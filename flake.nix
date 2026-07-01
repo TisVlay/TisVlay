@@ -37,6 +37,15 @@
         packages = {
           tisvlay = pkgs.callPackage ./packaging/nix/package.nix { };
           default = self.packages.${system}.tisvlay;
+
+          # Out-of-tree build of the in-tree pulse8-cec HDMI-CEC driver, so
+          # Pulse-Eight USB-CEC adapters expose /dev/cecN without a full
+          # kernel rebuild (nixpkgs doesn't ship USB_PULSE8_CEC). Built here
+          # against nixpkgs' default kernel for `nix build .#pulse8-cec`
+          # validation; the NixOS module rebuilds it against the host kernel
+          # (config.boot.kernelPackages) so vermagic matches at runtime. See
+          # services.tisvlay.cec.pulse8.enable.
+          pulse8-cec = pkgs.linuxPackages.callPackage ./packaging/nix/pulse8-cec.nix { };
         };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
