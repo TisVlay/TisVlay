@@ -38,7 +38,11 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = kernel.moduleBuildDependencies;
 
-  makeFlags = kernel.makeFlags ++ [
+  # `commonMakeFlags`, not `makeFlags`: the latter adds kernel-build-only
+  # flags (`O=$(buildRoot)`, `--eval=undefine modules`) that break an
+  # external `M=` module build. This matches what `kernelModuleMakeFlags`
+  # (used by v4l2loopback et al.) is built from.
+  makeFlags = kernel.commonMakeFlags ++ [
     "-C"
     "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
     "M=$(PWD)"
