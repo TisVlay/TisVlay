@@ -21,7 +21,12 @@ A CEC adapter is a character device on the HDMI bus. Unlike the network backends
 | `DISCOVERY` | enumerate `/dev/cecN` nodes (not a bus scan) | ✅ |
 | `VOLUME` | only relative `User Control Pressed{Volume Up/Down}` exists; no absolute set, readback is an AVR feature | ❌ deferred (needs a relative-volume primitive) |
 | `MUTE` | `User Control Pressed{Mute}` is a toggle; readback device-dependent | ❌ deferred |
-| `BACKLIGHT`, `SCREEN`-blank | not CEC concepts | ❌ omitted |
+| `SCREEN`-blank | no discrete CEC screen-off; **emulated via power** when `emulate_screen_via_power` (default on) | ✅ emulated |
+| `BACKLIGHT` | not a CEC concept | ❌ omitted |
+
+### Screen-via-power emulation
+
+HDMI-CEC has no way to blank the panel while leaving the TV on, so a bare CEC backend would ignore the stock screen-blank profile actions (`on_dpms_off` / `on_idle_timeout` / `on_session_lock` default to `screen_off`, with `screen_on` mirrors). The `emulate_screen_via_power` config field (`[tv.cec]`, default `true`) closes that gap: `CecConnector::emulate_screen_via_power()` reports it, and the **daemon** — not the connection — advertises `SCREEN` (config-aware `get_capabilities`) and dispatches `screen_off`/`screen_on` as `power_off`/`power_on`. Living at the daemon dispatch is load-bearing: it reuses the correct reachable-in-standby power path (keep the connection, **synthesize** the standby cache the TV won't re-broadcast for a *commanded* standby, wake in place). Routing screen→power inside the connection instead would leave the cached power state stale-`Active` after a commanded standby, which would make a later `power_on` wrongly no-op. Opt out (`false`) to have the device ignore screen actions entirely — sub-stock fidelity for a user who'd rather not power-cycle a slow-to-wake panel on every idle blank. Default-on so the stock profiles make every device "go dark" (LG blanks its OLED; CEC powers off) consistently across a mixed fleet.
 
 `IPV4` / `IPV6` are **not** declared — beyond "not a network transport", omitting them stops the daemon's manual-entry enrichment from ARP-probing a `/dev/cecN` path as if it were an IP.
 

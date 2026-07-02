@@ -126,6 +126,8 @@ The daemon's verify loop waits on a `watch::Sender<PowerState>` fed by *some* ca
 ### Emulating a capability the device lacks
 When a device is missing a discrete capability the daemon expects, a backend can sometimes emulate it with a little server-side state rather than declaring `NotSupported`. Example: a device with volume control but no audio-mute can emulate mute by driving volume to 0 and recalling the prior level on unmute (treating a volume change made while muted as the new recall target). This trades a clean device primitive for daemon-held state that resets on restart — worth it when the emulation is convincing and the capability matters; skip it when the device genuinely can't express the concept.
 
+A second worked example — **CEC's screen-via-power** — emulates `SCREEN` with the `POWER` primitive (HDMI-CEC has no discrete screen-blank), gated behind a per-device `emulate_screen_via_power` config (default on). Its lesson is *where* the emulation lives: the mapping is done at the **daemon dispatch** (a config-aware `TvConnector::emulate_screen_via_power()` predicate the daemon reads to advertise `SCREEN` and route `screen_off`/`screen_on` to `power_off`/`power_on`), **not** inside the connection's `screen_off`/`screen_on`. Doing it at the daemon reuses the correct power path (keep the connection across standby, synthesize the standby cache the TV won't re-broadcast, wake in place); doing it in the connection would bypass that and leave the cached power state stale. Rule of thumb: emulate at the layer that owns the primitive you're mapping *to*.
+
 ## Related docs
 
 - [docs/design.md](../design.md) — the trait/contract/D-Bus/config reference, and the power & screen state machine.

@@ -407,6 +407,23 @@ pub trait TvConnector: Send + Sync {
         false
     }
 
+    /// Whether this backend fulfils screen-blank actions by powering the
+    /// device — i.e. emulates the `SCREEN` capability via `POWER`.
+    ///
+    /// For a device with `POWER` but no discrete screen-blank (HDMI-CEC: the
+    /// panel can't go dark while the TV stays on), returning `true` lets the
+    /// daemon advertise `SCREEN` and dispatch `screen_off`/`screen_on` as
+    /// `power_off`/`power_on` — so the stock screen-action profiles
+    /// (idle/lock/DPMS) behave consistently across a mixed fleet without the
+    /// user rewriting them to power actions. The mapping lives at the daemon
+    /// dispatch (not the connection) so it reuses the correct power path
+    /// (standby-cache synthesis, wake-in-place). Default `false`: a backend
+    /// with a real screen-blank, or one that should simply ignore screen
+    /// actions, leaves it off. Config-driven so it's opt-out per device.
+    fn emulate_screen_via_power(&self, _vendor_config: &toml::Value) -> bool {
+        false
+    }
+
     /// Connect to a TV using vendor-specific config.
     ///
     /// The vendor config contains all transport and credential parameters.

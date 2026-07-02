@@ -1941,9 +1941,13 @@ impl TvManager {
     /// consistently rather than flickering as the TV connects and drops.
     pub async fn get_capabilities(&self, tv_id: &str) -> Option<Capabilities> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
-        let (live, vendor) = {
+        let (live, vendor, config) = {
             let tv = tv_arc.lock().await;
-            (tv.capabilities(), tv.config.vendor.clone())
+            (
+                tv.capabilities(),
+                tv.config.vendor.clone(),
+                tv.config.clone(),
+            )
         };
         let caps = if live.is_empty() {
             self.registry
@@ -1951,6 +1955,16 @@ impl TvManager {
                 .map(|b| b.backend.capabilities())?
         } else {
             live
+        };
+        // Screen-via-power emulation adds SCREEN config-awarely (the backend
+        // has no discrete screen-blank but the daemon dispatches screen
+        // actions as power). Added here — not on the connection — so the bit
+        // is driven by config, not connection state, and stays stable across
+        // connect/disconnect like the rest of this value.
+        let caps = if self.registry.emulate_screen_via_power(&config) {
+            caps | Capabilities::SCREEN
+        } else {
+            caps
         };
         // DISCOVERY is a backend-level capability (enumerate devices), not a
         // per-TV control, and a live connection never reports it — so the
@@ -2779,7 +2793,28 @@ impl TvManager {
     /// an active [`Self::refresh_power_state`] before each passive
     /// verify-await (nothing else fires the `power_state_tx` watch they
     /// await). Push backends keep the passive-await-only path.
+    /// Whether this TV's backend emulates `SCREEN` via `POWER` (config-aware,
+    /// e.g. CEC's `emulate_screen_via_power`). When true, `screen_on` /
+    /// `screen_off` dispatch as `power_on` / `power_off`.
+    async fn emulate_screen_via_power(&self, tv_id: &str) -> bool {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let config = tv_arc.lock().await.config.clone();
+                self.registry.emulate_screen_via_power(&config)
+            }
+            Err(_) => false,
+        }
+    }
+
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        // Screen-via-power emulation (CEC has no discrete screen-blank): a
+        // screen-on action *is* a power-on. Delegate to the real power path
+        // (wake-in-place, correct standby-cache handling) rather than the
+        // screen-latch / reconcile machinery below, which assumes a separate
+        // screen axis this device doesn't have.
+        if self.emulate_screen_via_power(tv_id).await {
+            return self.power_on(tv_id).await;
+        }
         // Latch the intent so an action deferred (or superseded) here still
         // lands via the push-driven reconcile once the TV is reachable.
         {
@@ -2943,6 +2978,14 @@ impl TvManager {
     /// known; see `docs/lg/firmware-quirks.md` (when ported) for
     /// the design rationale.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        // Screen-via-power emulation (CEC has no discrete screen-blank): a
+        // screen-off action *is* a power-off. Delegate to the real power path
+        // — which for a reachable-in-standby backend keeps the connection and
+        // synthesizes the standby cache the TV won't re-broadcast — rather
+        // than the screen-latch / reconcile machinery below.
+        if self.emulate_screen_via_power(tv_id).await {
+            return self.power_off(tv_id).await;
+        }
         // Latch the intent so an action deferred (or superseded) here still
         // lands via the push-driven reconcile once the TV is reachable.
         {

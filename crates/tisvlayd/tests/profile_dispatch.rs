@@ -366,6 +366,72 @@ async fn power_on_wakes_reachable_in_standby_tv_in_place_without_flap() {
     );
 }
 
+#[tokio::test]
+async fn screen_actions_dispatch_as_power_for_screen_via_power_backend() {
+    // A CEC-style backend with no discrete screen-blank emulates SCREEN via
+    // power: the daemon advertises SCREEN and dispatches screen_off/screen_on
+    // as power_off/power_on — reusing the reachable-in-standby power path
+    // (connection kept, standby cache synthesized), so a screen-blank action
+    // powers the TV consistently with a real-screen backend "going dark".
+    let tv_uuid = test_tv_uuid("lr_svp").to_string();
+    let daemon = TestDaemon::with_one_screen_via_power_mock_tv("lr_svp")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // SCREEN is advertised config-awarely, so clients render the control.
+    let caps = daemon
+        .manager()
+        .get_capabilities(&tv_uuid)
+        .await
+        .expect("caps");
+    assert!(
+        caps.contains(tisvlay_core::Capabilities::SCREEN),
+        "screen-via-power advertises SCREEN",
+    );
+
+    // screen_off dispatches as power_off: TV to standby, connection kept, and
+    // the cache reflects standby (not the stale-Active a connection-level
+    // route would leave, since the daemon power path synthesizes it).
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off");
+    settle().await;
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "connection kept (reachable in standby)",
+    );
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        !power_state_str_is_on(&tv.power_state),
+        "screen_off powered the TV to standby",
+    );
+
+    // screen_on dispatches as power_on (wake-in-place): TV back on.
+    daemon
+        .manager()
+        .screen_on(&tv_uuid)
+        .await
+        .expect("screen_on");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        power_state_str_is_on(&tv.power_state),
+        "screen_on powered the TV back on",
+    );
+}
+
 // ---------- Reliable screen-state actions through system-event dispatch ----------
 
 /// Build a config that maps a non-default `SessionAction` to `on_wake`

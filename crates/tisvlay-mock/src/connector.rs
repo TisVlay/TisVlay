@@ -85,6 +85,15 @@ impl TvConnector for MockConnector {
             .unwrap_or(false)
     }
 
+    fn emulate_screen_via_power(&self, vendor_config: &toml::Value) -> bool {
+        // Test-configurable: models a backend (CEC) with no discrete
+        // screen-blank, so the daemon dispatches screen actions as power.
+        // Default `false` so existing mock tests keep their real SCREEN.
+        parse_config(vendor_config)
+            .map(|c| c.emulate_screen_via_power)
+            .unwrap_or(false)
+    }
+
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;

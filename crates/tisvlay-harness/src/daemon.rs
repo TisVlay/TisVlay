@@ -126,6 +126,24 @@ pub fn mock_tv_config_reachable_in_standby(tv_id: &str, managed: bool) -> System
     config
 }
 
+/// Build a `SystemConfig` with one managed, CEC-style mock TV: reachable in
+/// standby *and* emulating `SCREEN` via power, so the daemon advertises
+/// `SCREEN` and dispatches `screen_off`/`screen_on` as `power_off`/`power_on`.
+pub fn mock_tv_config_screen_via_power(tv_id: &str, managed: bool) -> SystemConfig {
+    let mut config = SystemConfig::default();
+    config.tv.push(build_mock_tv_inner(
+        tv_id,
+        managed,
+        None,
+        MockVendorFlags {
+            reachable_in_standby: true,
+            emulate_screen_via_power: true,
+            ..Default::default()
+        },
+    ));
+    config
+}
+
 /// Optional vendor-config knobs the mock backend reads. Each maps to a
 /// boolean in the `[tv.mock]` table; omitted keys default off.
 #[derive(Debug, Default, Clone, Copy)]
@@ -134,6 +152,9 @@ struct MockVendorFlags {
     disable_subscription: bool,
     /// Backend reports `reachable_in_standby` — bus stays live in standby.
     reachable_in_standby: bool,
+    /// Backend reports `emulate_screen_via_power` — screen actions dispatch
+    /// as power (models a CEC-style backend with no discrete screen-blank).
+    emulate_screen_via_power: bool,
 }
 
 fn build_mock_tv_inner(
@@ -160,6 +181,12 @@ fn build_mock_tv_inner(
     if flags.reachable_in_standby {
         vendor_table.insert(
             "reachable_in_standby".to_string(),
+            toml::Value::Boolean(true),
+        );
+    }
+    if flags.emulate_screen_via_power {
+        vendor_table.insert(
+            "emulate_screen_via_power".to_string(),
             toml::Value::Boolean(true),
         );
     }
@@ -285,6 +312,13 @@ impl TestDaemon {
     /// [`mock_tv_config_reachable_in_standby`].
     pub async fn with_one_reachable_in_standby_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
         Self::with_config(mock_tv_config_reachable_in_standby(tv_id, true)).await
+    }
+
+    /// Build a daemon with a single managed, CEC-style mock TV that both stays
+    /// reachable in standby *and* emulates `SCREEN` via power — so screen
+    /// actions dispatch as power. See [`mock_tv_config_screen_via_power`].
+    pub async fn with_one_screen_via_power_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
+        Self::with_config(mock_tv_config_screen_via_power(tv_id, true)).await
     }
 
     /// The zbus connection bound to the private test bus.

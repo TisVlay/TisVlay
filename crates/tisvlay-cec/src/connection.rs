@@ -256,6 +256,10 @@ impl TvConnection for CecConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
+        // Power + input only. `SCREEN` for a screen-via-power CEC TV is
+        // added by the daemon (config-aware `get_capabilities`), not here:
+        // the emulation — dispatching screen actions as power — lives at the
+        // daemon so it reuses the correct `power_off`/`power_on` path.
         Capabilities::POWER | Capabilities::INPUT
     }
 
@@ -490,6 +494,9 @@ mod tests {
 
     #[test]
     fn capabilities_are_power_and_input() {
+        // The connection is a pure power+input backend; SCREEN for a
+        // screen-via-power CEC TV is added by the daemon's config-aware
+        // `get_capabilities`, not here.
         let conn = connection(PowerStatus::On);
         assert_eq!(
             conn.capabilities(),

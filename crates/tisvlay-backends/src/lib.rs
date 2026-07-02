@@ -254,6 +254,22 @@ impl BackendRegistry {
             .unwrap_or(false)
     }
 
+    /// Whether this TV's backend fulfils screen-blank actions by powering the
+    /// device (emulates `SCREEN` via `POWER`). The daemon uses this to
+    /// advertise `SCREEN` and dispatch `screen_off`/`screen_on` as
+    /// `power_off`/`power_on` for a device with no discrete screen-blank
+    /// (HDMI-CEC).
+    pub fn emulate_screen_via_power(&self, tv_config: &TvConfig) -> bool {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.emulate_screen_via_power(v))
+            })
+            .unwrap_or(false)
+    }
+
     /// Wake a TV from standby.
     pub async fn wake_tv(&self, tv_config: &TvConfig) -> tisvlay_core::Result<()> {
         let connector = self.get_connector(&tv_config.vendor)?;

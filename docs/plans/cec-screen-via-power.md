@@ -2,7 +2,18 @@
 
 A per-device opt-out CEC config that makes screen-blank profile actions (`screen_off` / `screen_on`) power the TV off/on, so the **shipped default profiles behave consistently across a mixed fleet** without the user rewriting them to power actions for a CEC-only setup. HDMI-CEC has no discrete screen-off (the panel can't blank while the TV stays "on"), so a device with `POWER` but no `SCREEN` otherwise ignores the stock screen events entirely.
 
-> Status: **planned**, on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)), building on the reachable-in-standby decouple + wake-in-place already landed. Small feature: one config field emulated inside `CecConnection`, no daemon/core changes.
+> Status: **built** on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)), building on the reachable-in-standby decouple + wake-in-place already landed. Green: build · clippy `-D warnings` · 603 tests.
+
+## As built (deviation from the plan below)
+
+The plan's § Decision put the emulation **inside `CecConnection`** (`screen_off`→`self.power_off()`). Implementation surfaced a correctness flaw that moved it up a layer:
+
+- **The emulation lives at the daemon dispatch, not the connection.** Routing `screen_off`→`power_off` *inside* the connection bypasses `TvManager::power_off`, which is the only thing that **synthesizes** the standby cache update for a *commanded* standby (a CEC TV doesn't re-broadcast a `<Standby>` it was told to do, so the monitor never pushes it). The connection-level route left the cached power state stale-`Active` after a screen-off — which would make a later `power_on` wrongly hit its idempotent no-op and *not* wake the TV. So the mapping is done at `TvManager::screen_off`/`screen_on` (delegate to `power_off`/`power_on`) via a config-aware `TvConnector::emulate_screen_via_power()` predicate (mirrors `reachable_in_standby` / `supports_wake` — vendor-blind, the daemon asks the backend). This reuses the correct reachable-in-standby power path (keep connection, synthesize cache, wake in place).
+- **`SCREEN` is added by the daemon's config-aware `get_capabilities`, not the connection.** Because it's config-driven rather than connection-state-driven, the bit is stable across connect/disconnect (no cap flicker — the property `get_capabilities` already guards against). `CecConnection::capabilities()` stays `POWER | INPUT`; `CecBackend` static caps unchanged.
+- **`PairingFieldType::Bool` already existed** (the plan's Open question), so the schema field is a proper editable `Bool` (`UserInput`), default `"true"` — no core field-type addition needed.
+- **Mock parity added** (`MockVendorConfig::emulate_screen_via_power` + connector override + `mock_tv_config_screen_via_power` harness builder) so the daemon dispatch is covered end-to-end (`screen_off` action → standby, connection kept, cache accurate; `SCREEN` advertised).
+
+Durable content migrated to [docs/cec/protocol.md](../cec/protocol.md) § Screen-via-power emulation and the vendor guide's "Emulating a capability the device lacks"; this plan deletes with the CEC PR.
 
 ## Problem
 

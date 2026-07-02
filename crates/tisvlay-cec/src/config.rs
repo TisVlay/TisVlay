@@ -35,10 +35,27 @@ pub struct CecVendorConfig {
         deserialize_with = "de_physical_address"
     )]
     pub physical_address: PhysicalAddress,
+
+    /// Fulfil screen-blank actions by powering the TV. HDMI-CEC has no
+    /// discrete screen-off (the panel can't blank while the TV stays on), so
+    /// with this on the backend emulates the `SCREEN` capability via power: a
+    /// `screen_off` action (e.g. the stock idle/lock/DPMS profiles) powers
+    /// the TV off and `screen_on` powers it back on. Off = the device ignores
+    /// screen actions (they read `NotSupported`), for a user who prefers
+    /// sub-stock fidelity over power-cycling a slow-to-wake panel. Default on
+    /// so the shipped default profiles behave consistently across a fleet.
+    #[serde(default = "default_emulate_screen_via_power")]
+    pub emulate_screen_via_power: bool,
 }
 
 fn default_device() -> String {
     "/dev/cec0".to_string()
+}
+
+/// Emulate `SCREEN` via power by default (see the field docs) so a CEC TV
+/// honors the stock screen-blank profiles out of the box.
+fn default_emulate_screen_via_power() -> bool {
+    true
 }
 
 /// `1.0.0.0` (HDMI 1) — the common single-adapter wiring.
@@ -74,6 +91,7 @@ impl Default for CecVendorConfig {
         Self {
             device: default_device(),
             physical_address: default_physical_address(),
+            emulate_screen_via_power: default_emulate_screen_via_power(),
         }
     }
 }
@@ -90,15 +108,29 @@ mod tests {
     }
 
     #[test]
+    fn emulate_screen_via_power_defaults_on() {
+        assert!(CecVendorConfig::default().emulate_screen_via_power);
+        // Absent from TOML → still on (the stock profiles work out of the box).
+        let cfg: CecVendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        assert!(cfg.emulate_screen_via_power);
+        // Explicit opt-out is honored.
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nemulate_screen_via_power = false").unwrap();
+        assert!(!cfg.emulate_screen_via_power);
+    }
+
+    #[test]
     fn physical_address_round_trips_through_toml() {
         let cfg = CecVendorConfig {
             device: "/dev/cec1".into(),
             physical_address: PhysicalAddress::from(0x2000),
+            emulate_screen_via_power: false,
         };
         let value = toml::Value::try_from(&cfg).unwrap();
         let back: CecVendorConfig = value.try_into().unwrap();
         assert_eq!(back.device, "/dev/cec1");
         assert_eq!(back.physical_address, PhysicalAddress::from(0x2000));
+        assert!(!back.emulate_screen_via_power, "flag round-trips");
     }
 
     #[test]

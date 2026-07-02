@@ -83,6 +83,15 @@ impl TvConnector for CecConnector {
         true
     }
 
+    fn emulate_screen_via_power(&self, vendor_config: &toml::Value) -> bool {
+        // HDMI-CEC has no discrete screen-blank, so honor screen actions by
+        // powering the TV (default on). The daemon reads this to advertise
+        // SCREEN and dispatch screen_off/screen_on as power_off/power_on.
+        parse_config(vendor_config)
+            .map(|c| c.emulate_screen_via_power)
+            .unwrap_or(false)
+    }
+
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
@@ -222,6 +231,20 @@ impl TvConnector for CecConnector {
                 default: "1.0.0.0".into(),
                 ..Default::default()
             },
+            PairingField {
+                name: "emulate_screen_via_power".into(),
+                label: "Screen actions power the TV".into(),
+                helper: "Fulfil screen-blank actions by powering the TV. HDMI-CEC can't blank \
+                         the panel while leaving the TV on, so with this on a screen-off action \
+                         (e.g. the default idle/lock/DPMS profile) powers the TV off and \
+                         screen-on powers it back on. Turn off to have this device ignore screen \
+                         actions instead."
+                    .into(),
+                field_type: PairingFieldType::Bool,
+                required: false,
+                default: "true".into(),
+                ..Default::default()
+            },
         ]
     }
 }
@@ -269,6 +292,19 @@ mod tests {
     #[test]
     fn reachable_in_standby_is_true() {
         assert!(connector(PowerStatus::On).reachable_in_standby(&cfg()));
+    }
+
+    #[test]
+    fn emulate_screen_via_power_defaults_on_and_honors_opt_out() {
+        // Default config → emulate on (stock screen profiles power the TV).
+        assert!(connector(PowerStatus::On).emulate_screen_via_power(&cfg()));
+        // Opt-out config → off (device ignores screen actions).
+        let off = toml::Value::try_from(CecVendorConfig {
+            emulate_screen_via_power: false,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!connector(PowerStatus::On).emulate_screen_via_power(&off));
     }
 
     #[tokio::test(start_paused = true)]
@@ -330,12 +366,16 @@ mod tests {
     fn config_schema_exposes_device_and_physical_address() {
         use tisvlay_core::PairingFieldType;
         let schema = connector(PowerStatus::On).config_schema();
-        assert_eq!(schema.len(), 2);
+        assert_eq!(schema.len(), 3);
         assert_eq!(schema[0].name, "device");
         assert_eq!(schema[0].field_type, PairingFieldType::Path);
         assert!(schema[0].required);
         assert_eq!(schema[1].name, "physical_address");
         assert!(!schema[1].required, "physical address has a sane default");
         assert_eq!(schema[1].default, "1.0.0.0");
+        assert_eq!(schema[2].name, "emulate_screen_via_power");
+        assert_eq!(schema[2].field_type, PairingFieldType::Bool);
+        assert!(!schema[2].required, "screen-via-power defaults on");
+        assert_eq!(schema[2].default, "true");
     }
 }
