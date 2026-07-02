@@ -41,6 +41,16 @@ All three slices shipped in one commit (`69383f3`):
 2. **Tests.** Connector predicate (default-on + opt-out); config default round-trip; and a daemon end-to-end (`screen_off` action → standby with the connection kept *and the cache accurate*, `SCREEN` advertised, `screen_on` → back on) — the cache assertion is what a connection-level route would fail. Mock parity added to drive it: `MockVendorConfig::emulate_screen_via_power` + connector override + `mock_tv_config_screen_via_power` / `with_one_screen_via_power_mock_tv` harness builders.
 3. **Docs.** [docs/cec/protocol.md](../cec/protocol.md) § Screen-via-power emulation; the schema helper copy; CLAUDE.md CEC lines; and the vendor guide's "Emulating a capability the device lacks" section extended with this as a second worked example teaching *where* to emulate.
 
+### GUI follow-ups (surfaced by hardware QA of the emulated screen)
+
+Advertising `SCREEN` on a sub-`STOCK` CEC TV exposed three GUI issues, each fixed as its own commit:
+
+- **View-mode config row missing** (`fix(core)`). `display_config` read only the *stored* vendor config, so a field left at its serde default (`emulate_screen_via_power`, absent from a TV paired before the field existed) showed only in edit mode. Fixed in the shared `display_rows_for_visibility`: fall back to the schema `default` when a field is absent, so view and edit agree on the effective value. General fix, not CEC-specific.
+- **Leftover whitespace from capability-hidden controls** (`fix(gui)`). The PICTURE/AUDIO/INPUT groups + rows gated on capability with `visible:`, which in Slint hides rendering but keeps the layout slot and spacing — so a CEC TV (no volume/mute/backlight) left empty rows and an empty group's gap. Switched the gates to `if` conditionals so hidden elements leave the layout entirely; the flags are static per vendor, so no flicker.
+- **Screen help copy was LG-specific** (`fix(gui)`). "Blank screen without powering off (instant resume)" is false for the emulated case. Reworded *statically* to cover both — a dedicated screen-blank with instant resume where supported, otherwise emulated via power — rather than swapping per backend (a user reads it once).
+
+Deferred (noted, not built): the manual Screen toggle on a power-emulated TV duplicates the Power button. Hiding it for emulated backends (keeping the capability for profile actions) needs a small daemon→GUI "emulated" signal; left for later since the reworded help now explains the behavior.
+
 ## Migration on merge
 
 Durable content already lives in [docs/cec/protocol.md](../cec/protocol.md) § Screen-via-power emulation and the vendor guide; delete this plan with the CEC PR. Per [docs/plans/README.md](README.md).
