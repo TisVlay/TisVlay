@@ -42,11 +42,32 @@ fn resolve_vendor(id: VendorId) -> Option<(&'static str, &'static str)> {
     Some((name, canonical))
 }
 
+/// Strip control characters (notably the `NUL` that CEC's fixed-width OSD
+/// name field pads with) and trim surrounding whitespace.
+///
+/// **Load-bearing for D-Bus:** a string with an embedded `NUL` is an invalid
+/// D-Bus message, and emitting one in the `VendorInfo`/`Brand`
+/// `PropertiesChanged` signal makes the bus disconnect the daemon (it loses
+/// its well-known name and reads offline to every peer). So every device
+/// string is cleaned before it can reach the wire.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// Query the device's identity over the link, best-effort: each field that
 /// fails to answer (or comes back empty) is simply omitted. An all-absent
 /// result is `is_empty()` and the state merge drops it.
 pub(crate) async fn query(link: &dyn CecLink) -> DeviceIdentity {
-    let osd_name = link.query_osd_name().await.ok().filter(|s| !s.is_empty());
+    let osd_name = link
+        .query_osd_name()
+        .await
+        .ok()
+        .map(|s| sanitize(&s))
+        .filter(|s| !s.is_empty());
 
     let (vendor_raw, vendor_name, vendor_canonical) = match link.query_vendor_id().await {
         Ok(Some(id)) => {
@@ -90,5 +111,29 @@ mod tests {
     #[test]
     fn unknown_vendor_resolves_to_none() {
         assert_eq!(resolve_vendor(VendorId([0x12, 0x34, 0x56])), None);
+    }
+
+    #[test]
+    fn sanitize_strips_nul_and_control_and_trims() {
+        // The exact shape that crashes the daemon on D-Bus: a name with an
+        // embedded NUL. Must come out clean (and empty if only padding).
+        assert_eq!(sanitize("OLED42C3PU\u{0}\u{0}\u{0}"), "OLED42C3PU");
+        assert_eq!(sanitize("  Living Room \t"), "Living Room");
+        assert_eq!(sanitize("\u{0}\u{0}"), "");
+    }
+
+    #[tokio::test]
+    async fn query_sanitizes_the_osd_name() {
+        // A fake link whose OSD name carries NUL padding — `query` must strip
+        // it so the string is safe to put on D-Bus.
+        let link = crate::link::FakeCecLink::new(linux_cec::operand::PowerStatus::On)
+            .with_identity(
+                "OLED42C3PU\u{0}\u{0}",
+                Some(VendorId([0x00, 0xE0, 0x91])),
+                "1.4",
+            );
+        let id = query(&link).await;
+        assert_eq!(id.osd_name.as_deref(), Some("OLED42C3PU"));
+        assert_eq!(id.vendor_canonical.as_deref(), Some("lg"));
     }
 }

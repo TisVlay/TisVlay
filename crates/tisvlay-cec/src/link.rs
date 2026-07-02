@@ -244,12 +244,52 @@ impl CecLink for LinuxCecLink {
     }
 
     async fn query_osd_name(&self) -> Result<String> {
-        let name = self.device.get_osd_name().await.map_err(map_cec_err)?;
-        Ok(name.to_string_lossy().into_owned())
+        // Query the *TV's* name over the bus (`Give OSD Name` →
+        // `Set OSD Name`), NOT `AsyncDevice::get_osd_name()`, which returns
+        // our own adapter's locally-configured, fixed 14-byte NUL-padded
+        // buffer. The message operand carries only the actual bytes (no
+        // padding); `identity::query` still sanitizes for D-Bus safety.
+        let envelope = self
+            .device
+            .tx_rx_message(
+                &Message::GiveOsdName {},
+                LogicalAddress::Tv,
+                Opcode::SetOsdName,
+                POWER_QUERY_TIMEOUT,
+            )
+            .await
+            .map_err(map_cec_err)?;
+        match envelope.message {
+            MessageData::Valid(Message::SetOsdName { name }) => {
+                Ok(String::from_utf8_lossy(name.as_bytes()).into_owned())
+            }
+            other => Err(Error::backend(
+                VENDOR_ID,
+                format!("expected Set OSD Name, got {other:?}"),
+            )),
+        }
     }
 
     async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>> {
-        self.device.get_vendor_id().await.map_err(map_cec_err)
+        // The TV's vendor over the bus (`Give Device Vendor ID` →
+        // `Device Vendor ID`), not our adapter's local one.
+        let envelope = self
+            .device
+            .tx_rx_message(
+                &Message::GiveDeviceVendorId {},
+                LogicalAddress::Tv,
+                Opcode::DeviceVendorId,
+                POWER_QUERY_TIMEOUT,
+            )
+            .await
+            .map_err(map_cec_err)?;
+        match envelope.message {
+            MessageData::Valid(Message::DeviceVendorId { vendor_id }) => Ok(Some(vendor_id)),
+            other => Err(Error::backend(
+                VENDOR_ID,
+                format!("expected Device Vendor ID, got {other:?}"),
+            )),
+        }
     }
 
     async fn query_cec_version(&self) -> Result<String> {
