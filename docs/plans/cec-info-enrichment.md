@@ -75,6 +75,7 @@ Hardware QA of v1 exposed a design flaw: the INFO group already renders **Make**
 ### Probe during discovery
 
 - `CecDiscovery` opens each `/dev/cecN` and queries OSD name + vendor, populating `DiscoveredTv.name` (OSD name) + its `HardwareId`. So the wizard's discovery list shows real TV names/models and the name field prefills from the OSD name — the enrichment finally reaches [`pairing_wizard.slint`](../../crates/tisvlay-gui/ui/globals/pairing_wizard.slint). A non-answering node falls back to the bare `/dev/cecN` entry.
+- **Wizard tile brand** (follow-up, `478433a`): the discovery tile keyed on `DiscoveredTv.vendor` (the backend id `cec` → `CE`), so a resolved LG set still showed the generic tile. Carry the canonical through `DiscoveredTv.vendor_data["brand"]` — the free-form map that already crosses D-Bus for autofill, so no `DiscoveredTv` wire-signature change — and key the wizard tile on it (falling back to the backend id). Mirrors the TVs-pane `Tv1.Brand`. `WizardDiscoveredTv` gains a `brand` field; `vendor` stays the backend id for pairing.
 
 ### Stall fix
 
