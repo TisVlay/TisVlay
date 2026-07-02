@@ -185,13 +185,15 @@ async fn shutdown_clears_connected_property_on_dbus() {
 
 #[tokio::test]
 async fn power_off_clears_connected_property_on_poll_only_tv() {
-    // Regression: poll-only backends (CEC, projectors) have no push
-    // subscription task, so nothing emits `ConnectionChanged` when
-    // `power_off` drops the connection. Without an explicit emit the
-    // cached D-Bus `Connected` property — and the GUI power toggle keyed
-    // on it — stays stuck at `true`, leaving the TV un-powerable-on from
-    // that button. The push-mock equivalent above passes via the
-    // subscription-end path; this exercises the poll-only path.
+    // Regression: a poll-only backend (e.g. a projector over a
+    // request/response transport) has no push subscription task, so nothing
+    // emits `ConnectionChanged` when `power_off` drops the connection.
+    // Without an explicit emit the cached D-Bus `Connected` property — and
+    // the GUI power toggle keyed on it — stays stuck at `true`, leaving the
+    // TV un-powerable-on from that button. The push-mock equivalent above
+    // passes via the subscription-end path; this exercises the poll-only
+    // path. (CEC is a *push* backend — its follower-mode monitor takes the
+    // subscription-end path, covered by the tisvlay-cec crate tests.)
     let tv_uuid = test_tv_uuid("lr_poll_off").to_string();
     let daemon = TestDaemon::with_one_poll_only_mock_tv("lr_poll_off")
         .await

@@ -130,18 +130,24 @@ impl TvConnector for CecConnector {
         // on every attempt (One Touch Play is idempotent for an already-on
         // TV) and poll power between sends until the TV reports on.
         for _ in 0..WAKE_VERIFY_ATTEMPTS {
-            // Best-effort: a transient send error on one attempt must not
-            // abort the wake — the next iteration re-sends. A send failure
-            // can mean the logical-address claim was lost, so re-open to
-            // re-claim before retrying (keeping the old handle if the
-            // re-open itself fails).
-            if link.power_on().await.is_err()
-                && let Ok(fresh) = self
-                    .opener
-                    .open(&config.device, config.physical_address)
-                    .await
-            {
-                link = fresh;
+            match link.power_on().await {
+                Ok(()) => {}
+                // A dead adapter won't recover by retrying — surface the
+                // concrete error now instead of burning the whole verify
+                // window on a generic "did not report power-on".
+                Err(e @ Error::ConnectionClosed) => return Err(e),
+                // Otherwise the send may have failed on a lost
+                // logical-address claim; re-open to re-claim before the
+                // next re-send (keep the old handle if the re-open fails).
+                Err(_) => {
+                    if let Ok(fresh) = self
+                        .opener
+                        .open(&config.device, config.physical_address)
+                        .await
+                    {
+                        link = fresh;
+                    }
+                }
             }
             tokio::time::sleep(WAKE_VERIFY_DELAY).await;
             if let Ok(status) = link.query_power().await

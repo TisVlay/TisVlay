@@ -86,9 +86,20 @@ fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
             }
         })
         .collect();
-    // Stable order so the wizard list doesn't shuffle between scans.
-    tvs.sort_by(|a, b| a.address.cmp(&b.address));
+    // Stable, *numeric* order (cec2 before cec10) so the wizard list is
+    // both stable across scans and in the order a human expects.
+    tvs.sort_by_key(|tv| cec_index(&tv.address));
     tvs
+}
+
+/// The `N` in a `/dev/cecN` path, for numeric ordering. Unparseable paths
+/// sort last (they shouldn't occur — `is_cec_device` gates enumeration).
+fn cec_index(address: &str) -> u32 {
+    address
+        .rsplit("cec")
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -110,7 +121,9 @@ mod tests {
     #[tokio::test]
     async fn discover_lists_cec_nodes_sorted() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        for name in ["cec0", "cec1", "cec10", "video0", "cec", "null"] {
+        // `cec2` + `cec10` catch lexicographic-vs-numeric ordering:
+        // lexicographic would put `cec10` before `cec2`.
+        for name in ["cec0", "cec1", "cec2", "cec10", "video0", "cec", "null"] {
             std::fs::File::create(tmp.path().join(name)).expect("create fixture");
         }
         let discovery = CecDiscovery::with_dir(tmp.path());
@@ -129,7 +142,7 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        assert_eq!(addrs, ["cec0", "cec1", "cec10"]);
+        assert_eq!(addrs, ["cec0", "cec1", "cec2", "cec10"]);
 
         // Each carries the device path for the wizard autofill.
         let first = &tvs[0];

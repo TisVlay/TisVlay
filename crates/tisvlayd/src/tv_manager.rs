@@ -2431,9 +2431,11 @@ impl TvManager {
             if result.is_ok() {
                 tv.powered_off = true;
             }
-            // Push backends emit `ConnectionChanged` from their subscription
-            // task's end-of-stream path when the connection drops. Poll-only
-            // backends (CEC, projectors) have no such task, so without an
+            // Push backends (LG SSAP, CEC's follower-mode monitor) emit
+            // `ConnectionChanged` from their subscription task's
+            // end-of-stream path when the dropped connection closes the
+            // state channel. A poll-only backend (e.g. a projector over a
+            // request/response transport) has no such task, so without an
             // explicit emit the cached `Connected` property — and the GUI
             // power toggle keyed on it — would stay stuck at `true` after a
             // power-off, leaving the TV un-powerable-on from that button.

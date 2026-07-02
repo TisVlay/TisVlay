@@ -52,11 +52,21 @@ fn de_physical_address<'de, D>(deserializer: D) -> Result<PhysicalAddress, D::Er
 where
     D: Deserializer<'de>,
 {
-    let raw = String::deserialize(deserializer)?;
-    if raw.is_empty() {
-        return Ok(default_physical_address());
+    // Accept either the dotted `a.b.c.d`/hex string form or a raw integer
+    // (matching linux-cec's own `Deserialize`, so an `UpdateConfig` numeric
+    // payload isn't rejected); an empty string — a cleared optional
+    // pairing-form field — falls back to the default.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Text(String),
+        Number(u16),
     }
-    PhysicalAddress::from_str(&raw).map_err(serde::de::Error::custom)
+    match Raw::deserialize(deserializer)? {
+        Raw::Text(s) if s.is_empty() => Ok(default_physical_address()),
+        Raw::Text(s) => PhysicalAddress::from_str(&s).map_err(serde::de::Error::custom),
+        Raw::Number(n) => Ok(PhysicalAddress::from(n)),
+    }
 }
 
 impl Default for CecVendorConfig {
@@ -109,5 +119,14 @@ mod tests {
         let cfg: CecVendorConfig =
             toml::from_str("device = \"/dev/cec0\"\nphysical_address = \"2.0.0.0\"").unwrap();
         assert_eq!(cfg.physical_address, PhysicalAddress::from(0x2000));
+    }
+
+    #[test]
+    fn parses_integer_physical_address() {
+        // A raw integer (e.g. an `UpdateConfig` numeric payload) is the
+        // packed u16, matching linux-cec's own deserializer.
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nphysical_address = 4096").unwrap();
+        assert_eq!(cfg.physical_address, PhysicalAddress::from(0x1000));
     }
 }
