@@ -27,8 +27,13 @@ use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notifier_v1::{self, ExtIdleNotifierV1},
 };
 
-/// Maximum protocol version we support for `ext_idle_notifier_v1`.
-/// The wayland-protocols crate supports up to version 1 for this protocol.
+/// Protocol version we bind for `ext_idle_notifier_v1`. v1's
+/// `get_idle_notification` respects idle inhibitors, so the screen won't
+/// blank (or a TV power off) mid-video — the behavior a blank/power-on-idle
+/// policy wants. A newer protocol version adds only an input-only
+/// `get_input_idle_notification` that ignores inhibitors, so binding higher
+/// buys nothing here; the registry bind caps whatever version the compositor
+/// advertises down to this constant.
 const EXT_IDLE_NOTIFIER_VERSION: u32 = 1;
 
 /// Maximum protocol version we support for `wl_seat`.
