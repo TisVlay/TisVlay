@@ -295,6 +295,22 @@ mod tests {
     }
 
     #[test]
+    fn display_config_shows_defaulted_emulate_screen_via_power() {
+        // A config that omits `emulate_screen_via_power` (a TV paired before
+        // the field existed, so it rides the serde default) must still show
+        // the field in the read-only view — falling back to the schema
+        // default, matching what the edit form prefills. Regression for the
+        // "option only visible in edit mode" GUI bug.
+        let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        let rows = connector(PowerStatus::On).display_config(&cfg);
+        assert!(
+            rows.iter()
+                .any(|(label, value)| label == "Screen actions power the TV" && value == "true"),
+            "defaulted emulate_screen_via_power shows its effective value: {rows:?}",
+        );
+    }
+
+    #[test]
     fn emulate_screen_via_power_defaults_on_and_honors_opt_out() {
         // Default config → emulate on (stock screen profiles power the TV).
         assert!(connector(PowerStatus::On).emulate_screen_via_power(&cfg()));

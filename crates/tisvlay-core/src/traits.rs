@@ -595,7 +595,16 @@ fn display_rows_for_visibility(
         .iter()
         .filter(|f| f.visibility == visibility)
         .filter_map(|f| {
-            let value = toml_field_as_string(vendor_config, &f.name)?;
+            // Fall back to the schema `default` when the field is absent from
+            // the stored config: a field left at its serde default isn't
+            // written to `[tv.<vendor>]`, so reading the stored value alone
+            // would drop it from the read-only view — even though it has an
+            // effective value the edit form (which prefills the default) does
+            // show. Showing the default keeps view mode and edit mode
+            // consistent. (Schema defaults are authored to match the serde
+            // defaults, so this is the value actually in force.)
+            let value =
+                toml_field_as_string(vendor_config, &f.name).unwrap_or_else(|| f.default.clone());
             if value.is_empty() {
                 return None;
             }
