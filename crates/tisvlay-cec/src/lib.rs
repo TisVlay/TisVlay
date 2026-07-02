@@ -4,8 +4,9 @@
 //! Linux CEC subsystem (`/dev/cecN`), built on Valve's `linux-cec`
 //! library. Unlike the network backends, the adapter is reachable on the
 //! bus even while the TV is in standby, so power-on is a real on-bus
-//! command (`Image View On`) rather than Wake-on-LAN — and `connect`
-//! refuses a standby TV so the daemon's `power_on` takes the wake path.
+//! command (`Image View On`) rather than Wake-on-LAN — and a standby TV
+//! stays *connected* (`reachable_in_standby`), with the daemon's `power_on`
+//! waking it by its reported power state rather than by connect success.
 //!
 //! v1 capability surface is power (on/off/state) and active-source input
 //! switching (`Set Stream Path`). Volume over CEC is relative-only and

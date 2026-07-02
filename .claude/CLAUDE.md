@@ -61,7 +61,7 @@ tisvlay/
 │   │   └── src/
 │   │       ├── lib.rs            # Public exports, VENDOR_ID/VENDOR_NAME
 │   │       ├── backend.rs        # CecBackend (POWER | INPUT | DISCOVERY)
-│   │       ├── connector.rs      # CecConnector (connect probes power; wake = ImageViewOn; no-auth pairing)
+│   │       ├── connector.rs      # CecConnector (reachable_in_standby; connect probes power but accepts standby; wake = ImageViewOn; no-auth pairing)
 │   │       ├── connection.rs     # CecConnection (power on/off/state; Set Stream Path input)
 │   │       ├── config.rs         # CecVendorConfig (/dev/cecN device path)
 │   │       ├── discovery.rs      # CecDiscovery (enumerate /dev/cecN nodes)
@@ -442,7 +442,7 @@ just test-snapshot-accept   # accept all pending snapshot changes
 - [docs/i18n.md](docs/i18n.md) - Translation architecture, workflow, add-a-locale walkthrough, decision rationale (gettext-rs vs Fluent / i18n-embed)
 - [docs/testing.md](docs/testing.md) - Testing guide: mock backend, harnesses, coverage, observability
 - [docs/lg/firmware-quirks.md](docs/lg/firmware-quirks.md) - LG WebOS firmware quirks (Bug A/B, `processing`/`onOff` discriminators, post-wake settle, `REQUEST_MS`-is-load-bearing)
-- [docs/cec/protocol.md](docs/cec/protocol.md) - HDMI-CEC backend: command vocabulary, capability mapping, physical-address inputs, the always-reachable-transport contract (`connect` refuses a standby TV)
+- [docs/cec/protocol.md](docs/cec/protocol.md) - HDMI-CEC backend: command vocabulary, capability mapping, physical-address inputs, the reachable-in-standby model (Connected ≠ power; `connect` accepts standby, `power_on` wakes by power state)
 - [docs/cec/testing.md](docs/cec/testing.md) - HDMI-CEC backend: the `CecLink` seam + `FakeCecLink`, vivid virtual-adapter note
 - [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls
 - [docs/firewall.md](docs/firewall.md) - SSDP firewall configuration
