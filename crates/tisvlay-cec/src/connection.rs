@@ -348,7 +348,10 @@ mod tests {
         );
         let mut rx = conn.subscribe_state().await.expect("subscribe");
         let got = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
-        assert!(got.is_err(), "a non-TV initiator must be filtered (no push)");
+        assert!(
+            got.is_err(),
+            "a non-TV initiator must be filtered (no push)"
+        );
     }
 
     #[tokio::test]

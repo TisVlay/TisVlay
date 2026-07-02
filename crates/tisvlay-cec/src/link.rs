@@ -123,8 +123,8 @@ impl LinuxCecMonitor {
 #[async_trait]
 impl CecMonitor for LinuxCecMonitor {
     async fn recv(&self) -> Result<Option<(LogicalAddress, Message)>> {
-        let timeout = Timeout::try_from(&Duration::from_millis(MONITOR_RX_POLL_MS))
-            .unwrap_or(Timeout::MAX);
+        let timeout =
+            Timeout::try_from(&Duration::from_millis(MONITOR_RX_POLL_MS)).unwrap_or(Timeout::MAX);
         match self.device.rx_message(timeout).await {
             Ok(envelope) => match envelope.message {
                 MessageData::Valid(message) => Ok(Some((envelope.initiator, message))),
