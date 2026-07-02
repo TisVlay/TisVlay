@@ -231,6 +231,23 @@ impl SessionState {
     pub fn subscribe_idle_timeout(&self) -> watch::Receiver<Option<u32>> {
         self.idle_timeout_tx.subscribe()
     }
+
+    /// Install a freshly-loaded [`SessionState`] in place of this one, as a
+    /// config reload does (daemon-late-connect retry, SIGHUP, D-Bus
+    /// `ReloadConfig`).
+    ///
+    /// Preserves the live `idle_timeout_tx`: the [`idle_watch_supervisor`] is
+    /// spawned once and parks on this channel, so a wholesale `*self = new`
+    /// would drop the channel, error the supervisor's receiver, and kill the
+    /// Wayland watch for the rest of the session (idle/lock-wake silently stop
+    /// while lock/unlock keeps working). Keeping the sender alive across the
+    /// swap and then republishing the new effective timeout is what lets the
+    /// supervisor re-register instead — the behavior the reload sites document.
+    pub fn apply_reload(&mut self, mut new: SessionState) {
+        new.idle_timeout_tx = self.idle_timeout_tx.clone();
+        *self = new;
+        self.republish_idle_timeout();
+    }
 }
 
 /// Drop user-config `[[tv]]` entries whose UUID is no longer in the
@@ -964,6 +981,29 @@ mod tests {
         // matching the greeter resolver.
         profiles.insert("a".to_string(), profile(600, SessionAction::None));
         assert_eq!(state_with(profiles).effective_idle_timeout(), 0);
+    }
+
+    #[tokio::test]
+    async fn apply_reload_keeps_idle_timeout_subscription_alive() {
+        // The idle-watch supervisor subscribes to `idle_timeout_tx` once at
+        // startup. A wholesale `*self = new` on a config reload
+        // (daemon-late-connect retry / SIGHUP / ReloadConfig) would drop the
+        // channel, error the supervisor's receiver, and kill the Wayland watch
+        // for the rest of the session. `apply_reload` must keep the
+        // subscription live and deliver the new effective timeout.
+        let mut state = state_with(HashMap::new());
+        let mut rx = state.subscribe_idle_timeout();
+        assert_eq!(*rx.borrow_and_update(), None, "starts disabled");
+
+        // A freshly-loaded state whose profile yields a concrete timeout.
+        let mut new_profiles = HashMap::new();
+        new_profiles.insert("a".to_string(), profile(600, SessionAction::ScreenOff));
+        state.apply_reload(state_with(new_profiles));
+
+        // Without the fix the swap drops the sender and `changed()` errors;
+        // with it, the preserved channel delivers the new timeout.
+        assert!(rx.changed().await.is_ok(), "subscription survives reload");
+        assert_eq!(*rx.borrow(), Some(600_000));
     }
 
     #[test]

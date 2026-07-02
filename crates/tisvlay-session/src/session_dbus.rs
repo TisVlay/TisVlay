@@ -467,7 +467,9 @@ impl SessionService {
         let (added, changed, removed) = {
             let mut s = self.state.write().await;
             let old_profiles = std::mem::take(&mut s.user_config.user.profiles);
-            *s = new_state;
+            // Preserve the idle-timeout channel + republish across the swap
+            // (bare `*s = new_state` strands the idle-watch supervisor).
+            s.apply_reload(new_state);
             let new_profiles = &s.user_config.user.profiles;
 
             let mut added = Vec::new();

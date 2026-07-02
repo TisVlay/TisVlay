@@ -133,7 +133,10 @@ async fn main() -> Result<()> {
                 match SessionState::load(&retry_daemon, retry_config.as_ref()).await {
                     Ok(new_state) => {
                         let mut s = retry_state.write().await;
-                        *s = new_state;
+                        // Preserve the idle-timeout channel (the idle-watch
+                        // supervisor is parked on it) across the swap — a bare
+                        // `*s = new_state` would strand it. See `apply_reload`.
+                        s.apply_reload(new_state);
                         info!(
                             tvs = s.tv_ids.len(),
                             "Session state loaded after daemon became available"
@@ -272,7 +275,10 @@ async fn wait_for_signals(
                     Ok(new_state) => {
                         let idle_timeout = new_state.effective_idle_timeout();
                         let mut s = state.write().await;
-                        *s = new_state;
+                        // `apply_reload` (not `*s = new_state`) preserves the
+                        // idle-timeout channel so the supervisor survives the
+                        // swap and re-registers on the change below.
+                        s.apply_reload(new_state);
                         info!(
                             idle_timeout = idle_timeout,
                             tvs = s.tv_ids.len(),
