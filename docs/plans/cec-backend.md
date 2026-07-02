@@ -172,7 +172,9 @@ Per [docs/plans/README.md](README.md): when this lands, fold the durable content
 
 > 10 finder angles (8 agents) + a gap sweep, cross-corroborated (each top item carried 2–8 independent votes). Findings cluster almost entirely in the push-subscription slice (`bb7db11`) — the newest, least hardware-exercised code. Tracked as a burn-down checklist; the "Cleared" list records what the review validated so it isn't re-litigated.
 
-> **Burn-down status:** all 15 resolved. Fixed in code — #1, #2, #3, #4, #5, #8, #9, #10, #11, #14 (commits `52cf3d3`, `d363452`, `9228bd3`, + the #9/#2 follow-ups). Accepted as-is with rationale — #6, #7, #12, #13. #15 partially fixed (the #10 overlap); the low-value remainder deferred.
+> **Burn-down status:** all 15 resolved and hardware-validated on the real C3. Fixed in code — #1, #2, #3, #4, #5, #6, #8, #9, #10, #11, #14 (commits `52cf3d3` … `d0f9ade`). Accepted as-is with rationale — #7, #12, #13. #15 partially fixed (the #10 overlap); the low-value remainder deferred.
+>
+> **QA (hardware).** A pass on the real C3 confirmed the full chain: correct power state on connect, button power off → on, and — the push-subscription payoff — **remote-driven** off/on (the TV's own `<Standby>`/`<Active Source>` broadcasts) reflected in the GUI in real time via the `initiator == Tv` filter. Two regressions the review-fix work surfaced were caught and fixed in QA: the #14 disconnect-comment exposure, and a missing initial push (`subscribe_state` seeded but never sent the first snapshot, so a freshly-connected on-TV read stale standby once the #2 fix keyed the button on power-state) — fixed in `d0f9ade`, which also closed #6.
 
 ### High — fix before merge
 
