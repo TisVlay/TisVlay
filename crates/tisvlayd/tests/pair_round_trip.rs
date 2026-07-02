@@ -84,20 +84,21 @@ async fn pair_mock_tv_appears_in_tv_list() {
 async fn pair_with_blank_name_defaults_to_device_osd_name() {
     let (daemon, client) = empty_daemon().await;
 
-    // The device reports an OSD name (CEC: the TV's own name). Seed it before
-    // pairing so the post-pair `device_info` query finds it.
+    // The device reports a model (CEC reads it as the TV's OSD name). Seed it
+    // before pairing so the post-pair `hardware_id` read finds it.
     daemon.handle().simulate_user_accept("mock://autofill");
-    daemon.handle().set_device_identity(
+    daemon.handle().set_hardware_id(
         "mock://autofill",
-        tisvlay_core::DeviceIdentity {
-            osd_name: Some("OLED42C3PU".to_string()),
-            ..Default::default()
+        tisvlay_core::HardwareId {
+            manufacturer: Some("LG".to_string()),
+            model: Some("OLED42C3PU".to_string()),
+            serial: None,
         },
     );
 
     let stream = client.pairing_progress_stream().await.unwrap();
     // Pair with a *blank* friendly name — the daemon should fall back to the
-    // device's OSD name rather than leaving it empty.
+    // device's model rather than leaving it empty.
     let config_json = r#"{"address": "mock://autofill"}"#;
     let tv_id = client
         .pair_tv("", "mock", config_json, true)
@@ -111,7 +112,7 @@ async fn pair_with_blank_name_defaults_to_device_osd_name() {
     let tv = tvs.iter().find(|t| t.uuid == tv_id).expect("paired tv");
     assert_eq!(
         tv.name, "OLED42C3PU",
-        "a blank name defaults to the device's OSD name",
+        "a blank name defaults to the device's model",
     );
 }
 

@@ -111,8 +111,7 @@ pub use profile_refs::{TvAssignment, references_of, user_references_of};
 
 // State
 pub use state::{
-    DeviceIdentity, DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState,
-    power_state_str_is_on,
+    DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState, power_state_str_is_on,
 };
 
 // Errors

@@ -298,17 +298,6 @@ impl MockHandle {
             .insert(address.to_string(), target);
     }
 
-    /// Set the device identity the mock reports for `address` (via
-    /// `device_info` and in its state). Re-read on each (re)connect, so a
-    /// test can change it and reconnect to model a CEC dongle re-plugged into
-    /// a different TV, asserting the daemon refreshes `Tv1.VendorInfo`/brand.
-    pub fn set_device_identity(&self, address: &str, identity: tisvlay_core::DeviceIdentity) {
-        let mut state = self.state.lock();
-        state
-            .device_identity_overrides
-            .insert(address.to_string(), identity);
-    }
-
     /// Number of times `MockConnection::screen_on` has been called
     /// for `address`, cumulative across reconnects.
     ///

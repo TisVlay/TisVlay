@@ -2,7 +2,7 @@
 
 Enrich the TVs-pane **INFO** group for a CEC-backed TV with the identity the set answers on the bus — OSD name, vendor, CEC version — and reflect the resolved vendor in the **VendorTile** branding. Unlike LG's static pair-time `scheme` diagnostic, CEC identity is **live**: re-plug the dongle into a different TV and INFO should follow. Grounded in a real `cec-ctl` dump of the C3 (`OSD Name 'OLED42C3PU'`, `Vendor ID 0x00e091 (LG)`, `CEC Version 1.4`) and confirmed against `linux-cec` 0.2 (`get_osd_name`, `get_vendor_id`, `GetCecVersion`).
 
-> Status: **v1 built, v2 reconciliation planned** on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)). v1 shipped a typed `DeviceIdentity` (614 tests green) but hardware QA showed it duplicates the existing `HardwareId` Make/Model display — see § Reconciliation v2 for the approved fold-into-`HardwareId` redesign (baseline before implementing v2). The crash fix (`a8a75be`) already landed.
+> Status: **v2 built** on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)). Green: build · clippy `-D warnings` · 614 tests. CEC identity is folded into `HardwareId` (Make/Model) with a `Tv1.Brand` signal for the tile; discovery probes each node; identity queries are bounded. All four v2 slices landed as § Reconciliation v2 describes; the v1 `DeviceIdentity`/`VendorInfo` parallel path is fully removed. Durable content is in [docs/cec/protocol.md](../cec/protocol.md) § Device identity.
 
 ## What CEC exposes (and the verdict)
 

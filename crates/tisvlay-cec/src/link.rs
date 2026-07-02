@@ -61,15 +61,13 @@ pub(crate) trait CecLink: Send + Sync + std::fmt::Debug {
     async fn set_stream_path(&self, address: PhysicalAddress) -> Result<()>;
 
     /// The TV's self-reported name (`Give OSD Name` → `Set OSD Name`), e.g.
-    /// `OLED42C3PU`. Feeds the INFO group and the pair-time name default.
+    /// `OLED42C3PU` — becomes the `HardwareId` model. Resolved to identity
+    /// via [`crate::identity`].
     async fn query_osd_name(&self) -> Result<String>;
     /// The TV's vendor OUI (`Give Device Vendor ID` → `Device Vendor ID`);
-    /// `None` when the TV reports no vendor. Resolved to a name via
-    /// [`crate::identity`].
+    /// `None` when the TV reports no vendor. Resolved to the manufacturer +
+    /// tile brand via [`crate::identity`].
     async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>>;
-    /// The TV's CEC version (`Get CEC Version` → `CEC Version`), formatted
-    /// like `1.4`.
-    async fn query_cec_version(&self) -> Result<String>;
 }
 
 /// A follower-mode handle for receiving unsolicited CEC traffic — the
@@ -152,6 +150,14 @@ impl CecMonitor for LinuxCecMonitor {
 /// The CEC ceiling for a single message round-trip is one second; use it
 /// for the power-status query.
 const POWER_QUERY_TIMEOUT: Timeout = Timeout::MAX;
+
+/// Bound for the best-effort identity queries (OSD name, vendor). Unlike
+/// power, identity is optional — a TV that never answers `Give OSD Name`
+/// must not stall connect or discovery, so this is a short, finite wait
+/// (the CEC spec's own response window is ~1 s) rather than `Timeout::MAX`.
+fn identity_query_timeout() -> Timeout {
+    Timeout::from_ms(2000)
+}
 
 /// Production [`CecLink`] wrapping a `linux_cec::AsyncDevice`.
 ///
@@ -255,7 +261,7 @@ impl CecLink for LinuxCecLink {
                 &Message::GiveOsdName {},
                 LogicalAddress::Tv,
                 Opcode::SetOsdName,
-                POWER_QUERY_TIMEOUT,
+                identity_query_timeout(),
             )
             .await
             .map_err(map_cec_err)?;
@@ -279,7 +285,7 @@ impl CecLink for LinuxCecLink {
                 &Message::GiveDeviceVendorId {},
                 LogicalAddress::Tv,
                 Opcode::DeviceVendorId,
-                POWER_QUERY_TIMEOUT,
+                identity_query_timeout(),
             )
             .await
             .map_err(map_cec_err)?;
@@ -291,43 +297,6 @@ impl CecLink for LinuxCecLink {
             )),
         }
     }
-
-    async fn query_cec_version(&self) -> Result<String> {
-        let envelope = self
-            .device
-            .tx_rx_message(
-                &Message::GetCecVersion {},
-                LogicalAddress::Tv,
-                Opcode::CecVersion,
-                POWER_QUERY_TIMEOUT,
-            )
-            .await
-            .map_err(map_cec_err)?;
-        match envelope.message {
-            MessageData::Valid(Message::CecVersion { version }) => Ok(cec_version_str(version)),
-            other => Err(Error::backend(
-                VENDOR_ID,
-                format!("expected CEC Version, got {other:?}"),
-            )),
-        }
-    }
-}
-
-/// Render a CEC version operand as its dotted spec string (`1.4`, `2.0`).
-fn cec_version_str(version: linux_cec::operand::Version) -> String {
-    use linux_cec::operand::Version;
-    match version {
-        Version::V1_1 => "1.1",
-        Version::V1_2 => "1.2",
-        Version::V1_2a => "1.2a",
-        Version::V1_3 => "1.3",
-        Version::V1_3a => "1.3a",
-        Version::V1_4 => "1.4",
-        Version::V2_0 => "2.0",
-        // `Version` is `#[non_exhaustive]`; a future spec bump reads as unknown.
-        _ => "unknown",
-    }
-    .to_string()
 }
 
 /// Map a `linux_cec::Error` onto the vendor-agnostic [`Error`].
@@ -359,12 +328,11 @@ mod fake {
     pub(crate) struct FakeCecLink {
         power: Mutex<PowerStatus>,
         ignore_wakes: Mutex<usize>,
-        /// Scripted identity for `query_osd_name`/`_vendor_id`/`_cec_version`.
+        /// Scripted identity for `query_osd_name` / `query_vendor_id`.
         /// Defaults are empty/`None` (no identity) so existing tests, which
-        /// don't assert identity, see an all-absent `DeviceIdentity`.
+        /// don't assert identity, see an all-absent result.
         osd_name: String,
         vendor_id: Option<linux_cec::VendorId>,
-        cec_version: String,
     }
 
     impl FakeCecLink {
@@ -374,21 +342,17 @@ mod fake {
                 ignore_wakes: Mutex::new(0),
                 osd_name: String::new(),
                 vendor_id: None,
-                cec_version: String::new(),
             }
         }
 
-        /// Seed the scripted device identity the CEC connection queries in
-        /// its initial subscription snapshot.
+        /// Seed the scripted TV identity the connection/discovery queries.
         pub(crate) fn with_identity(
             mut self,
             osd_name: &str,
             vendor_id: Option<linux_cec::VendorId>,
-            cec_version: &str,
         ) -> Self {
             self.osd_name = osd_name.to_string();
             self.vendor_id = vendor_id;
-            self.cec_version = cec_version.to_string();
             self
         }
     }
@@ -427,10 +391,6 @@ mod fake {
         async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>> {
             Ok(self.vendor_id)
         }
-
-        async fn query_cec_version(&self) -> Result<String> {
-            Ok(self.cec_version.clone())
-        }
     }
 
     /// Opener that yields a [`FakeCecLink`] seeded with a fixed initial
@@ -446,9 +406,9 @@ mod fake {
         /// When set, the monitor's `recv` returns `ConnectionClosed` once
         /// its script drains — models a real adapter disconnect.
         monitor_fails: bool,
-        /// Scripted `(osd_name, vendor_id, cec_version)` the opened
-        /// [`FakeCecLink`] reports; `None` = no identity.
-        identity: Option<(String, Option<linux_cec::VendorId>, String)>,
+        /// Scripted `(osd_name, vendor_id)` the opened [`FakeCecLink`]
+        /// reports; `None` = no identity.
+        identity: Option<(String, Option<linux_cec::VendorId>)>,
     }
 
     impl FakeCecLinkOpener {
@@ -498,6 +458,21 @@ mod fake {
             }
         }
 
+        /// Opener whose opened links report the given TV identity — for the
+        /// discovery-probe tests.
+        pub(crate) fn with_identity(
+            osd_name: &str,
+            vendor_id: Option<linux_cec::VendorId>,
+        ) -> Self {
+            Self {
+                initial: PowerStatus::On,
+                ignore_wakes: 0,
+                monitor_script: Mutex::new(None),
+                monitor_fails: false,
+                identity: Some((osd_name.to_string(), vendor_id)),
+            }
+        }
+
         /// Opener whose monitor `recv` returns `ConnectionClosed` — models a
         /// real adapter disconnect, so tests can assert the monitor flips
         /// `is_connected()`.
@@ -519,13 +494,12 @@ mod fake {
             _device: &str,
             _physical_address: PhysicalAddress,
         ) -> Result<Box<dyn CecLink>> {
-            let (osd_name, vendor_id, cec_version) = self.identity.clone().unwrap_or_default();
+            let (osd_name, vendor_id) = self.identity.clone().unwrap_or_default();
             Ok(Box::new(FakeCecLink {
                 power: Mutex::new(self.initial),
                 ignore_wakes: Mutex::new(self.ignore_wakes),
                 osd_name,
                 vendor_id,
-                cec_version,
             }))
         }
 

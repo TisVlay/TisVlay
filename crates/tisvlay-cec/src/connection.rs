@@ -39,6 +39,13 @@ pub struct CecConnection {
     /// handle on the same device for the push-state receive loop.
     opener: Arc<dyn CecLinkOpener>,
     device: String,
+    /// TV identity queried once at connect time (OSD name → model, vendor →
+    /// manufacturer), returned synchronously via `hardware_id`. `None` when
+    /// the TV answered nothing.
+    hardware_id: Option<tisvlay_core::HardwareId>,
+    /// Canonical vendor id for the tile (`lg`/…), resolved from the OUI at
+    /// connect time; returned via `brand`. `None` when unresolved.
+    brand: Option<String>,
     /// The `subscribe_state` monitor task. Aborted on drop so the state
     /// channel closes when the connection goes away — that closure is what
     /// drives the daemon's subscription-end `ConnectionChanged(false)`
@@ -52,12 +59,15 @@ impl CecConnection {
         link: Box<dyn CecLink>,
         opener: Arc<dyn CecLinkOpener>,
         device: String,
+        identity: crate::identity::CecIdentity,
     ) -> Self {
         Self {
             link,
             connected: Arc::new(AtomicBool::new(true)),
             opener,
             device,
+            hardware_id: identity.hardware_id,
+            brand: identity.brand,
             monitor_task: None,
         }
     }
@@ -167,11 +177,6 @@ impl TvConnection for CecConnection {
             .await
             .map(map_power)
             .unwrap_or(PowerState::Active);
-        // Query the device identity once (OSD name, vendor, CEC version) so
-        // the initial snapshot carries it — it's static for a given link, so
-        // no need to re-query per push. A reconnect (e.g. the dongle moved to
-        // a different TV) re-runs `subscribe_state`, re-querying the new set.
-        let identity = crate::identity::query(self.link.as_ref()).await;
         // Open a second, follower-mode handle on the same device (see
         // `CecMonitor`): its blocking receive loop lives on a distinct fd,
         // so it can't starve the single-threaded worker the tx handle
@@ -190,13 +195,6 @@ impl TvConnection for CecConnection {
             let mut state = TvState::new();
             state.update_power(initial);
             state.inputs = default_inputs();
-            // Attach the device identity to the (retained) snapshot so it
-            // rides the initial push and every subsequent one. Always `Some`
-            // for a CEC link (even if the queries came back empty) so a
-            // reconnect to a *different* TV replaces the prior identity rather
-            // than leaving it stale; the daemon applies `Some` and preserves
-            // across `None` (non-CEC) deltas.
-            state.device_identity = Some(identity);
             // Push the initial snapshot right away (see the seed comment) so
             // clients don't read a stale power state between connect and the
             // first bus broadcast.
@@ -296,8 +294,12 @@ impl TvConnection for CecConnection {
         Ok(map_power(self.link.query_power().await?))
     }
 
-    async fn device_info(&mut self) -> tisvlay_core::DeviceIdentity {
-        crate::identity::query(self.link.as_ref()).await
+    fn hardware_id(&self) -> Option<tisvlay_core::HardwareId> {
+        self.hardware_id.clone()
+    }
+
+    fn brand(&self) -> Option<String> {
+        self.brand.clone()
     }
 
     async fn switch_input(&mut self, input_id: &str) -> Result<()> {
@@ -331,6 +333,7 @@ mod tests {
             Box::new(FakeCecLink::new(power)),
             Arc::new(FakeCecLinkOpener::new(power)),
             "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
         )
     }
 
@@ -369,6 +372,7 @@ mod tests {
             Box::new(FakeCecLink::new(PowerStatus::On)),
             opener,
             "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
         );
         let mut rx = conn.subscribe_state().await.expect("subscribe");
         // Initial snapshot: the live power (On → active) is pushed at once.
@@ -399,6 +403,7 @@ mod tests {
             Box::new(FakeCecLink::new(PowerStatus::On)),
             opener,
             "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
         );
         let mut rx = conn.subscribe_state().await.expect("subscribe");
         // Drain the initial snapshot the subscription pushes on connect.
@@ -426,6 +431,7 @@ mod tests {
             Box::new(FakeCecLink::new(PowerStatus::On)),
             opener,
             "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
         );
         let mut rx = conn.subscribe_state().await.expect("subscribe");
         // Drain the initial on-connect snapshot.
@@ -453,6 +459,7 @@ mod tests {
             Box::new(FakeCecLink::new(PowerStatus::On)),
             opener,
             "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
         );
         assert!(conn.is_connected(), "starts connected");
         let _rx = conn.subscribe_state().await.expect("subscribe");
@@ -485,52 +492,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_state_reports_device_identity() {
-        // The initial snapshot carries the device identity the bus answers:
-        // OSD name, vendor (resolved from the OUI + the raw), CEC version.
-        let link = FakeCecLink::new(PowerStatus::On).with_identity(
-            "OLED42C3PU",
-            Some(linux_cec::VendorId([0x00, 0xE0, 0x91])),
-            "1.4",
-        );
-        let mut conn = CecConnection::new(
+    async fn hardware_id_and_brand_from_connect_identity() {
+        // The connection returns the identity queried at connect time via
+        // `hardware_id` (OSD name → model, vendor → manufacturer) + `brand`.
+        let link = FakeCecLink::new(PowerStatus::On)
+            .with_identity("OLED42C3PU", Some(linux_cec::VendorId([0x00, 0xE0, 0x91])));
+        let identity = crate::identity::query(&link).await;
+        let conn = CecConnection::new(
             Box::new(link),
             Arc::new(FakeCecLinkOpener::new(PowerStatus::On)),
             "/dev/cec0".to_string(),
+            identity,
         );
-        let mut rx = conn.subscribe_state().await.expect("subscribe");
-        let initial = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("initial pushed")
-            .expect("channel open");
-        let id = initial.device_identity.expect("identity present");
-        assert_eq!(id.osd_name.as_deref(), Some("OLED42C3PU"));
-        assert_eq!(id.vendor_raw.as_deref(), Some("00-e0-91"));
-        assert_eq!(id.vendor_name.as_deref(), Some("LG"));
-        assert_eq!(id.vendor_canonical.as_deref(), Some("lg"));
-        assert_eq!(id.cec_version.as_deref(), Some("1.4"));
+        let hw = conn.hardware_id().expect("hardware id");
+        assert_eq!(hw.model.as_deref(), Some("OLED42C3PU"));
+        assert_eq!(hw.manufacturer.as_deref(), Some("LG"));
+        assert_eq!(conn.brand().as_deref(), Some("lg"));
     }
 
     #[tokio::test]
-    async fn device_info_queries_identity_on_demand() {
-        // The pair flow uses this to default the friendly name; unknown
-        // vendor OUIs resolve name/canonical to None but keep the raw.
-        let link = FakeCecLink::new(PowerStatus::On).with_identity(
-            "MyTV",
-            Some(linux_cec::VendorId([0x12, 0x34, 0x56])),
-            "2.0",
-        );
-        let mut conn = CecConnection::new(
-            Box::new(link),
-            Arc::new(FakeCecLinkOpener::new(PowerStatus::On)),
-            "/dev/cec0".to_string(),
-        );
-        let id = conn.device_info().await;
-        assert_eq!(id.osd_name.as_deref(), Some("MyTV"));
-        assert_eq!(id.vendor_raw.as_deref(), Some("12-34-56"));
-        assert_eq!(id.vendor_name, None, "unknown OUI has no resolved name");
-        assert_eq!(id.vendor_canonical, None);
-        assert_eq!(id.cec_version.as_deref(), Some("2.0"));
+    async fn hardware_id_absent_without_identity() {
+        // A link that reports nothing → no hardware id, no brand.
+        let conn = connection(PowerStatus::On);
+        assert!(conn.hardware_id().is_none());
+        assert!(conn.brand().is_none());
     }
 
     #[tokio::test]

@@ -7,22 +7,37 @@
 //! pre-fills the `device` field from `vendor_data["device"]` via the
 //! schema's `autofill = "discovery.device"` directive.
 //!
-//! This is enumeration only — it does not open a device or query the TV's
-//! OSD name over the bus (that needs the `/dev/cecN` access the daemon,
-//! not a pre-pair scan, is set up for). Richer probing is a later
-//! enhancement.
+//! Each node is then *probed*, best-effort: the scanner opens it and queries
+//! the TV's OSD name + vendor over the bus, so the wizard's list shows the
+//! real set (`OLED42C3PU` / LG) and its name field prefills. A node that
+//! doesn't answer (or can't be opened — e.g. already held by an active
+//! connection) falls back to the bare `HDMI CEC (/dev/cecN)` entry. The
+//! identity queries are bounded (see [`crate::link`]) so a silent TV can't
+//! stall the scan.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use linux_cec::PhysicalAddress;
 use tisvlay_core::{DiscoveredTv, Result, TvDiscovery};
 
+use crate::link::{CecLinkOpener, LinuxCecLinkOpener};
+
+/// The physical address the probe claims when opening a node — the same
+/// `1.0.0.0` (HDMI 1) default the config uses; it only matters for the
+/// adapter to join the bus, and identity queries don't depend on it.
+fn probe_physical_address() -> PhysicalAddress {
+    PhysicalAddress::from(0x1000)
+}
+
 /// Enumerates CEC character devices under a directory (`/dev` in
-/// production; a fixture dir in tests).
+/// production; a fixture dir in tests) and probes each for its identity.
 #[derive(Debug)]
 pub struct CecDiscovery {
     dev_dir: PathBuf,
+    opener: Arc<dyn CecLinkOpener>,
 }
 
 impl CecDiscovery {
@@ -30,15 +45,17 @@ impl CecDiscovery {
     pub fn new() -> Self {
         Self {
             dev_dir: PathBuf::from("/dev"),
+            opener: Arc::new(LinuxCecLinkOpener),
         }
     }
 
-    /// Discover devices under a custom directory (tests point this at a
-    /// fixture dir of fake `cecN` files).
+    /// Discover devices under a custom directory with an injected opener
+    /// (tests point the dir at fixture `cecN` files and the opener at a fake).
     #[cfg(test)]
-    fn with_dir(dir: impl Into<PathBuf>) -> Self {
+    fn with_dir_and_opener(dir: impl Into<PathBuf>, opener: Arc<dyn CecLinkOpener>) -> Self {
         Self {
             dev_dir: dir.into(),
+            opener,
         }
     }
 }
@@ -51,9 +68,29 @@ impl Default for CecDiscovery {
 
 impl TvDiscovery for CecDiscovery {
     async fn discover(&self, _timeout: Duration) -> Result<Vec<DiscoveredTv>> {
-        // A directory listing is fast and bounded; no need to honor the
-        // timeout or hop to a blocking pool.
-        Ok(enumerate(&self.dev_dir))
+        // Enumerate (fast, bounded) then probe each node for its identity.
+        let mut tvs = enumerate(&self.dev_dir);
+        for tv in &mut tvs {
+            // Best-effort: an open failure (device busy / not a real CEC node)
+            // or a TV that answers nothing leaves the bare entry intact.
+            let Ok(link) = self
+                .opener
+                .open(&tv.address, probe_physical_address())
+                .await
+            else {
+                continue;
+            };
+            let identity = crate::identity::query(link.as_ref()).await;
+            if let Some(hw) = identity.hardware_id {
+                // Prefer the TV's own name (its OSD name = the model) for the
+                // list + the wizard's name field; keep the path entry too.
+                if let Some(model) = &hw.model {
+                    tv.name = model.clone();
+                }
+                tv.hardware_id = Some(hw);
+            }
+        }
+        Ok(tvs)
     }
 }
 
@@ -105,6 +142,14 @@ fn cec_index(address: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::link::FakeCecLinkOpener;
+    use linux_cec::operand::PowerStatus;
+
+    /// An opener that succeeds but reports no identity — the probe then
+    /// leaves each node as its bare `/dev/cecN` entry.
+    fn no_identity_opener() -> Arc<dyn CecLinkOpener> {
+        Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby))
+    }
 
     #[test]
     fn is_cec_device_matches_cec_n() {
@@ -126,7 +171,7 @@ mod tests {
         for name in ["cec0", "cec1", "cec2", "cec10", "video0", "cec", "null"] {
             std::fs::File::create(tmp.path().join(name)).expect("create fixture");
         }
-        let discovery = CecDiscovery::with_dir(tmp.path());
+        let discovery = CecDiscovery::with_dir_and_opener(tmp.path(), no_identity_opener());
         let tvs = discovery
             .discover(Duration::from_millis(0))
             .await
@@ -154,10 +199,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discover_probes_identity_into_name_and_hardware_id() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::File::create(tmp.path().join("cec0")).expect("create fixture");
+        // The opener reports an LG TV; the probe folds it into the entry.
+        let opener = Arc::new(FakeCecLinkOpener::with_identity(
+            "OLED42C3PU",
+            Some(linux_cec::VendorId([0x00, 0xE0, 0x91])),
+        ));
+        let tvs = CecDiscovery::with_dir_and_opener(tmp.path(), opener)
+            .discover(Duration::ZERO)
+            .await
+            .expect("discover");
+        assert_eq!(tvs.len(), 1);
+        let tv = &tvs[0];
+        assert_eq!(tv.name, "OLED42C3PU", "the TV's own name replaces the path");
+        let hw = tv.hardware_id.as_ref().expect("probed hardware id");
+        assert_eq!(hw.manufacturer.as_deref(), Some("LG"));
+        assert_eq!(hw.model.as_deref(), Some("OLED42C3PU"));
+        // The device path is still there for the config autofill.
+        assert_eq!(
+            tv.vendor_data.get("device").map(String::as_str),
+            Some(tv.address.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn discover_empty_when_no_cec_devices() {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::File::create(tmp.path().join("video0")).expect("create");
-        let discovery = CecDiscovery::with_dir(tmp.path());
+        let discovery = CecDiscovery::with_dir_and_opener(tmp.path(), no_identity_opener());
         assert!(
             discovery
                 .discover(Duration::ZERO)
@@ -169,7 +240,8 @@ mod tests {
 
     #[tokio::test]
     async fn discover_empty_when_dir_missing() {
-        let discovery = CecDiscovery::with_dir("/nonexistent/cec/dir");
+        let discovery =
+            CecDiscovery::with_dir_and_opener("/nonexistent/cec/dir", no_identity_opener());
         assert!(
             discovery
                 .discover(Duration::ZERO)

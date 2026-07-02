@@ -57,69 +57,6 @@ impl std::fmt::Display for PowerCyclePhase {
     }
 }
 
-/// Backend-reported device identity, surfaced live in the GUI's INFO
-/// group (and used to brand the vendor tile).
-///
-/// Distinct from the pair-time `Diagnostic` config fields (LG's WebSocket
-/// scheme): this rides [`TvState`], so it refreshes whenever the backend
-/// re-queries the device — e.g. a CEC dongle re-plugged into a different
-/// TV reconnects and reports the new set's identity. All fields optional:
-/// a backend fills what it can query, absent fields are elided from
-/// display. Every field is a plain string so the type stays vendor- and
-/// transport-agnostic (a CEC `VendorId` is resolved to these by the CEC
-/// backend, not carried raw).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceIdentity {
-    /// The device's self-reported name (CEC OSD name, e.g. `OLED42C3PU`).
-    pub osd_name: Option<String>,
-    /// Raw vendor identifier as reported (CEC OUI, e.g. `00-e0-91`).
-    pub vendor_raw: Option<String>,
-    /// Human-readable vendor name resolved from [`Self::vendor_raw`]
-    /// (e.g. `LG`); `None` when the id isn't in the backend's lookup.
-    pub vendor_name: Option<String>,
-    /// Canonical vendor id for branding — matches the GUI vendor tile's
-    /// keys (`lg` / `samsung` / `sony`) so a CEC-connected LG set shows the
-    /// LG tile. `None` when unresolved.
-    pub vendor_canonical: Option<String>,
-    /// Protocol version the device reports (CEC version, e.g. `1.4`).
-    pub cec_version: Option<String>,
-}
-
-impl DeviceIdentity {
-    /// Whether any field is populated — an all-`None` identity is treated
-    /// as "nothing to report" and skipped by the state merge.
-    pub fn is_empty(&self) -> bool {
-        self.osd_name.is_none()
-            && self.vendor_raw.is_none()
-            && self.vendor_name.is_none()
-            && self.vendor_canonical.is_none()
-            && self.cec_version.is_none()
-    }
-
-    /// Ordered `(label, value)` rows for the GUI INFO group. Absent fields
-    /// are elided; the vendor row shows the resolved name with the raw id in
-    /// parentheses (`LG (00-e0-91)`), or the raw id alone when unresolved.
-    pub fn display_rows(&self) -> Vec<(String, String)> {
-        let mut rows = Vec::new();
-        if let Some(name) = &self.osd_name {
-            rows.push(("Device name".to_string(), name.clone()));
-        }
-        let vendor = match (&self.vendor_name, &self.vendor_raw) {
-            (Some(name), Some(raw)) => Some(format!("{name} ({raw})")),
-            (Some(name), None) => Some(name.clone()),
-            (None, Some(raw)) => Some(raw.clone()),
-            (None, None) => None,
-        };
-        if let Some(vendor) = vendor {
-            rows.push(("Vendor".to_string(), vendor));
-        }
-        if let Some(version) = &self.cec_version {
-            rows.push(("CEC version".to_string(), version.clone()));
-        }
-        rows
-    }
-}
-
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TvState {
@@ -147,13 +84,6 @@ pub struct TvState {
     pub current_app: Option<String>,
     /// Available inputs.
     pub inputs: Vec<InputInfo>,
-    /// Backend-reported device identity (CEC: OSD name, vendor, CEC
-    /// version). Merge-preserved like [`Self::inputs`] — a backend reports
-    /// it in the connect snapshot; power-only deltas leave it untouched, and
-    /// a reconnect to a different device replaces it. `None` for backends
-    /// that don't report identity.
-    #[serde(default)]
-    pub device_identity: Option<DeviceIdentity>,
     /// Vendor-internal mapping from app IDs to physical input IDs.
     ///
     /// Populated by backends that use app-based input identification
@@ -387,40 +317,6 @@ impl DiscoveredTv {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn device_identity_display_rows_format_vendor_with_raw() {
-        let id = DeviceIdentity {
-            osd_name: Some("OLED42C3PU".to_string()),
-            vendor_raw: Some("00-e0-91".to_string()),
-            vendor_name: Some("LG".to_string()),
-            vendor_canonical: Some("lg".to_string()),
-            cec_version: Some("1.4".to_string()),
-        };
-        assert_eq!(
-            id.display_rows(),
-            vec![
-                ("Device name".to_string(), "OLED42C3PU".to_string()),
-                ("Vendor".to_string(), "LG (00-e0-91)".to_string()),
-                ("CEC version".to_string(), "1.4".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn device_identity_display_rows_elide_absent_and_fall_back_to_raw_vendor() {
-        // Unresolved vendor → raw only; absent osd/version → no rows.
-        let id = DeviceIdentity {
-            vendor_raw: Some("12-34-56".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(
-            id.display_rows(),
-            vec![("Vendor".to_string(), "12-34-56".to_string())]
-        );
-        assert!(DeviceIdentity::default().is_empty());
-        assert!(DeviceIdentity::default().display_rows().is_empty());
-    }
 
     /// Regression test for the Action-QoS field-test failure: when an LG
     /// TV transitions from `ScreenOff` to `ActiveStandby` (user presses

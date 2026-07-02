@@ -116,13 +116,6 @@ pub(crate) struct MockState {
     /// `tv_manager`.
     pub(crate) initial_power_state_overrides: HashMap<String, PowerState>,
 
-    /// Per-address device identity (OSD name / vendor / CEC version) the
-    /// connection reports — via `MockConnection::device_info` and in its
-    /// state pushes. Set with `MockHandle::set_device_identity`; re-read on
-    /// each (re)connect, so a test can model a CEC dongle re-plugged into a
-    /// different TV and assert the daemon refreshes `Tv1.VendorInfo` / brand.
-    pub(crate) device_identity_overrides: HashMap<String, tisvlay_core::DeviceIdentity>,
-
     /// Per-address call counter for `MockConnection::screen_on`
     /// invocations. Incremented before the `screen_on_noop` short-
     /// circuit so tests can assert the daemon's verify-retry loop

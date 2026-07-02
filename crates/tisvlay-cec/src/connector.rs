@@ -106,10 +106,14 @@ impl TvConnector for CecConnector {
         // reachable in standby, so a standby TV is legitimately connected;
         // the daemon's `power_on` wakes it based on the reported power state.
         let _status = link.query_power().await?;
+        // Query the TV's identity once here (bounded, best-effort) so the
+        // connection can return it synchronously via `hardware_id`/`brand`.
+        let identity = crate::identity::query(link.as_ref()).await;
         Ok(Box::new(CecConnection::new(
             link,
             self.opener.clone(),
             config.device,
+            identity,
         )))
     }
 
@@ -166,10 +170,12 @@ impl TvConnector for CecConnector {
             if let Ok(status) = link.query_power().await
                 && reachable(status)
             {
+                let identity = crate::identity::query(link.as_ref()).await;
                 return Ok(Box::new(CecConnection::new(
                     link,
                     self.opener.clone(),
                     config.device.clone(),
+                    identity,
                 )));
             }
         }

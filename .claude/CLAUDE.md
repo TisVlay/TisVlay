@@ -62,10 +62,10 @@ tisvlay/
 │   │       ├── lib.rs            # Public exports, VENDOR_ID/VENDOR_NAME
 │   │       ├── backend.rs        # CecBackend (POWER | INPUT | DISCOVERY)
 │   │       ├── connector.rs      # CecConnector (reachable_in_standby; emulate_screen_via_power; connect probes power but accepts standby; wake = ImageViewOn; no-auth pairing)
-│   │       ├── connection.rs     # CecConnection (power on/off/state; power_on = Image View On for wake-in-place; Set Stream Path input; device_info + subscribe identity)
+│   │       ├── connection.rs     # CecConnection (power on/off/state; power_on = Image View On for wake-in-place; Set Stream Path input; hardware_id + brand cached from connect query)
 │   │       ├── config.rs         # CecVendorConfig (/dev/cecN device path; emulate_screen_via_power)
-│   │       ├── discovery.rs      # CecDiscovery (enumerate /dev/cecN nodes)
-│   │       ├── identity.rs       # OUI→vendor-name map + query() building DeviceIdentity (OSD name, vendor, CEC version)
+│   │       ├── discovery.rs      # CecDiscovery (enumerate /dev/cecN nodes + probe each for OSD name/vendor → DiscoveredTv)
+│   │       ├── identity.rs       # OUI→vendor-name map + query() building HardwareId (OSD name→model, vendor→make) + canonical brand; sanitize (NUL-strip)
 │   │       └── link.rs           # CecLink seam over linux-cec AsyncDevice + FakeCecLink (#[cfg(test)])
 │   │
 │   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)

@@ -1988,6 +1988,17 @@ impl TvManager {
         tv.connection.as_ref().and_then(|c| c.hardware_id())
     }
 
+    /// The connection's resolved canonical vendor for the GUI tile (CEC → the
+    /// TV's own vendor, e.g. `lg`). `None` when disconnected or the backend
+    /// doesn't resolve one — the D-Bus `Tv1.Brand` then falls back to the
+    /// backend vendor id. Synchronous cached read on the connection, so no I/O
+    /// under the lock.
+    pub async fn get_brand(&self, tv_id: &str) -> Option<String> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        tv.connection.as_ref().and_then(|c| c.brand())
+    }
+
     /// Get the current desktop mapping for a TV.
     ///
     /// Returns `None` when the in-process DRM-EDID probe (see
@@ -3514,23 +3525,23 @@ impl TvManager {
             .insert(vendor.to_string(), final_config);
 
         // Open the post-pair connection.
-        let mut conn = self.registry.connect_tv(&tv_config).await.map_err(|e| {
+        let conn = self.registry.connect_tv(&tv_config).await.map_err(|e| {
             TvManagerError::ConnectionFailed {
                 tv_id: tv_id.to_string(),
                 source: e,
             }
         })?;
 
-        // Default the friendly name from the device's own OSD name when the
-        // user left it blank (CEC: the TV reports e.g. "OLED42C3PU"). Captured
-        // once here at pair time — the user can rename later, so it's not
-        // kept in sync with the live identity. Best-effort: a backend that
-        // can't read identity leaves the name as given.
+        // Default the friendly name from the device's model when the user
+        // left it blank (CEC reads it as the TV's OSD name, e.g.
+        // "OLED42C3PU"). A fallback for the manual-entry path — discovery
+        // prefills the wizard's name field directly. Captured once here; the
+        // user can rename later.
         if name.trim().is_empty()
-            && let Some(osd) = conn.device_info().await.osd_name
-            && !osd.trim().is_empty()
+            && let Some(model) = conn.hardware_id().and_then(|h| h.model)
+            && !model.trim().is_empty()
         {
-            tv_config.name = osd;
+            tv_config.name = model;
         }
 
         // Install the TV in the managed set and start state
