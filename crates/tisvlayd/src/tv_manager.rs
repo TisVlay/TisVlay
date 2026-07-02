@@ -3514,12 +3514,24 @@ impl TvManager {
             .insert(vendor.to_string(), final_config);
 
         // Open the post-pair connection.
-        let conn = self.registry.connect_tv(&tv_config).await.map_err(|e| {
+        let mut conn = self.registry.connect_tv(&tv_config).await.map_err(|e| {
             TvManagerError::ConnectionFailed {
                 tv_id: tv_id.to_string(),
                 source: e,
             }
         })?;
+
+        // Default the friendly name from the device's own OSD name when the
+        // user left it blank (CEC: the TV reports e.g. "OLED42C3PU"). Captured
+        // once here at pair time — the user can rename later, so it's not
+        // kept in sync with the live identity. Best-effort: a backend that
+        // can't read identity leaves the name as given.
+        if name.trim().is_empty()
+            && let Some(osd) = conn.device_info().await.osd_name
+            && !osd.trim().is_empty()
+        {
+            tv_config.name = osd;
+        }
 
         // Install the TV in the managed set and start state
         // subscription. Build the `ManagedTv` and subscribe to

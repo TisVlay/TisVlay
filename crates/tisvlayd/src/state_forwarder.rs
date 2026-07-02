@@ -304,6 +304,15 @@ async fn update_tv_cached_state(
             // Automated depends on current_input, signal it changed
             iface.automated_changed(emitter).await.ok();
         }
+        // Live device identity (CEC). Some = apply (a reconnect to a
+        // different TV brings fresh identity); None = preserve (non-CEC
+        // deltas don't carry it). VendorInfo composes it, and Brand derives
+        // from it — emit both when it changes.
+        if state.device_identity.is_some() && iface.device_identity != state.device_identity {
+            iface.device_identity = state.device_identity.clone();
+            iface.vendor_info_changed(emitter).await.ok();
+            iface.brand_changed(emitter).await.ok();
+        }
     }
 
     // TvPowerService: derive D-Bus property string from raw PowerState
@@ -419,8 +428,8 @@ async fn refresh_tv_vendor_state(
             iface.vendor_config = vendor_config;
             iface.vendor_config_changed(emitter).await.ok();
         }
-        if iface.vendor_info != vendor_diagnostics {
-            iface.vendor_info = vendor_diagnostics;
+        if iface.vendor_diagnostics != vendor_diagnostics {
+            iface.vendor_diagnostics = vendor_diagnostics;
             iface.vendor_info_changed(emitter).await.ok();
         }
     }

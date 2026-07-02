@@ -56,6 +56,10 @@ pub struct MockConnection {
     /// CEC-style bus that stays reachable in standby (Power ≠ Connected).
     /// Sourced from [`MockVendorConfig::reachable_in_standby`].
     reachable_in_standby: bool,
+    /// Device identity reported via `device_info` (and in the initial state),
+    /// from `MockState::device_identity_overrides`. Empty unless a test set
+    /// it via `MockHandle::set_device_identity`.
+    device_identity: tisvlay_core::DeviceIdentity,
 }
 
 impl MockConnection {
@@ -93,6 +97,15 @@ impl MockConnection {
             })
             .collect();
 
+        // Per-address device identity (set via `set_device_identity`),
+        // re-read here so a reconnect picks up a changed identity.
+        let device_identity = shared
+            .lock()
+            .device_identity_overrides
+            .get(&config.address)
+            .cloned()
+            .unwrap_or_default();
+
         let mut state = TvState::new();
         state.update_power(power);
         state.volume = Some(config.initial_volume);
@@ -100,6 +113,9 @@ impl MockConnection {
         state.current_input = Some(config.initial_input.clone());
         state.backlight = Some(config.initial_backlight);
         state.inputs = inputs;
+        if !device_identity.is_empty() {
+            state.device_identity = Some(device_identity.clone());
+        }
         let state_arc = Arc::new(Mutex::new(state));
 
         shared
@@ -120,6 +136,7 @@ impl MockConnection {
             ),
             disable_subscription: config.disable_subscription,
             reachable_in_standby: config.reachable_in_standby,
+            device_identity,
         }
     }
 
@@ -194,6 +211,10 @@ impl TvConnection for MockConnection {
 
     fn hardware_id(&self) -> Option<HardwareId> {
         self.hardware_id.clone()
+    }
+
+    async fn device_info(&mut self) -> tisvlay_core::DeviceIdentity {
+        self.device_identity.clone()
     }
 
     // ------------------------------------------------------------------

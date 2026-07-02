@@ -21,6 +21,7 @@ mod config;
 mod connection;
 mod connector;
 mod discovery;
+mod identity;
 mod link;
 
 pub use backend::CecBackend;

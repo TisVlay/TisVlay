@@ -221,6 +221,17 @@ pub trait TvConnection: Send + Sync {
         None
     }
 
+    /// Query the device's live identity (CEC: OSD name, vendor, CEC
+    /// version) over the transport.
+    ///
+    /// Distinct from [`Self::hardware_id`] (a synchronous cached read for
+    /// dedup/matching): this is an on-demand I/O query used to enrich the
+    /// GUI INFO group and to default a TV's friendly name at pair time.
+    /// Default empty — backends that can't read identity leave it.
+    async fn device_info(&mut self) -> crate::DeviceIdentity {
+        crate::DeviceIdentity::default()
+    }
+
     // =========================================================================
     // Power control (default: not supported)
     // =========================================================================

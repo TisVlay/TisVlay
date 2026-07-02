@@ -81,6 +81,41 @@ async fn pair_mock_tv_appears_in_tv_list() {
 }
 
 #[tokio::test]
+async fn pair_with_blank_name_defaults_to_device_osd_name() {
+    let (daemon, client) = empty_daemon().await;
+
+    // The device reports an OSD name (CEC: the TV's own name). Seed it before
+    // pairing so the post-pair `device_info` query finds it.
+    daemon.handle().simulate_user_accept("mock://autofill");
+    daemon.handle().set_device_identity(
+        "mock://autofill",
+        tisvlay_core::DeviceIdentity {
+            osd_name: Some("OLED42C3PU".to_string()),
+            ..Default::default()
+        },
+    );
+
+    let stream = client.pairing_progress_stream().await.unwrap();
+    // Pair with a *blank* friendly name — the daemon should fall back to the
+    // device's OSD name rather than leaving it empty.
+    let config_json = r#"{"address": "mock://autofill"}"#;
+    let tv_id = client
+        .pair_tv("", "mock", config_json, true)
+        .await
+        .expect("AddTv RPC should succeed");
+    DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .expect("drain should reach terminal");
+
+    let tvs = client.list_tvs().await.unwrap();
+    let tv = tvs.iter().find(|t| t.uuid == tv_id).expect("paired tv");
+    assert_eq!(
+        tv.name, "OLED42C3PU",
+        "a blank name defaults to the device's OSD name",
+    );
+}
+
+#[tokio::test]
 async fn pair_then_control_screen() {
     let (daemon, client) = empty_daemon().await;
 

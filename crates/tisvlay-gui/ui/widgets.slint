@@ -340,10 +340,33 @@ export component VendorTile inherits Rectangle {
     border-color: Theme.border;
 
     Text {
+        // 2-letter monogram per brand. `lg`/`samsung`/`sony` get colored
+        // tiles (above); the rest a neutral chip. `cec` → CE (an unresolved
+        // CEC TV) and `mock` → MK are the backend ids; the others are the
+        // canonical vendor ids the CEC OUI map resolves to (a CEC-connected
+        // LG set brands as `lg`). Slint has no substring, so the set is
+        // explicit; an unexpected value falls through to a neutral dot.
         text: root.is-lg ? "LG"
             : root.is-samsung ? "SS"
             : root.is-sony ? "SY"
-            : "MK";
+            : root.vendor == "cec" ? "CE"
+            : root.vendor == "mock" ? "MK"
+            : root.vendor == "panasonic" ? "PA"
+            : root.vendor == "philips" ? "PH"
+            : root.vendor == "sharp" ? "SH"
+            : root.vendor == "toshiba" ? "TO"
+            : root.vendor == "vizio" ? "VZ"
+            : root.vendor == "pioneer" ? "PI"
+            : root.vendor == "onkyo" ? "ON"
+            : root.vendor == "yamaha" ? "YA"
+            : root.vendor == "denon" ? "DN"
+            : root.vendor == "marantz" ? "MZ"
+            : root.vendor == "apple" ? "AP"
+            : root.vendor == "google" ? "GO"
+            : root.vendor == "grundig" ? "GR"
+            : root.vendor == "loewe" ? "LO"
+            : root.vendor == "benq" ? "BQ"
+            : "•";
         color: root.is-known ? white : Theme.chip-text;
         font-size: root.tile-size * 0.40;
         font-weight: 700;

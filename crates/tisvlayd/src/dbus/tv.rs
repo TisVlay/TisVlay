@@ -40,10 +40,16 @@ pub struct TvService {
     pub(crate) vendor_config: Vec<(String, String)>,
     /// Read-only diagnostic vendor rows — `(label, value)` pairs
     /// from the backend's `display_diagnostics` (LG: WebSocket
-    /// scheme). Surfaced via `Tv1.VendorInfo` and rendered in the
-    /// GUI's INFO group. Empty for backends with no `Diagnostic`
-    /// schema fields.
-    pub(crate) vendor_info: Vec<(String, String)>,
+    /// scheme). The static, pair-time base of `Tv1.VendorInfo`; the
+    /// live `device_identity` rows are appended by the property getter.
+    /// Empty for backends with no `Diagnostic` schema fields.
+    pub(crate) vendor_diagnostics: Vec<(String, String)>,
+    /// Live backend-reported device identity (CEC: OSD name, vendor, CEC
+    /// version). Updated by subscription pushes — unlike `vendor_diagnostics`
+    /// (a pair-time snapshot), this refreshes when the backend re-queries the
+    /// device, so a CEC dongle moved to a different TV updates the INFO group
+    /// and the vendor tile. `None` for backends that don't report identity.
+    pub(crate) device_identity: Option<tisvlay_core::DeviceIdentity>,
 
     // Cached runtime state (updated by subscription pushes)
     pub(crate) connected: bool,
@@ -107,20 +113,39 @@ impl TvService {
         self.vendor_config.clone()
     }
 
-    /// Backend-discovered diagnostic rows as ordered
-    /// `(label, value)` pairs. The GUI's INFO group renders these
-    /// alongside cross-vendor identity columns (TV ID, hardware,
-    /// DRM connector). LG: WebSocket scheme. Future backends:
-    /// whatever `Diagnostic`-visibility fields they declare. Not
-    /// editable — backends refresh diagnostics during pairing
-    /// only, so the user re-pairs to update.
+    /// Backend-discovered diagnostic rows as ordered `(label, value)`
+    /// pairs, rendered in the GUI's INFO group alongside the cross-vendor
+    /// identity columns (TV ID, hardware, DRM connector).
     ///
-    /// Set at interface-registration time and refreshed via
-    /// `state_forwarder` after `Tv1.UpdateConfig` writes (in case
-    /// a vendor field's display projection depends on others).
+    /// Two sources concatenated: the pair-time `vendor_diagnostics`
+    /// (`Diagnostic` schema fields — LG's WebSocket scheme; refreshed only
+    /// on re-pair) followed by the live `device_identity` rows (CEC: OSD
+    /// name, vendor, CEC version — refreshed whenever the backend re-queries
+    /// the device, e.g. a dongle re-plugged into a different TV). So the
+    /// property is not `const`: it changes on `Tv1.UpdateConfig` writes *and*
+    /// on identity pushes.
     #[zbus(property)]
     fn vendor_info(&self) -> Vec<(String, String)> {
-        self.vendor_info.clone()
+        let mut rows = self.vendor_diagnostics.clone();
+        if let Some(identity) = &self.device_identity {
+            rows.extend(identity.display_rows());
+        }
+        rows
+    }
+
+    /// Canonical vendor id for branding the GUI vendor tile. For a backend
+    /// that resolves the device's own vendor (CEC → the TV's OUI, e.g.
+    /// `lg`), that resolved id; otherwise the backend vendor id (`cec`,
+    /// `lg`, `mock`). So a CEC-connected LG set shows the LG tile, an
+    /// unresolved CEC TV shows the generic CEC tile, and native backends are
+    /// unchanged. Refreshes with identity (a dongle moved to a Samsung TV
+    /// re-brands).
+    #[zbus(property)]
+    fn brand(&self) -> String {
+        self.device_identity
+            .as_ref()
+            .and_then(|id| id.vendor_canonical.clone())
+            .unwrap_or_else(|| self.vendor.clone())
     }
 
     /// Whether the TV is currently connected.
@@ -733,7 +758,9 @@ pub async fn register_tv_interfaces(
     let object_server = connection.object_server();
 
     let vendor_config = manager.vendor_config(&tv_id).await;
-    let vendor_info = manager.vendor_diagnostics(&tv_id).await;
+    let vendor_diagnostics = manager.vendor_diagnostics(&tv_id).await;
+    // Seed identity from the connect snapshot, if the backend reported it.
+    let device_identity = initial_state.and_then(|s| s.device_identity.clone());
 
     object_server
         .at(
@@ -748,7 +775,8 @@ pub async fn register_tv_interfaces(
                 primary_input,
                 automate_when,
                 vendor_config,
-                vendor_info,
+                vendor_diagnostics,
+                device_identity,
                 connected,
                 current_input: current_input.clone(),
             },

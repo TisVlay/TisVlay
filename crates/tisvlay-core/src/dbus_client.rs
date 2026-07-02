@@ -661,8 +661,13 @@ pub struct TvInfo {
     pub uuid: String,
     /// Display name.
     pub name: String,
-    /// Vendor ID.
+    /// Vendor ID (the backend id: `lg`, `cec`, `mock`).
     pub vendor: String,
+    /// Canonical vendor id for branding the vendor tile. Mirrors
+    /// `Tv1.Brand`: the device's *resolved* vendor for a backend that reads
+    /// it (CEC → the TV's own OUI, e.g. `lg`), else the backend `vendor`. So
+    /// a CEC-connected LG set brands as LG; an unresolved CEC TV as `cec`.
+    pub brand: String,
     /// Feature capabilities this TV's backend supports (power, volume,
     /// input, …). Static per vendor — populated whether or not the TV is
     /// connected — so clients can gate affordances on what the device can
@@ -1008,6 +1013,13 @@ impl DaemonClient {
             let uuid = get_str("Uuid");
             let name = get_str("Name");
             let vendor = get_str("Vendor");
+            // Brand for the vendor tile: the daemon resolves it (CEC device
+            // vendor, else backend id); fall back to `vendor` for an older
+            // daemon that predates the property.
+            let brand = {
+                let b = get_str("Brand");
+                if b.is_empty() { vendor.clone() } else { b }
+            };
             let connected = get_bool("Connected", false);
             let managed = get_bool("Managed", true);
             let automated = get_bool("Automated", true);
@@ -1106,6 +1118,7 @@ impl DaemonClient {
                 uuid,
                 name,
                 vendor,
+                brand,
                 capabilities,
                 connected,
                 managed,

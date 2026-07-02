@@ -59,6 +59,17 @@ pub(crate) trait CecLink: Send + Sync + std::fmt::Debug {
     /// a broadcast that tells whichever device owns that physical address
     /// to become the active source).
     async fn set_stream_path(&self, address: PhysicalAddress) -> Result<()>;
+
+    /// The TV's self-reported name (`Give OSD Name` → `Set OSD Name`), e.g.
+    /// `OLED42C3PU`. Feeds the INFO group and the pair-time name default.
+    async fn query_osd_name(&self) -> Result<String>;
+    /// The TV's vendor OUI (`Give Device Vendor ID` → `Device Vendor ID`);
+    /// `None` when the TV reports no vendor. Resolved to a name via
+    /// [`crate::identity`].
+    async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>>;
+    /// The TV's CEC version (`Get CEC Version` → `CEC Version`), formatted
+    /// like `1.4`.
+    async fn query_cec_version(&self) -> Result<String>;
 }
 
 /// A follower-mode handle for receiving unsolicited CEC traffic — the
@@ -231,6 +242,52 @@ impl CecLink for LinuxCecLink {
             .map(|_seq| ())
             .map_err(map_cec_err)
     }
+
+    async fn query_osd_name(&self) -> Result<String> {
+        let name = self.device.get_osd_name().await.map_err(map_cec_err)?;
+        Ok(name.to_string_lossy().into_owned())
+    }
+
+    async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>> {
+        self.device.get_vendor_id().await.map_err(map_cec_err)
+    }
+
+    async fn query_cec_version(&self) -> Result<String> {
+        let envelope = self
+            .device
+            .tx_rx_message(
+                &Message::GetCecVersion {},
+                LogicalAddress::Tv,
+                Opcode::CecVersion,
+                POWER_QUERY_TIMEOUT,
+            )
+            .await
+            .map_err(map_cec_err)?;
+        match envelope.message {
+            MessageData::Valid(Message::CecVersion { version }) => Ok(cec_version_str(version)),
+            other => Err(Error::backend(
+                VENDOR_ID,
+                format!("expected CEC Version, got {other:?}"),
+            )),
+        }
+    }
+}
+
+/// Render a CEC version operand as its dotted spec string (`1.4`, `2.0`).
+fn cec_version_str(version: linux_cec::operand::Version) -> String {
+    use linux_cec::operand::Version;
+    match version {
+        Version::V1_1 => "1.1",
+        Version::V1_2 => "1.2",
+        Version::V1_2a => "1.2a",
+        Version::V1_3 => "1.3",
+        Version::V1_3a => "1.3a",
+        Version::V1_4 => "1.4",
+        Version::V2_0 => "2.0",
+        // `Version` is `#[non_exhaustive]`; a future spec bump reads as unknown.
+        _ => "unknown",
+    }
+    .to_string()
 }
 
 /// Map a `linux_cec::Error` onto the vendor-agnostic [`Error`].
@@ -262,6 +319,12 @@ mod fake {
     pub(crate) struct FakeCecLink {
         power: Mutex<PowerStatus>,
         ignore_wakes: Mutex<usize>,
+        /// Scripted identity for `query_osd_name`/`_vendor_id`/`_cec_version`.
+        /// Defaults are empty/`None` (no identity) so existing tests, which
+        /// don't assert identity, see an all-absent `DeviceIdentity`.
+        osd_name: String,
+        vendor_id: Option<linux_cec::VendorId>,
+        cec_version: String,
     }
 
     impl FakeCecLink {
@@ -269,7 +332,24 @@ mod fake {
             Self {
                 power: Mutex::new(power),
                 ignore_wakes: Mutex::new(0),
+                osd_name: String::new(),
+                vendor_id: None,
+                cec_version: String::new(),
             }
+        }
+
+        /// Seed the scripted device identity the CEC connection queries in
+        /// its initial subscription snapshot.
+        pub(crate) fn with_identity(
+            mut self,
+            osd_name: &str,
+            vendor_id: Option<linux_cec::VendorId>,
+            cec_version: &str,
+        ) -> Self {
+            self.osd_name = osd_name.to_string();
+            self.vendor_id = vendor_id;
+            self.cec_version = cec_version.to_string();
+            self
         }
     }
 
@@ -299,6 +379,18 @@ mod fake {
         async fn set_stream_path(&self, _address: PhysicalAddress) -> Result<()> {
             Ok(())
         }
+
+        async fn query_osd_name(&self) -> Result<String> {
+            Ok(self.osd_name.clone())
+        }
+
+        async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>> {
+            Ok(self.vendor_id)
+        }
+
+        async fn query_cec_version(&self) -> Result<String> {
+            Ok(self.cec_version.clone())
+        }
     }
 
     /// Opener that yields a [`FakeCecLink`] seeded with a fixed initial
@@ -314,6 +406,9 @@ mod fake {
         /// When set, the monitor's `recv` returns `ConnectionClosed` once
         /// its script drains — models a real adapter disconnect.
         monitor_fails: bool,
+        /// Scripted `(osd_name, vendor_id, cec_version)` the opened
+        /// [`FakeCecLink`] reports; `None` = no identity.
+        identity: Option<(String, Option<linux_cec::VendorId>, String)>,
     }
 
     impl FakeCecLinkOpener {
@@ -323,6 +418,7 @@ mod fake {
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(None),
                 monitor_fails: false,
+                identity: None,
             }
         }
 
@@ -334,6 +430,7 @@ mod fake {
                 ignore_wakes: ignored,
                 monitor_script: Mutex::new(None),
                 monitor_fails: false,
+                identity: None,
             }
         }
 
@@ -357,6 +454,7 @@ mod fake {
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(Some(script.into())),
                 monitor_fails: false,
+                identity: None,
             }
         }
 
@@ -369,6 +467,7 @@ mod fake {
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(None),
                 monitor_fails: true,
+                identity: None,
             }
         }
     }
@@ -380,9 +479,13 @@ mod fake {
             _device: &str,
             _physical_address: PhysicalAddress,
         ) -> Result<Box<dyn CecLink>> {
+            let (osd_name, vendor_id, cec_version) = self.identity.clone().unwrap_or_default();
             Ok(Box::new(FakeCecLink {
                 power: Mutex::new(self.initial),
                 ignore_wakes: Mutex::new(self.ignore_wakes),
+                osd_name,
+                vendor_id,
+                cec_version,
             }))
         }
 

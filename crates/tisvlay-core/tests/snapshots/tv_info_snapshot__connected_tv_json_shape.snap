@@ -6,6 +6,7 @@ expression: sample_connected()
   "uuid": "11111111-1111-1111-1111-111111111111",
   "name": "Living Room G4",
   "vendor": "lg",
+  "brand": "lg",
   "capabilities": [
     "power",
     "screen",

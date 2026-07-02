@@ -167,6 +167,11 @@ impl TvConnection for CecConnection {
             .await
             .map(map_power)
             .unwrap_or(PowerState::Active);
+        // Query the device identity once (OSD name, vendor, CEC version) so
+        // the initial snapshot carries it — it's static for a given link, so
+        // no need to re-query per push. A reconnect (e.g. the dongle moved to
+        // a different TV) re-runs `subscribe_state`, re-querying the new set.
+        let identity = crate::identity::query(self.link.as_ref()).await;
         // Open a second, follower-mode handle on the same device (see
         // `CecMonitor`): its blocking receive loop lives on a distinct fd,
         // so it can't starve the single-threaded worker the tx handle
@@ -185,6 +190,13 @@ impl TvConnection for CecConnection {
             let mut state = TvState::new();
             state.update_power(initial);
             state.inputs = default_inputs();
+            // Attach the device identity to the (retained) snapshot so it
+            // rides the initial push and every subsequent one. Always `Some`
+            // for a CEC link (even if the queries came back empty) so a
+            // reconnect to a *different* TV replaces the prior identity rather
+            // than leaving it stale; the daemon applies `Some` and preserves
+            // across `None` (non-CEC) deltas.
+            state.device_identity = Some(identity);
             // Push the initial snapshot right away (see the seed comment) so
             // clients don't read a stale power state between connect and the
             // first bus broadcast.
@@ -282,6 +294,10 @@ impl TvConnection for CecConnection {
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
         Ok(map_power(self.link.query_power().await?))
+    }
+
+    async fn device_info(&mut self) -> tisvlay_core::DeviceIdentity {
+        crate::identity::query(self.link.as_ref()).await
     }
 
     async fn switch_input(&mut self, input_id: &str) -> Result<()> {
@@ -466,6 +482,55 @@ mod tests {
             conn.get_power_state().await.expect("power state"),
             PowerState::Standby
         );
+    }
+
+    #[tokio::test]
+    async fn subscribe_state_reports_device_identity() {
+        // The initial snapshot carries the device identity the bus answers:
+        // OSD name, vendor (resolved from the OUI + the raw), CEC version.
+        let link = FakeCecLink::new(PowerStatus::On).with_identity(
+            "OLED42C3PU",
+            Some(linux_cec::VendorId([0x00, 0xE0, 0x91])),
+            "1.4",
+        );
+        let mut conn = CecConnection::new(
+            Box::new(link),
+            Arc::new(FakeCecLinkOpener::new(PowerStatus::On)),
+            "/dev/cec0".to_string(),
+        );
+        let mut rx = conn.subscribe_state().await.expect("subscribe");
+        let initial = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("initial pushed")
+            .expect("channel open");
+        let id = initial.device_identity.expect("identity present");
+        assert_eq!(id.osd_name.as_deref(), Some("OLED42C3PU"));
+        assert_eq!(id.vendor_raw.as_deref(), Some("00-e0-91"));
+        assert_eq!(id.vendor_name.as_deref(), Some("LG"));
+        assert_eq!(id.vendor_canonical.as_deref(), Some("lg"));
+        assert_eq!(id.cec_version.as_deref(), Some("1.4"));
+    }
+
+    #[tokio::test]
+    async fn device_info_queries_identity_on_demand() {
+        // The pair flow uses this to default the friendly name; unknown
+        // vendor OUIs resolve name/canonical to None but keep the raw.
+        let link = FakeCecLink::new(PowerStatus::On).with_identity(
+            "MyTV",
+            Some(linux_cec::VendorId([0x12, 0x34, 0x56])),
+            "2.0",
+        );
+        let mut conn = CecConnection::new(
+            Box::new(link),
+            Arc::new(FakeCecLinkOpener::new(PowerStatus::On)),
+            "/dev/cec0".to_string(),
+        );
+        let id = conn.device_info().await;
+        assert_eq!(id.osd_name.as_deref(), Some("MyTV"));
+        assert_eq!(id.vendor_raw.as_deref(), Some("12-34-56"));
+        assert_eq!(id.vendor_name, None, "unknown OUI has no resolved name");
+        assert_eq!(id.vendor_canonical, None);
+        assert_eq!(id.cec_version.as_deref(), Some("2.0"));
     }
 
     #[tokio::test]

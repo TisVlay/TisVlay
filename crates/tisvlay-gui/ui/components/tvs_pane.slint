@@ -37,6 +37,9 @@ export struct TvViewModel {
     uuid: string,
     name: string,
     vendor: string,
+    /// Canonical vendor for branding the tile (`Tv1.Brand`): the device's
+    /// resolved vendor for CEC (e.g. `lg`), else the backend vendor.
+    brand: string,
     primary-descriptor: string,
     connected: bool,
     power-state: string,
@@ -213,7 +216,7 @@ component TvListRow inherits Rectangle {
             width: Design.size-tile-sm;
             alignment: center;
             VendorTile {
-                vendor: root.tv.vendor;
+                vendor: root.tv.brand;
                 tile-size: Design.size-tile-sm;
             }
         }
@@ -499,7 +502,7 @@ component TvDetailHeader inherits Rectangle {
             width: Design.size-tile-md;
             alignment: center;
             VendorTile {
-                vendor: root.tv.vendor;
+                vendor: root.tv.brand;
                 tile-size: Design.size-tile-md;
             }
         }

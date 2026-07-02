@@ -31,6 +31,8 @@ pub struct TvViewRaw {
     pub uuid: SharedString,
     pub name: SharedString,
     pub vendor: SharedString,
+    /// Canonical vendor for branding the tile — mirrors `TvInfo::brand`.
+    pub brand: SharedString,
     /// Backend's primary diagnostic descriptor — first non-Secret entry
     /// of `Tv1.VendorInfo`. LG: IP address. Future Bluetooth: MAC.
     /// Future USB-CEC: serial-port path. Rendered as the small
@@ -272,6 +274,7 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             uuid: SharedString::from(tv.uuid.as_str()),
             name: SharedString::from(tv.name.as_str()),
             vendor: SharedString::from(tv.vendor.as_str()),
+            brand: SharedString::from(tv.brand.as_str()),
             primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
             power_state: SharedString::from(tv.power_state.as_str()),
@@ -572,6 +575,7 @@ mod tests {
             uuid: uuid.into(),
             name: name.into(),
             vendor: "lg".into(),
+            brand: "lg".into(),
             capabilities: Capabilities::STOCK,
             connected: false,
             managed: false,

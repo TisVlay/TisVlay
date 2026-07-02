@@ -2,7 +2,7 @@
 
 Enrich the TVs-pane **INFO** group for a CEC-backed TV with the identity the set answers on the bus — OSD name, vendor, CEC version — and reflect the resolved vendor in the **VendorTile** branding. Unlike LG's static pair-time `scheme` diagnostic, CEC identity is **live**: re-plug the dongle into a different TV and INFO should follow. Grounded in a real `cec-ctl` dump of the C3 (`OSD Name 'OLED42C3PU'`, `Vendor ID 0x00e091 (LG)`, `CEC Version 1.4`) and confirmed against `linux-cec` 0.2 (`get_osd_name`, `get_vendor_id`, `GetCecVersion`).
 
-> Status: **planned**, on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)). Baseline before implementing.
+> Status: **built** on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)). Green: build · clippy `-D warnings` · 612 tests. All four slices landed as designed; the approved leans (typed `DeviceIdentity` on `TvState`, dedicated `Tv1.Brand` signal) hold. Durable content is in [docs/cec/protocol.md](../cec/protocol.md) § Device identity.
 
 ## What CEC exposes (and the verdict)
 

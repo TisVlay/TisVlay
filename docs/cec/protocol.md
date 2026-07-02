@@ -59,6 +59,14 @@ CEC is a **push backend**, not polled: `subscribe_state` opens a *second*, follo
 
 Why a second handle: `AsyncDevice`'s worker is a single serial thread, so a blocking receive loop on the tx handle would starve `power_off`/`switch_input`/power queries. CEC allows multiple opens and follower/initiator mode is per-fd, so the receive fd listens independently of the tx fd (it claims no logical address of its own — the tx handle already claimed one for the adapter). This is the same follower-mode receive design `cecd` uses. The monitor task is aborted when the connection drops, closing the state channel — that closure is what drives the daemon's subscription-end `ConnectionChanged(false)` on power-off (the same path LG's socket-close takes). What unsolicited messages a given TV actually emits is TV-dependent, so real-time remote-driven updates are best-effort.
 
+## Device identity (live INFO + vendor tile)
+
+The bus answers a set of identity queries — `Give OSD Name` (the TV's own name, e.g. `OLED42C3PU`), `Give Device Vendor ID` (a 24-bit OUI), and `Get CEC Version` — even in standby. `subscribe_state` queries them **once per connection** and attaches a [`DeviceIdentity`](../../crates/tisvlay-core/src/state.rs) (`crate::identity::query`) to the connect snapshot, so it rides the state pipeline into `Tv1.VendorInfo` (the GUI INFO group) and a `Tv1.Brand` signal (the vendor tile). Because it's carried on live state, not the pair-time config, a **reconnect** — a dongle re-plugged into a different TV — re-queries and the INFO group and tile follow the new set. This is the deliberate contrast with LG's `scheme`, a static `Diagnostic` config field: `VendorInfo` carries both.
+
+`linux-cec`'s `VendorId` is only the raw OUI (`Display` = `00-e0-91`), with no name table, so `identity.rs` owns a small OUI→name map (libcec's `CEC_VENDOR_*` values). A resolved vendor shows as `LG (00-e0-91)` in INFO and brands the tile by its canonical id (a CEC-connected LG set shows the LG tile); an unresolved OUI shows the raw id in INFO and the generic `CE` tile. The map yields both a display name and a canonical id matching the GUI tile's brand keys.
+
+`TvConnection::device_info()` runs the same queries on demand; the pair flow uses it to **default a blank friendly name** to the OSD name (captured once — the user can rename, so it isn't kept live).
+
 ## Discovery
 
 CEC "discovery" is not a bus scan: it lists the host's `/dev/cecN` character devices (`CecDiscovery`), one `DiscoveredTv` per node, so the pairing wizard offers a device picker. The device path rides `vendor_data["device"]`, and the schema's `autofill = "discovery.device"` pre-fills the `device` config field. It is enumeration only — it does not open a node or read the TV's OSD name (that needs the `/dev/cecN` access the daemon, not a pre-pair scan, holds).
