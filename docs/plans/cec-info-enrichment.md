@@ -2,7 +2,7 @@
 
 Enrich the TVs-pane **INFO** group for a CEC-backed TV with the identity the set answers on the bus — OSD name, vendor, CEC version — and reflect the resolved vendor in the **VendorTile** branding. Unlike LG's static pair-time `scheme` diagnostic, CEC identity is **live**: re-plug the dongle into a different TV and INFO should follow. Grounded in a real `cec-ctl` dump of the C3 (`OSD Name 'OLED42C3PU'`, `Vendor ID 0x00e091 (LG)`, `CEC Version 1.4`) and confirmed against `linux-cec` 0.2 (`get_osd_name`, `get_vendor_id`, `GetCecVersion`).
 
-> Status: **built** on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)). Green: build · clippy `-D warnings` · 612 tests. All four slices landed as designed; the approved leans (typed `DeviceIdentity` on `TvState`, dedicated `Tv1.Brand` signal) hold. Durable content is in [docs/cec/protocol.md](../cec/protocol.md) § Device identity.
+> Status: **v1 built, v2 reconciliation planned** on `feat/cec-backend` (PR [#94](https://github.com/ruffsl/TisVlay/pull/94)). v1 shipped a typed `DeviceIdentity` (614 tests green) but hardware QA showed it duplicates the existing `HardwareId` Make/Model display — see § Reconciliation v2 for the approved fold-into-`HardwareId` redesign (baseline before implementing v2). The crash fix (`a8a75be`) already landed.
 
 ## What CEC exposes (and the verdict)
 
@@ -57,6 +57,36 @@ Plus tests (CEC unit: query round-trips, OUI resolution incl. unknown; daemon: i
 - **Brand surface — small dedicated signal** (approved). Expose the resolved canonical vendor for the tile as its own field the GUI reads (`TvView.brand-vendor`, backed by a daemon-side value), rather than reverse-parsing a `VendorInfo` display row.
 - **Query reliability.** Best-effort: a failed/absent query yields no row (elided) and no brand (tile falls back to `CE`). The C3 answered these *in Standby*, so pair-time and on-connect capture both work regardless of power.
 
+## Reconciliation v2 — fold identity into `HardwareId` (planned)
+
+Hardware QA of v1 exposed a design flaw: the INFO group already renders **Make** (`hw-manufacturer`), **Model** (`hw-model`), **Serial** from the cross-vendor [`HardwareId`](../../crates/tisvlay-core/src/hardware_id.rs) (LG populates it, refreshed on reconnect; the header also shows `hw-model` next to the descriptor). v1's parallel `DeviceIdentity` put a **Device name** (OSD name ≈ Model) and **Vendor** (≈ Make) row *right next to* the empty Make/Model rows — pure duplication. Also, v1 crashed the daemon on real hardware (`get_osd_name`/`get_vendor_id` read the *local adapter*, and the local OSD buffer is 14-byte NUL-padded → invalid D-Bus string → the bus dropped the daemon's name). The query-the-TV + sanitize fix landed (`a8a75be`); this section is the model reconciliation. Decisions (approved): **fold into `HardwareId`**, **drop the CEC version**, **probe during discovery**.
+
+### Fold CEC identity into `HardwareId`
+
+- CEC's `hardware_id()` returns `HardwareId { manufacturer: <resolved vendor name>, model: <OSD name>, serial: None }`, cached from a connect-time bus query (mirrors LG's `Arc<RwLock<Option<HardwareId>>>` refresh pattern — query async on connect, return sync). It flows through the *existing* `Tv1.HardwareId` → Make/Model rows + header `hw-model` (+ the deferred EDID-connector dedup). Refreshes on a dongle-swap via the GUI's `ConnectionChanged`-triggered re-fetch, like LG — no per-push liveness needed (identity only changes on reconnect).
+- **Remove** the v1 parallel plumbing: `DeviceIdentity` on `TvState` (+ `display_rows`/`is_empty`/exports), `TvConnection::device_info()`, the `Tv1.VendorInfo` composition (revert to config-diagnostics only, undo the `vendor_diagnostics` rename + `device_identity` field + forwarder emit), the daemon pair-time blank→OSD autofill, and the mock `set_device_identity` override (tests use the existing `set_hardware_id`).
+- **Drop the CEC version** — remove `query_cec_version` + `cec_version_str`; it doesn't fit Make/Model/Serial and was the least useful.
+
+### Keep the vendor-tile branding
+
+- The tile needs the canonical vendor (`lg`), which `HardwareId` doesn't carry. Keep `Tv1.Brand` + the GUI `brand` field + the `CE`/monogram fallback. Source it from a small **sync `TvConnection::brand() -> Option<String>`** (default `None`; CEC returns the cached canonical from the OUI map), so the daemon's `Brand` = `conn.brand()` else the backend vendor id — no `DeviceIdentity` needed.
+- Keep the OUI→(name, canonical) map in `identity.rs`; it feeds both `manufacturer` (name) and `brand` (canonical). Keep the fixed, TV-querying `query_osd_name`/`query_vendor_id` (used by both the connection and discovery).
+
+### Probe during discovery
+
+- `CecDiscovery` opens each `/dev/cecN` and queries OSD name + vendor, populating `DiscoveredTv.name` (OSD name) + its `HardwareId`. So the wizard's discovery list shows real TV names/models and the name field prefills from the OSD name — the enrichment finally reaches [`pairing_wizard.slint`](../../crates/tisvlay-gui/ui/globals/pairing_wizard.slint). A non-answering node falls back to the bare `/dev/cecN` entry.
+
+### Stall fix
+
+- Bound the CEC identity queries with a short `IDENTITY_QUERY_TIMEOUT` (best-effort), **not** `Timeout::MAX` — so a TV that ignores `Give OSD Name` can't hang connect or discovery. (Power keeps `Timeout::MAX`; it's not best-effort.)
+
+### v2 slices
+
+1. **CEC → HardwareId + brand.** Connection queries on connect (bounded), caches `HardwareId` + canonical; `hardware_id()` + new `brand()`. Remove `device_info`, version.
+2. **Unwind v1 core/daemon/mock.** Remove `DeviceIdentity`/`TvState` field, revert `VendorInfo`, drop pair-autofill + mock identity override. Daemon `Brand` from `conn.brand()`.
+3. **Discovery probe.** `CecDiscovery` OSD/vendor probe → `DiscoveredTv`; verify the wizard shows/prefills.
+4. **Tests + docs.** Daemon HardwareId via `set_hardware_id`; CEC-level brand + discovery-probe + timeout; refresh [docs/cec/protocol.md](../cec/protocol.md) (identity = HardwareId, not a separate block).
+
 ## Migration on merge
 
-Fold the identity/`VendorInfo`-is-live-or-snapshot note into [docs/cec/protocol.md](../cec/protocol.md); delete this plan with the CEC PR. Per [docs/plans/README.md](README.md).
+Fold the CEC-identity-is-`HardwareId` note into [docs/cec/protocol.md](../cec/protocol.md); delete this plan with the CEC PR. Per [docs/plans/README.md](README.md).
