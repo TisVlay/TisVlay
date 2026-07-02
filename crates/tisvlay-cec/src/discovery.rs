@@ -89,6 +89,13 @@ impl TvDiscovery for CecDiscovery {
                 }
                 tv.hardware_id = Some(hw);
             }
+            // Carry the resolved canonical vendor so the wizard tile brands by
+            // it (`lg`) instead of the backend id (`cec`). `vendor_data` is the
+            // free-form channel that already crosses D-Bus to the wizard;
+            // adding a `DiscoveredTv` field would change its wire signature.
+            if let Some(brand) = identity.brand {
+                tv.vendor_data.insert("brand".to_string(), brand);
+            }
         }
         Ok(tvs)
     }
@@ -217,6 +224,9 @@ mod tests {
         let hw = tv.hardware_id.as_ref().expect("probed hardware id");
         assert_eq!(hw.manufacturer.as_deref(), Some("LG"));
         assert_eq!(hw.model.as_deref(), Some("OLED42C3PU"));
+        // The canonical brand rides `vendor_data` so the wizard tile can brand
+        // by it (LG) rather than the backend id (CE).
+        assert_eq!(tv.vendor_data.get("brand").map(String::as_str), Some("lg"));
         // The device path is still there for the config autofill.
         assert_eq!(
             tv.vendor_data.get("device").map(String::as_str),
