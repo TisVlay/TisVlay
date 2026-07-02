@@ -15,22 +15,8 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-> - [`cec-backend.md`](cec-backend.md) — a new `tisvlay-cec` vendor
->   backend controlling TVs over HDMI-CEC (`/dev/cecN`) via Valve's
->   `linux-cec` library; v1 scope is power + active-source input,
->   built software-first against a fakeable seam since no real
->   CEC link exists on the dev box yet.
-> - [`cec-screen-via-power.md`](cec-screen-via-power.md) — a per-device
->   opt-out CEC config (`emulate_screen_via_power`, default on) that
->   fulfils screen-blank profile actions by powering the TV, so the
->   shipped default profiles behave consistently on a CEC-only setup.
-> - [`cec-info-enrichment.md`](cec-info-enrichment.md) — live CEC device
->   identity (OSD name, vendor, CEC version) in the TVs-pane INFO group,
->   an OUI→name map, VendorTile branding by resolved vendor, and
->   pair-time friendly-name autofill from the OSD name.
-
-When a plan is in flight, list it here with a one-line summary
-of the work it covers:
+None currently in flight. When a plan is in flight, list it here with
+a one-line summary of the work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short
 >   description of what's landing and why a multi-commit PR

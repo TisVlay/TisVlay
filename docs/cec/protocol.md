@@ -71,7 +71,7 @@ The bus answers `Give OSD Name` (the TV's own name, e.g. `OLED42C3PU`) and `Give
 
 ## Discovery
 
-CEC "discovery" is not a bus scan: it lists the host's `/dev/cecN` character devices (`CecDiscovery`), one `DiscoveredTv` per node, so the pairing wizard offers a device picker. The device path rides `vendor_data["device"]`, and the schema's `autofill = "discovery.device"` pre-fills the `device` config field. It is enumeration only — it does not open a node or read the TV's OSD name (that needs the `/dev/cecN` access the daemon, not a pre-pair scan, holds).
+CEC "discovery" is not a bus scan: it lists the host's `/dev/cecN` character devices (`CecDiscovery`), one `DiscoveredTv` per node, so the pairing wizard offers a device picker. The device path rides `vendor_data["device"]`, and the schema's `autofill = "discovery.device"` pre-fills the `device` config field. Each node is then *probed* for its identity (OSD name + vendor) — see § Device identity — so the list shows the TV's real name/model and the name field prefills; a node that can't be opened (busy, held by an active connection) or answers nothing falls back to the bare `HDMI CEC (/dev/cecN)` entry.
 
 ## Pairing
 
