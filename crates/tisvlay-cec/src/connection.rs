@@ -146,6 +146,19 @@ impl TvConnection for CecConnection {
         if let Some(prev) = self.monitor_task.take() {
             prev.abort();
         }
+        // Seed from the live power so the *first* push reflects reality. A
+        // CEC follower fd only receives future broadcasts, unlike an SSAP
+        // subscription that replays the current value — so without an
+        // explicit initial push the daemon has no CEC power state until the
+        // TV happens to broadcast, and a freshly-connected, powered-on TV
+        // reads stale standby. `connect` refuses a standby TV, so this
+        // resolves to On/ToOn (falling back to Active if the query blips).
+        let initial = self
+            .link
+            .query_power()
+            .await
+            .map(map_power)
+            .unwrap_or(PowerState::Active);
         // Open a second, follower-mode handle on the same device (see
         // `CecMonitor`): its blocking receive loop lives on a distinct fd,
         // so it can't starve the single-threaded worker the tx handle
@@ -153,14 +166,19 @@ impl TvConnection for CecConnection {
         let monitor = self.opener.open_monitor(&self.device).await?;
         let (tx, rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
-            // Running snapshot re-pushed on every power-relevant change. We
-            // only subscribe on a live connection, so seed it on with the
-            // best-effort input set — the daemon merges partial fields, but
-            // pushing a full snapshot keeps the contract identical to a
+            // Running snapshot re-pushed on every power-relevant change. The
+            // best-effort input set rides along; the daemon merges partial
+            // fields, but a full snapshot keeps the contract identical to a
             // push backend like LG.
             let mut state = TvState::new();
-            state.update_power(PowerState::Active);
+            state.update_power(initial);
             state.inputs = default_inputs();
+            // Push the initial snapshot right away (see the seed comment) so
+            // clients don't read a stale power state between connect and the
+            // first bus broadcast.
+            if tx.send(state.clone()).is_err() {
+                return;
+            }
             let mut consecutive_errors = 0u32;
             loop {
                 match monitor.recv().await {
@@ -302,7 +320,14 @@ mod tests {
             "/dev/cec0".to_string(),
         );
         let mut rx = conn.subscribe_state().await.expect("subscribe");
-        let state = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        // Initial snapshot: the live power (On → active) is pushed at once.
+        let initial = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("initial pushed within 1s")
+            .expect("subscription channel open");
+        assert_eq!(initial.power_state, PowerState::Active);
+        // Then the scripted <Standby> flips it.
+        let state = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("state pushed within 1s")
             .expect("subscription channel open");
@@ -325,6 +350,11 @@ mod tests {
             "/dev/cec0".to_string(),
         );
         let mut rx = conn.subscribe_state().await.expect("subscribe");
+        // Drain the initial snapshot the subscription pushes on connect.
+        tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("initial pushed")
+            .expect("channel open");
         drop(conn);
         assert!(
             rx.recv().await.is_none(),
@@ -347,10 +377,17 @@ mod tests {
             "/dev/cec0".to_string(),
         );
         let mut rx = conn.subscribe_state().await.expect("subscribe");
+        // Drain the initial on-connect snapshot.
+        let initial = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("initial pushed")
+            .expect("channel open");
+        assert_eq!(initial.power_state, PowerState::Active);
+        // The Tuner1 <Standby> is filtered — no *further* push.
         let got = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
         assert!(
             got.is_err(),
-            "a non-TV initiator must be filtered (no push)"
+            "a non-TV initiator must be filtered (no further push)"
         );
     }
 
