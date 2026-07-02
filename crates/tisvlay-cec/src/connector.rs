@@ -78,7 +78,10 @@ impl TvConnector for CecConnector {
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
-        let link = self.opener.open(&config.device).await?;
+        let link = self
+            .opener
+            .open(&config.device, config.physical_address)
+            .await?;
         // The `/dev/cecN` handle opens whether or not the TV is on, so a
         // bare open says nothing about reachability. Probe power and
         // refuse the connection when the TV is in standby — that is what
@@ -103,14 +106,20 @@ impl TvConnector for CecConnector {
     #[instrument(skip(self, vendor_config))]
     async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
         let config = parse_config(vendor_config)?;
-        let link = self.opener.open(&config.device).await?;
+        let link = self
+            .opener
+            .open(&config.device, config.physical_address)
+            .await?;
         link.power_on().await
     }
 
     #[instrument(skip(self, vendor_config))]
     async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
-        let link = self.opener.open(&config.device).await?;
+        let link = self
+            .opener
+            .open(&config.device, config.physical_address)
+            .await?;
         link.power_on().await?;
         // Image View On is fire-and-forget; poll power until the TV
         // reports it is on (or transitioning on). A non-responding TV
@@ -156,18 +165,32 @@ impl TvConnector for CecConnector {
 
     fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
         use tisvlay_core::{PairingField, PairingFieldType};
-        vec![PairingField {
-            name: "device".into(),
-            label: "CEC device".into(),
-            helper: "Path to the kernel CEC character device (e.g. /dev/cec0).".into(),
-            field_type: PairingFieldType::Path,
-            required: true,
-            placeholder: "/dev/cec0".into(),
-            // Pre-filled from the device picker: discovery emits
-            // `vendor_data["device"]` for each /dev/cecN node.
-            autofill: "discovery.device".into(),
-            ..Default::default()
-        }]
+        vec![
+            PairingField {
+                name: "device".into(),
+                label: "CEC device".into(),
+                helper: "Path to the kernel CEC character device (e.g. /dev/cec0).".into(),
+                field_type: PairingFieldType::Path,
+                required: true,
+                placeholder: "/dev/cec0".into(),
+                // Pre-filled from the device picker: discovery emits
+                // `vendor_data["device"]` for each /dev/cecN node.
+                autofill: "discovery.device".into(),
+                ..Default::default()
+            },
+            PairingField {
+                name: "physical_address".into(),
+                label: "Physical address".into(),
+                helper: "CEC address the adapter claims, matching the TV input it is plugged \
+                         into (1.0.0.0 = HDMI 1). Leave as the default for GPU DisplayPort-CEC."
+                    .into(),
+                field_type: PairingFieldType::String,
+                required: false,
+                placeholder: "1.0.0.0".into(),
+                default: "1.0.0.0".into(),
+                ..Default::default()
+            },
+        ]
     }
 }
 
@@ -250,12 +273,15 @@ mod tests {
     }
 
     #[test]
-    fn config_schema_exposes_the_device_path() {
+    fn config_schema_exposes_device_and_physical_address() {
         use tisvlay_core::PairingFieldType;
         let schema = connector(PowerStatus::On).config_schema();
-        assert_eq!(schema.len(), 1);
+        assert_eq!(schema.len(), 2);
         assert_eq!(schema[0].name, "device");
         assert_eq!(schema[0].field_type, PairingFieldType::Path);
         assert!(schema[0].required);
+        assert_eq!(schema[1].name, "physical_address");
+        assert!(!schema[1].required, "physical address has a sane default");
+        assert_eq!(schema[1].default, "1.0.0.0");
     }
 }

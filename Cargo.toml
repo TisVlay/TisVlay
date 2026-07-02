@@ -128,11 +128,15 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
-# `async` enables the tokio `AsyncDevice` wrapper; default features
-# (`cectool`, `tracing`) are dropped to avoid the clap pull and the
-# bundled CLI binary. LGPL-2.1 — carried via a per-crate exception in
-# packaging/licensing.
-linux-cec = { version = "0.2", default-features = false, features = ["async"] }
+# `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
+# `PhysicalAddress` its `a.b.c.d` string (de)serialization for the vendor
+# config. Default features (`cectool`, `tracing`) are dropped to avoid the
+# clap pull and the bundled CLI binary. LGPL-2.1 — carried via a per-crate
+# exception in packaging/licensing.
+linux-cec = { version = "0.2", default-features = false, features = [
+    "async",
+    "serde",
+] }
 
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the

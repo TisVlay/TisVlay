@@ -1,11 +1,15 @@
 //! Vendor config for the CEC backend.
 
-use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
+use linux_cec::PhysicalAddress;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// CEC TV configuration, stored under `[tv.cec]` in the daemon config.
 ///
-/// CEC has no network address, credentials, or pairing secret — the only
-/// thing a CEC TV needs is which kernel character device carries its bus.
+/// CEC has no network address, credentials, or pairing secret — a CEC TV
+/// needs only the kernel character device that carries its bus and the
+/// physical address the adapter should claim on it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CecVendorConfig {
     /// Path to the kernel CEC character device (e.g. `/dev/cec0`).
@@ -15,16 +19,95 @@ pub struct CecVendorConfig {
     /// is reachable on.
     #[serde(default = "default_device")]
     pub device: String,
+
+    /// Physical address the adapter claims on the bus, in `a.b.c.d` form —
+    /// the leading digit is the TV input the adapter is plugged into
+    /// (`1.0.0.0` = HDMI 1).
+    ///
+    /// USB CEC adapters advertise `CEC_CAP_PHYS_ADDR`: the kernel can't
+    /// derive their address from a DRM connector's EDID, so the backend
+    /// sets this before claiming a logical address — without it the
+    /// adapter never joins the bus. GPU DisplayPort-CEC advertises no such
+    /// cap (the kernel already assigned an address from the connector), so
+    /// the backend leaves it alone and this field is ignored.
+    #[serde(
+        default = "default_physical_address",
+        deserialize_with = "de_physical_address"
+    )]
+    pub physical_address: PhysicalAddress,
 }
 
 fn default_device() -> String {
     "/dev/cec0".to_string()
 }
 
+/// `1.0.0.0` (HDMI 1) — the common single-adapter wiring.
+fn default_physical_address() -> PhysicalAddress {
+    PhysicalAddress::from(0x1000)
+}
+
+/// Deserialize a physical address, treating an empty string (e.g. a
+/// cleared optional pairing-form field) as the default.
+fn de_physical_address<'de, D>(deserializer: D) -> Result<PhysicalAddress, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    if raw.is_empty() {
+        return Ok(default_physical_address());
+    }
+    PhysicalAddress::from_str(&raw).map_err(serde::de::Error::custom)
+}
+
 impl Default for CecVendorConfig {
     fn default() -> Self {
         Self {
             device: default_device(),
+            physical_address: default_physical_address(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_physical_address_is_hdmi1() {
+        let cfg = CecVendorConfig::default();
+        assert_eq!(cfg.physical_address, PhysicalAddress::from(0x1000));
+        assert_eq!(cfg.physical_address.to_string(), "1.0.0.0");
+    }
+
+    #[test]
+    fn physical_address_round_trips_through_toml() {
+        let cfg = CecVendorConfig {
+            device: "/dev/cec1".into(),
+            physical_address: PhysicalAddress::from(0x2000),
+        };
+        let value = toml::Value::try_from(&cfg).unwrap();
+        let back: CecVendorConfig = value.try_into().unwrap();
+        assert_eq!(back.device, "/dev/cec1");
+        assert_eq!(back.physical_address, PhysicalAddress::from(0x2000));
+    }
+
+    #[test]
+    fn absent_physical_address_uses_default() {
+        let cfg: CecVendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        assert_eq!(cfg.physical_address, PhysicalAddress::from(0x1000));
+    }
+
+    #[test]
+    fn empty_physical_address_uses_default() {
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nphysical_address = \"\"").unwrap();
+        assert_eq!(cfg.physical_address, PhysicalAddress::from(0x1000));
+    }
+
+    #[test]
+    fn parses_dotted_physical_address() {
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nphysical_address = \"2.0.0.0\"").unwrap();
+        assert_eq!(cfg.physical_address, PhysicalAddress::from(0x2000));
     }
 }

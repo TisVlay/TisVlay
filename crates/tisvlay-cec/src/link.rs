@@ -9,10 +9,10 @@
 //! always-reachable state machine rides the mock backend, not this seam.
 
 use async_trait::async_trait;
-use linux_cec::device::{AsyncDevice, MessageData};
+use linux_cec::device::{AsyncDevice, Capabilities as CecCapabilities, MessageData};
 use linux_cec::message::{Message, Opcode};
 use linux_cec::operand::PowerStatus;
-use linux_cec::{LogicalAddress, LogicalAddressType, PhysicalAddress, Timeout};
+use linux_cec::{InitiatorMode, LogicalAddress, LogicalAddressType, PhysicalAddress, Timeout};
 use tisvlay_core::{Capabilities, Error, Result};
 
 use crate::VENDOR_ID;
@@ -23,7 +23,11 @@ use crate::VENDOR_ID;
 /// fake that yields a scripted link with no hardware.
 #[async_trait]
 pub(crate) trait CecLinkOpener: Send + Sync + std::fmt::Debug {
-    async fn open(&self, device: &str) -> Result<Box<dyn CecLink>>;
+    async fn open(
+        &self,
+        device: &str,
+        physical_address: PhysicalAddress,
+    ) -> Result<Box<dyn CecLink>>;
 }
 
 /// A live handle to one CEC adapter, scoped to exactly the operations the
@@ -52,8 +56,14 @@ pub(crate) struct LinuxCecLinkOpener;
 
 #[async_trait]
 impl CecLinkOpener for LinuxCecLinkOpener {
-    async fn open(&self, device: &str) -> Result<Box<dyn CecLink>> {
-        Ok(Box::new(LinuxCecLink::open(device).await?))
+    async fn open(
+        &self,
+        device: &str,
+        physical_address: PhysicalAddress,
+    ) -> Result<Box<dyn CecLink>> {
+        Ok(Box::new(
+            LinuxCecLink::open(device, physical_address).await?,
+        ))
     }
 }
 
@@ -73,8 +83,28 @@ struct LinuxCecLink {
 }
 
 impl LinuxCecLink {
-    async fn open(device: &str) -> Result<Self> {
+    async fn open(device: &str, physical_address: PhysicalAddress) -> Result<Self> {
         let dev = AsyncDevice::open(device).await.map_err(map_cec_err)?;
+        // Enable transmit before configuring any addresses.
+        dev.set_initiator_mode(InitiatorMode::Enabled)
+            .await
+            .map_err(map_cec_err)?;
+        // A USB adapter advertises CEC_CAP_PHYS_ADDR: the kernel can't
+        // derive its physical address (there is no DRM connector to read an
+        // EDID from), so we set one — otherwise the logical-address claim
+        // below never takes effect on the bus. GPU DisplayPort-CEC lacks
+        // the cap (the kernel already assigned an address from the
+        // connector), so we leave that path untouched.
+        if dev
+            .get_capabilities()
+            .await
+            .map_err(map_cec_err)?
+            .contains(CecCapabilities::PHYS_ADDR)
+        {
+            dev.set_physical_address(physical_address)
+                .await
+                .map_err(map_cec_err)?;
+        }
         // Claim a Playback logical address so the adapter is allowed to
         // transmit on the bus.
         dev.set_logical_address(LogicalAddressType::Playback)
@@ -203,7 +233,11 @@ mod fake {
 
     #[async_trait]
     impl CecLinkOpener for FakeCecLinkOpener {
-        async fn open(&self, _device: &str) -> Result<Box<dyn CecLink>> {
+        async fn open(
+            &self,
+            _device: &str,
+            _physical_address: PhysicalAddress,
+        ) -> Result<Box<dyn CecLink>> {
             Ok(Box::new(FakeCecLink::new(self.initial)))
         }
     }
