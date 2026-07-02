@@ -233,7 +233,7 @@ impl TvConnector for CecConnector {
             },
             PairingField {
                 name: "emulate_screen_via_power".into(),
-                label: "Screen actions power the TV".into(),
+                label: "Screen is Power".into(),
                 helper: "Fulfil screen-blank actions by powering the TV. HDMI-CEC can't blank \
                          the panel while leaving the TV on, so with this on a screen-off action \
                          (e.g. the default idle/lock/DPMS profile) powers the TV off and \
