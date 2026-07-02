@@ -227,9 +227,11 @@ impl TvService {
             .to_dbus_tuple()
     }
 
-    /// Capabilities supported by this TV.
-    ///
-    /// Queried live from the backend (populated after connection).
+    /// Capabilities supported by this TV — the power/input/volume/… controls
+    /// the backend can drive. Stable across connect/disconnect: the
+    /// disconnected fallback reports the same per-TV control set (sans the
+    /// backend-only DISCOVERY bit), so the `invalidates` signal never fires
+    /// and cached clients don't drift.
     #[zbus(property(emits_changed_signal = "invalidates"))]
     async fn capabilities(&self) -> Vec<String> {
         self.manager

@@ -1937,10 +1937,21 @@ impl TvManager {
             let tv = tv_arc.lock().await;
             (tv.capabilities(), tv.config.vendor.clone())
         };
-        if !live.is_empty() {
-            return Some(live);
-        }
-        self.registry.get(&vendor).map(|b| b.backend.capabilities())
+        let caps = if live.is_empty() {
+            self.registry
+                .get(&vendor)
+                .map(|b| b.backend.capabilities())?
+        } else {
+            live
+        };
+        // DISCOVERY is a backend-level capability (enumerate devices), not a
+        // per-TV control, and a live connection never reports it — so the
+        // disconnected backend-caps fallback would otherwise make
+        // `Tv1.Capabilities` carry it only while disconnected. Strip it so
+        // the value is stable across connect/disconnect; the property is
+        // `emits_changed = "invalidates"` and nothing invalidates it on a
+        // connection change, so a drifting value would strand cached clients.
+        Some(caps.difference(Capabilities::DISCOVERY))
     }
 
     /// Get the TV's vendor-reported hardware identity, if known.

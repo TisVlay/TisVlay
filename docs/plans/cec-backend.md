@@ -172,12 +172,12 @@ Per [docs/plans/README.md](README.md): when this lands, fold the durable content
 
 > 10 finder angles (8 agents) + a gap sweep, cross-corroborated (each top item carried 2–8 independent votes). Findings cluster almost entirely in the push-subscription slice (`bb7db11`) — the newest, least hardware-exercised code. Tracked as a burn-down checklist; the "Cleared" list records what the review validated so it isn't re-litigated.
 
-> **Burn-down status:** ✅ fixed — #1, #3, #4, #5, #8, #10, #11, #14 (commits `52cf3d3`, `d363452`). Accepted as-is (rationale below) — #6, #7, #12. Open — #2 (design call), #9, #13, #15.
+> **Burn-down status:** all 15 resolved. Fixed in code — #1, #2, #3, #4, #5, #8, #9, #10, #11, #14 (commits `52cf3d3`, `d363452`, `9228bd3`, + the #9/#2 follow-ups). Accepted as-is with rationale — #6, #7, #12, #13. #15 partially fixed (the #10 overlap); the low-value remainder deferred.
 
 ### High — fix before merge
 
 - [x] **1. A single transient CEC rx error permanently kills the push subscription.** [link.rs `LinuxCecMonitor::recv`] maps only `Error::Timeout`→`Ok(None)`; any other error (garbled/aborted frame, momentary `EBUSY`) returns `Err`, and the monitor loop's `Err(_) => break` ends the task for good — nothing re-subscribes a still-connected TV. Compounded: `has_push_subscription` is never reset, so a later `power_off` skips the explicit disconnect emit (`!has_push_subscription` is false) with no task left to emit → `Connected` can stick `true`. Fix: treat transient rx errors as `Ok(None)` (keep looping); only `break` on `Disconnected`.
-- [ ] **2. A CEC TV powered off by its own remote stays `Connected=true`, so the GUI/tray offer no power-on affordance.** [state_forwarder.rs] forces `connected=true` on every pushed snapshot, so the monitor's `<Standby>` push pins it; the power button keys on `Connected`. Deeper altitude issue: for a reachable-in-standby transport `Connected ≠ powered-on`. Fix (design call): key the power-on affordance on power-state, or self-disconnect the CEC connection on `<Standby>`.
+- [x] **2. A CEC TV powered off by its own remote stays `Connected=true`, so the GUI/tray offer no power-on affordance.** [state_forwarder.rs] forces `connected=true` on every pushed snapshot, so the monitor's `<Standby>` push pins it; the power button keys on `Connected`. Deeper altitude issue: for a reachable-in-standby transport `Connected ≠ powered-on`. Fix (design call): key the power-on affordance on power-state, or self-disconnect the CEC connection on `<Standby>`.
 
 ### Medium — robustness
 
@@ -190,16 +190,16 @@ Per [docs/plans/README.md](README.md): when this lands, fold the durable content
 ### Medium-low
 
 - [x] **8. `subscribe_state` is not idempotent.** [connection.rs] Overwrites `monitor_task` without aborting the prior one; a second call leaks a monitor (fd + worker). Safe only by an external invariant — add a one-line `.take()/.abort()` guard.
-- [ ] **9. `Capabilities` change is never signaled.** [dbus/tv.rs:233] The property is `emits_changed = "invalidates"` but nothing invalidates it; the new connected-vs-static caps (DISCOVERY bit differs) never reach cached clients (GUI/tray via `GetManagedObjects`).
+- [x] **9. `Capabilities` change is never signaled.** [dbus/tv.rs:233] The property is `emits_changed = "invalidates"` but nothing invalidates it; the new connected-vs-static caps (DISCOVERY bit differs) never reach cached clients (GUI/tray via `GetManagedObjects`).
 - [x] **10. `de_physical_address` rejects integer TOML values.** [config.rs] `String::deserialize` errors on a numeric `physical_address` that linux-cec's own `Deserialize` (visit_u64) accepts; a numeric `Tv1.UpdateConfig` payload fails to parse.
 - [x] **11. `/dev/cecN` sorted lexicographically, not numerically.** [discovery.rs] `cec10` sorts before `cec2`; the test masks it (cec0/cec1/cec10 — `cec1` is a prefix of `cec10`).
 - [x] **12. `connect()` power probe has no retry.** [connector.rs] A single `query_power`; a momentarily-slow on-TV is refused into the wake path (re-sends Image View On to an already-on TV), against the "CEC is patient" stance used elsewhere. — *Accepted:* a retry would exceed the daemon's 2 s direct-connect probe cap, and the wake path already self-heals (Image View On to an on TV is a no-op).
-- [ ] **13. CEC power-off disconnect is untested at the daemon level.** [profile_dispatch.rs] The regression test uses a poll-only *mock*, not the CEC push path (`Drop`→abort→subscription-end); a `CecConnection::Drop` or `run_subscription_task` change could silently break it.
+- [x] **13. CEC power-off disconnect is untested at the daemon level.** [profile_dispatch.rs] The regression test uses a poll-only *mock*, not the CEC push path (`Drop`→abort→subscription-end); a `CecConnection::Drop` or `run_subscription_task` change could silently break it. — *Accepted:* the mechanism is covered by the *combination* of `dropping_connection_ends_the_subscription` (tisvlay-cec: Drop → channel close) and `shutdown_clears_connected_property_on_dbus` (daemon: push-backend channel-close → `ConnectionChanged(false)`). A full CEC-in-harness end-to-end test would need a `/dev/cecN` (or a fake wired through the backend registry) the harness doesn't have — not worth the infra.
 
 ### Low — doc/cleanup
 
 - [x] **14. `tv_manager.rs:2434` comment/gate mislabels CEC as poll-only** (loudest signal — 8 finders). CEC is push (`has_push_subscription=true`), so that explicit-emit branch never runs for it; the comment and the companion `profile_dispatch.rs` test both wrongly name "CEC". Correct-by-luck, but actively misleading.
-- [ ] **15. Cleanup cluster.** Per-push full-`TvState` re-clone including `default_inputs()` allocations (send a power-only delta); `parse_config`+`open` copy-pasted across 4 call sites; custom `de_physical_address` duplicates the library `Deserialize`; `FakeCecLinkOpener` monitor script is take-once (a resubscribe test would pass vacuously).
+- [x] **15. Cleanup cluster.** Per-push full-`TvState` re-clone including `default_inputs()` allocations (send a power-only delta); `parse_config`+`open` copy-pasted across 4 call sites; custom `de_physical_address` duplicates the library `Deserialize`; `FakeCecLinkOpener` monitor script is take-once (a resubscribe test would pass vacuously). — *Partial:* the deserializer no longer merely duplicates the library (#10 gave it the empty-string + integer handling the library lacks). The remainder (per-push delta, `open` DRY, fake take-once) is low-value cleanup on human-paced push volume + test-only infra — deferred rather than churn the code further.
 
 ### Cleared (validated — not defects)
 
