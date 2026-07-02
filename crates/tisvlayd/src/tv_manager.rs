@@ -2461,14 +2461,18 @@ impl TvManager {
             // later re-assert it. `screen_on` / `screen_off` re-establish it.
             tv.desired_screen = None;
             if result.is_ok() && self.registry.reachable_in_standby(&tv.config) {
-                // The TV accepted Standby and won't re-broadcast it for the
-                // monitor to catch, so snapshot the new state ourselves to
-                // push the power change (Power → standby) to clients.
-                let snapshot = match tv.connection.as_mut() {
-                    Some(conn) => conn.get_state().await.ok(),
-                    None => None,
-                };
-                (snapshot, false)
+                // Keep the connection (the bus stays reachable in standby) and
+                // mark powered_off so a later power_on skips the probe and
+                // wakes. The TV accepted <Standby> and won't re-broadcast it
+                // for the monitor to catch, so push the power change ourselves
+                // — *synthesized*, not queried: a get_state here would be a bus
+                // round-trip held under this per-TV lock (and could fail,
+                // stranding a stale "on"). Empty `inputs` is merged away by the
+                // forwarder, so the cached input list is preserved.
+                tv.powered_off = true;
+                let mut snapshot = TvState::new();
+                snapshot.update_power(PowerState::Standby);
+                (Some(snapshot), false)
             } else {
                 tv.connection = None;
                 // Only mark powered-off on success — a failed command may have

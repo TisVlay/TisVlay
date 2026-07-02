@@ -206,3 +206,22 @@ Per [docs/plans/README.md](README.md): when this lands, fold the durable content
 ### Cleared (validated — not defects)
 
 GUI/tray/CLI capability gating (interfaces registered unconditionally, setters handle `NotSupported` gracefully — no UnknownMethod risk); merge-vs-replace snapshot safety (`update_tv_cached_state` guards optional fields, CEC always populates power/inputs); all `CecConnection::new` call sites updated; `switch_input`/`SetStreamPath` target-address math; NixOS `pulse8-cec.nix`/`module.nix` udev/DeviceAllow/inputattach wiring; `parse_hdmi_input` `n << 12` overflow (range-guarded 1..=15 → max `0xF000`); no panics/unwraps in production CEC code; no CLAUDE.md violations (i18n, spelling, plan-refs).
+
+## Post-decouple review (`/code-review max --fix`, 2026-07-02)
+
+> Second pass over the diff introduced by the reachable-in-standby decouple (`d4ee1fb` + `9cd2139`) — the design call that closed burn-down items #2 (power ≠ connected) and #6 (initial-push seed). All findings applied with `--fix`; regression tests added where the mechanism was newly reachable.
+
+### Fixed
+
+- [x] **A monitor-side disconnect never reached `is_connected()`.** [connection.rs] `CecConnection.connected` was a plain `bool` owned by the connection, so when the subscription task hit `ConnectionClosed` (or exhausted its error budget) nothing flipped the flag — a CEC TV whose adapter was unplugged mid-session read `Connected` forever. Fixed: `connected` is now an `Arc<AtomicBool>` shared into the monitor task, which stores `false` on `ConnectionClosed` or max consecutive errors before breaking. Regression test `monitor_disconnect_flips_is_connected` (+ a `FakeCecLinkOpener::with_monitor_disconnect` fake mode).
+- [x] **Error-backoff spin.** [connection.rs] `consecutive_errors` reset on `Ok(None)` as well as `Ok(Some)`, so the idle-yielding monitor (which returns `Ok(None)` every tick) reset its own counter and could never reach the max-error break. Now only `Ok(Some)` (real bus traffic) resets it.
+- [x] **`power_off` held the per-TV lock across an untimed `get_state()` and left the cache in limbo on error.** [tv_manager.rs] The reachable-in-standby branch round-tripped the bus under the lock to read the post-off state. Now it synthesizes a `Standby` snapshot (no lock-held await, no limbo) and sets `powered_off = true` in that branch.
+- [x] **Mock fidelity + a stronger daemon assertion.** [mock/connection.rs, profile_dispatch.rs] The mock's `power_off` now keeps `connected` when `reachable_in_standby` (matching real CEC), and the daemon test asserts the *live* `is_connected()`, not merely the cached D-Bus property.
+- [x] **Stale "connect refuses standby" comments.** [connector.rs] Module doc + the subscribe seed comment corrected to the reachable-in-standby model.
+- [x] **Harness mock-builder duplication.** [daemon.rs] `disable_subscription` and `reachable_in_standby` folded into a single `MockVendorFlags` struct so the vendor-table assembly lives in one place.
+
+### Skipped (noted)
+
+- `traits.rs` default `reachable_in_standby(_vendor_config)` unused param — intentional, mirrors `supports_wake`'s signature for future per-config backends.
+- `power_on`'s multiple power-state round-trips — a real restructure of the connect/verify path, outside this diff's intent.
+- `parse_and_open` extraction / connector tuple→enum clarity — low-value polish, deferred (as with #15).

@@ -2,10 +2,11 @@
 //!
 //! The connector owns a [`CecLinkOpener`] so tests can swap a real
 //! `/dev/cecN` open for a scripted fake. Its defining quirk vs. a network
-//! backend: the bus reaches the TV even in standby, so `connect` must
-//! probe power and *refuse* when the TV is asleep — that is what routes
-//! the daemon's `power_on` into the wake path instead of a no-op direct
-//! connect.
+//! backend: the bus reaches the TV even in standby, so `connect` probes
+//! power only to confirm the TV answers on the bus but *accepts* a standby
+//! TV (`reachable_in_standby` — Connected ≠ power). The daemon's `power_on`
+//! then routes to the wake path by the reported power state, not by whether
+//! connect succeeds.
 
 use std::sync::Arc;
 use std::time::Duration;

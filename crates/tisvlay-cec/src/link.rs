@@ -311,6 +311,9 @@ mod fake {
         /// `open_monitor` hands to its [`FakeCecMonitor`], for
         /// `subscribe_state` tests. `take`-n once.
         monitor_script: Mutex<Option<VecDeque<(LogicalAddress, Message)>>>,
+        /// When set, the monitor's `recv` returns `ConnectionClosed` once
+        /// its script drains — models a real adapter disconnect.
+        monitor_fails: bool,
     }
 
     impl FakeCecLinkOpener {
@@ -319,6 +322,7 @@ mod fake {
                 initial,
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(None),
+                monitor_fails: false,
             }
         }
 
@@ -329,6 +333,7 @@ mod fake {
                 initial: PowerStatus::Standby,
                 ignore_wakes: ignored,
                 monitor_script: Mutex::new(None),
+                monitor_fails: false,
             }
         }
 
@@ -351,6 +356,19 @@ mod fake {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(Some(script.into())),
+                monitor_fails: false,
+            }
+        }
+
+        /// Opener whose monitor `recv` returns `ConnectionClosed` — models a
+        /// real adapter disconnect, so tests can assert the monitor flips
+        /// `is_connected()`.
+        pub(crate) fn with_monitor_disconnect() -> Self {
+            Self {
+                initial: PowerStatus::On,
+                ignore_wakes: 0,
+                monitor_script: Mutex::new(None),
+                monitor_fails: true,
             }
         }
     }
@@ -372,16 +390,19 @@ mod fake {
             let script = self.monitor_script.lock().take().unwrap_or_default();
             Ok(Box::new(FakeCecMonitor {
                 script: Mutex::new(script),
+                fails: self.monitor_fails,
             }))
         }
     }
 
     /// Replays a fixed script of inbound (initiator, message) pairs, then
     /// idles (yielding so the subscription task can notice its consumer
-    /// went away).
+    /// went away) — or, when `fails`, returns `ConnectionClosed` once the
+    /// script drains, modeling an adapter disconnect.
     #[derive(Debug)]
     pub(crate) struct FakeCecMonitor {
         script: Mutex<VecDeque<(LogicalAddress, Message)>>,
+        fails: bool,
     }
 
     #[async_trait]
@@ -390,6 +411,7 @@ mod fake {
             let next = self.script.lock().pop_front();
             match next {
                 Some(pair) => Ok(Some(pair)),
+                None if self.fails => Err(Error::ConnectionClosed),
                 None => {
                     tokio::task::yield_now().await;
                     Ok(None)

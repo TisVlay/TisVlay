@@ -80,7 +80,7 @@ pub fn mock_config_with_tvs(tv_ids: &[&str]) -> SystemConfig {
 }
 
 fn build_mock_tv(tv_id: &str, managed: bool, primary_input: Option<&str>) -> TvConfig {
-    build_mock_tv_inner(tv_id, managed, primary_input, false)
+    build_mock_tv_inner(tv_id, managed, primary_input, MockVendorFlags::default())
 }
 
 /// Build a `SystemConfig` with one managed, poll-only mock TV.
@@ -96,9 +96,15 @@ pub fn mock_tv_config_poll_only(
     primary_input: Option<&str>,
 ) -> SystemConfig {
     let mut config = SystemConfig::default();
-    config
-        .tv
-        .push(build_mock_tv_inner(tv_id, managed, primary_input, true));
+    config.tv.push(build_mock_tv_inner(
+        tv_id,
+        managed,
+        primary_input,
+        MockVendorFlags {
+            disable_subscription: true,
+            ..Default::default()
+        },
+    ));
     config
 }
 
@@ -107,30 +113,34 @@ pub fn mock_tv_config_poll_only(
 /// the daemon keeps the connection — and `Connected` — across a power-off,
 /// treating power and connection as separate axes.
 pub fn mock_tv_config_reachable_in_standby(tv_id: &str, managed: bool) -> SystemConfig {
-    let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", managed);
-    let mut vendor_table = HashMap::new();
-    vendor_table.insert(
-        "address".to_string(),
-        toml::Value::String(format!("mock://{}", tv_id)),
-    );
-    vendor_table.insert(
-        "reachable_in_standby".to_string(),
-        toml::Value::Boolean(true),
-    );
-    tv.vendor_config.insert(
-        "mock".to_string(),
-        toml::Value::Table(vendor_table.into_iter().collect()),
-    );
     let mut config = SystemConfig::default();
-    config.tv.push(tv);
+    config.tv.push(build_mock_tv_inner(
+        tv_id,
+        managed,
+        None,
+        MockVendorFlags {
+            reachable_in_standby: true,
+            ..Default::default()
+        },
+    ));
     config
+}
+
+/// Optional vendor-config knobs the mock backend reads. Each maps to a
+/// boolean in the `[tv.mock]` table; omitted keys default off.
+#[derive(Debug, Default, Clone, Copy)]
+struct MockVendorFlags {
+    /// `subscribe_state` returns `NotSupported` — models a poll-only backend.
+    disable_subscription: bool,
+    /// Backend reports `reachable_in_standby` — bus stays live in standby.
+    reachable_in_standby: bool,
 }
 
 fn build_mock_tv_inner(
     tv_id: &str,
     managed: bool,
     primary_input: Option<&str>,
-    disable_subscription: bool,
+    flags: MockVendorFlags,
 ) -> TvConfig {
     let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", managed);
     if let Some(input) = primary_input {
@@ -141,9 +151,15 @@ fn build_mock_tv_inner(
         "address".to_string(),
         toml::Value::String(format!("mock://{}", tv_id)),
     );
-    if disable_subscription {
+    if flags.disable_subscription {
         vendor_table.insert(
             "disable_subscription".to_string(),
+            toml::Value::Boolean(true),
+        );
+    }
+    if flags.reachable_in_standby {
+        vendor_table.insert(
+            "reachable_in_standby".to_string(),
             toml::Value::Boolean(true),
         );
     }

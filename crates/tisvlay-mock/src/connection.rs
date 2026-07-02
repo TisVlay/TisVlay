@@ -52,6 +52,10 @@ pub struct MockConnection {
     /// `NotSupported`, modeling a poll-only backend. Sourced from
     /// [`MockVendorConfig::disable_subscription`].
     disable_subscription: bool,
+    /// When `true`, `power_off` keeps `connected = true` — modeling a
+    /// CEC-style bus that stays reachable in standby (Power ≠ Connected).
+    /// Sourced from [`MockVendorConfig::reachable_in_standby`].
+    reachable_in_standby: bool,
 }
 
 impl MockConnection {
@@ -115,6 +119,7 @@ impl MockConnection {
                 config.backlight_ramp_step_delay_ms,
             ),
             disable_subscription: config.disable_subscription,
+            reachable_in_standby: config.reachable_in_standby,
         }
     }
 
@@ -199,8 +204,12 @@ impl TvConnection for MockConnection {
         self.mutate_and_push(|s| {
             s.update_power(PowerState::Standby);
         });
-        // Real backends close the transport after power_off; mirror that.
-        self.connected = false;
+        // Network backends close the transport after power_off; a
+        // reachable-in-standby (CEC-style) bus stays live — mirror the
+        // backend the config asks us to model, matching CecConnection.
+        if !self.reachable_in_standby {
+            self.connected = false;
+        }
         Ok(())
     }
 

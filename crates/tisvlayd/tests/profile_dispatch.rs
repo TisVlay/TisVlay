@@ -257,7 +257,13 @@ async fn power_off_keeps_connection_for_reachable_in_standby_tv() {
     let tvs = client.list_tvs().await.expect("list_tvs after power_off");
     assert!(
         tvs[0].connected,
-        "a reachable-in-standby TV stays Connected after power_off",
+        "a reachable-in-standby TV stays Connected after power_off (D-Bus)",
+    );
+    // ...and the live connection is genuinely kept (not just the cached
+    // property), matching CecConnection which no longer clears connected.
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "the underlying connection is kept, not merely the cached property",
     );
     assert!(
         !power_state_str_is_on(&tvs[0].power_state),

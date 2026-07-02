@@ -6,6 +6,7 @@
 //! stays at the trait's `NotSupported` default.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -27,7 +28,13 @@ const MONITOR_ERROR_BACKOFF: Duration = Duration::from_millis(500);
 #[derive(Debug)]
 pub struct CecConnection {
     link: Box<dyn CecLink>,
-    connected: bool,
+    /// Shared with the `subscribe_state` monitor task so it can flip us to
+    /// disconnected when its receive loop hits a real adapter disconnect —
+    /// otherwise `is_connected()` (a static field the monitor can't reach)
+    /// would stay `true` through an unplug and the daemon's subscription-end
+    /// gate would suppress the `ConnectionChanged(false)`. `power_off` does
+    /// NOT clear it: the CEC bus stays reachable in standby.
+    connected: Arc<AtomicBool>,
     /// Retained so `subscribe_state` can open a second, follower-mode
     /// handle on the same device for the push-state receive loop.
     opener: Arc<dyn CecLinkOpener>,
@@ -48,7 +55,7 @@ impl CecConnection {
     ) -> Self {
         Self {
             link,
-            connected: true,
+            connected: Arc::new(AtomicBool::new(true)),
             opener,
             device,
             monitor_task: None,
@@ -127,7 +134,7 @@ impl TvConnection for CecConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.connected
+        self.connected.load(Ordering::SeqCst)
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
@@ -150,9 +157,10 @@ impl TvConnection for CecConnection {
         // CEC follower fd only receives future broadcasts, unlike an SSAP
         // subscription that replays the current value — so without an
         // explicit initial push the daemon has no CEC power state until the
-        // TV happens to broadcast, and a freshly-connected, powered-on TV
-        // reads stale standby. `connect` refuses a standby TV, so this
-        // resolves to On/ToOn (falling back to Active if the query blips).
+        // TV happens to broadcast, and a freshly-connected TV reads stale
+        // standby. `connect` accepts a standby TV, so this reads the live
+        // power (On / Standby / ToOn); the Active fallback applies only if
+        // the query blips.
         let initial = self
             .link
             .query_power()
@@ -165,6 +173,10 @@ impl TvConnection for CecConnection {
         // transmits on.
         let monitor = self.opener.open_monitor(&self.device).await?;
         let (tx, rx) = mpsc::unbounded_channel();
+        // Shared with the task so a monitor-detected disconnect flips
+        // `is_connected()`; otherwise the daemon's subscription-end gate
+        // (which reads `is_connected()`) suppresses `ConnectionChanged`.
+        let connected = Arc::clone(&self.connected);
         let task = tokio::spawn(async move {
             // Running snapshot re-pushed on every power-relevant change. The
             // best-effort input set rides along; the daemon merges partial
@@ -179,6 +191,12 @@ impl TvConnection for CecConnection {
             if tx.send(state.clone()).is_err() {
                 return;
             }
+            // Consecutive rx errors *not separated by a received message*.
+            // Only a real message (Ok(Some)) proves the adapter is healthy
+            // and resets the count — an idle timeout (Ok(None)) neither
+            // confirms health nor is an error, so it must NOT reset, or an
+            // adapter that alternates error/timeout would never trip the
+            // give-up threshold.
             let mut consecutive_errors = 0u32;
             loop {
                 match monitor.recv().await {
@@ -196,24 +214,28 @@ impl TvConnection for CecConnection {
                             }
                         }
                     }
-                    // Idle beat: stop once the consumer is gone.
+                    // Idle beat: stop once the consumer is gone. Does NOT
+                    // reset consecutive_errors (see the counter comment).
                     Ok(None) => {
-                        consecutive_errors = 0;
                         if tx.is_closed() {
                             break;
                         }
                     }
                     Err(e) => {
-                        // A real disconnect ends the stream promptly (drives
-                        // the daemon's subscription-end ConnectionChanged); a
-                        // transient rx error (garbled frame, momentary EBUSY)
-                        // backs off and retries rather than killing the
-                        // subscription for the life of the connection.
+                        // A real disconnect — or a sustained error burst on a
+                        // wedged adapter — ends the stream AND marks the
+                        // connection disconnected, so `is_connected()` flips
+                        // and the daemon's subscription-end path emits
+                        // `ConnectionChanged(false)`. A lone transient error
+                        // (garbled frame, momentary EBUSY) backs off and
+                        // retries rather than killing the subscription.
                         if matches!(e, Error::ConnectionClosed) {
+                            connected.store(false, Ordering::SeqCst);
                             break;
                         }
                         consecutive_errors += 1;
                         if consecutive_errors >= MONITOR_MAX_ERRORS {
+                            connected.store(false, Ordering::SeqCst);
                             break;
                         }
                         tokio::time::sleep(MONITOR_ERROR_BACKOFF).await;
@@ -229,7 +251,7 @@ impl TvConnection for CecConnection {
         // Mark the handle closed; the worker thread is torn down when the
         // boxed link drops with this connection. `close` itself stays
         // non-blocking so the daemon's per-TV lock isn't held on a join.
-        self.connected = false;
+        self.connected.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -388,6 +410,34 @@ mod tests {
         assert!(
             got.is_err(),
             "a non-TV initiator must be filtered (no further push)"
+        );
+    }
+
+    #[tokio::test]
+    async fn monitor_disconnect_flips_is_connected() {
+        // A monitor `recv` that returns `ConnectionClosed` (adapter unplugged
+        // mid-subscription) must flip the shared connected flag, so the
+        // daemon's subscription-end path can report the TV disconnected —
+        // `is_connected()` can't stay a static `true`.
+        let opener = Arc::new(FakeCecLinkOpener::with_monitor_disconnect());
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::On)),
+            opener,
+            "/dev/cec0".to_string(),
+        );
+        assert!(conn.is_connected(), "starts connected");
+        let _rx = conn.subscribe_state().await.expect("subscribe");
+        // The monitor hits ConnectionClosed on its first recv and flips the
+        // flag; poll (bounded) until the detached task lands the store.
+        for _ in 0..50 {
+            if !conn.is_connected() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !conn.is_connected(),
+            "a monitor disconnect flips is_connected() to false",
         );
     }
 
