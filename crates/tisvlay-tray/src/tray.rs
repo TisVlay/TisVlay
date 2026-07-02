@@ -415,7 +415,10 @@ fn build_tv_submenu(
     tv: &CachedTvState,
     cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
 ) -> MenuItem<TisvlayTray> {
-    let submenu = if tv.connected {
+    // Key on powered-on, not merely connected: a CEC TV reachable in
+    // standby is connected-but-off and must offer "Power On (Wake)", not
+    // "Power Off".
+    let submenu = if tv.connected && tv.is_on {
         build_connected_tv_menu(tv, cmd_tx)
     } else {
         build_disconnected_tv_menu(tv, cmd_tx)

@@ -40,6 +40,11 @@ export struct TvViewModel {
     primary-descriptor: string,
     connected: bool,
     power-state: string,
+    /// Whether the TV is powered on (connected *and* not in a standby /
+    /// off / cooling-down state). The power button keys its label and
+    /// action on this rather than `connected`, because a CEC TV stays
+    /// reachable in standby — `connected` there does not mean "on".
+    is-on: bool,
     /// Whether the vendor backend can wake the TV from standby
     /// (LG: has a MAC). The Power-on button is disabled when both
     /// `connected == false` AND `supports-wake == false` — that's
@@ -633,13 +638,16 @@ component TvDetail inherits Rectangle {
                             root.tv.connected || root.tv.supports-wake;
 
                         Button {
-                            text: root.tv.connected ? @tr("Power off") : @tr("Power on");
+                            // Keyed on `is-on`, not `connected`: a CEC TV
+                            // reachable in standby is connected-but-off, and
+                            // must still offer "Power on".
+                            text: root.tv.is-on ? @tr("Power off") : @tr("Power on");
                             icon: Icons.shutdown;
                             colorize-icon: true;
-                            primary: !root.tv.connected;
+                            primary: !root.tv.is-on;
                             enabled: !power-row.power-cycle-in-flight && power-row.can-power-on;
                             clicked => {
-                                if (root.tv.connected) {
+                                if (root.tv.is-on) {
                                     Daemon.power-off(root.tv.uuid);
                                 } else {
                                     Daemon.power-on(root.tv.uuid);

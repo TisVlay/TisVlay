@@ -32,6 +32,7 @@ fn push_tvs(app: &AppWindow, snapshot: StateSnapshot) {
             primary_descriptor: raw.primary_descriptor,
             connected: raw.connected,
             power_state: raw.power_state,
+            is_on: raw.is_on,
             supports_wake: raw.supports_wake,
             has_screen: raw.has_screen,
             has_volume: raw.has_volume,

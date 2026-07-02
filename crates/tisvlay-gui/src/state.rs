@@ -18,8 +18,8 @@ use gettextrs::gettext;
 use slint::SharedString;
 use tisvlay_core::{
     Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
-    SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, references_of,
-    user_references_of,
+    SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, power_state_str_is_on,
+    references_of, user_references_of,
 };
 use tracing::debug;
 use uuid::Uuid;
@@ -38,6 +38,10 @@ pub struct TvViewRaw {
     pub primary_descriptor: SharedString,
     pub connected: bool,
     pub power_state: SharedString,
+    /// Connected *and* powered on (via `power_state_str_is_on`). The power
+    /// button keys on this rather than `connected` so a connected-in-standby
+    /// CEC TV still offers "Power on".
+    pub is_on: bool,
     pub supports_wake: bool,
     /// Per-capability flags from `Tv1.Capabilities` (mirrors
     /// [`TvInfo::capabilities`]), used to hide controls a backend can't
@@ -271,6 +275,7 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
             power_state: SharedString::from(tv.power_state.as_str()),
+            is_on: tv.connected && power_state_str_is_on(&tv.power_state),
             supports_wake: tv.supports_wake,
             has_screen: tv.capabilities.contains(Capabilities::SCREEN),
             has_volume: tv.capabilities.contains(Capabilities::VOLUME),
@@ -623,6 +628,24 @@ mod tests {
     }
 
     #[test]
+    fn connected_but_standby_is_not_on() {
+        // A CEC TV stays reachable in standby: connected, but off. The
+        // power button keys on `is_on`, so this must be false to offer
+        // "Power on" rather than a stuck "Power off".
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000009", "CEC TV");
+        tv.connected = true;
+        tv.power_state = "standby".into();
+
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        let row = &snap.tvs[0];
+        assert!(row.connected, "still connected on the bus");
+        assert!(!row.is_on, "standby is not on");
+    }
+
+    #[test]
     fn single_tv_round_trips_through_conversion() {
         let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "Living Room");
         tv.connected = true;
@@ -655,6 +678,7 @@ mod tests {
         assert_eq!(row.name.as_str(), "Living Room");
         assert!(row.connected);
         assert_eq!(row.power_state.as_str(), "active");
+        assert!(row.is_on, "connected + active is on");
         assert_eq!(row.volume, 42);
         assert_eq!(row.backlight, 80);
         assert!(row.muted);
