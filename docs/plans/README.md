@@ -24,6 +24,10 @@ Working space for in-progress plan docs — anything substantial enough that a m
 >   opt-out CEC config (`emulate_screen_via_power`, default on) that
 >   fulfils screen-blank profile actions by powering the TV, so the
 >   shipped default profiles behave consistently on a CEC-only setup.
+> - [`cec-info-enrichment.md`](cec-info-enrichment.md) — live CEC device
+>   identity (OSD name, vendor, CEC version) in the TVs-pane INFO group,
+>   an OUI→name map, VendorTile branding by resolved vendor, and
+>   pair-time friendly-name autofill from the OSD name.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
