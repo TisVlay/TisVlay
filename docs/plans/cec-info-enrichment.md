@@ -51,10 +51,10 @@ In `build_config_from_pairing`, prefill the friendly-name field from the OSD nam
 
 Plus tests (CEC unit: query round-trips, OUI resolution incl. unknown; daemon: identity flows to `VendorInfo` live and refreshes on reconnect to a different mock identity) and docs ([docs/cec/protocol.md](../cec/protocol.md) INFO/identity section; CLAUDE.md).
 
-## Open questions / decisions
+## Decisions
 
-- **Identity typing.** A typed `DeviceIdentity` (optional fields) on `TvState` beats a loose `Vec<(String,String)>` because the VendorTile needs the canonical vendor id *separately* from the display rows. Wire cost is a few extra fields on the state property.
-- **Brand surface.** Prefer a small dedicated signal (e.g. a `brand`/`device_vendor` the GUI reads) over parsing a `VendorInfo` display row for the tile.
+- **Identity typing — typed `DeviceIdentity`** (approved). A typed struct with optional fields (`osd_name`, `vendor` = raw OUI + resolved name + canonical id, `cec_version`) on `TvState`, not a loose `Vec<(String,String)>` — the VendorTile needs the canonical vendor id *separately* from the display rows, and typing keeps the merge/serialize surface explicit. The daemon derives the `VendorInfo` display rows from it.
+- **Brand surface — small dedicated signal** (approved). Expose the resolved canonical vendor for the tile as its own field the GUI reads (`TvView.brand-vendor`, backed by a daemon-side value), rather than reverse-parsing a `VendorInfo` display row.
 - **Query reliability.** Best-effort: a failed/absent query yields no row (elided) and no brand (tile falls back to `CE`). The C3 answered these *in Standby*, so pair-time and on-connect capture both work regardless of power.
 
 ## Migration on merge
