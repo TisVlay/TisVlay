@@ -20,6 +20,10 @@ Working space for in-progress plan docs — anything substantial enough that a m
 >   `linux-cec` library; v1 scope is power + active-source input,
 >   built software-first against a fakeable seam since no real
 >   CEC link exists on the dev box yet.
+> - [`cec-screen-via-power.md`](cec-screen-via-power.md) — a per-device
+>   opt-out CEC config (`emulate_screen_via_power`, default on) that
+>   fulfils screen-blank profile actions by powering the TV, so the
+>   shipped default profiles behave consistently on a CEC-only setup.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
