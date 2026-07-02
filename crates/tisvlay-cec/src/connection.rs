@@ -6,15 +6,22 @@
 //! stays at the trait's `NotSupported` default.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use linux_cec::PhysicalAddress;
 use linux_cec::message::Message;
 use linux_cec::operand::PowerStatus;
+use linux_cec::{LogicalAddress, PhysicalAddress};
 use tisvlay_core::{Capabilities, Error, InputInfo, PowerState, Result, TvConnection, TvState};
 use tokio::sync::mpsc;
 
 use crate::link::{CecLink, CecLinkOpener};
+
+/// A transient monitor rx error backs off this long before retrying; the
+/// loop gives up only after this many *consecutive* errors — separating a
+/// momentary bus glitch (recover) from a wedged adapter (stop).
+const MONITOR_MAX_ERRORS: u32 = 5;
+const MONITOR_ERROR_BACKOFF: Duration = Duration::from_millis(500);
 
 /// A live CEC control handle for one TV.
 #[derive(Debug)]
@@ -134,6 +141,11 @@ impl TvConnection for CecConnection {
     }
 
     async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
+        // Idempotency: abort any prior monitor before installing a new one,
+        // so a re-subscribe never orphans a follower fd + its worker thread.
+        if let Some(prev) = self.monitor_task.take() {
+            prev.abort();
+        }
         // Open a second, follower-mode handle on the same device (see
         // `CecMonitor`): its blocking receive loop lives on a distinct fd,
         // so it can't starve the single-threaded worker the tx handle
@@ -149,10 +161,17 @@ impl TvConnection for CecConnection {
             let mut state = TvState::new();
             state.update_power(PowerState::Active);
             state.inputs = default_inputs();
+            let mut consecutive_errors = 0u32;
             loop {
                 match monitor.recv().await {
-                    Ok(Some(message)) => {
-                        if let Some(power) = power_from_message(&message) {
+                    Ok(Some((initiator, message))) => {
+                        consecutive_errors = 0;
+                        // Only the TV's own broadcasts define its power —
+                        // ignore the adapter's looped-back wake / Active
+                        // Source frames and unrelated sources on the bus.
+                        if initiator == LogicalAddress::Tv
+                            && let Some(power) = power_from_message(&message)
+                        {
                             state.update_power(power);
                             if tx.send(state.clone()).is_err() {
                                 break; // daemon dropped the subscription
@@ -161,13 +180,26 @@ impl TvConnection for CecConnection {
                     }
                     // Idle beat: stop once the consumer is gone.
                     Ok(None) => {
+                        consecutive_errors = 0;
                         if tx.is_closed() {
                             break;
                         }
                     }
-                    // Adapter went away — end the stream; the daemon's
-                    // subscription-end path emits ConnectionChanged.
-                    Err(_) => break,
+                    Err(e) => {
+                        // A real disconnect ends the stream promptly (drives
+                        // the daemon's subscription-end ConnectionChanged); a
+                        // transient rx error (garbled frame, momentary EBUSY)
+                        // backs off and retries rather than killing the
+                        // subscription for the life of the connection.
+                        if matches!(e, Error::ConnectionClosed) {
+                            break;
+                        }
+                        consecutive_errors += 1;
+                        if consecutive_errors >= MONITOR_MAX_ERRORS {
+                            break;
+                        }
+                        tokio::time::sleep(MONITOR_ERROR_BACKOFF).await;
+                    }
                 }
             }
         });
@@ -298,6 +330,25 @@ mod tests {
             rx.recv().await.is_none(),
             "state channel closes once the connection drops",
         );
+    }
+
+    #[tokio::test]
+    async fn subscribe_state_ignores_non_tv_initiators() {
+        // A <Standby> that did not originate from the TV — the adapter's own
+        // looped-back frame, or an unrelated bus device — must not flip the
+        // reported power.
+        let opener = Arc::new(FakeCecLinkOpener::with_monitor_script_from(vec![(
+            LogicalAddress::Tuner1,
+            Message::Standby,
+        )]));
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::On)),
+            opener,
+            "/dev/cec0".to_string(),
+        );
+        let mut rx = conn.subscribe_state().await.expect("subscribe");
+        let got = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(got.is_err(), "a non-TV initiator must be filtered (no push)");
     }
 
     #[tokio::test]

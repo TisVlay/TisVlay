@@ -8,6 +8,8 @@
 //! never touch a real `/dev/cecN` ioctl. Daemon-level coverage of the
 //! always-reachable state machine rides the mock backend, not this seam.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use linux_cec::device::{AsyncDevice, Capabilities as CecCapabilities, MessageData};
 use linux_cec::message::{Message, Opcode};
@@ -65,10 +67,11 @@ pub(crate) trait CecLink: Send + Sync + std::fmt::Debug {
 /// the two are distinct fds on the same adapter.
 #[async_trait]
 pub(crate) trait CecMonitor: Send + Sync + std::fmt::Debug {
-    /// Await the next inbound message. `Ok(None)` on a receive timeout
-    /// (the caller loops, re-checking whether it should keep listening);
-    /// `Err` once the adapter goes away.
-    async fn recv(&self) -> Result<Option<Message>>;
+    /// Await the next inbound message, paired with its initiator (so the
+    /// caller can ignore the adapter's own looped-back frames). `Ok(None)`
+    /// on a receive timeout (the caller loops, re-checking whether it
+    /// should keep listening); `Err` on a transient or fatal rx error.
+    async fn recv(&self) -> Result<Option<(LogicalAddress, Message)>>;
 }
 
 /// Production [`CecLinkOpener`] backed by `linux_cec::AsyncDevice`.
@@ -92,11 +95,12 @@ impl CecLinkOpener for LinuxCecLinkOpener {
     }
 }
 
-/// Poll cadence for the monitor receive loop. `Timeout::MAX` is the CEC
-/// spec's 1 s round-trip ceiling; a receive that hits it returns
-/// `Ok(None)`, giving the subscription task a regular beat to notice its
-/// consumer went away and shut down.
-const MONITOR_RX_POLL: Timeout = Timeout::MAX;
+/// Idle receive cadence for the monitor loop, in milliseconds. Kept well
+/// under the 1 s CEC ceiling for two reasons: it is the beat on which the
+/// loop notices its consumer went away, and it bounds the worker-thread
+/// `join()` in `AsyncDevice::drop` (which runs on the executor when the
+/// aborted monitor task is dropped) to roughly this instead of a second.
+const MONITOR_RX_POLL_MS: u64 = 250;
 
 /// Production [`CecMonitor`]: a follower-mode `AsyncDevice` on the same
 /// node as the tx link. It claims no logical address of its own — the tx
@@ -118,10 +122,12 @@ impl LinuxCecMonitor {
 
 #[async_trait]
 impl CecMonitor for LinuxCecMonitor {
-    async fn recv(&self) -> Result<Option<Message>> {
-        match self.device.rx_message(MONITOR_RX_POLL).await {
+    async fn recv(&self) -> Result<Option<(LogicalAddress, Message)>> {
+        let timeout = Timeout::try_from(&Duration::from_millis(MONITOR_RX_POLL_MS))
+            .unwrap_or(Timeout::MAX);
+        match self.device.rx_message(timeout).await {
             Ok(envelope) => match envelope.message {
-                MessageData::Valid(message) => Ok(Some(message)),
+                MessageData::Valid(message) => Ok(Some((envelope.initiator, message))),
                 // Malformed / aborted frame — ignore, keep listening.
                 _ => Ok(None),
             },
@@ -301,9 +307,10 @@ mod fake {
     pub(crate) struct FakeCecLinkOpener {
         initial: PowerStatus,
         ignore_wakes: usize,
-        /// Scripted inbound messages the first `open_monitor` hands to its
-        /// [`FakeCecMonitor`], for `subscribe_state` tests. `take`-n once.
-        monitor_script: Mutex<Option<VecDeque<Message>>>,
+        /// Scripted inbound (initiator, message) pairs the first
+        /// `open_monitor` hands to its [`FakeCecMonitor`], for
+        /// `subscribe_state` tests. `take`-n once.
+        monitor_script: Mutex<Option<VecDeque<(LogicalAddress, Message)>>>,
     }
 
     impl FakeCecLinkOpener {
@@ -326,8 +333,20 @@ mod fake {
         }
 
         /// Opener whose monitor handle replays `script` (one message per
-        /// `recv`), then idles — drives `subscribe_state` tests.
+        /// `recv`) as if each came from the TV, then idles — drives
+        /// `subscribe_state` tests.
         pub(crate) fn with_monitor_script(script: Vec<Message>) -> Self {
+            Self::with_monitor_script_from(
+                script
+                    .into_iter()
+                    .map(|message| (LogicalAddress::Tv, message))
+                    .collect(),
+            )
+        }
+
+        /// Like [`Self::with_monitor_script`] but with explicit initiators,
+        /// so tests can exercise the monitor's initiator filter.
+        pub(crate) fn with_monitor_script_from(script: Vec<(LogicalAddress, Message)>) -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
@@ -357,19 +376,20 @@ mod fake {
         }
     }
 
-    /// Replays a fixed script of inbound messages, then idles (yielding so
-    /// the subscription task can notice its consumer went away).
+    /// Replays a fixed script of inbound (initiator, message) pairs, then
+    /// idles (yielding so the subscription task can notice its consumer
+    /// went away).
     #[derive(Debug)]
     pub(crate) struct FakeCecMonitor {
-        script: Mutex<VecDeque<Message>>,
+        script: Mutex<VecDeque<(LogicalAddress, Message)>>,
     }
 
     #[async_trait]
     impl CecMonitor for FakeCecMonitor {
-        async fn recv(&self) -> Result<Option<Message>> {
+        async fn recv(&self) -> Result<Option<(LogicalAddress, Message)>> {
             let next = self.script.lock().pop_front();
             match next {
-                Some(message) => Ok(Some(message)),
+                Some(pair) => Ok(Some(pair)),
                 None => {
                     tokio::task::yield_now().await;
                     Ok(None)
