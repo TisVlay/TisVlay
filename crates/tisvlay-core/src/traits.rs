@@ -379,6 +379,21 @@ pub trait TvConnector: Send + Sync {
         false
     }
 
+    /// Whether the transport keeps a live connection while the TV is in
+    /// standby — i.e. whether `Connected` and the power state are *separate*
+    /// axes for this backend.
+    ///
+    /// CEC returns `true`: the HDMI-CEC bus stays reachable in standby (we
+    /// can still query power and receive the TV's broadcasts), so a
+    /// standby TV is legitimately `Connected` with `Power = standby`, and
+    /// `power_on` wakes it based on the reported power state rather than on
+    /// whether a fresh connect succeeds. Network backends (LG) return the
+    /// default `false`: the socket dies on power-off, so the daemon drops
+    /// the connection and `Connected` tracks power.
+    fn reachable_in_standby(&self, _vendor_config: &toml::Value) -> bool {
+        false
+    }
+
     /// Connect to a TV using vendor-specific config.
     ///
     /// The vendor config contains all transport and credential parameters.

@@ -75,6 +75,13 @@ impl TvConnector for CecConnector {
         Transport::Cec
     }
 
+    fn reachable_in_standby(&self, _vendor_config: &toml::Value) -> bool {
+        // The CEC bus stays live in standby, so a standby TV is still
+        // connected (Power ≠ Connected). `power_on` wakes it by power state,
+        // not by connect success.
+        true
+    }
+
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
@@ -82,17 +89,13 @@ impl TvConnector for CecConnector {
             .opener
             .open(&config.device, config.physical_address)
             .await?;
-        // The `/dev/cecN` handle opens whether or not the TV is on, so a
-        // bare open says nothing about reachability. Probe power and
-        // refuse the connection when the TV is in standby — that is what
-        // routes the daemon's `power_on` into the wake path.
-        let status = link.query_power().await?;
-        if !reachable(status) {
-            return Err(Error::backend(
-                crate::VENDOR_ID,
-                "TV is in standby — wake required",
-            ));
-        }
+        // Probe power to confirm the TV actually answers on the bus — a
+        // powered-off-at-the-wall TV (or one on a different HDMI input)
+        // drops off CEC and this query fails, so `connect` fails and the TV
+        // reads disconnected. We do NOT refuse standby, though: the bus is
+        // reachable in standby, so a standby TV is legitimately connected;
+        // the daemon's `power_on` wakes it based on the reported power state.
+        let _status = link.query_power().await?;
         Ok(Box::new(CecConnection::new(
             link,
             self.opener.clone(),
@@ -253,11 +256,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_fails_when_tv_in_standby() {
-        // The device opens fine, but a standby TV must not yield a live
-        // connection — otherwise the daemon's power_on never wakes it.
+    async fn connect_succeeds_when_tv_in_standby() {
+        // The CEC bus stays reachable in standby, so a standby TV is
+        // legitimately connected (Power ≠ Connected). The daemon wakes it by
+        // power state, not by refusing the connection.
         let conn = connector(PowerStatus::Standby).connect(&cfg()).await;
-        assert!(conn.is_err(), "connect must fail when TV is in standby");
+        assert!(conn.is_ok(), "connect succeeds for a standby (on-bus) TV");
+        assert!(conn.unwrap().is_connected());
+    }
+
+    #[test]
+    fn reachable_in_standby_is_true() {
+        assert!(connector(PowerStatus::On).reachable_in_standby(&cfg()));
     }
 
     #[tokio::test(start_paused = true)]

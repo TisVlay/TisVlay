@@ -19,7 +19,10 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_core::{DaemonClient, PowerState, SessionAction, SystemConfig, SystemProfileConfig};
+use tisvlay_core::{
+    DaemonClient, PowerState, SessionAction, SystemConfig, SystemProfileConfig,
+    power_state_str_is_on,
+};
 use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 use tisvlayd::tv_manager::SystemEvent;
@@ -221,6 +224,44 @@ async fn power_off_clears_connected_property_on_poll_only_tv() {
     assert!(
         !tvs[0].connected,
         "D-Bus Connected must be false after power_off on a poll-only TV",
+    );
+}
+
+#[tokio::test]
+async fn power_off_keeps_connection_for_reachable_in_standby_tv() {
+    // A CEC-style backend stays reachable in standby: power_off keeps the
+    // connection (Connected stays true) and only moves the *power* axis to
+    // standby — unlike a network backend whose socket dies on power-off.
+    // This is what makes button-off match remote-off for CEC.
+    let tv_uuid = test_tv_uuid("lr_ris").to_string();
+    let daemon = TestDaemon::with_one_reachable_in_standby_mock_tv("lr_ris")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs after connect");
+    assert!(tvs[0].connected, "connects");
+
+    daemon
+        .manager()
+        .power_off(&tv_uuid)
+        .await
+        .expect("power_off");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs after power_off");
+    assert!(
+        tvs[0].connected,
+        "a reachable-in-standby TV stays Connected after power_off",
+    );
+    assert!(
+        !power_state_str_is_on(&tvs[0].power_state),
+        "power reflects standby",
     );
 }
 

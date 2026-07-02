@@ -238,11 +238,11 @@ impl TvConnection for CecConnection {
     }
 
     async fn power_off(&mut self) -> Result<()> {
-        self.link.power_off().await?;
-        // The TV is heading to standby; drop the reachable-for-control
-        // flag so the daemon stops treating it as live.
-        self.connected = false;
-        Ok(())
+        // Send Standby but stay connected: the CEC bus remains reachable in
+        // standby (we can still query power and receive broadcasts), so this
+        // changes only the power axis, not the connection. The daemon keeps
+        // the connection for a `reachable_in_standby` backend.
+        self.link.power_off().await
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
@@ -392,10 +392,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn power_off_sends_standby_and_marks_disconnected() {
+    async fn power_off_sends_standby_but_stays_connected() {
+        // The bus is reachable in standby, so power_off changes only the
+        // power axis — the connection stays live (Power ≠ Connected).
         let mut conn = connection(PowerStatus::On);
         conn.power_off().await.expect("power off");
-        assert!(!conn.is_connected());
+        assert!(conn.is_connected(), "connection survives standby");
         // The fake flips to standby; a fresh state read reflects it.
         assert_eq!(
             conn.get_power_state().await.expect("power state"),

@@ -102,6 +102,30 @@ pub fn mock_tv_config_poll_only(
     config
 }
 
+/// Build a `SystemConfig` with one managed mock TV whose backend reports
+/// `reachable_in_standby` (CEC-style): its bus stays live in standby, so
+/// the daemon keeps the connection — and `Connected` — across a power-off,
+/// treating power and connection as separate axes.
+pub fn mock_tv_config_reachable_in_standby(tv_id: &str, managed: bool) -> SystemConfig {
+    let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", managed);
+    let mut vendor_table = HashMap::new();
+    vendor_table.insert(
+        "address".to_string(),
+        toml::Value::String(format!("mock://{}", tv_id)),
+    );
+    vendor_table.insert(
+        "reachable_in_standby".to_string(),
+        toml::Value::Boolean(true),
+    );
+    tv.vendor_config.insert(
+        "mock".to_string(),
+        toml::Value::Table(vendor_table.into_iter().collect()),
+    );
+    let mut config = SystemConfig::default();
+    config.tv.push(tv);
+    config
+}
+
 fn build_mock_tv_inner(
     tv_id: &str,
     managed: bool,
@@ -238,6 +262,13 @@ impl TestDaemon {
     #[instrument]
     pub async fn with_one_poll_only_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
         Self::with_config(mock_tv_config_poll_only(tv_id, true, None)).await
+    }
+
+    /// Build a daemon with a single managed, `reachable_in_standby` mock TV
+    /// (CEC-style: the connection survives power-off). See
+    /// [`mock_tv_config_reachable_in_standby`].
+    pub async fn with_one_reachable_in_standby_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
+        Self::with_config(mock_tv_config_reachable_in_standby(tv_id, true)).await
     }
 
     /// The zbus connection bound to the private test bus.

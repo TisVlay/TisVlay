@@ -2334,18 +2334,41 @@ impl TvManager {
             Err("powered_off hint; skipping probe".to_string())
         };
 
-        let connection = match direct_result {
-            Ok(conn) => {
-                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
-                debug!(tv_id = %tv_id, "Direct connect succeeded; skipping WoL");
-                conn
+        // Reach the TV, then decide whether it still needs waking. For a
+        // `reachable_in_standby` backend (CEC), a successful connect can be a
+        // *standby* TV — the bus stays live — so check its power and wake if
+        // off, exactly as for an unreachable TV. Network backends only
+        // connect when the TV is on, so their connect-success skips the check.
+        let reached_and_on = match direct_result {
+            Ok(mut conn) => {
+                if self.registry.reachable_in_standby(&config)
+                    && !matches!(conn.get_power_state().await, Ok(s) if s.is_on())
+                {
+                    debug!(tv_id = %tv_id, "Reachable but in standby; waking");
+                    let _ = conn.close().await;
+                    None
+                } else {
+                    Some(conn)
+                }
             }
             Err(probe_err) => {
                 debug!(
                     tv_id = %tv_id,
                     error = %probe_err,
-                    "Direct-connect probe skipped/failed; falling back to WoL"
+                    "Direct-connect probe skipped/failed; falling back to wake"
                 );
+                None
+            }
+        };
+
+        let connection = match reached_and_on {
+            Some(conn) => {
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
+                debug!(tv_id = %tv_id, "Direct connect succeeded; TV already on");
+                conn
+            }
+            None => {
+                // The TV is off — standby-reachable or unreachable — so wake it.
                 if !supports_wake {
                     // No wake method AND TV not reachable. Without
                     // this, the only evidence the user gets is a
@@ -2425,33 +2448,46 @@ impl TvManager {
             })
             .await;
 
-        // Always drop the connection: if the command failed the socket is
-        // likely broken anyway. Only mark as powered-off when the command
-        // actually succeeded — if it failed the TV may still be on, and
-        // leaving powered_off=false lets auto-reconnect attempt recovery.
-        let notify_disconnect = {
-            let tv_arc = self.get_tv(tv_id).await?;
+        let tv_arc = self.get_tv(tv_id).await?;
+        // A backend whose transport stays reachable in standby (CEC) keeps
+        // its connection: the TV is still `Connected`, now with
+        // `Power = standby` — the two are separate axes. Everything else
+        // drops the connection (a dead socket, or the power-off failed and
+        // the state is unknown). Returns `(forward, notify_disconnect)`.
+        let (forward, notify_disconnect) = {
             let mut tv = tv_arc.lock().await;
-            tv.connection = None;
             // An explicit or system power-off ends any screen intent — the TV
             // is off. Drop the latch so the push-driven reconcile does not
-            // later re-assert it (e.g. re-lighting a TV the user just powered
-            // off). `screen_on` / `screen_off` re-establish it on the next
-            // request. Safe here because no screen path calls `power_off`.
+            // later re-assert it. `screen_on` / `screen_off` re-establish it.
             tv.desired_screen = None;
-            if result.is_ok() {
-                tv.powered_off = true;
+            if result.is_ok() && self.registry.reachable_in_standby(&tv.config) {
+                // The TV accepted Standby and won't re-broadcast it for the
+                // monitor to catch, so snapshot the new state ourselves to
+                // push the power change (Power → standby) to clients.
+                let snapshot = match tv.connection.as_mut() {
+                    Some(conn) => conn.get_state().await.ok(),
+                    None => None,
+                };
+                (snapshot, false)
+            } else {
+                tv.connection = None;
+                // Only mark powered-off on success — a failed command may have
+                // left the TV on, and `powered_off=false` lets auto-reconnect
+                // attempt recovery.
+                if result.is_ok() {
+                    tv.powered_off = true;
+                }
+                // Push backends emit `ConnectionChanged` from their
+                // subscription task's end-of-stream path when the dropped
+                // connection closes the channel. A poll-only backend has no
+                // such task, so emit explicitly or the cached `Connected`
+                // property (and the GUI toggle) stays stuck at `true`.
+                (None, !tv.has_push_subscription)
             }
-            // Push backends (LG SSAP, CEC's follower-mode monitor) emit
-            // `ConnectionChanged` from their subscription task's
-            // end-of-stream path when the dropped connection closes the
-            // state channel. A poll-only backend (e.g. a projector over a
-            // request/response transport) has no such task, so without an
-            // explicit emit the cached `Connected` property — and the GUI
-            // power toggle keyed on it — would stay stuck at `true` after a
-            // power-off, leaving the TV un-powerable-on from that button.
-            !tv.has_push_subscription
         };
+        if let Some(state) = forward {
+            forward_state_snapshot(tv_id, &self.tvs, &self.state_change_tx, state).await;
+        }
         if notify_disconnect {
             let _ = self
                 .state_change_tx

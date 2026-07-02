@@ -76,6 +76,15 @@ impl TvConnector for MockConnector {
         false
     }
 
+    fn reachable_in_standby(&self, vendor_config: &toml::Value) -> bool {
+        // Test-configurable: models a CEC-style bus that stays reachable in
+        // standby (the connection survives power-off). Default `false` so
+        // existing network-shaped mock tests are unaffected.
+        parse_config(vendor_config)
+            .map(|c| c.reachable_in_standby)
+            .unwrap_or(false)
+    }
+
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;

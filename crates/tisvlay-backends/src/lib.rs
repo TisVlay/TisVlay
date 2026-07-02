@@ -239,6 +239,21 @@ impl BackendRegistry {
             .unwrap_or(false)
     }
 
+    /// Whether this TV's backend keeps a live connection while the TV is in
+    /// standby (CEC's bus stays reachable; a network socket does not). The
+    /// daemon uses this to keep the connection — and `Connected` — across a
+    /// power-off, treating power and connection as separate axes.
+    pub fn reachable_in_standby(&self, tv_config: &TvConfig) -> bool {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.reachable_in_standby(v))
+            })
+            .unwrap_or(false)
+    }
+
     /// Wake a TV from standby.
     pub async fn wake_tv(&self, tv_config: &TvConfig) -> tisvlay_core::Result<()> {
         let connector = self.get_connector(&tv_config.vendor)?;
