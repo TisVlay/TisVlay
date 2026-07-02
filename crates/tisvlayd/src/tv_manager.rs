@@ -2418,7 +2418,7 @@ impl TvManager {
         // likely broken anyway. Only mark as powered-off when the command
         // actually succeeded — if it failed the TV may still be on, and
         // leaving powered_off=false lets auto-reconnect attempt recovery.
-        {
+        let notify_disconnect = {
             let tv_arc = self.get_tv(tv_id).await?;
             let mut tv = tv_arc.lock().await;
             tv.connection = None;
@@ -2431,6 +2431,21 @@ impl TvManager {
             if result.is_ok() {
                 tv.powered_off = true;
             }
+            // Push backends emit `ConnectionChanged` from their subscription
+            // task's end-of-stream path when the connection drops. Poll-only
+            // backends (CEC, projectors) have no such task, so without an
+            // explicit emit the cached `Connected` property — and the GUI
+            // power toggle keyed on it — would stay stuck at `true` after a
+            // power-off, leaving the TV un-powerable-on from that button.
+            !tv.has_push_subscription
+        };
+        if notify_disconnect {
+            let _ = self
+                .state_change_tx
+                .send(StateChangeEvent::ConnectionChanged {
+                    tv_id: tv_id.to_string(),
+                    connected: false,
+                });
         }
 
         result
