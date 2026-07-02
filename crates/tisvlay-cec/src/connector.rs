@@ -120,11 +120,15 @@ impl TvConnector for CecConnector {
             .opener
             .open(&config.device, config.physical_address)
             .await?;
-        link.power_on().await?;
-        // Image View On is fire-and-forget; poll power until the TV
-        // reports it is on (or transitioning on). A non-responding TV
-        // mid-wake yields a transient error we simply retry past.
+        // Image View On is fire-and-forget, a freshly-opened adapter is
+        // still claiming its logical address, and a just-standby TV can
+        // ignore the first wake — so a single send is easily lost. Re-send
+        // on every attempt (One Touch Play is idempotent for an already-on
+        // TV) and poll power between sends until the TV reports on.
         for _ in 0..WAKE_VERIFY_ATTEMPTS {
+            // Best-effort: a transient send error on one attempt must not
+            // abort the wake — the next iteration re-sends.
+            let _ = link.power_on().await;
             tokio::time::sleep(WAKE_VERIFY_DELAY).await;
             if let Ok(status) = link.query_power().await
                 && reachable(status)
@@ -134,7 +138,7 @@ impl TvConnector for CecConnector {
         }
         Err(Error::backend(
             crate::VENDOR_ID,
-            "TV did not report power-on after Image View On",
+            "TV did not report power-on after repeated Image View On",
         ))
     }
 
@@ -241,6 +245,21 @@ mod tests {
             .wake_and_connect(&cfg())
             .await;
         assert!(conn.is_ok(), "wake_and_connect should connect after wake");
+        assert!(conn.unwrap().is_connected());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wake_and_connect_resends_until_tv_wakes() {
+        // The TV drops the first two Image View On sends and only wakes on
+        // the third. A single fire-and-forget send would strand it in
+        // standby; the re-send loop must keep trying across verify attempts.
+        let conn = CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new_flaky_wake(2)))
+            .wake_and_connect(&cfg())
+            .await;
+        assert!(
+            conn.is_ok(),
+            "wake_and_connect should re-send Image View On until the TV wakes",
+        );
         assert!(conn.unwrap().is_connected());
     }
 

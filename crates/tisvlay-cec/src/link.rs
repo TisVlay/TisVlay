@@ -183,16 +183,20 @@ mod fake {
 
     /// A scripted [`CecLink`] for tests: holds a mutable power status that
     /// `power_on` / `power_off` flip, so connector and connection logic
-    /// run without a real `/dev/cecN`.
+    /// run without a real `/dev/cecN`. `ignore_wakes` models a TV that
+    /// drops the first N `power_on` sends before reporting on, so tests
+    /// can exercise the wake re-send loop.
     #[derive(Debug)]
     pub(crate) struct FakeCecLink {
         power: Mutex<PowerStatus>,
+        ignore_wakes: Mutex<usize>,
     }
 
     impl FakeCecLink {
         pub(crate) fn new(power: PowerStatus) -> Self {
             Self {
                 power: Mutex::new(power),
+                ignore_wakes: Mutex::new(0),
             }
         }
     }
@@ -204,7 +208,14 @@ mod fake {
         }
 
         async fn power_on(&self) -> Result<()> {
-            *self.power.lock() = PowerStatus::On;
+            // Drop the first `ignore_wakes` sends (they "don't land"),
+            // then honor the next one — modeling a flaky/just-standby TV.
+            let mut remaining = self.ignore_wakes.lock();
+            if *remaining == 0 {
+                *self.power.lock() = PowerStatus::On;
+            } else {
+                *remaining -= 1;
+            }
             Ok(())
         }
 
@@ -223,11 +234,24 @@ mod fake {
     #[derive(Debug)]
     pub(crate) struct FakeCecLinkOpener {
         initial: PowerStatus,
+        ignore_wakes: usize,
     }
 
     impl FakeCecLinkOpener {
         pub(crate) fn new(initial: PowerStatus) -> Self {
-            Self { initial }
+            Self {
+                initial,
+                ignore_wakes: 0,
+            }
+        }
+
+        /// Opener yielding a standby TV that only wakes after `ignored`
+        /// dropped `power_on` sends — exercises the wake re-send loop.
+        pub(crate) fn new_flaky_wake(ignored: usize) -> Self {
+            Self {
+                initial: PowerStatus::Standby,
+                ignore_wakes: ignored,
+            }
         }
     }
 
@@ -238,7 +262,10 @@ mod fake {
             _device: &str,
             _physical_address: PhysicalAddress,
         ) -> Result<Box<dyn CecLink>> {
-            Ok(Box::new(FakeCecLink::new(self.initial)))
+            Ok(Box::new(FakeCecLink {
+                power: Mutex::new(self.initial),
+                ignore_wakes: Mutex::new(self.ignore_wakes),
+            }))
         }
     }
 }
