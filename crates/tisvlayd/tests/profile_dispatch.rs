@@ -271,6 +271,46 @@ async fn power_off_keeps_connection_for_reachable_in_standby_tv() {
     );
 }
 
+#[tokio::test]
+async fn power_on_is_a_noop_when_already_connected_and_on() {
+    // Regression: a reachable-in-standby TV (CEC-style) whose connection
+    // persists across standby must treat a redundant power_on — e.g. an
+    // `on_lock_wake` profile action firing once per idle cycle while locked
+    // — as a no-op, NOT a teardown+reconnect. Without the idempotent fast
+    // path in `power_on`, each redundant call flapped Connected
+    // (disconnect→reconnect), storming the tray's connect/disconnect
+    // notifications.
+    let tv_uuid = test_tv_uuid("lr_ris_idem").to_string();
+    let addr = "mock://lr_ris_idem";
+    let daemon = TestDaemon::with_one_reachable_in_standby_mock_tv("lr_ris_idem")
+        .await
+        .expect("daemon");
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    assert!(daemon.manager().is_connected(&tv_uuid).await, "connects");
+    // The mock reports "active" by default, so the subscription push has
+    // seeded the cached power state as on. Baseline the connect count here
+    // (robust to any boot-time connect) and assert power_on doesn't add one.
+    let before = daemon.handle().connect_call_count(addr);
+
+    daemon.manager().power_on(&tv_uuid).await.expect("power_on");
+    settle().await;
+    assert_eq!(
+        daemon.handle().connect_call_count(addr),
+        before,
+        "power_on on an already-connected, already-on TV is a no-op (no reconnect flap)",
+    );
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "the live connection is kept across the redundant power_on",
+    );
+}
+
 // ---------- Reliable screen-state actions through system-event dispatch ----------
 
 /// Build a config that maps a non-default `SessionAction` to `on_wake`

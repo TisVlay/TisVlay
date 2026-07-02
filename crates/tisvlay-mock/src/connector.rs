@@ -90,14 +90,23 @@ impl TvConnector for MockConnector {
         let config = parse_config(vendor_config)?;
 
         // Honour any test-injected connect delay (simulates slow/unreachable TV),
-        // and pick up any test-seeded hardware identity keyed by address.
-        let (delay, hardware_id) = {
-            let state = self.state.lock();
+        // pick up any test-seeded hardware identity keyed by address, and bump
+        // the per-address connect counter so tests can assert an idempotent
+        // `power_on` skipped the teardown/reconnect.
+        let (delay, hardware_id, connect_counter) = {
+            let mut state = self.state.lock();
+            let counter = state
+                .connect_calls
+                .entry(config.address.clone())
+                .or_default()
+                .clone();
             (
                 state.connect_delay,
                 state.hardware_ids.get(&config.address).cloned(),
+                counter,
             )
         };
+        connect_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(delay) = delay {
             tracing::debug!(address = %config.address, ?delay, "delaying mock connect");
             tokio::time::sleep(delay).await;

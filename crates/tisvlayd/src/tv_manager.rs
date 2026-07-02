@@ -2293,6 +2293,28 @@ impl TvManager {
                 "PowerOn requested",
             );
 
+            // Idempotent fast path: a live connection to a fully-`Active` TV
+            // means PowerOn has nothing to do — skip the teardown/reconnect
+            // below, which would otherwise flap `Connected` on a healthy
+            // link. This matters for reachable-in-standby backends (CEC),
+            // whose connection persists across standby: a repeated PowerOn
+            // (e.g. an `on_lock_wake` profile action firing once per idle
+            // cycle) would otherwise storm disconnect/connect notifications.
+            //
+            // Two deliberate narrowings keep this from swallowing real work:
+            // - `is_connected()`, not merely `Some` — an LG websocket that
+            //   died on standby reads not-connected, so it still wakes.
+            // - `Active` specifically, not the broader `is_on()` set — a
+            //   `ScreenOff` (panel blanked, still powered) TV must fall
+            //   through so PowerOn re-lights the panel (the D-Bus handler
+            //   latched `desired_screen = Some(true)` just before this call).
+            if tv.connection.as_ref().is_some_and(|c| c.is_connected())
+                && matches!(tv.last_known_power_state, PowerState::Active)
+            {
+                debug!(tv_id = %tv_id, "PowerOn: already connected and Active; no-op");
+                return Ok(());
+            }
+
             // Drop any stale connection and clear the powered-off flag
             tv.powered_off = false;
             tv.reconnecting = true;
