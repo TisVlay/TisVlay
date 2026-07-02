@@ -311,6 +311,61 @@ async fn power_on_is_a_noop_when_already_connected_and_on() {
     );
 }
 
+#[tokio::test]
+async fn power_on_wakes_reachable_in_standby_tv_in_place_without_flap() {
+    // The mirror of the power_off decouple: waking a reachable-in-standby TV
+    // (CEC-style) must send the wake on the *existing* connection, not tear
+    // it down and re-open. A teardown would flap Connected — a spurious
+    // "Disconnected" toast on a power-on. Assert the connection is never
+    // rebuilt (connect count unchanged) and Connected never drops.
+    let tv_uuid = test_tv_uuid("lr_ris_wake").to_string();
+    let addr = "mock://lr_ris_wake";
+    let daemon = TestDaemon::with_one_reachable_in_standby_mock_tv("lr_ris_wake")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    let baseline_connects = daemon.handle().connect_call_count(addr);
+
+    // Power off → standby, but the connection is kept (reachable in standby).
+    daemon
+        .manager()
+        .power_off(&tv_uuid)
+        .await
+        .expect("power_off");
+    settle().await;
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "connection kept across power_off",
+    );
+
+    // Power on → wake in place: no reconnect, so the connect count is
+    // unchanged and Connected never flapped.
+    daemon.manager().power_on(&tv_uuid).await.expect("power_on");
+    settle().await;
+    assert_eq!(
+        daemon.handle().connect_call_count(addr),
+        baseline_connects,
+        "wake-in-place must not rebuild the connection (no flap)",
+    );
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "TV stays connected through the wake",
+    );
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        power_state_str_is_on(&tv.power_state),
+        "TV is powered on again after wake-in-place",
+    );
+}
+
 // ---------- Reliable screen-state actions through system-event dispatch ----------
 
 /// Build a config that maps a non-default `SessionAction` to `on_wake`

@@ -59,6 +59,14 @@ const WARMUP_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// poll issues a live `get_power_state`, so this paces the queries
 /// rather than busy-looping.
 const WARMUP_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Wake-in-place (reachable-in-standby) retry budget: how long to wait for
+/// the push subscription to report the TV on after each connection-level
+/// wake (CEC Image View On), and how many times to re-send before falling
+/// back to a full teardown + re-open. A CEC TV can take a second or more to
+/// report on, so this is deliberately patient.
+const WAKE_IN_PLACE_VERIFY_DELAY: Duration = Duration::from_millis(1500);
+const WAKE_IN_PLACE_ATTEMPTS: usize = 3;
 use tisvlay_core::{
     ActionExecutor, Capabilities, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID,
     FieldVisibility, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig,
@@ -2280,7 +2288,7 @@ impl TvManager {
     pub async fn power_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let tv_arc = self.get_tv(tv_id).await?;
 
-        let (config, supports_wake, was_powered_off) = {
+        let (config, supports_wake, was_powered_off, wake_in_place) = {
             let mut tv = tv_arc.lock().await;
             let supports_wake = self.registry.supports_wake(&tv.config);
             let was_powered_off = tv.powered_off;
@@ -2315,15 +2323,51 @@ impl TvManager {
                 return Ok(());
             }
 
-            // Drop any stale connection and clear the powered-off flag
+            // Wake-in-place vs teardown. A reachable-in-standby backend (CEC)
+            // keeps its connection live in standby, so we can wake the TV on
+            // the *existing* connection (Image View On) — no teardown, so
+            // `Connected` never flaps and the user sees no spurious
+            // "Disconnected" on a power-*on*. Everything else drops any stale
+            // connection and re-opens a fresh link.
+            let wake_in_place = self.registry.reachable_in_standby(&tv.config)
+                && tv.connection.as_ref().is_some_and(|c| c.is_connected());
+
             tv.powered_off = false;
-            tv.reconnecting = true;
-            if let Some(mut conn) = tv.connection.take() {
-                let _ = conn.close().await;
+            if !wake_in_place {
+                tv.reconnecting = true;
+                if let Some(mut conn) = tv.connection.take() {
+                    let _ = conn.close().await;
+                }
             }
 
-            (tv.config.clone(), supports_wake, was_powered_off)
+            (
+                tv.config.clone(),
+                supports_wake,
+                was_powered_off,
+                wake_in_place,
+            )
         };
+
+        // Wake on the kept connection first. On success we're done with no
+        // connection flap; if it never confirms (dropped frame, TV wedged),
+        // fall back to the full teardown + re-open path below.
+        if wake_in_place {
+            match self.try_wake_in_place(tv_id).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    debug!(
+                        tv_id = %tv_id,
+                        error = %e,
+                        "Wake-in-place did not confirm; falling back to reconnect",
+                    );
+                    let mut tv = tv_arc.lock().await;
+                    tv.reconnecting = true;
+                    if let Some(mut conn) = tv.connection.take() {
+                        let _ = conn.close().await;
+                    }
+                }
+            }
+        }
 
         // Heuristic: skip the direct-connect probe when we *know*
         // the TV is in standby. The user just hit Power Off seconds
@@ -2457,6 +2501,54 @@ impl TvManager {
             tv_id: tv_id.to_string(),
             phase,
         });
+    }
+
+    /// Wake a reachable-in-standby TV on its *existing* connection.
+    ///
+    /// Sends the connection-level wake (CEC Image View On) and waits for the
+    /// push subscription to report the TV on, re-sending up to
+    /// [`WAKE_IN_PLACE_ATTEMPTS`] times. The connection is kept throughout —
+    /// no `ConnectionChanged` is emitted, so the tray sees no "Disconnected"
+    /// flap on a power-*on*. Emits `WolSent` up front and `Connected` on
+    /// success so the tray's power-cycle watcher still raises its "is awake"
+    /// notification (that watcher keys "awake" on a `Connected` preceded by
+    /// `WolSent`).
+    ///
+    /// Returns `Err` *without* emitting `Failed` if the wake never confirms
+    /// or the connection vanished mid-flight, so [`Self::power_on`] can fall
+    /// back to a full teardown + re-open (and owns the terminal phase).
+    async fn try_wake_in_place(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        let tv_arc = self.get_tv(tv_id).await?;
+        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::WolSent);
+        for _ in 0..WAKE_IN_PLACE_ATTEMPTS {
+            // Send the wake on the kept connection (brief lock hold —
+            // fire-and-forget, no auto-reconnect). A vanished connection
+            // (raced with a disconnect) drops us to the caller's fallback.
+            {
+                let mut tv = tv_arc.lock().await;
+                let Some(conn) = tv.connection.as_mut() else {
+                    return Err(TvManagerError::NotConnected(tv_id.to_string()));
+                };
+                let _ = conn.power_on().await;
+            }
+            // The subscription fires `power_state_tx` when the monitor sees
+            // the TV come up; return the moment the cached state reads on.
+            if let AwaitOutcome::Matched(_) = self
+                .await_power_state(tv_id, WAKE_IN_PLACE_VERIFY_DELAY, |s| s.is_on())
+                .await
+            {
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connected);
+                info!(tv_id = %tv_id, "TV woke in place (connection kept)");
+                return Ok(());
+            }
+        }
+        Err(TvManagerError::WakeFailed {
+            tv_id: tv_id.to_string(),
+            source: tisvlay_core::Error::backend(
+                "daemon",
+                "TV did not report power-on after wake-in-place",
+            ),
+        })
     }
 
     /// Power off a TV.

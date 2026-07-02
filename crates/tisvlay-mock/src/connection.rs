@@ -213,6 +213,16 @@ impl TvConnection for MockConnection {
         Ok(())
     }
 
+    async fn power_on(&mut self) -> Result<()> {
+        // Wake in place: a reachable-in-standby bus stays live in standby,
+        // so the daemon wakes on this existing connection (no teardown).
+        // Push Active as the wake result, matching CecConnection.
+        self.mutate_and_push(|s| {
+            s.update_power(PowerState::Active);
+        });
+        Ok(())
+    }
+
     async fn get_power_state(&mut self) -> Result<PowerState> {
         // Return the raw enum directly. Re-deriving from
         // `(is_on, is_screen_on)` would collapse `ActiveStandby`

@@ -62,7 +62,7 @@ tisvlay/
 │   │       ├── lib.rs            # Public exports, VENDOR_ID/VENDOR_NAME
 │   │       ├── backend.rs        # CecBackend (POWER | INPUT | DISCOVERY)
 │   │       ├── connector.rs      # CecConnector (reachable_in_standby; connect probes power but accepts standby; wake = ImageViewOn; no-auth pairing)
-│   │       ├── connection.rs     # CecConnection (power on/off/state; Set Stream Path input)
+│   │       ├── connection.rs     # CecConnection (power on/off/state; power_on = Image View On for wake-in-place; Set Stream Path input)
 │   │       ├── config.rs         # CecVendorConfig (/dev/cecN device path)
 │   │       ├── discovery.rs      # CecDiscovery (enumerate /dev/cecN nodes)
 │   │       └── link.rs           # CecLink seam over linux-cec AsyncDevice + FakeCecLink (#[cfg(test)])

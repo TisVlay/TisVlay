@@ -267,6 +267,15 @@ impl TvConnection for CecConnection {
         self.link.power_off().await
     }
 
+    async fn power_on(&mut self) -> Result<()> {
+        // Wake in place: the connection is still live in standby, so send
+        // Image View On on the existing link. This lets the daemon wake the
+        // TV without tearing the connection down and re-opening it — the
+        // teardown would flap `Connected` (a spurious disconnect on a
+        // power-*on*). One Touch Play is idempotent for an already-on TV.
+        self.link.power_on().await
+    }
+
     async fn get_power_state(&mut self) -> Result<PowerState> {
         Ok(map_power(self.link.query_power().await?))
     }
@@ -452,6 +461,23 @@ mod tests {
         assert_eq!(
             conn.get_power_state().await.expect("power state"),
             PowerState::Standby
+        );
+    }
+
+    #[tokio::test]
+    async fn power_on_wakes_in_place_on_the_existing_link() {
+        // A standby-but-connected TV: power_on sends Image View On on the
+        // existing link (no reconnect) and the TV comes up, still connected.
+        // This is what lets the daemon wake a reachable-in-standby TV without
+        // flapping Connected on a power-on.
+        let mut conn = connection(PowerStatus::Standby);
+        assert!(conn.is_connected());
+        conn.power_on().await.expect("power on");
+        assert!(conn.is_connected(), "connection is kept across the wake");
+        assert_eq!(
+            conn.get_power_state().await.expect("power state"),
+            PowerState::Active,
+            "Image View On woke the TV on the existing link",
         );
     }
 

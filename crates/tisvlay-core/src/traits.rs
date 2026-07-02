@@ -230,6 +230,19 @@ pub trait TvConnection: Send + Sync {
         Err(Error::not_supported("power_off", Capabilities::POWER))
     }
 
+    /// Wake the TV on this *existing* connection (e.g. CEC Image View On).
+    ///
+    /// Only meaningful for backends that stay reachable in standby (see
+    /// [`TvConnector::reachable_in_standby`]): the connection is still live
+    /// while the TV sleeps, so the daemon can wake it in place instead of
+    /// tearing the connection down and opening a fresh link via
+    /// [`TvConnector::wake_and_connect`] — the teardown would flap
+    /// `Connected` (a spurious disconnect on a power-*on*). Default: not
+    /// supported, so those callers fall back to `wake_and_connect`.
+    async fn power_on(&mut self) -> Result<()> {
+        Err(Error::not_supported("power_on", Capabilities::POWER))
+    }
+
     /// Get the current power state.
     async fn get_power_state(&mut self) -> Result<PowerState> {
         Err(Error::not_supported("get_power_state", Capabilities::POWER))
