@@ -5,26 +5,70 @@
 //! active-source input switching (`Set Stream Path`). Everything else
 //! stays at the trait's `NotSupported` default.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use linux_cec::PhysicalAddress;
+use linux_cec::message::Message;
 use linux_cec::operand::PowerStatus;
 use tisvlay_core::{Capabilities, Error, InputInfo, PowerState, Result, TvConnection, TvState};
+use tokio::sync::mpsc;
 
-use crate::link::CecLink;
+use crate::link::{CecLink, CecLinkOpener};
 
 /// A live CEC control handle for one TV.
 #[derive(Debug)]
 pub struct CecConnection {
     link: Box<dyn CecLink>,
     connected: bool,
+    /// Retained so `subscribe_state` can open a second, follower-mode
+    /// handle on the same device for the push-state receive loop.
+    opener: Arc<dyn CecLinkOpener>,
+    device: String,
+    /// The `subscribe_state` monitor task. Aborted on drop so the state
+    /// channel closes when the connection goes away — that closure is what
+    /// drives the daemon's subscription-end `ConnectionChanged(false)`
+    /// (e.g. on power-off). Without this the detached task would keep the
+    /// channel open and the TV would read `Connected` forever.
+    monitor_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl CecConnection {
-    pub(crate) fn new(link: Box<dyn CecLink>) -> Self {
+    pub(crate) fn new(
+        link: Box<dyn CecLink>,
+        opener: Arc<dyn CecLinkOpener>,
+        device: String,
+    ) -> Self {
         Self {
             link,
             connected: true,
+            opener,
+            device,
+            monitor_task: None,
         }
+    }
+}
+
+impl Drop for CecConnection {
+    fn drop(&mut self) {
+        if let Some(task) = self.monitor_task.take() {
+            task.abort();
+        }
+    }
+}
+
+/// Extract a [`PowerState`] from an unsolicited inbound CEC message, if it
+/// carries one. `<Report Power Status>` is authoritative; `<Standby>` and
+/// the source-active / One-Touch-Play messages are what a TV broadcasts
+/// when its power changes on its own (e.g. via its own remote).
+fn power_from_message(message: &Message) -> Option<PowerState> {
+    match message {
+        Message::ReportPowerStatus { status } => Some(map_power(*status)),
+        Message::Standby => Some(PowerState::Standby),
+        Message::ActiveSource { .. } | Message::ImageViewOn | Message::TextViewOn => {
+            Some(PowerState::Active)
+        }
+        _ => None,
     }
 }
 
@@ -89,6 +133,48 @@ impl TvConnection for CecConnection {
         Ok(state)
     }
 
+    async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
+        // Open a second, follower-mode handle on the same device (see
+        // `CecMonitor`): its blocking receive loop lives on a distinct fd,
+        // so it can't starve the single-threaded worker the tx handle
+        // transmits on.
+        let monitor = self.opener.open_monitor(&self.device).await?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            // Running snapshot re-pushed on every power-relevant change. We
+            // only subscribe on a live connection, so seed it on with the
+            // best-effort input set — the daemon merges partial fields, but
+            // pushing a full snapshot keeps the contract identical to a
+            // push backend like LG.
+            let mut state = TvState::new();
+            state.update_power(PowerState::Active);
+            state.inputs = default_inputs();
+            loop {
+                match monitor.recv().await {
+                    Ok(Some(message)) => {
+                        if let Some(power) = power_from_message(&message) {
+                            state.update_power(power);
+                            if tx.send(state.clone()).is_err() {
+                                break; // daemon dropped the subscription
+                            }
+                        }
+                    }
+                    // Idle beat: stop once the consumer is gone.
+                    Ok(None) => {
+                        if tx.is_closed() {
+                            break;
+                        }
+                    }
+                    // Adapter went away — end the stream; the daemon's
+                    // subscription-end path emits ConnectionChanged.
+                    Err(_) => break,
+                }
+            }
+        });
+        self.monitor_task = Some(task);
+        Ok(rx)
+    }
+
     async fn close(&mut self) -> Result<()> {
         // Mark the handle closed; the worker thread is torn down when the
         // boxed link drops with this connection. `close` itself stays
@@ -137,10 +223,14 @@ impl TvConnection for CecConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::link::FakeCecLink;
+    use crate::link::{FakeCecLink, FakeCecLinkOpener};
 
     fn connection(power: PowerStatus) -> CecConnection {
-        CecConnection::new(Box::new(FakeCecLink::new(power)))
+        CecConnection::new(
+            Box::new(FakeCecLink::new(power)),
+            Arc::new(FakeCecLinkOpener::new(power)),
+            "/dev/cec0".to_string(),
+        )
     }
 
     #[test]
@@ -164,6 +254,50 @@ mod tests {
         // Inputs are the best-effort HDMI set; current input is unknown.
         assert_eq!(state.inputs.len(), 4);
         assert_eq!(state.current_input, None);
+    }
+
+    #[tokio::test]
+    async fn subscribe_state_pushes_power_changes_from_the_bus() {
+        // The monitor replays an unsolicited <Standby> (what a TV
+        // broadcasts when powered off at the set); the subscription must
+        // push a snapshot flipped to Standby, with no poll involved.
+        let opener = Arc::new(FakeCecLinkOpener::with_monitor_script(vec![
+            Message::Standby,
+        ]));
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::On)),
+            opener,
+            "/dev/cec0".to_string(),
+        );
+        let mut rx = conn.subscribe_state().await.expect("subscribe");
+        let state = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("state pushed within 1s")
+            .expect("subscription channel open");
+        assert_eq!(state.power_state, PowerState::Standby);
+        // Full snapshot — the best-effort input set rides along.
+        assert_eq!(state.inputs.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn dropping_connection_ends_the_subscription() {
+        // The monitor task is a detached spawn; on connection drop it must
+        // be aborted so the state channel closes. The daemon's
+        // subscription-end path keys on that closure to emit
+        // `ConnectionChanged(false)` — without it a powered-off CEC TV
+        // would read `Connected` forever.
+        let opener = Arc::new(FakeCecLinkOpener::with_monitor_script(vec![]));
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::On)),
+            opener,
+            "/dev/cec0".to_string(),
+        );
+        let mut rx = conn.subscribe_state().await.expect("subscribe");
+        drop(conn);
+        assert!(
+            rx.recv().await.is_none(),
+            "state channel closes once the connection drops",
+        );
     }
 
     #[tokio::test]

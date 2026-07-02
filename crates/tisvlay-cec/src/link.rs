@@ -12,7 +12,9 @@ use async_trait::async_trait;
 use linux_cec::device::{AsyncDevice, Capabilities as CecCapabilities, MessageData};
 use linux_cec::message::{Message, Opcode};
 use linux_cec::operand::PowerStatus;
-use linux_cec::{InitiatorMode, LogicalAddress, LogicalAddressType, PhysicalAddress, Timeout};
+use linux_cec::{
+    FollowerMode, InitiatorMode, LogicalAddress, LogicalAddressType, PhysicalAddress, Timeout,
+};
 use tisvlay_core::{Capabilities, Error, Result};
 
 use crate::VENDOR_ID;
@@ -28,6 +30,13 @@ pub(crate) trait CecLinkOpener: Send + Sync + std::fmt::Debug {
         device: &str,
         physical_address: PhysicalAddress,
     ) -> Result<Box<dyn CecLink>>;
+
+    /// Open a *second*, follower-mode handle on the same device for
+    /// receiving unsolicited traffic. It shares the adapter's claimed
+    /// logical address with the tx [`CecLink`] but is a distinct fd — so
+    /// its blocking receive loop can't starve the single-threaded
+    /// `AsyncDevice` worker the connection transmits on.
+    async fn open_monitor(&self, device: &str) -> Result<Box<dyn CecMonitor>>;
 }
 
 /// A live handle to one CEC adapter, scoped to exactly the operations the
@@ -50,6 +59,18 @@ pub(crate) trait CecLink: Send + Sync + std::fmt::Debug {
     async fn set_stream_path(&self, address: PhysicalAddress) -> Result<()>;
 }
 
+/// A follower-mode handle for receiving unsolicited CEC traffic — the
+/// receive half of push-based state (power/input changes the TV makes on
+/// its own, e.g. via its remote). Kept separate from [`CecLink`] because
+/// the two are distinct fds on the same adapter.
+#[async_trait]
+pub(crate) trait CecMonitor: Send + Sync + std::fmt::Debug {
+    /// Await the next inbound message. `Ok(None)` on a receive timeout
+    /// (the caller loops, re-checking whether it should keep listening);
+    /// `Err` once the adapter goes away.
+    async fn recv(&self) -> Result<Option<Message>>;
+}
+
 /// Production [`CecLinkOpener`] backed by `linux_cec::AsyncDevice`.
 #[derive(Debug)]
 pub(crate) struct LinuxCecLinkOpener;
@@ -64,6 +85,50 @@ impl CecLinkOpener for LinuxCecLinkOpener {
         Ok(Box::new(
             LinuxCecLink::open(device, physical_address).await?,
         ))
+    }
+
+    async fn open_monitor(&self, device: &str) -> Result<Box<dyn CecMonitor>> {
+        Ok(Box::new(LinuxCecMonitor::open(device).await?))
+    }
+}
+
+/// Poll cadence for the monitor receive loop. `Timeout::MAX` is the CEC
+/// spec's 1 s round-trip ceiling; a receive that hits it returns
+/// `Ok(None)`, giving the subscription task a regular beat to notice its
+/// consumer went away and shut down.
+const MONITOR_RX_POLL: Timeout = Timeout::MAX;
+
+/// Production [`CecMonitor`]: a follower-mode `AsyncDevice` on the same
+/// node as the tx link. It claims no logical address of its own — the tx
+/// link already claimed one for the adapter — and just listens.
+#[derive(Debug)]
+struct LinuxCecMonitor {
+    device: AsyncDevice,
+}
+
+impl LinuxCecMonitor {
+    async fn open(device: &str) -> Result<Self> {
+        let dev = AsyncDevice::open(device).await.map_err(map_cec_err)?;
+        dev.set_follower_mode(FollowerMode::Enabled)
+            .await
+            .map_err(map_cec_err)?;
+        Ok(Self { device: dev })
+    }
+}
+
+#[async_trait]
+impl CecMonitor for LinuxCecMonitor {
+    async fn recv(&self) -> Result<Option<Message>> {
+        match self.device.rx_message(MONITOR_RX_POLL).await {
+            Ok(envelope) => match envelope.message {
+                MessageData::Valid(message) => Ok(Some(message)),
+                // Malformed / aborted frame — ignore, keep listening.
+                _ => Ok(None),
+            },
+            // A receive timeout is the normal idle case, not an error.
+            Err(linux_cec::Error::Timeout) => Ok(None),
+            Err(e) => Err(map_cec_err(e)),
+        }
     }
 }
 
@@ -180,6 +245,7 @@ pub(crate) use fake::{FakeCecLink, FakeCecLinkOpener};
 mod fake {
     use super::*;
     use parking_lot::Mutex;
+    use std::collections::VecDeque;
 
     /// A scripted [`CecLink`] for tests: holds a mutable power status that
     /// `power_on` / `power_off` flip, so connector and connection logic
@@ -235,6 +301,9 @@ mod fake {
     pub(crate) struct FakeCecLinkOpener {
         initial: PowerStatus,
         ignore_wakes: usize,
+        /// Scripted inbound messages the first `open_monitor` hands to its
+        /// [`FakeCecMonitor`], for `subscribe_state` tests. `take`-n once.
+        monitor_script: Mutex<Option<VecDeque<Message>>>,
     }
 
     impl FakeCecLinkOpener {
@@ -242,6 +311,7 @@ mod fake {
             Self {
                 initial,
                 ignore_wakes: 0,
+                monitor_script: Mutex::new(None),
             }
         }
 
@@ -251,6 +321,17 @@ mod fake {
             Self {
                 initial: PowerStatus::Standby,
                 ignore_wakes: ignored,
+                monitor_script: Mutex::new(None),
+            }
+        }
+
+        /// Opener whose monitor handle replays `script` (one message per
+        /// `recv`), then idles — drives `subscribe_state` tests.
+        pub(crate) fn with_monitor_script(script: Vec<Message>) -> Self {
+            Self {
+                initial: PowerStatus::On,
+                ignore_wakes: 0,
+                monitor_script: Mutex::new(Some(script.into())),
             }
         }
     }
@@ -266,6 +347,34 @@ mod fake {
                 power: Mutex::new(self.initial),
                 ignore_wakes: Mutex::new(self.ignore_wakes),
             }))
+        }
+
+        async fn open_monitor(&self, _device: &str) -> Result<Box<dyn CecMonitor>> {
+            let script = self.monitor_script.lock().take().unwrap_or_default();
+            Ok(Box::new(FakeCecMonitor {
+                script: Mutex::new(script),
+            }))
+        }
+    }
+
+    /// Replays a fixed script of inbound messages, then idles (yielding so
+    /// the subscription task can notice its consumer went away).
+    #[derive(Debug)]
+    pub(crate) struct FakeCecMonitor {
+        script: Mutex<VecDeque<Message>>,
+    }
+
+    #[async_trait]
+    impl CecMonitor for FakeCecMonitor {
+        async fn recv(&self) -> Result<Option<Message>> {
+            let next = self.script.lock().pop_front();
+            match next {
+                Some(message) => Ok(Some(message)),
+                None => {
+                    tokio::task::yield_now().await;
+                    Ok(None)
+                }
+            }
         }
     }
 }

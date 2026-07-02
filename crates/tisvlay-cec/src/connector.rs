@@ -93,7 +93,11 @@ impl TvConnector for CecConnector {
                 "TV is in standby — wake required",
             ));
         }
-        Ok(Box::new(CecConnection::new(link)))
+        Ok(Box::new(CecConnection::new(
+            link,
+            self.opener.clone(),
+            config.device,
+        )))
     }
 
     fn supports_wake(&self, _vendor_config: &toml::Value) -> bool {
@@ -116,7 +120,7 @@ impl TvConnector for CecConnector {
     #[instrument(skip(self, vendor_config))]
     async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
-        let link = self
+        let mut link = self
             .opener
             .open(&config.device, config.physical_address)
             .await?;
@@ -127,13 +131,27 @@ impl TvConnector for CecConnector {
         // TV) and poll power between sends until the TV reports on.
         for _ in 0..WAKE_VERIFY_ATTEMPTS {
             // Best-effort: a transient send error on one attempt must not
-            // abort the wake — the next iteration re-sends.
-            let _ = link.power_on().await;
+            // abort the wake — the next iteration re-sends. A send failure
+            // can mean the logical-address claim was lost, so re-open to
+            // re-claim before retrying (keeping the old handle if the
+            // re-open itself fails).
+            if link.power_on().await.is_err()
+                && let Ok(fresh) = self
+                    .opener
+                    .open(&config.device, config.physical_address)
+                    .await
+            {
+                link = fresh;
+            }
             tokio::time::sleep(WAKE_VERIFY_DELAY).await;
             if let Ok(status) = link.query_power().await
                 && reachable(status)
             {
-                return Ok(Box::new(CecConnection::new(link)));
+                return Ok(Box::new(CecConnection::new(
+                    link,
+                    self.opener.clone(),
+                    config.device.clone(),
+                )));
             }
         }
         Err(Error::backend(
