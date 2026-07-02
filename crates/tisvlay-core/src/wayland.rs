@@ -27,13 +27,13 @@ use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notifier_v1::{self, ExtIdleNotifierV1},
 };
 
-/// Protocol version we bind for `ext_idle_notifier_v1`. We stay on v1's
-/// `get_idle_notification`, which respects idle inhibitors — so the screen
-/// won't blank (or a TV power off) mid-video. wayland-protocols already
-/// bundles the interface at version 2, but v2 only *adds*
-/// `get_input_idle_notification` (input-only, ignoring inhibitors), which a
-/// blank/power-on-idle policy does not want — so there's no reason to bind
-/// higher even though KWin advertises v2.
+/// Protocol version we bind for `ext_idle_notifier_v1`. v1's
+/// `get_idle_notification` respects idle inhibitors, so the screen won't
+/// blank (or a TV power off) mid-video — the behavior a blank/power-on-idle
+/// policy wants. A newer protocol version adds only an input-only
+/// `get_input_idle_notification` that ignores inhibitors, so binding higher
+/// buys nothing here; the registry bind caps whatever version the compositor
+/// advertises down to this constant.
 const EXT_IDLE_NOTIFIER_VERSION: u32 = 1;
 
 /// Maximum protocol version we support for `wl_seat`.
