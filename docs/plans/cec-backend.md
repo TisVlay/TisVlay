@@ -167,3 +167,38 @@ Chunked so scaffolding lands with first use (no orphaned plumbing):
 ## Migration on merge
 
 Per [docs/plans/README.md](README.md): when this lands, fold the durable content out of this file before deleting it — the capability-gating gap and the always-reachable-transport / systemd-sandbox / LGPL gotchas belong in `docs/design.md` (or `docs/concerns/`) and `docs/cec/`, not evaporated with the plan.
+
+## Pre-merge review (`/code-review max`, 2026-07-01)
+
+> 10 finder angles (8 agents) + a gap sweep, cross-corroborated (each top item carried 2–8 independent votes). Findings cluster almost entirely in the push-subscription slice (`bb7db11`) — the newest, least hardware-exercised code. Tracked as a burn-down checklist; the "Cleared" list records what the review validated so it isn't re-litigated.
+
+### High — fix before merge
+
+- [ ] **1. A single transient CEC rx error permanently kills the push subscription.** [link.rs `LinuxCecMonitor::recv`] maps only `Error::Timeout`→`Ok(None)`; any other error (garbled/aborted frame, momentary `EBUSY`) returns `Err`, and the monitor loop's `Err(_) => break` ends the task for good — nothing re-subscribes a still-connected TV. Compounded: `has_push_subscription` is never reset, so a later `power_off` skips the explicit disconnect emit (`!has_push_subscription` is false) with no task left to emit → `Connected` can stick `true`. Fix: treat transient rx errors as `Ok(None)` (keep looping); only `break` on `Disconnected`.
+- [ ] **2. A CEC TV powered off by its own remote stays `Connected=true`, so the GUI/tray offer no power-on affordance.** [state_forwarder.rs] forces `connected=true` on every pushed snapshot, so the monitor's `<Standby>` push pins it; the power button keys on `Connected`. Deeper altitude issue: for a reachable-in-standby transport `Connected ≠ powered-on`. Fix (design call): key the power-on affordance on power-state, or self-disconnect the CEC connection on `<Standby>`.
+
+### Medium — robustness
+
+- [ ] **3. `power_from_message` trusts `<Active Source>`/`<Image View On>` from any initiator.** [connection.rs] No `Envelope.initiator` filter, so the adapter's own wake broadcast (during a failed wake) or another HDMI device can push a spurious `Active` while the panel is dark. Fix: only map power from `initiator == LogicalAddress::Tv`.
+- [ ] **4. Blocking `thread.join()` in async `Drop`.** [connection.rs] Aborting the monitor drops its `AsyncDevice`, whose `Drop` joins the worker mid-`rx_message` (≤1 s), stalling a tokio worker and delaying the disconnect emit. Fix: shorten the monitor rx timeout (bounds the join) or tear down off-executor.
+- [ ] **5. `wake_and_connect` over-opens the adapter + swallows errors.** [connector.rs] A cold power-on can open `/dev/cecN` ~6× (probe + wake + up-to-4 re-opens + monitor); it now ignores `power_on` errors, turning an unplugged adapter into a 6 s vague timeout instead of the old instant concrete error. Fix: gate the re-open on a distinct lost-logical-address error; surface a hard error early.
+- [ ] **6. Monitor seeded `PowerState::Active`.** [connection.rs] Masks a `ToOn`/WarmingUp TV at subscribe time; the follower fd (no LA, `FollowerMode::Enabled`) may never receive a directed `<Report Power Status>` to correct the seed without MONITOR_ALL.
+- [ ] **7. `power_off` leaves the monitor running until `Drop`.** [connection.rs] A stale snapshot can push in the `is_connected()==false` window; `abort()` isn't synchronous.
+
+### Medium-low
+
+- [ ] **8. `subscribe_state` is not idempotent.** [connection.rs] Overwrites `monitor_task` without aborting the prior one; a second call leaks a monitor (fd + worker). Safe only by an external invariant — add a one-line `.take()/.abort()` guard.
+- [ ] **9. `Capabilities` change is never signaled.** [dbus/tv.rs:233] The property is `emits_changed = "invalidates"` but nothing invalidates it; the new connected-vs-static caps (DISCOVERY bit differs) never reach cached clients (GUI/tray via `GetManagedObjects`).
+- [ ] **10. `de_physical_address` rejects integer TOML values.** [config.rs] `String::deserialize` errors on a numeric `physical_address` that linux-cec's own `Deserialize` (visit_u64) accepts; a numeric `Tv1.UpdateConfig` payload fails to parse.
+- [ ] **11. `/dev/cecN` sorted lexicographically, not numerically.** [discovery.rs] `cec10` sorts before `cec2`; the test masks it (cec0/cec1/cec10 — `cec1` is a prefix of `cec10`).
+- [ ] **12. `connect()` power probe has no retry.** [connector.rs] A single `query_power`; a momentarily-slow on-TV is refused into the wake path (re-sends Image View On to an already-on TV), against the "CEC is patient" stance used elsewhere.
+- [ ] **13. CEC power-off disconnect is untested at the daemon level.** [profile_dispatch.rs] The regression test uses a poll-only *mock*, not the CEC push path (`Drop`→abort→subscription-end); a `CecConnection::Drop` or `run_subscription_task` change could silently break it.
+
+### Low — doc/cleanup
+
+- [ ] **14. `tv_manager.rs:2434` comment/gate mislabels CEC as poll-only** (loudest signal — 8 finders). CEC is push (`has_push_subscription=true`), so that explicit-emit branch never runs for it; the comment and the companion `profile_dispatch.rs` test both wrongly name "CEC". Correct-by-luck, but actively misleading.
+- [ ] **15. Cleanup cluster.** Per-push full-`TvState` re-clone including `default_inputs()` allocations (send a power-only delta); `parse_config`+`open` copy-pasted across 4 call sites; custom `de_physical_address` duplicates the library `Deserialize`; `FakeCecLinkOpener` monitor script is take-once (a resubscribe test would pass vacuously).
+
+### Cleared (validated — not defects)
+
+GUI/tray/CLI capability gating (interfaces registered unconditionally, setters handle `NotSupported` gracefully — no UnknownMethod risk); merge-vs-replace snapshot safety (`update_tv_cached_state` guards optional fields, CEC always populates power/inputs); all `CecConnection::new` call sites updated; `switch_input`/`SetStreamPath` target-address math; NixOS `pulse8-cec.nix`/`module.nix` udev/DeviceAllow/inputattach wiring; `parse_hdmi_input` `n << 12` overflow (range-guarded 1..=15 → max `0xF000`); no panics/unwraps in production CEC code; no CLAUDE.md violations (i18n, spelling, plan-refs).
