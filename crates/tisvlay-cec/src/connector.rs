@@ -303,9 +303,12 @@ mod tests {
         // "option only visible in edit mode" GUI bug.
         let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
         let rows = connector(PowerStatus::On).display_config(&cfg);
+        // All three `UserInput` fields show even though only `device` is
+        // stored — the other two fall back to their schema defaults. Assert on
+        // the effective value, not the (tweakable) label copy.
+        assert_eq!(rows.len(), 3, "every UserInput field shows: {rows:?}");
         assert!(
-            rows.iter()
-                .any(|(label, value)| label == "Screen actions power the TV" && value == "true"),
+            rows.iter().any(|(_, value)| value == "true"),
             "defaulted emulate_screen_via_power shows its effective value: {rows:?}",
         );
     }
