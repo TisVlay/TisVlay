@@ -29,4 +29,4 @@ The kernel's `vivid` driver exposes **virtual CEC adapters** (real `/dev/cecN` n
 
 ## Field testing
 
-Once a CEC adapter that exposes `/dev/cecN` is available, exercise the real path with `cec-ctl` (v4l-utils) alongside the daemon, and grow `firmware-quirks.md` from what surfaces.
+Exercise the real path with `cec-ctl` (v4l-utils) alongside the daemon — validated on the LG C3 via a Pulse-Eight USB-CEC adapter — and grow `firmware-quirks.md` from what surfaces.

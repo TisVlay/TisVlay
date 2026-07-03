@@ -83,4 +83,4 @@ CEC needs the kernel to expose a `/dev/cecN` node, which needs both the `cec` co
 
 ## Quirks
 
-A `firmware-quirks.md` (Symptom → Root Cause → Fix → Regression-Coverage) will grow here as real-hardware field testing surfaces issues — none recorded yet, since validation waits on a CEC adapter that exposes `/dev/cecN`.
+A `firmware-quirks.md` (Symptom → Root Cause → Fix → Regression-Coverage) will grow here as real-hardware field testing surfaces issues. None recorded yet: hardware validation on the LG C3 (Pulse-Eight USB-CEC adapter) exercised the full power / wake-in-place / screen-via-power / identity path, and the bugs it surfaced were tisvlay's own (query the TV not the local adapter, initial-push seed, idempotent power-on), not TV-firmware quirks.
