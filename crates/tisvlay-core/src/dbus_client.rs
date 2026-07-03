@@ -2620,7 +2620,15 @@ impl GuiClient {
         let connection = zbus::Connection::session()
             .await
             .context("Failed to connect to session D-Bus")?;
-        let proxy = TisvlayGuiProxy::new(&connection)
+        // `CacheProperties::No` for the same reason as `DaemonClient` /
+        // `SessionClient`: `is_available()` and `version()` are property
+        // reads, so a client built before the GUI is running would
+        // otherwise poison its lazy property cache with a `ServiceUnknown`
+        // `GetAll` that zbus never retries — reporting the GUI offline for
+        // the connection's lifetime even after it appears.
+        let proxy = TisvlayGuiProxy::builder(&connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
             .await
             .context("Failed to create GUI proxy")?;
         Ok(Self { proxy })
