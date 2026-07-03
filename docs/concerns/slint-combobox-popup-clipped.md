@@ -1,7 +1,8 @@
 ## Slint `ComboBox` dropdown clipped by the window
 
-**Priority**: medium
+**Priority**: low (profiles pane fixed; other panes still exposed)
 **Found by**: GUI Profiles/TVs pane review (July 2026); reproduced live via the Slint MCP server (July 2026)
+**Status**: mitigated in the profiles pane with a custom flip-up dropdown (`ThemedSelect`); the stock `ComboBox` panes (`tvs_pane`, `pairing_wizard`, `schema_form`) still clip.
 
 ### Reproduced
 
@@ -39,16 +40,17 @@ Notably, winit#4543's tested platforms include **KDE Plasma on Wayland — `tisv
 
 ### Risk
 
-Medium. Confirmed real reachability impact, not just cosmetic: a `ComboBox` sitting at the bottom of a scrollable field list drops a dropdown that clips off-window, and the hidden options can't be scrolled into view within the clipped popup. The user can still reach them by scrolling the field list up first (so the row isn't flush against the window edge) or by enlarging the window — but nothing signals that, so it reads as a bug. No data-corruption risk; the current selection and the visible options still commit correctly.
+Low, now that the field-dense profiles pane is fixed. The remaining exposure is the stock-`ComboBox` panes (`tvs_pane`, `pairing_wizard`, `schema_form`), whose selectors are fewer and rarely sit flush against the window's bottom edge. Where a stock `ComboBox` does clip, the hidden options can't be scrolled into view within the clipped popup (Slint blocks scroll while a popup is open — an open `PopupWindow` is pointer-modal, the same modality native Qt/KDE combos have), so the workaround is to enlarge the window. No data-corruption risk; the current selection and the visible options still commit correctly.
 
-### Mitigation options
+### Mitigation
 
-- **Bottom-space reservation (applied, but insufficient alone).** The profile field editor reserves one dropdown's height of empty scrollable slack below its fields card (`Design.combobox-popup-room`, used in `profiles_pane.slint`). Verified via the Slint MCP: scrolling the list down first *does* let the bottom row's dropdown open fully in-window. **But QA found it doesn't help in practice** — Slint blocks vertical scroll while a popup is open (an open `PopupWindow` is pointer-modal: `window.rs::process_mouse_input` swallows any pointer event outside the popup rect, scroll included — the same modality native Qt/KDE combos have). So a user who opens a bottom-edge dropdown and sees it cut off cannot scroll to fix it, and no scroll-based fix is possible. The reservation is only a substrate. The intended follow-up (next commit) is a **custom `ComboBox` built on `ComboBoxBase` that flips its popup upward when the row sits low in the window** — matching native toolkits, which keep the popup on-screen rather than clipping it. It also doesn't cover the other panes (`tvs_pane`, `pairing_wizard`, `schema_form`). Remove all of it when the upstream native-popup fix lands.
-- **Qt backend.** Slint's Qt backend renders real popup windows and sidesteps this entirely — but adopting it swaps the whole rendering path and pulls a Qt dependency, disproportionate here. Rejected.
-- **Avoid, don't rebuild.** A hand-rolled in-window overlay (the toggletip overlay pattern already used for KDE-style contextual help) would dodge `PopupWindow` clipping but means re-implementing keyboard nav, focus, and dismiss for a stock widget. Not worth it here.
+- **Flip-up overlay (applied to the profiles pane).** `crates/tisvlay-gui/ui/globals/select.slint` adds `ThemedSelect` — a drop-in for `ComboBox` on the `model`/`current-value`/`selected` subset — whose dropdown is an in-window overlay (`SelectOverlay` at the AppWindow root), **not** a Slint `PopupWindow`. Mirroring the [Help overlay](../../crates/tisvlay-gui/ui/globals/help.slint), it escapes the detail's clipping ScrollView, reads the window size, and **flips upward when the row sits low in the window** — matching native Qt/KDE, which keep the dropdown on-screen. Verified via the Slint MCP: a bottom-edge row flips up fully in-window, a top row opens downward, click-outside dismisses, and selection commits both ways (`accessibleValue` round-trip). `ComboBoxBase` is not exported from std-widgets, so selection/keyboard is re-implemented (arrow/enter/escape via the overlay's FocusScope). Remove `select.slint` and revert the panes to stock `ComboBox` when the upstream native-popup fix lands.
+- **Not yet migrated:** `tvs_pane`, `pairing_wizard`, `schema_form` still use stock `ComboBox`. Migrate them to `ThemedSelect` if their selectors start clipping, or leave them until the upstream fix.
+- **Qt backend (rejected).** Slint's Qt backend renders real popup windows and sidesteps this entirely — but adopting it swaps the whole rendering path and pulls a Qt dependency, disproportionate here.
 
 ### Re-evaluation triggers
 
 - winit#4543 merges → watch slint#11740 to consume it, then bump Slint (coordinate with the exact-version pin — see [Slint `unstable-winit-030` feature dependency](slint-unstable-winit-030.md)). Wayland/KDE is covered by #4543; X11 users would still wait.
-- A Slint release closes [#2375](https://github.com/slint-ui/slint/issues/2375) or ships #11740 → drop this concern, remove the `Design.combobox-popup-room` reservation from `profiles_pane.slint` (and the token), and re-verify the "On DPMS on" dropdown at the window's bottom edge.
-- If it becomes worth chasing before then: file a focused upstream repro against #2375 showing #6434's `place_popup` clamp not repositioning a `ComboBox` popup on the winit-Wayland ChildWindow path (with the geometry captured here), and/or extend the bottom-space reservation to the other ComboBox panes (`tvs_pane`, `pairing_wizard`, `schema_form`).
+- A Slint release closes [#2375](https://github.com/slint-ui/slint/issues/2375) or ships #11740 → drop this concern, delete `select.slint`, revert the profiles pane to stock `ComboBox`, and re-verify the "On DPMS on" dropdown at the window's bottom edge.
+- A stock-`ComboBox` selector in `tvs_pane` / `pairing_wizard` / `schema_form` starts clipping → migrate that pane to `ThemedSelect`.
+- If worth chasing upstream: file a focused repro against #2375 showing #6434's `place_popup` clamp not repositioning a `ComboBox` popup on the winit-Wayland ChildWindow path (with the geometry captured here).

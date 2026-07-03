@@ -1,0 +1,313 @@
+// Flip-aware dropdown select, rendered as an in-window overlay (NOT a
+// Slint PopupWindow). Same rationale as the Help overlay (help.slint):
+// a PopupWindow is drawn inside its own window and clips at the window
+// edge — Slint can't paint a popup past the window, and the #6434
+// placement clamp doesn't reposition it on the winit-Wayland path
+// (docs/concerns/slint-combobox-popup-clipped.md). Native Qt/KDE combos
+// keep the dropdown on-screen by flipping it upward near the bottom; a
+// root overlay lets us do the same: it escapes the detail's clipping
+// ScrollView, sees the window size for edge-aware placement, and never
+// grabs a modal focus.
+//
+// A `ThemedSelect` button pushes its options + absolute anchor geometry
+// to the `Select` global and opens; the single `SelectOverlay` at the
+// AppWindow root reads it and draws the list — below the anchor, flipped
+// above when there's no room, clamped into the window. Picking routes
+// back to the owning button by id.
+//
+// Drop-in for `ComboBox` on the `model` / `current-value` / `selected`
+// subset the panes use.
+
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+
+// Absolute (window-space) geometry of the button the list anchors to.
+export struct SelectAnchor {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+export global Select {
+    // Open state + the active request's data.
+    in-out property <bool> open;
+    in-out property <[string]> options;
+    in-out property <string> current-value;
+    in-out property <SelectAnchor> anchor;
+    // Which button owns the open list (routes the pick back to it).
+    in-out property <int> owner;
+    in-out property <int> next-id: 1;
+    // Keyboard cursor within the open list.
+    in-out property <int> highlight;
+    // Bumped on a pick; the owning button reads `picked-value` in its
+    // change handler and re-emits `selected`.
+    in-out property <int> pick-tick;
+    in-out property <string> picked-value;
+
+    // Hand each button a stable id once, at init.
+    public function claim-id() -> int {
+        root.next-id += 1;
+        return root.next-id - 1;
+    }
+
+    public function open-for(id: int, opts: [string], current: string, a: SelectAnchor) {
+        root.owner = id;
+        root.options = opts;
+        root.current-value = current;
+        root.anchor = a;
+        root.highlight = 0;
+        root.open = true;
+    }
+
+    public function move(delta: int) {
+        if (root.open && root.options.length > 0) {
+            root.highlight = (root.highlight + delta).clamp(0, root.options.length - 1);
+        }
+    }
+
+    public function pick(v: string) {
+        root.picked-value = v;
+        root.pick-tick += 1;
+        root.open = false;
+    }
+
+    public function pick-highlighted() {
+        if (root.open && root.highlight >= 0 && root.highlight < root.options.length) {
+            root.pick(root.options[root.highlight]);
+        }
+    }
+
+    public function close() {
+        root.open = false;
+    }
+}
+
+// One option row inside the open list.
+component SelectRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-current;
+    in property <bool> is-cursor;
+
+    height: Design.size-input;
+    background: root.is-cursor || touch.has-hover ? Theme.row-hover : transparent;
+    border-radius: Design.radius-control;
+
+    callback clicked();
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: Design.gap-tight;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: root.label;
+            color: root.is-current ? Theme.accent : Theme.text;
+            font-size: Design.font-meta;
+            overflow: elide;
+        }
+        // Check glyph on the currently-selected option.
+        Text {
+            vertical-alignment: center;
+            text: root.is-current ? "✓" : "";
+            color: Theme.accent;
+            font-size: Design.font-meta;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Rendered once at the AppWindow root. Fills the window so it can read
+// the window size and place the list edge-aware.
+export component SelectOverlay inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    visible: Select.open;
+
+    property <length> margin: 6px;
+    property <length> pad: 4px;
+    property <length> row-h: Design.size-input;
+    property <int> max-visible: 6;
+    property <int> count: Select.options.length;
+    property <int> vis: min(root.count, root.max-visible);
+    property <length> list-w: Select.anchor.width;
+    property <length> list-h: root.vis * root.row-h + 2 * root.pad + 2 * Design.border-thin;
+
+    // X: aligned under the anchor, clamped into the window.
+    property <length> place-x: clamp(
+        Select.anchor.x,
+        root.margin,
+        max(root.margin, root.width - root.list-w - root.margin));
+    // Y: below the anchor if it fits, else flip above; then clamp so a
+    // list taller than expected still stays fully in the window.
+    property <bool> room-below:
+        Select.anchor.y + Select.anchor.height + root.list-h + root.margin <= root.height;
+    property <length> raw-y: root.room-below
+        ? Select.anchor.y + Select.anchor.height
+        : Select.anchor.y - root.list-h;
+    property <length> place-y: clamp(
+        root.raw-y,
+        root.margin,
+        max(root.margin, root.height - root.list-h - root.margin));
+
+    // Scrim: dismiss on click outside, and swallow wheel scroll so the
+    // list stays anchored (the background can't scroll out from under it).
+    if Select.open: TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            Select.close();
+        }
+        scroll-event(e) => {
+            return accept;
+        }
+    }
+
+    // The list surface.
+    if Select.open: Rectangle {
+        x: root.place-x;
+        y: root.place-y;
+        width: root.list-w;
+        height: root.list-h;
+        background: Theme.surface;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: Theme.drop-shadow;
+        drop-shadow-offset-y: 4px;
+
+        // Grabs focus while open so Up/Down/Enter/Escape work. This block
+        // is (re)created each time the list opens, so focusing in `init`
+        // fires on every open; it's released when the block tears down.
+        key-scope := FocusScope {
+            init => {
+                self.focus();
+            }
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    Select.move(-1);
+                    return accept;
+                } else if (event.text == Key.DownArrow) {
+                    Select.move(1);
+                    return accept;
+                } else if (event.text == Key.Return) {
+                    Select.pick-highlighted();
+                    return accept;
+                } else if (event.text == Key.Escape) {
+                    Select.close();
+                    return accept;
+                }
+                return reject;
+            }
+
+            VerticalLayout {
+                padding: root.pad;
+                for opt[i] in Select.options: SelectRow {
+                    label: opt;
+                    is-current: opt == Select.current-value;
+                    is-cursor: i == Select.highlight;
+                    clicked => {
+                        Select.pick(opt);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The visible select button — a drop-in for `ComboBox` on the subset the
+// panes use (`model` / `current-value` / `selected`).
+export component ThemedSelect inherits Rectangle {
+    in property <[string]> model;
+    in property <string> current-value;
+    callback selected(value: string);
+
+    property <int> id;
+    init => {
+        self.id = Select.claim-id();
+    }
+
+    min-width: 120px;
+    height: Design.size-input;
+    horizontal-stretch: 1;
+    background: Theme.surface2;
+    border-color: root.is-open ? Theme.accent : (touch.has-hover ? Theme.border-strong : Theme.border);
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    forward-focus: fs;
+
+    accessible-role: combobox;
+    accessible-expandable: true;
+    accessible-expanded: root.is-open;
+    accessible-value: root.current-value;
+    accessible-action-expand => {
+        root.open-list();
+    }
+
+    property <bool> is-open: Select.open && Select.owner == root.id;
+
+    // Read absolute-position only inside event handlers (post-layout) —
+    // an eager binding trips Slint's layout-cache reentrancy panic (same
+    // rule the Help overlay follows).
+    function open-list() {
+        Select.open-for(
+            root.id,
+            root.model,
+            root.current-value,
+            { x: root.absolute-position.x, y: root.absolute-position.y, width: root.width, height: root.height });
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: Design.gap-tight;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: root.current-value;
+            color: Theme.text;
+            font-size: Design.font-meta;
+            overflow: elide;
+        }
+        Text {
+            vertical-alignment: center;
+            text: "▾";
+            color: Theme.text-dim;
+            font-size: Design.font-meta;
+        }
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return
+                || event.text == " "
+                || event.text == Key.DownArrow) {
+                root.open-list();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.focus();
+            root.open-list();
+        }
+    }
+
+    // A pick from the overlay routes back here by owner id.
+    property <int> pick-mirror: Select.pick-tick;
+    changed pick-mirror => {
+        if (Select.owner == root.id) {
+            root.selected(Select.picked-value);
+        }
+    }
+}

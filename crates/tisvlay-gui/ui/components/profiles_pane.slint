@@ -18,7 +18,8 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { ComboBox, ScrollView, SpinBox } from "std-widgets.slint";
+import { ScrollView, SpinBox } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
@@ -406,7 +407,7 @@ component ProfileFieldRowEnum inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ComboBox {
+                ThemedSelect {
                     model: root.entry.options;
                     current-value: root.entry.current-value;
                     selected(v) => { Profiles.value-edited(root.entry.field-name, v); }
@@ -996,19 +997,6 @@ component ProfileDetail inherits Rectangle {
                             }
                         }
                     }
-
-                    // Empty scrollable slack below the fields card. A stock
-                    // ComboBox opens its dropdown downward and Slint clips it
-                    // at the window's bottom edge (it can't paint a popup past
-                    // its own window). This slack is the substrate for keeping
-                    // a bottom-edge row's popup on-screen — but on its own it's
-                    // insufficient: vertical scroll is blocked while a popup is
-                    // open (as in native Qt/KDE), so the user can't scroll a
-                    // cut-off dropdown into view after opening it. The follow-up
-                    // is a custom ComboBox that flips its popup upward near the
-                    // window bottom. Remove both when the upstream native-popup
-                    // fix lands — docs/concerns/slint-combobox-popup-clipped.md.
-                    Rectangle { height: Design.combobox-popup-room; }
                 }
             }
         }
