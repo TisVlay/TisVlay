@@ -15,8 +15,10 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-None currently in flight. When a plan is in flight, list it here with
-a one-line summary of the work it covers:
+- [`cec-permission-diagnostics.md`](cec-permission-diagnostics.md) — typed pairing-failure reason payload (`a{sv}` detail dict + namespaced codes) surfacing CEC `/dev/cecN` permission errors end-to-end, plus a permission-only warning badge on the discovery row.
+
+When a plan is in flight, list it here with a one-line summary of the
+work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short
 >   description of what's landing and why a multi-commit PR
