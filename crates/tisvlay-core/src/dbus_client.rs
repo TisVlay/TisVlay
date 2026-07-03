@@ -108,12 +108,15 @@ pub enum PairTerminal {
 trait TisvlayManager {
     /// Compile-time version of the running daemon binary.
     ///
-    /// Marked `emits_changed_signal = "false"` so zbus doesn't cache
-    /// the read: const-property caches survive the peer's
-    /// `NameOwnerChanged`, which would let consumers (e.g. the GUI's
-    /// About-pane refresh) report a gone peer as still online. Same
-    /// rationale applies to every other peer `Version` / `ConfigPath`
-    /// property below.
+    /// Marked `emits_changed_signal = "false"` so a stale cached value
+    /// can't survive the peer's `NameOwnerChanged` and report a gone
+    /// peer as still online. Note this annotation only keeps the value
+    /// out of the *stored* cache — the peer proxies are additionally
+    /// built with `CacheProperties::No` (see `DaemonClient` /
+    /// `SessionClient`), because a lazy cache still runs a one-shot
+    /// `GetAll` on first read and a failed one (GUI started before the
+    /// daemon) poisons every later read. Same rationale applies to
+    /// every other peer `Version` / `ConfigPath` property below.
     #[zbus(property(emits_changed_signal = "false"))]
     fn version(&self) -> zbus::Result<String>;
 
@@ -851,9 +854,24 @@ impl DaemonClient {
     /// [`zbus::Connection::session`] / `system` use, so each test gets
     /// an isolated connection.
     pub async fn from_connection(connection: zbus::Connection) -> Result<Self> {
+        // `CacheProperties::No` on both proxies. The default (`Lazily`)
+        // builds a property cache whose one-shot `GetAll` runs against
+        // whatever the destination is at first-read time. When the GUI
+        // starts before the daemon that `GetAll` fails with
+        // `ServiceUnknown`, and zbus records the failure permanently
+        // (`OnceLock`, never retried): every later property read then
+        // short-circuits on `cache.ready()` returning the stored error
+        // instead of falling through to a fresh `Get`. That stranded the
+        // About pane's daemon row at `offline` forever even after the
+        // daemon appeared, while method calls (`GetManagedObjects`)
+        // recovered normally. Neither proxy reads a cacheable property —
+        // `Manager1`'s `Version`/`ConfigPath` are const and must be
+        // fresh, `ObjectManager` has none — so an uncached `Get` is both
+        // correct and free of the poisoned-cache trap.
         let manager = TisvlayManagerProxy::builder(&connection)
             .destination(DAEMON_SERVICE)?
             .path(MANAGER_PATH)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await
             .context("Failed to create D-Bus proxy for tisvlay manager")?;
@@ -861,6 +879,7 @@ impl DaemonClient {
         let object_manager = ObjectManagerProxy::builder(&connection)
             .destination(DAEMON_SERVICE)?
             .path(OBJECT_MANAGER_PATH)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await
             .context("Failed to create D-Bus ObjectManager proxy")?;
@@ -2147,7 +2166,16 @@ impl SessionClient {
     /// a private `dbus-daemon` to bypass `zbus`'s per-process
     /// `OnceCell` cache.
     pub async fn from_connection(connection: zbus::Connection) -> Result<Self> {
-        let proxy = TisvlaySessionProxy::new(&connection)
+        // `CacheProperties::No` for the same reason as `DaemonClient`: a
+        // GUI launched before `tisvlay-session` would otherwise poison
+        // the lazy property cache with a `ServiceUnknown` `GetAll` that
+        // zbus never retries, stranding the About pane's session row at
+        // `offline` even after the service appears. `Session1`'s only
+        // properties (`Version`/`ConfigPath`) are const and must read
+        // fresh, so an uncached `Get` is the correct behavior anyway.
+        let proxy = TisvlaySessionProxy::builder(&connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
             .await
             .context("Failed to create session proxy")?;
 
@@ -3421,5 +3449,64 @@ mod tests {
             chain.contains("ended before") && chain.contains("tv-1"),
             "error should explain the stream-end mode; got: {chain}"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Regression: a DaemonClient built while `org.tisvlay.Daemon` is absent
+    // (the GUI-started-before-the-daemon case) must still read the `Version`
+    // const property once the daemon appears. Before the
+    // `CacheProperties::No` fix, the first (offline) property read lazily
+    // built a property cache whose failed `GetAll` was recorded permanently
+    // (zbus `OnceLock`, never retried); every later read then
+    // short-circuited on `cache.ready()` returning that stored error rather
+    // than doing a fresh `Get`, stranding the About pane's daemon row at
+    // `offline` forever even after the daemon came up. `ConfigPath` shares
+    // the same path; `Version` stands in for both.
+    // ---------------------------------------------------------------------
+    struct FakeManager;
+
+    #[zbus::interface(name = "org.tisvlay.Manager1")]
+    impl FakeManager {
+        #[zbus(property)]
+        fn version(&self) -> String {
+            "9.9.9-test".to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn version_recovers_after_daemon_appears_late() {
+        let bus = tisvlay_test::PrivateBus::shared();
+
+        // GUI-side client connects before any daemon owns the name.
+        let client_conn = bus.connect().await.expect("client connection");
+        let client = DaemonClient::from_connection(client_conn)
+            .await
+            .expect("build client");
+
+        // First read while the daemon is absent — errors, and (pre-fix)
+        // used to poison the property cache for the connection's lifetime.
+        assert!(
+            client.version().await.is_err(),
+            "version() should error while the daemon name is unowned"
+        );
+
+        // Daemon appears: a second connection claims the well-known name
+        // and serves Manager1 at the path the proxy targets.
+        let _daemon_conn = zbus::connection::Builder::address(bus.address())
+            .expect("bus address")
+            .name(DAEMON_SERVICE)
+            .expect("own daemon name")
+            .serve_at(MANAGER_PATH, FakeManager)
+            .expect("serve manager object")
+            .build()
+            .await
+            .expect("build daemon connection");
+
+        // The pre-existing client must now see the daemon as online.
+        let version = client
+            .version()
+            .await
+            .expect("version() must succeed once the daemon appears");
+        assert_eq!(version, "9.9.9-test");
     }
 }
