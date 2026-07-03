@@ -1,8 +1,8 @@
 ## Slint `ComboBox` dropdown clipped by the window
 
-**Priority**: low (profiles pane fixed; other panes still exposed)
+**Priority**: low (resolved app-wide via `ThemedSelect`; kept open only to track the upstream revert)
 **Found by**: GUI Profiles/TVs pane review (July 2026); reproduced live via the Slint MCP server (July 2026)
-**Status**: mitigated in the profiles pane with a custom flip-up dropdown (`ThemedSelect`); the stock `ComboBox` panes (`tvs_pane`, `pairing_wizard`, `schema_form`) still clip.
+**Status**: resolved — every `ComboBox` in the GUI (profiles, `tvs_pane`, `pairing_wizard`, `schema_form`) now uses the custom flip-up `ThemedSelect`, so no stock `PopupWindow` can clip. `ThemedSelect` is `Theme`-tokened (matches the rest of the app + the DE accent). Remove it and revert to stock `ComboBox` when upstream native popups land.
 
 ### Reproduced
 
@@ -44,13 +44,11 @@ Low, now that the field-dense profiles pane is fixed. The remaining exposure is 
 
 ### Mitigation
 
-- **Flip-up overlay (applied to the profiles pane).** `crates/tisvlay-gui/ui/globals/select.slint` adds `ThemedSelect` — a drop-in for `ComboBox` on the `model`/`current-value`/`selected` subset — whose dropdown is an in-window overlay (`SelectOverlay` at the AppWindow root), **not** a Slint `PopupWindow`. Mirroring the [Help overlay](../../crates/tisvlay-gui/ui/globals/help.slint), it escapes the detail's clipping ScrollView, reads the window size, and **flips upward when the row sits low in the window** — matching native Qt/KDE, which keep the dropdown on-screen. Verified via the Slint MCP: a bottom-edge row flips up fully in-window, a top row opens downward, click-outside dismisses, and selection commits both ways (`accessibleValue` round-trip). `ComboBoxBase` is not exported from std-widgets, so selection/keyboard is re-implemented (arrow/enter/escape via the overlay's FocusScope). Remove `select.slint` and revert the panes to stock `ComboBox` when the upstream native-popup fix lands.
-- **Not yet migrated:** `tvs_pane`, `pairing_wizard`, `schema_form` still use stock `ComboBox`. Migrate them to `ThemedSelect` if their selectors start clipping, or leave them until the upstream fix.
+- **Flip-up overlay (`ThemedSelect`, applied app-wide).** `crates/tisvlay-gui/ui/globals/select.slint` adds `ThemedSelect` — a drop-in for `ComboBox` on `model`/`current-value`/`selected` (+ `selected-index` for index-bound consumers, `enabled`) — whose dropdown is an in-window overlay (`SelectOverlay` at the AppWindow root), **not** a Slint `PopupWindow`. Mirroring the [Help overlay](../../crates/tisvlay-gui/ui/globals/help.slint), it escapes the detail's clipping ScrollView, reads the window size, and **flips upward when the row sits low in the window** — matching native Qt/KDE. Selection + keyboard (arrow/enter/escape, modal-while-open, focus-visible ring) are re-implemented since `ComboBoxBase` isn't exported. Colors are `Theme`-tokened so it matches the rest of the app (and the DE accent). **All four ComboBox sites now use it** — `profiles_pane`, `tvs_pane`, `pairing_wizard`, `schema_form` — so the stock `ComboBox` (and the popup clip) is gone from the GUI. Verified via the Slint MCP (flip/dismiss/commit) and headless `slint-viewer` renders.
 - **Qt backend (rejected).** Slint's Qt backend renders real popup windows and sidesteps this entirely — but adopting it swaps the whole rendering path and pulls a Qt dependency, disproportionate here.
 
 ### Re-evaluation triggers
 
 - winit#4543 merges → watch slint#11740 to consume it, then bump Slint (coordinate with the exact-version pin — see [Slint `unstable-winit-030` feature dependency](slint-unstable-winit-030.md)). Wayland/KDE is covered by #4543; X11 users would still wait.
-- A Slint release closes [#2375](https://github.com/slint-ui/slint/issues/2375) or ships #11740 → drop this concern, delete `select.slint`, revert the profiles pane to stock `ComboBox`, and re-verify the "On DPMS on" dropdown at the window's bottom edge.
-- A stock-`ComboBox` selector in `tvs_pane` / `pairing_wizard` / `schema_form` starts clipping → migrate that pane to `ThemedSelect`.
+- A Slint release closes [#2375](https://github.com/slint-ui/slint/issues/2375) or ships #11740 → drop this concern, delete `select.slint`, revert all four panes to stock `ComboBox`, and re-verify the "On DPMS on" dropdown at the window's bottom edge.
 - If worth chasing upstream: file a focused repro against #2375 showing #6434's `place_popup` clamp not repositioning a `ComboBox` popup on the winit-Wayland ChildWindow path (with the geometry captured here).
