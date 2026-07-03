@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::pgettext;
 use parking_lot::Mutex;
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
     AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     SessionAction, SessionClient, SystemProfileBody, UserProfileBody,
@@ -301,23 +301,18 @@ pub(crate) struct UserProfileLayers {
 // Resolved-value walker
 // =============================================================================
 
-/// Outcome of an inherit-chain walk for one field. Carries both the
-/// underlying resolved-to value (as the wire-token string for enum
-/// fields, decimal integer for number fields) and a separate "current
-/// for the row" string. `Inheriting` adds the inherit overlay to
-/// `current_string` so the visual cue shows in the ComboBox and the
-/// `selected()` callback fires even when the user picks the same value
-/// that's already resolved.
+/// Outcome of an inherit-chain walk for one field: the wire-token
+/// string for enum fields, decimal integer for number fields. The
+/// variant records whether the value is set on the profile's own body
+/// (drives the gutter accent + reset glyph) or walked from the default
+/// body / baseline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedValue {
-    /// Field is set on the profile's own body — caller renders the
-    /// value verbatim and shows the gutter accent + reset glyph.
+    /// Field is set on the profile's own body.
     LocallySet { current: String },
     /// Field is `None` on its body — value walked from the default
-    /// body, then the baseline. `resolved` is the underlying token;
-    /// `current` is what the ComboBox displays (resolved + inherit
-    /// overlay for enums; resolved verbatim for numbers).
-    Inheriting { resolved: String, current: String },
+    /// body, then the baseline.
+    Inheriting { current: String },
 }
 
 impl ResolvedValue {
@@ -328,8 +323,9 @@ impl ResolvedValue {
     /// Body-relative current value (what the widget shows).
     pub(crate) fn current(&self) -> &str {
         match self {
-            ResolvedValue::LocallySet { current } => current,
-            ResolvedValue::Inheriting { current, .. } => current,
+            ResolvedValue::LocallySet { current } | ResolvedValue::Inheriting { current } => {
+                current
+            }
         }
     }
 }
@@ -366,8 +362,7 @@ pub(crate) fn resolve_system_field(
         .or_else(|| read_system_field(&layers.baseline, field.wire))
         .unwrap_or_default();
 
-    let current = inherit_overlay(field, &resolved);
-    ResolvedValue::Inheriting { resolved, current }
+    ResolvedValue::Inheriting { current: resolved }
 }
 
 /// User-side mirror of [`resolve_system_field`].
@@ -393,23 +388,7 @@ pub(crate) fn resolve_user_field(
         .or_else(|| read_user_field(&layers.baseline, field.wire))
         .unwrap_or_default();
 
-    let current = inherit_overlay(field, &resolved);
-    ResolvedValue::Inheriting { resolved, current }
-}
-
-/// Build the trailing inherit overlay for an inheriting enum field,
-/// or pass the resolved string through verbatim for non-enum kinds.
-/// The overlay is the visual cue + the workaround for ComboBox's
-/// no-op when `selected(v)` matches the current text — by surfacing
-/// a distinct trailing string at row-build time, picking the
-/// resolved value still fires the callback (different text → state
-/// change → emit). The exact glyph is a presentation detail; only
-/// the "differs from any wire token" property is load-bearing.
-fn inherit_overlay(field: &FieldSpec, resolved: &str) -> String {
-    match field.kind {
-        FieldKind::Enum { .. } => format!("{resolved}\u{00A0}\u{2713}"),
-        FieldKind::Number { .. } => resolved.to_string(),
-    }
+    ResolvedValue::Inheriting { current: resolved }
 }
 
 /// Read one field off a `SystemProfileBody`. Returns `None` when the
@@ -521,6 +500,12 @@ pub(crate) struct ProfileEditorState {
     pub selection: Selection,
     pub system_gen: AtomicU64,
     pub user_gen: AtomicU64,
+    /// The (kind, uuid) whose rows are currently pushed into the Slint
+    /// editor model. `push_editor_rows` updates the model in place only
+    /// when this is unchanged (a value refresh of the same profile); a
+    /// switch to a different profile forces a fresh model so an in-flight
+    /// edit in a reused row can't commit against the new profile.
+    pub displayed: Option<(EditorKind, Uuid)>,
 }
 
 impl std::fmt::Debug for ProfileEditorState {
@@ -730,18 +715,49 @@ fn push_editor_rows(
     kind: EditorKind,
     uuid: Uuid,
 ) {
-    let (raw, can_reset_all) = {
-        let state = editor.lock();
-        match kind {
+    let (raw, can_reset_all, same_profile) = {
+        let mut state = editor.lock();
+        let (raw, can_reset_all) = match kind {
             EditorKind::System => build_system_rows(&state.system, uuid),
             EditorKind::User => build_user_rows(&state.user, uuid),
-        }
+        };
+        // Is this a refresh of the profile already shown, or a switch to a
+        // different one? All profiles of a kind share the same field schema,
+        // so field-name shape alone can't tell them apart.
+        let same_profile = state.displayed == Some((kind, uuid));
+        state.displayed = Some((kind, uuid));
+        (raw, can_reset_all, same_profile)
     };
 
     on_ui(&app_weak, move |app| {
         let profiles = app.global::<Profiles>();
         let rows: Vec<ProfileFieldEntry> = raw.into_iter().map(into_slint_entry).collect();
-        profiles.set_editor_fields(ModelRc::new(VecModel::from(rows)));
+        // Update the model in place only when refreshing the SAME profile
+        // (a value edit / echo) and the field shape is unchanged, so Slint
+        // reuses the existing row elements and keyboard focus survives.
+        // A switch to a different profile replaces the model with fresh
+        // elements — reusing rows across a switch could let an in-flight
+        // edit in a focused row commit against the newly-selected profile.
+        let existing = profiles.get_editor_fields();
+        let same_shape = same_profile
+            && existing.row_count() == rows.len()
+            && rows.iter().enumerate().all(|(i, r)| {
+                existing
+                    .row_data(i)
+                    .is_some_and(|e| e.field_name == r.field_name)
+            });
+        if same_shape {
+            for (i, row) in rows.into_iter().enumerate() {
+                // Only write rows that actually changed — an unchanged
+                // set_row_data still fires a Slint row-changed notification
+                // and re-renders that row.
+                if existing.row_data(i).as_ref() != Some(&row) {
+                    existing.set_row_data(i, row);
+                }
+            }
+        } else {
+            profiles.set_editor_fields(ModelRc::new(VecModel::from(rows)));
+        }
         profiles.set_editor_can_reset_all(can_reset_all);
     });
 }
@@ -1638,16 +1654,12 @@ mod tests {
         };
 
         // Default-set field — inheriting, value from the default body.
-        // The `current` string carries the inherit overlay produced by
-        // `inherit_overlay()` for enum kinds; computing it through that
-        // helper keeps the test from hardcoding the presentation glyph.
         let on_startup = find_system("on_startup");
         let resolved = resolve_system_field(&layers, uuid, on_startup);
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
-                resolved: "screen_off".to_string(),
-                current: inherit_overlay(on_startup, "screen_off"),
+                current: "screen_off".to_string(),
             }
         );
 
@@ -1657,8 +1669,7 @@ mod tests {
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
-                resolved: "power_off".to_string(),
-                current: inherit_overlay(on_shutdown, "power_off"),
+                current: "power_off".to_string(),
             }
         );
     }
@@ -1742,8 +1753,7 @@ mod tests {
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
-                resolved: "300".to_string(),
-                current: "300".to_string(), // no overlay
+                current: "300".to_string(),
             }
         );
     }
@@ -1816,7 +1826,6 @@ mod tests {
         // `current_value` verbatim. Using a sentinel proves that.
         let sentinel_current = "power_on<<sentinel>>";
         let resolved = ResolvedValue::Inheriting {
-            resolved: "power_on".to_string(),
             current: sentinel_current.to_string(),
         };
         let spec = find_system("on_startup");

@@ -18,7 +18,8 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { ComboBox, ScrollView, SpinBox } from "std-widgets.slint";
+import { ScrollView, SpinBox } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
@@ -353,10 +354,9 @@ component ProfileList inherits Rectangle {
 // Reset is only rendered for locally-set rows — inheriting fields
 // can't be "reset" because they already inherit.
 //
-// The inherit overlay on `entry.current-value` for enum rows is the
-// visual inherit cue AND the workaround for `ComboBox.selected(v)`
-// no-op when picked == current. Number rows skip the overlay; the
-// gutter + reset glyph carry the inherit signal alone.
+// `entry.current-value` is the resolved token verbatim for both kinds
+// (enum and number); the inherit cue is the gutter accent + reset glyph,
+// not a marker baked into the value.
 
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;
@@ -406,7 +406,7 @@ component ProfileFieldRowEnum inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ComboBox {
+                ThemedSelect {
                     model: root.entry.options;
                     current-value: root.entry.current-value;
                     selected(v) => { Profiles.value-edited(root.entry.field-name, v); }

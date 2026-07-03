@@ -26,6 +26,7 @@ import { Icons } from "globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "globals/profiles.slint";
 import { Toast, ToastView } from "globals/toast.slint";
 import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
+import { SelectOverlay } from "globals/select.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
@@ -420,4 +421,9 @@ export component AppWindow inherits Window {
     // can place itself against the window bounds. Driven by the `Help`
     // global; see globals/help.slint.
     HelpOverlay { }
+
+    // Flip-aware dropdown overlay for ThemedSelect. Also root-level and
+    // top-most so it escapes pane clipping and stays on-screen (flips up
+    // near the window bottom); see globals/select.slint.
+    SelectOverlay { }
 }

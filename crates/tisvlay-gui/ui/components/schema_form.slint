@@ -13,7 +13,8 @@
 // "password" / "ip" / "mac" / "port" / "int" / "bool" / "select" /
 // "path"). `FieldRenderer` switches on it to pick the right widget.
 
-import { CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
+import { CheckBox, LineEdit } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow } from "../globals/pairing_wizard.slint";
@@ -69,7 +70,7 @@ export component FieldRenderer {
             checked: root.field.value == "true";
             toggled => { root.value-edited(self.checked ? "true" : "false"); }
         }
-        if root.field.field-type == "select": ComboBox {
+        if root.field.field-type == "select": ThemedSelect {
             model: root.field.options;
             current-value: root.field.value;
             selected(v) => { root.value-edited(v); }

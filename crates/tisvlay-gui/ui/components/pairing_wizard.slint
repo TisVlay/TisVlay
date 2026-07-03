@@ -12,7 +12,8 @@
 // callback interfaces and the outer pane forwards them to the
 // global.
 
-import { Button, CheckBox, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
@@ -224,9 +225,8 @@ component StepDiscover {
     /// button so double-clicks can't spawn parallel RPCs.
     in property <bool> manual-lookup-streaming;
     in-out property <int> selected-index;
-    // Index into `supported-vendors`; ComboBox is bound to it via
-    // `current-index <=>` so user picks round-trip without a Rust
-    // callback.
+    // Index into `supported-vendors`; the vendor ThemedSelect shows the
+    // name at this index and writes picks back through `selected-index`.
     in-out property <int> manual-vendor-index;
     in-out property <string> manual-ip;
     callback selection-changed(int);
@@ -431,12 +431,12 @@ component StepDiscover {
                             font-weight: 500;
                         }
                         // ≤ 1 vendor: static chip (no point in a
-                        // single-option dropdown). > 1: ComboBox bound
-                        // by `current-index <=>` — user picks write
-                        // straight back to `manual-vendor-index` with
-                        // no Rust callback in the path. Rust at
-                        // manual-add time reads `supported-vendors[idx]`
-                        // for both id and display name.
+                        // single-option dropdown). > 1: a vendor select
+                        // whose shown value is derived from
+                        // `manual-vendor-index` and whose picks write back
+                        // via `selected-index`. Rust at manual-add time
+                        // reads `supported-vendors[idx]` for both id and
+                        // display name.
                         if root.supported-vendors.length <= 1: Rectangle {
                             background: Theme.surface;
                             border-color: Theme.border-strong;
@@ -458,9 +458,14 @@ component StepDiscover {
                                 }
                             }
                         }
-                        if root.supported-vendors.length > 1: ComboBox {
+                        if root.supported-vendors.length > 1: ThemedSelect {
                             model: root.supported-vendor-names;
-                            current-index <=> root.manual-vendor-index;
+                            // Clamp: the vendor set can shrink under a stale
+                            // index (daemon re-publishes fewer vendors), which
+                            // would otherwise read past the model and show blank.
+                            current-value: root.supported-vendor-names[
+                                root.manual-vendor-index.clamp(0, root.supported-vendor-names.length - 1)];
+                            selected-index(i) => { root.manual-vendor-index = i; }
                         }
                     }
 
@@ -632,9 +637,7 @@ component StepConfigure {
             value-edited(i, v) => { root.field-value-edited(i, v); }
         }
 
-        // System profile — std ComboBox wrapped in a themed border so
-        // the field is always visible. The dropdown uses the platform
-        // style; that's acceptable since it's only briefly visible.
+        // System profile — a ThemedSelect for the initial assignment.
         VerticalLayout {
             spacing: Design.gap-form;
             Text {
@@ -643,7 +646,7 @@ component StepConfigure {
                 font-size: Design.font-meta;
                 font-weight: 500;
             }
-            ComboBox {
+            ThemedSelect {
                 model: root.system-profiles;
                 current-value: root.system-profile == "" ? "default" : root.system-profile;
                 enabled: root.system-profiles.length > 0;

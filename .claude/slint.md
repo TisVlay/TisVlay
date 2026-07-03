@@ -7,28 +7,35 @@ the skill doesn't say outright.
 
 ## MCP server
 
-Slint ships an in-process MCP server in `i-slint-backend-selector`'s
-`mcp` feature. It speaks JSON-RPC over Streamable HTTP at
-`http://127.0.0.1:<port>/mcp`. There's no separate process — the GUI
-binary itself listens.
+Slint ships an in-process MCP server (the `slint/mcp` feature, 1.17+).
+It speaks JSON-RPC over Streamable HTTP at `http://127.0.0.1:<port>/mcp`.
+There's no separate process — the GUI binary itself listens. Fastest
+launch: `GUI_MCP=true just gui-start` (wires the env vars + feature flag
+below), then attach via the project-root `.mcp.json`.
 
 ### Setup gotchas
 
-- **Pin `i-slint-backend-selector` to the exact `slint` version with `=`.**
-  It does not follow semver. Mismatch → build fails. Resolved Slint
-  version on crates.io is `1.16.1`, so:
-  ```toml
-  slint = "1.16"
-  i-slint-backend-selector = { version = "=1.16.1", features = ["mcp"], optional = true }
-  ```
+- **Enable it on the command line, not in `Cargo.toml`.** Pass
+  `--features slint/mcp` to `cargo run`; do *not* declare a crate
+  feature for it. It's a dependency feature (pulls the server via
+  `i-slint-backend-selector/mcp` → `i-slint-backend-testing/mcp`), so
+  keeping it off our own feature list means plain `cargo build` /
+  `--all-features` never drag in its prost/protox stack.
+
+- **No explicit init call.** `BackendSelector::select()` auto-starts the
+  server when the binary is built with `slint/mcp` and `SLINT_MCP_PORT`
+  is set (`i-slint-backend-selector`'s `select_internal` →
+  `init_testing_backends` → `mcp_server::init()`). Absent the env var,
+  init is a no-op — so a `slint/mcp` build without the port is inert.
 
 - **`SLINT_EMIT_DEBUG_INFO=1` must be set at *build time*, not just at
   runtime.** The element tree is dead without it — `get_element_tree`
   returns only the root and `query_element_descendants` returns empty
-  arrays. Set it on the `cargo build` invocation:
+  arrays. With `cargo run` (build + run in one), set both on the
+  invocation:
   ```sh
-  SLINT_EMIT_DEBUG_INFO=1 cargo build -p tisvlay-gui --features dev-mcp
-  SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315 ./target/debug/tisvlay-gui
+  SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315 \
+      cargo run -p tisvlay-gui --features slint/mcp
   ```
 
 - **Disabling Slint's `accessibility` default feature does NOT break
@@ -313,19 +320,15 @@ pattern above. The pure-callback path is fine for one-shot lookups
 called from event handlers (`=>` arrows); just don't trust it as a
 binding source for state that depends on multiple properties.
 
-### `dev-mcp` feature gating
+### Keeping MCP out of production without a crate feature
 
-Keep the MCP server gated behind a Cargo feature. Production builds
-should ship without it. My pattern:
-
-```toml
-[features]
-dev-mcp = ["dep:i-slint-backend-selector"]
-```
-
-Then build with `--features dev-mcp` for development. Remember: the
-feature pulls the dependency in; the env vars (`SLINT_EMIT_DEBUG_INFO`,
-`SLINT_MCP_PORT`) actually activate it at runtime.
+The MCP server must never ship in production builds, but it does *not*
+need a crate feature to gate it. `slint/mcp` is a dependency feature
+passed on the command line (`cargo run --features slint/mcp`), so a
+plain `cargo build` — and `--all-features`, since it's not one of our
+crate's own features — never compiles it in. The env vars
+(`SLINT_EMIT_DEBUG_INFO`, `SLINT_MCP_PORT`) then activate it at runtime;
+without them the built-in server is inert.
 
 ## Operational rituals
 

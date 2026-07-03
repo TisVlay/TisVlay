@@ -33,15 +33,14 @@ test:
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
 
-# Feature subset for CI's coverage and clippy paths. Excludes
-# `tisvlay-gui`'s `dev-mcp`, which pulls
-# `i-slint-backend-testing/mcp`'s prost/pbjson/protox stack and busts
-# the runner's ~14 GB free-disk ceiling. Audit: every `#[cfg(feature
-# = "X")]` block in `crates/*/src/` is covered either directly by
-# `mock` or transitively (`discovery`, `dbus`, `logging` are reached
-# through `tisvlayd/mock`'s default + workspace consumers). prek
-# locally still runs `--all-features` clippy, which is the
-# dep-resolution gate for `dev-mcp`.
+# Minimal feature subset for CI's coverage + clippy path (`test-ci`).
+# Chosen as the smallest set that still exercises every `#[cfg(feature
+# = "X")]` block in `crates/*/src/` — covered either directly by `mock`
+# or transitively (`discovery`, `dbus`, `logging` are reached through
+# `tisvlayd/mock`'s default + workspace consumers). Keeping it minimal
+# holds the coverage-instrumented build under the runner's ~14 GB
+# free-disk ceiling; `--all-features` would compile far more under
+# instrumentation. prek locally still runs `--all-features` clippy.
 #
 # When to extend:
 # - New `#[cfg(feature = "X")]` block in `src/` where X isn't already
@@ -257,9 +256,8 @@ cov-ratchet lines=cov_baseline_lines: _cov-collect
 # "user" = session/user bus, "system" = system bus (daemon needs sudo).
 bus := env("BUS", "user")
 
-# GUI only. "true" → build with the `dev-mcp` Cargo feature and start
-# the Slint MCP server on http://127.0.0.1:9315/mcp. See
-# `.claude/slint.md`.
+# GUI only. "true" → build with `--features slint/mcp` and start the
+# Slint MCP server on http://127.0.0.1:9315/mcp. See `.claude/slint.md`.
 gui_mcp := env("GUI_MCP", "false")
 
 _daemon_log := "debug,zbus=warn,rustls=warn,tungstenite=warn"
@@ -310,7 +308,7 @@ tray-start:
 gui-start:
     {{ if gui_mcp == "true" { "SLINT_MCP_PORT=9315" } else { "" } }} \
         RUST_LOG="{{ _gui_log }}" \
-        cargo run {{ if gui_mcp == "true" { "--features dev-mcp" } else { "" } }} \
+        cargo run {{ if gui_mcp == "true" { "--features slint/mcp" } else { "" } }} \
         --bin tisvlay-gui -- {{ _user_flag }}
 
 # Kill all running dev processes

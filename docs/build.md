@@ -16,7 +16,7 @@ There's a residual dual-compile that *can't* be eliminated on stable today (veri
 
 The mock-feature subset CI uses (`tisvlay-backends/mock,tisvlayd/mock`) lives as `ci_features` in the [`justfile`](../justfile). Comment block on the variable is the canonical place for rationale and extension triggers — when to add a new feature to the list, when a new workspace crate's mock-style feature should join, etc.
 
-Audit (as of writing): every `#[cfg(feature = "X")]` block in `crates/*/src/` is reached by `mock` or its transitive defaults (`discovery`, `dbus`, `logging` are activated through `tisvlayd/mock`'s consumer chain). `dev-mcp` on `tisvlay-gui` is dep-only — it gates `i-slint-backend-selector`'s registration but no source code, so the mock subset doesn't lose lint coverage on workspace source.
+Audit (as of writing): every `#[cfg(feature = "X")]` block in `crates/*/src/` is reached by `mock` or its transitive defaults (`discovery`, `dbus`, `logging` are activated through `tisvlayd/mock`'s consumer chain). The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source, so the mock subset loses no lint coverage by omitting it.
 
 Local `prek` still runs `--all-features` clippy via `just clippy` to catch dev-only feature paths CI doesn't lint.
 
@@ -63,7 +63,7 @@ Smaller offenders (`tiny-skia`, `foldhash`, `pastey`, `zune-*`, `dirs-sys`) trac
 
 ### Default-feature resolution
 
-cargo-deny resolves with default features rather than `--all-features`. Default-features matches the dep graph we actually distribute. Dev-only features (`dev-mcp` on `tisvlay-gui`) pull `i-slint-backend-testing/mcp`'s prost chain which contains MPL-2.0 crates we don't audit for production. Excluding them from the licenses gate matches what's actually shipped.
+cargo-deny resolves with default features rather than `--all-features`, matching the dep graph we actually distribute. The MCP debug stack (`i-slint-backend-testing/mcp`'s prost chain, with MPL-2.0 crates we don't audit for production) is reachable only via an ad-hoc `cargo run --features slint/mcp` — a `slint` dependency feature no workspace crate enables — so it's absent from both default- and all-feature resolution and never reaches the licenses gate.
 
 cargo-deny 0.18+ also excludes dev-deps from `bans` and `licenses` by default — no extra `multiple-versions-include-dev` knob needed.
 

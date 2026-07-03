@@ -32,7 +32,7 @@ Tooltips + accessible-labels are the harder-than-it-looks piece — make sure ea
 
 ## What to leave alone
 
-The editor's inherit-overlay marker on enum field rows (in `inherit_overlay()` in `profiles.rs`) is a different concern from the default-profile indicator. It happens to reuse the same `\u{2713}` codepoint for visual cohesion with the master-list marker, but its mechanism (defeat the `ComboBox.selected(v)` no-op by ensuring the displayed string differs from any wire token) requires a string-level differentiator. Replacing it with an image widget would break the no-op-defeating mechanism — keep the codepoint there.
+Don't reintroduce a trailing marker into an inheriting enum row's value. Editor enum rows now render the resolved token verbatim (`ThemedSelect` fires `selected` on every pick, so there's no `ComboBox` same-value no-op to defeat, and the gutter accent + reset glyph carry the inherit cue). A trailing glyph in the value would make it differ from every option token and suppress the dropdown's current-selection accent again — the master-list default-profile emblem is a separate surface.
 
 ## Triggers for picking this up
 

@@ -875,8 +875,8 @@ export component InlineError inherits Rectangle {
 // Use for any value mirrored on the daemon as a numeric property and
 // driven via a "live preview" slider thumb (volume, backlight,
 // future contrast / brightness / color balance). For discrete
-// selection inputs use std-widgets `ComboBox` — the flicker pattern
-// doesn't apply.
+// selection inputs use `ThemedSelect` (globals/select.slint) — the
+// flicker pattern doesn't apply.
 
 export component OptimisticSlider {
     /// Gated authoritative value from the model (Rust drives it

@@ -46,6 +46,11 @@
           # (config.boot.kernelPackages) so vermagic matches at runtime. See
           # services.tisvlay.cec.pulse8.enable.
           pulse8-cec = pkgs.linuxPackages.callPackage ./packaging/nix/pulse8-cec.nix { };
+
+          # slint-viewer pinned to the workspace's slint version (1.17.0);
+          # nixpkgs' is 1.16.1, which predates `--check` / `--screenshot`.
+          # Exposed so the devShell and CI can share one definition.
+          slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
         };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
@@ -64,6 +69,7 @@
         devShells.default =
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
+            slintViewer = self.packages.${system}.slint-viewer;
           in
           pkgs.mkShell {
             packages =
@@ -104,6 +110,9 @@
                 # instead of failing to find a bundled binary.
                 # Tracks slint-ui/slint#2577 (NixOS LSP discovery).
                 slint-lsp
+                # slint-viewer pinned to 1.17.0 (packaging/nix/slint-viewer.nix)
+                # for headless `--check` / `--screenshot` during GUI work.
+                slintViewer
                 socat
                 tcpdump
                 wakeonlan
