@@ -366,7 +366,7 @@ pub(crate) fn resolve_system_field(
         .or_else(|| read_system_field(&layers.baseline, field.wire))
         .unwrap_or_default();
 
-    let current = inherit_overlay(field, &resolved);
+    let current = inherit_display(&resolved);
     ResolvedValue::Inheriting { resolved, current }
 }
 
@@ -393,23 +393,21 @@ pub(crate) fn resolve_user_field(
         .or_else(|| read_user_field(&layers.baseline, field.wire))
         .unwrap_or_default();
 
-    let current = inherit_overlay(field, &resolved);
+    let current = inherit_display(&resolved);
     ResolvedValue::Inheriting { resolved, current }
 }
 
-/// Build the trailing inherit overlay for an inheriting enum field,
-/// or pass the resolved string through verbatim for non-enum kinds.
-/// The overlay is the visual cue + the workaround for ComboBox's
-/// no-op when `selected(v)` matches the current text — by surfacing
-/// a distinct trailing string at row-build time, picking the
-/// resolved value still fires the callback (different text → state
-/// change → emit). The exact glyph is a presentation detail; only
-/// the "differs from any wire token" property is load-bearing.
-fn inherit_overlay(field: &FieldSpec, resolved: &str) -> String {
-    match field.kind {
-        FieldKind::Enum { .. } => format!("{resolved}\u{00A0}\u{2713}"),
-        FieldKind::Number { .. } => resolved.to_string(),
-    }
+/// Display string for an inheriting field: the resolved token, verbatim.
+///
+/// Enum rows once appended a trailing `"\u{00A0}\u{2713}"` marker so the
+/// stock `ComboBox`'s `selected(v)` would still fire when the user re-picked
+/// the already-resolved value (a same-text pick was a no-op), doubling as an
+/// inherit cue. `ThemedSelect` fires `selected` on every pick, and the gutter
+/// accent + reset glyph carry the inherit cue — so the marker is gone. It
+/// also kept an inheriting enum row's value from matching any option token,
+/// which suppressed the dropdown's current-selection accent.
+fn inherit_display(resolved: &str) -> String {
+    resolved.to_string()
 }
 
 /// Read one field off a `SystemProfileBody`. Returns `None` when the
@@ -1657,16 +1655,16 @@ mod tests {
         };
 
         // Default-set field — inheriting, value from the default body.
-        // The `current` string carries the inherit overlay produced by
-        // `inherit_overlay()` for enum kinds; computing it through that
-        // helper keeps the test from hardcoding the presentation glyph.
+        // `current` is the resolved token verbatim (via `inherit_display`);
+        // computing it through the helper keeps the test in lockstep with
+        // the resolver rather than hardcoding the display string.
         let on_startup = find_system("on_startup");
         let resolved = resolve_system_field(&layers, uuid, on_startup);
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
                 resolved: "screen_off".to_string(),
-                current: inherit_overlay(on_startup, "screen_off"),
+                current: inherit_display("screen_off"),
             }
         );
 
@@ -1677,7 +1675,7 @@ mod tests {
             resolved,
             ResolvedValue::Inheriting {
                 resolved: "power_off".to_string(),
-                current: inherit_overlay(on_shutdown, "power_off"),
+                current: inherit_display("power_off"),
             }
         );
     }
