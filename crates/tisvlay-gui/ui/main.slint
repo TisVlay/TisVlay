@@ -25,12 +25,13 @@ import { Errors } from "globals/errors.slint";
 import { Icons } from "globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "globals/profiles.slint";
 import { Toast, ToastView } from "globals/toast.slint";
+import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, Tray, TrayNotificationSettings, PairingWizard, EditPane, Clipboard, Errors, Icons, Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry, Toast }
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, Tray, TrayNotificationSettings, PairingWizard, EditPane, Clipboard, Errors, Icons, Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry, Toast, Help }
 
 export enum Pane {
     tvs,
@@ -122,6 +123,22 @@ export component AppWindow inherits Window {
     callback view-notices-clicked();
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
+    // Navigating panes retires any open help bubble: the owning info
+    // button is gone (or no longer hovered/focused), so its own
+    // hover-leave / focus-out dismiss can't fire — without this the
+    // bubble would linger over the new pane.
+    changed active-pane => {
+        Help.dismiss();
+    }
+    // Resizing moves the help anchor; nudge the overlay to re-read it
+    // (the window's own width/height are safe to observe — unlike a
+    // child's absolute-position).
+    changed width => {
+        Help.reposition-tick += 1;
+    }
+    changed height => {
+        Help.reposition-tick += 1;
+    }
 
     // Browser-style history navigation (Alt+Left/Right, mouse back/forward).
     // `navigate` is the single choke point for pane changes (sidebar +
@@ -292,9 +309,19 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        // Hover hint: "Reload" alone doesn't convey the
+                        // from-disk power-user scope.
+                        reload-help := HelpTrigger {
+                            width: 100%;
+                            height: 100%;
+                            text: @tr("Reload the daemon's config from disk — picks up edits made outside the app.");
+                        }
                         reload-touch := TouchArea {
                             enabled: root.daemon-available;
                             clicked => { Daemon.reload-config(); }
+                            changed has-hover => {
+                                reload-help.set-hover(self.has-hover);
+                            }
                         }
                     }
 
@@ -387,4 +414,10 @@ export component AppWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: 24px;
     }
+
+    // Contextual-help bubble overlay. Rendered last (top-most) and at
+    // the window root so it escapes the panes' clipping ScrollView and
+    // can place itself against the window bounds. Driven by the `Help`
+    // global; see globals/help.slint.
+    HelpOverlay { }
 }

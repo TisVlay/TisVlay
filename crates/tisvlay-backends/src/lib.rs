@@ -239,6 +239,37 @@ impl BackendRegistry {
             .unwrap_or(false)
     }
 
+    /// Whether this TV's backend keeps a live connection while the TV is in
+    /// standby (CEC's bus stays reachable; a network socket does not). The
+    /// daemon uses this to keep the connection — and `Connected` — across a
+    /// power-off, treating power and connection as separate axes.
+    pub fn reachable_in_standby(&self, tv_config: &TvConfig) -> bool {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.reachable_in_standby(v))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether this TV's backend fulfils screen-blank actions by powering the
+    /// device (emulates `SCREEN` via `POWER`). The daemon uses this to
+    /// advertise `SCREEN` and dispatch `screen_off`/`screen_on` as
+    /// `power_off`/`power_on` for a device with no discrete screen-blank
+    /// (HDMI-CEC).
+    pub fn emulate_screen_via_power(&self, tv_config: &TvConfig) -> bool {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.emulate_screen_via_power(v))
+            })
+            .unwrap_or(false)
+    }
+
     /// Wake a TV from standby.
     pub async fn wake_tv(&self, tv_config: &TvConfig) -> tisvlay_core::Result<()> {
         let connector = self.get_connector(&tv_config.vendor)?;
@@ -384,6 +415,26 @@ fn register_lg(registry: &mut BackendRegistry, discovery: &tisvlay_core::Discove
     );
 }
 
+/// Register the HDMI-CEC backend on an existing registry.
+///
+/// CEC discovery is enumerating the host's `/dev/cecN` nodes — no network
+/// or SSDP — so it's wired unconditionally (not behind the `discovery`
+/// feature, which gates only the network backends' SSDP). Shared between
+/// the production and test registries so both wire CEC identically.
+fn register_cec(registry: &mut BackendRegistry) {
+    use tisvlay_core::TvDiscovery;
+    let discovery = Arc::new(tisvlay_cec::CecDiscovery::new());
+    let discover_fn: Arc<DiscoverFn> = Arc::new(move |timeout| {
+        let discovery = Arc::clone(&discovery);
+        Box::pin(async move { discovery.discover(timeout).await })
+    });
+    registry.register(
+        Arc::new(tisvlay_cec::CecBackend::new()),
+        Arc::new(tisvlay_cec::CecConnector::new()),
+        Some(discover_fn),
+    );
+}
+
 /// Register the mock backend (for production use) on an existing
 /// registry. The mock's state is private and inaccessible, so
 /// discovery returns an empty list.
@@ -415,6 +466,7 @@ pub fn create_registry(discovery: &tisvlay_core::DiscoveryConfig) -> BackendRegi
     let mut registry = BackendRegistry::new();
 
     register_lg(&mut registry, discovery);
+    register_cec(&mut registry);
 
     #[cfg(feature = "mock")]
     register_mock_production(&mut registry);
@@ -448,6 +500,7 @@ pub fn create_test_registry() -> (BackendRegistry, tisvlay_mock::MockHandle) {
     let mut registry = BackendRegistry::new();
 
     register_lg(&mut registry, &tisvlay_core::DiscoveryConfig::default());
+    register_cec(&mut registry);
 
     let (connector, discovery, handle) = tisvlay_mock::new_test_parts();
     let connector = Arc::new(connector);

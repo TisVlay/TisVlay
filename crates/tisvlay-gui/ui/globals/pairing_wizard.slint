@@ -15,6 +15,10 @@ export struct WizardDiscoveredTv {
     id: string,
     name: string,
     vendor: string,
+    /// Canonical vendor for branding the tile (CEC's resolved device vendor,
+    /// e.g. `lg`; else the backend id). Distinct from `vendor`, which stays
+    /// the backend id used for pairing.
+    brand: string,
     address: string,
     hw-model: string,
 }

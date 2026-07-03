@@ -620,10 +620,10 @@ async fn process_commands(
                     warn!(error = %e, "Reload: daemon reload failed");
                 }
                 let session_ref = session.read().await;
-                if let Some(ref session_client) = *session_ref {
-                    if let Err(e) = session_client.reload_config().await {
-                        warn!(error = %e, "Reload: session reload failed");
-                    }
+                if let Some(ref session_client) = *session_ref
+                    && let Err(e) = session_client.reload_config().await
+                {
+                    warn!(error = %e, "Reload: session reload failed");
                 }
                 drop(session_ref);
                 refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await;

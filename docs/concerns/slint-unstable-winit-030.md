@@ -10,15 +10,15 @@
 - `slint::winit_030::WinitWindowAccessor::with_winit_window` — synchronous `&winit::window::Window` access from inside event-loop callbacks. Used in `dbus.rs::raise()` to call `request_user_attention` on re-activation (taskbar pulse UX on KDE Plasma 6).
 - `slint::BackendSelector::with_winit_window_attributes_hook` — apply `WindowAttributes` at construction time. Used in `lib.rs` to plumb the cold-spawn `activation-token` via `WindowAttributesExtStartupNotify::with_activation_token`. Replaces an earlier `unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", ...) }` block.
 
-Slint marks the `winit_030` module as "may be removed or changed in future minor releases" (`slint-1.16.1/lib.rs:680-743`).
+Slint marks the `winit_030` module as "may be removed or changed in future minor releases" (its module doc in `slint`'s `lib.rs`).
 
 ### Pin
 
-`slint = "=1.16.1"` — exact-version pin in `crates/tisvlay-gui/Cargo.toml`. The matching test dependency `i-slint-backend-testing` and the optional dev dep `i-slint-backend-selector` are similarly pinned to `=1.16.1`.
+`slint = "=1.17.0"` — exact-version pin in `crates/tisvlay-gui/Cargo.toml`. The matching test dependency `i-slint-backend-testing`, the optional dev dep `i-slint-backend-selector`, and `slint-build` are similarly exact-pinned to `=1.17.0` (the last so the `.slint` compiler can't desync from the runtime under `cargo update`).
 
 ### Risk
 
-A `slint = "1.16"` constraint would let cargo pick any future 1.16.x patch release. Slint patch releases historically don't break stable API, but `unstable-winit-030` is explicitly excluded from the stability contract — Slint reserves the right to change it within minor versions, which under cargo's resolver could mean within `1.16.x`. The exact-version pin bounds that risk.
+A caret `slint = "1.17"` constraint would let `cargo update` pick any future 1.17.x — or a later minor. Slint patch releases historically don't break stable API, but `unstable-winit-030` is explicitly excluded from the stability contract — Slint reserves the right to change it within minor versions. The exact pin bounds that risk; a committed `Cargo.lock` adds reproducibility but doesn't replace the pin — it only governs what a `cargo update` may move to.
 
 ### Mitigation options
 
@@ -27,9 +27,26 @@ A `slint = "1.16"` constraint would let cargo pick any future 1.16.x patch relea
 
 ### Re-evaluation triggers
 
-- Slint 1.17 or later released → audit the `winit_030` API surface; either bump the pin or re-migrate to the new path.
+- A new Slint minor (1.18+) released → audit the `winit_030` API surface; either bump the pin or re-migrate to the new path.
 - `slint-ui/slint#4382` lands a public raise/focus API → drop `unstable-winit-030`, switch the re-activation path to the new API.
 - `cargo update` produces a compile error despite the pin → check if a transitive Slint dep got promoted.
+
+### On 1.17.0 — ksni coupling resolved upstream
+
+1.17's new `SystemTrayIcon` made `i-slint-core` pull `ksni` on a hardcoded
+`async-io` backend, which would clash (Cargo feature unification) with
+`tisvlay-tray`'s default-tokio ksni. We filed and landed the upstream fix —
+[slint-ui/slint#12141](https://github.com/slint-ui/slint/pull/12141), gating the
+tray/ksni backend behind a `system-tray` Cargo feature, released in 1.17.0. So
+`tisvlay-gui` builds `default-features = false` without `system-tray`, Slint pulls
+no `ksni`, and `tisvlay-tray` keeps its tokio backend.
+
+**1.16.1 → 1.17.0 audit (done).** The three `winit_030` call sites below compile
+unchanged against 1.17.0 (`just check` green); the module is still present and its
+API surface (`WinitWindowAccessor::with_winit_window`,
+`with_winit_window_attributes_hook`, the `activation-token` plumbing) is intact.
+Behavioral checks (taskbar pulse on re-activation, startup-notify activation
+token) are manual KDE QA.
 
 ### Audit checklist on upgrade
 

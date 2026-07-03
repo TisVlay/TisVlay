@@ -17,8 +17,9 @@ use anyhow::Result;
 use gettextrs::gettext;
 use slint::SharedString;
 use tisvlay_core::{
-    DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient,
-    SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, references_of, user_references_of,
+    Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
+    SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, power_state_str_is_on,
+    references_of, user_references_of,
 };
 use tracing::debug;
 use uuid::Uuid;
@@ -30,6 +31,8 @@ pub struct TvViewRaw {
     pub uuid: SharedString,
     pub name: SharedString,
     pub vendor: SharedString,
+    /// Canonical vendor for branding the tile — mirrors `TvInfo::brand`.
+    pub brand: SharedString,
     /// Backend's primary diagnostic descriptor — first non-Secret entry
     /// of `Tv1.VendorInfo`. LG: IP address. Future Bluetooth: MAC.
     /// Future USB-CEC: serial-port path. Rendered as the small
@@ -37,7 +40,21 @@ pub struct TvViewRaw {
     pub primary_descriptor: SharedString,
     pub connected: bool,
     pub power_state: SharedString,
+    /// Connected *and* powered on (via `power_state_str_is_on`). The power
+    /// button keys on this rather than `connected` so a connected-in-standby
+    /// CEC TV still offers "Power on".
+    pub is_on: bool,
     pub supports_wake: bool,
+    /// Per-capability flags from `Tv1.Capabilities` (mirrors
+    /// [`TvInfo::capabilities`]), used to hide controls a backend can't
+    /// drive — a CEC TV has no volume, mute, backlight, or screen-blank.
+    /// Static per vendor, so controls don't flicker as the TV's
+    /// connection cycles.
+    pub has_screen: bool,
+    pub has_volume: bool,
+    pub has_mute: bool,
+    pub has_input: bool,
+    pub has_backlight: bool,
     pub is_screen_on: bool,
     pub volume: i32,
     pub muted: bool,
@@ -257,10 +274,17 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             uuid: SharedString::from(tv.uuid.as_str()),
             name: SharedString::from(tv.name.as_str()),
             vendor: SharedString::from(tv.vendor.as_str()),
+            brand: SharedString::from(tv.brand.as_str()),
             primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
             power_state: SharedString::from(tv.power_state.as_str()),
+            is_on: tv.connected && power_state_str_is_on(&tv.power_state),
             supports_wake: tv.supports_wake,
+            has_screen: tv.capabilities.contains(Capabilities::SCREEN),
+            has_volume: tv.capabilities.contains(Capabilities::VOLUME),
+            has_mute: tv.capabilities.contains(Capabilities::MUTE),
+            has_input: tv.capabilities.contains(Capabilities::INPUT),
+            has_backlight: tv.capabilities.contains(Capabilities::BACKLIGHT),
             is_screen_on: tv.is_screen_on,
             volume: tv.volume as i32,
             muted: tv.muted,
@@ -551,6 +575,8 @@ mod tests {
             uuid: uuid.into(),
             name: name.into(),
             vendor: "lg".into(),
+            brand: "lg".into(),
+            capabilities: Capabilities::STOCK,
             connected: false,
             managed: false,
             automated: false,
@@ -606,6 +632,24 @@ mod tests {
     }
 
     #[test]
+    fn connected_but_standby_is_not_on() {
+        // A CEC TV stays reachable in standby: connected, but off. The
+        // power button keys on `is_on`, so this must be false to offer
+        // "Power on" rather than a stuck "Power off".
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000009", "CEC TV");
+        tv.connected = true;
+        tv.power_state = "standby".into();
+
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        let row = &snap.tvs[0];
+        assert!(row.connected, "still connected on the bus");
+        assert!(!row.is_on, "standby is not on");
+    }
+
+    #[test]
     fn single_tv_round_trips_through_conversion() {
         let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "Living Room");
         tv.connected = true;
@@ -638,6 +682,7 @@ mod tests {
         assert_eq!(row.name.as_str(), "Living Room");
         assert!(row.connected);
         assert_eq!(row.power_state.as_str(), "active");
+        assert!(row.is_on, "connected + active is on");
         assert_eq!(row.volume, 42);
         assert_eq!(row.backlight, 80);
         assert!(row.muted);
@@ -654,6 +699,39 @@ mod tests {
         assert_eq!(row.hw_manufacturer.as_str(), "GSM");
         assert_eq!(row.hw_model.as_str(), "OLED65G4SUB");
         assert_eq!(row.hw_serial.as_str(), "XYZ123");
+    }
+
+    #[test]
+    fn capabilities_map_to_per_control_has_flags() {
+        // A sub-STOCK backend (CEC: power + input only) must surface
+        // the per-control flags the TVs-pane uses to hide the PICTURE /
+        // AUDIO controls it can't drive.
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "CEC TV");
+        tv.capabilities = Capabilities::POWER | Capabilities::INPUT;
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        let row = &snap.tvs[0];
+        assert!(row.has_input);
+        assert!(!row.has_volume);
+        assert!(!row.has_mute);
+        assert!(!row.has_backlight);
+        assert!(!row.has_screen);
+
+        // A full STOCK backend lights every control up.
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000002", "LG TV");
+        tv.capabilities = Capabilities::STOCK;
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        let row = &snap.tvs[0];
+        assert!(row.has_input);
+        assert!(row.has_volume);
+        assert!(row.has_mute);
+        assert!(row.has_backlight);
+        assert!(row.has_screen);
     }
 
     #[test]

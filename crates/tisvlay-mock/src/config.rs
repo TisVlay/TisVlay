@@ -80,6 +80,21 @@ pub struct MockVendorConfig {
     /// tests are unaffected.
     #[serde(default)]
     pub disable_subscription: bool,
+
+    /// When `true`, the connector reports `reachable_in_standby` — modeling
+    /// a bus-style transport (CEC) whose connection survives standby, so the
+    /// daemon keeps the connection (and `Connected`) across a power-off and
+    /// wakes by power state. Default `false` (network-like, drop on
+    /// power-off) so existing mock-based tests are unaffected.
+    #[serde(default)]
+    pub reachable_in_standby: bool,
+
+    /// When `true`, the connector reports `emulate_screen_via_power` — modeling
+    /// a backend (CEC) with no discrete screen-blank, so the daemon advertises
+    /// `SCREEN` and dispatches `screen_off`/`screen_on` as `power_off`/
+    /// `power_on`. Default `false` so existing mock-based tests are unaffected.
+    #[serde(default)]
+    pub emulate_screen_via_power: bool,
 }
 
 fn default_address() -> String {
@@ -123,6 +138,8 @@ impl Default for MockVendorConfig {
             backlight_ramp_intermediates: Vec::new(),
             backlight_ramp_step_delay_ms: 0,
             disable_subscription: false,
+            reachable_in_standby: false,
+            emulate_screen_via_power: false,
         }
     }
 }

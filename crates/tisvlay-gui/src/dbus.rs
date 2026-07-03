@@ -334,10 +334,10 @@ impl ApplicationService {
             });
             return;
         }
-        if let Some(token) = activation_token {
-            if let Ok(mut guard) = self.activation.cold_spawn_token.lock() {
-                *guard = Some(token);
-            }
+        if let Some(token) = activation_token
+            && let Ok(mut guard) = self.activation.cold_spawn_token.lock()
+        {
+            *guard = Some(token);
         }
     }
 }

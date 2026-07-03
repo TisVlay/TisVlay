@@ -114,12 +114,11 @@ impl TvConnector for LgConnector {
         for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
             // Resend WoL before retrying — earlier packets may have been
             // lost if the desktop network wasn't up after system resume.
-            if attempt > 1 {
-                if let Some(ref mac) = config.mac {
-                    if let Ok(mac_addr) = MacAddress::parse(mac) {
-                        tisvlay_core::wol::wake_best_effort(&mac_addr);
-                    }
-                }
+            if attempt > 1
+                && let Some(ref mac) = config.mac
+                && let Ok(mac_addr) = MacAddress::parse(mac)
+            {
+                tisvlay_core::wol::wake_best_effort(&mac_addr);
             }
 
             match self.connect(vendor_config).await {

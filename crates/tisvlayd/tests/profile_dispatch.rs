@@ -19,7 +19,10 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_core::{DaemonClient, PowerState, SessionAction, SystemConfig, SystemProfileConfig};
+use tisvlay_core::{
+    DaemonClient, PowerState, SessionAction, SystemConfig, SystemProfileConfig,
+    power_state_str_is_on,
+};
 use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 use tisvlayd::tv_manager::SystemEvent;
@@ -180,6 +183,252 @@ async fn shutdown_clears_connected_property_on_dbus() {
     assert!(
         !tvs[0].connected,
         "D-Bus Connected should be false after shutdown",
+    );
+}
+
+#[tokio::test]
+async fn power_off_clears_connected_property_on_poll_only_tv() {
+    // Regression: a poll-only backend (e.g. a projector over a
+    // request/response transport) has no push subscription task, so nothing
+    // emits `ConnectionChanged` when `power_off` drops the connection.
+    // Without an explicit emit the cached D-Bus `Connected` property — and
+    // the GUI power toggle keyed on it — stays stuck at `true`, leaving the
+    // TV un-powerable-on from that button. The push-mock equivalent above
+    // passes via the subscription-end path; this exercises the poll-only
+    // path. (CEC is a *push* backend — its follower-mode monitor takes the
+    // subscription-end path, covered by the tisvlay-cec crate tests.)
+    let tv_uuid = test_tv_uuid("lr_poll_off").to_string();
+    let daemon = TestDaemon::with_one_poll_only_mock_tv("lr_poll_off")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs after connect");
+    assert!(tvs[0].connected, "poll-only TV connects");
+
+    daemon
+        .manager()
+        .power_off(&tv_uuid)
+        .await
+        .expect("power_off");
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs after power_off");
+    assert!(
+        !tvs[0].connected,
+        "D-Bus Connected must be false after power_off on a poll-only TV",
+    );
+}
+
+#[tokio::test]
+async fn power_off_keeps_connection_for_reachable_in_standby_tv() {
+    // A CEC-style backend stays reachable in standby: power_off keeps the
+    // connection (Connected stays true) and only moves the *power* axis to
+    // standby — unlike a network backend whose socket dies on power-off.
+    // This is what makes button-off match remote-off for CEC.
+    let tv_uuid = test_tv_uuid("lr_ris").to_string();
+    let daemon = TestDaemon::with_one_reachable_in_standby_mock_tv("lr_ris")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs after connect");
+    assert!(tvs[0].connected, "connects");
+
+    daemon
+        .manager()
+        .power_off(&tv_uuid)
+        .await
+        .expect("power_off");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs after power_off");
+    assert!(
+        tvs[0].connected,
+        "a reachable-in-standby TV stays Connected after power_off (D-Bus)",
+    );
+    // ...and the live connection is genuinely kept (not just the cached
+    // property), matching CecConnection which no longer clears connected.
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "the underlying connection is kept, not merely the cached property",
+    );
+    assert!(
+        !power_state_str_is_on(&tvs[0].power_state),
+        "power reflects standby",
+    );
+}
+
+#[tokio::test]
+async fn power_on_is_a_noop_when_already_connected_and_on() {
+    // Regression: a reachable-in-standby TV (CEC-style) whose connection
+    // persists across standby must treat a redundant power_on — e.g. an
+    // `on_lock_wake` profile action firing once per idle cycle while locked
+    // — as a no-op, NOT a teardown+reconnect. Without the idempotent fast
+    // path in `power_on`, each redundant call flapped Connected
+    // (disconnect→reconnect), storming the tray's connect/disconnect
+    // notifications.
+    let tv_uuid = test_tv_uuid("lr_ris_idem").to_string();
+    let addr = "mock://lr_ris_idem";
+    let daemon = TestDaemon::with_one_reachable_in_standby_mock_tv("lr_ris_idem")
+        .await
+        .expect("daemon");
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    assert!(daemon.manager().is_connected(&tv_uuid).await, "connects");
+    // The mock reports "active" by default, so the subscription push has
+    // seeded the cached power state as on. Baseline the connect count here
+    // (robust to any boot-time connect) and assert power_on doesn't add one.
+    let before = daemon.handle().connect_call_count(addr);
+
+    daemon.manager().power_on(&tv_uuid).await.expect("power_on");
+    settle().await;
+    assert_eq!(
+        daemon.handle().connect_call_count(addr),
+        before,
+        "power_on on an already-connected, already-on TV is a no-op (no reconnect flap)",
+    );
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "the live connection is kept across the redundant power_on",
+    );
+}
+
+#[tokio::test]
+async fn power_on_wakes_reachable_in_standby_tv_in_place_without_flap() {
+    // The mirror of the power_off decouple: waking a reachable-in-standby TV
+    // (CEC-style) must send the wake on the *existing* connection, not tear
+    // it down and re-open. A teardown would flap Connected — a spurious
+    // "Disconnected" toast on a power-on. Assert the connection is never
+    // rebuilt (connect count unchanged) and Connected never drops.
+    let tv_uuid = test_tv_uuid("lr_ris_wake").to_string();
+    let addr = "mock://lr_ris_wake";
+    let daemon = TestDaemon::with_one_reachable_in_standby_mock_tv("lr_ris_wake")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    let baseline_connects = daemon.handle().connect_call_count(addr);
+
+    // Power off → standby, but the connection is kept (reachable in standby).
+    daemon
+        .manager()
+        .power_off(&tv_uuid)
+        .await
+        .expect("power_off");
+    settle().await;
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "connection kept across power_off",
+    );
+
+    // Power on → wake in place: no reconnect, so the connect count is
+    // unchanged and Connected never flapped.
+    daemon.manager().power_on(&tv_uuid).await.expect("power_on");
+    settle().await;
+    assert_eq!(
+        daemon.handle().connect_call_count(addr),
+        baseline_connects,
+        "wake-in-place must not rebuild the connection (no flap)",
+    );
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "TV stays connected through the wake",
+    );
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        power_state_str_is_on(&tv.power_state),
+        "TV is powered on again after wake-in-place",
+    );
+}
+
+#[tokio::test]
+async fn screen_actions_dispatch_as_power_for_screen_via_power_backend() {
+    // A CEC-style backend with no discrete screen-blank emulates SCREEN via
+    // power: the daemon advertises SCREEN and dispatches screen_off/screen_on
+    // as power_off/power_on — reusing the reachable-in-standby power path
+    // (connection kept, standby cache synthesized), so a screen-blank action
+    // powers the TV consistently with a real-screen backend "going dark".
+    let tv_uuid = test_tv_uuid("lr_svp").to_string();
+    let daemon = TestDaemon::with_one_screen_via_power_mock_tv("lr_svp")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // SCREEN is advertised config-awarely, so clients render the control.
+    let caps = daemon
+        .manager()
+        .get_capabilities(&tv_uuid)
+        .await
+        .expect("caps");
+    assert!(
+        caps.contains(tisvlay_core::Capabilities::SCREEN),
+        "screen-via-power advertises SCREEN",
+    );
+
+    // screen_off dispatches as power_off: TV to standby, connection kept, and
+    // the cache reflects standby (not the stale-Active a connection-level
+    // route would leave, since the daemon power path synthesizes it).
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off");
+    settle().await;
+    assert!(
+        daemon.manager().is_connected(&tv_uuid).await,
+        "connection kept (reachable in standby)",
+    );
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        !power_state_str_is_on(&tv.power_state),
+        "screen_off powered the TV to standby",
+    );
+
+    // screen_on dispatches as power_on (wake-in-place): TV back on.
+    daemon
+        .manager()
+        .screen_on(&tv_uuid)
+        .await
+        .expect("screen_on");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        power_state_str_is_on(&tv.power_state),
+        "screen_on powered the TV back on",
     );
 }
 

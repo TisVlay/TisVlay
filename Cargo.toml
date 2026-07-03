@@ -5,6 +5,7 @@ members = [
     "crates/tisvlay-ssdp",
     "crates/tisvlay-lg",
     "crates/tisvlay-mock",
+    "crates/tisvlay-cec",
     "crates/tisvlay-test",
     "crates/tisvlay-backends",
     "crates/tisvlay",
@@ -36,7 +37,7 @@ default-members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/ruffsl/tisvlay"
@@ -126,6 +127,17 @@ futures-core = "0.3"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
+# HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
+# `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
+# `PhysicalAddress` its `a.b.c.d` string (de)serialization for the vendor
+# config. Default features (`cectool`, `tracing`) are dropped to avoid the
+# clap pull and the bundled CLI binary. LGPL-2.1 — carried via a per-crate
+# exception in packaging/licensing.
+linux-cec = { version = "0.2", default-features = false, features = [
+    "async",
+    "serde",
+] }
+
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
 # version is used once the path is stripped). The dev-only crates
@@ -137,6 +149,7 @@ tisvlay-core = { path = "crates/tisvlay-core", version = "0.1.0" }
 tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.1.0" }
 tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.1.0" }
 tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.1.0" }
+tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.1.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-backends = { path = "crates/tisvlay-backends", version = "0.1.0" }
 tisvlay-harness = { path = "crates/tisvlay-harness" }
@@ -148,7 +161,7 @@ tisvlay-gui = { path = "crates/tisvlay-gui", version = "0.1.0" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml", "filters"] }
-insta-cmd = "0.6"
+insta-cmd = "0.7"
 proptest = "1"
 rstest = "0.26"
 tempfile = "3"

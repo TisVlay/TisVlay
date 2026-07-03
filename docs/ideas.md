@@ -9,6 +9,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [TV-side power prevention (manage LG auto-off Luna settings)](ideas/tv-side-power-prevention.md)
 - [Richer `DispatchOutcome` return type for screen_on / screen_off](ideas/dispatch-outcome-return-type.md)
 - [Virtual DRM connector for detached TVs](ideas/virtual-drm-connector.md)
+- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label)](ideas/cec-followups.md)
 - [Probe library extraction (when GUI lands)](ideas/probe-library-extraction.md)
 - [SSDP `NOTIFY` passive listener](ideas/ssdp-notify-passive-listener.md)
 - [Pair-time MAC capture](ideas/pair-time-mac-capture.md)
@@ -36,6 +37,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Re-enable Slint `accessibility` feature once upstream blockers clear](ideas/re-enable-slint-accessibility.md)
 - [GUI test coverage fan-out (Layer-C end-to-end tests)](ideas/gui-test-coverage-fanout.md)
 - [Theme-icon upgrade for the default-profile indicator](ideas/profile-default-emblem-theme-icon.md)
+- [Contextual-help pencil/info double-affordance density](ideas/contextual-help-followups.md)
 
 ## Build & CI
 

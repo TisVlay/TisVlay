@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Currently supports LG WebOS TVs, with a vendor-agnostic architecture designed for adding Samsung, Sony, and other backends. The user's Nvidia GPU does not support HDMI-CEC, so network-based control via vendor protocols (e.g., LG WebOS SSAP) is required.
+A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Supports LG WebOS TVs (network, SSAP) and HDMI-CEC (the Linux CEC subsystem, via `linux-cec`), with a vendor- and transport-agnostic architecture designed for adding Samsung, Sony, and other backends. The user's Nvidia GPU can't tunnel HDMI-CEC, so the CEC path needs a CEC adapter (USB, or a DP→HDMI adapter on an amdgpu/i915 output) — the network path (LG WebOS SSAP) needs none.
 
 See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface specs, config schema, CLI reference, and implementation phase history.
 
@@ -56,6 +56,17 @@ tisvlay/
 │   │       ├── config.rs         # LgVendorConfig
 │   │       ├── discovery.rs      # LgDiscovery (TvDiscovery) + SSDP search (feature-gated)
 │   │       └── test_server.rs    # FakeSsapServer (#[cfg(test)])
+│   │
+│   ├── tisvlay-cec/               # HDMI-CEC vendor implementation (linux-cec)
+│   │   └── src/
+│   │       ├── lib.rs            # Public exports, VENDOR_ID/VENDOR_NAME
+│   │       ├── backend.rs        # CecBackend (POWER | DISCOVERY; INPUT not advertised — unreliable over CEC)
+│   │       ├── connector.rs      # CecConnector (reachable_in_standby; emulate_screen_via_power; connect probes power but accepts standby; wake = ImageViewOn; no-auth pairing)
+│   │       ├── connection.rs     # CecConnection (power on/off/state; power_on = Image View On for wake-in-place; Set Stream Path input switching kept dormant behind unadvertised INPUT cap; hardware_id + brand cached from connect query)
+│   │       ├── config.rs         # CecVendorConfig (/dev/cecN device path; emulate_screen_via_power)
+│   │       ├── discovery.rs      # CecDiscovery (enumerate /dev/cecN nodes + probe each for OSD name/vendor → DiscoveredTv)
+│   │       ├── identity.rs       # OUI→vendor-name map + query() building HardwareId (OSD name→model, vendor→make) + canonical brand; sanitize (NUL-strip)
+│   │       └── link.rs           # CecLink seam over linux-cec AsyncDevice + FakeCecLink (#[cfg(test)])
 │   │
 │   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)
 │   │   └── src/
@@ -199,6 +210,7 @@ tisvlay/
 | Logging | `tracing`, `tracing-subscriber`, `tracing-journald` |
 | WoL | `socket2` |
 | Netlink | `rtnetlink`, `netlink-packet-route`, `netlink-packet-core` |
+| HDMI-CEC | `linux-cec` (LGPL; crates.io) |
 
 ## Known Quirks
 
@@ -431,6 +443,8 @@ just test-snapshot-accept   # accept all pending snapshot changes
 - [docs/i18n.md](docs/i18n.md) - Translation architecture, workflow, add-a-locale walkthrough, decision rationale (gettext-rs vs Fluent / i18n-embed)
 - [docs/testing.md](docs/testing.md) - Testing guide: mock backend, harnesses, coverage, observability
 - [docs/lg/firmware-quirks.md](docs/lg/firmware-quirks.md) - LG WebOS firmware quirks (Bug A/B, `processing`/`onOff` discriminators, post-wake settle, `REQUEST_MS`-is-load-bearing)
+- [docs/cec/protocol.md](docs/cec/protocol.md) - HDMI-CEC backend: command vocabulary, capability mapping, physical-address inputs, the reachable-in-standby model (Connected ≠ power; `connect` accepts standby, `power_on` wakes by power state), and screen-via-power emulation (daemon dispatches `screen_off`/`screen_on` as power so the stock profiles work; daemon-level so it reuses the standby-cache synthesis)
+- [docs/cec/testing.md](docs/cec/testing.md) - HDMI-CEC backend: the `CecLink` seam + `FakeCecLink`, vivid virtual-adapter note
 - [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls
 - [docs/firewall.md](docs/firewall.md) - SSDP firewall configuration
 - [docs/bugs.md](docs/bugs.md) - Known bugs and fix plans

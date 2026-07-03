@@ -221,6 +221,16 @@ pub trait TvConnection: Send + Sync {
         None
     }
 
+    /// Canonical vendor id for branding the GUI vendor tile, when the
+    /// backend can resolve the *device's own* vendor (CEC reads the TV's OUI
+    /// → `lg`/`samsung`/…). `None` otherwise — the daemon then brands by the
+    /// backend vendor id. A synchronous cached read (populated at connect
+    /// time, like [`Self::hardware_id`]), so the daemon can read it under the
+    /// connection lock without awaiting.
+    fn brand(&self) -> Option<String> {
+        None
+    }
+
     // =========================================================================
     // Power control (default: not supported)
     // =========================================================================
@@ -228,6 +238,19 @@ pub trait TvConnection: Send + Sync {
     /// Power off the TV (standby).
     async fn power_off(&mut self) -> Result<()> {
         Err(Error::not_supported("power_off", Capabilities::POWER))
+    }
+
+    /// Wake the TV on this *existing* connection (e.g. CEC Image View On).
+    ///
+    /// Only meaningful for backends that stay reachable in standby (see
+    /// [`TvConnector::reachable_in_standby`]): the connection is still live
+    /// while the TV sleeps, so the daemon can wake it in place instead of
+    /// tearing the connection down and opening a fresh link via
+    /// [`TvConnector::wake_and_connect`] — the teardown would flap
+    /// `Connected` (a spurious disconnect on a power-*on*). Default: not
+    /// supported, so those callers fall back to `wake_and_connect`.
+    async fn power_on(&mut self) -> Result<()> {
+        Err(Error::not_supported("power_on", Capabilities::POWER))
     }
 
     /// Get the current power state.
@@ -376,6 +399,38 @@ pub trait TvConnector: Send + Sync {
     /// existing connection is closed and a new one established via the
     /// new interface.
     fn survives_source_ip_change(&self) -> bool {
+        false
+    }
+
+    /// Whether the transport keeps a live connection while the TV is in
+    /// standby — i.e. whether `Connected` and the power state are *separate*
+    /// axes for this backend.
+    ///
+    /// CEC returns `true`: the HDMI-CEC bus stays reachable in standby (we
+    /// can still query power and receive the TV's broadcasts), so a
+    /// standby TV is legitimately `Connected` with `Power = standby`, and
+    /// `power_on` wakes it based on the reported power state rather than on
+    /// whether a fresh connect succeeds. Network backends (LG) return the
+    /// default `false`: the socket dies on power-off, so the daemon drops
+    /// the connection and `Connected` tracks power.
+    fn reachable_in_standby(&self, _vendor_config: &toml::Value) -> bool {
+        false
+    }
+
+    /// Whether this backend fulfils screen-blank actions by powering the
+    /// device — i.e. emulates the `SCREEN` capability via `POWER`.
+    ///
+    /// For a device with `POWER` but no discrete screen-blank (HDMI-CEC: the
+    /// panel can't go dark while the TV stays on), returning `true` lets the
+    /// daemon advertise `SCREEN` and dispatch `screen_off`/`screen_on` as
+    /// `power_off`/`power_on` — so the stock screen-action profiles
+    /// (idle/lock/DPMS) behave consistently across a mixed fleet without the
+    /// user rewriting them to power actions. The mapping lives at the daemon
+    /// dispatch (not the connection) so it reuses the correct power path
+    /// (standby-cache synthesis, wake-in-place). Default `false`: a backend
+    /// with a real screen-blank, or one that should simply ignore screen
+    /// actions, leaves it off. Config-driven so it's opt-out per device.
+    fn emulate_screen_via_power(&self, _vendor_config: &toml::Value) -> bool {
         false
     }
 
@@ -550,7 +605,16 @@ fn display_rows_for_visibility(
         .iter()
         .filter(|f| f.visibility == visibility)
         .filter_map(|f| {
-            let value = toml_field_as_string(vendor_config, &f.name)?;
+            // Fall back to the schema `default` when the field is absent from
+            // the stored config: a field left at its serde default isn't
+            // written to `[tv.<vendor>]`, so reading the stored value alone
+            // would drop it from the read-only view — even though it has an
+            // effective value the edit form (which prefills the default) does
+            // show. Showing the default keeps view mode and edit mode
+            // consistent. (Schema defaults are authored to match the serde
+            // defaults, so this is the value actually in force.)
+            let value =
+                toml_field_as_string(vendor_config, &f.name).unwrap_or_else(|| f.default.clone());
             if value.is_empty() {
                 return None;
             }

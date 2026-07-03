@@ -92,7 +92,7 @@ test-ci:
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
-check: deny fmt build clippy test
+check: deny licenses-html fmt build clippy test
 
 # Review pending snapshot changes (insta)
 [group('check')]
@@ -118,7 +118,12 @@ deny:
     cargo deny check --config packaging/licensing/deny.toml licenses bans
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
-# consumed by the package-* recipes).
+# consumed by the package-* recipes). Doubles as the cargo-about
+# license gate: `--all-features --fail` surfaces any crate whose
+# license expression isn't covered by `about.toml` (e.g. a Slint bump
+# pulling a new renderer into the all-features graph). Wired into
+# `check` and a gated prek hook so the gate runs on dep / about.toml
+# changes — not just at distro-package build time.
 [group('check')]
 licenses-html:
     cargo about generate \

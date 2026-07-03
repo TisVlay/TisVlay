@@ -24,7 +24,8 @@ import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
+import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -204,9 +205,23 @@ component ProfileSectionHeader inherits Rectangle {
                 width: 100%;
                 height: 100%;
             }
+            // Hover hint: clarify the "+" creates a named profile.
+            add-help := HelpTrigger {
+                width: 100%;
+                height: 100%;
+                text: @tr("Create a new profile.");
+            }
             add-touch := TouchArea {
                 enabled: root.add-enabled;
-                clicked => { root.add-clicked(); }
+                // Clear on click: the click opens a modal name dialog the
+                // window-root tip would otherwise float over.
+                clicked => {
+                    root.add-clicked();
+                    add-help.hover-leave();
+                }
+                changed has-hover => {
+                    add-help.set-hover(self.has-hover);
+                }
             }
         }
     }
@@ -406,7 +421,8 @@ component ProfileFieldRowEnum inherits Rectangle {
                 alignment: center;
                 if root.entry.is-locally-set: IconBtn {
                     source: Icons.reload;
-                    accessible-label: @tr("Reset {} to inherit", root.entry.label);
+                    accessible-label: @tr("Reset {} to default", root.entry.label);
+                    tip: @tr("Reset field");
                     clicked => { Profiles.reset-field(root.entry.field-name); }
                 }
             }
@@ -515,6 +531,7 @@ component ProfileFieldRowNumber inherits Rectangle {
                 if root.entry.is-locally-set: IconBtn {
                     source: Icons.reload;
                     accessible-label: @tr("Reset {} to inherit", root.entry.label);
+                    tip: @tr("Reset field");
                     clicked => { Profiles.reset-field(root.entry.field-name); }
                 }
             }
@@ -715,6 +732,7 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.edit;
                         accessible-label: @tr("Rename profile");
+                        tip: @tr("Rename profile");
                         enabled: root.can-delete;
                         clicked => { root.begin-rename(); }
                     }
@@ -724,6 +742,7 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
+                        tip: @tr("Delete profile");
                         enabled: root.can-delete;
                         clicked => { root.request-delete(); }
                     }
@@ -793,6 +812,7 @@ component ProfileDetailHeader inherits Rectangle {
                         }
                         LinkText {
                             text: tv.name;
+                            tip: @tr("Edit {} config", tv.name);
                             text-color: tv.automated
                                 ? Theme.success-text
                                 : Theme.info-text;
@@ -871,8 +891,11 @@ component ProfileDetail inherits Rectangle {
         // ("SYSTEM PROFILE" / "USER PROFILE") so a user who arrived
         // via the TVs-pane pencil pane-hop sees the context without
         // relying on the col-1 tile glyph alone.
-        ScrollView {
-            viewport-width: self.visible-width;
+        // HelpScrollView pins viewport-width and confines help bubbles to
+        // this viewport on scroll/resize — bubbles anchored outside it (the
+        // header rename/delete tips) are left to the window. See
+        // globals/help.slint.
+        HelpScrollView {
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;
@@ -905,12 +928,19 @@ component ProfileDetail inherits Rectangle {
                                 letter-spacing: 0.6px;
                             }
                         }
+                        VerticalLayout {
+                            alignment: center;
+                            ContextualHelpButton {
+                                text: @tr("Profile automation maps events to actions. Unset fields inherit from default.");
+                            }
+                        }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout {
                             alignment: center;
                             IconBtn {
                                 source: Icons.copy;
                                 accessible-label: @tr("Duplicate profile");
+                                tip: @tr("Duplicate profile");
                                 clicked => { root.request-duplicate(); }
                             }
                         }
@@ -918,7 +948,8 @@ component ProfileDetail inherits Rectangle {
                             alignment: center;
                             IconBtn {
                                 source: Icons.reload;
-                                accessible-label: @tr("Reset all locally-set fields");
+                                accessible-label: @tr("Reset profile");
+                                tip: @tr("Reset profile");
                                 enabled: Profiles.editor-can-reset-all;
                                 clicked => { root.request-reset-all(); }
                             }

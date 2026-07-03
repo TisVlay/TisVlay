@@ -40,10 +40,19 @@ pub(crate) struct WizardEntry {
 
 impl WizardEntry {
     fn to_slint(&self) -> WizardDiscoveredTv {
+        // Brand for the vendor tile: the backend's resolved device vendor
+        // (`vendor_data["brand"]`, e.g. CEC's `lg`) when known, else the
+        // backend vendor id. Mirrors `TvInfo::brand` on the TVs pane.
+        let brand = self
+            .vendor_data
+            .get("brand")
+            .filter(|b| !b.is_empty())
+            .unwrap_or(&self.vendor);
         WizardDiscoveredTv {
             id: SharedString::from(self.id.as_str()),
             name: SharedString::from(self.name.as_str()),
             vendor: SharedString::from(self.vendor.as_str()),
+            brand: SharedString::from(brand.as_str()),
             address: SharedString::from(self.address.as_str()),
             hw_model: SharedString::from(self.hw_model.as_str()),
         }
@@ -617,16 +626,16 @@ fn publish_pair_outcome(
                 }
             }
             Err(e) => {
-                if let Some((field, reason)) = extract_invalid_vendor_config(&e) {
-                    if mark_field_invalid(&wizard, &field, &reason) {
-                        // Field-level routing succeeded — bounce
-                        // back to step 2 so the inline error sits
-                        // under the offending widget.
-                        wizard.set_step(2);
-                        wizard.set_pair_phase(SharedString::default());
-                        wizard.set_pair_message(SharedString::default());
-                        return;
-                    }
+                if let Some((field, reason)) = extract_invalid_vendor_config(&e)
+                    && mark_field_invalid(&wizard, &field, &reason)
+                {
+                    // Field-level routing succeeded — bounce
+                    // back to step 2 so the inline error sits
+                    // under the offending widget.
+                    wizard.set_step(2);
+                    wizard.set_pair_phase(SharedString::default());
+                    wizard.set_pair_message(SharedString::default());
+                    return;
                 }
                 wizard.set_pair_phase("failed".into());
                 wizard.set_pair_message(SharedString::from(format!("{e}")));

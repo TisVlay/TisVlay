@@ -324,6 +324,21 @@ impl MockHandle {
             .unwrap_or(0)
     }
 
+    /// Number of times `MockConnector::connect` has been called for
+    /// `address`, cumulative across reconnects.
+    ///
+    /// Lets tests assert an idempotent `power_on` (live connection, TV
+    /// already on) skipped the teardown/reconnect rather than flapping a
+    /// healthy link. Returns 0 if the address has never been connected.
+    pub fn connect_call_count(&self, address: &str) -> usize {
+        self.state
+            .lock()
+            .connect_calls
+            .get(address)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------

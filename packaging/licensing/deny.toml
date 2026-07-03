@@ -65,6 +65,12 @@ exceptions = [
     { name = "i-slint-core-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-renderer-femtovg", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "option-ext", allow = ["MPL-2.0"] },
+    # Valve's HDMI-CEC library + its proc-macro helper, used by the
+    # tisvlay-cec backend. LGPL-2.1 weak copyleft; the static-relink
+    # obligation is satisfied by tisvlay being open source. linux-cec-sys
+    # (the ioctl bindings) is BSD-3 and needs no exception.
+    { name = "linux-cec", allow = ["LGPL-2.1-or-later"] },
+    { name = "linux-cec-macros", allow = ["LGPL-2.1-or-later"] },
 ]
 
 # Multi-version dep duplication. `warn` keeps the build green while
