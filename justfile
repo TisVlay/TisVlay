@@ -228,7 +228,7 @@ docs-serve:
 # Regenerate the CLI-reference partial from the clap definitions.
 [group('docs')]
 docs-cli:
-    cargo run -q -p tisvlay-cli --example gen-cli-docs > {{ cli_doc }}
+    cargo run -q -p tisvlay-cli --bin gen-cli-docs --features gen-docs > {{ cli_doc }}
     @echo "Wrote {{ cli_doc }} — review and commit."
 
 # Fail if the committed CLI-reference partial is stale (CI drift gate).
