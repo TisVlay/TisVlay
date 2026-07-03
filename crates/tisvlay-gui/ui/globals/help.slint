@@ -13,32 +13,24 @@
 // flipped below when there's no room above.
 
 import { ScrollView } from "std-widgets.slint";
+import { OverlayAnchor, OverlayIds } from "overlay.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-
-// Absolute (window-space) geometry of the control the help describes.
-export struct HelpAnchor {
-    x: length,
-    y: length,
-    width: length,
-    height: length,
-}
 
 export global Help {
     // Active request (empty `text` ⇒ nothing shown).
     in-out property <string> text;
-    in-out property <HelpAnchor> anchor;
+    in-out property <OverlayAnchor> anchor;
     // The region (in window coords) the bubble is confined to — the
     // originating ScrollView's viewport, pushed by that ScrollView. So
     // an anchor scrolled past the viewport edge pins the bubble to the
     // ScrollView's edge, not the window's, keeping it clear of chrome
     // outside the scroll area (header, sidebar). `width == 0` ⇒ unset,
     // fall back to the whole window.
-    in-out property <HelpAnchor> clip;
+    in-out property <OverlayAnchor> clip;
     // Which trigger owns the active request (so a trigger only closes
     // its own help, and a re-click toggles the right one).
     in-out property <int> owner;
-    in-out property <int> next-id: 1;
     // Click-latched (persists until dismissed) vs transient hover.
     in-out property <bool> pinned;
     // The owning trigger's live hover (post-delay) and the bubble's own
@@ -55,12 +47,6 @@ export global Help {
     out property <bool> shown: root.text != ""
         && (root.pinned || root.requester-hovered || root.bubble-hovered);
 
-    // Hand each trigger a stable id once, at init.
-    public function claim-id() -> int {
-        root.next-id += 1;
-        return root.next-id - 1;
-    }
-
     // Shared setup for a new request (hover or click). Resets the
     // per-request state — crucially the `clip` back to the whole-window
     // fallback — then stores the new content + anchor. A ScrollView only
@@ -69,7 +55,7 @@ export global Help {
     // every ScrollView (the header Reload tip, the sidebar) must start
     // from "no clip" rather than inherit the previous in-ScrollView
     // bubble's region. This is the open-time counterpart to dismiss().
-    function begin-request(id: int, t: string, a: HelpAnchor) {
+    function begin-request(id: int, t: string, a: OverlayAnchor) {
         root.owner = id;
         root.text = t;
         root.anchor = a;
@@ -86,7 +72,7 @@ export global Help {
     }
 
     // Transient hover open; never overrides a pinned bubble.
-    public function hover-open(id: int, t: string, a: HelpAnchor) {
+    public function hover-open(id: int, t: string, a: OverlayAnchor) {
         if (!root.pinned) {
             root.begin-request(id, t, a);
             root.requester-hovered = true;
@@ -100,7 +86,7 @@ export global Help {
 
     // Click toggle: re-clicking the same trigger dismisses; otherwise
     // pin this trigger's help open.
-    public function toggle(id: int, t: string, a: HelpAnchor) {
+    public function toggle(id: int, t: string, a: OverlayAnchor) {
         if (root.pinned && root.owner == id) {
             root.dismiss();
         } else {
@@ -117,7 +103,7 @@ export global Help {
     // another pane keeps the whole-window fallback). Call from a
     // ScrollView's show/reposition handlers. Reads no geometry itself —
     // the caller passes its own post-layout rect.
-    public function set-clip-if-inside(rect: HelpAnchor) {
+    public function set-clip-if-inside(rect: OverlayAnchor) {
         if (root.shown
             && root.anchor.x >= rect.x
             && root.anchor.y >= rect.y
@@ -171,9 +157,9 @@ export component HelpTrigger inherits Rectangle {
 
     property <int> id;
     init => {
-        self.id = Help.claim-id();
+        self.id = OverlayIds.claim();
     }
-    property <HelpAnchor> anchor: {
+    property <OverlayAnchor> anchor: {
         x: self.absolute-position.x,
         y: self.absolute-position.y,
         width: self.width,

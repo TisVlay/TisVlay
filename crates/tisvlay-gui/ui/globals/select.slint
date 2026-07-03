@@ -19,26 +19,18 @@
 // subset the panes use.
 
 import { ScrollView } from "std-widgets.slint";
+import { OverlayAnchor, OverlayIds } from "overlay.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-
-// Absolute (window-space) geometry of the button the list anchors to.
-export struct SelectAnchor {
-    x: length,
-    y: length,
-    width: length,
-    height: length,
-}
 
 export global Select {
     // Open state + the active request's data.
     in-out property <bool> open;
     in-out property <[string]> options;
     in-out property <string> current-value;
-    in-out property <SelectAnchor> anchor;
+    in-out property <OverlayAnchor> anchor;
     // Which button owns the open list (routes the pick back to it).
     in-out property <int> owner;
-    in-out property <int> next-id: 1;
     // Keyboard cursor within the open list.
     in-out property <int> highlight;
     // Bumped on a pick; the owning button reads `picked-index` in its change
@@ -47,13 +39,7 @@ export global Select {
     in-out property <int> pick-tick;
     in-out property <int> picked-index;
 
-    // Hand each button a stable id once, at init.
-    public function claim-id() -> int {
-        root.next-id += 1;
-        return root.next-id - 1;
-    }
-
-    public function open-for(id: int, opts: [string], current: string, a: SelectAnchor) {
+    public function open-for(id: int, opts: [string], current: string, a: OverlayAnchor) {
         root.owner = id;
         root.options = opts;
         root.current-value = current;
@@ -251,7 +237,7 @@ export component ThemedSelect inherits Rectangle {
 
     property <int> id;
     init => {
-        self.id = Select.claim-id();
+        self.id = OverlayIds.claim();
     }
 
     min-width: 120px;
