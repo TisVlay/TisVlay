@@ -18,6 +18,7 @@
 // Drop-in for `ComboBox` on the `model` / `current-value` / `selected`
 // subset the panes use.
 
+import { Palette } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 
@@ -90,7 +91,10 @@ component SelectRow inherits Rectangle {
     in property <bool> is-cursor;
 
     height: Design.size-input;
-    background: root.is-cursor || touch.has-hover ? Theme.menu-hover : transparent;
+    // Hover/cursor wash: a translucent veil of the foreground color, like
+    // the native ListItem's subtle highlight — visible over the elevated
+    // menu regardless of scheme.
+    background: root.is-cursor || touch.has-hover ? Palette.foreground.with-alpha(0.09) : transparent;
     border-radius: Design.radius-control;
 
     callback clicked();
@@ -102,7 +106,7 @@ component SelectRow inherits Rectangle {
         y: (parent.height - self.height) / 2;
         width: 3px;
         height: 16px;
-        background: Theme.accent;
+        background: Palette.accent-background;
         border-radius: 1.5px;
         visible: root.is-current;
     }
@@ -114,7 +118,7 @@ component SelectRow inherits Rectangle {
             horizontal-stretch: 1;
             vertical-alignment: center;
             text: root.label;
-            color: Theme.text;
+            color: Palette.foreground;
             font-size: Design.font-meta;
             overflow: elide;
         }
@@ -173,16 +177,17 @@ export component SelectOverlay inherits Rectangle {
         }
     }
 
-    // The list surface. Elevated background + stronger border + deeper
-    // shadow (offset-8, like the native ComboBox flyout) so the popup
-    // reads as distinct from the pane it floats over.
+    // The list surface. Uses the native menu tokens: `alternate-background`
+    // is exactly the flyout color the stock ComboBox's MenuBorder uses, so
+    // the popup matches — and reads as distinct from the control surface it
+    // floats over. Deeper offset-8 shadow, like the native flyout.
     if Select.open: Rectangle {
         x: root.place-x;
         y: root.place-y;
         width: root.list-w;
         height: root.list-h;
-        background: Theme.surface2;
-        border-color: Theme.border-strong;
+        background: Palette.alternate-background;
+        border-color: Palette.border;
         border-width: Design.border-thin;
         border-radius: Design.radius-card;
         drop-shadow-blur: 16px;
@@ -222,12 +227,11 @@ export component ThemedSelect inherits Rectangle {
     min-width: 120px;
     height: Design.size-input;
     horizontal-stretch: 1;
-    background: Theme.surface2;
+    // Native control tokens so the button matches the stock ComboBox.
+    background: Palette.control-background;
     // Accent border when open OR keyboard-focused (the focus-visible ring
-    // a native combobox shows when you Tab onto it); hover thickens it.
-    border-color: root.is-open || fs.has-focus
-        ? Theme.accent
-        : (touch.has-hover ? Theme.border-strong : Theme.border);
+    // a native combobox shows when you Tab onto it).
+    border-color: root.is-open || fs.has-focus ? Palette.accent-background : Palette.border;
     border-width: root.is-open || fs.has-focus ? 2px : Design.border-thin;
     border-radius: Design.radius-control;
     forward-focus: fs;
@@ -261,18 +265,19 @@ export component ThemedSelect inherits Rectangle {
             horizontal-stretch: 1;
             vertical-alignment: center;
             text: root.current-value;
-            color: Theme.text;
+            color: Palette.foreground;
             font-size: Design.font-meta;
             overflow: elide;
         }
         // Thin stroked chevron, matching the native ComboBox's dropdown
-        // glyph (a "v", not a filled triangle).
+        // glyph (a "v", not a filled triangle). Dimmed foreground, like the
+        // native secondary-text glyph color.
         VerticalLayout {
             alignment: center;
             Path {
                 width: 11px;
                 height: 6px;
-                stroke: Theme.text-dim;
+                stroke: Palette.foreground.with-alpha(0.66);
                 stroke-width: 1.25px;
                 viewbox-width: 12;
                 viewbox-height: 7;

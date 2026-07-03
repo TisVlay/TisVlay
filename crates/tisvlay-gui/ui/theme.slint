@@ -113,12 +113,6 @@ export global Theme {
     out property <brush> row-hover: dark-mode ? #2b2f39 : #f4f5f7;
     out property <brush> row-selected: dark-mode ? #1c3a4d : #e3f3fc;
     out property <brush> row-selected-text: dark-mode ? #a5d8f0 : #0e6e9c;
-    // Hover/cursor wash for rows inside an elevated menu/flyout. A
-    // translucent veil so it lightens whatever surface it floats over
-    // (`row-hover` is opaque and matches `surface2`, so it would vanish
-    // against the popup). White in dark, ink in light — like the native
-    // ComboBox's subtle item highlight.
-    out property <brush> menu-hover: dark-mode ? #ffffff1f : #00000012;
 
     // -- Vendor brand swatches --
     // Background colors for `VendorTile`. Brand identity is mode-
