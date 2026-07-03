@@ -69,7 +69,7 @@ export global Select {
     public function pick(v: string) {
         root.picked-value = v;
         root.pick-tick += 1;
-        root.open = false;
+        root.close();
     }
 
     public function pick-highlighted() {
@@ -183,39 +183,18 @@ export component SelectOverlay inherits Rectangle {
         drop-shadow-color: Theme.drop-shadow;
         drop-shadow-offset-y: 4px;
 
-        // Grabs focus while open so Up/Down/Enter/Escape work. This block
-        // is (re)created each time the list opens, so focusing in `init`
-        // fires on every open; it's released when the block tears down.
-        key-scope := FocusScope {
-            init => {
-                self.focus();
-            }
-            key-pressed(event) => {
-                if (event.text == Key.UpArrow) {
-                    Select.move(-1);
-                    return accept;
-                } else if (event.text == Key.DownArrow) {
-                    Select.move(1);
-                    return accept;
-                } else if (event.text == Key.Return) {
-                    Select.pick-highlighted();
-                    return accept;
-                } else if (event.text == Key.Escape) {
-                    Select.close();
-                    return accept;
-                }
-                return reject;
-            }
-
-            VerticalLayout {
-                padding: root.pad;
-                for opt[i] in Select.options: SelectRow {
-                    label: opt;
-                    is-current: opt == Select.current-value;
-                    is-cursor: i == Select.highlight;
-                    clicked => {
-                        Select.pick(opt);
-                    }
+        // No FocusScope here: focus stays on the owning ThemedSelect's
+        // button (see its `fs`), which handles the open-state keys. Keeping
+        // focus put means Tab traversal survives the popup and needs no
+        // focus hand-back.
+        VerticalLayout {
+            padding: root.pad;
+            for opt[i] in Select.options: SelectRow {
+                label: opt;
+                is-current: opt == Select.current-value;
+                is-cursor: i == Select.highlight;
+                clicked => {
+                    Select.pick(opt);
                 }
             }
         }
@@ -238,8 +217,12 @@ export component ThemedSelect inherits Rectangle {
     height: Design.size-input;
     horizontal-stretch: 1;
     background: Theme.surface2;
-    border-color: root.is-open ? Theme.accent : (touch.has-hover ? Theme.border-strong : Theme.border);
-    border-width: Design.border-thin;
+    // Accent border when open OR keyboard-focused (the focus-visible ring
+    // a native combobox shows when you Tab onto it); hover thickens it.
+    border-color: root.is-open || fs.has-focus
+        ? Theme.accent
+        : (touch.has-hover ? Theme.border-strong : Theme.border);
+    border-width: root.is-open || fs.has-focus ? 2px : Design.border-thin;
     border-radius: Design.radius-control;
     forward-focus: fs;
 
@@ -284,8 +267,29 @@ export component ThemedSelect inherits Rectangle {
         }
     }
 
+    // Focus lives here the whole time — closed or open — so Tab traversal
+    // is never disturbed. When open, this handles list navigation; when
+    // closed, it opens the list.
     fs := FocusScope {
+        width: 100%;
+        height: 100%;
         key-pressed(event) => {
+            if (root.is-open) {
+                if (event.text == Key.UpArrow) {
+                    Select.move(-1);
+                } else if (event.text == Key.DownArrow) {
+                    Select.move(1);
+                } else if (event.text == Key.Return) {
+                    Select.pick-highlighted();
+                } else if (event.text == Key.Escape) {
+                    Select.close();
+                }
+                // While open the menu is modal: accept every key (Tab
+                // included) so Slint's fall-through focus traversal / popup
+                // handling never runs and focus stays put. Only Enter/Escape
+                // above dismiss it.
+                return accept;
+            }
             if (event.text == Key.Return
                 || event.text == " "
                 || event.text == Key.DownArrow) {
@@ -308,6 +312,16 @@ export component ThemedSelect inherits Rectangle {
     changed pick-mirror => {
         if (Select.owner == root.id) {
             root.selected(Select.picked-value);
+        }
+    }
+
+    // Keep focus on this button while its menu is open, however it was
+    // opened — a mouse press clears focus before `open-list` runs, which
+    // would otherwise leave the modal key handling above with no keys and
+    // break Escape.
+    changed is-open => {
+        if (root.is-open) {
+            fs.focus();
         }
     }
 }

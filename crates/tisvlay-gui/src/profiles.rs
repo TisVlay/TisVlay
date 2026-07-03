@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::pgettext;
 use parking_lot::Mutex;
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
     AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     SessionAction, SessionClient, SystemProfileBody, UserProfileBody,
@@ -741,7 +741,26 @@ fn push_editor_rows(
     on_ui(&app_weak, move |app| {
         let profiles = app.global::<Profiles>();
         let rows: Vec<ProfileFieldEntry> = raw.into_iter().map(into_slint_entry).collect();
-        profiles.set_editor_fields(ModelRc::new(VecModel::from(rows)));
+        // Update the model in place when the field shape is unchanged (same
+        // profile, just new values) so Slint reuses the existing row
+        // elements rather than recreating them. Replacing the model would
+        // destroy the row the user is editing, dropping keyboard focus and
+        // breaking Tab traversal after a selection. Fall back to a fresh
+        // model only when the field set changes (a different profile).
+        let existing = profiles.get_editor_fields();
+        let same_shape = existing.row_count() == rows.len()
+            && rows.iter().enumerate().all(|(i, r)| {
+                existing
+                    .row_data(i)
+                    .is_some_and(|e| e.field_name == r.field_name)
+            });
+        if same_shape {
+            for (i, row) in rows.into_iter().enumerate() {
+                existing.set_row_data(i, row);
+            }
+        } else {
+            profiles.set_editor_fields(ModelRc::new(VecModel::from(rows)));
+        }
         profiles.set_editor_can_reset_all(can_reset_all);
     });
 }
