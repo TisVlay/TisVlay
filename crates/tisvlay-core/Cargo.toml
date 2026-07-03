@@ -48,7 +48,7 @@ wayland-protocols = { workspace = true, optional = true }
 # Interruptible poll over the wayland fd + a stop pipe, so the idle watch can be
 # torn down and re-registered on a timeout change. The same crate (and the same
 # `poll`) wayland-backend itself uses to read events.
-rustix = { version = "1.0", features = ["event", "pipe"], optional = true }
+rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
