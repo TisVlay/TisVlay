@@ -76,19 +76,46 @@ impl TvConnector for MockConnector {
         false
     }
 
+    fn reachable_in_standby(&self, vendor_config: &toml::Value) -> bool {
+        // Test-configurable: models a CEC-style bus that stays reachable in
+        // standby (the connection survives power-off). Default `false` so
+        // existing network-shaped mock tests are unaffected.
+        parse_config(vendor_config)
+            .map(|c| c.reachable_in_standby)
+            .unwrap_or(false)
+    }
+
+    fn emulate_screen_via_power(&self, vendor_config: &toml::Value) -> bool {
+        // Test-configurable: models a backend (CEC) with no discrete
+        // screen-blank, so the daemon dispatches screen actions as power.
+        // Default `false` so existing mock tests keep their real SCREEN.
+        parse_config(vendor_config)
+            .map(|c| c.emulate_screen_via_power)
+            .unwrap_or(false)
+    }
+
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
 
         // Honour any test-injected connect delay (simulates slow/unreachable TV),
-        // and pick up any test-seeded hardware identity keyed by address.
-        let (delay, hardware_id) = {
-            let state = self.state.lock();
+        // pick up any test-seeded hardware identity keyed by address, and bump
+        // the per-address connect counter so tests can assert an idempotent
+        // `power_on` skipped the teardown/reconnect.
+        let (delay, hardware_id, connect_counter) = {
+            let mut state = self.state.lock();
+            let counter = state
+                .connect_calls
+                .entry(config.address.clone())
+                .or_default()
+                .clone();
             (
                 state.connect_delay,
                 state.hardware_ids.get(&config.address).cloned(),
+                counter,
             )
         };
+        connect_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(delay) = delay {
             tracing::debug!(address = %config.address, ?delay, "delaying mock connect");
             tokio::time::sleep(delay).await;

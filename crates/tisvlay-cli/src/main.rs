@@ -4,7 +4,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tisvlay_core::{DaemonClient, PairTerminal, SessionClient, TvInfo, power_state_str_is_on};
+use tisvlay_core::{
+    Capabilities, DaemonClient, PairTerminal, SessionClient, TvInfo, power_state_str_is_on,
+};
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -621,11 +623,17 @@ fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
     }
     println!("Connected: {}", tv.connected);
     println!("  Power: {}", tv.power_state);
-    println!("  Screen: {}", if tv.is_screen_on { "on" } else { "off" });
+    if tv.capabilities.contains(Capabilities::SCREEN) {
+        println!("  Screen: {}", if tv.is_screen_on { "on" } else { "off" });
+    }
     if is_on {
-        let muted = if tv.muted { " (muted)" } else { "" };
-        println!("  Volume: {}{}", tv.volume, muted);
-        println!("  Backlight: {}", tv.backlight);
+        if tv.capabilities.contains(Capabilities::VOLUME) {
+            let muted = if tv.muted { " (muted)" } else { "" };
+            println!("  Volume: {}{}", tv.volume, muted);
+        }
+        if tv.capabilities.contains(Capabilities::BACKLIGHT) {
+            println!("  Backlight: {}", tv.backlight);
+        }
     }
     if !tv.inputs.is_empty() {
         println!("Inputs:");

@@ -661,8 +661,18 @@ pub struct TvInfo {
     pub uuid: String,
     /// Display name.
     pub name: String,
-    /// Vendor ID.
+    /// Vendor ID (the backend id: `lg`, `cec`, `mock`).
     pub vendor: String,
+    /// Canonical vendor id for branding the vendor tile. Mirrors
+    /// `Tv1.Brand`: the device's *resolved* vendor for a backend that reads
+    /// it (CEC → the TV's own OUI, e.g. `lg`), else the backend `vendor`. So
+    /// a CEC-connected LG set brands as LG; an unresolved CEC TV as `cec`.
+    pub brand: String,
+    /// Feature capabilities this TV's backend supports (power, volume,
+    /// input, …). Static per vendor — populated whether or not the TV is
+    /// connected — so clients can gate affordances on what the device can
+    /// actually do (e.g. hide volume controls for a CEC TV).
+    pub capabilities: crate::Capabilities,
     /// Whether connected.
     pub connected: bool,
     /// Whether this TV participates in automated management.
@@ -1003,6 +1013,13 @@ impl DaemonClient {
             let uuid = get_str("Uuid");
             let name = get_str("Name");
             let vendor = get_str("Vendor");
+            // Brand for the vendor tile: the daemon resolves it (CEC device
+            // vendor, else backend id); fall back to `vendor` for an older
+            // daemon that predates the property.
+            let brand = {
+                let b = get_str("Brand");
+                if b.is_empty() { vendor.clone() } else { b }
+            };
             let connected = get_bool("Connected", false);
             let managed = get_bool("Managed", true);
             let automated = get_bool("Automated", true);
@@ -1030,6 +1047,14 @@ impl DaemonClient {
             let vendor_info: Vec<(String, String)> = props
                 .get("VendorInfo")
                 .and_then(|v: &OwnedValue| <Vec<(String, String)>>::try_from(v.clone()).ok())
+                .unwrap_or_default();
+            let capabilities = props
+                .get("Capabilities")
+                .and_then(|v: &OwnedValue| <Vec<String>>::try_from(v.clone()).ok())
+                .map(|strs| {
+                    let refs: Vec<&str> = strs.iter().map(String::as_str).collect();
+                    crate::Capabilities::from_strings(&refs)
+                })
                 .unwrap_or_default();
 
             // Helper to extract properties from a sub-interface.
@@ -1093,6 +1118,8 @@ impl DaemonClient {
                 uuid,
                 name,
                 vendor,
+                brand,
+                capabilities,
                 connected,
                 managed,
                 automated,

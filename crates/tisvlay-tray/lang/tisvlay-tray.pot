@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-tray\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-16 17:20-0500\n"
+"POT-Creation-Date: 2026-07-01 22:29-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -34,7 +34,7 @@ msgstr ""
 msgid "off"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:242 crates/tisvlay-tray/src/tray.rs:532
+#: crates/tisvlay-tray/src/tray.rs:242 crates/tisvlay-tray/src/tray.rs:548
 msgid " (muted)"
 msgstr ""
 
@@ -68,79 +68,79 @@ msgstr ""
 msgid "Quit"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:451
+#: crates/tisvlay-tray/src/tray.rs:454
 msgid "Power Off"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:473
+#: crates/tisvlay-tray/src/tray.rs:481
 #, rust-format
 msgid "Backlight: {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:483
+#: crates/tisvlay-tray/src/tray.rs:491
 msgid "Backlight Up (+10)"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:493
+#: crates/tisvlay-tray/src/tray.rs:501
 msgid "Backlight Down (-10)"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:506
+#: crates/tisvlay-tray/src/tray.rs:516
 msgid "Screen Off"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:517
+#: crates/tisvlay-tray/src/tray.rs:527
 msgid "Screen On"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:538
+#: crates/tisvlay-tray/src/tray.rs:554
 #, rust-format
 msgid "Volume: {0}{1}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:550
+#: crates/tisvlay-tray/src/tray.rs:566
 msgid "Volume Up (+10)"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:560
+#: crates/tisvlay-tray/src/tray.rs:576
 msgid "Volume Down (-10)"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:573
+#: crates/tisvlay-tray/src/tray.rs:591
 msgid "Unmute"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:575
+#: crates/tisvlay-tray/src/tray.rs:593
 msgid "Mute"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:603
+#: crates/tisvlay-tray/src/tray.rs:622
 msgid "Unmanage"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:605
+#: crates/tisvlay-tray/src/tray.rs:624
 msgid "Manage"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:628
+#: crates/tisvlay-tray/src/tray.rs:647
 msgid "Power On (Wake)"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:696
+#: crates/tisvlay-tray/src/tray.rs:715
 #, rust-format
 msgid "User: {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:748
+#: crates/tisvlay-tray/src/tray.rs:767
 #, rust-format
 msgid "System: {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:771
+#: crates/tisvlay-tray/src/tray.rs:790
 msgid "Profiles"
 msgstr ""
 
-#: crates/tisvlay-tray/src/tray.rs:805
+#: crates/tisvlay-tray/src/tray.rs:824
 msgid "Input"
 msgstr ""
 

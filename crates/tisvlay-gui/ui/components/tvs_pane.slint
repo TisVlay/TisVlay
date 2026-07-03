@@ -37,15 +37,33 @@ export struct TvViewModel {
     uuid: string,
     name: string,
     vendor: string,
+    /// Canonical vendor for branding the tile (`Tv1.Brand`): the device's
+    /// resolved vendor for CEC (e.g. `lg`), else the backend vendor.
+    brand: string,
     primary-descriptor: string,
     connected: bool,
     power-state: string,
+    /// Whether the TV is powered on (connected *and* not in a standby /
+    /// off / cooling-down state). The power button keys its label and
+    /// action on this rather than `connected`, because a CEC TV stays
+    /// reachable in standby — `connected` there does not mean "on".
+    is-on: bool,
     /// Whether the vendor backend can wake the TV from standby
     /// (LG: has a MAC). The Power-on button is disabled when both
     /// `connected == false` AND `supports-wake == false` — that's
     /// the only state where Power-on has no path to succeed.
     /// Sourced from `Tv1.Power.SupportsWake` D-Bus property.
     supports-wake: bool,
+    /// Per-capability flags from `Tv1.Capabilities`. Used to hide
+    /// controls a backend can't drive — a CEC TV, for instance, has no
+    /// volume, mute, backlight, or screen-blank. Static per vendor:
+    /// populated whether or not the TV is connected, so controls don't
+    /// flicker in and out as the connection comes and goes.
+    has-screen: bool,
+    has-volume: bool,
+    has-mute: bool,
+    has-input: bool,
+    has-backlight: bool,
     is-screen-on: bool,
     volume: int,
     muted: bool,
@@ -198,7 +216,7 @@ component TvListRow inherits Rectangle {
             width: Design.size-tile-sm;
             alignment: center;
             VendorTile {
-                vendor: root.tv.vendor;
+                vendor: root.tv.brand;
                 tile-size: Design.size-tile-sm;
             }
         }
@@ -484,7 +502,7 @@ component TvDetailHeader inherits Rectangle {
             width: Design.size-tile-md;
             alignment: center;
             VendorTile {
-                vendor: root.tv.vendor;
+                vendor: root.tv.brand;
                 tile-size: Design.size-tile-md;
             }
         }
@@ -623,13 +641,16 @@ component TvDetail inherits Rectangle {
                             root.tv.connected || root.tv.supports-wake;
 
                         Button {
-                            text: root.tv.connected ? @tr("Power off") : @tr("Power on");
+                            // Keyed on `is-on`, not `connected`: a CEC TV
+                            // reachable in standby is connected-but-off, and
+                            // must still offer "Power on".
+                            text: root.tv.is-on ? @tr("Power off") : @tr("Power on");
                             icon: Icons.shutdown;
                             colorize-icon: true;
-                            primary: !root.tv.connected;
+                            primary: !root.tv.is-on;
                             enabled: !power-row.power-cycle-in-flight && power-row.can-power-on;
                             clicked => {
-                                if (root.tv.connected) {
+                                if (root.tv.is-on) {
                                     Daemon.power-off(root.tv.uuid);
                                 } else {
                                     Daemon.power-on(root.tv.uuid);
@@ -752,10 +773,17 @@ component TvDetail inherits Rectangle {
                 }
 
                 // -- Picture --
-                Group {
+                //
+                // Capability gating uses `if` (not `visible`): a hidden
+                // `visible` element still reserves its layout slot and the
+                // surrounding `spacing`, leaving empty rows inside a group and
+                // an empty group's gap in the pane. `if` removes it from the
+                // layout so the whitespace collapses. The flags are static per
+                // vendor, so this still doesn't flicker across connect/reconnect.
+                if root.tv.has-backlight || root.tv.has-screen: Group {
                     title: @tr("PICTURE");
 
-                    FormRow {
+                    if root.tv.has-backlight: FormRow {
                         label: @tr("Backlight");
                         help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
@@ -766,9 +794,9 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    FormRow {
+                    if root.tv.has-screen: FormRow {
                         label: @tr("screen power" => "Screen");
-                        help: @tr("Blank screen without powering off (instant resume).");
+                        help: @tr("Turn off the display — a dedicated screen-blank with instant resume where the TV supports it, otherwise emulated by powering the set off and on.");
                         HorizontalLayout {
                             alignment: start;
                             VerticalLayout {
@@ -784,10 +812,10 @@ component TvDetail inherits Rectangle {
                 }
 
                 // -- Audio --
-                Group {
+                if root.tv.has-volume || root.tv.has-mute: Group {
                     title: @tr("AUDIO");
 
-                    FormRow {
+                    if root.tv.has-volume: FormRow {
                         label: @tr("Volume");
                         OptimisticSlider {
                             model-value: root.tv.volume;
@@ -797,7 +825,7 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    FormRow {
+                    if root.tv.has-mute: FormRow {
                         label: @tr("Mute");
                         Switch {
                             checked: root.tv.muted;
@@ -808,7 +836,7 @@ component TvDetail inherits Rectangle {
                 }
 
                 // -- Input --
-                Group {
+                if root.tv.has-input: Group {
                     title: @tr("INPUT");
 
                     FormRow {

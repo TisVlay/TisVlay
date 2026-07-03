@@ -29,6 +29,12 @@ RuntimeDirectoryPreserve=restart
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# PrivateDevices gives a minimal private /dev with no /dev/cecN. To drive
+# a TV over HDMI-CEC, comment this out and instead add:
+#   DeviceAllow=char-cec rw
+# then grant this unit's user rw on the nodes with a udev rule, e.g.
+#   KERNEL=="cec[0-9]*", GROUP="tisvlay", MODE="0660"
+# The NixOS module gates exactly this behind services.tisvlay.cec.enable.
 PrivateDevices=true
 NoNewPrivileges=true
 

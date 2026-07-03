@@ -51,6 +51,7 @@ See `CLAUDE.md` for the full file tree. Key crates:
 |-------|---------|
 | `tisvlay-core` | Core traits (`TvBackend`, `TvConnection`, `TvConnector`), types, config, schema (`PairingField`, `FieldVisibility`), D-Bus client |
 | `tisvlay-lg` | LG WebOS backend (WebSocket, SSAP protocol, SSDP discovery) |
+| `tisvlay-cec` | HDMI-CEC backend (`/dev/cecN` via Valve's `linux-cec`; first non-network transport, first sub-`STOCK` capability set) — see [docs/cec/](cec/protocol.md) |
 | `tisvlay-mock` | In-memory mock backend (dev/tests, optional via `mock` feature) |
 | `tisvlay-test` | OS-environment fakes — private `dbus-daemon`, fake logind, fake screensaver |
 | `tisvlay-backends` | Composition crate — only place that imports vendor crates |
@@ -178,7 +179,7 @@ Key `TvConnector` methods:
 
 `TvConnection` has all feature methods directly with default implementations returning `Error::NotSupported`. Backends only override the methods they support. Callers use `capabilities()` bitflags to check availability before calling.
 
-Note: `power_on()` is not a `TvConnection` method — power-on is handled at the daemon level via `TvConnector::wake()` (WoL, CEC, etc.) since it requires a new connection to be established.
+Note: power-on has **two** paths. The default is a fresh connection — the daemon calls `TvConnector::wake()` (WoL, CEC `Image View On`, …) and re-connects, since waking normally requires establishing a new connection. But a `reachable_in_standby` backend (CEC) keeps its connection live across standby, so it also overrides `TvConnection::power_on()` to **wake in place** on the existing link — the daemon prefers this when the connection is still up, avoiding a `Connected` flap (see [§ Reachable-in-standby transports](#reachable-in-standby-transports)). `TvConnection::power_on()` defaults to `NotSupported` for backends that can only wake by re-connecting.
 
 ### Capabilities
 
@@ -186,6 +187,8 @@ Bitflags in `crates/tisvlay-core/src/capabilities.rs`. Two axes:
 
 - **Feature bits** — `POWER`, `SCREEN`, `VOLUME`, `MUTE`, `INPUT`, `BACKLIGHT`, `WOL`, `DISCOVERY`. Folded into `STOCK` for convenience (the conventional baseline a typical TV backend is expected to expose). Future feature bits (`RECORD`, `EPG`, `MEDIA_PLAYBACK`, …) will *not* auto-fold — vendors opt in explicitly, same reason as the transport bits below.
 - **Transport-family bits** — `IPV4`, `IPV6`. Per-vendor declaration of which IP families the vendor's transport has been verified against. Deliberately *not* part of `STOCK`, so vendors that use `STOCK` for the feature set don't silently auto-claim a transport family they haven't tested. Consumed by the GUI wizard (form-build-time field gating + placeholder selection) and the daemon (`EnrichManualEntry` family gate). Wake-on-LAN availability is *derived* (`WOL && IPV4`-locally-reachable), not stored as a separate bit — stored derivations are how flag sets rot. Architectural rationale + the rejected alternatives are in [docs/discovery.md § Per-vendor transport family](discovery.md#per-vendor-transport-family).
+
+**Clients gate controls on capabilities, not `connected`.** LG and mock both declare nearly-full `STOCK`, so the stack was originally built capability-blind: GUI/tray/CLI enabled feature controls on `connected` alone. HDMI-CEC is the first **sub-`STOCK`** backend (`POWER | INPUT`, no volume/mute/backlight/screen), and it made that latent gap user-visible — a connected CEC TV would render live Volume/Screen/Backlight controls that silently no-op. So `Capabilities` is threaded through `TvInfo` (it already rode the wire as `Tv1.Capabilities`; it was just dropped from the client snapshot) and the GUI PICTURE/AUDIO/INPUT groups, tray menu sections, and CLI status lines all gate on the bits. Per-TV caps are **static** — `TvManager::get_capabilities` falls back to the backend's declared caps (config-aware for emulated ones, see below) when disconnected — so controls don't flicker across connect/disconnect. Any future heterogeneous backend (a projector, an RS-232 amp) inherits the honest surface.
 
 ---
 
@@ -634,6 +637,17 @@ stateDiagram-v2
 ```
 
 **Transient power substates.** `PowerState::WarmingUp` / `CoolingDown` model the multi-second laser/lamp warmup and cooldown of projector-class backends; instant-power TVs skip them and go `STANDBY → ON` directly. `WarmingUp` is `is_on=true, is_screen_on=false` (powering up, no usable image yet); `CoolingDown` is `is_on=false, is_screen_on=false` (powering down). The daemon gives each its own `Tv1.Power.PowerState` wire string (`warming_up` / `cooling_down`) so GUIs can show staged feedback, and both sit in the [`needs_wake_preflight`](#reliable-screen-state-actions) set — a screen action waits for the transition to settle rather than racing it. They complement the [`PowerCyclePhase`](../crates/tisvlay-core/src/state.rs) progress signal, which narrates a *daemon-driven* power-on; these substates are the steady state a *passively* warming/cooling device sits in (e.g. powered on by its own remote).
+
+### Reachable-in-standby transports
+
+The daemon was originally built around a **network** TV: unreachable when off, reachable when on, so connect-success *means* powered-on and `Connected` tracks power. HDMI-CEC breaks that — the `/dev/cecN` bus stays reachable in standby, so `Connected` and power become **separate axes**. `TvConnector::reachable_in_standby()` (CEC → `true`; network backends keep the `false` default) is the switch:
+
+- **`connect()` accepts a standby TV.** CEC's connect probes power only to confirm the TV answers on the bus (a set powered off at the wall drops off CEC and the probe fails → disconnected), but both `On` and `Standby` connect. So `power_on` can no longer decide wake-vs-direct by whether connect succeeds; it decides by the **reported power state**.
+- **`power_off` keeps the connection** for a `reachable_in_standby` backend — the TV reads `Connected` + `Power: standby`, honest for both a button-off and a remote-off. Because a CEC TV won't re-broadcast a `<Standby>` it was *commanded* to do, `TvManager::power_off` **synthesizes** the standby cache update itself (no bus round-trip under the per-TV lock) rather than waiting for a push that never comes.
+- **`power_on` wakes in place.** A live-but-standby connection is woken on the existing link (`TvConnection::power_on`, CEC `Image View On`) and the daemon awaits the push subscription reporting it on — no teardown, so `Connected` never flaps (a teardown would emit a spurious "Disconnected" on a power-*on*). An already-`Active` TV is an idempotent no-op (so a repeated `PowerOn` from a per-idle-cycle profile action can't storm connect/disconnect notifications); a wake that never confirms falls back to the full teardown + reconnect.
+- **Screen-via-power emulation.** CEC has no discrete screen-blank, so the stock screen-action profiles (`on_dpms_off` / `on_session_lock` / `on_idle_timeout`, all `ScreenOff`) would no-op. A per-device `emulate_screen_via_power` config (default on) closes that: a config-aware `TvConnector::emulate_screen_via_power()` predicate the **daemon** reads to advertise `SCREEN` (config-driven, so the bit is stable across connect/disconnect) and dispatch `screen_off`/`screen_on` as `power_off`/`power_on`. Doing the mapping at the daemon — not inside the connection — is load-bearing: it reuses the power path above (synthesized standby cache, wake-in-place). Routing screen→power inside the connection would leave the cache stale-`Active` after a commanded standby and make a later `power_on` wrongly no-op.
+
+Full CEC-side detail (message vocabulary, the `Image View On` re-send loop, the follower-mode push monitor) is in [docs/cec/protocol.md](cec/protocol.md); this section is the vendor-agnostic model the rest of the stack sees.
 
 ### Event → Action Mapping
 

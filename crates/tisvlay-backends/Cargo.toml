@@ -24,6 +24,7 @@ tisvlay-core.workspace = true
 
 # Vendor implementations (only this crate imports these)
 tisvlay-lg.workspace = true
+tisvlay-cec.workspace = true
 tisvlay-mock = { workspace = true, optional = true }
 
 # Serialization

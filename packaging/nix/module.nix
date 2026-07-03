@@ -224,6 +224,47 @@ in
         client but does not yet blank anything.
       '';
     };
+
+    cec.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable HDMI-CEC TV control. The daemon opens the kernel CEC
+        character devices (`/dev/cecN`), so this relaxes the daemon's
+        `PrivateDevices` sandbox to expose them — narrowed straight back
+        down with `DeviceAllow=char-cec rw` so only the CEC char subsystem
+        is reachable at the cgroup level — and installs a udev rule
+        granting the tisvlay group read/write on `/dev/cec*`.
+
+        Off by default: it slightly loosens the daemon sandbox, so only
+        enable it on hosts that actually drive a TV over CEC (a CEC-capable
+        HDMI or USB adapter that exposes a `/dev/cecN` node — most GPU HDMI
+        ports do not). The CEC backend is always compiled in; this option
+        only governs device access.
+      '';
+    };
+
+    cec.pulse8.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Bring up a Pulse-Eight-class USB-CEC adapter so `/dev/cecN`
+        appears — needed because nixpkgs' kernel doesn't build the
+        `USB_PULSE8_CEC` driver (native DisplayPort-AUX CEC on amdgpu/i915
+        works without this; a USB serial adapter does not).
+
+        Rather than force a full kernel rebuild to flip that one config
+        symbol, this builds the in-tree `pulse8-cec` driver as an
+        out-of-tree module against the running kernel and loads it, and
+        installs the udev rule + `inputattach` systemd unit that binds the
+        adapter's serial line discipline (per the kernel's
+        `admin-guide/media/cec.rst`). Implies the CEC device-access rules
+        of `cec.enable`.
+
+        Only for hosts with a Pulse-Eight USB-CEC adapter (USB id
+        `2548:1001` / `2548:1002`).
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -275,6 +316,42 @@ in
     services.dbus.packages = [
       (pkgs.writeTextDir "share/dbus-1/system.d/org.tisvlay.Daemon.conf" dbusPolicy)
     ];
+
+    # CEC device access + optional Pulse-Eight adapter bring-up.
+    #
+    # The `/dev/cecN` group grant applies whenever CEC is in use — direct
+    # access (`cec.enable`) or the pulse8 adapter (`cec.pulse8.enable`).
+    # The pulse8 rule triggers `inputattach` to bind the adapter's serio
+    # line discipline so `/dev/cecN` appears (kernel
+    # `admin-guide/media/cec.rst`).
+    services.udev.extraRules = lib.mkMerge [
+      (lib.mkIf (cfg.cec.enable || cfg.cec.pulse8.enable) ''
+        KERNEL=="cec[0-9]*", GROUP="${cfg.group}", MODE="0660"
+      '')
+      (lib.mkIf cfg.cec.pulse8.enable ''
+        ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="2548", ATTRS{idProduct}=="1001", TAG+="systemd", ENV{SYSTEMD_WANTS}+="pulse8-cec-inputattach@%k.service"
+        ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="2548", ATTRS{idProduct}=="1002", TAG+="systemd", ENV{SYSTEMD_WANTS}+="pulse8-cec-inputattach@%k.service"
+      '')
+    ];
+
+    # Build the in-tree pulse8-cec driver out-of-tree against the running
+    # kernel (nixpkgs doesn't ship USB_PULSE8_CEC) and load it.
+    boot.extraModulePackages = lib.mkIf cfg.cec.pulse8.enable [
+      (config.boot.kernelPackages.callPackage ./pulse8-cec.nix { })
+    ];
+    boot.kernelModules = lib.mkIf cfg.cec.pulse8.enable [ "pulse8_cec" ];
+
+    # inputattach holds the serio line discipline that binds pulse8-cec; it
+    # must stay in the foreground (no --daemon) or /dev/cecN disappears.
+    systemd.services."pulse8-cec-inputattach@" = lib.mkIf cfg.cec.pulse8.enable {
+      description = "inputattach for pulse8-cec device on %I";
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.linuxConsoleTools}/bin/inputattach --pulse8-cec /dev/%I";
+        Restart = "on-failure";
+        RestartSec = 2;
+      };
+    };
 
     # Make the CLI available system-wide. The GUI .desktop entry
     # and D-Bus session activation file ship with the package
@@ -334,7 +411,11 @@ in
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;
-        PrivateDevices = true;
+        # PrivateDevices gives a minimal private /dev with no /dev/cecN, so
+        # the CEC backend can't open its character device under it. Relaxed
+        # only when cec.enable is set; the DeviceAllow merge below then
+        # re-narrows access to the cec char subsystem.
+        PrivateDevices = !(cfg.cec.enable || cfg.cec.pulse8.enable);
         NoNewPrivileges = true;
 
         # Network: UNIX (D-Bus), INET{4,6} (WebSocket to TVs, WoL), NETLINK
@@ -386,6 +467,13 @@ in
         # Clean up any SysV IPC the daemon (or its future children)
         # might leak at shutdown.
         RemoveIPC = true;
+      }
+      // lib.optionalAttrs (cfg.cec.enable || cfg.cec.pulse8.enable) {
+        # With PrivateDevices relaxed (above) so /dev/cecN is visible,
+        # scope the cgroup device policy to the cec char subsystem so the
+        # daemon can reach CEC adapters and nothing else new. The udev rule
+        # in the config block grants the tisvlay group rw on the nodes.
+        DeviceAllow = [ "char-cec rw" ];
       };
     };
 

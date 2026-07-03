@@ -37,6 +37,7 @@
         "rustup",
         "serde",
         "SIGPIPE",
+        "SIMPLINK",
         "slint",
         "socat",
         "SSAP",

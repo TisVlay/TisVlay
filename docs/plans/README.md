@@ -15,10 +15,8 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None in flight._
-
-When a plan is in flight, list it here with a one-line summary
-of the work it covers:
+None currently in flight. When a plan is in flight, list it here with
+a one-line summary of the work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short
 >   description of what's landing and why a multi-commit PR

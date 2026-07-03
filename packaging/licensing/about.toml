@@ -156,6 +156,10 @@ license = "LicenseRef-Slint-Royalty-free-2.0"
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
+# The shipped GUI package pulls the software renderer (the dev
+# `--all-features` graph pulls skia instead), so cargo-about resolves it
+# during `nix build .#tisvlay` even though `just deny` (default features)
+# doesn't surface it.
 [i-slint-renderer-software]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
 [i-slint-renderer-software.clarify]
@@ -172,3 +176,12 @@ accepted = ["MPL-2.0"]
 
 [libfuzzer-sys]
 accepted = ["NCSA"]
+
+# Valve's HDMI-CEC library + its proc-macro helper (tisvlay-cec backend).
+# LGPL-2.1 weak copyleft — see docs/licensing.md. linux-cec-sys (the ioctl
+# bindings) is BSD-3 and needs no entry.
+[linux-cec]
+accepted = ["LGPL-2.1-or-later"]
+
+[linux-cec-macros]
+accepted = ["LGPL-2.1-or-later"]

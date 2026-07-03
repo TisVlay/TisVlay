@@ -42,7 +42,8 @@ pub struct TvService {
     /// from the backend's `display_diagnostics` (LG: WebSocket
     /// scheme). Surfaced via `Tv1.VendorInfo` and rendered in the
     /// GUI's INFO group. Empty for backends with no `Diagnostic`
-    /// schema fields.
+    /// schema fields. (CEC device identity flows through `HardwareId`,
+    /// not here.)
     pub(crate) vendor_info: Vec<(String, String)>,
 
     // Cached runtime state (updated by subscription pushes)
@@ -107,20 +108,30 @@ impl TvService {
         self.vendor_config.clone()
     }
 
-    /// Backend-discovered diagnostic rows as ordered
-    /// `(label, value)` pairs. The GUI's INFO group renders these
-    /// alongside cross-vendor identity columns (TV ID, hardware,
-    /// DRM connector). LG: WebSocket scheme. Future backends:
-    /// whatever `Diagnostic`-visibility fields they declare. Not
-    /// editable — backends refresh diagnostics during pairing
-    /// only, so the user re-pairs to update.
-    ///
-    /// Set at interface-registration time and refreshed via
-    /// `state_forwarder` after `Tv1.UpdateConfig` writes (in case
-    /// a vendor field's display projection depends on others).
+    /// Backend-discovered diagnostic rows as ordered `(label, value)`
+    /// pairs (`Diagnostic` schema fields — LG's WebSocket scheme), rendered
+    /// in the GUI's INFO group alongside the cross-vendor identity columns
+    /// (TV ID, Make/Model/Serial from `HardwareId`, DRM connector). Refreshed
+    /// on `Tv1.UpdateConfig` writes. CEC device identity flows through
+    /// `HardwareId`, not here.
     #[zbus(property)]
     fn vendor_info(&self) -> Vec<(String, String)> {
         self.vendor_info.clone()
+    }
+
+    /// Canonical vendor id for branding the GUI vendor tile. When the
+    /// connection resolves the device's *own* vendor (CEC → the TV's OUI,
+    /// e.g. `lg`), that; otherwise the backend vendor id (`cec`, `lg`,
+    /// `mock`). So a CEC-connected LG set shows the LG tile, an unresolved
+    /// CEC TV the generic CEC tile, and native backends are unchanged. Read
+    /// live from the connection (refreshes on a dongle-swap when the GUI
+    /// re-fetches on `ConnectionChanged`), falling back to the backend id.
+    #[zbus(property)]
+    async fn brand(&self) -> String {
+        self.manager
+            .get_brand(&self.tv_id)
+            .await
+            .unwrap_or_else(|| self.vendor.clone())
     }
 
     /// Whether the TV is currently connected.
@@ -227,9 +238,11 @@ impl TvService {
             .to_dbus_tuple()
     }
 
-    /// Capabilities supported by this TV.
-    ///
-    /// Queried live from the backend (populated after connection).
+    /// Capabilities supported by this TV — the power/input/volume/… controls
+    /// the backend can drive. Stable across connect/disconnect: the
+    /// disconnected fallback reports the same per-TV control set (sans the
+    /// backend-only DISCOVERY bit), so the `invalidates` signal never fires
+    /// and cached clients don't drift.
     #[zbus(property(emits_changed_signal = "invalidates"))]
     async fn capabilities(&self) -> Vec<String> {
         self.manager
