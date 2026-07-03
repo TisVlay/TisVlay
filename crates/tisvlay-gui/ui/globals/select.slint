@@ -90,29 +90,33 @@ component SelectRow inherits Rectangle {
     in property <bool> is-cursor;
 
     height: Design.size-input;
-    background: root.is-cursor || touch.has-hover ? Theme.row-hover : transparent;
+    background: root.is-cursor || touch.has-hover ? Theme.menu-hover : transparent;
     border-radius: Design.radius-control;
 
     callback clicked();
 
+    // Accent bar marks the current selection — the native ComboBox's
+    // ListItem uses a left bar, not a check glyph.
+    Rectangle {
+        x: 4px;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        background: Theme.accent;
+        border-radius: 1.5px;
+        visible: root.is-current;
+    }
+
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 8px;
-        spacing: Design.gap-tight;
+        padding-left: 14px;
+        padding-right: 12px;
         Text {
             horizontal-stretch: 1;
             vertical-alignment: center;
             text: root.label;
-            color: root.is-current ? Theme.accent : Theme.text;
+            color: Theme.text;
             font-size: Design.font-meta;
             overflow: elide;
-        }
-        // Check glyph on the currently-selected option.
-        Text {
-            vertical-alignment: center;
-            text: root.is-current ? "✓" : "";
-            color: Theme.accent;
-            font-size: Design.font-meta;
         }
     }
 
@@ -169,19 +173,21 @@ export component SelectOverlay inherits Rectangle {
         }
     }
 
-    // The list surface.
+    // The list surface. Elevated background + stronger border + deeper
+    // shadow (offset-8, like the native ComboBox flyout) so the popup
+    // reads as distinct from the pane it floats over.
     if Select.open: Rectangle {
         x: root.place-x;
         y: root.place-y;
         width: root.list-w;
         height: root.list-h;
-        background: Theme.surface;
-        border-color: Theme.border;
+        background: Theme.surface2;
+        border-color: Theme.border-strong;
         border-width: Design.border-thin;
         border-radius: Design.radius-card;
         drop-shadow-blur: 16px;
         drop-shadow-color: Theme.drop-shadow;
-        drop-shadow-offset-y: 4px;
+        drop-shadow-offset-y: 8px;
 
         // No FocusScope here: focus stays on the owning ThemedSelect's
         // button (see its `fs`), which handles the open-state keys. Keeping
@@ -248,9 +254,9 @@ export component ThemedSelect inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 8px;
-        spacing: Design.gap-tight;
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
         Text {
             horizontal-stretch: 1;
             vertical-alignment: center;
@@ -259,11 +265,19 @@ export component ThemedSelect inherits Rectangle {
             font-size: Design.font-meta;
             overflow: elide;
         }
-        Text {
-            vertical-alignment: center;
-            text: "▾";
-            color: Theme.text-dim;
-            font-size: Design.font-meta;
+        // Thin stroked chevron, matching the native ComboBox's dropdown
+        // glyph (a "v", not a filled triangle).
+        VerticalLayout {
+            alignment: center;
+            Path {
+                width: 11px;
+                height: 6px;
+                stroke: Theme.text-dim;
+                stroke-width: 1.25px;
+                viewbox-width: 12;
+                viewbox-height: 7;
+                commands: "M 1 1 L 6 6 L 11 1";
+            }
         }
     }
 
