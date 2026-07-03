@@ -151,13 +151,13 @@ export global PairingWizard {
     in-out property <string> system-profile;
     in-out property <bool> managed: true;
     // Index into `supported-vendors` for the vendor the user picked
-    // in the manual-add path's ComboBox. Default 0 = first
+    // in the manual-add path's vendor select. Default 0 = first
     // alphabetically-sorted vendor (the `state_watch` publisher
-    // sorts before publishing). The ComboBox is bound via
-    // `current-index <=>` so user picks write back here directly,
-    // and Rust at `manual-add` time reads
-    // `supported-vendors[manual-vendor-index]` to recover the id +
-    // display name. Single source of truth replaces the prior
+    // sorts before publishing). The ThemedSelect shows
+    // `supported-vendor-names[manual-vendor-index]` and writes picks
+    // back here via its `selected-index` callback; Rust at `manual-add`
+    // time reads `supported-vendors[manual-vendor-index]` to recover the
+    // id + display name. Single source of truth replaces the prior
     // `manual-vendor` (id) + `manual-vendor-name` (display) pair.
     in-out property <int> manual-vendor-index: 0;
     in-out property <string> manual-ip;

@@ -149,8 +149,8 @@ pub(crate) fn reset_wizard(
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
     // is sorted by display name in `state_watch::initial_fetch_and_watch`.
-    // The ComboBox's `current-index <=> manual-vendor-index` binding
-    // updates the visible selection in lockstep.
+    // The vendor ThemedSelect derives its shown value from this index and
+    // writes picks back through its `selected-index` callback.
     wizard.set_manual_vendor_index(0);
     wizard.set_manual_ip(SharedString::default());
     wizard.set_selected_vendor(SharedString::default());

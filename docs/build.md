@@ -63,7 +63,7 @@ Smaller offenders (`tiny-skia`, `foldhash`, `pastey`, `zune-*`, `dirs-sys`) trac
 
 ### Default-feature resolution
 
-cargo-deny resolves with default features rather than `--all-features`. Default-features matches the dep graph we actually distribute. The ad-hoc MCP debug build (`cargo run --features slint/mcp`) pulls `i-slint-backend-testing/mcp`'s prost chain, which contains MPL-2.0 crates we don't audit for production. Excluding them from the licenses gate matches what's actually shipped.
+cargo-deny resolves with default features rather than `--all-features`, matching the dep graph we actually distribute. The MCP debug stack (`i-slint-backend-testing/mcp`'s prost chain, with MPL-2.0 crates we don't audit for production) is reachable only via an ad-hoc `cargo run --features slint/mcp` — a `slint` dependency feature no workspace crate enables — so it's absent from both default- and all-feature resolution and never reaches the licenses gate.
 
 cargo-deny 0.18+ also excludes dev-deps from `bans` and `licenses` by default — no extra `multiple-versions-include-dev` knob needed.
 

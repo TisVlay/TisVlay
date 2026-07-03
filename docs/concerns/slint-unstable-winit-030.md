@@ -14,7 +14,7 @@ Slint marks the `winit_030` module as "may be removed or changed in future minor
 
 ### Pin
 
-`slint = "=1.17.0"` — exact-version pin in `crates/tisvlay-gui/Cargo.toml`. The matching test dependency `i-slint-backend-testing`, the optional dev dep `i-slint-backend-selector`, and `slint-build` are similarly exact-pinned to `=1.17.0` (the last so the `.slint` compiler can't desync from the runtime under `cargo update`).
+`slint = "=1.17.0"` — exact-version pin in `crates/tisvlay-gui/Cargo.toml`. The matching test dependency `i-slint-backend-testing` and `slint-build` are similarly exact-pinned to `=1.17.0` (the latter so the `.slint` compiler can't desync from the runtime under `cargo update`).
 
 ### Risk
 

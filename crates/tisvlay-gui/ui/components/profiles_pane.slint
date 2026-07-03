@@ -354,11 +354,9 @@ component ProfileList inherits Rectangle {
 // Reset is only rendered for locally-set rows — inheriting fields
 // can't be "reset" because they already inherit.
 //
-// `entry.current-value` is the resolved token verbatim for both kinds;
-// the inherit cue is the gutter accent + reset glyph. (Enum rows once
-// carried a trailing "✓" overlay for the stock ComboBox — obsolete now
-// that ThemedSelect fires `selected` on every pick; see
-// `profiles::inherit_display`.)
+// `entry.current-value` is the resolved token verbatim for both kinds
+// (enum and number); the inherit cue is the gutter accent + reset glyph,
+// not a marker baked into the value.
 
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;

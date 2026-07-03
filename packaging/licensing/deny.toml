@@ -15,12 +15,12 @@
 # systemd, GUI is Wayland-only since the share-target sprint.
 #
 # Default-feature resolution intentionally — matches the dep graph
-# we actually ship. The ad-hoc MCP debug build
-# (`cargo run --features slint/mcp`) pulls
-# `i-slint-backend-testing/mcp`'s prost chain, which contains crates
-# we don't audit for production (e.g. `generational-arena` under
-# MPL-2.0). Leaving `all-features` unset keeps those pollutants out
-# of the licenses check.
+# we actually ship. The MCP debug stack (`i-slint-backend-testing/mcp`'s
+# prost chain, which contains crates we don't audit for production, e.g.
+# `generational-arena` under MPL-2.0) is reachable only via an ad-hoc
+# `cargo run --features slint/mcp` — a `slint` dependency feature that no
+# workspace crate enables — so it is absent from both default- and
+# all-feature resolution and never reaches the licenses check.
 [graph]
 targets = [
     { triple = "x86_64-unknown-linux-gnu" },

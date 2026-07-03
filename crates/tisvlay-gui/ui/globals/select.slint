@@ -18,6 +18,7 @@
 // Drop-in for `ComboBox` on the `model` / `current-value` / `selected`
 // subset the panes use.
 
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 
@@ -40,10 +41,10 @@ export global Select {
     in-out property <int> next-id: 1;
     // Keyboard cursor within the open list.
     in-out property <int> highlight;
-    // Bumped on a pick; the owning button reads `picked-value` / `picked-index`
-    // in its change handler and re-emits `selected` / `selected-index`.
+    // Bumped on a pick; the owning button reads `picked-index` in its change
+    // handler and re-emits `selected` / `selected-index`. The value is
+    // derived from `options[picked-index]` — no separate stored copy.
     in-out property <int> pick-tick;
-    in-out property <string> picked-value;
     in-out property <int> picked-index;
 
     // Hand each button a stable id once, at init.
@@ -70,7 +71,6 @@ export global Select {
     public function pick(index: int) {
         if (root.open && index >= 0 && index < root.options.length) {
             root.picked-index = index;
-            root.picked-value = root.options[index];
             root.pick-tick += 1;
         }
         root.close();
@@ -88,15 +88,24 @@ export global Select {
 // One option row inside the open list.
 component SelectRow inherits Rectangle {
     in property <string> label;
+    in property <int> index;
     in property <bool> is-current;
     in property <bool> is-cursor;
 
     height: Design.size-input;
-    // Hover/cursor wash: a translucent veil of the foreground color, like
-    // the native ListItem's subtle highlight — visible over the elevated
-    // menu regardless of scheme.
-    background: root.is-cursor || touch.has-hover ? Theme.text.with-alpha(0.09) : transparent;
+    // Single highlight source: the keyboard/hover cursor (`is-cursor`,
+    // driven by `Select.highlight`). A translucent veil of the foreground
+    // color, like the native ListItem's subtle highlight — visible over the
+    // elevated menu regardless of scheme. On open, the current row claims
+    // the cursor so keyboard nav and Enter start on the current selection.
+    background: root.is-cursor ? Theme.text.with-alpha(0.09) : transparent;
     border-radius: Design.radius-control;
+
+    init => {
+        if (root.is-current) {
+            Select.highlight = root.index;
+        }
+    }
 
     callback clicked();
 
@@ -126,6 +135,11 @@ component SelectRow inherits Rectangle {
     }
 
     touch := TouchArea {
+        changed has-hover => {
+            if (self.has-hover) {
+                Select.highlight = root.index;
+            }
+        }
         clicked => {
             root.clicked();
         }
@@ -146,7 +160,11 @@ export component SelectOverlay inherits Rectangle {
     property <int> count: Select.options.length;
     property <int> vis: min(root.count, root.max-visible);
     property <length> list-w: Select.anchor.width;
-    property <length> list-h: root.vis * root.row-h + 2 * root.pad + 2 * Design.border-thin;
+    // Cap the flyout at `max-visible` rows AND at the window (minus margins)
+    // so it never exceeds the window even in a short/resized window; the
+    // inner ScrollView scrolls the rest.
+    property <length> full-h: root.vis * root.row-h + 2 * root.pad + 2 * Design.border-thin;
+    property <length> list-h: min(root.full-h, root.height - 2 * root.margin);
 
     // X: aligned under the anchor, clamped into the window.
     property <length> place-x: clamp(
@@ -178,10 +196,9 @@ export component SelectOverlay inherits Rectangle {
         }
     }
 
-    // The list surface. Uses the native menu tokens: `alternate-background`
-    // is exactly the flyout color the stock ComboBox's MenuBorder uses, so
-    // the popup matches — and reads as distinct from the control surface it
-    // floats over. Deeper offset-8 shadow, like the native flyout.
+    // The list surface. An elevated `surface2` background + `border-strong`
+    // edge + deeper offset-8 shadow read as distinct from the control
+    // surface the flyout floats over, like a native ComboBox menu.
     if Select.open: Rectangle {
         x: root.place-x;
         y: root.place-y;
@@ -191,6 +208,7 @@ export component SelectOverlay inherits Rectangle {
         border-color: Theme.border-strong;
         border-width: Design.border-thin;
         border-radius: Design.radius-card;
+        clip: true;
         drop-shadow-blur: 16px;
         drop-shadow-color: Theme.drop-shadow;
         drop-shadow-offset-y: 8px;
@@ -198,15 +216,21 @@ export component SelectOverlay inherits Rectangle {
         // No FocusScope here: focus stays on the owning ThemedSelect's
         // button (see its `fs`), which handles the open-state keys. Keeping
         // focus put means Tab traversal survives the popup and needs no
-        // focus hand-back.
-        VerticalLayout {
-            padding: root.pad;
-            for opt[i] in Select.options: SelectRow {
-                label: opt;
-                is-current: opt == Select.current-value;
-                is-cursor: i == Select.highlight;
-                clicked => {
-                    Select.pick(i);
+        // focus hand-back. The ScrollView keeps a list longer than
+        // `max-visible` inside the flyout and follows the keyboard cursor.
+        ScrollView {
+            viewport-width: self.visible-width;
+            viewport-y: -max(0px, (Select.highlight - root.vis + 1) * root.row-h);
+            VerticalLayout {
+                padding: root.pad;
+                for opt[i] in Select.options: SelectRow {
+                    label: opt;
+                    index: i;
+                    is-current: opt == Select.current-value;
+                    is-cursor: i == Select.highlight;
+                    clicked => {
+                        Select.pick(i);
+                    }
                 }
             }
         }
@@ -258,7 +282,7 @@ export component ThemedSelect inherits Rectangle {
     // an eager binding trips Slint's layout-cache reentrancy panic (same
     // rule the Help overlay follows).
     function open-list() {
-        if (!root.enabled) {
+        if (!root.enabled || root.model.length == 0) {
             return;
         }
         Select.open-for(
@@ -341,7 +365,7 @@ export component ThemedSelect inherits Rectangle {
     property <int> pick-mirror: Select.pick-tick;
     changed pick-mirror => {
         if (Select.owner == root.id) {
-            root.selected(Select.picked-value);
+            root.selected(root.model[Select.picked-index]);
             root.selected-index(Select.picked-index);
         }
     }
@@ -353,6 +377,14 @@ export component ThemedSelect inherits Rectangle {
     changed is-open => {
         if (root.is-open) {
             fs.focus();
+        }
+    }
+
+    // If this button is disabled while its menu is open (e.g. its model
+    // empties on a state refresh), close the orphaned overlay.
+    changed enabled => {
+        if (!root.enabled && root.is-open) {
+            Select.close();
         }
     }
 }

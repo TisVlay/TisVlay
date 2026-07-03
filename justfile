@@ -306,7 +306,7 @@ tray-start:
 # Start the GUI (paired with `daemon-start`).
 [group('dev')]
 gui-start:
-    {{ if gui_mcp == "true" { "SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315" } else { "" } }} \
+    {{ if gui_mcp == "true" { "SLINT_MCP_PORT=9315" } else { "" } }} \
         RUST_LOG="{{ _gui_log }}" \
         cargo run {{ if gui_mcp == "true" { "--features slint/mcp" } else { "" } }} \
         --bin tisvlay-gui -- {{ _user_flag }}
