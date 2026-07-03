@@ -2,13 +2,13 @@
 
 **TV display control for Linux.**
 
-tisvlay controls smart TVs from a Linux desktop over the network — power, screen blanking, HDMI input, volume, and backlight — and ties that control to your desktop session (lock/unlock, suspend/resume, idle, and display blanking). It's built for setups where the TV is driven over the network rather than HDMI-CEC (for example an Nvidia GPU, which has no CEC).
+tisvlay controls smart TVs from a Linux desktop — power, screen blanking, HDMI input, volume, and backlight — and ties that control to your desktop session (lock/unlock, suspend/resume, idle, and display blanking). It reaches a TV two ways: over the **network** (LG WebOS — no extra hardware, and it works even where the GPU exposes no HDMI-CEC, as on Nvidia) or over **HDMI-CEC** (the Linux CEC subsystem, through a USB CEC adapter or an amdgpu/i915 DisplayPort→HDMI adapter).
 
-Today tisvlay supports **LG WebOS** TVs. The architecture is vendor- and transport-agnostic, so other backends (Samsung, Sony, …) can be added later.
+Today tisvlay supports **LG WebOS** TVs over the network, plus any TV that speaks **HDMI-CEC** (power and screen-blanking) through a CEC adapter. The architecture is vendor- and transport-agnostic, so other backends (Samsung, Sony, …) can be added later.
 
 ## Features
 
-- **Power** — turn the TV on (Wake-on-LAN) and off (standby).
+- **Power** — turn the TV on (Wake-on-LAN, or a CEC bus wake) and off (standby).
 - **Screen blanking** — OLED-safe screen on/off for burn-in protection, distinct from a full power-off.
 - **HDMI input switching** — change inputs programmatically.
 - **Volume & backlight** — adjust volume, mute, and OLED pixel brightness.
@@ -42,9 +42,9 @@ graph LR
         Daemon["tisvlayd<br/><i>system daemon</i>"]
     end
 
-    subgraph Network
+    subgraph TVs
         TV1["LG TV"]
-        TV2["… TV"]
+        TV2["CEC TV"]
     end
 
     Session -->|D-Bus| Daemon
@@ -52,7 +52,7 @@ graph LR
     Gui -->|D-Bus| Daemon
     Cli -->|D-Bus| Daemon
     Daemon -.->|WebSocket / WoL| TV1
-    Daemon -.->|vendor protocol| TV2
+    Daemon -.->|HDMI-CEC| TV2
 ```
 
 ## Where to go next

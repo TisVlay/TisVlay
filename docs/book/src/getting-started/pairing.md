@@ -18,7 +18,16 @@ Accept the prompt on the TV when it appears. On success the TV is added to the c
 
 ## Pair from the GUI
 
-`tisvlay-gui` includes a pairing wizard that discovers TVs on the network and walks through the prompt. Launch it from your application menu (or run `tisvlay-gui`).
+`tisvlay-gui` includes a pairing wizard that discovers TVs on the network — and lists the host's CEC adapters — then walks through the prompt. Launch it from your application menu (or run `tisvlay-gui`).
+
+## HDMI-CEC: no pairing needed
+
+HDMI-CEC has no credentials and no on-screen prompt — any device on the CEC bus is reachable, so "pairing" a CEC TV just means telling tisvlay which adapter it's on:
+
+- **GUI wizard** — the pairing wizard lists the host's CEC adapters (`/dev/cec0`, `/dev/cec1`, …), probes each for the TV's own name and make/model, and prefills the device. Pick the adapter and confirm.
+- **By hand** — add a `[tv.cec]` block to the daemon config (at minimum `device = "/dev/cec0"`) and reload; see [Configuration](../guide/configuration.md#tv-definitions).
+
+The TV must be on the CEC bus — powered, or even in standby (the bus reaches a standby TV) — and on the input the adapter is plugged into. See [Installation](./installation.md#hdmi-cec-backend-optional) for adapter requirements.
 
 ## Re-pairing
 

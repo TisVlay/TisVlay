@@ -1,12 +1,12 @@
 # FAQ
 
-### Why control the TV over the network instead of HDMI-CEC?
+### Network or HDMI-CEC — which backend should I use?
 
-Many desktop GPUs — notably Nvidia's — expose no HDMI-CEC, so the cable can't carry power/input commands at all. tisvlay talks to the TV's own network API instead: no extra hardware, and it reaches any TV on the LAN, not just the one on the cable. The architecture doesn't preclude CEC/serial/USB transports as future backends.
+Both ship today. **LG WebOS over the network** needs no extra hardware, reaches any TV on the LAN (not just the one on the cable), and exposes the fullest feature set — power, screen-blank, input, volume, and backlight. It's the natural choice for an LG TV, and the only option where the GPU has no working CEC (as on Nvidia). **HDMI-CEC** drives the TV over the cable through the Linux CEC subsystem, so it works with any CEC-capable TV regardless of brand — but it needs a CEC adapter (a USB CEC dongle, or an amdgpu/i915 DisplayPort→HDMI adapter; most GPU HDMI ports, Nvidia's included, don't wire CEC), and it covers power plus screen-blank (emulated by powering the TV, since CEC can't blank a panel that stays on). Volume, backlight, and arbitrary input switching aren't reliable over CEC. See [Requirements & Compatibility](./requirements.md).
 
 ### Which TVs are supported?
 
-LG webOS TVs today (see [Requirements & Compatibility](./requirements.md)), plus a built-in [mock vendor](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend) for testing. The core is vendor-agnostic by design, so additional brands can land as backends.
+LG webOS TVs over the network, and any TV reachable over **HDMI-CEC** (power and screen-blank) with a CEC adapter — see [Requirements & Compatibility](./requirements.md). There's also a built-in [mock vendor](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend) for testing. The core is vendor- and transport-agnostic by design, so additional brands can land as backends.
 
 ### Do I need all the services?
 

@@ -39,6 +39,17 @@ client_key = "…"           # set during pairing
 scheme = "wss"
 ```
 
+A CEC TV uses a `[tv.cec]` table instead of `[tv.lg]` — CEC has no address or credentials, only the kernel device the TV is reachable on:
+
+```toml
+[tv.cec]
+device = "/dev/cec0"            # the kernel CEC node the TV is reachable on
+physical_address = "1.0.0.0"    # the adapter's HDMI port on the TV (USB adapters only; ignored on GPU DP-CEC)
+emulate_screen_via_power = true # honor screen_off/screen_on by powering the TV (CEC can't blank a live panel)
+```
+
+CEC has no discrete screen-blank, so with `emulate_screen_via_power` (default `true`) the daemon fulfills the stock `screen_off`/`screen_on` profile actions by powering the TV off/on; set it `false` to have the TV ignore screen actions instead.
+
 ## Discovery
 
 ```toml
@@ -66,7 +77,7 @@ Every event field takes one of:
 | `screen_off` | OLED-safe blank (TV stays powered) |
 | `screen_on` | unblank |
 | `power_off` | standby |
-| `power_on` | Wake-on-LAN |
+| `power_on` | Wake-on-LAN (a CEC bus wake for the HDMI-CEC backend) |
 
 ### System profile
 

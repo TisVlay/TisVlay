@@ -84,3 +84,14 @@ cargo build --release
 Binaries land in `target/release/`. Building from Cargo does **not** install the systemd units or D-Bus policy — copy those from [`packaging/`](https://github.com/ruffsl/tisvlay/tree/main/packaging) if you want the daemon and session services managed by systemd.
 
 A Rust toolchain is required; install it from <https://rust-lang.org/tools/install/>.
+
+## HDMI-CEC backend (optional)
+
+The HDMI-CEC backend needs a CEC adapter that the kernel exposes as a `/dev/cecN` character device — most GPU HDMI ports don't wire the CEC pin. Two known-working sources:
+
+- A **USB CEC adapter** (e.g. Pulse-Eight), via the kernel `pulse8-cec` driver.
+- An active **DisplayPort→HDMI adapter on an amdgpu or i915 output** — the GPU driver tunnels DP-AUX CEC. **Nvidia GPUs expose no CEC**, so use a USB adapter there.
+
+On NixOS, enable device access for the sandboxed daemon with `services.tisvlay.cec.enable = true` (it installs the udev rule and grants the daemon `char-cec` access). The backend depends on the LGPL-licensed [`linux-cec`](https://crates.io/crates/linux-cec) crate.
+
+No pairing prompt or credentials are involved — a CEC TV is added by picking its adapter; see [Pairing](./pairing.md#hdmi-cec-no-pairing-needed).

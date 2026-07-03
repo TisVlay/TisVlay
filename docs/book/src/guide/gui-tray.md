@@ -20,6 +20,8 @@ Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single
 
 **Navigation** — Alt+←/→ or the mouse back/forward buttons step through your pane history, browser-style. (Inactive while the pairing wizard or an edit form is open, so keys aren't stolen mid-edit.)
 
+**Contextual help** — an info (**ⓘ**) button reveals a longer explanation of the option beside it; icon-only buttons and chips show a short tip on hover. KDE-style, so the help stays out of the way until you ask for it.
+
 ## Tray applet (`tisvlay-tray`)
 
 Runs as a user service, started automatically with your graphical session. Each TV is a submenu; the icon reflects its state (connected and managed, connected but unmanaged, disconnected).
