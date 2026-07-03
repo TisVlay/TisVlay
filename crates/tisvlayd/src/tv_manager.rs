@@ -2581,6 +2581,11 @@ impl TvManager {
     /// After sending the power-off command, clears the daemon's connection
     /// tracking. The backend already closed its own socket.
     pub async fn power_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        // Mirror `power_on`'s "PowerOn requested" so a lifecycle power-off
+        // (on_shutdown / on_sleep / a screen-via-power screen_off) is visible
+        // at INFO — the action dispatch itself only logs at debug.
+        info!(tv_id = %tv_id, "PowerOff requested");
+
         let result = self
             .with_connection(tv_id, |conn| {
                 Box::pin(async move { conn.power_off().await })
