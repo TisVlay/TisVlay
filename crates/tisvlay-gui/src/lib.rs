@@ -304,17 +304,9 @@ pub fn run() -> Result<()> {
         })
         .select()
         .context("Failed to initialize Slint backend")?;
-
-    // Activate Slint's in-process MCP server when `SLINT_MCP_PORT`
-    // is set. The selector's `mcp` feature gates an internal
-    // `mcp_server::init()` call behind the legacy `with_platform()`
-    // path; `BackendSelector::select()` calls `set_platform()`
-    // directly and never reaches it, so we invoke the init
-    // ourselves. No-op if the env var is absent.
-    #[cfg(feature = "dev-mcp")]
-    if let Err(e) = i_slint_backend_testing::mcp_server::init() {
-        tracing::warn!(error = ?e, "Slint MCP server init failed");
-    }
+    // `.select()` above auto-starts Slint's in-process MCP server when
+    // the binary is built with `--features slint/mcp` and `SLINT_MCP_PORT`
+    // is set (dev-only; inert otherwise). See `.claude/slint.md`.
 
     // Set the Wayland app_id / X11 WM_CLASS to match the .desktop
     // entry's `StartupWMClass=org.tisvlay.Gui`. This lets KWin /
