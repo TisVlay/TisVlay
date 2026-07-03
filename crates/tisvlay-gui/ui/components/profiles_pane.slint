@@ -996,6 +996,19 @@ component ProfileDetail inherits Rectangle {
                             }
                         }
                     }
+
+                    // Empty scrollable slack below the fields card. A stock
+                    // ComboBox opens its dropdown downward and Slint clips it
+                    // at the window's bottom edge (it can't paint a popup past
+                    // its own window). This slack is the substrate for keeping
+                    // a bottom-edge row's popup on-screen — but on its own it's
+                    // insufficient: vertical scroll is blocked while a popup is
+                    // open (as in native Qt/KDE), so the user can't scroll a
+                    // cut-off dropdown into view after opening it. The follow-up
+                    // is a custom ComboBox that flips its popup upward near the
+                    // window bottom. Remove both when the upstream native-popup
+                    // fix lands — docs/concerns/slint-combobox-popup-clipped.md.
+                    Rectangle { height: Design.combobox-popup-room; }
                 }
             }
         }

@@ -35,6 +35,12 @@ export global Design {
     out property <length> size-tile-md: 40px;      // vendor tile in detail header
     out property <length> size-status-dot: 6px;
     out property <length> size-glyph: 14px;         // action-icon glyph in buttons
+    // Scrollable slack reserved below the last row of a ComboBox-bearing
+    // editor list, so a bottom-edge dropdown can be scrolled into a spot
+    // with room to open downward. Sized to one stock dropdown's height
+    // (5 items). Stopgap for a Slint popup-clipping limitation — see
+    // docs/concerns/slint-combobox-popup-clipped.md.
+    out property <length> combobox-popup-room: 216px;
 
     // -- Layout widths --
     out property <length> width-sidebar: 110px;
