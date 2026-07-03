@@ -17,7 +17,7 @@ A CEC adapter is a character device on the HDMI bus. Unlike the network backends
 |---|---|---|
 | `POWER` on/off | `Image View On` (wake path) / `Standby` | ✅ |
 | power **state** | `Give Device Power Status` → `Report Power Status` (`On` / `Standby` / `ToOn` / `ToStandby`) | ✅ |
-| `INPUT` switch | `Set Stream Path` to a port's physical address | ✅ (switch); readback ❌ |
+| `INPUT` switch | `Set Stream Path` to a port's physical address | ❌ not advertised — see below |
 | `DISCOVERY` | enumerate `/dev/cecN` nodes (not a bus scan) | ✅ |
 | `VOLUME` | only relative `User Control Pressed{Volume Up/Down}` exists; no absolute set, readback is an AVR feature | ❌ deferred (needs a relative-volume primitive) |
 | `MUTE` | `User Control Pressed{Mute}` is a toggle; readback device-dependent | ❌ deferred |
@@ -27,6 +27,14 @@ A CEC adapter is a character device on the HDMI bus. Unlike the network backends
 ### Screen-via-power emulation
 
 HDMI-CEC has no way to blank the panel while leaving the TV on, so a bare CEC backend would ignore the stock screen-blank profile actions (`on_dpms_off` / `on_idle_timeout` / `on_session_lock` default to `screen_off`, with `screen_on` mirrors). The `emulate_screen_via_power` config field (`[tv.cec]`, default `true`) closes that gap: `CecConnector::emulate_screen_via_power()` reports it, and the **daemon** — not the connection — advertises `SCREEN` (config-aware `get_capabilities`) and dispatches `screen_off`/`screen_on` as `power_off`/`power_on`. Living at the daemon dispatch is load-bearing: it reuses the correct reachable-in-standby power path (keep the connection, **synthesize** the standby cache the TV won't re-broadcast for a *commanded* standby, wake in place). Routing screen→power inside the connection instead would leave the cached power state stale-`Active` after a commanded standby, which would make a later `power_on` wrongly no-op. Opt out (`false`) to have the device ignore screen actions entirely — sub-stock fidelity for a user who'd rather not power-cycle a slow-to-wake panel on every idle blank. Default-on so the stock profiles make every device "go dark" (LG blanks its OLED; CEC powers off) consistently across a mixed fleet.
+
+### Input switching (not advertised)
+
+CEC's only *reliable* input operation is "make the TV show **our own** port": a source announces itself with `<Active Source>`, and the TV switches to it. The wake path already does exactly this — `Image View On` appends `Active Source` for the adapter's physical address — so powering the TV on from the PC brings it to the PC's input regardless of what it was showing before. Field-confirmed on the C3: with the TV manually switched to HDMI 2, a CEC power-off then a CEC power-on returned it to HDMI 1 (the adapter's port).
+
+Switching to an *arbitrary other* input is the part CEC can't do reliably. `switch_input("HDMI_N")` broadcasts `<Set Stream Path>` to that port's physical address, which asks *whatever CEC device sits there* to become active source — an empty port, or a non-CEC source, has nothing to answer, so the TV doesn't switch (the C3 does not self-route on it; LG's own SIMPLINK docs describe CEC as power-control only). And `<current input>` is not portably readable over CEC (`get_current_input` is always `None`), so a picker couldn't reflect the real state anyway.
+
+So the `INPUT` capability is **not advertised** — the clients' capability gating then hides the INPUT group / menu / status line, rather than offering a control that silently no-ops. The `switch_input` / `Set Stream Path` implementation is kept **dormant behind the bit** (still unit-tested), so a future "switch to the PC via `<Active Source>`" model — the reliable subset — can re-enable it. Automation is unaffected: `on_primary` / `off_primary` gating no-ops to "always automate" when the current input is unknown (see [design.md § Capabilities](../design.md#capabilities) and `AutomateWhen::should_automate`), which is CEC's permanent state, so a CEC TV keeps getting its power/screen actions regardless of the input policy.
 
 `IPV4` / `IPV6` are **not** declared — beyond "not a network transport", omitting them stops the daemon's manual-entry enrichment from ARP-probing a `/dev/cecN` path as if it were an IP.
 

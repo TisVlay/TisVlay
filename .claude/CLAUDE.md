@@ -60,9 +60,9 @@ tisvlay/
 │   ├── tisvlay-cec/               # HDMI-CEC vendor implementation (linux-cec)
 │   │   └── src/
 │   │       ├── lib.rs            # Public exports, VENDOR_ID/VENDOR_NAME
-│   │       ├── backend.rs        # CecBackend (POWER | INPUT | DISCOVERY)
+│   │       ├── backend.rs        # CecBackend (POWER | DISCOVERY; INPUT not advertised — unreliable over CEC)
 │   │       ├── connector.rs      # CecConnector (reachable_in_standby; emulate_screen_via_power; connect probes power but accepts standby; wake = ImageViewOn; no-auth pairing)
-│   │       ├── connection.rs     # CecConnection (power on/off/state; power_on = Image View On for wake-in-place; Set Stream Path input; hardware_id + brand cached from connect query)
+│   │       ├── connection.rs     # CecConnection (power on/off/state; power_on = Image View On for wake-in-place; Set Stream Path input switching kept dormant behind unadvertised INPUT cap; hardware_id + brand cached from connect query)
 │   │       ├── config.rs         # CecVendorConfig (/dev/cecN device path; emulate_screen_via_power)
 │   │       ├── discovery.rs      # CecDiscovery (enumerate /dev/cecN nodes + probe each for OSD name/vendor → DiscoveredTv)
 │   │       ├── identity.rs       # OUI→vendor-name map + query() building HardwareId (OSD name→model, vendor→make) + canonical brand; sanitize (NUL-strip)

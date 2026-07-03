@@ -33,14 +33,18 @@ impl TvBackend for CecBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // CEC reliably does power on/off + power-status readback, can
-        // switch the TV to a given HDMI input (`Set Stream Path`), and
-        // "discovers" by enumerating the host's `/dev/cecN` nodes. Volume
-        // over CEC is relative-only (deferred behind a future capability),
-        // and backlight / OLED screen-blank aren't CEC concepts. Declaring
-        // neither IPV4 nor IPV6 is load-bearing beyond "not a network
+        // Power on/off + power-status readback, and "discovery" by enumerating
+        // the host's `/dev/cecN` nodes. INPUT is deliberately *not* advertised:
+        // CEC's only reliable input op is "make the TV show our own port"
+        // (`Active Source`, already sent at wake); routing to an arbitrary
+        // other input relies on `Set Stream Path` reaching a CEC device that
+        // answers at the target port, which is TV-dependent and unreliable in
+        // practice. The `switch_input` impl is kept dormant behind this bit.
+        // Volume over CEC is relative-only (deferred behind a future
+        // capability); backlight / OLED screen-blank aren't CEC concepts.
+        // Declaring neither IPV4 nor IPV6 is load-bearing beyond "not a network
         // transport": it stops the daemon's manual-entry enrichment from
         // ARP-probing a `/dev/cecN` path as if it were an IP address.
-        Capabilities::POWER | Capabilities::INPUT | Capabilities::DISCOVERY
+        Capabilities::POWER | Capabilities::DISCOVERY
     }
 }
