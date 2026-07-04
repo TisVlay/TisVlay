@@ -79,13 +79,14 @@ Minimal first: a `tvnextd` systemd system unit (socket dir + group setup via tmp
 
 ## Phases
 
-- [ ] **P1 — persistence + full TV surface**: store layer with atomic writes; boot from store; every remaining `Tv1.*` member as rpc/key (input, backlight, screen, setters, get/update-config with schema redaction, re-pair); power-cycle progress key. Exit: daemon restart keeps the C3 paired; every busctl example in CLAUDE.md has a `tvnext` equivalent.
-- [ ] **P2 — reliable dispatch + watchers + CEC semantics**: verify-retry-escalate systems, netlink adapter, logind consume + inhibitor, desktop_probe with per-TV DPMS scoping; CEC standby model + screen-via-power; upstream `test-link` feature in `tisvlay-cec` so the spike gains CEC coverage. Exit: G4 + C3 fleet field session incl. suspend/resume survives.
+- [x] **P1 — persistence + full TV surface**: store layer with atomic writes; boot from store; every remaining `Tv1.*` member as rpc/key (input, backlight, screen, setters, get/update-config with schema redaction, re-pair); power-cycle progress key. Exit: daemon restart keeps its TVs (restart wire test; C3 re-pair pending user return); every busctl example in CLAUDE.md has a `tvnext` equivalent.
+- [x] **P2 — reliable dispatch + watchers + CEC semantics** (provisional tick): verify-retry-escalate systems (Bug-A retries + wake escalation, tested against the mock's noop knobs), netlink carrier monitor (park/redial via CarrierParked, PendingConnect as the single dial gate), logind consume + delay inhibitor (FakeLogind e2e on a private bus), desktop probe with deterministic EDID matching and per-TV connector-scoped DPMS; CEC standby model + screen-via-power verified against both the mock's CEC shape and the real `CecConnection` over the upstream `test-link` fake (feature added to `tisvlay-cec`). Field half deferred per policy: the G4 + C3 fleet session incl. suspend/resume batches to the user's return (credentials watch `/tmp/tv-creds.toml`).
 - [ ] **P3 — profiles + discovery sessions + schemas**: system-profile entities/CRUD/resolution with stock seeds; open-ended discovery sessions (pubs + liveliness); vendor/schema queryables. Exit: everything the GUI wizard and profiles editor need exists on the wire.
 - [ ] **P4 — session service + greeter**: gateway topology live (two sockets), user profiles, idle/lock events, greeter port. Exit: lock/unlock/idle drive the C3 through user-profile resolution with two users logged in seeing no cross-talk.
 - [ ] **P5 — tray**: port + field use. Exit: tray is the daily driver for power/volume.
-- [ ] **P6 — GUI**: forked port per above. Exit: pairing wizard, TVs pane, profiles pane all functional against the new daemon.
-- [ ] **P7 — CLI completion + packaging + switchover**: remaining CLI verbs; systemd units; a week of full-stack duty; workspace promotion out of `spikes/` plus the crate-naming settlement (deferred here by decision); then the old-stack decommission decision (separate discussion — root-repo surgery is its own plan).
+- [ ] **P6 — GUI**: forked port per above. Exit: pairing wizard, TVs pane, profiles pane all functional against the new daemon, ready for user QA.
+- [ ] **P6.5 — CLI completion**: remaining CLI verbs to full parity, ready for user QA alongside the GUI.
+- [ ] **P7 — packaging + switchover** (user-assisted): systemd units; a week of full-stack duty; workspace promotion out of `spikes/` plus the crate-naming settlement (deferred here by decision); then the old-stack decommission decision (separate discussion — root-repo surgery is its own plan).
 
 Battle-test checkpoints are the phase exits; the plan's war stories accumulate per phase like the spike's.
 
