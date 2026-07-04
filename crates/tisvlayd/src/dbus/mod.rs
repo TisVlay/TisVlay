@@ -69,6 +69,13 @@ pub enum DaemonError {
     /// TV is already powered off.
     PowerAlreadyOff(String),
 
+    // -- Device access (typed; mirrors `errors::DeviceErrorCode`) --
+    /// A backend couldn't open a required device node because the daemon
+    /// lacks permission (e.g. its user isn't in the group owning
+    /// `/dev/cecN`). Message carries the node path. Routing is by error
+    /// name (`org.tisvlay.Error.PermissionDenied`).
+    PermissionDenied(String),
+
     // -- Config (typed; mirrors `errors::ConfigErrorCode`) --
     /// Schema-validated field has an invalid or missing value.
     /// Message format: `"<field>: <reason>"` so clients can split
@@ -124,12 +131,27 @@ impl From<TvManagerError> for DaemonError {
             TvManagerError::PoweredOff(id) => {
                 DaemonError::NotConnected(format!("TV {} is powered off", id))
             }
-            TvManagerError::WakeFailed { tv_id, source } => {
-                DaemonError::OperationFailed(format!("Wake failed for TV {}: {}", tv_id, source))
-            }
-            TvManagerError::ConnectionFailed { tv_id, source } => DaemonError::ConnectionFailed(
-                format!("Connection failed for TV {}: {}", tv_id, source),
-            ),
+            TvManagerError::WakeFailed { tv_id, source } => match &source {
+                tisvlay_core::Error::PermissionDenied { path } => {
+                    DaemonError::PermissionDenied(path.clone())
+                }
+                _ => DaemonError::OperationFailed(format!(
+                    "Wake failed for TV {}: {}",
+                    tv_id, source
+                )),
+            },
+            // Inspect the wrapped error so a device-access failure reaches the
+            // typed `PermissionDenied` name on the sync-RPC surface (Reconnect /
+            // PowerOn), matching the async pairing path's `device.permission-denied`.
+            TvManagerError::ConnectionFailed { tv_id, source } => match &source {
+                tisvlay_core::Error::PermissionDenied { path } => {
+                    DaemonError::PermissionDenied(path.clone())
+                }
+                _ => DaemonError::ConnectionFailed(format!(
+                    "Connection failed for TV {}: {}",
+                    tv_id, source
+                )),
+            },
             TvManagerError::CommandFailed { tv_id, source } => {
                 // Inspect the underlying core error for more precise D-Bus classification
                 match &source {
@@ -198,6 +220,9 @@ impl From<tisvlay_core::Error> for DaemonError {
             }
             tisvlay_core::Error::PairingTimeout => {
                 DaemonError::PairingFailed("Pairing timed out".to_string())
+            }
+            tisvlay_core::Error::PermissionDenied { path } => {
+                DaemonError::PermissionDenied(path.clone())
             }
             _ => DaemonError::OperationFailed(e.to_string()),
         }

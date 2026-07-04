@@ -59,6 +59,17 @@ pub enum Error {
     #[error("Connection closed")]
     ConnectionClosed,
 
+    /// The backend could not access a required device node because the
+    /// process lacks permission (e.g. the daemon's user is not in the
+    /// group that owns `/dev/cecN`, or the udev rule granting access
+    /// isn't installed). Transport-agnostic: any device-node backend can
+    /// return it. `path` is the node that couldn't be opened.
+    #[error("Permission denied accessing {path}")]
+    PermissionDenied {
+        /// Absolute path of the device node that couldn't be opened.
+        path: String,
+    },
+
     /// Invalid TV response format.
     #[error("Invalid response from TV: {0}")]
     InvalidResponse(String),

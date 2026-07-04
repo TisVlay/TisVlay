@@ -174,7 +174,7 @@ async fn pair_with_rejected_pairing_returns_error() {
         .await
         .expect("drain should reach terminal");
     let message = match terminal {
-        PairTerminal::Failed { message, .. } => message,
+        PairTerminal::Failed { detail, .. } => detail.message,
         PairTerminal::Complete { .. } => {
             panic!("expected Failed terminal, got Complete")
         }

@@ -87,6 +87,8 @@ pub use hardware_id::HardwareId;
 pub use desktop::DesktopMapping;
 
 // Pairing
+#[cfg(feature = "dbus")]
+pub use pairing::PairingProgressDetail;
 pub use pairing::{
     Credentials, InputType, PairingCommand, PairingError, PairingErrorCode, PairingSession,
     PairingState,

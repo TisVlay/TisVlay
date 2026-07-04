@@ -41,7 +41,7 @@ use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
-use crate::{NotificationSettingsBody, SystemProfileBody, UserProfileBody};
+use crate::{NotificationSettingsBody, PairingProgressDetail, SystemProfileBody, UserProfileBody};
 
 // =============================================================================
 // Bus Selection
@@ -89,10 +89,15 @@ pub enum PairTerminal {
     /// Pairing completed successfully. `message` carries the
     /// backend's confirmation string (typically `"Pairing complete"`).
     Complete { tv_id: String, message: String },
-    /// Pairing failed (TV rejected, timeout, cancelled, network
-    /// error, …). `message` carries the human-readable failure
-    /// reason from the originating `PairingError`.
-    Failed { tv_id: String, message: String },
+    /// Pairing failed (TV rejected, timeout, cancelled, permission,
+    /// network error, …). `detail` carries the human `message` plus,
+    /// for the failure, a namespaced reason `code` (e.g.
+    /// `device.permission-denied`) and its optional `path` — so clients
+    /// can localize and branch on the reason rather than parse a string.
+    Failed {
+        tv_id: String,
+        detail: PairingProgressDetail,
+    },
 }
 
 // =============================================================================
@@ -305,10 +310,17 @@ trait TisvlayManager {
     fn system_profile_removed(&self, uuid: String) -> zbus::Result<()>;
 
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
-    /// `awaiting_input`, `complete`, `failed`. See
+    /// `awaiting_input`, `complete`, `failed`. `detail` is the typed
+    /// [`PairingProgressDetail`] `a{sv}` — the human `message` plus, on
+    /// `failed`, a namespaced reason `code` and optional `path`. See
     /// [`tisvlay_core::PairingState`] for the canonical enum.
     #[zbus(signal)]
-    fn pairing_progress(&self, tv_id: String, phase: String, message: String) -> zbus::Result<()>;
+    fn pairing_progress(
+        &self,
+        tv_id: String,
+        phase: String,
+        detail: PairingProgressDetail,
+    ) -> zbus::Result<()>;
 
     /// One TV was discovered during a `DiscoverTvs` scan. Tuple shape
     /// matches the synchronous RPC return:
@@ -1478,15 +1490,17 @@ impl DaemonClient {
 
     /// Subscribe to `Manager1.PairingProgress` signals.
     ///
-    /// Returns a stream of `(tv_id, phase, message)` tuples emitted
-    /// during `pair_tv()` calls. Phase strings: `awaiting_tv`,
+    /// Returns a stream of `(tv_id, phase, detail)` tuples emitted
+    /// during `pair_tv()` calls, where `detail` is the typed
+    /// [`PairingProgressDetail`]. Phase strings: `awaiting_tv`,
     /// `awaiting_input`, `complete`, `failed`. Set up the stream
     /// **before** calling `pair_tv` if you want to observe its
     /// progress — phases emitted before the stream is active are
     /// dropped.
     pub async fn pairing_progress_stream(
         &self,
-    ) -> Result<impl futures_util::Stream<Item = (String, String, String)> + use<>> {
+    ) -> Result<impl futures_util::Stream<Item = (String, String, PairingProgressDetail)> + use<>>
+    {
         use futures_util::StreamExt;
 
         let raw = self
@@ -1496,7 +1510,7 @@ impl DaemonClient {
             .context("failed to subscribe to PairingProgress signal")?;
         Ok(raw.filter_map(|sig| async move {
             let args = sig.args().ok()?;
-            Some((args.tv_id, args.phase, args.message))
+            Some((args.tv_id, args.phase, args.detail))
         }))
     }
 
@@ -1530,7 +1544,7 @@ impl DaemonClient {
         on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (String, String, String)>,
+        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
     {
         let mut stream = std::pin::pin!(stream);
         Self::drain_pair_to_terminal_pinned(stream.as_mut(), target_tv_id, on_progress).await
@@ -1546,17 +1560,22 @@ impl DaemonClient {
         mut on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (String, String, String)>,
+        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
     {
         use futures_util::StreamExt;
-        while let Some((tv_id, phase, message)) = stream.as_mut().next().await {
+        while let Some((tv_id, phase, detail)) = stream.as_mut().next().await {
             if tv_id != target_tv_id {
                 continue;
             }
             match phase.as_str() {
-                "complete" => return Ok(PairTerminal::Complete { tv_id, message }),
-                "failed" => return Ok(PairTerminal::Failed { tv_id, message }),
-                _ => on_progress(&phase, &message),
+                "complete" => {
+                    return Ok(PairTerminal::Complete {
+                        tv_id,
+                        message: detail.message,
+                    });
+                }
+                "failed" => return Ok(PairTerminal::Failed { tv_id, detail }),
+                _ => on_progress(&phase, &detail.message),
             }
         }
         anyhow::bail!(
@@ -3317,14 +3336,20 @@ mod tests {
     use super::*;
 
     /// Build a stream from owned tuples for unit-testing the drain helper.
+    /// The third element is the human message; it becomes the
+    /// [`PairingProgressDetail`]'s `message` (a test that asserts on a
+    /// failure `code` builds the detail explicitly — see
+    /// `drain_pair_to_terminal_carries_failure_code`).
     fn stream_from(
         events: Vec<(&str, &str, &str)>,
-    ) -> impl futures_util::Stream<Item = (String, String, String)> {
-        futures_util::stream::iter(
-            events
-                .into_iter()
-                .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string())),
-        )
+    ) -> impl futures_util::Stream<Item = (String, String, PairingProgressDetail)> {
+        futures_util::stream::iter(events.into_iter().map(|(a, b, c)| {
+            (
+                a.to_string(),
+                b.to_string(),
+                PairingProgressDetail::message(c),
+            )
+        }))
     }
 
     // ---------------------------------------------------------------------
@@ -3373,7 +3398,36 @@ mod tests {
             outcome,
             PairTerminal::Failed {
                 tv_id: "tv-1".to_string(),
-                message: "Pairing rejected by TV".to_string(),
+                detail: PairingProgressDetail::message("Pairing rejected by TV"),
+            }
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // drain_pair_to_terminal: a `failed` phase carrying a namespaced reason
+    // code + parameter survives into PairTerminal::Failed, so clients can
+    // localize / branch on the code instead of parsing the message string.
+    // ---------------------------------------------------------------------
+    #[tokio::test]
+    async fn drain_pair_to_terminal_carries_failure_code() {
+        let detail = PairingProgressDetail {
+            message: "Permission denied accessing /dev/cec0".to_string(),
+            code: Some("device.permission-denied".to_string()),
+            path: Some("/dev/cec0".to_string()),
+        };
+        let stream = futures_util::stream::iter(vec![(
+            "tv-1".to_string(),
+            "failed".to_string(),
+            detail.clone(),
+        )]);
+        let outcome = DaemonClient::drain_pair_to_terminal(stream, "tv-1", |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            PairTerminal::Failed {
+                tv_id: "tv-1".to_string(),
+                detail,
             }
         );
     }

@@ -146,6 +146,9 @@ impl TvConnector for CecConnector {
         // ignore the first wake — so a single send is easily lost. Re-send
         // on every attempt (One Touch Play is idempotent for an already-on
         // TV) and poll power between sends until the TV reports on.
+        // A permission failure (the daemon can't open the node) surfaces
+        // from the initial `open()?` above, before this loop runs — so the
+        // loop only handles the wake itself.
         for _ in 0..WAKE_VERIFY_ATTEMPTS {
             match link.power_on().await {
                 Ok(()) => {}
@@ -293,6 +296,20 @@ mod tests {
         let conn = connector(PowerStatus::Standby).connect(&cfg()).await;
         assert!(conn.is_ok(), "connect succeeds for a standby (on-bus) TV");
         assert!(conn.unwrap().is_connected());
+    }
+
+    #[tokio::test]
+    async fn connect_surfaces_permission_denied() {
+        // A node the daemon can enumerate but not open must surface the
+        // typed permission error (not a generic backend/"CEC error"), so
+        // the pairing/connect path can carry an actionable reason.
+        let conn = CecConnector::with_opener(Arc::new(FakeCecLinkOpener::permission_denied()))
+            .connect(&cfg())
+            .await;
+        assert!(
+            matches!(conn, Err(Error::PermissionDenied { .. })),
+            "expected PermissionDenied on an unopenable node",
+        );
     }
 
     #[test]

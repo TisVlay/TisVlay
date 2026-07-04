@@ -6,6 +6,7 @@
 //!
 //! - [`power`] — Wake-on-LAN, connect, and power-cycle failures.
 //! - [`config`] — Schema validation, duplicate IDs, profile refs.
+//! - [`device`] — Local device-node access (permission, etc.).
 //! - Future: `pairing`, `connection` modules.
 //!
 //! Each variant has:
@@ -23,7 +24,9 @@
 //! [1]: https://www.freedesktop.org/software/ModemManager/doc/latest/ModemManager/ModemManager-Errors.html
 
 pub mod config;
+pub mod device;
 pub mod power;
 
 pub use config::{ConfigError, ConfigErrorCode};
+pub use device::DeviceErrorCode;
 pub use power::{PowerError, PowerErrorCode};

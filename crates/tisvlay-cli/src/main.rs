@@ -316,12 +316,12 @@ async fn main() -> Result<()> {
                         println!("You can update the MAC address in the config file.");
                     }
                 }
-                PairTerminal::Failed { message, .. } => {
-                    // The terminal message already carries the
-                    // failure reason (e.g. "Pairing failed: Pairing
-                    // was rejected on the TV"); bubble it up as-is
-                    // without an extra prefix.
-                    anyhow::bail!("{message}");
+                PairTerminal::Failed { detail, .. } => {
+                    // `detail.message` already carries the failure reason
+                    // (e.g. "Permission denied accessing /dev/cec0", or
+                    // "Pairing failed: Pairing was rejected on the TV");
+                    // bubble it up as-is without an extra prefix.
+                    anyhow::bail!("{}", detail.message);
                 }
             }
         }
@@ -342,8 +342,8 @@ async fn main() -> Result<()> {
                 PairTerminal::Complete { .. } => {
                     println!("TV '{}' re-paired successfully", tv_id);
                 }
-                PairTerminal::Failed { message, .. } => {
-                    anyhow::bail!("{message}");
+                PairTerminal::Failed { detail, .. } => {
+                    anyhow::bail!("{}", detail.message);
                 }
             }
         }

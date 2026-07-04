@@ -37,7 +37,7 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
         let mut stream = Box::pin(stream);
         info!("Watching pairing-progress signals");
 
-        while let Some((tv_id, phase, message)) = stream.next().await {
+        while let Some((tv_id, phase, detail)) = stream.next().await {
             match phase.as_str() {
                 "complete" => {
                     let tv_name = daemon.resolve_tv_name(&tv_id).await;
@@ -52,16 +52,24 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
                 "failed" => {
                     let tv_name = daemon.resolve_tv_name(&tv_id).await;
                     let summary = gettext("Pairing failed for {0}").replace("{0}", &tv_name);
-                    // `message` is daemon-emitted in English today —
-                    // see docs/i18n.md's note on cross-process
-                    // strings. Pass it through verbatim; full
-                    // localization tracks the source-side gettext
-                    // catalogs.
+                    // `detail.message` is daemon-emitted in English today —
+                    // see docs/i18n.md's note on cross-process strings.
+                    // Pass it through verbatim; full localization tracks
+                    // the source-side gettext catalogs. A permission
+                    // failure is a setup problem the user has to act on, so
+                    // raise its urgency above a routine rejection.
+                    let urgency = if detail.code.as_deref()
+                        == Some(tisvlay_core::errors::DeviceErrorCode::PermissionDenied.as_str())
+                    {
+                        Urgency::Critical
+                    } else {
+                        Urgency::Normal
+                    };
                     notifier.notify(
                         NotificationCategory::TvPairing,
                         summary,
-                        message,
-                        Urgency::Normal,
+                        detail.message,
+                        urgency,
                     );
                 }
                 _ => {}

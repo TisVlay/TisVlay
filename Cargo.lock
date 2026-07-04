@@ -5598,6 +5598,7 @@ name = "tisvlay-cec"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "libc",
  "linux-cec",
  "parking_lot",
  "serde",

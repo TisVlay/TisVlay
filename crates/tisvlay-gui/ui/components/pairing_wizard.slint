@@ -17,6 +17,7 @@ import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
+import { HelpTrigger } from "../globals/help.slint";
 import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
@@ -153,7 +154,10 @@ component DiscoveryRow inherits Rectangle {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 10px;
-        alignment: start;
+        // `stretch` (not `start`) so the center column's `horizontal-stretch`
+        // actually expands and the trailing status column sits flush-right —
+        // same discipline as the About pane's ComponentRow.
+        alignment: stretch;
 
         // Vendor swatch — shared widget so the brand colors + match
         // arms stay in sync with the TVs pane.
@@ -166,18 +170,44 @@ component DiscoveryRow inherits Rectangle {
             }
         }
 
+        // Two-line detail column, each line pairing left content with a
+        // right-adjusted status element so the layout is fixed regardless
+        // of state — mirrors the About pane's ComponentRow chip column.
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
             spacing: 2px;
 
-            Text {
-                text: root.tv.name == "" ? root.tv.address : root.tv.name;
-                color: root.selected ? Theme.row-selected-text : Theme.text;
-                font-size: Design.font-body;
-                font-weight: root.selected ? 600 : 500;
-                overflow: elide;
+            // Primary line: name (elides) + the status chip pinned
+            // top-right. Every row shows a discovery-source chip (`SSDP` /
+            // `CEC`, success-toned); a flagged (unusable) device flips it
+            // to a warn `No access` chip. On the name line so it stays put
+            // whether or not the hint below is present.
+            HorizontalLayout {
+                spacing: Design.gap-stack;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.tv.name == "" ? root.tv.address : root.tv.name;
+                    color: root.selected ? Theme.row-selected-text : Theme.text;
+                    font-size: Design.font-body;
+                    font-weight: root.selected ? 600 : 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                // No chip on a row that is neither flagged nor
+                // discovery-sourced (e.g. a manually-entered TV), rather
+                // than an empty pill or a mislabeled one.
+                if root.tv.access-warning || root.tv.source-label != "": Chip {
+                    // `source-label` is a machine/protocol id — shown
+                    // verbatim, not translated.
+                    label: root.tv.access-warning ? @tr("No access") : root.tv.source-label;
+                    tone: root.tv.access-warning ? "warn" : "success";
+                }
             }
+
+            // Secondary line: address · model (left) + a succinct hint
+            // right-adjusted, shown only when flagged. The full remedy
+            // rides the whole-row help bubble (see `warn-tip`).
             HorizontalLayout {
                 spacing: Design.gap-stack;
                 Text {
@@ -186,7 +216,7 @@ component DiscoveryRow inherits Rectangle {
                     font-size: Design.font-caption;
                     font-family: "ui-monospace, monospace";
                     // ~39-char v6 addresses would otherwise push the
-                    // trailing hw-model chip off the row.
+                    // trailing model chip off the row.
                     overflow: elide;
                 }
                 if root.tv.hw-model != "": Text {
@@ -199,12 +229,37 @@ component DiscoveryRow inherits Rectangle {
                     color: Theme.text-faint;
                     font-size: Design.font-caption;
                 }
+                Rectangle { horizontal-stretch: 1; }
+                if root.tv.access-warning: Text {
+                    text: @tr("check permissions");
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
         }
     }
 
+    // Whole-row help anchor. Kept out of the layout (an absolutely
+    // positioned child overlaying the right column) so it stays
+    // referenceable from `touch` — an `if`-gated element would not be —
+    // and the entire row is the hover target, so the user is most likely
+    // to surface the full remedy. Invisible (no background, no
+    // TouchArea): `touch` above it still owns clicks and hover.
+    warn-tip := HelpTrigger {
+        x: parent.width - self.width - 12px;
+        y: 0;
+        width: 180px;
+        height: parent.height;
+        text: root.tv.access-warning ? @tr("The daemon can't access {} \u{2014} insufficient permissions. Check that node's permissions or the daemon user's group membership.", root.tv.address) : "";
+    }
+
     touch := TouchArea {
         clicked => { root.clicked(); }
+        changed has-hover => {
+            warn-tip.set-hover(self.has-hover);
+        }
     }
 }
 

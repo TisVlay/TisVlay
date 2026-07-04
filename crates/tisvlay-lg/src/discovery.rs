@@ -104,7 +104,9 @@ fn parse_response(resp: &SsdpResponse) -> Option<DiscoveredTv> {
         hardware_id,
         vendor: crate::VENDOR_ID.to_string(),
         location: location.to_string(),
-        vendor_data: std::collections::HashMap::new(),
+        // `source` tags how the TV was found (SSDP for LG's network scan)
+        // so the wizard can show a discovery-source chip.
+        vendor_data: std::collections::HashMap::from([("source".to_string(), "ssdp".to_string())]),
     })
 }
 

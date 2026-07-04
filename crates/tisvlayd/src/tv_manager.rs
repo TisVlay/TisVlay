@@ -69,9 +69,9 @@ const WAKE_IN_PLACE_VERIFY_DELAY: Duration = Duration::from_millis(1500);
 const WAKE_IN_PLACE_ATTEMPTS: usize = 3;
 use tisvlay_core::{
     ActionExecutor, Capabilities, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID,
-    FieldVisibility, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig,
-    SystemProfileBody, SystemProfileConfig, SystemSection, TvAssignment, TvConfig, TvConnection,
-    TvState, UserProfileConfig, UserSection, references_of,
+    FieldVisibility, PairingProgressDetail, PowerState, ResolvedSystemProfile, SessionAction,
+    SystemConfig, SystemProfileBody, SystemProfileConfig, SystemSection, TvAssignment, TvConfig,
+    TvConnection, TvState, UserProfileConfig, UserSection, references_of,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -260,8 +260,59 @@ pub enum StateChangeEvent {
     PairingProgress {
         tv_id: String,
         phase: String,
-        message: String,
+        /// Typed progress detail: the human message plus, on the `failed`
+        /// phase, a namespaced reason `code` and its optional parameter.
+        /// Projected onto the D-Bus `a{sv}` at the signal boundary.
+        detail: tisvlay_core::PairingProgressDetail,
     },
+}
+
+/// Project a terminal pairing failure onto the typed detail that rides
+/// the `PairingProgress` `failed` phase: a namespaced reason `code`, its
+/// optional parameter, and the human `message`. Clients localize and
+/// branch on `code`; `message` stays the English fallback / log text.
+fn failure_reason(err: &TvManagerError) -> PairingProgressDetail {
+    use tisvlay_core::errors::DeviceErrorCode;
+    use tisvlay_core::{Error, PairingError, PairingErrorCode};
+
+    // `message` is the human fallback CLI/tray render verbatim — for the
+    // connect path use the *underlying* error's message, not the outer
+    // `ConnectionFailed` Display, which prefixes the internal TV UUID.
+    let (code, path, message) = match err {
+        // Post-handshake connect. A node the daemon can't open is the
+        // actionable permission case; carry the node path as the param.
+        TvManagerError::ConnectionFailed { source, .. } => match source {
+            Error::PermissionDenied { path } => (
+                DeviceErrorCode::PermissionDenied.as_str(),
+                Some(path.clone()),
+                source.to_string(),
+            ),
+            _ => (
+                PairingErrorCode::ConnectionFailed.as_str(),
+                None,
+                source.to_string(),
+            ),
+        },
+        // The handshake itself failed. The boxed error is either a typed
+        // `PairingError` (rejected / timeout / …) or a `core::Error`;
+        // recover the code from the former, else fall back to Unknown.
+        TvManagerError::PairingFailed(boxed) => (
+            boxed
+                .downcast_ref::<PairingError>()
+                .map(|pe| pe.code)
+                .unwrap_or(PairingErrorCode::Unknown)
+                .as_str(),
+            None,
+            err.to_string(),
+        ),
+        _ => (PairingErrorCode::Unknown.as_str(), None, err.to_string()),
+    };
+
+    PairingProgressDetail {
+        message,
+        code: Some(code.to_string()),
+        path,
+    }
 }
 
 /// Basic TV information for D-Bus properties.
@@ -3486,14 +3537,17 @@ impl TvManager {
         // never fire before the per-TV interfaces are registered
         // (the success case) or before the failure reason is
         // composed from any post-handshake step (the failure case).
-        let (phase, message) = match &result {
-            Ok(()) => ("complete", "Pairing complete".to_string()),
-            Err(e) => ("failed", e.to_string()),
+        let (phase, detail) = match &result {
+            Ok(()) => (
+                "complete",
+                PairingProgressDetail::message("Pairing complete"),
+            ),
+            Err(e) => ("failed", failure_reason(e)),
         };
         self.emit_state_change(StateChangeEvent::PairingProgress {
             tv_id: tv_id.clone(),
             phase: phase.to_string(),
-            message,
+            detail,
         });
 
         match result {
@@ -3702,7 +3756,7 @@ impl TvManager {
                 let _ = progress_tx.send(StateChangeEvent::PairingProgress {
                     tv_id: progress_tv_id.clone(),
                     phase: initial.to_dbus_state().to_string(),
-                    message: initial.message().to_string(),
+                    detail: PairingProgressDetail::message(initial.message()),
                 });
             }
             while state_rx.changed().await.is_ok() {
@@ -3713,7 +3767,7 @@ impl TvManager {
                 let _ = progress_tx.send(StateChangeEvent::PairingProgress {
                     tv_id: progress_tv_id.clone(),
                     phase: s.to_dbus_state().to_string(),
-                    message: s.message().to_string(),
+                    detail: PairingProgressDetail::message(s.message()),
                 });
             }
         });
@@ -3908,7 +3962,7 @@ impl TvManager {
                     self.emit_state_change(StateChangeEvent::PairingProgress {
                         tv_id: tv_id.clone(),
                         phase: "failed".to_string(),
-                        message: e.to_string(),
+                        detail: failure_reason(&e),
                     });
                     return;
                 }
@@ -3957,7 +4011,7 @@ impl TvManager {
         self.emit_state_change(StateChangeEvent::PairingProgress {
             tv_id: tv_id.clone(),
             phase: "complete".to_string(),
-            message: "Re-pair complete".to_string(),
+            detail: PairingProgressDetail::message("Re-pair complete"),
         });
     }
 
@@ -4730,6 +4784,49 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use tisvlay_core::HardwareId;
+
+    #[test]
+    fn failure_reason_projects_permission_denied_with_path() {
+        // A post-handshake connect against an unopenable device node must
+        // project to the namespaced `device.permission-denied` code with
+        // the node path as the parameter, so clients can localize + act.
+        let err = TvManagerError::ConnectionFailed {
+            tv_id: "tv-1".to_string(),
+            source: tisvlay_core::Error::PermissionDenied {
+                path: "/dev/cec0".to_string(),
+            },
+        };
+        let detail = failure_reason(&err);
+        assert_eq!(detail.code.as_deref(), Some("device.permission-denied"));
+        assert_eq!(detail.path.as_deref(), Some("/dev/cec0"));
+        assert!(detail.message.contains("/dev/cec0"));
+    }
+
+    #[test]
+    fn failure_reason_recovers_handshake_code_and_falls_back() {
+        // A boxed `PairingError` recovers its namespaced code…
+        let rejected =
+            TvManagerError::PairingFailed(Box::new(tisvlay_core::PairingError::rejected()));
+        assert_eq!(
+            failure_reason(&rejected).code.as_deref(),
+            Some("pairing.rejected"),
+        );
+        // …a non-permission connect failure reads as connection-failed…
+        let conn = TvManagerError::ConnectionFailed {
+            tv_id: "tv-1".to_string(),
+            source: tisvlay_core::Error::ConnectionClosed,
+        };
+        assert_eq!(
+            failure_reason(&conn).code.as_deref(),
+            Some("pairing.connection-failed"),
+        );
+        // …and an unrelated variant degrades to Unknown rather than panic.
+        let other = TvManagerError::ConfigError("disk full".to_string());
+        assert_eq!(
+            failure_reason(&other).code.as_deref(),
+            Some("pairing.unknown")
+        );
+    }
 
     /// Minimal `TvConnection` fake for unit tests — only implements
     /// what `ManagedTv::is_connected()` needs and the trait's

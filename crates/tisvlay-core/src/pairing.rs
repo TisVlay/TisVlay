@@ -182,6 +182,12 @@ impl fmt::Display for PairingError {
 impl std::error::Error for PairingError {}
 
 /// Error codes for pairing failures.
+///
+/// The wire/routing form is [`Self::as_str`] (namespaced `pairing.<kebab>`),
+/// used by `tv_manager::failure_reason` and matched by clients. The derived
+/// serde impl exists only because the in-process [`PairingError`] /
+/// [`PairingState`] derive it — those are never serialized across a
+/// boundary, so its (snake_case) form is not a wire contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairingErrorCode {
@@ -199,15 +205,72 @@ pub enum PairingErrorCode {
     Unknown,
 }
 
+impl PairingErrorCode {
+    /// Stable machine-readable identifier for routing on clients.
+    /// Format mirrors the `<domain>.<kebab-case-variant>` convention
+    /// shared with the other typed-error domains (`power.*`, `config.*`,
+    /// `device.*`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rejected => "pairing.rejected",
+            Self::Timeout => "pairing.timeout",
+            Self::ConnectionFailed => "pairing.connection-failed",
+            Self::InvalidInput => "pairing.invalid-input",
+            Self::Cancelled => "pairing.cancelled",
+            Self::Unknown => "pairing.unknown",
+        }
+    }
+}
+
 impl fmt::Display for PairingErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Rejected => write!(f, "rejected"),
-            Self::Timeout => write!(f, "timeout"),
-            Self::ConnectionFailed => write!(f, "connection_failed"),
-            Self::InvalidInput => write!(f, "invalid_input"),
-            Self::Cancelled => write!(f, "cancelled"),
-            Self::Unknown => write!(f, "unknown"),
+        f.write_str(self.as_str())
+    }
+}
+
+/// Structured detail for a `PairingProgress` update.
+///
+/// The transport-agnostic value that carries a progress update's data:
+/// projected onto the D-Bus `a{sv}` dict at the boundary today (and
+/// serde-serializable for any other transport). `code` / `path` are set
+/// only on the terminal `failed` phase; absent `Option` fields are
+/// omitted from the dict, so non-failure updates carry just `message`.
+/// No `deny_unknown_fields`, so an older client tolerates keys a newer
+/// daemon may add.
+#[cfg(feature = "dbus")]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    zbus::zvariant::Type,
+    zbus::zvariant::SerializeDict,
+    zbus::zvariant::DeserializeDict,
+)]
+#[zvariant(signature = "a{sv}")]
+pub struct PairingProgressDetail {
+    /// Human-readable English detail — the log line and the client's
+    /// fallback display text when it has no localized string for `code`.
+    pub message: String,
+    /// Namespaced reason code for the `failed` phase (e.g.
+    /// `device.permission-denied`, `pairing.rejected`); clients localize
+    /// by it. See [`PairingErrorCode::as_str`] and
+    /// [`crate::errors::DeviceErrorCode`].
+    pub code: Option<String>,
+    /// Reason-specific parameter — the device-node path for
+    /// `device.permission-denied`. Absent for reasons that carry none.
+    pub path: Option<String>,
+}
+
+#[cfg(feature = "dbus")]
+impl PairingProgressDetail {
+    /// A non-failure update carrying just a human message — no reason
+    /// code or parameter (the common case for progress and success).
+    pub fn message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: None,
+            path: None,
         }
     }
 }
@@ -506,6 +569,51 @@ mod tests {
         assert_eq!(InputType::None.to_string(), "none");
         assert_eq!(InputType::Pin.to_string(), "pin");
         assert_eq!(InputType::Password.to_string(), "password");
+    }
+
+    #[test]
+    fn pairing_error_code_as_str_is_namespaced() {
+        assert_eq!(PairingErrorCode::Rejected.as_str(), "pairing.rejected");
+        assert_eq!(
+            PairingErrorCode::ConnectionFailed.as_str(),
+            "pairing.connection-failed",
+        );
+        assert_eq!(PairingErrorCode::Unknown.as_str(), "pairing.unknown");
+        // Display delegates to as_str.
+        assert_eq!(
+            PairingErrorCode::Timeout.to_string(),
+            PairingErrorCode::Timeout.as_str(),
+        );
+    }
+
+    #[cfg(feature = "dbus")]
+    #[test]
+    fn pairing_progress_detail_round_trips_dbus_and_json() {
+        use zbus::zvariant::{LE, serialized::Context, to_bytes};
+
+        let detail = PairingProgressDetail {
+            message: "Permission denied accessing /dev/cec0".into(),
+            code: Some("device.permission-denied".into()),
+            path: Some("/dev/cec0".into()),
+        };
+
+        // D-Bus a{sv} projection.
+        let ctx = Context::new_dbus(LE, 0);
+        let encoded = to_bytes(ctx, &detail).expect("encode a{sv}");
+        let (decoded, _): (PairingProgressDetail, usize) =
+            encoded.deserialize().expect("decode a{sv}");
+        assert_eq!(decoded, detail);
+
+        // serde JSON projection (the transport-agnostic contract); absent
+        // Option fields are omitted from the dict.
+        let bare = PairingProgressDetail {
+            message: "Accept on TV".into(),
+            code: None,
+            path: None,
+        };
+        let json = serde_json::to_string(&bare).unwrap();
+        assert!(!json.contains("code"), "None fields omitted: {json}");
+        assert!(!json.contains("path"), "None fields omitted: {json}");
     }
 
     #[test]

@@ -29,7 +29,11 @@ discovery = ["tisvlay-backends/discovery"]
 mock = ["tisvlay-backends/mock"]
 
 [dependencies]
-tisvlay-core = { workspace = true, features = ["logging"] }
+# `dbus` is used by the daemon's production code (D-Bus interfaces, the
+# `PairingProgressDetail`/`SystemProfileBody` wire types); declare it here
+# rather than relying on workspace feature-unification, so `cargo check
+# -p tisvlayd` builds in isolation.
+tisvlay-core = { workspace = true, features = ["logging", "dbus"] }
 tisvlay-backends = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }

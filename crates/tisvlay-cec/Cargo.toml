@@ -19,6 +19,10 @@ tisvlay-core = { workspace = true }
 # packaging/licensing). `async` pulls the tokio `AsyncDevice` wrapper.
 linux-cec = { workspace = true }
 
+# ABI-stable `EACCES`/`EPERM` constants to classify a `/dev/cecN` open
+# failure into a typed `Error::PermissionDenied` (see `map_open_err`).
+libc = { workspace = true }
+
 tokio = { workspace = true }
 async-trait = { workspace = true }
 

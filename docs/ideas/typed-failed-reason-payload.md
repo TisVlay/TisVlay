@@ -1,11 +1,10 @@
 # Typed `Failed { reason }` payload across daemon error vocabulary
 
-The `PairingState::Failed` wire format is still `(s)` — a single human-readable string carrying the reason. Plan 5 introduced typed `ConfigError::InvalidVendorConfig { field, reason }` for the pairing-form validation case (so the GUI routes per-field errors back to the originating row), but the broader `Failed { reason }` payload across `Connection` / `Pairing` / `Internal` errors stays untyped on the wire.
+**Status: first slice landed.** The `Manager1.PairingProgress` signal now carries a typed `PairingProgressDetail` `a{sv}` (the variant-tagged-dict wire encoding this idea called for) instead of a bare `(s)` message. On the `failed` phase it carries a namespaced reason `code` (`device.permission-denied`, `pairing.rejected`, …) and an optional `path` parameter; the GUI localizes and branches on the `code`, the CLI/tray render the `message`. `PairingErrorCode` was retrofitted to namespaced `pairing.<kebab>` codes (matching `errors/power.rs` / `config.rs`), and a `device` error domain (`errors/device.rs`, `DeviceErrorCode`) was added for the transport-agnostic `Error::PermissionDenied`. The permission case is the first consumer.
 
-Path forward:
+Remaining scope (all incremental — the architecture is in place; each item extends the established projection/vocabulary):
 
-- Define typed sub-variants (`Failed::ConnectionRefused`, `Failed::TvUnreachable { last_seen_at }`, `Failed::PairingRejected`, `Failed::Internal { kind }`) under the existing `tisvlay-core/src/errors/` per-domain enum tree.
-- D-Bus wire encoding: variant-tagged dict rather than a free-form string, so clients can branch on reason kind.
-- Migrate `tisvlay-cli` and the GUI's inline-error surface to render the typed variant rather than the raw string.
-
-Useful when the GUI grows kind-based recovery actions ("Edit MAC", "Open firewall settings", etc.) — each action ID is gated on the corresponding `Failed::*` variant.
+- **Retype `TvManagerError::PairingFailed(Box<dyn Error>)` to carry a typed `PairingError`.** Today `failure_reason` recovers the code via `downcast_ref::<PairingError>()`, which only works because the *permission* case travels as `ConnectionFailed { source }` (a plain match). If a future device-node backend opens its node *during* `start_pairing`/`build_config_from_pairing`, its `Error::PermissionDenied` boxes into `PairingFailed` and the downcast misses, degrading the code to `pairing.unknown`. Making the variant carry a typed error (mapping `core::Error` → a coded `PairingError` at the boxing sites) drops the downcast and lets every code survive.
+- Broaden the reason vocabulary to every terminal `TvManagerError` beyond what pairing already projects — the `tv_manager::failure_reason` projection is the single place to extend, and handshake-native codes (`pairing.rejected`/`timeout`/…) already flow.
+- Structured params in the detail dict for more reason kinds (the `path` key is the pattern; e.g. `last_seen_at` for a future `TvUnreachable`).
+- Kind-based recovery actions in the GUI ("Edit MAC", "Open CEC docs", "Open firewall settings") — each action gated on the corresponding reason `code`; the typed payload already reaches the wizard's outcome sink.
