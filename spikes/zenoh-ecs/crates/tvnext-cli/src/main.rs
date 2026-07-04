@@ -19,6 +19,11 @@ struct Cli {
     #[arg(long)]
     socket: Option<PathBuf>,
 
+    /// Session-service user socket for `user-profile` verbs (default:
+    /// $XDG_RUNTIME_DIR/tisvlay/session.sock).
+    #[arg(long)]
+    user_socket: Option<PathBuf>,
+
     /// Site chunk used in all key expressions.
     #[arg(long, default_value = "main")]
     site: String,
@@ -82,7 +87,7 @@ enum Command {
     /// Toggle whether the daemon drives this TV.
     Managed {
         id: Uuid,
-        #[arg(value_parser = clap::value_parser!(bool))]
+        #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
         managed: bool,
     },
     /// Read a TV's config (vendor secrets redacted).
@@ -101,6 +106,95 @@ enum Command {
     Reconnect { id: Uuid },
     /// Remove a TV (deletes all its keys).
     Remove { id: Uuid },
+    /// Mute or unmute a TV.
+    Mute {
+        id: Uuid,
+        #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
+        muted: bool,
+    },
+    /// Set (or with no value clear) the TV's primary input.
+    PrimaryInput { id: Uuid, input: Option<String> },
+    /// Gate automation on the current input: always | on_primary | off_primary.
+    AutomateWhen { id: Uuid, when: String },
+    /// Assign (or with no value clear) the TV's system profile.
+    Assign { id: Uuid, profile: Option<Uuid> },
+    /// List registered vendor backends with their capabilities.
+    Vendors,
+    /// Show a vendor's pairing form schema.
+    Schema { vendor: String },
+    /// Open-ended discovery session: findings stream until ctrl-c.
+    DiscoverSession {
+        #[arg(long)]
+        vendor: Option<String>,
+    },
+    /// System-profile catalog (daemon-side).
+    #[command(subcommand)]
+    Profile(ProfileCmd),
+    /// User-profile catalog (session-service side, via --user-socket).
+    #[command(subcommand)]
+    UserProfile(UserProfileCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum ProfileCmd {
+    /// List profile bodies from the catalog caches.
+    List,
+    /// Create a profile: `--json` is a SystemProfileConfig body.
+    Create {
+        name: String,
+        #[arg(long)]
+        json: Option<String>,
+    },
+    /// Replace a profile's body (`--json` full body; name required inside).
+    Update {
+        id: Uuid,
+        json: String,
+    },
+    /// Copy a profile under a new name.
+    Duplicate {
+        id: Uuid,
+        name: String,
+    },
+    Delete {
+        id: Uuid,
+    },
+    /// The stock mapping unset fields inherit.
+    Defaults,
+    /// One TV's resolved mapping (assigned profile over stock).
+    Effective {
+        tv: Uuid,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum UserProfileCmd {
+    List,
+    /// Create a profile: `--json` is a UserProfileConfig body.
+    Create {
+        name: String,
+        #[arg(long)]
+        json: Option<String>,
+    },
+    Update {
+        id: Uuid,
+        json: String,
+    },
+    Duplicate {
+        id: Uuid,
+        name: String,
+    },
+    Delete {
+        id: Uuid,
+    },
+    Defaults,
+    Effective {
+        tv: Uuid,
+    },
+    /// Assign (or with no value clear) a TV's user profile.
+    Assign {
+        tv: Uuid,
+        profile: Option<Uuid>,
+    },
 }
 
 #[tokio::main]
@@ -249,7 +343,324 @@ async fn main() -> Result<()> {
             println!("removed");
             Ok(())
         }
+        Command::Mute { id, muted } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-muted"),
+                json!({ "muted": muted }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::PrimaryInput { id, input } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-primary-input"),
+                json!({ "input": input }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::AutomateWhen { id, when } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-automate-when"),
+                json!({ "when": when }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Assign { id, profile } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-system-profile"),
+                json!({ "profile": profile }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Vendors => {
+            let vendors = call(&session, &keys::vendors(site), Value::Null).await?;
+            for vendor in vendors.as_array().into_iter().flatten() {
+                let caps: Vec<&str> = vendor["capabilities"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                println!(
+                    "{}  {}  [{}]",
+                    vendor["id"].as_str().unwrap_or("?"),
+                    vendor["name"].as_str().unwrap_or("?"),
+                    caps.join(", "),
+                );
+            }
+            Ok(())
+        }
+        Command::Schema { vendor } => {
+            let schema = call(&session, &keys::vendor_schema(site, &vendor), Value::Null).await?;
+            for field in schema.as_array().into_iter().flatten() {
+                let required = if field["required"].as_bool().unwrap_or(false) {
+                    " (required)"
+                } else {
+                    ""
+                };
+                println!(
+                    "{}{}  {}",
+                    field["name"].as_str().unwrap_or("?"),
+                    required,
+                    field["helper"].as_str().unwrap_or_default(),
+                );
+            }
+            Ok(())
+        }
+        Command::DiscoverSession { vendor } => discover_session(&session, site, vendor).await,
+        Command::Profile(cmd) => {
+            profile_cmd(&session, site, cmd, |verb| keys::profile_rpc(site, verb)).await
+        }
+        Command::UserProfile(cmd) => {
+            let user_socket = cli
+                .user_socket
+                .unwrap_or_else(tvnext_wire::bootstrap::default_session_socket_path);
+            let user = zenoh::open(tvnext_wire::bootstrap::client_config(&user_socket)?)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "session service unreachable at {}: {e}",
+                        user_socket.display()
+                    )
+                })?;
+            user_profile_cmd(&user, site, cmd).await
+        }
     }
+}
+
+/// Print one profile catalog row.
+fn print_profile(id: &str, body: &Value) {
+    let mut extras: Vec<String> = body
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| *key != "name")
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    extras.sort();
+    println!(
+        "{}  {}  {}",
+        id,
+        body["name"].as_str().unwrap_or("?"),
+        extras.join(" "),
+    );
+}
+
+/// Hydrate a cached catalog wildcard and print each body once the
+/// stream goes quiet.
+async fn list_catalog(session: &Session, keyexpr: String) -> Result<()> {
+    let sub = session
+        .declare_subscriber(keyexpr)
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+        .map_err(|e| anyhow!("subscribe catalog: {e}"))?;
+    let mut rows: BTreeMap<String, Value> = BTreeMap::new();
+    while let Ok(Ok(sample)) =
+        tokio::time::timeout(Duration::from_millis(600), sub.recv_async()).await
+    {
+        if sample.kind() != SampleKind::Put {
+            continue;
+        }
+        let id = sample
+            .key_expr()
+            .as_str()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let body: Value =
+            serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+        rows.insert(id, body);
+    }
+    if rows.is_empty() {
+        println!("no profiles");
+    }
+    for (id, body) in rows {
+        print_profile(&id, &body);
+    }
+    Ok(())
+}
+
+/// Build a profile body: `--json` merged over the positional name.
+fn profile_body(name: String, json: Option<String>) -> Result<Value> {
+    let mut body = match json {
+        Some(json) => serde_json::from_str(&json)?,
+        None => json!({}),
+    };
+    if body["name"].is_null() {
+        body["name"] = Value::String(name);
+    }
+    Ok(body)
+}
+
+async fn profile_cmd(
+    session: &Session,
+    site: &str,
+    cmd: ProfileCmd,
+    key: impl Fn(&str) -> String,
+) -> Result<()> {
+    match cmd {
+        ProfileCmd::List => list_catalog(session, format!("tisvlay/{site}/profile/system/*")).await,
+        ProfileCmd::Create { name, json } => {
+            let reply = call(
+                session,
+                &key("create"),
+                json!({ "body": profile_body(name, json)? }),
+            )
+            .await?;
+            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            Ok(())
+        }
+        ProfileCmd::Update { id, json } => {
+            let body: Value = serde_json::from_str(&json)?;
+            call(session, &key("update"), json!({ "id": id, "body": body })).await?;
+            println!("ok");
+            Ok(())
+        }
+        ProfileCmd::Duplicate { id, name } => {
+            let reply = call(
+                session,
+                &key("duplicate"),
+                json!({ "id": id, "name": name }),
+            )
+            .await?;
+            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            Ok(())
+        }
+        ProfileCmd::Delete { id } => {
+            call(session, &key("delete"), json!({ "id": id })).await?;
+            println!("deleted");
+            Ok(())
+        }
+        ProfileCmd::Defaults => {
+            let defaults = call(session, &key("defaults"), Value::Null).await?;
+            println!("{}", serde_json::to_string_pretty(&defaults)?);
+            Ok(())
+        }
+        ProfileCmd::Effective { tv } => {
+            let effective = call(session, &key("effective"), json!({ "id": tv })).await?;
+            println!("{}", serde_json::to_string_pretty(&effective)?);
+            Ok(())
+        }
+    }
+}
+
+async fn user_profile_cmd(user: &Session, site: &str, cmd: UserProfileCmd) -> Result<()> {
+    let key = |verb: &str| keys::user_profile_rpc(site, verb);
+    match cmd {
+        UserProfileCmd::List => list_catalog(user, format!("tisvlay/{site}/user/profile/*")).await,
+        UserProfileCmd::Create { name, json } => {
+            let reply = call(
+                user,
+                &key("create"),
+                json!({ "body": profile_body(name, json)? }),
+            )
+            .await?;
+            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            Ok(())
+        }
+        UserProfileCmd::Update { id, json } => {
+            let body: Value = serde_json::from_str(&json)?;
+            call(user, &key("update"), json!({ "id": id, "body": body })).await?;
+            println!("ok");
+            Ok(())
+        }
+        UserProfileCmd::Duplicate { id, name } => {
+            let reply = call(user, &key("duplicate"), json!({ "id": id, "name": name })).await?;
+            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            Ok(())
+        }
+        UserProfileCmd::Delete { id } => {
+            call(user, &key("delete"), json!({ "id": id })).await?;
+            println!("deleted");
+            Ok(())
+        }
+        UserProfileCmd::Defaults => {
+            let defaults = call(user, &key("defaults"), Value::Null).await?;
+            println!("{}", serde_json::to_string_pretty(&defaults)?);
+            Ok(())
+        }
+        UserProfileCmd::Effective { tv } => {
+            let effective = call(user, &key("effective"), json!({ "id": tv })).await?;
+            println!("{}", serde_json::to_string_pretty(&effective)?);
+            Ok(())
+        }
+        UserProfileCmd::Assign { tv, profile } => {
+            call(
+                user,
+                &key("assign"),
+                json!({ "tv": tv, "profile": profile }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+    }
+}
+
+/// Start an open-ended discovery session, stream findings, stop on
+/// ctrl-c.
+async fn discover_session(session: &Session, site: &str, vendor: Option<String>) -> Result<()> {
+    let reply = call(
+        session,
+        &keys::manager_rpc(site, "discover-start"),
+        serde_json::to_value(rpc::DiscoverStart { vendor })?,
+    )
+    .await?;
+    let id: Uuid = reply["session"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow!("discover-start reply carries the session id"))?;
+    println!("discovery session {id} — ctrl-c stops");
+    let sub = session
+        .declare_subscriber(format!("tisvlay/{site}/discovery/{id}/found/*"))
+        .await
+        .map_err(|e| anyhow!("subscribe findings: {e}"))?;
+    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
+    loop {
+        tokio::select! {
+            sample = sub.recv_async() => {
+                let Ok(sample) = sample else { break };
+                let tv: Value = serde_json::from_slice(&sample.payload().to_bytes())
+                    .unwrap_or(Value::Null);
+                let finding = tv["id"].as_str().unwrap_or_default().to_string();
+                if seen.insert(finding, ()).is_none() {
+                    let mac = tv["vendor_data"]["mac"]
+                        .as_str()
+                        .map(|mac| format!("  mac={mac}"))
+                        .unwrap_or_default();
+                    println!(
+                        "{}  {}  {}  id={}{}",
+                        tv["vendor"].as_str().unwrap_or("?"),
+                        tv["name"].as_str().unwrap_or("?"),
+                        tv["address"].as_str().unwrap_or("?"),
+                        tv["id"].as_str().unwrap_or("?"),
+                        mac,
+                    );
+                }
+            }
+            _ = tokio::signal::ctrl_c() => break,
+        }
+    }
+    call(
+        session,
+        &keys::manager_rpc(site, "discover-stop"),
+        json!({ "session": id }),
+    )
+    .await?;
+    println!("stopped");
+    Ok(())
 }
 
 async fn open_client(socket: &Path) -> Result<Session> {
