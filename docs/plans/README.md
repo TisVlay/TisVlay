@@ -15,7 +15,8 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`spike-zenoh-ecs.md`](spike-zenoh-ecs.md) — Zenoh 1.9 + bevy_ecs rewrite exploration: key-space design, ECS world + reactor bridge, milestones M0–M4 with keep/kill criteria.
+- [`spike-zenoh-ecs.md`](spike-zenoh-ecs.md) — Zenoh 1.9 + bevy_ecs rewrite exploration: key-space design, ECS world + reactor bridge, milestones M0–M4 with keep/kill criteria. Exited with a keep verdict; continues in the parity plan.
+- [`parity-zenoh-ecs.md`](parity-zenoh-ecs.md) — driving the zenoh+ECS stack to full parity (persistence, reliable dispatch, profiles, session/greeter/tray/GUI ports) with the two-socket gateway topology; phases P1–P7 with battle-test exits.
 
 When a plan is in flight, list it here with
 a one-line summary of the work it covers:

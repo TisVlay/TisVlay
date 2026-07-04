@@ -188,7 +188,7 @@ Findings ledger — wire: the `@adv` verbatim cache suffix (hydration is subscri
 
 Not yet validated: the G4 (second TV / fleet dispatch), suspend/resume across the zenoh session, long-run stability, multi-day cache behavior.
 
-Verdict: ___ (user's call — the continuation options are: drive this stack toward parity as the successor plan; run the zlink comparison spike first per the original sequencing; or both in parallel now that the world/backend layers are proven transport-independent).
+Verdict: **continue this stack to full parity** for battle-testing across greeter/tray/GUI/CLI — see [parity-zenoh-ecs.md](parity-zenoh-ecs.md). The zlink comparison spike remains an option later; the world/backend layers are transport-independent if that day comes.
 
 ## Open questions
 
