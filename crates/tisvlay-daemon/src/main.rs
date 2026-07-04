@@ -38,8 +38,8 @@ struct Args {
 
 fn default_state_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "tisvlay")
-        .map(|dirs| dirs.config_dir().join("state.toml"))
-        .unwrap_or_else(|| PathBuf::from("tisvlay-state.toml"))
+        .map(|dirs| dirs.config_dir().join("daemon.toml"))
+        .unwrap_or_else(|| PathBuf::from("tisvlay-daemon.toml"))
 }
 
 #[tokio::main]

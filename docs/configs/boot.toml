@@ -1,7 +1,7 @@
 # Sample boot config for tisvlay-daemon (--config). Additive: entries
 # seed TVs at start, but ids already present in the daemon's writable
 # state file win, and pairing/state changes persist to the state file
-# regardless. Managed TVs live in the state file (state.toml), written
+# regardless. Managed TVs live in the daemon-owned file (daemon.toml), written
 # by the daemon itself — this file is only for declarative seeding.
 
 [[tv]]

@@ -181,7 +181,7 @@ in
         file in the Nix store and passed via `--config`. Its `[[tv]]`
         entries seed extra TVs at start; entries already present in
         the daemon's writable state file win, and pairing/state
-        changes still persist to `/var/lib/tisvlay/state.toml`
+        changes still persist to `/var/lib/tisvlay/daemon.toml`
         regardless (the boot config is additive, not a lockdown).
 
         Changes to it only take effect after `nixos-rebuild switch`.
@@ -375,7 +375,7 @@ in
     ];
 
     # System daemon: owns the TV fleet and the zenoh socket clients
-    # connect to. State lives in /var/lib/tisvlay/state.toml
+    # connect to. State lives in /var/lib/tisvlay/daemon.toml
     # (StateDirectory), writable by the daemon so pairing can persist
     # credentials. Mode 0750 — only tisvlay user/group can read.
     # Clients talk to the daemon over the socket instead of reading
@@ -396,7 +396,7 @@ in
             "--socket"
             systemSocket
             "--state"
-            "/var/lib/tisvlay/state.toml"
+            "/var/lib/tisvlay/daemon.toml"
           ]
           ++ lib.optionals (configFile != null) [
             "--config"

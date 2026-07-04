@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn store_round_trips_snapshots() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.toml");
+        let path = dir.path().join("daemon.toml");
         let snapshot = StoreSnapshot {
             tv: vec![TvRecord {
                 id: Uuid::new_v4(),

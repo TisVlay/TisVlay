@@ -223,7 +223,7 @@ Each test gets its own `(connector, discovery, handle)` triple from `new_test_pa
 
 ### Running the mock in development
 
-The production daemon registers the mock vendor alongside LG and CEC, so a mock TV can be seeded declaratively via the boot config (see [docs/configs/daemon.toml](configs/daemon.toml)):
+The production daemon registers the mock vendor alongside LG and CEC, so a mock TV can be seeded declaratively via the boot config (see [docs/configs/boot.toml](configs/boot.toml)):
 
 ```toml
 [[tv]]
@@ -233,7 +233,7 @@ config = { address = "mock://den" }
 ```
 
 ```bash
-cargo run --bin tisvlay-daemon -- --config docs/configs/daemon.toml
+cargo run --bin tisvlay-daemon -- --config docs/configs/boot.toml
 # or, with the dev defaults (socket, site, state dir):
 just daemon-start
 ```

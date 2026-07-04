@@ -624,7 +624,7 @@ async fn vendor_catalog_and_schema_queryables() {
 #[tokio::test(flavor = "multi_thread")]
 async fn store_round_trips_profiles_and_assignment() {
     let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("state.toml");
+    let store = dir.path().join("daemon.toml");
     let socket1: PathBuf = dir.path().join("a.sock");
     let (connector, discovery, _handle) = new_test_parts();
     let stack1 = tisvlay_daemon::serve(

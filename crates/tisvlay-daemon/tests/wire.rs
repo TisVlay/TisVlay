@@ -265,7 +265,7 @@ async fn volume_rpc_lands_as_state_publish() {
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_preserves_tvs_via_store() {
     let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("state.toml");
+    let store = dir.path().join("daemon.toml");
     let socket1 = dir.path().join("a.sock");
     let (connector, discovery, _handle) = new_test_parts();
     let stack1 = tisvlay_daemon::serve(
