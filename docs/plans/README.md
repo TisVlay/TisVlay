@@ -15,7 +15,9 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-None currently in flight. When a plan is in flight, list it here with
+- [`spike-zenoh-ecs.md`](spike-zenoh-ecs.md) — Zenoh 1.9 + bevy_ecs rewrite exploration: key-space design, ECS world + reactor bridge, milestones M0–M4 with keep/kill criteria.
+
+When a plan is in flight, list it here with
 a one-line summary of the work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short
