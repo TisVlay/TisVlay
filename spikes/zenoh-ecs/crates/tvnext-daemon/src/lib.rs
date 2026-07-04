@@ -6,6 +6,9 @@ mod boot;
 mod bridge;
 mod discovery;
 mod dpms;
+mod logind;
+mod netlink;
+mod probe;
 mod store;
 
 use std::collections::{HashMap, HashSet};
@@ -26,6 +29,7 @@ use zenoh::liveliness::LivelinessToken;
 pub use boot::{BootConfig, BootTv, load_boot_config};
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
+pub use logind::watch_logind;
 pub use store::load_store;
 
 /// An open daemon session: zenoh peer listening on a Unix socket, with the
@@ -197,6 +201,25 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             DPMS_PERIOD,
             stack.world.clone(),
         ));
+    }
+    netlink::spawn_link_monitor(stack.world.clone());
+    tokio::spawn(probe::probe_task(
+        stack.daemon.session().clone(),
+        options.site.clone(),
+        stack.world.clone(),
+        PathBuf::from("/sys/class/drm"),
+        Duration::from_secs(60),
+    ));
+    match zbus::Connection::system().await {
+        Ok(connection) => {
+            let world = stack.world.clone();
+            tokio::spawn(async move {
+                if let Err(e) = watch_logind(connection, world).await {
+                    tracing::warn!(%e, "logind watcher exited");
+                }
+            });
+        }
+        Err(e) => tracing::warn!(%e, "no system bus, logind watcher disabled"),
     }
 
     let mut seeded: HashSet<Uuid> = HashSet::new();

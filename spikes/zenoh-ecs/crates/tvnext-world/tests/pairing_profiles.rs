@@ -200,6 +200,7 @@ async fn system_events_dispatch_profile_actions() {
 
     client.send(InEvent::System {
         event: SystemEvent::DpmsOff,
+        connector: None,
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
@@ -208,6 +209,7 @@ async fn system_events_dispatch_profile_actions() {
 
     client.send(InEvent::System {
         event: SystemEvent::DpmsOn,
+        connector: None,
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/power")

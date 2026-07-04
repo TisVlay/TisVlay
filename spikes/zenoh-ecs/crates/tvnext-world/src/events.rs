@@ -22,8 +22,19 @@ pub enum InEvent {
     /// A fact reported by a pairing task (or the reactor's pairing glue).
     PairingUpdate { id: Uuid, update: PairingUpdate },
     /// A desktop/power event from an adapter (logind, DPMS, lock),
-    /// dispatched through the system profile to per-TV actions.
-    System { event: SystemEvent },
+    /// dispatched through the system profile to per-TV actions. A
+    /// `connector` scopes the event to the TV mirroring that DRM
+    /// connector; TVs without a mapping treat every event as global.
+    System {
+        event: SystemEvent,
+        connector: Option<String>,
+    },
+    /// NIC carrier transition — parks/unparks network-dependent
+    /// connections.
+    Carrier { up: bool },
+    /// The desktop probe matched a TV's hardware identity to a DRM
+    /// connector.
+    ConnectorMatched { tv: Uuid, connector: String },
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.
     Tick { now: Instant },

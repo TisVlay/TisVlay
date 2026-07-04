@@ -39,7 +39,10 @@ pub async fn watch_dpms(base: PathBuf, connector: String, period: Duration, worl
                 SystemEvent::DpmsOff
             };
             debug!(connector, ?event, "DPMS transition");
-            if !world.send(InEvent::System { event }) {
+            if !world.send(InEvent::System {
+                event,
+                connector: Some(connector.clone()),
+            }) {
                 return;
             }
         }

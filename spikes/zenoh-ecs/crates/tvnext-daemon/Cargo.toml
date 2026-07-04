@@ -11,6 +11,12 @@ publish.workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 directories = { workspace = true }
+edidkit = { workspace = true }
+futures-util = { workspace = true }
+netlink-packet-core = { workspace = true }
+netlink-packet-route = { workspace = true }
+rtnetlink = { workspace = true }
+zbus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tisvlay-cec = { workspace = true }
@@ -29,6 +35,7 @@ zenoh-ext = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tisvlay-test = { workspace = true }
 
 [lints]
 workspace = true

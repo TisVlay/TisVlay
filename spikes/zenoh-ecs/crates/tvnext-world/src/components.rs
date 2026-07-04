@@ -44,6 +44,15 @@ pub(crate) struct PendingConnect {
 #[derive(Component, Debug)]
 pub(crate) struct RetryAt(pub Instant);
 
+/// Connection parked by a carrier-down event; the next carrier-up redials.
+#[derive(Component, Debug)]
+pub(crate) struct CarrierParked;
+
+/// The DRM connector this TV mirrors (desktop-probe match) — scopes DPMS
+/// events to the right TV.
+#[derive(Component, Debug)]
+pub(crate) struct MirrorsConnector(pub String);
+
 /// Live connection: channel into the tokio task that owns the
 /// `TvConnection`. Dropping this (despawn, disconnect) closes the channel
 /// and the task shuts the connection down — RAII instead of a drain layer.

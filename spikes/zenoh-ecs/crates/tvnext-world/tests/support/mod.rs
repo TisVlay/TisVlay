@@ -44,7 +44,7 @@ pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, Mo
 /// (including the matching effect). Panics after 5 s.
 pub(crate) async fn collect_until(
     rx: &mut UnboundedReceiver<WireEffect>,
-    stop: impl Fn(&WireEffect) -> bool,
+    mut stop: impl FnMut(&WireEffect) -> bool,
 ) -> Vec<WireEffect> {
     let mut seen = Vec::new();
     loop {

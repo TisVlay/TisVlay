@@ -20,6 +20,11 @@ async-trait = "0.1"
 bevy_ecs = "0.19"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
+edidkit = "0.1"
+futures-util = "0.3"
+netlink-packet-core = "0.8"
+netlink-packet-route = "0.30"
+rtnetlink = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
@@ -28,10 +33,15 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 zenoh = "1.9"
 # The advanced pub/sub API (caches, history, recovery) is behind `unstable` —
 # an accepted spike risk, tracked in the plan's watch items.
 zenoh-ext = { version = "1.9", features = ["unstable"] }
+
+# Dev-only: private dbus-daemon + logind/screensaver fakes from the parent
+# workspace, for testing the consumed-D-Bus adapters.
+tisvlay-test = { path = "../../crates/tisvlay-test" }
 
 # Path deps into the parent workspace: the vendor-agnostic core plus the
 # mock and real vendor backends. All build without D-Bus (core's `dbus`

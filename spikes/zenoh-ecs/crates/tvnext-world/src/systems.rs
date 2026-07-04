@@ -12,9 +12,10 @@ use tvnext_wire::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    Clock, ConnectionHandle, DirtyStore, DispatchRetry, DispatchVerify, Effect, KnownVendors,
-    Managed, Outbox, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
-    Reconnecting, RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
+    CarrierParked, Clock, ConnectionHandle, DirtyStore, DispatchRetry, DispatchVerify, Effect,
+    KnownVendors, Managed, MirrorsConnector, Outbox, PairingEnroll, PairingIndex, PairingRef,
+    PendingConnect, ProfileAction, Reconnecting, RetryAt, Site, SystemProfile, TransportTraits,
+    TvId, TvIndex, VendorRef,
 };
 use crate::events::{
     BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ReplyTo, TvRecord, WireEffect,
@@ -34,7 +35,9 @@ pub(crate) fn build_schedule() -> Schedule {
             handle_lifecycle_commands,
             handle_tv_commands,
             apply_backend_events,
+            apply_connector_matches,
             apply_pairing_updates,
+            handle_carrier_events,
             verify_dispatch,
             dispatch_system_events,
             reconcile_connections,
@@ -1146,9 +1149,86 @@ fn apply_pairing_updates(
     }
 }
 
+/// Park/unpark network-dependent connections on NIC carrier transitions —
+/// the same guarantee the old daemon's reconnecting-flag dance provided,
+/// expressed as components (no racing WoL loops: `PendingConnect` is the
+/// single dial gate).
+#[allow(clippy::type_complexity)]
+fn handle_carrier_events(
+    mut reader: MessageReader<InEvent>,
+    mut commands: Commands,
+    q: Query<
+        (
+            Entity,
+            &TvId,
+            Option<&TransportTraits>,
+            Option<&ConnectionHandle>,
+            Has<CarrierParked>,
+            Has<PendingConnect>,
+        ),
+        With<Managed>,
+    >,
+) {
+    for msg in reader.read() {
+        let InEvent::Carrier { up } = msg else {
+            continue;
+        };
+        for (entity, id, traits, handle, parked, pending) in &q {
+            if *up {
+                if parked {
+                    tracing::info!(tv = %id.0, "carrier restored, redialing");
+                    let mut e = commands.entity(entity);
+                    e.remove::<CarrierParked>();
+                    if !pending {
+                        e.insert(PendingConnect {
+                            attempts: 0,
+                            wake: false,
+                        });
+                    }
+                }
+            } else if handle.is_some() && traits.is_some_and(|t| t.0.network_dependent) {
+                tracing::info!(tv = %id.0, "carrier lost, parking connection");
+                commands
+                    .entity(entity)
+                    .remove::<(ConnectionHandle, DispatchVerify)>()
+                    .insert(CarrierParked);
+            }
+        }
+    }
+}
+
+/// Attach desktop-probe matches: the TV's identity gains its DRM
+/// connector, and DPMS events scope to it.
+fn apply_connector_matches(
+    mut reader: MessageReader<InEvent>,
+    mut commands: Commands,
+    index: Res<TvIndex>,
+    mut identities: Query<&mut payload::Identity>,
+) {
+    for msg in reader.read() {
+        let InEvent::ConnectorMatched { tv, connector } = msg else {
+            continue;
+        };
+        let Some(&entity) = index.0.get(tv) else {
+            continue;
+        };
+        if let Ok(mut identity) = identities.get_mut(entity)
+            && identity.connector.as_deref() != Some(connector)
+        {
+            tracing::info!(%tv, connector, "TV matched to DRM connector");
+            identity.connector = Some(connector.clone());
+        }
+        commands
+            .entity(entity)
+            .insert(MirrorsConnector(connector.clone()));
+    }
+}
+
 /// Map system events (lock, DPMS, sleep) through the profile onto every
 /// managed TV — screen actions ride the reliable tier, and wake-capable
 /// power/screen-on reach even disconnected TVs via the wake dial.
+/// Connector-scoped events skip TVs mapped to a different connector;
+/// unmapped TVs treat every event as global.
 #[allow(clippy::type_complexity)]
 fn dispatch_system_events(
     mut reader: MessageReader<InEvent>,
@@ -1165,19 +1245,25 @@ fn dispatch_system_events(
             Option<&TransportTraits>,
             Option<&payload::Link>,
             Option<&DispatchRetry>,
+            Option<&MirrorsConnector>,
         ),
         With<Managed>,
     >,
 ) {
     for msg in reader.read() {
-        let InEvent::System { event } = msg else {
+        let InEvent::System { event, connector } = msg else {
             continue;
         };
         let Some(action) = profile.0.get(event) else {
             tracing::debug!(?event, "no profile action for system event");
             continue;
         };
-        for (entity, id, handle, pending, traits, link, retry) in &q {
+        for (entity, id, handle, pending, traits, link, retry, mirrors) in &q {
+            if let (Some(scope), Some(MirrorsConnector(mapped))) = (connector, mirrors)
+                && scope != mapped
+            {
+                continue;
+            }
             tracing::debug!(tv = %id.0, ?event, ?action, "profile action dispatched");
             match action {
                 ProfileAction::ScreenOff => dispatch_screen(

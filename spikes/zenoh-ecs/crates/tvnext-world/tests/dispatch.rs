@@ -173,6 +173,7 @@ async fn profile_screen_actions_respect_emulation() {
 
     client.send(InEvent::System {
         event: SystemEvent::DpmsOff,
+        connector: None,
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "standby")
@@ -180,6 +181,7 @@ async fn profile_screen_actions_respect_emulation() {
     .await;
     client.send(InEvent::System {
         event: SystemEvent::DpmsOn,
+        connector: None,
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
