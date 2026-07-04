@@ -132,6 +132,7 @@ pub async fn run(
     site: &str,
     boot: Option<&Path>,
     dpms_connector: Option<&str>,
+    ssdp_port: u16,
 ) -> Result<()> {
     let (mock_connector, mock_discovery) = tisvlay_mock::new_production_parts();
     let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vec![
@@ -141,8 +142,10 @@ pub async fn run(
     ];
     let discoveries: Vec<(&str, Arc<dyn DynDiscovery>)> = vec![
         ("mock", Arc::new(mock_discovery)),
-        // Ephemeral SSDP source port; binds lazily on first scan.
-        ("lg", Arc::new(tisvlay_lg::LgDiscovery::new(0))),
+        // Pinned SSDP source port: LG TVs reply unicast from ephemeral
+        // ports TO this port, so it must match the firewall's allowed UDP
+        // port — see docs/firewall.md at the repo root.
+        ("lg", Arc::new(tisvlay_lg::LgDiscovery::new(ssdp_port))),
         ("cec", Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
     let stack = serve(socket, site, connectors, discoveries).await?;

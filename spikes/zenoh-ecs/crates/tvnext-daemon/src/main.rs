@@ -22,6 +22,11 @@ struct Args {
     /// (e.g. card1-HDMI-A-1).
     #[arg(long)]
     dpms_connector: Option<String>,
+
+    /// SSDP source port for LG discovery — replies return to this port, so
+    /// it must match your firewall rule (docs/firewall.md); 0 = ephemeral.
+    #[arg(long, default_value_t = 1901)]
+    ssdp_port: u16,
 }
 
 #[tokio::main]
@@ -40,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         &args.site,
         args.config.as_deref(),
         args.dpms_connector.as_deref(),
+        args.ssdp_port,
     )
     .await
 }
