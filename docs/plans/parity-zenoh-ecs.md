@@ -1,6 +1,6 @@
 # Parity: driving the zenoh+ECS stack to full TisVlay parity
 
-Status: **baseline committed — open questions pending user answers** (see Open decisions).
+Status: **decisions resolved (2026-07-04) — P1 ready to start** (see Resolved decisions).
 
 ## Goal
 
@@ -19,7 +19,7 @@ Proposed design — **the session service is an application-level gateway, not a
 - **User clients (GUI, tray, CLI)**: one zenoh client session with **two connect endpoints** (system socket + own user socket). Client mode does not forward between its links, so the mesh stays partitioned; one subscriber on `tisvlay/<site>/**` spans both worlds transparently.
 - **Greeter**: client → system socket only (greeter user joins the `tisvlay` group), publishing `tisvlay/<site>/greeter/idle` exactly as the spike does.
 
-Alternatives considered: (a) single connected mesh + zenoh ACL rules denying `user/**` across the system daemon's links — keeps one session everywhere but rests the privacy boundary on `unstable` ACL semantics instead of the filesystem; (b) single system socket, user keys namespaced by uid — no privacy at all between logged-in users. The gateway design is recommended; decision pending (question 1).
+Alternatives considered: (a) single connected mesh + zenoh ACL rules denying `user/**` across the system daemon's links — keeps one session everywhere but rests the privacy boundary on `unstable` ACL semantics instead of the filesystem; (b) single system socket, user keys namespaced by uid — no privacy at all between logged-in users. **Decided: the gateway design** (2026-07-04).
 
 Carried risk, now sharper with multi-user in scope: within one socket's group, there is no per-method or per-caller authorization (the greeter user can technically publish anything on the system mesh). This was the accepted regression from the original spike plan; polkit-shaped gating would be a post-parity design if it ever matters.
 
@@ -27,7 +27,7 @@ Carried risk, now sharper with multi-user in scope: within one socket's group, t
 
 The daemon gains a `store` layer: a TOML file (`/var/lib/tisvlay/…` in production, `--state-dir` for dev) holding TVs (including vendor configs with credentials), per-TV settings, and system profiles. The world emits a `Persist` effect (full snapshot) whenever config-shaped components change; the reactor debounces (~500 ms) and writes atomically (tmp + rename — the root project's deferred "atomic config writes" idea, done from day one). Boot replays the store into `AddTv`-equivalent spawns. Secrets stay serde fields in vendor configs; the wire never carries them (`get-config` redacts via the vendor `config_schema` visibility tags, same as the root daemon).
 
-Config schema: **clean break** (pending question 3) — a fresh lean schema owned by the new stack, no migration from the old daemon's files (per the project's no-backwards-compat stance); switching stacks means re-pairing once. `SystemProfileConfig`/`UserProfileConfig` semantics are ported, types reused from `tisvlay-core` where they fit without dragging shape we don't want.
+Config schema: **clean break** (decided 2026-07-04) — a fresh lean schema owned by the new stack, no migration from the old daemon's files (per the project's no-backwards-compat stance); switching stacks means re-pairing once. `SystemProfileConfig`/`UserProfileConfig` semantics are ported, types reused from `tisvlay-core` where they fit without dragging shape we don't want.
 
 ### Key-space extensions (parity delta)
 
@@ -70,7 +70,7 @@ The `tv_manager` verify-retry-escalate machinery becomes components + Tick-drive
 - **Session service** (`tvnext-session`): the gateway peer above + user-profile CRUD/resolution + idle detection (core's wayland `ext-idle-notify` transport, feature-gated, zbus-free) + lock/unlock monitoring (consumed D-Bus) → publishes session events; dispatches user-profile actions through the system daemon's rpcs.
 - **Greeter** (`tvnext-greeter`): core wayland idle → publish `greeter/idle`. Tiny.
 - **Tray** (`tvnext-tray`): ksni (zbus, unavoidable for StatusNotifierItem) + one zenoh client session; menu renders from an `AdvancedSubscriber` cache mirror; commands via rpc.
-- **GUI** (`tvnext-gui`): fork of the Slint GUI into the new workspace (pending question 4): `dbus.rs`/`state_watch.rs`/wizard drain replaced by a zenoh client module (subscriber → Slint models; rpcs; wizard over pairing progress keys + discovery session pubs; profiles editor over profile rpcs; single-instance via a liveliness token on the user socket). The `.slint` UI layer ports unchanged.
+- **GUI** (`tvnext-gui`): fork of the Slint GUI into the new workspace (decided 2026-07-04): `dbus.rs`/`state_watch.rs`/wizard drain replaced by a zenoh client module (subscriber → Slint models; rpcs; wizard over pairing progress keys + discovery session pubs; profiles editor over profile rpcs; single-instance via a liveliness token on the user socket). The `.slint` UI layer ports unchanged.
 - **CLI**: fill to parity (input/screen/backlight/config get+patch/re-pair/profiles/user-profiles).
 
 ### Packaging for battle-testing
@@ -85,16 +85,16 @@ Minimal first: a `tvnextd` systemd system unit (socket dir + group setup via tmp
 - [ ] **P4 — session service + greeter**: gateway topology live (two sockets), user profiles, idle/lock events, greeter port. Exit: lock/unlock/idle drive the C3 through user-profile resolution with two users logged in seeing no cross-talk.
 - [ ] **P5 — tray**: port + field use. Exit: tray is the daily driver for power/volume.
 - [ ] **P6 — GUI**: forked port per above. Exit: pairing wizard, TVs pane, profiles pane all functional against the new daemon.
-- [ ] **P7 — CLI completion + packaging + switchover**: remaining CLI verbs; systemd units; a week of full-stack duty; then the old-stack decommission decision (separate discussion — root-repo surgery is its own plan).
+- [ ] **P7 — CLI completion + packaging + switchover**: remaining CLI verbs; systemd units; a week of full-stack duty; workspace promotion out of `spikes/` plus the crate-naming settlement (deferred here by decision); then the old-stack decommission decision (separate discussion — root-repo surgery is its own plan).
 
 Battle-test checkpoints are the phase exits; the plan's war stories accumulate per phase like the spike's.
 
-## Open decisions (asked alongside this baseline)
+## Resolved decisions (2026-07-04)
 
-1. Topology: gateway design vs single-mesh + ACL vs single socket (recommendation: gateway).
-2. Workspace promotion + naming: stay in `spikes/zenoh-ecs` vs promote to a top-level workspace now; keep `tvnext-*` names or rename.
-3. Config/state: clean-break schema (recommendation) vs sharing the root daemon's config format/state dir.
-4. GUI: fork into the new workspace (recommendation) vs port `crates/tisvlay-gui` in place.
+1. **Topology: gateway design** — session service runs two zenoh sessions; user-private keys never transit the system peer.
+2. **Workspace: stay in `spikes/zenoh-ecs` until switchover** — zero churn during parity; promotion and the crate-naming settlement happen together at P7.
+3. **Config/state: clean break** — fresh schema, own state dir, re-pair once at switchover.
+4. **GUI: fork into the new workspace** — old GUI untouched until switchover retires it.
 
 ## Risks and watch items
 
