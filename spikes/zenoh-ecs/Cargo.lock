@@ -1732,6 +1732,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 
 [[package]]
+name = "ksni"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da9eeb3f510b6148ae68f963af2c1fbb0de4d9e4e05f82813cfb319837c3ad2b"
+dependencies = [
+ "futures-util",
+ "pastey",
+ "serde",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2215,6 +2228,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "pem"
@@ -4008,6 +4027,28 @@ dependencies = [
  "tvnext-wire",
  "uuid",
  "zbus",
+ "zenoh",
+ "zenoh-ext",
+]
+
+[[package]]
+name = "tvnext-tray"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ksni",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tisvlay-mock",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tvnext-daemon",
+ "tvnext-session",
+ "tvnext-wire",
+ "uuid",
  "zenoh",
  "zenoh-ext",
 ]

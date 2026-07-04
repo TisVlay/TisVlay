@@ -284,6 +284,33 @@ pub mod keys {
         format!("tisvlay/{site}/tv/*/meta/config")
     }
 
+    /// All system-profile bodies.
+    pub fn profile_system_wild(site: &str) -> String {
+        format!("tisvlay/{site}/profile/system/*")
+    }
+
+    pub fn parse_profile_system(site: &str, key: &str) -> Option<Uuid> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/profile/system/")
+            .and_then(|id| Uuid::parse_str(id).ok())
+    }
+
+    pub fn parse_user_profile(site: &str, key: &str) -> Option<Uuid> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/user/profile/")
+            .and_then(|id| Uuid::parse_str(id).ok())
+    }
+
+    pub fn parse_user_tv_profile(site: &str, key: &str) -> Option<Uuid> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/user/tv/")?
+            .strip_suffix("/profile")
+            .and_then(|id| Uuid::parse_str(id).ok())
+    }
+
     /// Pairing progress stream: `tisvlay/<site>/pairing/<uuid>/progress`.
     pub fn pairing_progress(site: &str, tv: &Uuid) -> String {
         format!("tisvlay/{site}/pairing/{tv}/progress")

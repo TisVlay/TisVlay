@@ -6,6 +6,7 @@ members = [
     "crates/tvnext-daemon",
     "crates/tvnext-session",
     "crates/tvnext-greeter",
+    "crates/tvnext-tray",
     "crates/tvnext-cli",
 ]
 
@@ -24,6 +25,7 @@ clap = { version = "4", features = ["derive"] }
 directories = "6"
 edidkit = "0.1"
 futures-util = "0.3"
+ksni = "0.3"
 netlink-packet-core = "0.8"
 netlink-packet-route = "0.30"
 rtnetlink = "0.21"
@@ -57,6 +59,7 @@ tvnext-wire = { path = "crates/tvnext-wire" }
 tvnext-world = { path = "crates/tvnext-world" }
 tvnext-daemon = { path = "crates/tvnext-daemon" }
 tvnext-session = { path = "crates/tvnext-session" }
+tvnext-tray = { path = "crates/tvnext-tray" }
 
 [workspace.lints.rust]
 unreachable_pub = "warn"
