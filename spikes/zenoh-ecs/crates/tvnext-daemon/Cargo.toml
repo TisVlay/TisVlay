@@ -35,6 +35,7 @@ zenoh-ext = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tisvlay-cec = { workspace = true, features = ["test-link"] }
 tisvlay-test = { workspace = true }
 
 [lints]

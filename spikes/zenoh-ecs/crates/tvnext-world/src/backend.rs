@@ -117,6 +117,24 @@ pub(crate) async fn connect_flow(
                     if let Err(error) = result {
                         warn!(%tv, ?cmd, %error, "backend command failed");
                     }
+                    // Standby-reachable transports (CEC) have no push for
+                    // their own command effects — refresh state so the
+                    // world's cache reflects the transition it just caused.
+                    if traits.reachable_in_standby
+                        && matches!(
+                            cmd,
+                            BackendCmd::PowerOn
+                                | BackendCmd::PowerOff
+                                | BackendCmd::ScreenOn
+                                | BackendCmd::ScreenOff
+                        )
+                        && let Ok(state) = connection.get_state().await
+                    {
+                        let _ = inbox.send(InEvent::Backend {
+                            tv,
+                            event: BackendEvent::State(Box::new(state)),
+                        });
+                    }
                     if !connection.is_connected() {
                         // Network-style transports drop on power_off. Drain
                         // state the command itself pushed (the standby

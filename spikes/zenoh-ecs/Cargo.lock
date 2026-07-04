@@ -3495,6 +3495,7 @@ dependencies = [
  "async-trait",
  "libc",
  "linux-cec",
+ "parking_lot",
  "serde",
  "tisvlay-core",
  "tokio",
