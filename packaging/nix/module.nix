@@ -107,7 +107,7 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       example = [
-        "--boot"
+        "--seed"
         "/etc/tisvlay/seed.toml"
       ];
       description = ''
@@ -177,12 +177,14 @@ in
         }
       '';
       description = ''
-        Declarative boot config for tisvlay-daemon, rendered to a TOML
-        file in the Nix store and passed via `--boot`. Its `[[tv]]`
-        entries seed extra TVs at start; entries already present in
-        the daemon's writable state file win, and pairing/state
-        changes still persist to `/var/lib/tisvlay/daemon.toml`
-        regardless (the boot config is additive, not a lockdown).
+        Declarative seed config for tisvlay-daemon, rendered to a
+        TOML file in the Nix store and passed via `--seed`.
+        Provisioning semantics: re-applied every start; entries whose
+        id already exists in the daemon-owned
+        `/var/lib/tisvlay/daemon.toml` are skipped, so runtime edits
+        stick and pairing still persists there. A still-declared TV
+        removed at runtime returns on the next start — drop the
+        entry to drop the TV.
 
         Changes to it only take effect after `nixos-rebuild switch`.
         Leave unset (`null`, the default) to manage TVs entirely at
@@ -399,7 +401,7 @@ in
             "/var/lib/tisvlay/daemon.toml"
           ]
           ++ lib.optionals (configFile != null) [
-            "--boot"
+            "--seed"
             "${configFile}"
           ]
           ++ lib.optionals (cfg.bindPort != null) [

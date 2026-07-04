@@ -40,7 +40,7 @@ tisvlay/
 │   ├── tisvlay-world/             # bevy_ecs world: components, systems, reactor loop,
 │   │                             # backend bridge (deferred acks via CommandDone)
 │   ├── tisvlay-daemon/            # System daemon binary+lib: world + zenoh bridge,
-│   │   └── src/                  # store (TOML persistence), boot config, discovery,
+│   │   └── src/                  # store (TOML persistence), seed config, discovery,
 │   │                             # dpms sysfs watcher, logind, netlink, arp, probe (EDID)
 │   ├── tisvlay-session/           # Per-user session service: gateway (client link to
 │   │                             # system socket + router owning user/**), user profiles,

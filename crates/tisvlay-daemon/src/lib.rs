@@ -2,13 +2,13 @@
 //! world reactor + zenoh bridge (M2).
 
 mod arp;
-mod boot;
 mod bridge;
 mod discovery;
 mod dpms;
 mod logind;
 mod netlink;
 mod probe;
+mod seed;
 mod store;
 
 use std::collections::{HashMap, HashSet};
@@ -26,10 +26,10 @@ use uuid::Uuid;
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
 
-pub use boot::{BootConfig, BootTv, load_boot_config};
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
 pub use logind::watch_logind;
+pub use seed::{SeedConfig, SeedTv, load_seed_config};
 pub use store::load_store;
 
 /// An open daemon session: zenoh peer listening on a Unix socket, with the
@@ -300,14 +300,15 @@ pub struct DaemonOptions {
     /// The daemon's own file — persisted TV table (credentials
     /// included). `None` = ephemeral.
     pub store: Option<PathBuf>,
-    /// Additive boot seeds; ids already in the store win.
-    pub boot: Option<PathBuf>,
+    /// Declarative seed config re-applied each start; ids already in
+    /// the store win.
+    pub seed: Option<PathBuf>,
     pub dpms_connector: Option<String>,
     pub ssdp_port: u16,
 }
 
 /// Production-shaped entry: serve with the real vendor backends (plus the
-/// mock for play), replay the store, seed extras from the boot config,
+/// mock for play), replay the store, apply the seed config,
 /// optionally watch a DRM connector's DPMS state, run until ctrl-c.
 pub async fn run(options: DaemonOptions) -> Result<()> {
     use tisvlay_core::TvBackend;
@@ -395,13 +396,13 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             });
         }
     }
-    if let Some(path) = &options.boot {
-        for tv in load_boot_config(path)?.tv {
-            let id = tv.id.unwrap_or_else(Uuid::new_v4);
+    if let Some(path) = &options.seed {
+        for tv in load_seed_config(path)?.tv {
+            let id = tv.stable_id();
             if seeded.contains(&id) {
                 continue;
             }
-            info!(%id, name = %tv.name, vendor = %tv.vendor, "boot TV");
+            info!(%id, name = %tv.name, vendor = %tv.vendor, "seed TV");
             stack.world.command(Command::AddTv {
                 record: Box::new(TvRecord {
                     id,

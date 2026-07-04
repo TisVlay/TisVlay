@@ -23,10 +23,10 @@ struct Args {
     #[arg(long)]
     ephemeral: bool,
 
-    /// Boot seed (TOML) adding extra TVs at start; ids already in the
-    /// daemon's own file win.
+    /// Seed config (TOML): declaratively provisioned TVs, re-applied
+    /// each start; ids already in the daemon's own file win.
     #[arg(long)]
-    boot: Option<PathBuf>,
+    seed: Option<PathBuf>,
 
     /// DRM connector whose sysfs DPMS state drives screen actions
     /// (e.g. card1-HDMI-A-1).
@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(tisvlay_wire::bootstrap::default_socket_path),
         site: args.site,
         store,
-        boot: args.boot,
+        seed: args.seed,
         dpms_connector: args.dpms_connector,
         ssdp_port: args.ssdp_port,
     })
