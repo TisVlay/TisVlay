@@ -1,0 +1,45 @@
+// Tray-scoped state + callbacks. Bound by Rust via
+// `app.global::<Tray>().on_X(...)`. Pane components call
+// `Tray.X(...)` directly — symmetric with `Daemon` and `Session`.
+//
+// Settings storage lives in the tray's `tray.toml` and is exposed
+// over `org.tisvlay.Tray1`. `notifications` holds the last-fetched
+// body; when `available` is false (tray service not running) the
+// settings pane keeps switches visible-but-disabled, with values
+// reflecting the last-known state. Initial Slint default values are
+// overridden Rust-side from `NotificationSettingsBody::defaults()`
+// at GUI startup so a fresh launch while the tray is offline still
+// shows sensible defaults.
+
+export struct TrayNotificationSettings {
+    tv-connection: bool,
+    tv-pairing: bool,
+    tv-wake: bool,
+    daemon-offline: bool,
+}
+
+export global Tray {
+    /// True when the tray's `org.tisvlay.Tray` service is registered
+    /// on the user bus. Drives the settings pane's empty-state vs
+    /// switches-enabled rendering.
+    in property <bool> available: false;
+
+    /// Last-known notification settings. Seeded Rust-side from
+    /// `NotificationSettingsBody::defaults()` before any successful
+    /// fetch; refreshed on `TrayAppeared` and on `PropertiesChanged`
+    /// for the `NotificationSettings` property.
+    in property <TrayNotificationSettings> notifications;
+
+    /// Flip a single category. Rust packs the (category, enabled)
+    /// pair into a one-key `NotificationSettingsBody` and calls
+    /// `TrayClient::update_notification_settings`. The `category`
+    /// string is the snake_case wire identifier
+    /// (`tv_connection`, `tv_pairing`, `tv_wake`, `daemon_offline`).
+    callback set-notification(string, bool);
+
+    /// Fire one test notification. Rust calls
+    /// `TrayClient::send_test_notification`, which bypasses every
+    /// category gate so users can verify their DE's notification
+    /// stack regardless of which categories are off.
+    callback send-test-notification();
+}

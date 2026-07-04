@@ -1,0 +1,1119 @@
+// Pairing wizard — takes over the TVs pane content area when active.
+//
+// Renders one of four steps based on `PairingWizard.step`:
+//   1 = Discover    SSDP scan, list of found TVs, user picks one
+//   2 = Configure   name + system profile + managed checkbox
+//   3 = Pair        live PairingProgress phase from the daemon
+//   4 = Done        summary + Close
+//
+// All state and callbacks live on the `PairingWizard` global
+// (`globals/pairing_wizard.slint`). The outer `PairingWizardPane`
+// is just rendering; inner step components retain their local
+// callback interfaces and the outer pane forwards them to the
+// global.
+
+import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
+import { HelpTrigger } from "../globals/help.slint";
+import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, VendorTile } from "../widgets.slint";
+import { SchemaForm } from "schema_form.slint";
+
+// =============================================================================
+// Stepper — 4 numbered circles with labels, connected by lines.
+// =============================================================================
+
+component StepperItem {
+    in property <int> step;
+    in property <string> label;
+    in property <int> current;
+
+    property <bool> done: step < current;
+    property <bool> active: step == current;
+
+    HorizontalLayout {
+        spacing: Design.gap-stack;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: done || active ? Theme.accent : Theme.surface;
+                border-color: done || active ? Theme.accent : Theme.border-strong;
+                border-width: Design.border-thin;
+                Text {
+                    text: root.step;
+                    color: done || active ? white : Theme.text-dim;
+                    font-size: Design.font-mini;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.label;
+                color: active ? Theme.text : (done ? Theme.text-dim : Theme.text-faint);
+                font-size: Design.font-helper;
+                font-weight: active ? 600 : 500;
+            }
+        }
+    }
+}
+
+component Stepper inherits Rectangle {
+    in property <int> current;
+
+    height: 56px;
+    background: Theme.surface2;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 20px;
+        padding-right: 20px;
+        spacing: 12px;
+        alignment: stretch;
+
+        StepperItem { step: 1; label: @tr("Discover"); current: root.current; }
+        Rectangle {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    height: Design.border-thin;
+                    background: 1 < root.current ? Theme.accent : Theme.border;
+                }
+            }
+        }
+        StepperItem { step: 2; label: @tr("Configure"); current: root.current; }
+        Rectangle {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    height: Design.border-thin;
+                    background: 2 < root.current ? Theme.accent : Theme.border;
+                }
+            }
+        }
+        StepperItem { step: 3; label: @tr("Pair"); current: root.current; }
+        Rectangle {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    height: Design.border-thin;
+                    background: 3 < root.current ? Theme.accent : Theme.border;
+                }
+            }
+        }
+        StepperItem { step: 4; label: @tr("Done"); current: root.current; }
+    }
+}
+
+// =============================================================================
+// Discovered-TV row.
+// =============================================================================
+
+component DiscoveryRow inherits Rectangle {
+    in property <WizardDiscoveredTv> tv;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 56px;
+    background: selected ? Theme.row-selected
+              : (touch.has-hover ? Theme.row-hover : Theme.surface);
+    animate background { duration: 150ms; }
+
+    Rectangle {
+        x: 0;
+        width: selected ? 3px : 0;
+        background: Theme.accent;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        // `stretch` (not `start`) so the center column's `horizontal-stretch`
+        // actually expands and the trailing status column sits flush-right —
+        // same discipline as the About pane's ComponentRow.
+        alignment: stretch;
+
+        // Vendor swatch — shared widget so the brand colors + match
+        // arms stay in sync with the TVs pane.
+        VerticalLayout {
+            width: Design.size-tile-sm;
+            alignment: center;
+            VendorTile {
+                vendor: root.tv.brand;
+                tile-size: Design.size-tile-sm;
+            }
+        }
+
+        // Two-line detail column, each line pairing left content with a
+        // right-adjusted status element so the layout is fixed regardless
+        // of state — mirrors the About pane's ComponentRow chip column.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            // Primary line: name (elides) + the status chip pinned
+            // top-right. Every row shows a discovery-source chip (`SSDP` /
+            // `CEC`, success-toned); a flagged (unusable) device flips it
+            // to a warn `No access` chip. On the name line so it stays put
+            // whether or not the hint below is present.
+            HorizontalLayout {
+                spacing: Design.gap-stack;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.tv.name == "" ? root.tv.address : root.tv.name;
+                    color: root.selected ? Theme.row-selected-text : Theme.text;
+                    font-size: Design.font-body;
+                    font-weight: root.selected ? 600 : 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                // No chip on a row that is neither flagged nor
+                // discovery-sourced (e.g. a manually-entered TV), rather
+                // than an empty pill or a mislabeled one.
+                if root.tv.access-warning || root.tv.source-label != "": Chip {
+                    // `source-label` is a machine/protocol id — shown
+                    // verbatim, not translated.
+                    label: root.tv.access-warning ? @tr("No access") : root.tv.source-label;
+                    tone: root.tv.access-warning ? "warn" : "success";
+                }
+            }
+
+            // Secondary line: address · model (left) + a succinct hint
+            // right-adjusted, shown only when flagged. The full remedy
+            // rides the whole-row help bubble (see `warn-tip`).
+            HorizontalLayout {
+                spacing: Design.gap-stack;
+                Text {
+                    text: root.tv.address;
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                    font-family: "ui-monospace, monospace";
+                    // ~39-char v6 addresses would otherwise push the
+                    // trailing model chip off the row.
+                    overflow: elide;
+                }
+                if root.tv.hw-model != "": Text {
+                    text: "·";
+                    color: Theme.text-faint;
+                    font-size: Design.font-caption;
+                }
+                if root.tv.hw-model != "": Text {
+                    text: root.tv.hw-model;
+                    color: Theme.text-faint;
+                    font-size: Design.font-caption;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.tv.access-warning: Text {
+                    text: @tr("check permissions");
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // Whole-row help anchor. Kept out of the layout (an absolutely
+    // positioned child overlaying the right column) so it stays
+    // referenceable from `touch` — an `if`-gated element would not be —
+    // and the entire row is the hover target, so the user is most likely
+    // to surface the full remedy. Invisible (no background, no
+    // TouchArea): `touch` above it still owns clicks and hover.
+    warn-tip := HelpTrigger {
+        x: parent.width - self.width - 12px;
+        y: 0;
+        width: 180px;
+        height: parent.height;
+        text: root.tv.access-warning ? @tr("The daemon can't access {} \u{2014} insufficient permissions. Check that node's permissions or the daemon user's group membership.", root.tv.address) : "";
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            warn-tip.set-hover(self.has-hover);
+        }
+    }
+}
+
+// =============================================================================
+// Step bodies.
+// =============================================================================
+
+component StepDiscover {
+    in property <[WizardDiscoveredTv]> discovered;
+    in property <[VendorOption]> supported-vendors;
+    /// Pre-computed display-name list (parallel to supported-vendors).
+    /// Slint can't transform arrays, so Rust passes both shapes.
+    in property <[string]> supported-vendor-names;
+    in property <bool> streaming;
+    in property <string> error-message;
+    /// True while the manual-entry MAC enrichment RPC is in flight
+    /// (after Continue, before step 2 paints). Gates the Continue
+    /// button so double-clicks can't spawn parallel RPCs.
+    in property <bool> manual-lookup-streaming;
+    in-out property <int> selected-index;
+    // Index into `supported-vendors`; the vendor ThemedSelect shows the
+    // name at this index and writes picks back through `selected-index`.
+    in-out property <int> manual-vendor-index;
+    in-out property <string> manual-ip;
+    callback selection-changed(int);
+    callback manual-ip-edited(string);
+    callback manual-add();
+
+    VerticalLayout {
+        spacing: Design.gap-block;
+
+        // Section heading
+        VerticalLayout {
+            spacing: Design.gap-form;
+            Text {
+                text: @tr("Find your TV");
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            Text {
+                text: @tr("Searching the local network for compatible TVs.");
+                color: Theme.text-dim;
+                font-size: Design.font-meta;
+            }
+        }
+
+        // Status / error banner
+        if root.error-message != "": Rectangle {
+            background: Theme.danger-soft;
+            border-color: Theme.danger;
+            border-width: Design.border-thin;
+            border-radius: 5px;
+            HorizontalLayout {
+                width: 100%;
+                padding: 10px;
+                spacing: Design.gap-stack;
+                Text {
+                    text: @tr("Discovery failed");
+                    color: Theme.danger-text;
+                    font-size: Design.font-body;
+                    font-weight: 600;
+                    width: 130px;
+                }
+                Text {
+                    text: root.error-message;
+                    color: Theme.text;
+                    font-size: Design.font-helper;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if root.error-message == "": HorizontalLayout {
+            spacing: Design.gap-stack;
+            alignment: start;
+            // Radar PulseDot while scanning, plain still dot otherwise.
+            // The `tv-pulse` keyframe is the design's blessed liveness
+            // signal — see `.claude/ui/pairing-wizard-motion.md` § 1.
+            VerticalLayout {
+                alignment: center;
+                if root.streaming: PulseDot {}
+                if !root.streaming: Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.text-faint;
+                }
+            }
+            Text {
+                text: root.streaming
+                    ? @tr("Scanning via SSDP — found {}, listening for more…", root.discovered.length)
+                    : (root.discovered.length == 0
+                        ? @tr("No TVs found. Make sure your TV is on the same network.")
+                        : @tr("Found {} TV" | "Found {} TVs" % root.discovered.length, root.discovered.length));
+                color: Theme.text-dim;
+                font-size: Design.font-helper;
+                vertical-alignment: center;
+            }
+        }
+
+        // Discovered list / empty-state. A single region with a stable
+        // `min-height` so the layout doesn't shift the moment the first
+        // TV arrives — that shift previously pushed the manual-entry
+        // panel off-screen at minimum window sizes. The branch swap
+        // (empty placeholder ↔ populated list) happens *inside* the
+        // region, so the wizard's overall height stays constant.
+        // `vertical-stretch: 1` is set as forward-compat for a future
+        // refactor that lifts the wizard's outer ScrollView; today the
+        // outer scroll caps StepDiscover at its preferred height, so
+        // stretch is a no-op.
+        if root.error-message == "": Rectangle {
+            background: root.discovered.length > 0 ? Theme.surface : Theme.surface2;
+            border-color: root.discovered.length > 0 ? Theme.border : Theme.border-strong;
+            border-width: Design.border-thin;
+            border-radius: Design.radius-card;
+            // 2.5 × DiscoveryRow.height (56px) = 140px. The half-row
+            // peek at the bottom telegraphs "scroll me" the moment a
+            // 3rd TV is found — without that, the list would look
+            // exactly-fit at 2 rows and users might assume there's
+            // nothing more. Keep this in sync if DiscoveryRow.height
+            // moves.
+            min-height: 140px;
+            vertical-stretch: 1;
+
+            // Stack [content, ScanLine] so the ScanLine sits at the
+            // bottom of the region in both empty and populated states —
+            // a stable scan indicator across the empty → found
+            // transition rather than two separate ScanLines with
+            // different sizes and positions.
+            VerticalLayout {
+                width: 100%;
+
+                if root.discovered.length > 0: VerticalLayout {
+                    vertical-stretch: 1;
+                    width: 100%;
+                    ScrollView {
+                        width: 100%;
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            width: 100%;
+                            for tv[i] in root.discovered: DiscoveryRow {
+                                tv: tv;
+                                selected: i == root.selected-index;
+                                clicked => { root.selection-changed(i); }
+                            }
+                        }
+                    }
+                }
+
+                if root.discovered.length == 0: VerticalLayout {
+                    vertical-stretch: 1;
+                    width: 100%;
+                    alignment: center;
+                    spacing: Design.gap-tight;
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
+                            color: Theme.text;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
+                            color: Theme.text-dim;
+                            font-size: Design.font-helper;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if root.streaming: HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 6px;
+                    padding-bottom: 8px;
+                    ScanLine {}
+                }
+            }
+        }
+
+        // Manual-entry fallback. Always visible; matches the design's
+        // "Don't see your TV? Add it manually" panel (collapsible in
+        // the JSX prototype; we render it inline for v1).
+        Rectangle {
+            background: Theme.surface;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            border-radius: Design.radius-card;
+
+            VerticalLayout {
+                width: 100%;
+                padding: 14px;
+                spacing: Design.gap-block;
+
+                Text {
+                    text: @tr("Don't see your TV? Add it manually");
+                    color: Theme.text;
+                    font-size: Design.font-body;
+                    font-weight: 600;
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: stretch;
+
+                    // Vendor — combobox when ≥ 2 backends are
+                    // registered, static chip when only one. Built from
+                    // the daemon's GetSupportedVendors so it reflects
+                    // whatever vendor crates are actually in the
+                    // running daemon — no hardcoded list.
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: Design.gap-form;
+                        Text {
+                            text: @tr("Vendor");
+                            color: Theme.text;
+                            font-size: Design.font-helper;
+                            font-weight: 500;
+                        }
+                        // ≤ 1 vendor: static chip (no point in a
+                        // single-option dropdown). > 1: a vendor select
+                        // whose shown value is derived from
+                        // `manual-vendor-index` and whose picks write back
+                        // via `selected-index`. Rust at manual-add time
+                        // reads `supported-vendors[idx]` for both id and
+                        // display name.
+                        if root.supported-vendors.length <= 1: Rectangle {
+                            background: Theme.surface;
+                            border-color: Theme.border-strong;
+                            border-width: Design.border-thin;
+                            border-radius: Design.radius-control;
+                            min-height: Design.size-input;
+                            HorizontalLayout {
+                                width: 100%;
+                                height: 100%;
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                Text {
+                                    text: root.supported-vendors.length == 1
+                                        ? root.supported-vendors[0].name
+                                        : "";
+                                    color: Theme.text;
+                                    font-size: Design.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if root.supported-vendors.length > 1: ThemedSelect {
+                            model: root.supported-vendor-names;
+                            // Clamp: the vendor set can shrink under a stale
+                            // index (daemon re-publishes fewer vendors), which
+                            // would otherwise read past the model and show blank.
+                            current-value: root.supported-vendor-names[
+                                root.manual-vendor-index.clamp(0, root.supported-vendor-names.length - 1)];
+                            selected-index(i) => { root.manual-vendor-index = i; }
+                        }
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 2;
+                        spacing: Design.gap-form;
+                        Text {
+                            text: @tr("IP");
+                            color: Theme.text;
+                            font-size: Design.font-helper;
+                            font-weight: 500;
+                        }
+                        LineEditField {
+                            // Vendor-aware placeholder. The selected
+                            // vendor's `supports-ipv4` / `supports-ipv6`
+                            // flags come from
+                            // `Manager1.GetVendorCapabilities` —
+                            // v6-only vendors get the RFC 3849
+                            // documentation prefix; everything else
+                            // (v4-only and v4+v6) keeps the familiar
+                            // v4 example. The bounds check (`length
+                            // > index`) covers the
+                            // zero-registered-vendor edge so we never
+                            // index an empty model.
+                            placeholder-text:
+                                root.supported-vendors.length > root.manual-vendor-index
+                                && root.supported-vendors[root.manual-vendor-index].supports-ipv6
+                                && !root.supported-vendors[root.manual-vendor-index].supports-ipv4
+                                    ? "2001:db8::1"
+                                    : "192.168.1.100";
+                            font-family: "ui-monospace, monospace";
+                            text <=> root.manual-ip;
+                            edited(v) => { root.manual-ip-edited(v); }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: end;
+                        Button {
+                            text: root.manual-lookup-streaming
+                                ? @tr("Looking up…")
+                                : @tr("Continue");
+                            enabled: root.manual-ip != "" && !root.manual-lookup-streaming;
+                            clicked => { root.manual-add(); }
+                        }
+                    }
+                }
+                Text {
+                    // Vendor-specific extras (MAC for Wake-on-LAN, API
+                    // keys, ports, etc.) are filled in the next step
+                    // from the vendor's pairing schema; we just need
+                    // enough here to identify the TV.
+                    text: @tr("You'll fill the rest (MAC, etc.) in the next step.");
+                    color: Theme.text-faint;
+                    font-size: Design.font-mini;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+component StepConfigure {
+    // Pass individual fields rather than the struct — avoids Slint's
+    // model-row-into-struct binding edge cases and makes the values
+    // explicit at the call site.
+    in property <string> selected-vendor;
+    // Display name for `selected-vendor`, looked up in Rust via the
+    // wizard's `supported-vendors` model.
+    in property <string> selected-vendor-name;
+    in property <string> selected-address;
+    in property <string> selected-hw-model;
+    in-out property <string> tv-name;
+    in-out property <string> system-profile;
+    in-out property <bool> managed;
+    in property <[string]> system-profiles;
+    /// Vendor's pairing-form schema rows (driven by Rust through
+    /// `Manager1.GetPairingSchema`, autofilled from the selected
+    /// TV's `vendor_data`). Empty schema → the field-renderer block
+    /// disappears and the user just confirms name/profile/managed.
+    in property <[PairingFieldRow]> schema-fields;
+    callback name-edited(string);
+    callback profile-selected(string);
+    callback managed-toggled(bool);
+    callback field-value-edited(int, string);
+
+    VerticalLayout {
+        spacing: Design.gap-row;
+
+        // Section heading
+        VerticalLayout {
+            spacing: Design.gap-form;
+            Text {
+                text: @tr("Configure this TV");
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            Text {
+                text: @tr("Set how TisVlay should refer to and automate this device.");
+                color: Theme.text-dim;
+                font-size: Design.font-meta;
+            }
+        }
+
+        // Friendly name
+        VerticalLayout {
+            spacing: Design.gap-form;
+            Text {
+                text: @tr("Friendly name");
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-weight: 500;
+            }
+            LineEditField {
+                placeholder-text: @tr("e.g. Living Room G4");
+                text <=> root.tv-name;
+                edited(value) => { root.name-edited(value); }
+            }
+            Text {
+                text: @tr("Shown in the TVs pane, tray menu, and CLI.");
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+            }
+        }
+
+        // Vendor (read-only display)
+        VerticalLayout {
+            spacing: Design.gap-form;
+            Text {
+                text: @tr("Vendor");
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-weight: 500;
+            }
+            HorizontalLayout {
+                spacing: Design.gap-stack;
+                alignment: start;
+                VerticalLayout {
+                    alignment: center;
+                    Chip {
+                        label: root.selected-vendor-name == "" ? "—" : root.selected-vendor-name;
+                        tone: "neutral";
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.selected-address
+                            + (root.selected-hw-model != "" ? (" · " + root.selected-hw-model) : "");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        font-family: "ui-monospace, monospace";
+                        // Wrap (not elide) so the full v6 address
+                        // stays visible — wizard step 2 is where the
+                        // user confirms what they're pairing.
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // Vendor pairing-form schema (dynamic — driven by
+        // `Manager1.GetPairingSchema`). Shared with the TVs-pane
+        // edit-mode form via the same `SchemaForm` component.
+        SchemaForm {
+            schema-fields: root.schema-fields;
+            value-edited(i, v) => { root.field-value-edited(i, v); }
+        }
+
+        // System profile — a ThemedSelect for the initial assignment.
+        VerticalLayout {
+            spacing: Design.gap-form;
+            Text {
+                text: @tr("Initial system profile");
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-weight: 500;
+            }
+            ThemedSelect {
+                model: root.system-profiles;
+                current-value: root.system-profile == "" ? "default" : root.system-profile;
+                enabled: root.system-profiles.length > 0;
+                selected(v) => { root.profile-selected(v); }
+            }
+            Text {
+                text: @tr("Drives boot/shutdown/sleep behavior. You can change this later.");
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+            }
+        }
+
+        // Managed checkbox
+        Rectangle {
+            background: Theme.surface2;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            border-radius: 5px;
+            VerticalLayout {
+                width: 100%;
+                padding: 12px;
+                spacing: Design.gap-tight;
+
+                CheckBox {
+                    text: @tr("Managed by TisVlay");
+                    checked: root.managed;
+                    toggled => { root.managed-toggled(self.checked); }
+                }
+                Text {
+                    text: @tr("The daemon will power-cycle this TV in response to desktop session events (lock, unlock, sleep, shutdown). Untick to keep it paired but ignored by automation.");
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+component StepPair {
+    in property <string> phase;        // "awaiting_tv" / "complete" / "failed" / ""
+    in property <string> message;
+    in property <string> tv-address;
+    callback retry();
+    callback back-to-discovery();
+
+    Rectangle {
+        background: Theme.surface2;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        height: 320px;
+
+        VerticalLayout {
+            width: 100%;
+            height: 100%;
+            padding: 28px;
+            spacing: 18px;
+            alignment: center;
+
+            // Status icon. Terminal phases (complete / failed) render
+            // as still ✓ / ✕ in a soft-tinted circle — per
+            // `.claude/ui/pairing-wizard-motion.md`, *"stillness on
+            // resolution states is its own design choice"*. Anything
+            // else is in-flight and gets the std-widgets `Spinner`
+            // (the `tv-spin` indeterminate-progress role).
+            HorizontalLayout {
+                alignment: center;
+                if root.phase == "complete" || root.phase == "failed": Rectangle {
+                    width: 56px;
+                    height: 56px;
+                    border-radius: 28px;
+                    background: root.phase == "complete" ? Theme.success-soft : Theme.danger-soft;
+                    border-color: root.phase == "complete" ? Theme.success : Theme.danger;
+                    border-width: Design.border-thin;
+                    Text {
+                        text: root.phase == "complete" ? "✓" : "✕";
+                        color: root.phase == "complete" ? Theme.success-text : Theme.danger-text;
+                        font-size: 28px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+                if root.phase != "complete" && root.phase != "failed": SpinnerArc {
+                    width: 48px;
+                    height: 48px;
+                }
+            }
+
+            // Heading + body text
+            VerticalLayout {
+                spacing: Design.gap-tight;
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.phase == "complete" ? @tr("Paired successfully")
+                            : root.phase == "failed" ? @tr("Pairing failed")
+                            : root.phase == "awaiting_tv" ? @tr("Confirm the prompt on your TV")
+                            : root.phase == "awaiting_input" ? @tr("Awaiting input on the TV")
+                            : @tr("Connecting to the TV…");
+                        color: Theme.text;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        // `root.message` is set from Rust — typed errors are
+                        // already localized by the time they reach this Text.
+                        // The fallback strings below are static, so wrap them.
+                        text: root.message != ""
+                            ? root.message
+                            : (root.phase == "complete"
+                                ? @tr("Client key stored. TisVlay can now control this TV.")
+                                : root.phase == "failed"
+                                    ? @tr("The prompt was rejected, or the request timed out.")
+                                    : @tr("Use the magic remote (or the directional pad) to choose Accept on the TV."));
+                        color: root.phase == "failed" ? Theme.danger-text : Theme.text-dim;
+                        font-size: Design.font-meta;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.phase != "complete" && root.phase != "failed": HorizontalLayout {
+                    alignment: center;
+                    padding-top: Design.gap-stack;
+                    ScanLine {
+                        width: 220px;
+                    }
+                }
+            }
+
+            // Phase-specific actions
+            if root.phase == "failed": HorizontalLayout {
+                alignment: center;
+                spacing: Design.gap-stack;
+                Button {
+                    text: @tr("Retry pairing");
+                    primary: true;
+                    clicked => { root.retry(); }
+                }
+                Button {
+                    text: @tr("Back to discovery");
+                    clicked => { root.back-to-discovery(); }
+                }
+            }
+        }
+    }
+}
+
+component StepDone {
+    in property <string> tv-name;
+    in property <string> tv-vendor;
+    // Display name for `tv-vendor`, looked up in Rust via the
+    // wizard's `supported-vendors` model.
+    in property <string> tv-vendor-name;
+    in property <string> tv-address;
+    in property <bool> managed;
+
+    Rectangle {
+        background: Theme.surface2;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        height: 320px;
+
+        VerticalLayout {
+            width: 100%;
+            height: 100%;
+            padding: 28px;
+            spacing: 18px;
+            alignment: center;
+
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 64px;
+                    height: 64px;
+                    border-radius: 32px;
+                    background: Theme.success-soft;
+                    border-color: Theme.success;
+                    border-width: Design.border-thin;
+                    Text {
+                        text: "✓";
+                        color: Theme.success-text;
+                        font-size: 32px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: Design.gap-tight;
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: @tr("{} is ready.", root.tv-name == "" ? @tr("TV") : root.tv-name);
+                        color: Theme.text;
+                        font-size: Design.font-section;
+                        font-weight: 600;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: @tr("The new TV will appear selected in the TVs pane. Boot, sleep, and session events follow the default profile until you change it.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: Design.gap-row;
+                Text {
+                    text: @tr("Vendor: ");
+                    color: Theme.text-faint;
+                    font-size: Design.font-caption;
+                }
+                Text {
+                    // Vendor display name — supplied by the daemon via
+                    // `Manager1.GetSupportedVendors` and looked up
+                    // Rust-side at every setter site. Falls back to
+                    // the id (machine identifier) if the model is empty.
+                    text: root.tv-vendor-name == "" ? root.tv-vendor : root.tv-vendor-name;
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "·";
+                    color: Theme.text-faint;
+                    font-size: Design.font-caption;
+                }
+                Text {
+                    text: root.tv-address;
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                    font-family: "ui-monospace, monospace";
+                    // v6 addresses would otherwise crowd out the
+                    // trailing Managed/Unmanaged badge.
+                    overflow: elide;
+                }
+                Text {
+                    text: "·";
+                    color: Theme.text-faint;
+                    font-size: Design.font-caption;
+                }
+                Text {
+                    text: root.managed ? @tr("Managed") : @tr("Unmanaged");
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Top-level wizard.
+// =============================================================================
+
+// Outer wizard view. Reads its state from the `PairingWizard` global
+// (in `globals/pairing_wizard.slint`) and forwards inner-step
+// callbacks to the global. Other panes don't see any of this — they
+// just render `PairingWizardPane { }` and the global drives it.
+//
+// Renamed from `PairingWizard` to disambiguate from the global of
+// the same name; matches the `*Pane` naming used by `TvsPane`,
+// `SettingsPane`, etc.
+
+export component PairingWizardPane inherits Rectangle {
+    /// Shared state — the same list AppWindow exposes for the
+    /// TvDetail's profile dropdown. Not wizard-specific, so kept as
+    /// an in-property rather than hosted on the global.
+    in property <[string]> system-profiles;
+
+    background: Theme.surface;
+
+    // Currently-selected discovered TV (or empty struct).
+    property <WizardDiscoveredTv> selected-tv:
+        PairingWizard.selected-index >= 0 && PairingWizard.selected-index < PairingWizard.discovered.length
+            ? PairingWizard.discovered[PairingWizard.selected-index]
+            : { id: "", name: "", vendor: "", address: "", hw-model: "" };
+
+    // Whether the primary action button is enabled at the current step.
+    property <bool> next-enabled:
+        PairingWizard.step == 1 ? PairingWizard.selected-index >= 0
+      : PairingWizard.step == 2 ? PairingWizard.tv-name != "" && PairingWizard.schema-valid
+      : PairingWizard.step == 3 ? PairingWizard.pair-phase == "complete"
+      : PairingWizard.step == 4 ? true
+      : false;
+
+    property <string> next-label:
+        PairingWizard.step == 2 ? @tr("Pair")
+      : PairingWizard.step == 3 ? @tr("Next")
+      : PairingWizard.step == 4 ? @tr("Close")
+      : @tr("Next");
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        // Stepper at top
+        Stepper {
+            current: PairingWizard.step;
+        }
+
+        // Body
+        ScrollView {
+            VerticalLayout {
+                width: 100%;
+                padding: 20px;
+                spacing: Design.gap-pane;
+
+                if PairingWizard.step == 1: StepDiscover {
+                    discovered: PairingWizard.discovered;
+                    supported-vendors: PairingWizard.supported-vendors;
+                    supported-vendor-names: PairingWizard.supported-vendor-names;
+                    streaming: PairingWizard.discovery-streaming;
+                    error-message: PairingWizard.discovery-error;
+                    manual-lookup-streaming: PairingWizard.manual-lookup-streaming;
+                    selected-index: PairingWizard.selected-index;
+                    manual-vendor-index <=> PairingWizard.manual-vendor-index;
+                    manual-ip <=> PairingWizard.manual-ip;
+                    selection-changed(i) => { PairingWizard.selected-changed(i); }
+                    manual-ip-edited(v) => { PairingWizard.manual-ip-edited(v); }
+                    manual-add => { PairingWizard.manual-add(); }
+                }
+                if PairingWizard.step == 2: StepConfigure {
+                    selected-vendor: PairingWizard.selected-vendor;
+                    selected-vendor-name: PairingWizard.selected-vendor-name;
+                    selected-address: PairingWizard.selected-address;
+                    selected-hw-model: PairingWizard.selected-hw-model;
+                    tv-name <=> PairingWizard.tv-name;
+                    system-profile: PairingWizard.system-profile;
+                    managed: PairingWizard.managed;
+                    system-profiles: root.system-profiles;
+                    schema-fields: PairingWizard.schema-fields;
+                    name-edited(v) => { PairingWizard.name-edited(v); }
+                    profile-selected(v) => { PairingWizard.profile-selected(v); }
+                    managed-toggled(v) => { PairingWizard.managed-toggled(v); }
+                    field-value-edited(i, v) => { PairingWizard.field-value-edited(i, v); }
+                }
+                if PairingWizard.step == 3: StepPair {
+                    phase: PairingWizard.pair-phase;
+                    message: PairingWizard.pair-message;
+                    tv-address: PairingWizard.selected-address;
+                    retry => { PairingWizard.retry-pair(); }
+                    back-to-discovery => { PairingWizard.back-to-discovery(); }
+                }
+                if PairingWizard.step == 4: StepDone {
+                    tv-name: PairingWizard.tv-name;
+                    tv-vendor: PairingWizard.selected-vendor;
+                    tv-vendor-name: PairingWizard.selected-vendor-name;
+                    tv-address: PairingWizard.selected-address;
+                    managed: PairingWizard.managed;
+                }
+            }
+        }
+
+        // Footer
+        Rectangle {
+            height: 56px;
+            background: Theme.surface2;
+
+            Rectangle {
+                y: 0;
+                height: Design.border-thin;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding: 12px;
+                spacing: Design.gap-stack;
+                alignment: stretch;
+
+                if PairingWizard.step != 4: Button {
+                    text: @tr("Cancel");
+                    clicked => { PairingWizard.cancel(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): Button {
+                    text: @tr("Back");
+                    clicked => { PairingWizard.step-back(); }
+                }
+                Button {
+                    text: root.next-label;
+                    primary: true;
+                    enabled: root.next-enabled;
+                    clicked => {
+                        if (PairingWizard.step == 4) {
+                            PairingWizard.finish();
+                        } else {
+                            PairingWizard.step-next();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

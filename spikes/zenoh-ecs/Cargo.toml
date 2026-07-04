@@ -8,6 +8,7 @@ members = [
     "crates/tvnext-greeter",
     "crates/tvnext-tray",
     "crates/tvnext-client",
+    "crates/tvnext-gui",
     "crates/tvnext-cli",
 ]
 

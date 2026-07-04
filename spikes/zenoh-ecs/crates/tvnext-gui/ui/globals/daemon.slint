@@ -1,0 +1,40 @@
+// TV-control + daemon-scoped callbacks. Bound by Rust via
+// `app.global::<Daemon>().on_X(...)`. Pane components call
+// `Daemon.X(...)` directly — no prop-drilling through AppWindow /
+// TvsPane / TvDetail forwarders.
+
+export global Daemon {
+    // -- Per-TV writable state (D-Bus methods on Tv1.Volume /
+    //    Tv1.Backlight / Tv1.Screen). The dispatch path is:
+    //    OptimisticSlider.committed → Daemon.set-volume(tv.uuid, v) →
+    //    Rust → coalescer → reconciler.dispatch + daemon write. --
+    callback set-volume(string, int);
+    callback set-mute(string, bool);
+    callback set-backlight(string, int);
+    callback set-screen(string, bool);
+
+    // -- Per-TV actions --
+    callback switch-input(string, string);
+    callback power-on(string);
+    callback power-off(string);
+
+    // -- Per-TV configuration writes (config-file backed,
+    //    synchronous on the daemon side) --
+    callback set-managed(string, bool);
+    callback set-system-profile(string, string);
+    callback set-user-profile(string, string);
+    callback set-primary-input(string, string);
+    callback remove-tv(string);
+
+    // -- Daemon-scoped --
+    callback reload-config();
+    /// Open the pairing wizard. Implemented in Rust by setting
+    /// `PairingWizard.active = true` after seeding initial state.
+    callback request-pair();
+    /// Re-pair an existing TV: refresh vendor credentials in place
+    /// without losing top-level config. Routes to `Tv1.RePair(tv_id)`
+    /// on the daemon side. The Rust handler opens the wizard at
+    /// `StepPair` with vendor/address/name prefilled from the
+    /// existing TV's state.
+    callback request-re-pair(string);
+}
