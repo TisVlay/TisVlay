@@ -521,16 +521,27 @@ async fn discovery_session_streams_findings_until_stopped() {
         .unwrap();
     w.handle
         .publish_tv(DiscoveredTv::new("tv-d", "Delta", "mock://d", "mock"));
+    // CEC-shaped finding id: a device path. The publish key must
+    // sanitize it into one chunk — the raw path would be an invalid
+    // key expression and the finding would silently never stream.
+    w.handle
+        .publish_tv(DiscoveredTv::new("/dev/cec9", "Cec", "/dev/cec9", "mock"));
+    let (mut delta_seen, mut cec_seen) = (false, false);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
+    while !(delta_seen && cec_seen) {
         let sample = tokio::time::timeout_at(deadline, sub.recv_async())
             .await
-            .expect("timed out waiting for a finding")
+            .expect("timed out waiting for findings")
             .expect("subscriber closed");
         let finding = payload_json(&sample);
         if finding["name"] == "Delta" {
             assert!(sample.key_expr().as_str().ends_with("/found/tv-d"));
-            break;
+            delta_seen = true;
+        }
+        if finding["name"] == "Cec" {
+            assert!(sample.key_expr().as_str().ends_with("/found/_dev_cec9"));
+            assert_eq!(finding["id"], "/dev/cec9", "payload keeps the raw id");
+            cec_seen = true;
         }
     }
 

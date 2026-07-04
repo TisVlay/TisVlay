@@ -375,9 +375,28 @@ pub mod keys {
         format!("tisvlay/{site}/manager/vendors/**")
     }
 
-    /// A discovery session's finding key.
+    /// A discovery session's finding key. Finding ids are arbitrary
+    /// vendor strings — CEC uses the device path (`/dev/cec0`), SSDP a
+    /// USN — so the id is sanitized into one valid key chunk (a `/`
+    /// would otherwise split it and leave an empty chunk, which zenoh
+    /// rejects and which silently dropped every CEC finding from the
+    /// wizard). Consumers identify findings by the payload's `id`
+    /// field; the chunk only needs validity and per-id stability.
     pub fn discovery_found(site: &str, session: &Uuid, finding: &str) -> String {
-        format!("tisvlay/{site}/discovery/{session}/found/{finding}")
+        let mut chunk: String = finding
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        if chunk.is_empty() {
+            chunk.push('_');
+        }
+        format!("tisvlay/{site}/discovery/{session}/found/{chunk}")
     }
 
     /// Liveliness token for a running discovery session.
@@ -461,6 +480,25 @@ pub mod keys {
         #[test]
         fn daemon_alive_key_shape() {
             assert_eq!(daemon_alive("main"), "tisvlay/main/alive/daemon");
+        }
+
+        #[test]
+        fn discovery_found_sanitizes_arbitrary_finding_ids() {
+            let session = Uuid::nil();
+            // CEC's finding id is the device path — the raw form would
+            // carry an empty chunk and be rejected by zenoh.
+            let key = discovery_found("main", &session, "/dev/cec0");
+            assert_eq!(
+                key,
+                "tisvlay/main/discovery/00000000-0000-0000-0000-000000000000/found/_dev_cec0"
+            );
+            for id in ["/dev/cec0", "uuid:5f2?a*b", "", "a b/c"] {
+                let key = discovery_found("main", &session, id);
+                assert!(
+                    zenoh::key_expr::KeyExpr::try_from(key.as_str()).is_ok(),
+                    "sanitized key must be a valid key expression: {key}"
+                );
+            }
         }
 
         #[test]

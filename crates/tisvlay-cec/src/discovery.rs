@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use linux_cec::PhysicalAddress;
 use tisvlay_core::{DiscoveredTv, Error, Result, TvDiscovery};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::link::{CecLinkOpener, LinuxCecLinkOpener};
 
@@ -83,13 +83,20 @@ impl TvDiscovery for CecDiscovery {
                 Err(e) => {
                     // Every probe failure gets a diagnostic line — silence
                     // here is what made a permission problem read as an
-                    // off/absent TV. A permission failure additionally tags
-                    // the row so the wizard can badge it: the node was
-                    // enumerable but the daemon's user can't open it.
-                    debug!(device = %tv.address, error = %e, "CEC probe open failed");
+                    // off/absent TV. A permission failure warns (it's
+                    // actionable: grant the daemon's user access to the
+                    // node) and additionally tags the row so the wizard
+                    // can badge it: the node was enumerable but the
+                    // daemon's user can't open it.
                     if let Error::PermissionDenied { .. } = e {
+                        warn!(
+                            device = %tv.address,
+                            "CEC device not accessible (permission denied) — grant the daemon's user access to the node (its owning group, e.g. via a udev rule)"
+                        );
                         tv.vendor_data
                             .insert("access".to_string(), "permission_denied".to_string());
+                    } else {
+                        debug!(device = %tv.address, error = %e, "CEC probe open failed");
                     }
                     continue;
                 }
