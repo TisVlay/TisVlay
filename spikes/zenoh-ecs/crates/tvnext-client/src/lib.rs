@@ -57,21 +57,6 @@ pub enum PairTerminal {
     },
 }
 
-/// One pairing-progress sample with its TV correlation.
-#[derive(Debug, Clone)]
-pub struct PairingEvent {
-    pub tv_id: String,
-    pub phase: String,
-    pub detail: PairingProgressDetail,
-}
-
-/// One power-cycle progress sample (`progress/power` key).
-#[derive(Debug, Clone)]
-pub struct PowerCycleEvent {
-    pub tv_id: String,
-    pub phase: String,
-}
-
 /// The first key in a change window — root parity for logging.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TvStateChange {
@@ -109,6 +94,80 @@ pub struct NotificationSettingsBody {
     pub tv_pairing: Option<bool>,
     pub tv_wake: Option<bool>,
     pub daemon_offline: Option<bool>,
+}
+
+impl NotificationSettingsBody {
+    /// Factory defaults — every category at its default-on value.
+    pub fn defaults() -> Self {
+        let mut body = Self::default();
+        for category in NotificationCategory::ALL {
+            category.set(&mut body, category.default_enabled());
+        }
+        body
+    }
+}
+
+/// Root-compatible notification category vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NotificationCategory {
+    TvConnection = 0,
+    TvPairing = 1,
+    TvWake = 2,
+    DaemonOffline = 3,
+}
+
+impl NotificationCategory {
+    pub const ALL: [Self; 4] = [
+        Self::TvConnection,
+        Self::TvPairing,
+        Self::TvWake,
+        Self::DaemonOffline,
+    ];
+
+    pub const fn bit(self) -> u8 {
+        1u8 << (self as u8)
+    }
+
+    const fn key(self) -> &'static str {
+        match self {
+            Self::TvConnection => "tv_connection",
+            Self::TvPairing => "tv_pairing",
+            Self::TvWake => "tv_wake",
+            Self::DaemonOffline => "daemon_offline",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|category| category.key() == key)
+    }
+
+    pub fn get(self, body: &NotificationSettingsBody) -> Option<bool> {
+        match self {
+            Self::TvConnection => body.tv_connection,
+            Self::TvPairing => body.tv_pairing,
+            Self::TvWake => body.tv_wake,
+            Self::DaemonOffline => body.daemon_offline,
+        }
+    }
+
+    pub fn set(self, body: &mut NotificationSettingsBody, value: bool) {
+        match self {
+            Self::TvConnection => body.tv_connection = Some(value),
+            Self::TvPairing => body.tv_pairing = Some(value),
+            Self::TvWake => body.tv_wake = Some(value),
+            Self::DaemonOffline => body.daemon_offline = Some(value),
+        }
+    }
+
+    pub const fn default_enabled(self) -> bool {
+        match self {
+            Self::TvConnection => true,
+            Self::TvPairing => true,
+            Self::TvWake => true,
+            Self::DaemonOffline => true,
+        }
+    }
 }
 
 /// Everything `list_tvs` reports per TV — field set matches the root
@@ -225,7 +284,7 @@ impl DaemonClient {
         };
         let mut tvs = Vec::with_capacity(rows.len());
         for (id, row) in rows {
-            let vendor_config = match self.get_tv_config(&id.to_string()).await {
+            let vendor_config = match self.get_tv_config_value(&id.to_string()).await {
                 Ok(config) => flatten_config(&config),
                 Err(_) => Vec::new(),
             };
@@ -273,12 +332,19 @@ impl DaemonClient {
         serde_json::from_value(schema).context("decode pairing schema")
     }
 
-    pub async fn pair_tv(&self, name: &str, vendor: &str, config: Value) -> Result<String> {
+    pub async fn pair_tv(
+        &self,
+        name: &str,
+        vendor: &str,
+        config_json: &str,
+        managed: bool,
+    ) -> Result<String> {
+        let config: Value = serde_json::from_str(config_json).context("pairing config JSON")?;
         let body = serde_json::to_value(rpc::AddTv {
             id: None,
             name: name.into(),
             vendor: vendor.into(),
-            managed: true,
+            managed,
             config,
         })?;
         let ok = self
@@ -307,49 +373,101 @@ impl DaemonClient {
         .map(|_| ())
     }
 
-    /// Live pairing-progress samples for one TV, hydrated with the
-    /// session's history (the deep pairing cache replays prior phases).
+    /// Bus-wide pairing progress (root shape): every session's samples
+    /// as `(tv_id, phase, detail)` tuples, hydrated from the deep
+    /// pairing caches so a re-opened wizard replays prior phases.
     pub async fn pairing_progress_stream(
         &self,
-        tv: &str,
-    ) -> Result<mpsc::UnboundedReceiver<PairingEvent>> {
-        let id = parse_tv(tv)?;
+    ) -> Result<impl futures_util::Stream<Item = (String, String, PairingProgressDetail)> + use<>>
+    {
         let sub = self
             .session
-            .declare_subscriber(keys::pairing_progress(&self.site, &id))
+            .declare_subscriber(format!("tisvlay/{}/pairing/*/progress", self.site))
             .history(HistoryConfig::default().detect_late_publishers())
             .await
             .map_err(|e| anyhow!("subscribe pairing progress: {e}"))?;
         let (tx, rx) = mpsc::unbounded_channel();
-        let tv = tv.to_string();
+        let site = self.site.clone();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str())
+                else {
+                    continue;
+                };
                 let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes())
                 else {
                     continue;
                 };
-                let event = PairingEvent {
-                    tv_id: tv.clone(),
-                    phase: progress["phase"].as_str().unwrap_or_default().to_string(),
-                    detail: PairingProgressDetail {
+                let item = (
+                    tv.to_string(),
+                    progress["phase"].as_str().unwrap_or_default().to_string(),
+                    PairingProgressDetail {
                         message: progress["message"].as_str().unwrap_or_default().to_string(),
                         code: progress["code"].as_str().map(str::to_string),
                         path: progress["path"].as_str().map(str::to_string),
                     },
-                };
-                if tx.send(event).is_err() {
+                );
+                if tx.send(item).is_err() {
                     return;
                 }
             }
         });
-        Ok(rx)
+        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }
 
-    /// `progress/power` samples for one TV (wake feedback).
+    /// Drain a pairing-progress stream to `tv_id`'s terminal phase,
+    /// reporting non-terminal phases through `on_progress` — root
+    /// semantics verbatim.
+    pub async fn drain_pair_to_terminal<S>(
+        stream: S,
+        target_tv_id: &str,
+        on_progress: impl FnMut(&str, &str),
+    ) -> Result<PairTerminal>
+    where
+        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
+    {
+        let mut stream = std::pin::pin!(stream);
+        Self::drain_pair_to_terminal_pinned(stream.as_mut(), target_tv_id, on_progress).await
+    }
+
+    /// Pinned-borrow workhorse for [`Self::drain_pair_to_terminal`] —
+    /// for callers that keep the stream alive across operations (wait
+    /// for `awaiting_tv`, cancel, then drain the remainder).
+    pub async fn drain_pair_to_terminal_pinned<S>(
+        mut stream: std::pin::Pin<&mut S>,
+        target_tv_id: &str,
+        mut on_progress: impl FnMut(&str, &str),
+    ) -> Result<PairTerminal>
+    where
+        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
+    {
+        use futures_util::StreamExt;
+        while let Some((tv_id, phase, detail)) = stream.as_mut().next().await {
+            if tv_id != target_tv_id {
+                continue;
+            }
+            match phase.as_str() {
+                "complete" => {
+                    return Ok(PairTerminal::Complete {
+                        tv_id,
+                        message: detail.message,
+                    });
+                }
+                "failed" => return Ok(PairTerminal::Failed { tv_id, detail }),
+                _ => on_progress(&phase, &detail.message),
+            }
+        }
+        bail!(
+            "PairingProgress stream ended before reaching a terminal phase for tv_id `{target_tv_id}`"
+        )
+    }
+
+    /// One TV's `progress/power` phases (wake feedback), root item type.
     pub async fn power_cycle_progress_stream(
         &self,
         tv: &str,
-    ) -> Result<mpsc::UnboundedReceiver<PowerCycleEvent>> {
+    ) -> Result<impl futures_util::Stream<Item = tisvlay_core::PowerCyclePhase> + use<>> {
+        use tisvlay_core::PowerCyclePhase as P;
         let id = parse_tv(tv)?;
         let sub = self
             .session
@@ -358,31 +476,36 @@ impl DaemonClient {
             .await
             .map_err(|e| anyhow!("subscribe power progress: {e}"))?;
         let (tx, rx) = mpsc::unbounded_channel();
-        let tv = tv.to_string();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
                 let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes())
                 else {
                     continue;
                 };
-                let event = PowerCycleEvent {
-                    tv_id: tv.clone(),
-                    phase: progress["phase"].as_str().unwrap_or_default().to_string(),
-                };
-                if tx.send(event).is_err() {
+                let phase = [
+                    P::WolSent,
+                    P::DirectConnect,
+                    P::Connecting,
+                    P::Connected,
+                    P::Failed,
+                ]
+                .into_iter()
+                .find(|phase| Some(phase.as_str()) == progress["phase"].as_str());
+                if let Some(phase) = phase
+                    && tx.send(phase).is_err()
+                {
                     return;
                 }
             }
         });
-        Ok(rx)
+        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }
 
-    /// Open-ended discovery session; returns its id for the found-stream
-    /// subscription and the eventual stop.
-    pub async fn start_discovery(&self, vendor: Option<&str>) -> Result<String> {
-        let body = serde_json::to_value(rpc::DiscoverStart {
-            vendor: vendor.map(str::to_string),
-        })?;
+    /// Open-ended discovery session. The wire scan runs its own cadence;
+    /// `timeout_ms` is accepted for root-signature parity but the
+    /// session lives until [`Self::stop_discovery`].
+    pub async fn start_discovery(&self, _timeout_ms: u32) -> Result<String> {
+        let body = serde_json::to_value(rpc::DiscoverStart { vendor: None })?;
         let ok = self
             .call(&keys::manager_rpc(&self.site, "discover-start"), body)
             .await?;
@@ -402,31 +525,81 @@ impl DaemonClient {
         .map(|_| ())
     }
 
+    /// Bus-wide findings (root item shape): every discovery session.s
+    /// puts as `(id, name, address, hardware_id, vendor, vendor_data)`.
+    #[allow(clippy::type_complexity)]
     pub async fn discovery_found_stream(
         &self,
-        session_id: &str,
-    ) -> Result<mpsc::UnboundedReceiver<DiscoveredTv>> {
-        let session: Uuid = session_id.parse().context("discovery session id")?;
+    ) -> Result<
+        impl futures_util::Stream<
+            Item = (
+                String,
+                String,
+                String,
+                HardwareId,
+                String,
+                HashMap<String, String>,
+            ),
+        > + use<>,
+    > {
         let sub = self
             .session
-            .declare_subscriber(format!(
-                "tisvlay/{}/discovery/{}/found/*",
-                self.site, session
-            ))
+            .declare_subscriber(format!("tisvlay/{}/discovery/*/found/*", self.site))
             .await
             .map_err(|e| anyhow!("subscribe discovery findings: {e}"))?;
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
-                if let Ok(found) =
+                let Ok(found) =
                     serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes())
-                    && tx.send(found).is_err()
-                {
+                else {
+                    continue;
+                };
+                let item = (
+                    found.id,
+                    found.name,
+                    found.address,
+                    found.hardware_id.unwrap_or_default(),
+                    found.vendor,
+                    found.vendor_data,
+                );
+                if tx.send(item).is_err() {
                     return;
                 }
             }
         });
-        Ok(rx)
+        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+    }
+
+    /// Root rpc parity: the wire enriches configs daemon-side at pair
+    /// time (ARP MAC fill), so client-side manual-entry enrichment has
+    /// nothing to add — the wizard simply shows no pre-filled MAC.
+    pub async fn enrich_manual_entry(
+        &self,
+        _vendor: &str,
+        _address: &str,
+    ) -> Result<HashMap<String, String>> {
+        Ok(HashMap::new())
+    }
+
+    pub async fn get_vendor_capabilities(&self, vendor: &str) -> Result<Capabilities> {
+        let list = self.call(&keys::vendors(&self.site), Value::Null).await?;
+        let names: Vec<String> = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry["id"] == vendor)
+            .map(|entry| {
+                entry["capabilities"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|cap| cap.as_str().map(str::to_string))
+                    .collect()
+            })
+            .with_context(|| format!("no vendor '{vendor}'"))?;
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        Ok(Capabilities::from_strings(&refs))
     }
 
     pub async fn power_on(&self, tv: &str) -> Result<()> {
@@ -455,8 +628,8 @@ impl DaemonClient {
             .await
     }
 
-    pub async fn set_muted(&self, tv: &str, muted: bool) -> Result<()> {
-        self.tv_call(tv, "set-muted", json!({ "muted": muted }))
+    pub async fn set_mute(&self, tv: &str, mute: bool) -> Result<()> {
+        self.tv_call(tv, "set-muted", json!({ "muted": mute }))
             .await
     }
 
@@ -469,12 +642,13 @@ impl DaemonClient {
         self.tv_call(tv, "set-name", json!({ "name": name })).await
     }
 
-    pub async fn set_managed(&self, tv: &str, managed: bool) -> Result<()> {
+    pub async fn set_tv_managed(&self, tv: &str, managed: bool) -> Result<()> {
         self.tv_call(tv, "set-managed", json!({ "managed": managed }))
             .await
     }
 
-    pub async fn set_primary_input(&self, tv: &str, input: Option<&str>) -> Result<()> {
+    pub async fn set_tv_primary_input(&self, tv: &str, input: &str) -> Result<()> {
+        let input = (!input.is_empty()).then_some(input);
         self.tv_call(tv, "set-primary-input", json!({ "input": input }))
             .await
     }
@@ -484,7 +658,12 @@ impl DaemonClient {
             .await
     }
 
-    pub async fn set_system_profile(&self, tv: &str, profile: Option<Uuid>) -> Result<()> {
+    pub async fn set_tv_system_profile(&self, tv: &str, profile_uuid: &str) -> Result<()> {
+        let profile: Option<Uuid> = if profile_uuid.is_empty() {
+            None
+        } else {
+            Some(profile_uuid.parse().context("system profile uuid")?)
+        };
         self.tv_call(tv, "set-system-profile", json!({ "profile": profile }))
             .await
     }
@@ -497,14 +676,20 @@ impl DaemonClient {
         self.tv_call(tv, "remove", Value::Null).await
     }
 
-    pub async fn get_tv_config(&self, tv: &str) -> Result<Value> {
+    pub async fn get_tv_config(&self, tv: &str) -> Result<String> {
+        let config = self.get_tv_config_value(tv).await?;
+        serde_json::to_string(&config).context("encode config JSON")
+    }
+
+    async fn get_tv_config_value(&self, tv: &str) -> Result<Value> {
         let id = parse_tv(tv)?;
         self.call(&keys::tv_rpc(&self.site, &id, "get-config"), Value::Null)
             .await
     }
 
-    pub async fn update_tv_config(&self, tv: &str, patch: Value) -> Result<()> {
+    pub async fn update_tv_config(&self, tv: &str, patch_json: &str) -> Result<()> {
         let id = parse_tv(tv)?;
+        let patch: Value = serde_json::from_str(patch_json).context("config patch JSON")?;
         self.call(&keys::tv_rpc(&self.site, &id, "update-config"), patch)
             .await
             .map(|_| ())
@@ -531,7 +716,12 @@ impl DaemonClient {
             .collect())
     }
 
-    pub async fn create_system_profile(&self, body: &SystemProfileBody) -> Result<Uuid> {
+    pub async fn create_system_profile(&self, name: &str) -> Result<Uuid> {
+        let body = SystemProfileBody {
+            name: name.into(),
+            ..Default::default()
+        };
+        let body = &body;
         let ok = self
             .call(
                 &keys::profile_rpc(&self.site, "create"),
@@ -580,9 +770,12 @@ impl DaemonClient {
     }
 
     /// The stock mapping as system-profile field values (JSON map).
-    pub async fn get_resolved_system_profile_defaults(&self) -> Result<Value> {
-        self.call(&keys::profile_rpc(&self.site, "defaults"), Value::Null)
-            .await
+    pub async fn get_resolved_system_profile_defaults(&self) -> Result<SystemProfileBody> {
+        let mut defaults = self
+            .call(&keys::profile_rpc(&self.site, "defaults"), Value::Null)
+            .await?;
+        defaults["name"] = Value::String("default".into());
+        serde_json::from_value(defaults).context("decode resolved system defaults")
     }
 
     /// One TV's resolved mapping (assigned profile over stock).
@@ -678,9 +871,22 @@ impl SessionClient {
         self.mirror.lock().expect("mirror lock").session_alive
     }
 
+    pub async fn version(&self) -> Result<String> {
+        Ok(format!("{} (zenoh spike)", env!("CARGO_PKG_VERSION")))
+    }
+
+    pub async fn config_path(&self) -> Result<String> {
+        Ok(String::new())
+    }
+
+    pub async fn reload_config(&self) -> Result<()> {
+        // The session store is wire-mutated; there is no file to reload.
+        Ok(())
+    }
+
     /// The TV's assigned user-profile uuid, empty string when unset —
     /// root wire shape.
-    pub async fn get_user_profile(&self, tv: &str) -> Result<String> {
+    pub async fn get_tv_user_profile(&self, tv: &str) -> Result<String> {
         let id = parse_tv(tv)?;
         Ok(self
             .mirror
@@ -718,7 +924,7 @@ impl SessionClient {
             .collect())
     }
 
-    pub async fn get_user_profile_body(&self, profile: Uuid) -> Result<UserProfileBody> {
+    pub async fn get_user_profile(&self, profile: Uuid) -> Result<UserProfileBody> {
         self.mirror
             .lock()
             .expect("mirror lock")
@@ -728,7 +934,12 @@ impl SessionClient {
             .with_context(|| format!("no user profile {profile}"))
     }
 
-    pub async fn create_user_profile(&self, body: &UserProfileBody) -> Result<Uuid> {
+    pub async fn create_user_profile(&self, name: &str) -> Result<Uuid> {
+        let body = UserProfileBody {
+            name: name.into(),
+            ..Default::default()
+        };
+        let body = &body;
         let ok = self
             .call(
                 &keys::user_profile_rpc(&self.site, "create"),
@@ -772,9 +983,12 @@ impl SessionClient {
             .context("duplicate reply carries the id")
     }
 
-    pub async fn get_resolved_user_profile_defaults(&self) -> Result<Value> {
-        self.call(&keys::user_profile_rpc(&self.site, "defaults"), Value::Null)
-            .await
+    pub async fn get_resolved_user_profile_defaults(&self) -> Result<UserProfileBody> {
+        let mut defaults = self
+            .call(&keys::user_profile_rpc(&self.site, "defaults"), Value::Null)
+            .await?;
+        defaults["name"] = Value::String("default".into());
+        serde_json::from_value(defaults).context("decode resolved user defaults")
     }
 
     fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
@@ -792,8 +1006,25 @@ impl SessionClient {
 pub struct TrayClient;
 
 impl TrayClient {
+    /// Root-signature shim; there is no tray settings service to dial.
+    pub async fn new() -> Result<Self> {
+        Ok(Self)
+    }
+
     pub async fn is_available(&self) -> bool {
         false
+    }
+
+    pub async fn version(&self) -> Result<String> {
+        bail!("tray settings service not available in the zenoh spike")
+    }
+
+    pub async fn config_path(&self) -> Result<String> {
+        bail!("tray settings service not available in the zenoh spike")
+    }
+
+    pub async fn reload_config(&self) -> Result<()> {
+        bail!("tray settings service not available in the zenoh spike")
     }
 
     pub async fn notification_settings(&self) -> Result<NotificationSettingsBody> {
@@ -802,12 +1033,12 @@ impl TrayClient {
 
     pub async fn update_notification_settings(
         &self,
-        _body: &NotificationSettingsBody,
+        _body: NotificationSettingsBody,
     ) -> Result<()> {
         bail!("tray settings service not available in the zenoh spike")
     }
 
-    pub async fn send_test_notification(&self, _category: &str) -> Result<()> {
+    pub async fn send_test_notification(&self) -> Result<()> {
         bail!("tray settings service not available in the zenoh spike")
     }
 }

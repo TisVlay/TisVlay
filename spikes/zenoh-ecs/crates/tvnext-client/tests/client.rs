@@ -52,7 +52,8 @@ async fn sdk_mirrors_rpcs_and_watches() {
         .pair_tv(
             "Den",
             "mock",
-            json!({ "address": "mock://sdk", "pairing": "accept" }),
+            &json!({ "address": "mock://sdk", "pairing": "accept" }).to_string(),
+            true,
         )
         .await
         .unwrap();
@@ -102,13 +103,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
     );
 
     // System + user profile bodies flow through both clients.
-    let profile = daemon
-        .create_system_profile(&tvnext_client::SystemProfileBody {
-            name: "Cinema".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let profile = daemon.create_system_profile("Cinema").await.unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         if daemon.get_system_profile(profile).await.is_ok() {
@@ -121,23 +116,20 @@ async fn sdk_mirrors_rpcs_and_watches() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let defaults = daemon.get_resolved_system_profile_defaults().await.unwrap();
-    assert_eq!(defaults["on_dpms_off"], "screen_off");
+    assert_eq!(
+        defaults.on_dpms_off,
+        Some(tisvlay_core::SessionAction::ScreenOff)
+    );
 
     assert!(session.is_available().await);
-    let user_profile = session
-        .create_user_profile(&tvnext_client::UserProfileBody {
-            name: "Quiet".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let user_profile = session.create_user_profile("Quiet").await.unwrap();
     session
         .set_tv_user_profile(&tv, &user_profile.to_string())
         .await
         .unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if session.get_user_profile(&tv).await.unwrap() == user_profile.to_string() {
+        if session.get_tv_user_profile(&tv).await.unwrap() == user_profile.to_string() {
             break;
         }
         assert!(

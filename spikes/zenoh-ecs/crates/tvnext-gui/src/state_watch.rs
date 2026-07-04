@@ -10,7 +10,7 @@ use crate::compat::{
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
 use crate::profiles::{self, ProfileEditor};
@@ -208,17 +208,14 @@ async fn watch_state(
     // `invoke_from_event_loop` is cheap; the property tracker dedups
     // and only one paint per frame happens regardless of how many
     // updates feed in.
-    let watcher_config = tisvlay_core::StateWatcherConfig {
+    let watcher_config = crate::compat::StateWatcherConfig {
         signal_debounce: std::time::Duration::ZERO,
         ..Default::default()
     };
-    let mut watcher = match StateWatcher::new(&daemon, watcher_config).await {
-        Ok(w) => w,
-        Err(e) => {
-            warn!(error = %e, "Failed to create state watcher; live updates disabled");
-            return;
-        }
-    };
+    // Session events ride the SessionClient built at startup; one that
+    // appears later is picked up by the reconnect arm below, with the
+    // fallback poll covering its catalog until then.
+    let mut watcher = StateWatcher::new(&daemon, session.read().await.as_ref(), watcher_config);
 
     // `watcher.next() → refresh.await` inline halts signal_stream
     // draining and wedges the connection under flood. See
@@ -320,7 +317,9 @@ async fn watch_state(
                 refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
-                if let Ok(client) = SessionClient::new().await
+                let endpoints = crate::endpoints();
+                if let Ok(client) =
+                    SessionClient::connect(&endpoints.user_socket, &endpoints.site).await
                     && client.is_available().await
                 {
                     profiles::prime_user_layers(&client, &editor).await;

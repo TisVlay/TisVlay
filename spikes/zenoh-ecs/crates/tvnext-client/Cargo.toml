@@ -9,10 +9,12 @@ publish.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tisvlay-core = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = "0.1"
 tracing = { workspace = true }
 tvnext-wire = { workspace = true }
 uuid = { workspace = true }

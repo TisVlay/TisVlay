@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 # Transport-free core types (profiles, schema, capabilities, helpers);
 # the D-Bus client surface is replaced by tvnext-client.
-tisvlay-core = { workspace = true }
+tisvlay-core = { workspace = true, features = ["logging"] }
 tvnext-client = { workspace = true }
 tvnext-wire = { workspace = true }
 tokio = { workspace = true }
@@ -41,6 +41,7 @@ tempfile = { workspace = true }
 os_info = { version = "3", default-features = false }
 rustix = { version = "1", features = ["system"] }
 libc = "0.2"
+zbus = { workspace = true }
 zenoh = { workspace = true }
 
 [dev-dependencies]

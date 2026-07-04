@@ -6984,6 +6984,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-stream"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-tungstenite"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7293,12 +7304,14 @@ name = "tvnext-client"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "futures-util",
  "serde",
  "serde_json",
  "tempfile",
  "tisvlay-core",
  "tisvlay-mock",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tvnext-daemon",
  "tvnext-session",
@@ -7382,6 +7395,7 @@ dependencies = [
  "uuid",
  "webbrowser",
  "wl-clipboard-rs",
+ "zbus",
  "zenoh",
 ]
 
