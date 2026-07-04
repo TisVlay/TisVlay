@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::compat::{DaemonClient, PairTerminal, PairingProgressDetail};
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::errors::DeviceErrorCode;
-use crate::compat::{DaemonClient, PairTerminal, PairingProgressDetail};
 use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;

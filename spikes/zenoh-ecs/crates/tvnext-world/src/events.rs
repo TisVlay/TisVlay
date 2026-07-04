@@ -257,19 +257,30 @@ pub enum BackendEvent {
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
     PowerPhase(&'static str),
+    /// A reply-carrying command finished at the TV — answer the rpc.
+    CommandDone {
+        reply: ReplyTo,
+        result: Result<(), String>,
+    },
 }
 
 /// Commands the world sends to a live connection task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendCmd {
-    SetVolume(u8),
-    SetMuted(bool),
+    /// Settings (and rpc power-off) carry their reply correlation: the
+    /// caller's rpc is answered only when the TV acknowledged, so a
+    /// well-behaved client paces its writes at device speed instead of
+    /// flooding this queue with stale absolute values.
+    SetVolume(u8, Option<ReplyTo>),
+    SetMuted(bool, Option<ReplyTo>),
+    SwitchInput(String, Option<ReplyTo>),
+    SetBacklight(u8, Option<ReplyTo>),
+    PowerOff(Option<ReplyTo>),
+    /// Wake and screen dispatch reply through their own machinery (the
+    /// power-progress key and the verify-retry tier).
     PowerOn,
-    PowerOff,
     ScreenOn,
     ScreenOff,
-    SwitchInput(String),
-    SetBacklight(u8),
 }
 
 /// One TV's persistable state — the store row, snapshotted from the world

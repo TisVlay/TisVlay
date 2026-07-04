@@ -13,14 +13,14 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
-use gettextrs::gettext;
-use slint::SharedString;
 use crate::compat::{
     Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, power_state_str_is_on,
     references_of, user_references_of,
 };
+use anyhow::Result;
+use gettextrs::gettext;
+use slint::SharedString;
 use tracing::debug;
 use uuid::Uuid;
 

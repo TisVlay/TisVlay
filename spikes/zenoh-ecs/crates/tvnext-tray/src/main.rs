@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "tvnext-tray", about = "zenoh-ecs spike system tray")]
@@ -22,11 +21,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    // journald when non-TTY (systemd service), stderr when interactive;
+    // RUST_LOG overrides these defaults entirely (see the justfile).
+    tisvlay_core::logging::init(&["tvnext_tray=info", "zbus=warn", "ksni=warn"], &[])?;
     let args = Args::parse();
     tvnext_tray::run(tvnext_tray::TrayOptions {
         system_socket: args

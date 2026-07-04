@@ -18,8 +18,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use slint::{ComponentHandle, Model, SharedString};
 use crate::compat::{DaemonClient, SessionClient};
+use slint::{ComponentHandle, Model, SharedString};
 use tokio::sync::RwLock;
 use tracing::warn;
 

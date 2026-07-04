@@ -562,6 +562,14 @@ pub mod error {
             }
         }
 
+        /// The backend accepted the command but the device call failed.
+        pub fn command_failed(message: impl Into<String>) -> Self {
+            Self {
+                code: "command-failed".into(),
+                message: message.into(),
+            }
+        }
+
         pub fn profile_not_found(id: Uuid) -> Self {
             Self {
                 code: "profile-not-found".into(),

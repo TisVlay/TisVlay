@@ -212,7 +212,7 @@ fn dispatch_screen(
         if on {
             power_on_tv(commands, outbox, entity, id, handle, pending, link, reply);
         } else if let Some(handle) = handle {
-            let _ = handle.cmd_tx.send(BackendCmd::PowerOff);
+            let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
             reply_ok(outbox, reply);
         } else {
             reply_err(outbox, reply, WireError::not_connected(id));
@@ -523,7 +523,7 @@ fn handle_tv_commands(
                     &mut outbox,
                     entity,
                     id,
-                    BackendCmd::SetVolume(*level),
+                    BackendCmd::SetVolume(*level, reply),
                     reply,
                 );
             }
@@ -533,7 +533,7 @@ fn handle_tv_commands(
                     &mut outbox,
                     entity,
                     id,
-                    BackendCmd::SetMuted(*muted),
+                    BackendCmd::SetMuted(*muted, reply),
                     reply,
                 );
             }
@@ -543,7 +543,7 @@ fn handle_tv_commands(
                     &mut outbox,
                     entity,
                     id,
-                    BackendCmd::SwitchInput(input.clone()),
+                    BackendCmd::SwitchInput(input.clone(), reply),
                     reply,
                 );
             }
@@ -553,7 +553,7 @@ fn handle_tv_commands(
                     &mut outbox,
                     entity,
                     id,
-                    BackendCmd::SetBacklight(*level),
+                    BackendCmd::SetBacklight(*level, reply),
                     reply,
                 );
             }
@@ -571,7 +571,14 @@ fn handle_tv_commands(
                 );
             }
             Command::PowerOff { .. } => {
-                send_backend(&q, &mut outbox, entity, id, BackendCmd::PowerOff, reply);
+                send_backend(
+                    &q,
+                    &mut outbox,
+                    entity,
+                    id,
+                    BackendCmd::PowerOff(reply),
+                    reply,
+                );
             }
             Command::GetConfig { .. } => {
                 let Some(to) = reply else { continue };
@@ -781,7 +788,10 @@ fn send_backend(
     reply: Option<ReplyTo>,
 ) {
     match q.get(entity).ok().and_then(|(handle, ..)| handle) {
-        Some(handle) if handle.cmd_tx.send(cmd).is_ok() => reply_ok(outbox, reply),
+        // The reply rides inside the command and is answered from the
+        // connection task once the TV acknowledged (`CommandDone`) — the
+        // enqueue itself is not the ack.
+        Some(handle) if handle.cmd_tx.send(cmd).is_ok() => {}
         _ => reply_err(outbox, reply, WireError::not_connected(id)),
     }
 }
@@ -1126,6 +1136,14 @@ fn apply_backend_events(
             BackendEvent::PowerPhase(phase) => {
                 publish_power_phase(&mut outbox, &site, tv, phase);
             }
+            BackendEvent::CommandDone { reply, result } => match result {
+                Ok(()) => reply_ok(&mut outbox, Some(*reply)),
+                Err(message) => reply_err(
+                    &mut outbox,
+                    Some(*reply),
+                    WireError::command_failed(message.clone()),
+                ),
+            },
         }
     }
 }
@@ -1472,7 +1490,7 @@ fn dispatch_system_events(
                 ),
                 ProfileAction::PowerOff => {
                     if let Some(handle) = handle {
-                        let _ = handle.cmd_tx.send(BackendCmd::PowerOff);
+                        let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
                     }
                 }
                 ProfileAction::PowerOn => power_on_tv(

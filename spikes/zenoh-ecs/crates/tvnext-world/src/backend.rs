@@ -104,18 +104,38 @@ pub(crate) async fn connect_flow(
                     return;
                 }
                 Some(cmd) => {
-                    let result = match &cmd {
-                        BackendCmd::SetVolume(level) => connection.set_volume(*level).await,
-                        BackendCmd::SetMuted(muted) => connection.set_mute(*muted).await,
-                        BackendCmd::PowerOn => connection.power_on().await,
-                        BackendCmd::PowerOff => connection.power_off().await,
-                        BackendCmd::ScreenOn => connection.screen_on().await,
-                        BackendCmd::ScreenOff => connection.screen_off().await,
-                        BackendCmd::SwitchInput(input) => connection.switch_input(input).await,
-                        BackendCmd::SetBacklight(level) => connection.set_backlight(*level).await,
+                    let (result, reply) = match &cmd {
+                        BackendCmd::SetVolume(level, reply) => {
+                            (connection.set_volume(*level).await, *reply)
+                        }
+                        BackendCmd::SetMuted(muted, reply) => {
+                            (connection.set_mute(*muted).await, *reply)
+                        }
+                        BackendCmd::SwitchInput(input, reply) => {
+                            (connection.switch_input(input).await, *reply)
+                        }
+                        BackendCmd::SetBacklight(level, reply) => {
+                            (connection.set_backlight(*level).await, *reply)
+                        }
+                        BackendCmd::PowerOff(reply) => (connection.power_off().await, *reply),
+                        BackendCmd::PowerOn => (connection.power_on().await, None),
+                        BackendCmd::ScreenOn => (connection.screen_on().await, None),
+                        BackendCmd::ScreenOff => (connection.screen_off().await, None),
                     };
-                    if let Err(error) = result {
+                    if let Err(error) = &result {
                         warn!(%tv, ?cmd, %error, "backend command failed");
+                    }
+                    // Deferred rpc release: the caller hears back at device
+                    // speed — the backpressure that keeps rapid absolute
+                    // writes (volume scroll) from queueing stale values.
+                    if let Some(reply) = reply {
+                        let _ = inbox.send(InEvent::Backend {
+                            tv,
+                            event: BackendEvent::CommandDone {
+                                reply,
+                                result: result.map_err(|error| error.to_string()),
+                            },
+                        });
                     }
                     // Standby-reachable transports (CEC) have no push for
                     // their own command effects — refresh state so the
@@ -124,7 +144,7 @@ pub(crate) async fn connect_flow(
                         && matches!(
                             cmd,
                             BackendCmd::PowerOn
-                                | BackendCmd::PowerOff
+                                | BackendCmd::PowerOff(_)
                                 | BackendCmd::ScreenOn
                                 | BackendCmd::ScreenOff
                         )

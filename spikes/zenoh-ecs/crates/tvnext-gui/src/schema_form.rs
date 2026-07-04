@@ -18,8 +18,8 @@
 
 use std::collections::HashMap;
 
-use slint::{Model, ModelRc, SharedString, VecModel};
 use crate::compat::{PairingField, PairingFieldType};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::PairingFieldRow;
 

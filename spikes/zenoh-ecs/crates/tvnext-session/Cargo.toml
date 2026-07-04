@@ -14,11 +14,10 @@ directories = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tisvlay-core = { workspace = true, features = ["wayland"] }
+tisvlay-core = { workspace = true, features = ["wayland", "logging"] }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 tvnext-wire = { workspace = true }
 uuid = { workspace = true }
 zbus = { workspace = true }

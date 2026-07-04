@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "tvnext-greeter", about = "zenoh-ecs spike greeter idle client")]
@@ -17,11 +16,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    // journald when non-TTY (systemd service), stderr when interactive;
+    // RUST_LOG overrides these defaults entirely (see the justfile).
+    tisvlay_core::logging::init(&["tvnext_greeter=info"], &[])?;
     let args = Args::parse();
     let socket = args
         .socket

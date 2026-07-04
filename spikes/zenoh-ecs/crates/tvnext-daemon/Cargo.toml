@@ -20,13 +20,12 @@ zbus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tisvlay-cec = { workspace = true }
-tisvlay-core = { workspace = true }
+tisvlay-core = { workspace = true, features = ["logging"] }
 tisvlay-lg = { workspace = true }
 tisvlay-mock = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 tvnext-wire = { workspace = true }
 tvnext-world = { workspace = true }
 uuid = { workspace = true }

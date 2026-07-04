@@ -14,8 +14,8 @@
 #![allow(unreachable_pub, missing_debug_implementations)]
 
 mod about;
-mod compat;
 mod accent;
+mod compat;
 mod dbus;
 mod diagnostic;
 mod edit_pane;
@@ -82,12 +82,12 @@ use clap::Parser;
 // Slint properties (e.g. wizard pair-flow messages) wrap their
 // literals with `gettext("…")` so the slint-tr-extractor and
 // xgettext both find the same source-of-truth in the .pot file.
-use gettextrs::gettext;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use crate::compat::{
     Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     NotificationCategory, NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
 };
+use gettextrs::gettext;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 

@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use crate::compat::{
     DaemonClient, NotificationSettingsBody, RefreshTrigger, SessionClient, StateEvent,
     StateWatcher, TrayClient,
 };
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
