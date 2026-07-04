@@ -199,7 +199,7 @@ async fn watch_state(
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
 ) {
-    // No debounce: every D-Bus state signal triggers a refresh fire.
+    // No debounce: every state event triggers a refresh fire.
     // The default 100ms (originally a flood guard before
     // `RefreshTrigger` existed) is now redundant — `RefreshTrigger`
     // already folds concurrent fires into a single in-flight refresh
@@ -221,9 +221,10 @@ async fn watch_state(
         signal_debounce: std::time::Duration::ZERO,
         ..Default::default()
     };
-    // Session events ride the SessionClient built at startup; one that
-    // appears later is picked up by the reconnect arm below, with the
-    // fallback poll covering its catalog until then.
+    // Session/tray events ride the clients built at startup (resilient
+    // links, never replaced); the watcher synthesizes `*Appeared` for
+    // peers already alive at construction, so the initial availability
+    // reads above can't leave the flags permanently stale.
     let mut watcher = StateWatcher::new(
         &daemon,
         session.read().await.as_ref(),
@@ -343,7 +344,9 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
-                *session.write().await = None;
+                // The client stays — its resilient link redials and its
+                // liveliness subscriber delivers the next Appeared.
+                // Only the availability flags flip.
                 on_ui(&app_weak, move |app| {
                     app.set_session_available(false);
                     app.global::<Profiles>().set_session_available(false);
@@ -362,7 +365,7 @@ async fn watch_state(
                 }
             }
             StateEvent::TrayDisappeared => {
-                *tray.write().await = None;
+                // Client stays, same as the session arm above.
                 on_ui(&app_weak, move |app| {
                     app.set_tray_available(false);
                     app.global::<Tray>().set_available(false);
@@ -370,10 +373,10 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::TrayNotificationSettingsChanged => {
-                // Property-change signal from the tray's
-                // `Tray1.NotificationSettings` — re-fetch the body
-                // and update the Slint global. Switch values get
-                // their new bindings on the next render.
+                // The tray republished its cached settings key —
+                // re-fetch the body and update the Slint global.
+                // Switch values get their new bindings on the next
+                // render.
                 refresh_tray_notifications(&tray, &app_weak).await;
             }
         }
@@ -383,9 +386,9 @@ async fn watch_state(
 /// Pull the current notification body from the tray and push into the
 /// `Tray.notifications` Slint global. Used on `TrayAppeared` (initial
 /// sync after the tray comes up) and on `TrayNotificationSettingsChanged`
-/// (every subsequent mutation, whether via D-Bus or a hand-edit +
-/// `ReloadConfig`). Tray-offline → no-op (the global keeps its
-/// last-fetched values for the visible-but-disabled UX).
+/// (every subsequent settings-key republish). Tray-offline → the
+/// fetch fails quietly and the global keeps its last-fetched values
+/// for the visible-but-disabled UX.
 pub(crate) async fn refresh_tray_notifications(
     tray: &RwLock<Option<TrayClient>>,
     app_weak: &slint::Weak<AppWindow>,
@@ -453,10 +456,10 @@ async fn refresh(
     refresh_about_components(daemon, session, tray, app_weak).await;
 }
 
-/// Probe each peer's `Version` + `ConfigPath` D-Bus properties and
-/// push the COMPONENTS-table model to the About pane. Both
-/// properties are `const` upstream, so this is cheap to invoke after
-/// every state-affecting event; caching would save a couple of zbus
+/// Probe each peer's version + config-path info rpcs and push the
+/// COMPONENTS-table model to the About pane. Both values are
+/// constant for a peer's lifetime, so this is cheap to invoke after
+/// every state-affecting event; caching would save a couple of
 /// round-trips on a flap-storm but isn't worth the extra plumbing.
 async fn refresh_about_components(
     daemon: &DaemonClient,

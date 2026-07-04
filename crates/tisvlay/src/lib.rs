@@ -1190,6 +1190,35 @@ impl StateWatcher {
         if let Some(tray) = tray {
             forward(tray.subscribe_events(), tx.clone());
         }
+        // Synthesize `*Appeared` for peers already alive: their
+        // liveliness edge fired into the client's broadcast before this
+        // watcher subscribed (a tokio broadcast drops events sent with
+        // no receivers), so consumers relying on edges alone would
+        // never learn about a peer that came up between client
+        // construction and watcher construction. A level-triggered
+        // emit after subscription closes the window; consumers treat
+        // repeated `*Appeared` idempotently.
+        {
+            let tx = tx.clone();
+            let daemon = daemon.clone();
+            let session = session.cloned();
+            let tray = tray.cloned();
+            tokio::spawn(async move {
+                if daemon.is_available().await {
+                    let _ = tx.send(StateEvent::DaemonAppeared);
+                }
+                if let Some(session) = session
+                    && session.is_available().await
+                {
+                    let _ = tx.send(StateEvent::SessionAppeared);
+                }
+                if let Some(tray) = tray
+                    && tray.is_available().await
+                {
+                    let _ = tx.send(StateEvent::TrayAppeared);
+                }
+            });
+        }
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(config.fallback_poll_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
