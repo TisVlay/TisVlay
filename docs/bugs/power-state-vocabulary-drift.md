@@ -1,6 +1,6 @@
 # GUI power-state gate misses the wire's new power-state spellings
 
-**Status:** open. Found during the v0.3.0 switchover comment sweep (2026-07-04); pre-existing drift from the GUI fork, not a regression of the switchover itself.
+**Status:** closed (2026-07-04). `power_state_str_is_on` now delegates to `PowerState::parse(...).is_on()`, so the string gate and the enum share one classification; a table test pins every serde wire spelling against `is_on`.
 
 `TvInfo::power_state` now carries the serde `lowercase` serialization of `tisvlay_core::PowerState` — `"screenoff"`, `"warmingup"`, `"coolingdown"`, `"activestandby"` — but `tisvlay_core::power_state_str_is_on` (consumed by the GUI's TVs pane) still blocklists the retired collapsed codes `"standby" | "unknown" | "cooling_down"`. Consequence: `"coolingdown"` and `"activestandby"` fall through the blocklist and read as *on*.
 

@@ -167,8 +167,8 @@ impl PowerState {
             "active standby" | "activestandby" => Self::ActiveStandby,
             "screen saver" | "screensaver" => Self::ScreenSaver,
             "screen off" | "screenoff" => Self::ScreenOff,
-            "warming up" | "warmingup" | "warming_up" => Self::WarmingUp,
-            "cooling down" | "coolingdown" | "cooling_down" => Self::CoolingDown,
+            "warming up" | "warmingup" => Self::WarmingUp,
+            "cooling down" | "coolingdown" => Self::CoolingDown,
             _ => Self::Unknown,
         }
     }
@@ -192,15 +192,15 @@ impl PowerState {
 /// Clients (CLI, tray, GUI) read the string projection of the per-TV
 /// `state/power` payload (surfaced as `TvInfo::power_state` by the
 /// SDK) rather than the rich [`PowerState`] enum. This is the single
-/// place that maps that vocabulary to an on/off bit, so every client
-/// agrees: a TV is *not* on for `"standby"`, `"unknown"`, or
-/// `"cooling_down"` (powering down, no longer usable), and on
-/// otherwise — `"active"`, `"screen_off"` (powered, panel blanked),
-/// and `"warming_up"` (powering up) all read as on. The off-list is
-/// deliberately a blocklist, so strings this helper doesn't know
-/// read as on.
+/// place that maps that vocabulary to an on/off bit, and it delegates
+/// to the enum — [`PowerState::parse`] accepts every serde wire
+/// spelling (plus the vendor-side spellings), and
+/// [`PowerState::is_on`] is the one on/off classification — so the
+/// string gate can never drift from the enum's semantics. Strings
+/// the vocabulary doesn't know parse as [`PowerState::Unknown`] and
+/// read as off, same as a stale or hand-set `"unknown"` value.
 pub fn power_state_str_is_on(power_state: &str) -> bool {
-    !matches!(power_state, "standby" | "unknown" | "cooling_down")
+    PowerState::parse(power_state).is_on()
 }
 
 impl TvState {
@@ -379,19 +379,37 @@ mod tests {
         }
     }
 
-    /// Pins the shared client-side on/off interpretation against the
-    /// full daemon wire vocabulary. The two transient projector codes
-    /// are the ones that bit the three-way client fork: `warming_up`
-    /// reads as on (powering up), `cooling_down` as off (powering down).
+    /// Pins the string gate to `PowerState::is_on` across every
+    /// variant's actual serde wire spelling, so a serde rename (or a
+    /// new variant) can't silently split the two interpretations.
     #[test]
-    fn power_state_str_is_on_covers_wire_vocabulary() {
-        assert!(power_state_str_is_on("active"));
-        assert!(power_state_str_is_on("screen_off"));
-        assert!(power_state_str_is_on("warming_up"));
-        assert!(!power_state_str_is_on("cooling_down"));
-        assert!(!power_state_str_is_on("standby"));
-        // A client reading a stale or hand-set `unknown` value must
-        // still classify it as off.
-        assert!(!power_state_str_is_on("unknown"));
+    fn power_state_str_is_on_matches_enum_for_every_wire_spelling() {
+        for state in [
+            PowerState::Active,
+            PowerState::Standby,
+            PowerState::ActiveStandby,
+            PowerState::Suspend,
+            PowerState::ScreenSaver,
+            PowerState::ScreenOff,
+            PowerState::WarmingUp,
+            PowerState::CoolingDown,
+            PowerState::Unknown,
+        ] {
+            let wire = serde_json::to_value(state).unwrap();
+            let wire = wire.as_str().unwrap();
+            assert_eq!(
+                power_state_str_is_on(wire),
+                state.is_on(),
+                "string gate diverges from PowerState::is_on for wire spelling {wire:?}"
+            );
+        }
+    }
+
+    /// Strings outside the vocabulary read as off — a client must
+    /// never treat an unclassifiable power state as powered.
+    #[test]
+    fn power_state_str_is_on_reads_unknown_strings_as_off() {
+        assert!(!power_state_str_is_on("no such state"));
+        assert!(!power_state_str_is_on(""));
     }
 }
