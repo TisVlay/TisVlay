@@ -225,11 +225,20 @@ pub(crate) fn autofill_schema(
 /// falling back to the field's `default` when absent. Used by the
 /// TVs pane's edit-pencil flow to prefill the form with the TV's
 /// current values before the user makes any changes.
+///
+/// The `get-config` reply nests the vendor table under `config`
+/// (top level carries the TV-level fields: `name`, `managed`, …);
+/// the schema fields live in that nested table, so it wins when
+/// present. A flat object still works — callers can pass the vendor
+/// table directly.
 pub(crate) fn prefill_schema_from_config(
     schema: &[PairingField],
     config: &serde_json::Value,
 ) -> Vec<AutofilledRow> {
-    let table = config.as_object();
+    let table = config
+        .get("config")
+        .and_then(|nested| nested.as_object())
+        .or_else(|| config.as_object());
     schema
         .iter()
         .map(|f| {
@@ -468,6 +477,24 @@ mod tests {
         let cfg = serde_json::json!({ "ip": "10.0.0.5" });
         let rows = prefill_schema_from_config(&[f], &cfg);
         assert_eq!(rows[0].value, "10.0.0.5");
+    }
+
+    #[test]
+    fn prefill_schema_from_config_reads_the_nested_vendor_table() {
+        // The full `get-config` reply shape: TV-level fields at the
+        // top, vendor fields nested under `config`. The prefill must
+        // read the nested table — otherwise every field misses and
+        // the edit pane opens blank over a fully-configured TV.
+        let ip = field("ip", PairingFieldType::Ip, true);
+        let mac = field("mac", PairingFieldType::Mac, false);
+        let reply = serde_json::json!({
+            "name": "Living Room",
+            "managed": true,
+            "config": { "ip": "192.168.1.50", "mac": "84:90:0a:63:a9:94" }
+        });
+        let rows = prefill_schema_from_config(&[ip, mac], &reply);
+        assert_eq!(rows[0].value, "192.168.1.50");
+        assert_eq!(rows[1].value, "84:90:0a:63:a9:94");
     }
 
     #[test]
