@@ -16,6 +16,7 @@
 use anyhow::Result;
 use futures_util::{Stream, StreamExt};
 use std::pin::Pin;
+use tisvlay_core::PairingProgressDetail;
 
 /// Drain pairing progress events from a pinned stream until a phase
 /// matching `target_phase` arrives for `target_tv_id`. Returns the
@@ -37,11 +38,11 @@ pub async fn wait_for_pair_phase<S>(
     target_phase: &str,
 ) -> Result<(String, String)>
 where
-    S: Stream<Item = (String, String, String)>,
+    S: Stream<Item = (String, String, PairingProgressDetail)>,
 {
-    while let Some((tv_id, phase, message)) = stream.as_mut().next().await {
+    while let Some((tv_id, phase, detail)) = stream.as_mut().next().await {
         if tv_id == target_tv_id && phase == target_phase {
-            return Ok((phase, message));
+            return Ok((phase, detail.message));
         }
     }
     anyhow::bail!(

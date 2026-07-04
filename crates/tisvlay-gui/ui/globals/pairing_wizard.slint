@@ -21,6 +21,13 @@ export struct WizardDiscoveredTv {
     brand: string,
     address: string,
     hw-model: string,
+    /// Discovery-source label for the row's status chip (e.g. `SSDP`,
+    /// `CEC`), derived from the daemon's `vendor_data["source"]`. A
+    /// machine/protocol identifier — shown verbatim, not translated.
+    source-label: string,
+    /// The daemon could enumerate this device node but not open it
+    /// (insufficient permissions). Flips the status chip to a warning.
+    access-warning: bool,
 }
 
 // `supports-ipv4` / `supports-ipv6` mirror the vendor's

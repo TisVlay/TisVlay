@@ -138,6 +138,13 @@ linux-cec = { version = "0.2", default-features = false, features = [
     "serde",
 ] }
 
+# ABI-stable `EACCES` / `EPERM` constants to classify a `/dev/cecN` open
+# failure that `linux-cec` surfaces as `Error::SystemError(errno)`. Matching
+# the raw errno value against `libc` (rather than naming `nix::Errno`
+# variants) avoids pinning to whatever `nix` major `linux-cec` transitively
+# selects.
+libc = { version = "0.2", default-features = false }
+
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
 # version is used once the path is stripped). The dev-only crates

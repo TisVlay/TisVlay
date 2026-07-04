@@ -201,12 +201,12 @@ pub async fn state_change_forwarder(
             StateChangeEvent::PairingProgress {
                 ref tv_id,
                 ref phase,
-                ref message,
+                ref detail,
             } => {
                 debug!(tv_id = %tv_id, phase = %phase, "Forwarding pairing progress to D-Bus");
                 if let Ok(emitter) = SignalEmitter::new(&connection, MANAGER_PATH)
                     && let Err(e) =
-                        ManagerService::pairing_progress(&emitter, tv_id, phase, message).await
+                        ManagerService::pairing_progress(&emitter, tv_id, phase, detail).await
                 {
                     warn!(error = %e, tv_id = %tv_id, "Failed to emit PairingProgress");
                 }

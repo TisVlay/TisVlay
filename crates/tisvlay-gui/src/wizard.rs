@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{DaemonClient, PairTerminal};
+use tisvlay_core::errors::DeviceErrorCode;
+use tisvlay_core::{DaemonClient, PairTerminal, PairingProgressDetail};
 use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;
@@ -48,6 +49,22 @@ impl WizardEntry {
             .get("brand")
             .filter(|b| !b.is_empty())
             .unwrap_or(&self.vendor);
+        // The daemon tags a node it could enumerate but not open (e.g. a
+        // `/dev/cecN` its user lacks access to) via `vendor_data["access"]`,
+        // so the row can warn the user before they try to pair it.
+        let access_warning =
+            self.vendor_data.get("access").map(String::as_str) == Some("permission_denied");
+        // Discovery-source chip label (`SSDP` / `CEC`) from the daemon's
+        // `vendor_data["source"]`, upper-cased for display. No vendor-id
+        // fallback: a row with no discovery source (e.g. a manually-entered
+        // TV) shows no source chip rather than mislabeling the make as a
+        // source. `source` is ASCII, so `to_ascii_uppercase` suffices.
+        let source_label = self
+            .vendor_data
+            .get("source")
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_uppercase())
+            .unwrap_or_default();
         WizardDiscoveredTv {
             id: SharedString::from(self.id.as_str()),
             name: SharedString::from(self.name.as_str()),
@@ -55,6 +72,8 @@ impl WizardEntry {
             brand: SharedString::from(brand.as_str()),
             address: SharedString::from(self.address.as_str()),
             hw_model: SharedString::from(self.hw_model.as_str()),
+            source_label: SharedString::from(source_label),
+            access_warning,
         }
     }
 }
@@ -414,7 +433,13 @@ pub(crate) async fn run_wizard_pair(
     let tv_id = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
         Ok(id) => id,
         Err(e) => {
-            publish_pair_outcome(app_weak, &wizard_gen, captured_gen, Err(e), true);
+            publish_pair_outcome(
+                app_weak,
+                &wizard_gen,
+                captured_gen,
+                Err(PairError::Rpc(e)),
+                true,
+            );
             return;
         }
     };
@@ -466,12 +491,12 @@ async fn run_pair_no_progress(
     managed: bool,
 ) {
     let result = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
-        Err(e) => Err(e),
+        Err(e) => Err(PairError::Rpc(e)),
         Ok(_) => {
             let msg = gettext(
                 "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
             );
-            Err(anyhow::anyhow!("{msg}"))
+            Err(PairError::Rpc(anyhow::anyhow!("{msg}")))
         }
     };
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
@@ -508,12 +533,12 @@ pub(crate) async fn run_wizard_re_pair(
             // can't know the actual outcome, so we surface an
             // explicit failure instead of an optimistic `complete`.
             let result = match daemon.re_pair(&tv_id).await {
-                Err(e) => Err(e),
+                Err(e) => Err(PairError::Rpc(e)),
                 Ok(()) => {
                     let msg = gettext(
                         "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
                     );
-                    Err(anyhow::anyhow!("{msg}"))
+                    Err(PairError::Rpc(anyhow::anyhow!("{msg}")))
                 }
             };
             publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
@@ -524,7 +549,13 @@ pub(crate) async fn run_wizard_re_pair(
     // Re-pair's sync RPC errors are TvNotFound / AlreadyPairing —
     // route them through the same outcome publisher.
     if let Err(e) = daemon.re_pair(&tv_id).await {
-        publish_pair_outcome(app_weak, &wizard_gen, captured_gen, Err(e), true);
+        publish_pair_outcome(
+            app_weak,
+            &wizard_gen,
+            captured_gen,
+            Err(PairError::Rpc(e)),
+            true,
+        );
         return;
     }
 
@@ -571,21 +602,48 @@ fn make_progress_callback(
     }
 }
 
-/// Translate `drain_pair_to_terminal`'s `Result<PairTerminal>` into
-/// the shape `publish_pair_outcome` expects: `Result<tv_id,
-/// anyhow::Error>`. `PairTerminal::Failed`'s message becomes a
-/// plain anyhow error — typed-error routing (per-field) doesn't
-/// apply to handshake-level failures because the daemon's
-/// post-validation errors don't carry the zbus::Error::MethodError
-/// shape in the message string.
+/// Typed pair/re-pair outcome for [`publish_pair_outcome`]. Keeps the
+/// handshake failure's typed detail compiler-visible (no anyhow
+/// erase-then-downcast) while still carrying sync-RPC errors as `anyhow`
+/// — those need the `zbus::Error::MethodError` chain intact for
+/// `extract_invalid_vendor_config`'s per-field routing.
+enum PairError {
+    /// Terminal `failed` phase from the daemon — localize by its `code`.
+    Handshake(PairingProgressDetail),
+    /// A sync-RPC / stream error (unknown vendor, ConfigInvalidVendorConfig,
+    /// no-progress fallback) — field-routed, else shown verbatim.
+    Rpc(anyhow::Error),
+}
+
+/// Localize a pairing-failure reason for display. Branches on the
+/// daemon's stable, machine-readable `code`; an unknown or absent code
+/// falls back to the daemon's English `message`. The daemon stays
+/// locale-agnostic — the translated copy lives here in the GUI.
+fn localize_pair_failure(detail: &PairingProgressDetail) -> String {
+    if detail.code.as_deref() == Some(DeviceErrorCode::PermissionDenied.as_str()) {
+        // Name the actual node from the payload when present.
+        let node = detail.path.as_deref().unwrap_or("/dev/cec*");
+        return gettext(
+            "The TisVlay daemon doesn't have permission to use {0}. Add its user to the group \
+             that owns the device (on NixOS, enable services.tisvlay.cec), or install the udev \
+             rule granting access.",
+        )
+        .replace("{0}", node);
+    }
+    detail.message.clone()
+}
+
+/// Translate `drain_pair_to_terminal`'s `Result<PairTerminal>` into the
+/// shape [`publish_pair_outcome`] expects: a terminal `Failed` keeps its
+/// typed detail; a stream error stays `anyhow`.
 fn terminal_to_result(
     outcome: anyhow::Result<PairTerminal>,
     tv_id: String,
-) -> anyhow::Result<String> {
+) -> Result<String, PairError> {
     match outcome {
         Ok(PairTerminal::Complete { .. }) => Ok(tv_id),
-        Ok(PairTerminal::Failed { message, .. }) => Err(anyhow::anyhow!("{message}")),
-        Err(e) => Err(e),
+        Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(detail)),
+        Err(e) => Err(PairError::Rpc(e)),
     }
 }
 
@@ -604,7 +662,7 @@ fn publish_pair_outcome(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: &WizardGen,
     captured_gen: u64,
-    result: anyhow::Result<String>,
+    result: Result<String, PairError>,
     had_progress_stream: bool,
 ) {
     let wizard_gen = wizard_gen.clone();
@@ -625,7 +683,14 @@ fn publish_pair_outcome(
                     wizard.set_pair_message(SharedString::from(msg));
                 }
             }
-            Err(e) => {
+            // Typed handshake failure (carries a reason code) — localize
+            // by the code. A handshake failure never carries the
+            // ConfigInvalidVendorConfig D-Bus shape, so no field routing.
+            Err(PairError::Handshake(detail)) => {
+                wizard.set_pair_phase("failed".into());
+                wizard.set_pair_message(SharedString::from(localize_pair_failure(&detail)));
+            }
+            Err(PairError::Rpc(e)) => {
                 if let Some((field, reason)) = extract_invalid_vendor_config(&e)
                     && mark_field_invalid(&wizard, &field, &reason)
                 {

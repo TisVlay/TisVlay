@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tisvlay_core::dbus_paths::{MANAGER_PATH, tv_path};
-use tisvlay_core::{DiscoveredTv, SystemProfileBody};
+use tisvlay_core::{DiscoveredTv, PairingProgressDetail, SystemProfileBody};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -875,9 +875,11 @@ impl ManagerService {
     /// Emitted as `pair_tv()` walks through the underlying
     /// [`tisvlay_core::PairingState`]. `phase` is the stable D-Bus
     /// string from `PairingState::to_dbus_state()`: `awaiting_tv`,
-    /// `awaiting_input`, `complete`, `failed`. `message` is a
-    /// human-readable detail (e.g., "Please accept the pairing
-    /// request on your TV", or the failure reason).
+    /// `awaiting_input`, `complete`, `failed`. `detail` is the typed
+    /// [`PairingProgressDetail`] `a{sv}`: always a human-readable
+    /// `message`, plus — on the `failed` phase — a namespaced reason
+    /// `code` (e.g. `device.permission-denied`) and its optional `path`
+    /// parameter, so clients can localize and branch on the reason.
     ///
     /// Pair this with the async-spawn `AddTv` / `Tv1.RePair` RPCs:
     /// subscribe to the signal first, call the RPC to get the
@@ -889,7 +891,7 @@ impl ManagerService {
         emitter: &SignalEmitter<'_>,
         tv_id: &str,
         phase: &str,
-        message: &str,
+        detail: &PairingProgressDetail,
     ) -> zbus::Result<()>;
 
     /// One TV was discovered during a `DiscoverTvs` scan.
