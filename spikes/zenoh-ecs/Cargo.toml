@@ -31,9 +31,12 @@ zenoh = "1.9"
 # an accepted spike risk, tracked in the plan's watch items.
 zenoh-ext = { version = "1.9", features = ["unstable"] }
 
-# Path deps into the parent workspace: the vendor-agnostic core and the mock
-# backend. Both build without D-Bus (core's `dbus` feature is opt-in).
+# Path deps into the parent workspace: the vendor-agnostic core plus the
+# mock and real vendor backends. All build without D-Bus (core's `dbus`
+# feature is opt-in).
+tisvlay-cec = { path = "../../crates/tisvlay-cec" }
 tisvlay-core = { path = "../../crates/tisvlay-core" }
+tisvlay-lg = { path = "../../crates/tisvlay-lg", features = ["discovery"] }
 tisvlay-mock = { path = "../../crates/tisvlay-mock" }
 
 tvnext-wire = { path = "crates/tvnext-wire" }

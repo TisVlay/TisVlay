@@ -35,6 +35,25 @@ enum Command {
     List,
     /// Stream every data key: history first, then live samples.
     Watch,
+    /// Scan for TVs (bounded window; findings stream back as replies).
+    Discover {
+        #[arg(long)]
+        vendor: Option<String>,
+        #[arg(long, default_value_t = 3000)]
+        timeout_ms: u64,
+    },
+    /// Pair a new TV, streaming the pairing progress (ctrl-c cancels).
+    Pair {
+        name: String,
+        #[arg(long, default_value = "lg")]
+        vendor: String,
+        /// Vendor config as JSON, e.g. '{"ip":"192.168.1.50"}'.
+        #[arg(long)]
+        json: Option<String>,
+        /// Mock shorthand for --json '{"address":"mock://…"}'.
+        #[arg(long)]
+        address: Option<String>,
+    },
     /// Add a mock TV (shortcut around the add-tv rpc).
     Add {
         name: String,
@@ -72,6 +91,22 @@ async fn main() -> Result<()> {
         Command::Status => status(&session, site, &socket).await,
         Command::List => list(&session, site).await,
         Command::Watch => watch(&session, site).await,
+        Command::Discover { vendor, timeout_ms } => {
+            discover(&session, site, vendor, timeout_ms).await
+        }
+        Command::Pair {
+            name,
+            vendor,
+            json,
+            address,
+        } => {
+            let config = match (json, address) {
+                (Some(json), _) => serde_json::from_str(&json)?,
+                (None, Some(address)) => json!({ "address": address }),
+                (None, None) => bail!("provide --json or --address"),
+            };
+            pair(&session, site, name, vendor, config).await
+        }
         Command::Add {
             name,
             address,
@@ -154,6 +189,131 @@ async fn call(session: &Session, key: &str, body: Value) -> Result<Value> {
             }
         },
         Err(_) => bail!("no reply for rpc {key} (daemon down?)"),
+    }
+}
+
+/// Multi-reply RPC: collect every reply until the query finalizes.
+/// Consolidation must be off — same-key replies otherwise collapse to the
+/// latest one.
+async fn call_many(
+    session: &Session,
+    key: &str,
+    body: Value,
+    timeout: Duration,
+) -> Result<Vec<Value>> {
+    let replies = session
+        .get(key.to_string())
+        .payload(serde_json::to_vec(&body)?)
+        .encoding(Encoding::APPLICATION_JSON)
+        .consolidation(zenoh::query::ConsolidationMode::None)
+        .timeout(timeout)
+        .await
+        .map_err(|e| anyhow!("rpc {key}: {e}"))?;
+    let mut out = Vec::new();
+    while let Ok(reply) = replies.recv_async().await {
+        match reply.result() {
+            Ok(sample) => out
+                .push(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null)),
+            Err(err) => {
+                let error: Value =
+                    serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null);
+                bail!(
+                    "{}: {}",
+                    error["code"].as_str().unwrap_or("error"),
+                    error["message"].as_str().unwrap_or_default()
+                )
+            }
+        }
+    }
+    Ok(out)
+}
+
+async fn discover(
+    session: &Session,
+    site: &str,
+    vendor: Option<String>,
+    timeout_ms: u64,
+) -> Result<()> {
+    let body = serde_json::to_value(rpc::Discover {
+        vendor,
+        timeout_ms: Some(timeout_ms),
+    })?;
+    let found = call_many(
+        session,
+        &keys::manager_rpc(site, "discover"),
+        body,
+        Duration::from_millis(timeout_ms + 4000),
+    )
+    .await?;
+    if found.is_empty() {
+        println!("nothing found");
+        return Ok(());
+    }
+    for tv in found {
+        let mac = tv["vendor_data"]["mac"]
+            .as_str()
+            .map(|mac| format!("  mac={mac}"))
+            .unwrap_or_default();
+        println!(
+            "{}  {}  {}  id={}{}",
+            tv["vendor"].as_str().unwrap_or("?"),
+            tv["name"].as_str().unwrap_or("?"),
+            tv["address"].as_str().unwrap_or("?"),
+            tv["id"].as_str().unwrap_or("?"),
+            mac,
+        );
+    }
+    Ok(())
+}
+
+async fn pair(
+    session: &Session,
+    site: &str,
+    name: String,
+    vendor: String,
+    config: Value,
+) -> Result<()> {
+    let body = serde_json::to_value(rpc::AddTv {
+        id: None,
+        name,
+        vendor,
+        managed: true,
+        config,
+    })?;
+    let started = call(session, &keys::manager_rpc(site, "pair"), body).await?;
+    let id = Uuid::parse_str(started["id"].as_str().unwrap_or_default())
+        .map_err(|_| anyhow!("daemon reply carried no pairing id"))?;
+    println!("pairing session {id} started");
+    let subscriber = session
+        .declare_subscriber(keys::pairing_progress(site, &id))
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+        .map_err(|e| anyhow!("subscribe progress: {e}"))?;
+    loop {
+        tokio::select! {
+            sample = subscriber.recv_async() => {
+                let Ok(sample) = sample else { bail!("progress stream closed") };
+                let value: Value =
+                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                let phase = value["phase"].as_str().unwrap_or("?");
+                println!("[{phase}] {}", value["message"].as_str().unwrap_or(""));
+                match phase {
+                    "complete" => {
+                        println!("paired: {id}");
+                        return Ok(());
+                    }
+                    "failed" => bail!(
+                        "pairing failed: {}",
+                        value["code"].as_str().unwrap_or("unknown")
+                    ),
+                    _ => {}
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("cancelling…");
+                let _ = call(session, &keys::manager_rpc(site, "cancel-pair"), json!({ "id": id })).await;
+            }
+        }
     }
 }
 

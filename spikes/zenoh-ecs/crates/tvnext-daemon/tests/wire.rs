@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tisvlay_core::DiscoveredTv;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tvnext_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
@@ -20,7 +21,7 @@ type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 struct Wire {
     _dir: tempfile::TempDir,
     socket: PathBuf,
-    _stack: tvnext_daemon::Stack,
+    stack: tvnext_daemon::Stack,
     handle: MockHandle,
     client: Session,
     site: String,
@@ -29,17 +30,22 @@ struct Wire {
 async fn wire() -> Wire {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("w.sock");
-    let (connector, _discovery, handle) = new_test_parts();
-    let stack = tvnext_daemon::serve(&socket, "t", vec![("mock", Arc::new(connector))])
-        .await
-        .unwrap();
+    let (connector, discovery, handle) = new_test_parts();
+    let stack = tvnext_daemon::serve(
+        &socket,
+        "t",
+        vec![("mock", Arc::new(connector))],
+        vec![("mock", Arc::new(discovery))],
+    )
+    .await
+    .unwrap();
     let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
         .await
         .unwrap();
     Wire {
         _dir: dir,
         socket,
-        _stack: stack,
+        stack,
         handle,
         client,
         site: "t".into(),
@@ -208,7 +214,100 @@ async fn volume_rpc_lands_as_state_publish() {
     .await;
     // The push originated from the backend, proving the full loop:
     // rpc → world → connection task → mock → subscription → publish.
-    let _ = w.handle;
+}
+
+/// The M2b shape in action: one discover query, one reply per finding.
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_streams_findings_as_multiple_replies() {
+    let w = wire().await;
+    w.handle
+        .publish_tv(DiscoveredTv::new("tv-a", "Alpha", "mock://a", "mock"));
+    w.handle
+        .publish_tv(DiscoveredTv::new("tv-b", "Beta", "mock://b", "mock"));
+
+    // Consolidation off: discovery replies share the query's key, and the
+    // default mode would collapse them to the latest one.
+    let replies = w
+        .client
+        .get(keys::manager_rpc(&w.site, "discover"))
+        .payload(serde_json::to_vec(&json!({ "vendor": "mock", "timeout_ms": 200 })).unwrap())
+        .encoding(Encoding::APPLICATION_JSON)
+        .consolidation(zenoh::query::ConsolidationMode::None)
+        .timeout(Duration::from_secs(5))
+        .await
+        .unwrap();
+    let mut names = Vec::new();
+    while let Ok(reply) = replies.recv_async().await {
+        let sample = reply.result().expect("discover replies are ok samples");
+        names.push(payload_json(sample)["name"].as_str().unwrap().to_string());
+    }
+    names.sort();
+    assert_eq!(names, ["Alpha", "Beta"]);
+
+    let replies = w
+        .client
+        .get(keys::manager_rpc(&w.site, "discover"))
+        .payload(serde_json::to_vec(&json!({ "vendor": "nope" })).unwrap())
+        .encoding(Encoding::APPLICATION_JSON)
+        .timeout(Duration::from_secs(5))
+        .await
+        .unwrap();
+    let reply = replies.recv_async().await.expect("one reply");
+    let err = reply.result().expect_err("unknown vendor must err");
+    let value: Value = serde_json::from_slice(&err.payload().to_bytes()).unwrap();
+    assert_eq!(value["code"], "unknown-vendor");
+}
+
+/// Full loop: sysfs DPMS flip → watcher → world system event → stock
+/// profile → mock backend → state publish on the wire.
+#[tokio::test(flavor = "multi_thread")]
+async fn dpms_transitions_drive_profile_actions_end_to_end() {
+    let w = wire().await;
+    let ok = call(
+        &w.client,
+        &keys::manager_rpc(&w.site, "add-tv"),
+        add_body("Den", "mock://dpms"),
+    )
+    .await
+    .expect("add-tv ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+
+    let sysfs = tempfile::tempdir().unwrap();
+    let connector_dir = sysfs.path().join("card9-HDMI-A-9");
+    std::fs::create_dir_all(&connector_dir).unwrap();
+    std::fs::write(connector_dir.join("status"), "connected\n").unwrap();
+    std::fs::write(connector_dir.join("dpms"), "On\n").unwrap();
+    tokio::spawn(tvnext_daemon::watch_dpms(
+        sysfs.path().to_path_buf(),
+        "card9-HDMI-A-9".into(),
+        Duration::from_millis(25),
+        w.stack.world.clone(),
+    ));
+    // Let the watcher take its baseline reading before flipping.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    std::fs::write(connector_dir.join("dpms"), "Off\n").unwrap();
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/power")
+            && payload_json(s)["state"] == "screenoff"
+    })
+    .await;
+
+    std::fs::write(connector_dir.join("dpms"), "On\n").unwrap();
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/power")
+            && payload_json(s)["state"] == "active"
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

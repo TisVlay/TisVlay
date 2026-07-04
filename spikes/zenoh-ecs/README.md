@@ -9,7 +9,10 @@ This is an **independent cargo workspace** — not a member of the root workspac
 ```bash
 cargo run -p tvnext-daemon                        # daemon: world + bridge on $XDG_RUNTIME_DIR/tisvlay/next.sock
 cargo run -p tvnext-daemon -- --config tvs.toml   # …seeding TVs from a boot config
+cargo run -p tvnext-daemon -- --dpms-connector card1-HDMI-A-1   # …mirroring a DRM connector's DPMS state
 cargo run -p tvnext-cli -- status                 # probe the daemon's liveliness token
+cargo run -p tvnext-cli -- discover               # SSDP + mock + cec scan, one line per finding
+cargo run -p tvnext-cli -- pair "Living Room" --vendor lg --json '{"ip":"192.168.1.50"}'
 cargo run -p tvnext-cli -- add Den --address mock://den
 cargo run -p tvnext-cli -- list                   # hydrate from publisher caches (subscriber history)
 cargo run -p tvnext-cli -- watch                  # stream every data key: history, then live

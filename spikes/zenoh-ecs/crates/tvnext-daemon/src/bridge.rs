@@ -5,6 +5,7 @@
 //! and the pairing liveliness tokens — so there are no locks here either.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -14,6 +15,8 @@ use tracing::{debug, warn};
 use tvnext_wire::{keys, rpc};
 use tvnext_world::{Command, ReplyTo, WireEffect, WireError, WorldClient};
 use uuid::Uuid;
+
+use crate::discovery::DynDiscovery;
 use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::liveliness::LivelinessToken;
@@ -32,6 +35,7 @@ pub(crate) async fn run(
     site: String,
     mut effects: mpsc::UnboundedReceiver<WireEffect>,
     world: WorldClient,
+    discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
 ) -> anyhow::Result<()> {
     let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
     let mut queryables: Vec<Queryable<()>> = Vec::new();
@@ -52,6 +56,7 @@ pub(crate) async fn run(
         session,
         site,
         world,
+        discoveries,
         publishers: HashMap::new(),
         pending: HashMap::new(),
         next_reply: 1,
@@ -83,6 +88,7 @@ struct Bridge {
     session: Session,
     site: String,
     world: WorldClient,
+    discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
     pending: HashMap<ReplyTo, PendingQuery>,
     next_reply: ReplyTo,
@@ -212,6 +218,12 @@ impl Bridge {
             },
             None => Value::Null,
         };
+        // Discovery is a stateless read — served bridge-side with streamed
+        // replies, never touching the world.
+        if keys::parse_manager_rpc(&self.site, &key) == Some("discover") {
+            self.handle_discover(query, &body);
+            return;
+        }
         let reply_id = self.next_reply;
         self.next_reply += 1;
         match self.route(&key, &body, reply_id) {
@@ -234,6 +246,54 @@ impl Bridge {
             }
             Err(error) => reply_err(&query, &error).await,
         }
+    }
+
+    /// The M2b decision made concrete: a bounded scan is one query whose
+    /// findings stream back as multiple replies — dropping the query at the
+    /// end finalizes it. Open-ended wizard scans stay session-pub-shaped
+    /// (deferred until a wizard consumer exists).
+    fn handle_discover(&self, query: Query, body: &Value) {
+        let request: rpc::Discover = match parse(body) {
+            Ok(request) => request,
+            Err(error) => {
+                tokio::spawn(async move { reply_err(&query, &error).await });
+                return;
+            }
+        };
+        // Clamp under the client-side query timeout so replies land in time.
+        let window = Duration::from_millis(request.timeout_ms.unwrap_or(3000).min(8000));
+        let discoveries = Arc::clone(&self.discoveries);
+        tokio::spawn(async move {
+            if let Some(vendor) = &request.vendor
+                && !discoveries.contains_key(vendor)
+            {
+                reply_err(&query, &WireError::unknown_vendor(vendor)).await;
+                return;
+            }
+            for (vendor, discovery) in discoveries.iter() {
+                if request.vendor.as_deref().is_some_and(|v| v != vendor) {
+                    continue;
+                }
+                match discovery.discover(window).await {
+                    Ok(found) => {
+                        for tv in found {
+                            let Ok(bytes) = serde_json::to_vec(&tv) else {
+                                continue;
+                            };
+                            let key = query.key_expr().clone().into_owned();
+                            if let Err(e) = query
+                                .reply(key, bytes)
+                                .encoding(Encoding::APPLICATION_JSON)
+                                .await
+                            {
+                                warn!(vendor, %e, "discovery reply failed");
+                            }
+                        }
+                    }
+                    Err(error) => warn!(vendor, %error, "discovery scan failed"),
+                }
+            }
+        });
     }
 
     /// Map an RPC key + JSON body onto a world command. The reply

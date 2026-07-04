@@ -3,10 +3,14 @@
 
 mod boot;
 mod bridge;
+mod discovery;
+mod dpms;
 
+use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tisvlay_core::TvConnector;
@@ -17,6 +21,8 @@ use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
 
 pub use boot::{BootConfig, BootTv, load_boot_config};
+pub use discovery::DynDiscovery;
+pub use dpms::watch_dpms;
 
 /// An open daemon session: zenoh peer listening on a Unix socket, with the
 /// `tisvlay/<site>/alive/daemon` liveliness token declared.
@@ -77,32 +83,77 @@ pub struct Stack {
     pub world: WorldClient,
 }
 
-/// Boot the stack on `socket` with the given vendor connectors. The
-/// reactor and bridge run as detached tasks for the process lifetime.
+/// Boot the stack on `socket` with the given vendor connectors and
+/// discovery backends. The reactor and bridge run as detached tasks for
+/// the process lifetime.
 pub async fn serve(
     socket: &Path,
     site: &str,
     connectors: Vec<(&str, Arc<dyn TvConnector>)>,
+    discoveries: Vec<(&str, Arc<dyn DynDiscovery>)>,
 ) -> Result<Stack> {
     let daemon = open(socket, site).await?;
     let (reactor, effects, world) = Reactor::new(site, connectors);
     tokio::spawn(reactor.run());
+    let discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>> = Arc::new(
+        discoveries
+            .into_iter()
+            .map(|(vendor, discovery)| (vendor.to_string(), discovery))
+            .collect(),
+    );
     let bridge_session = daemon.session().clone();
     let bridge_site = site.to_string();
     let bridge_world = world.clone();
     tokio::spawn(async move {
-        if let Err(e) = bridge::run(bridge_session, bridge_site, effects, bridge_world).await {
+        if let Err(e) = bridge::run(
+            bridge_session,
+            bridge_site,
+            effects,
+            bridge_world,
+            discoveries,
+        )
+        .await
+        {
             tracing::error!(%e, "zenoh bridge exited");
         }
     });
     Ok(Stack { daemon, world })
 }
 
-/// Production-shaped entry: serve with the mock backend registered, seed
-/// TVs from the boot config, run until ctrl-c.
-pub async fn run(socket: &Path, site: &str, boot: Option<&Path>) -> Result<()> {
-    let (connector, _discovery) = tisvlay_mock::new_production_parts();
-    let stack = serve(socket, site, vec![("mock", Arc::new(connector))]).await?;
+/// DPMS sysfs poll period in production (`watch_dpms` takes it as a
+/// parameter so tests can run fast).
+const DPMS_PERIOD: Duration = Duration::from_secs(2);
+
+/// Production-shaped entry: serve with the real vendor backends (plus the
+/// mock for play), seed TVs from the boot config, optionally watch a DRM
+/// connector's DPMS state, run until ctrl-c.
+pub async fn run(
+    socket: &Path,
+    site: &str,
+    boot: Option<&Path>,
+    dpms_connector: Option<&str>,
+) -> Result<()> {
+    let (mock_connector, mock_discovery) = tisvlay_mock::new_production_parts();
+    let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vec![
+        ("mock", Arc::new(mock_connector)),
+        ("lg", Arc::new(tisvlay_lg::LgConnector::new())),
+        ("cec", Arc::new(tisvlay_cec::CecConnector::new())),
+    ];
+    let discoveries: Vec<(&str, Arc<dyn DynDiscovery>)> = vec![
+        ("mock", Arc::new(mock_discovery)),
+        // Ephemeral SSDP source port; binds lazily on first scan.
+        ("lg", Arc::new(tisvlay_lg::LgDiscovery::new(0))),
+        ("cec", Arc::new(tisvlay_cec::CecDiscovery::new())),
+    ];
+    let stack = serve(socket, site, connectors, discoveries).await?;
+    if let Some(connector) = dpms_connector {
+        tokio::spawn(watch_dpms(
+            PathBuf::from("/sys/class/drm"),
+            connector.to_string(),
+            DPMS_PERIOD,
+            stack.world.clone(),
+        ));
+    }
     if let Some(path) = boot {
         for tv in load_boot_config(path)?.tv {
             let id = tv.id.unwrap_or_else(Uuid::new_v4);

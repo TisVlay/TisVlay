@@ -313,6 +313,20 @@ pub mod rpc {
     pub struct SetMuted {
         pub muted: bool,
     }
+
+    /// Body for `manager/rpc/discover` — a bounded scan whose findings
+    /// stream back as one query reply per discovered TV.
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Discover {
+        /// Restrict to one vendor; omitted scans every discovery-capable
+        /// backend.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub vendor: Option<String>,
+        /// Scan window in milliseconds (defaulted and clamped daemon-side
+        /// to stay under the zenoh query-timeout ceiling).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub timeout_ms: Option<u64>,
+    }
 }
 
 pub mod bootstrap {

@@ -17,6 +17,11 @@ struct Args {
     /// Boot config (TOML) seeding TVs at start.
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// DRM connector whose sysfs DPMS state drives screen actions
+    /// (e.g. card1-HDMI-A-1).
+    #[arg(long)]
+    dpms_connector: Option<String>,
 }
 
 #[tokio::main]
@@ -30,5 +35,11 @@ async fn main() -> anyhow::Result<()> {
     let socket = args
         .socket
         .unwrap_or_else(tvnext_wire::bootstrap::default_socket_path);
-    tvnext_daemon::run(&socket, &args.site, args.config.as_deref()).await
+    tvnext_daemon::run(
+        &socket,
+        &args.site,
+        args.config.as_deref(),
+        args.dpms_connector.as_deref(),
+    )
+    .await
 }

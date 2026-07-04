@@ -12,7 +12,9 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tisvlay-cec = { workspace = true }
 tisvlay-core = { workspace = true }
+tisvlay-lg = { workspace = true }
 tisvlay-mock = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
