@@ -197,6 +197,11 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         tvs: HashMap::new(),
         publishers: HashMap::new(),
         persist,
+        state_path: options
+            .store
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
         idle_tx,
         _alive: alive,
     };
@@ -220,6 +225,8 @@ struct Core {
     tvs: HashMap<Uuid, payload::Meta>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
     persist: Option<mpsc::UnboundedSender<UserStoreSnapshot>>,
+    /// For the `info` rpc (About pane row).
+    state_path: String,
     idle_tx: watch::Sender<u64>,
     _alive: zenoh::liveliness::LivelinessToken,
 }
@@ -493,6 +500,10 @@ impl Core {
                 self.recompute_idle();
                 Ok(json!({}))
             }
+            "info" => Ok(json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "state_path": self.state_path,
+            })),
             "defaults" => {
                 // The hard-coded floor as a Body — the editable default
                 // profile sits between this and child profiles.

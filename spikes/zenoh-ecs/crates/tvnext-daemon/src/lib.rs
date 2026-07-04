@@ -201,6 +201,11 @@ pub async fn serve(
     let bridge_session = daemon.session().clone();
     let bridge_site = site.to_string();
     let bridge_world = world.clone();
+    // Introspection served by the bridge (About pane rows).
+    let info = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "state_path": store_path.map(|p| p.display().to_string()).unwrap_or_default(),
+    });
     tokio::spawn(async move {
         if let Err(e) = bridge::run(
             bridge_session,
@@ -209,6 +214,7 @@ pub async fn serve(
             bridge_world,
             discoveries,
             catalog,
+            info,
         )
         .await
         {

@@ -46,6 +46,7 @@ pub(crate) async fn run(
     world: WorldClient,
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     catalog: Arc<Vec<VendorMeta>>,
+    info: Value,
 ) -> anyhow::Result<()> {
     let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
     let mut queryables: Vec<Queryable<()>> = Vec::new();
@@ -74,6 +75,7 @@ pub(crate) async fn run(
         world,
         discoveries,
         catalog,
+        info,
         publishers: HashMap::new(),
         pending: HashMap::new(),
         next_reply: 1,
@@ -108,6 +110,7 @@ struct Bridge {
     world: WorldClient,
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     catalog: Arc<Vec<VendorMeta>>,
+    info: Value,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
     pending: HashMap<ReplyTo, PendingQuery>,
     next_reply: ReplyTo,
@@ -238,8 +241,17 @@ impl Bridge {
             },
             None => Value::Null,
         };
-        // Catalog reads and discovery are served bridge-side, never
-        // touching the world.
+        // Catalog reads, introspection, and discovery are served
+        // bridge-side, never touching the world.
+        if key == keys::manager_rpc(&self.site, "info") {
+            let info = self.info.clone();
+            reply_json(&query, &info).await;
+            return;
+        }
+        if key == keys::manager_rpc(&self.site, "enrich") {
+            self.handle_enrich(query, &body).await;
+            return;
+        }
         if key == keys::vendors(&self.site) {
             let list: Vec<Value> = self
                 .catalog
@@ -391,6 +403,33 @@ impl Bridge {
                 .await;
             }
         }
+    }
+
+    /// Manual-entry enrichment: probe the ARP cache for `ip` (after the
+    /// vendor primes it) so the wizard can hint the device's MAC before
+    /// pairing. Best-effort — an empty map just means no hint.
+    async fn handle_enrich(&self, query: Query, body: &Value) {
+        let vendor = body["vendor"].as_str().unwrap_or_default().to_string();
+        let ip = body["ip"]
+            .as_str()
+            .or_else(|| body["address"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        let connector = self
+            .catalog
+            .iter()
+            .find(|meta| meta.id == vendor)
+            .map(|meta| Arc::clone(&meta.connector));
+        tokio::spawn(async move {
+            if let (Some(connector), Ok(addr)) = (connector, ip.parse()) {
+                let _ = connector.probe_arp_cache(addr).await;
+            }
+            let mut map = serde_json::Map::new();
+            if let Some(mac) = crate::arp::lookup_mac(&ip) {
+                map.insert("mac".into(), Value::String(mac));
+            }
+            reply_json(&query, &Value::Object(map)).await;
+        });
     }
 
     /// The M2b decision made concrete: a bounded scan is one query whose

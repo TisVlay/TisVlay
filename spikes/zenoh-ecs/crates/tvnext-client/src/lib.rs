@@ -294,11 +294,19 @@ impl DaemonClient {
     }
 
     pub async fn version(&self) -> Result<String> {
-        Ok(format!("{} (zenoh spike)", env!("CARGO_PKG_VERSION")))
+        let info = self
+            .call(&keys::manager_rpc(&self.site, "info"), Value::Null)
+            .await?;
+        Ok(info["version"].as_str().unwrap_or_default().to_string())
     }
 
+    /// The daemon's state-store path (the zenoh stack has no config
+    /// file; the store is what an admin would inspect).
     pub async fn config_path(&self) -> Result<String> {
-        Ok(String::new())
+        let info = self
+            .call(&keys::manager_rpc(&self.site, "info"), Value::Null)
+            .await?;
+        Ok(info["state_path"].as_str().unwrap_or_default().to_string())
     }
 
     pub async fn reload_config(&self) -> Result<()> {
@@ -571,15 +579,29 @@ impl DaemonClient {
         Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }
 
-    /// Root rpc parity: the wire enriches configs daemon-side at pair
-    /// time (ARP MAC fill), so client-side manual-entry enrichment has
-    /// nothing to add — the wizard simply shows no pre-filled MAC.
+    /// Manual-entry hint: the daemon probes its ARP cache (after the
+    /// vendor primes it) so the wizard can show the device's MAC before
+    /// pairing. Pair-time enrichment daemon-side remains the safety net.
     pub async fn enrich_manual_entry(
         &self,
-        _vendor: &str,
-        _address: &str,
+        vendor: &str,
+        address: &str,
     ) -> Result<HashMap<String, String>> {
-        Ok(HashMap::new())
+        let map = self
+            .call(
+                &keys::manager_rpc(&self.site, "enrich"),
+                json!({ "vendor": vendor, "ip": address }),
+            )
+            .await?;
+        Ok(map
+            .as_object()
+            .map(|object| {
+                object
+                    .iter()
+                    .filter_map(|(key, value)| value.as_str().map(|v| (key.clone(), v.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     pub async fn get_vendor_capabilities(&self, vendor: &str) -> Result<Capabilities> {
@@ -872,11 +894,17 @@ impl SessionClient {
     }
 
     pub async fn version(&self) -> Result<String> {
-        Ok(format!("{} (zenoh spike)", env!("CARGO_PKG_VERSION")))
+        let info = self
+            .call(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
+            .await?;
+        Ok(info["version"].as_str().unwrap_or_default().to_string())
     }
 
     pub async fn config_path(&self) -> Result<String> {
-        Ok(String::new())
+        let info = self
+            .call(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
+            .await?;
+        Ok(info["state_path"].as_str().unwrap_or_default().to_string())
     }
 
     pub async fn reload_config(&self) -> Result<()> {
