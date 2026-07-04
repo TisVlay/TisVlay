@@ -146,13 +146,49 @@ Cross-host operation (the `<site>` chunk is the only concession), session-servic
 - [x] **M2 — wire**: state keys with AdvancedPublisher caches, rpc queryables with typed errors, PUT/DELETE lifecycle, pairing progress + liveliness, boot config seeding TVs at daemon start, late-joiner hydration demo (`tvnext list`/`watch` via subscriber history — plain `z get` can't reach the caches, see the `@adv` finding above).
 - [x] **M2b — discovery over the wire**: decision recorded — a bounded scan is one `manager/rpc/discover` query answered with one reply per finding, served bridge-side (a stateless read that never touches the world); mock + lg + cec discovery backends registered. Finding: multi-reply queries need `ConsolidationMode::None` querier-side — zenoh's default consolidation collapses same-key replies to the latest one. Open-ended wizard scans stay session-pubs + liveliness, to be built when a wizard consumer exists (M4+).
 - [x] **M3a — real-backend wiring**: lg + cec connectors and discovery backends registered in the daemon (LG SSDP on an ephemeral source port), `tvnext pair` (progress streaming, ctrl-c cancels) and `tvnext discover` in the CLI, DPMS sysfs watcher (`--dpms-connector`, injectable base dir) feeding DpmsOff/DpmsOn into the world — file-driven end-to-end test through the stock profile to a state publish. CEC-via-`FakeCecLink` is blocked cross-crate: the fake is `#[cfg(test)]`-only in `tisvlay-cec`; exposing it needs a `test-link` feature upstream (deferred).
-- [ ] **M3b — hardware validation** (user-driven session): pair the C3, power/volume round-trip, WoL retry against the real firmware quirks, DPMS against the real connector. Field-validated on the real C3: discovery with MAC enrichment (after pinning the SSDP source port to 1901 — the docs/firewall.md lesson re-learned), pairing, volume, power-off, and the full WoL power-on round-trip (magic packet → `wake_and_connect` → `connected=true power=active`). The missing-MAC gap (`wake-not-supported`) was the session's find, fixed by porting ARP enrichment bridge-side. Remaining: DPMS against the real connector, the G4.
-- [ ] **M4 — first real client**: CLI subset (list/status/power/volume/watch) as a pure zenoh client; side-by-side DX comparison against `dbus_client.rs` equivalents.
-- [ ] **Exit review**: score keep/kill criteria below; append verdict + war stories here; then either draft the continuation plan (session/GUI ports) or the zlink spike plan.
+- [ ] **M3b — hardware validation** (user-driven session): pair the C3, power/volume round-trip, WoL retry against the real firmware quirks, DPMS against the real connector. Field-validated on the real C3: discovery with MAC enrichment (after pinning the SSDP source port to 1901 — the docs/firewall.md lesson re-learned), pairing, volume, power-off, and the full WoL power-on round-trip (magic packet → `wake_and_connect` → `connected=true power=active`). The missing-MAC gap (`wake-not-supported`) was the session's find, fixed by porting ARP enrichment bridge-side. DPMS validated on the real connector too: KWin's sysfs write-through on `card1-HDMI-A-1` drove `screen_off`/`screen_on` on the C3 through the watcher → world → stock profile, visible as `state/power` transitions in `tvnext watch`. Remaining: the G4.
+- [x] **M4 — first real client**: the CLI grew organically through M2/M3 (status, list, watch, discover, pair, add, set-volume, power, reconnect, remove) as a pure zenoh client with no SDK crate. Measured comparison in the DX-comparison section below.
+- [ ] **Exit review**: draft below with signals scored and the findings ledger; the verdict (continue to parity, run the zlink spike, or both) is the user's call.
 
 Keep signals: world tests read like specs; bridge stayed thin; `z` CLI debugging beats `busctl` muscle memory; state hydration "just works" for late joiners.
 
 Kill signals: bridge choreography rivals the plumbing it replaced; zenoh dep weight/compile times grate; suspend/resume or cache semantics produce mystery staleness; the authz gap starts blocking features rather than being a deferred note.
+
+## M4 — DX comparison (measured)
+
+tokei code lines (comments and blanks excluded); the spike numbers **include all its tests**, the root numbers include none:
+
+| | code lines |
+|---|---|
+| Spike, entire stack: `tvnext-wire` 290 + `tvnext-world` 1,620 + `tvnext-daemon` 1,111 + `tvnext-cli` 372 | **3,393** |
+| Root served-IPC middle alone: `tisvlayd/src/dbus/*`, `state_forwarder.rs`, `json_toml.rs`, `dbus_client.rs`, `dbus_paths.rs` | **3,922** |
+| `tv_manager.rs` alone (orchestration the world+reactor replace, mixed with real domain logic) | 3,010 |
+
+Honesty caveats: this is nowhere near feature parity — the spike has no profiles CRUD, no session service or user profiles, no input/backlight rpcs, no GetConfig/UpdateConfig, no persistence, no netlink/logind watchers, no re-pair, no reliable-dispatch verify-retry tiers, no GUI/tray. And `tv_manager.rs` contains hard-won domain logic (wake preflight, standby-cache synthesis) the spike will need at parity. The signal is not "half the code for the same product"; it is that the *entire working vertical slice with its tests* costs less than the transport glue alone did.
+
+Concept-for-concept, the interesting rows:
+
+| Concern | zbus stack | spike |
+|---|---|---|
+| State forwarding | `state_forwarder.rs` (~500 raw lines) + per-interface cached properties + emit-ordering tests | one generic `Changed<T>` system + the bridge's publish arm (~85 lines total) |
+| Client hydration | StateWatcher (snapshot + subscribe + coalesce, inside the 3.5k-line `dbus_client.rs`) | `AdvancedSubscriber::history` — a library feature, ~15 lines per client |
+| Removal vs in-flight calls | per-TV Mutex drain layer + three-case invariant essay + dedicated test | index miss; a boring ~40-line test |
+| Interface lifecycle | register/unregister dance, `at()` `Ok(false)` trap, ObjectManager races, deferred `complete` | none — per-key publishers, and `complete` needs no deferral because caches hydrate whenever |
+| Typed failure payloads | `PairingProgressDetail` over `a{sv}` + `json_toml.rs` | serde enums end-to-end |
+| Pairing progress to a re-opened client | signal drain + `WizardGen` generation guards | cached key replay (depth 64) |
+| Client SDK | dedicated crate wrapping zbus proxies | none — a zenoh session + the `tvnext-wire` vocabulary is the whole client stack |
+
+## Exit review (draft — verdict pending)
+
+Keep signals, scored against the list above: world tests read like specs (**yes** — 10 headless world tests + 8 wire tests, remove-during-in-flight is the promised boring test); bridge stayed thin (**yes** — one lock-free task, measured above); CLI debugging vs busctl muscle memory (**mostly** — `tvnext watch`/`list` beat busctl for state, ad-hoc rpc pokes work via `tvnext` or any zenoh client; plain `z get` hydration lost to the `@adv` finding); late-joiner hydration just works (**yes** — field-verified in the watch stream, including replay of a finished pairing session).
+
+Kill signals: bridge choreography rivaling the old plumbing (**no** — measured), dep weight/compile grating (**no** — cold zenoh build ~1 min once, warm spike iterations 1–25 s), cache/staleness mysteries (**none observed**, suspend/resume untested), authz gap blocking features (**didn't bite** at spike scope; still the accepted architectural regression).
+
+Findings ledger — wire: the `@adv` verbatim cache suffix (hydration is subscriber-history only); `timestamping/enabled` required for caches; reply consolidation eats same-key multi-replies (`ConsolidationMode::None`); the advanced API rides zenoh-ext `unstable`; zenoh rejects tokio's current-thread runtime. Field: the SSDP pinned-port lesson re-learned (docs/firewall.md), and the missing-MAC wake gap fixed by porting ARP enrichment bridge-side. Design: the `&mut self` connection surface makes task-ownership natural and eliminated every lock in the daemon; connection teardown must drain command-pushed state (a test caught it); dials must be event-driven, not reconcile-to-connected, or the world fights a powered-off TV.
+
+Not yet validated: the G4 (second TV / fleet dispatch), suspend/resume across the zenoh session, long-run stability, multi-day cache behavior.
+
+Verdict: ___ (user's call — the continuation options are: drive this stack toward parity as the successor plan; run the zlink comparison spike first per the original sequencing; or both in parallel now that the world/backend layers are proven transport-independent).
 
 ## Open questions
 
