@@ -303,11 +303,11 @@ gui-start:
 # Kill all running dev processes
 [group('dev')]
 stop-all:
-    -pkill -f 'target/debug/tisvlay-daemon'
-    -pkill -f 'target/debug/tisvlay-session'
-    -pkill -f 'target/debug/tisvlay-greeter'
-    -pkill -f 'target/debug/tisvlay-tray'
-    -pkill -f 'target/debug/tisvlay-gui'
+    -pkill -f 'tisvlay-daemon'
+    -pkill -f 'tisvlay-session'
+    -pkill -f 'tisvlay-greeter'
+    -pkill -f 'tisvlay-tray'
+    -pkill -f 'tisvlay-gui'
     # SIGTERM returns immediately; wait until the processes are gone so
     # a follow-up start can't race the exit. Stale socket files are
     # fine — zenoh's `.lock` protocol takes over an unclean listener
