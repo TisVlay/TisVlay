@@ -212,12 +212,6 @@ pub async fn serve_settings(
     };
     publish(settings).await;
 
-    let _alive = user
-        .liveliness()
-        .declare_token(keys::user_alive_tray(&site))
-        .await
-        .map_err(|e| anyhow!("declare tray liveliness: {e}"))?;
-
     let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
     let _queryable = user
         .declare_queryable(keys::user_tray_rpc_wild(&site))
@@ -227,6 +221,14 @@ pub async fn serve_settings(
         })
         .await
         .map_err(|e| anyhow!("declare tray rpc queryable: {e}"))?;
+
+    // Liveliness after the rpc queryable: a client that observes the
+    // tray alive must find the rpc surface already declared.
+    let _alive = user
+        .liveliness()
+        .declare_token(keys::user_alive_tray(&site))
+        .await
+        .map_err(|e| anyhow!("declare tray liveliness: {e}"))?;
 
     info!(site, config = %config_path.display(), "tray settings service running");
     while let Some(query) = queries.recv().await {

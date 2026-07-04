@@ -45,6 +45,7 @@ async fn wire() -> Wire {
     let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
         .await
         .unwrap();
+    await_daemon_visible(&client, "t").await;
     Wire {
         _dir: dir,
         socket,
@@ -52,6 +53,30 @@ async fn wire() -> Wire {
         handle,
         client,
         site: "t".into(),
+    }
+}
+
+/// Wait until the daemon's liveliness token is visible from `client`.
+/// `serve` declares the token only after its rpc queryables, and
+/// declarations reach a late-joining session in order — so a visible
+/// token means every rpc is ready and raw gets can't hit the
+/// no-queryable instant-empty-reply case.
+async fn await_daemon_visible(client: &Session, site: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let replies = client
+            .liveliness()
+            .get(keys::daemon_alive(site))
+            .await
+            .unwrap();
+        if replies.recv_async().await.is_ok() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "daemon liveliness never became visible"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 

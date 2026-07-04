@@ -45,6 +45,27 @@ async fn logind_sleep_resume_drive_profile_actions() {
     let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
         .await
         .unwrap();
+    // Token-after-queryables ordering makes a visible liveliness token
+    // mean the rpc surface is ready — required before the raw get
+    // below (a get matching zero queryables returns instantly empty).
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let replies = client
+                .liveliness()
+                .get(keys::daemon_alive("t"))
+                .await
+                .unwrap();
+            if replies.recv_async().await.is_ok() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "daemon liveliness never became visible"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
     let body = serde_json::to_value(rpc::AddTv {
         id: None,
         name: "Den".into(),

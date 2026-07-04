@@ -64,8 +64,8 @@ impl Daemon {
     }
 }
 
-/// Open the daemon's zenoh peer session on `socket` and declare liveliness.
-pub async fn open(socket: &Path, site: &str) -> Result<Daemon> {
+/// Open the daemon's zenoh peer session listening on `socket`.
+async fn open_socket(socket: &Path) -> Result<Session> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create socket dir {}", parent.display()))?;
@@ -82,12 +82,27 @@ pub async fn open(socket: &Path, site: &str) -> Result<Daemon> {
         std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))
             .with_context(|| format!("set socket permissions on {}", socket.display()))?;
     }
+    Ok(session)
+}
+
+/// Declare the daemon's liveliness token. The token is the SDK's
+/// availability signal, so it must come last in bring-up: everything
+/// the daemon serves is already declared by the time a client can
+/// observe it alive (first-rpc-right-after-alive must never race the
+/// queryable declarations).
+async fn declare_alive(session: &Session, site: &str) -> Result<LivelinessToken> {
     let key = tisvlay_wire::keys::daemon_alive(site);
-    let alive = session
+    session
         .liveliness()
         .declare_token(key.as_str())
         .await
-        .map_err(|e| anyhow!("declare liveliness token {key}: {e}"))?;
+        .map_err(|e| anyhow!("declare liveliness token {key}: {e}"))
+}
+
+/// Open the daemon's zenoh peer session on `socket` and declare liveliness.
+pub async fn open(socket: &Path, site: &str) -> Result<Daemon> {
+    let session = open_socket(socket).await?;
+    let alive = declare_alive(&session, site).await?;
     info!(site, socket = %socket.display(), "zenoh peer session open, liveliness declared");
     Ok(Daemon { session, alive })
 }
@@ -152,7 +167,7 @@ pub async fn serve(
     vendors: Vec<VendorReg>,
     store_path: Option<&Path>,
 ) -> Result<Stack> {
-    let daemon = open(socket, site).await?;
+    let session = open_socket(socket).await?;
     let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vendors
         .iter()
         .map(|v| (v.id.as_str(), Arc::clone(&v.connector)))
@@ -206,7 +221,7 @@ pub async fn serve(
             })
             .collect(),
     );
-    let bridge_session = daemon.session().clone();
+    let bridge_session = session.clone();
     let bridge_site = site.to_string();
     let bridge_world = world.clone();
     // Introspection served by the bridge (About pane rows).
@@ -214,6 +229,7 @@ pub async fn serve(
         "version": env!("CARGO_PKG_VERSION"),
         "state_path": store_path.map(|p| p.display().to_string()).unwrap_or_default(),
     });
+    let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         if let Err(e) = bridge::run(
             bridge_session,
@@ -223,6 +239,7 @@ pub async fn serve(
             discoveries,
             catalog,
             info,
+            bridge_ready,
         )
         .await
         {
@@ -231,20 +248,16 @@ pub async fn serve(
     });
     // Greeter idle transitions arrive as plain puts from `tisvlay-greeter`
     // (or any client standing in for it) — forward them into the world.
-    let greeter_session = daemon.session().clone();
-    let greeter_site = site.to_string();
+    // Declared before the spawn (and thus before the liveliness token
+    // below): a greeter that sees the daemon alive must not put into
+    // the void.
+    let greeter_sub = session
+        .declare_subscriber(tisvlay_wire::keys::greeter_idle(site))
+        .await
+        .map_err(|e| anyhow!("declare greeter idle subscriber: {e}"))?;
     let greeter_world = world.clone();
     tokio::spawn(async move {
-        let sub = match greeter_session
-            .declare_subscriber(tisvlay_wire::keys::greeter_idle(&greeter_site))
-            .await
-        {
-            Ok(sub) => sub,
-            Err(e) => {
-                tracing::warn!(%e, "greeter idle subscriber failed");
-                return;
-            }
-        };
+        let sub = greeter_sub;
         while let Ok(sample) = sub.recv_async().await {
             let idle = serde_json::from_slice::<serde_json::Value>(&sample.payload().to_bytes())
                 .ok()
@@ -263,6 +276,14 @@ pub async fn serve(
             }
         }
     });
+    // Liveliness comes last: a client that observes the daemon alive
+    // must find every rpc queryable already declared.
+    bridge_declared
+        .await
+        .map_err(|_| anyhow!("bridge exited before declaring its queryables"))?;
+    let alive = declare_alive(&session, site).await?;
+    info!(site, socket = %socket.display(), "bridge serving, liveliness declared");
+    let daemon = Daemon { session, alive };
     Ok(Stack { daemon, world })
 }
 

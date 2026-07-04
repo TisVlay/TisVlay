@@ -123,12 +123,6 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             options.user_socket.display()
         )
     })?;
-    let alive = user
-        .liveliness()
-        .declare_token(keys::user_alive_session(&options.site))
-        .await
-        .map_err(|e| anyhow!("declare session liveliness: {e}"))?;
-
     let mut snapshot = match &options.store {
         Some(path) => load_user_store(path)?,
         None => UserStoreSnapshot::default(),
@@ -170,6 +164,14 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         })
         .await
         .map_err(|e| anyhow!("declare user rpc queryable: {e}"))?;
+
+    // Liveliness after the rpc queryable: a client that observes the
+    // service alive must find the rpc surface already declared.
+    let alive = user
+        .liveliness()
+        .declare_token(keys::user_alive_session(&options.site))
+        .await
+        .map_err(|e| anyhow!("declare session liveliness: {e}"))?;
 
     // Fleet mirror: every TV's meta/config, hydrated from history.
     let meta_sub = system

@@ -39,6 +39,7 @@ pub(crate) struct VendorMeta {
     pub connector: Arc<dyn tisvlay_core::TvConnector>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     session: Session,
     site: String,
@@ -47,6 +48,7 @@ pub(crate) async fn run(
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     catalog: Arc<Vec<VendorMeta>>,
     info: Value,
+    ready: tokio::sync::oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
     let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
     let mut queryables: Vec<Queryable<()>> = Vec::new();
@@ -68,6 +70,10 @@ pub(crate) async fn run(
             .map_err(|e| anyhow::anyhow!("declare rpc queryable {key}: {e}"))?;
         queryables.push(queryable);
     }
+    // Serve-readiness gate: `serve` withholds the daemon's liveliness
+    // token until this fires, so no client can observe the daemon
+    // alive while the rpc surface is still being declared.
+    let _ = ready.send(());
 
     let mut bridge = Bridge {
         session,
