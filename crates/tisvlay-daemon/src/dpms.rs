@@ -2,6 +2,12 @@
 //! DRM connector (KWin on Wayland writes its DPMS state through to it) and
 //! feeds transitions into the world as system events. The base directory is
 //! injectable so tests drive it with plain files.
+//!
+//! `scope_events` picks the dispatch audience: the desktop probe's
+//! auto-spawned watchers tag events with their connector so the world
+//! routes them to the one TV matched there; the `--dpms-connector`
+//! override watcher leaves events untagged (global — every automated
+//! TV), which is what a setup whose EDID match failed needs.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -9,7 +15,13 @@ use std::time::Duration;
 use tisvlay_world::{InEvent, SystemEvent, WorldClient};
 use tracing::{debug, info};
 
-pub async fn watch_dpms(base: PathBuf, connector: String, period: Duration, world: WorldClient) {
+pub async fn watch_dpms(
+    base: PathBuf,
+    connector: String,
+    scope_events: bool,
+    period: Duration,
+    world: WorldClient,
+) {
     let dpms_path: PathBuf = base.join(&connector).join("dpms");
     let status_path: PathBuf = base.join(&connector).join("status");
     let mut last: Option<bool> = None;
@@ -41,7 +53,7 @@ pub async fn watch_dpms(base: PathBuf, connector: String, period: Duration, worl
             debug!(connector, ?event, "DPMS transition");
             if !world.send(InEvent::System {
                 event,
-                connector: Some(connector.clone()),
+                connector: scope_events.then(|| connector.clone()),
             }) {
                 return;
             }

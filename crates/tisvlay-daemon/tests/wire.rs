@@ -663,9 +663,12 @@ async fn dpms_transitions_drive_profile_actions_end_to_end() {
     std::fs::create_dir_all(&connector_dir).unwrap();
     std::fs::write(connector_dir.join("status"), "connected\n").unwrap();
     std::fs::write(connector_dir.join("dpms"), "On\n").unwrap();
+    // Override-watcher semantics: unscoped events dispatch globally, so
+    // the mock TV (which never EDID-matches a connector) still reacts.
     tokio::spawn(tisvlay_daemon::watch_dpms(
         sysfs.path().to_path_buf(),
         "card9-HDMI-A-9".into(),
+        false,
         Duration::from_millis(25),
         w.stack.world.clone(),
     ));

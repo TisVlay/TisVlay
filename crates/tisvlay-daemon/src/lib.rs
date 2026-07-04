@@ -303,6 +303,8 @@ pub struct DaemonOptions {
     /// Declarative seed config re-applied each start; ids already in
     /// the store win.
     pub seed: Option<PathBuf>,
+    /// Extra unscoped DPMS watcher (override; probe-matched connectors
+    /// are watched automatically).
     pub dpms_connector: Option<String>,
     pub ssdp_port: u16,
 }
@@ -349,10 +351,15 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         options.store.as_deref(),
     )
     .await?;
+    // The desktop probe auto-spawns a scoped DPMS watcher per
+    // EDID-matched connector; the override flag adds one more whose
+    // transitions dispatch globally (the escape hatch when the EDID
+    // match fails or the target is a mock).
     if let Some(connector) = &options.dpms_connector {
         tokio::spawn(watch_dpms(
             PathBuf::from("/sys/class/drm"),
             connector.clone(),
+            false,
             DPMS_PERIOD,
             stack.world.clone(),
         ));
@@ -364,6 +371,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         stack.world.clone(),
         PathBuf::from("/sys/class/drm"),
         Duration::from_secs(60),
+        DPMS_PERIOD,
     ));
     match zbus::Connection::system().await {
         Ok(connection) => {

@@ -41,7 +41,8 @@ tisvlay/
 │   │                             # backend bridge (deferred acks via CommandDone)
 │   ├── tisvlay-daemon/            # System daemon binary+lib: world + zenoh bridge,
 │   │   └── src/                  # store (TOML persistence), seed config, discovery,
-│   │                             # dpms sysfs watcher, logind, netlink, arp, probe (EDID)
+│   │                             # per-connector dpms watchers, logind, netlink, arp,
+│   │                             # probe (EDID matcher driving the watcher set)
 │   ├── tisvlay-session/           # Per-user session service: gateway (client link to
 │   │                             # system socket + router owning user/**), user profiles,
 │   │                             # ScreenSaver lock/unlock, wayland idle

@@ -142,14 +142,23 @@ pub(crate) fn match_displays_to_tvs<'a>(
     out
 }
 
-/// Consume identity keys from our own wire, probe sysfs, and feed matches
-/// into the world. Periodic re-probe catches displays plugged in later.
+/// Consume identity keys from our own wire, probe sysfs, feed matches
+/// into the world, and keep one DPMS watcher per matched connector.
+/// Periodic re-probe catches displays plugged in later.
+///
+/// Watcher lifecycle rides the match table: a connector gains a watcher
+/// when some TV matches it and loses it when no TV holds it anymore
+/// (TV removed, or its match moved). Matches persist across a display
+/// reading `disconnected` — a powered-off TV drops its EDID link, and
+/// the watcher itself idles on disconnected status — so watchers don't
+/// churn with TV power state.
 pub(crate) async fn probe_task(
     session: Session,
     site: String,
     world: WorldClient,
     sysfs: PathBuf,
     period: Duration,
+    dpms_period: Duration,
 ) {
     let subscriber = match session
         .declare_subscriber(keys::tv_all(&site))
@@ -164,13 +173,14 @@ pub(crate) async fn probe_task(
     };
     let mut tvs: HashMap<Uuid, HardwareId> = HashMap::new();
     let mut assigned: HashMap<Uuid, String> = HashMap::new();
+    let mut watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut ticker = tokio::time::interval(period);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     info!("desktop probe started");
     loop {
         tokio::select! {
             sample = subscriber.recv_async() => {
-                let Ok(sample) = sample else { return };
+                let Ok(sample) = sample else { break };
                 let Some((tv, path)) = keys::parse_tv_path(&site, sample.key_expr().as_str())
                 else {
                     continue;
@@ -198,12 +208,51 @@ pub(crate) async fn probe_task(
                         }
                     }
                 }
+                reconcile_watchers(&assigned, &mut watchers, &sysfs, dpms_period, &world);
             }
             _ = ticker.tick() => {
                 if !tvs.is_empty() {
                     rematch(&sysfs, &tvs, &mut assigned, &world);
+                    reconcile_watchers(&assigned, &mut watchers, &sysfs, dpms_period, &world);
                 }
             }
+        }
+    }
+    for (_, watcher) in watchers.drain() {
+        watcher.abort();
+    }
+}
+
+/// Align the running DPMS watchers with the match table: one scoped
+/// watcher per connector some TV is matched to.
+fn reconcile_watchers(
+    assigned: &HashMap<Uuid, String>,
+    watchers: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+    sysfs: &Path,
+    dpms_period: Duration,
+    world: &WorldClient,
+) {
+    let desired: HashSet<&String> = assigned.values().collect();
+    watchers.retain(|connector, watcher| {
+        let keep = desired.contains(connector);
+        if !keep {
+            info!(connector, "DPMS watcher stopped (no TV matched)");
+            watcher.abort();
+        }
+        keep
+    });
+    for connector in desired {
+        if !watchers.contains_key(connector) {
+            watchers.insert(
+                connector.clone(),
+                tokio::spawn(crate::dpms::watch_dpms(
+                    sysfs.to_path_buf(),
+                    connector.clone(),
+                    true,
+                    dpms_period,
+                    world.clone(),
+                )),
+            );
         }
     }
 }

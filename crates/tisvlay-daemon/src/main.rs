@@ -28,8 +28,10 @@ struct Args {
     #[arg(long)]
     seed: Option<PathBuf>,
 
-    /// DRM connector whose sysfs DPMS state drives screen actions
-    /// (e.g. card1-HDMI-A-1).
+    /// Watch this DRM connector's DPMS state in addition to the
+    /// EDID-matched ones the daemon watches automatically; its
+    /// transitions dispatch to every automated TV — the override for
+    /// setups where the EDID match fails (e.g. card1-HDMI-A-1).
     #[arg(long)]
     dpms_connector: Option<String>,
 

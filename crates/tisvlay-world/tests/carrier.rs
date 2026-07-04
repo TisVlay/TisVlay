@@ -29,13 +29,15 @@ async fn carrier_transitions_park_and_redial() {
     assert_eq!(handle.connect_call_count("mock://carrier"), 2);
 }
 
-/// A connector-scoped DPMS event reaches only the TV mapped to that
-/// connector; unmapped TVs still treat events as global.
+/// A connector-scoped DPMS event reaches only the TV mapped to exactly
+/// that connector: TVs mapped elsewhere skip it, and so do unmapped
+/// TVs (only global events — no connector — reach those).
 #[tokio::test]
 async fn connector_scoping_targets_the_mapped_tv() {
     let (mut effects, client, _handle) = spawn_reactor();
     let tv_a = Uuid::new_v4();
     let tv_b = Uuid::new_v4();
+    let tv_c = Uuid::new_v4();
     client.command(Command::AddTv {
         record: Box::new(tv_record(tv_a, "A", mock_config("mock://scope-a"))),
         reply: None,
@@ -44,13 +46,18 @@ async fn connector_scoping_targets_the_mapped_tv() {
         record: Box::new(tv_record(tv_b, "B", mock_config("mock://scope-b"))),
         reply: None,
     });
-    // Both connected.
+    // C never gets a connector match — scoped events must pass it by.
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(tv_c, "C", mock_config("mock://scope-c"))),
+        reply: None,
+    });
+    // All connected.
     let mut connected = 0;
     collect_until(&mut effects, |e| {
         if link_connected(e, true) {
             connected += 1;
         }
-        connected >= 2
+        connected >= 3
     })
     .await;
 
@@ -72,9 +79,10 @@ async fn connector_scoping_targets_the_mapped_tv() {
         event: SystemEvent::DpmsOff,
         connector: Some("card1-HDMI-A-1".into()),
     });
-    // Only TV A blanks.
+    // Only TV A blanks — B is mapped elsewhere, C is unmapped.
     let a_prefix = format!("/tv/{tv_a}/state/power");
     let b_prefix = format!("/tv/{tv_b}/state/power");
+    let c_prefix = format!("/tv/{tv_c}/state/power");
     collect_until(&mut effects, |e| match e {
         tisvlay_world::WireEffect::Publish { key, payload }
             if key.contains(&a_prefix.trim_start_matches('/').to_string()) =>
@@ -87,6 +95,22 @@ async fn connector_scoping_targets_the_mapped_tv() {
     assert_quiet(&mut effects, Duration::from_millis(300), |e| match e {
         tisvlay_world::WireEffect::Publish { key, .. } => {
             key.contains(b_prefix.trim_start_matches('/'))
+                || key.contains(c_prefix.trim_start_matches('/'))
+        }
+        _ => false,
+    })
+    .await;
+
+    // The global path still reaches the unmapped TV.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| match e {
+        tisvlay_world::WireEffect::Publish { key, payload }
+            if key.contains(&c_prefix.trim_start_matches('/').to_string()) =>
+        {
+            payload["state"] == "screenoff"
         }
         _ => false,
     })

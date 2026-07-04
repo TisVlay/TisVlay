@@ -230,8 +230,10 @@ site := env("SITE", "main")
 # "true" → daemon/session run without persistence.
 ephemeral := env("EPHEMERAL", "false")
 
-# DRM connector whose sysfs DPMS state drives screen actions
-# (e.g. card1-HDMI-A-1). Empty = no DPMS watcher.
+# Extra DRM connector to watch for DPMS transitions, dispatched to
+# every automated TV (e.g. card1-HDMI-A-1) — the override for mocks
+# and failed EDID matches. EDID-matched connectors are watched
+# automatically, scoped per TV. Empty = automatic watchers only.
 dpms_connector := env("DPMS_CONNECTOR", "")
 
 # Pinned SSDP source port for LG discovery — must match the firewall
@@ -261,7 +263,7 @@ daemon-start:
         dpms=(--dpms-connector "{{ dpms_connector }}")
     fi
     RUST_LOG="{{ _daemon_log }}" \
-        cargo run --bin tisvlay-daemon -- \
+        cargo run --release --bin tisvlay-daemon -- \
             --socket "{{ socket }}" --site "{{ site }}" \
             --ssdp-port "{{ ssdp_port }}" {{ _ephemeral_flag }} "${dpms[@]}"
 
@@ -269,7 +271,7 @@ daemon-start:
 [group('dev')]
 session-start:
     RUST_LOG="{{ _session_log }}" \
-        cargo run --bin tisvlay-session -- \
+        cargo run --release --bin tisvlay-session -- \
             --system-socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}" {{ _ephemeral_flag }}
 
@@ -277,14 +279,14 @@ session-start:
 [group('dev')]
 greeter-start:
     RUST_LOG="{{ _greeter_log }}" \
-        cargo run --bin tisvlay-greeter -- \
+        cargo run --release --bin tisvlay-greeter -- \
             --socket "{{ socket }}" --site "{{ site }}"
 
 # Start the tray (user profiles appear when session-start is up).
 [group('dev')]
 tray-start:
     RUST_LOG="{{ _tray_log }}" \
-        cargo run --bin tisvlay-tray -- \
+        cargo run --release --bin tisvlay-tray -- \
             --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}"
 
@@ -294,7 +296,7 @@ gui-start:
     {{ if gui_mcp == "true" { "SLINT_MCP_PORT=9315" } else { "" } }} \
         RUST_LOG="{{ _gui_log }}" \
         cargo run {{ if gui_mcp == "true" { "--features slint/mcp" } else { "" } }} \
-        --bin tisvlay-gui -- \
+        --release --bin tisvlay-gui -- \
             --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}"
 
@@ -317,12 +319,12 @@ stop-all:
 # Show CLI status (manual smoke test)
 [group('dev')]
 cli-status:
-    cargo run --bin tisvlay -- --socket "{{ socket }}" --site "{{ site }}" status
+    cargo run --release --bin tisvlay -- --socket "{{ socket }}" --site "{{ site }}" status
 
 # Run any CLI verb against the dev sockets, e.g. `just cli list`.
 [group('dev')]
 cli *args:
-    cargo run --bin tisvlay -- \
+    cargo run --release --bin tisvlay -- \
         --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
         --site "{{ site }}" {{ args }}
 

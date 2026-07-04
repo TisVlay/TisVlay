@@ -1448,8 +1448,9 @@ fn apply_connector_matches(
 /// Map system events (DPMS, sleep, greeter idle) through the profile onto
 /// every automated TV — screen actions ride the reliable tier, and
 /// wake-capable power/screen-on reach even disconnected TVs via the wake
-/// dial. Connector-scoped events skip TVs mapped to a different connector;
-/// unmapped TVs treat every event as global.
+/// dial. Connector-scoped events apply only to TVs matched to exactly
+/// that connector; global events (no connector) reach every automated
+/// TV.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 fn dispatch_system_events(
@@ -1481,8 +1482,8 @@ fn dispatch_system_events(
             continue;
         };
         for (entity, id, handle, pending, traits, link, retry, mirrors, meta, input) in &q {
-            if let (Some(scope), Some(MirrorsConnector(mapped))) = (connector, mirrors)
-                && scope != mapped
+            if let Some(scope) = connector
+                && mirrors.is_none_or(|MirrorsConnector(mapped)| mapped != scope)
             {
                 continue;
             }
