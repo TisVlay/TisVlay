@@ -16,11 +16,7 @@ async fn add_tv_connects_and_publishes_initial_state() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = Uuid::new_v4();
     client.command(Command::AddTv {
-        id,
-        name: "Den".into(),
-        vendor: "mock".into(),
-        config: mock_config("mock://den"),
-        managed: true,
+        record: Box::new(tv_record(id, "Den", mock_config("mock://den"))),
         reply: Some(1),
     });
 
@@ -104,7 +100,7 @@ async fn remove_tv_is_boring() {
             _ => None,
         })
         .collect();
-    assert_eq!(deletes.len(), 5, "one DELETE per per-TV key: {deletes:?}");
+    assert_eq!(deletes.len(), 8, "one DELETE per per-TV key: {deletes:?}");
     assert!(deletes.iter().all(|k| k.contains(&id.to_string())));
 
     // A command against the dead uuid gets a typed error, not a hang.
@@ -183,11 +179,11 @@ async fn connect_failure_backs_off_and_gives_up() {
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::Integer(42));
     client.command(Command::AddTv {
-        id: Uuid::new_v4(),
-        name: "Broken".into(),
-        vendor: "mock".into(),
-        config: toml::Value::Table(table),
-        managed: true,
+        record: Box::new(tv_record(
+            Uuid::new_v4(),
+            "Broken",
+            toml::Value::Table(table),
+        )),
         reply: None,
     });
 

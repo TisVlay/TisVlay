@@ -20,6 +20,14 @@ pub(crate) async fn connect_flow(
 ) {
     let supports_wake = connector.supports_wake(&config);
     let dial = if wake {
+        let _ = inbox.send(InEvent::Backend {
+            tv,
+            event: BackendEvent::PowerPhase("wol_sent"),
+        });
+        let _ = inbox.send(InEvent::Backend {
+            tv,
+            event: BackendEvent::PowerPhase("connecting"),
+        });
         connector.wake_and_connect(&config).await
     } else {
         connector.connect(&config).await
@@ -48,6 +56,13 @@ pub(crate) async fn connect_flow(
             return;
         }
     };
+    let brand = connection.brand();
+    let hardware = connection.hardware_id();
+    let capabilities: Vec<String> = connection
+        .capabilities()
+        .iter_names()
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
     // Push-capable backends stream deltas; poll-only backends (subscribe
     // refused) still work — the connection serves commands, state refreshes
     // only on reconnect.
@@ -59,6 +74,9 @@ pub(crate) async fn connect_flow(
             cmd_tx,
             state: Box::new(state),
             supports_wake,
+            brand,
+            hardware,
+            capabilities,
         },
     });
 
@@ -75,13 +93,15 @@ pub(crate) async fn connect_flow(
                     return;
                 }
                 Some(cmd) => {
-                    let result = match cmd {
-                        BackendCmd::SetVolume(level) => connection.set_volume(level).await,
-                        BackendCmd::SetMuted(muted) => connection.set_mute(muted).await,
+                    let result = match &cmd {
+                        BackendCmd::SetVolume(level) => connection.set_volume(*level).await,
+                        BackendCmd::SetMuted(muted) => connection.set_mute(*muted).await,
                         BackendCmd::PowerOn => connection.power_on().await,
                         BackendCmd::PowerOff => connection.power_off().await,
                         BackendCmd::ScreenOn => connection.screen_on().await,
                         BackendCmd::ScreenOff => connection.screen_off().await,
+                        BackendCmd::SwitchInput(input) => connection.switch_input(input).await,
+                        BackendCmd::SetBacklight(level) => connection.set_backlight(*level).await,
                     };
                     if let Err(error) = result {
                         warn!(%tv, ?cmd, %error, "backend command failed");

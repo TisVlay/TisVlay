@@ -2,26 +2,27 @@
 //! vocabulary.
 
 use bevy_ecs::message::Message;
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tisvlay_core::TvState;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-/// Correlation id for a command reply. In M2 this becomes the zenoh query
-/// handle; for now it is an opaque number the test (or RPC glue) chooses.
+/// Correlation id for a command reply — the bridge maps it back onto the
+/// zenoh query that asked.
 pub type ReplyTo = u64;
 
 /// Everything that can enter the world through the reactor inbox.
 #[derive(Message, Debug)]
 pub enum InEvent {
-    /// A control-plane command (RPC in M2, test driver today).
+    /// A control-plane command (RPC via the bridge, or a test driver).
     Command(Command),
     /// A fact reported by a backend connection task.
     Backend { tv: Uuid, event: BackendEvent },
     /// A fact reported by a pairing task (or the reactor's pairing glue).
     PairingUpdate { id: Uuid, update: PairingUpdate },
-    /// A desktop/power event from an adapter (logind, DPMS, lock — tests
-    /// today), dispatched through the system profile to per-TV actions.
+    /// A desktop/power event from an adapter (logind, DPMS, lock),
+    /// dispatched through the system profile to per-TV actions.
     System { event: SystemEvent },
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.
@@ -48,7 +49,7 @@ pub enum PairingUpdate {
     /// A pairing state transition (progress or terminal).
     State(Box<tisvlay_core::PairingState>),
     /// The reactor built the final vendor config from credentials — spawn
-    /// the TV.
+    /// the TV (or update it, for a re-pair).
     ConfigReady(toml::Value),
     /// Config build failed after successful pairing.
     ConfigFailed(String),
@@ -67,16 +68,20 @@ pub enum Command {
         managed: bool,
         reply: Option<ReplyTo>,
     },
+    /// Re-run the pairing handshake for an existing TV (refreshes
+    /// credentials); progress streams on the TV's pairing key.
+    RePair {
+        id: Uuid,
+        reply: Option<ReplyTo>,
+    },
     CancelPair {
         id: Uuid,
         reply: Option<ReplyTo>,
     },
+    /// Enroll a TV directly from a full store row — the boot-replay and
+    /// rpc enrollment path alike.
     AddTv {
-        id: Uuid,
-        name: String,
-        vendor: String,
-        config: toml::Value,
-        managed: bool,
+        record: Box<TvRecord>,
         reply: Option<ReplyTo>,
     },
     RemoveTv {
@@ -90,6 +95,31 @@ pub enum Command {
         id: Uuid,
         reply: Option<ReplyTo>,
     },
+    SetName {
+        id: Uuid,
+        name: String,
+        reply: Option<ReplyTo>,
+    },
+    SetManaged {
+        id: Uuid,
+        managed: bool,
+        reply: Option<ReplyTo>,
+    },
+    SetSystemProfile {
+        id: Uuid,
+        profile: Option<Uuid>,
+        reply: Option<ReplyTo>,
+    },
+    SetPrimaryInput {
+        id: Uuid,
+        input: Option<String>,
+        reply: Option<ReplyTo>,
+    },
+    SetAutomateWhen {
+        id: Uuid,
+        when: String,
+        reply: Option<ReplyTo>,
+    },
     SetVolume {
         id: Uuid,
         level: u8,
@@ -100,6 +130,21 @@ pub enum Command {
         muted: bool,
         reply: Option<ReplyTo>,
     },
+    SwitchInput {
+        id: Uuid,
+        input: String,
+        reply: Option<ReplyTo>,
+    },
+    SetBacklight {
+        id: Uuid,
+        level: u8,
+        reply: Option<ReplyTo>,
+    },
+    SetScreen {
+        id: Uuid,
+        on: bool,
+        reply: Option<ReplyTo>,
+    },
     PowerOn {
         id: Uuid,
         reply: Option<ReplyTo>,
@@ -108,17 +153,36 @@ pub enum Command {
         id: Uuid,
         reply: Option<ReplyTo>,
     },
+    /// Read the TV's config: top-level fields + the vendor table. The
+    /// reactor redacts `Secret` fields against the vendor schema before
+    /// the reply leaves the process.
+    GetConfig {
+        id: Uuid,
+        reply: Option<ReplyTo>,
+    },
+    /// Patch config: known top-level keys apply to the TV's settings,
+    /// everything else merges into the vendor table (which forces a
+    /// reconnect, since transport parameters may have changed).
+    UpdateConfig {
+        id: Uuid,
+        patch: serde_json::Value,
+        reply: Option<ReplyTo>,
+    },
 }
 
 /// Facts pushed by a backend connection task into the world.
 #[derive(Debug)]
 pub enum BackendEvent {
     /// Dial succeeded: the connection task is live and commands can be sent
-    /// through `cmd_tx`. Carries the initial state snapshot.
+    /// through `cmd_tx`. Carries the initial state snapshot and the
+    /// connection-derived identity.
     Connected {
         cmd_tx: mpsc::UnboundedSender<BackendCmd>,
         state: Box<TvState>,
         supports_wake: bool,
+        brand: Option<String>,
+        hardware: Option<tisvlay_core::HardwareId>,
+        capabilities: Vec<String>,
     },
     /// Dial failed before a connection existed.
     ConnectFailed { error: String },
@@ -127,10 +191,13 @@ pub enum BackendEvent {
     /// The connection ended (device closed it, or `power_off` on a
     /// network-style transport).
     Disconnected,
+    /// A wake-dial phase for the `progress/power` key (`wol_sent`,
+    /// `connecting`; the world adds the terminal `connected`/`failed`).
+    PowerPhase(&'static str),
 }
 
 /// Commands the world sends to a live connection task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendCmd {
     SetVolume(u8),
     SetMuted(bool),
@@ -138,11 +205,35 @@ pub enum BackendCmd {
     PowerOff,
     ScreenOn,
     ScreenOff,
+    SwitchInput(String),
+    SetBacklight(u8),
 }
 
-/// Outbound wire-facing effects. In M2 these map 1:1 onto zenoh operations
-/// (put / delete / query reply); today the effects channel is the observable
-/// contract the tests assert on.
+/// One TV's persistable state — the store row, snapshotted from the world
+/// whenever config-shaped components change.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TvRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub vendor: String,
+    pub managed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_profile: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_input: Option<String>,
+    #[serde(default = "default_automate_when")]
+    pub automate_when: String,
+    /// Vendor config verbatim, credentials included — disk only, never
+    /// the wire.
+    pub config: toml::Value,
+}
+
+fn default_automate_when() -> String {
+    "always".into()
+}
+
+/// Outbound wire-facing effects. The bridge maps these 1:1 onto zenoh
+/// operations (put / delete / query reply).
 #[derive(Debug, Clone, PartialEq)]
 pub enum WireEffect {
     Publish {
@@ -159,7 +250,7 @@ pub enum WireEffect {
 }
 
 /// Typed failure reason for a command reply — serialized into the zenoh
-/// `reply_err` payload in M2.
+/// `reply_err` payload.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct WireError {
     pub code: String,
@@ -213,6 +304,13 @@ impl WireError {
         Self {
             code: "wake-not-supported".into(),
             message: format!("TV {id} is disconnected and its transport cannot wake it"),
+        }
+    }
+
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad-request".into(),
+            message: message.into(),
         }
     }
 }

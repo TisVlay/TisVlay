@@ -6,8 +6,9 @@ mod boot;
 mod bridge;
 mod discovery;
 mod dpms;
+mod store;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,8 +16,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tisvlay_core::TvConnector;
+use tokio::sync::mpsc;
 use tracing::info;
-use tvnext_world::{Command, Reactor, WorldClient};
+use tvnext_world::{Command, Reactor, TvRecord, WorldClient};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
@@ -24,6 +26,7 @@ use zenoh::liveliness::LivelinessToken;
 pub use boot::{BootConfig, BootTv, load_boot_config};
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
+pub use store::load_store;
 
 /// An open daemon session: zenoh peer listening on a Unix socket, with the
 /// `tisvlay/<site>/alive/daemon` liveliness token declared.
@@ -92,9 +95,15 @@ pub async fn serve(
     site: &str,
     connectors: Vec<(&str, Arc<dyn TvConnector>)>,
     discoveries: Vec<(&str, Arc<dyn DynDiscovery>)>,
+    store_path: Option<&Path>,
 ) -> Result<Stack> {
     let daemon = open(socket, site).await?;
-    let (reactor, effects, world) = Reactor::new(site, connectors);
+    let (mut reactor, effects, world) = Reactor::new(site, connectors);
+    if let Some(path) = store_path {
+        let (tx, rx) = mpsc::unbounded_channel();
+        reactor.set_persist(tx);
+        tokio::spawn(store::store_task(path.to_path_buf(), rx));
+    }
     tokio::spawn(reactor.run());
     let discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>> = Arc::new(
         discoveries
@@ -125,16 +134,24 @@ pub async fn serve(
 /// parameter so tests can run fast).
 const DPMS_PERIOD: Duration = Duration::from_secs(2);
 
+/// Everything the production entry point needs; `main` builds it from
+/// flags.
+#[derive(Debug)]
+pub struct DaemonOptions {
+    pub socket: PathBuf,
+    pub site: String,
+    /// Persisted TV table (credentials included). `None` = ephemeral.
+    pub state: Option<PathBuf>,
+    /// Additive dev seeds; ids already in the store win.
+    pub boot: Option<PathBuf>,
+    pub dpms_connector: Option<String>,
+    pub ssdp_port: u16,
+}
+
 /// Production-shaped entry: serve with the real vendor backends (plus the
-/// mock for play), seed TVs from the boot config, optionally watch a DRM
-/// connector's DPMS state, run until ctrl-c.
-pub async fn run(
-    socket: &Path,
-    site: &str,
-    boot: Option<&Path>,
-    dpms_connector: Option<&str>,
-    ssdp_port: u16,
-) -> Result<()> {
+/// mock for play), replay the store, seed extras from the boot config,
+/// optionally watch a DRM connector's DPMS state, run until ctrl-c.
+pub async fn run(options: DaemonOptions) -> Result<()> {
     let (mock_connector, mock_discovery) = tisvlay_mock::new_production_parts();
     let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vec![
         ("mock", Arc::new(mock_connector)),
@@ -146,28 +163,58 @@ pub async fn run(
         // Pinned SSDP source port: LG TVs reply unicast from ephemeral
         // ports TO this port, so it must match the firewall's allowed UDP
         // port — see docs/firewall.md at the repo root.
-        ("lg", Arc::new(tisvlay_lg::LgDiscovery::new(ssdp_port))),
+        (
+            "lg",
+            Arc::new(tisvlay_lg::LgDiscovery::new(options.ssdp_port)),
+        ),
         ("cec", Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
-    let stack = serve(socket, site, connectors, discoveries).await?;
-    if let Some(connector) = dpms_connector {
+    let stack = serve(
+        &options.socket,
+        &options.site,
+        connectors,
+        discoveries,
+        options.state.as_deref(),
+    )
+    .await?;
+    if let Some(connector) = &options.dpms_connector {
         tokio::spawn(watch_dpms(
             PathBuf::from("/sys/class/drm"),
-            connector.to_string(),
+            connector.clone(),
             DPMS_PERIOD,
             stack.world.clone(),
         ));
     }
-    if let Some(path) = boot {
+
+    let mut seeded: HashSet<Uuid> = HashSet::new();
+    if let Some(path) = &options.state {
+        for record in load_store(path)? {
+            info!(id = %record.id, name = %record.name, vendor = %record.vendor, "store TV");
+            seeded.insert(record.id);
+            stack.world.command(Command::AddTv {
+                record: Box::new(record),
+                reply: None,
+            });
+        }
+    }
+    if let Some(path) = &options.boot {
         for tv in load_boot_config(path)?.tv {
             let id = tv.id.unwrap_or_else(Uuid::new_v4);
+            if seeded.contains(&id) {
+                continue;
+            }
             info!(%id, name = %tv.name, vendor = %tv.vendor, "boot TV");
             stack.world.command(Command::AddTv {
-                id,
-                name: tv.name,
-                vendor: tv.vendor,
-                config: tv.config,
-                managed: tv.managed,
+                record: Box::new(TvRecord {
+                    id,
+                    name: tv.name,
+                    vendor: tv.vendor,
+                    managed: tv.managed,
+                    system_profile: None,
+                    primary_input: None,
+                    automate_when: "always".into(),
+                    config: tv.config,
+                }),
                 reply: None,
             });
         }

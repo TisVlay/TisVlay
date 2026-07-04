@@ -8,7 +8,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{BackendCmd, SystemEvent, WireEffect};
+use crate::events::{BackendCmd, ReplyTo, SystemEvent, TvRecord, WireEffect};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
 #[derive(Component, Debug)]
@@ -52,21 +52,29 @@ pub(crate) struct ConnectionHandle {
     pub cmd_tx: mpsc::UnboundedSender<BackendCmd>,
 }
 
-/// A running pairing session. Lives on its own entity (the TV entity does
-/// not exist until pairing completes); despawned on any terminal outcome.
+/// A running pairing session, keyed by the TV's uuid. For a fresh pairing
+/// the TV entity doesn't exist yet and `enroll` carries its birth
+/// metadata; for a re-pair `enroll` is `None` and completion refreshes the
+/// existing TV's credentials. Despawned on any terminal outcome.
 #[derive(Component, Debug)]
 pub(crate) struct PairingRef {
-    pub name: String,
     pub vendor: String,
     /// The pairing-form params — fed to `build_config_from_pairing` on
     /// success.
     pub params: toml::Value,
-    pub managed: bool,
+    /// `Some` = fresh enrollment (spawn on success), `None` = re-pair.
+    pub enroll: Option<PairingEnroll>,
     /// Cancel channel, attached once the pairing task starts. `None` for
     /// the brief window before the task reports in.
     pub cancel_tx: Option<mpsc::Sender<tisvlay_core::PairingCommand>>,
     /// A cancel arrived before `cancel_tx` did — forward it on attach.
     pub cancel_requested: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct PairingEnroll {
+    pub name: String,
+    pub managed: bool,
 }
 
 /// Uuid → pairing-session entity index.
@@ -125,6 +133,11 @@ pub(crate) struct TvIndex(pub HashMap<Uuid, Entity>);
 #[derive(Resource, Debug)]
 pub(crate) struct KnownVendors(pub HashSet<String>);
 
+/// Config-shaped state changed this frame — the persist system snapshots
+/// the whole TV table when set.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct DirtyStore(pub bool);
+
 /// Deferred outbound work, drained by the reactor after each schedule run.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct Outbox(pub Vec<Effect>);
@@ -153,4 +166,10 @@ pub(crate) enum Effect {
         params: toml::Value,
         credentials: Box<tisvlay_core::Credentials>,
     },
+    /// Persist the full TV table (reactor debounces and writes atomically).
+    Persist(Vec<TvRecord>),
+    /// Redact a TV's config against its vendor schema and reply — the
+    /// reactor owns the connectors (and thus the schemas), so the Secret
+    /// filtering happens there and credentials never reach the bridge.
+    RedactConfig { reply: ReplyTo, record: TvRecord },
 }

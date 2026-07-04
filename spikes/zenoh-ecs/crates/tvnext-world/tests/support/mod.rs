@@ -7,13 +7,26 @@ use std::time::Duration;
 
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tokio::sync::mpsc::UnboundedReceiver;
-use tvnext_world::{Command, Reactor, WireEffect, WorldClient};
+use tvnext_world::{Command, Reactor, TvRecord, WireEffect, WorldClient};
 use uuid::Uuid;
 
 pub(crate) fn mock_config(address: &str) -> toml::Value {
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::String(address.into()));
     toml::Value::Table(table)
+}
+
+pub(crate) fn tv_record(id: Uuid, name: &str, config: toml::Value) -> TvRecord {
+    TvRecord {
+        id,
+        name: name.into(),
+        vendor: "mock".into(),
+        managed: true,
+        system_profile: None,
+        primary_input: None,
+        automate_when: "always".into(),
+        config,
+    }
 }
 
 pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
@@ -99,11 +112,7 @@ pub(crate) async fn add_connected_tv(
 ) -> Uuid {
     let id = Uuid::new_v4();
     client.command(Command::AddTv {
-        id,
-        name: "Den".into(),
-        vendor: "mock".into(),
-        config: mock_config(address),
-        managed: true,
+        record: Box::new(tv_record(id, "Den", mock_config(address))),
         reply: Some(1),
     });
     collect_until(effects, |e| link_connected(e, true)).await;

@@ -14,7 +14,15 @@ struct Args {
     #[arg(long, default_value = "main")]
     site: String,
 
-    /// Boot config (TOML) seeding TVs at start.
+    /// Persisted TV table (default: XDG data dir); --ephemeral disables.
+    #[arg(long)]
+    state: Option<PathBuf>,
+
+    /// Run without persistence (state lives only in the world).
+    #[arg(long)]
+    ephemeral: bool,
+
+    /// Boot config (TOML) seeding extra TVs at start (store ids win).
     #[arg(long)]
     config: Option<PathBuf>,
 
@@ -29,6 +37,12 @@ struct Args {
     ssdp_port: u16,
 }
 
+fn default_state_path() -> PathBuf {
+    directories::ProjectDirs::from("", "", "tvnext")
+        .map(|dirs| dirs.data_dir().join("state.toml"))
+        .unwrap_or_else(|| PathBuf::from("tvnext-state.toml"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -37,15 +51,20 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = Args::parse();
-    let socket = args
-        .socket
-        .unwrap_or_else(tvnext_wire::bootstrap::default_socket_path);
-    tvnext_daemon::run(
-        &socket,
-        &args.site,
-        args.config.as_deref(),
-        args.dpms_connector.as_deref(),
-        args.ssdp_port,
-    )
+    let state = if args.ephemeral {
+        None
+    } else {
+        Some(args.state.unwrap_or_else(default_state_path))
+    };
+    tvnext_daemon::run(tvnext_daemon::DaemonOptions {
+        socket: args
+            .socket
+            .unwrap_or_else(tvnext_wire::bootstrap::default_socket_path),
+        site: args.site,
+        state,
+        boot: args.config,
+        dpms_connector: args.dpms_connector,
+        ssdp_port: args.ssdp_port,
+    })
     .await
 }

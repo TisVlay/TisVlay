@@ -67,6 +67,30 @@ enum Command {
     },
     /// Set a TV's volume.
     SetVolume { id: Uuid, level: u8 },
+    /// Switch a TV's input.
+    Input { id: Uuid, input: String },
+    /// Set a TV's backlight level.
+    Backlight { id: Uuid, level: u8 },
+    /// Blank or wake the screen.
+    Screen {
+        id: Uuid,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Rename a TV.
+    Rename { id: Uuid, name: String },
+    /// Toggle whether the daemon drives this TV.
+    Managed {
+        id: Uuid,
+        #[arg(value_parser = clap::value_parser!(bool))]
+        managed: bool,
+    },
+    /// Read a TV's config (vendor secrets redacted).
+    Config { id: Uuid },
+    /// Patch a TV's config with a JSON object (null unsets a vendor key).
+    ConfigSet { id: Uuid, json: String },
+    /// Re-run the pairing handshake for an existing TV.
+    Repair { id: Uuid },
     /// Power a TV on or off.
     Power {
         id: Uuid,
@@ -133,6 +157,77 @@ async fn main() -> Result<()> {
             .await?;
             println!("ok");
             Ok(())
+        }
+        Command::Input { id, input } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "switch-input"),
+                json!({ "input": input }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Backlight { id, level } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-backlight"),
+                json!({ "level": level }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Screen { id, state } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-screen"),
+                json!({ "on": state == "on" }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Rename { id, name } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-name"),
+                json!({ "name": name }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Managed { id, managed } => {
+            call(
+                &session,
+                &keys::tv_rpc(site, &id, "set-managed"),
+                json!({ "managed": managed }),
+            )
+            .await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Config { id } => {
+            let config = call(
+                &session,
+                &keys::tv_rpc(site, &id, "get-config"),
+                Value::Null,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&config)?);
+            Ok(())
+        }
+        Command::ConfigSet { id, json } => {
+            let patch: Value = serde_json::from_str(&json)?;
+            call(&session, &keys::tv_rpc(site, &id, "update-config"), patch).await?;
+            println!("ok");
+            Ok(())
+        }
+        Command::Repair { id } => {
+            call(&session, &keys::tv_rpc(site, &id, "re-pair"), Value::Null).await?;
+            println!("re-pairing session {id} started");
+            watch_pairing(&session, site, id).await
         }
         Command::Power { id, state } => {
             let verb = if state == "on" {
@@ -284,6 +379,12 @@ async fn pair(
     let id = Uuid::parse_str(started["id"].as_str().unwrap_or_default())
         .map_err(|_| anyhow!("daemon reply carried no pairing id"))?;
     println!("pairing session {id} started");
+    watch_pairing(session, site, id).await
+}
+
+/// Stream a pairing session's progress phases to stdout until a terminal
+/// one; ctrl-c sends cancel-pair.
+async fn watch_pairing(session: &Session, site: &str, id: Uuid) -> Result<()> {
     let subscriber = session
         .declare_subscriber(keys::pairing_progress(site, &id))
         .history(HistoryConfig::default().detect_late_publishers())

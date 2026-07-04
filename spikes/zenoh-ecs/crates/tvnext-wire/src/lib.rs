@@ -65,10 +65,66 @@ pub mod payload {
         const PATH: &'static str = "state/link";
     }
 
+    /// Current + available inputs.
+    #[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct Input {
+        pub current: Option<String>,
+        pub available: Vec<InputEntry>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct InputEntry {
+        pub id: String,
+        pub label: String,
+        pub connected: bool,
+    }
+
+    impl StatePayload for Input {
+        const PATH: &'static str = "state/input";
+    }
+
+    #[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct Backlight {
+        pub level: u8,
+    }
+
+    impl StatePayload for Backlight {
+        const PATH: &'static str = "state/backlight";
+    }
+
     #[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
     pub struct Identity {
         pub name: String,
         pub vendor: String,
+        /// Canonical device brand when the backend can resolve it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub brand: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub make: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub model: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub serial: Option<String>,
+        pub capabilities: Vec<String>,
+        /// DRM connector this TV mirrors, once the desktop probe matches it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub connector: Option<String>,
+    }
+
+    impl Identity {
+        /// A fresh identity carrying only what enrollment knows.
+        pub fn new(name: impl Into<String>, vendor: impl Into<String>) -> Self {
+            Self {
+                name: name.into(),
+                vendor: vendor.into(),
+                brand: None,
+                make: None,
+                model: None,
+                serial: None,
+                capabilities: Vec::new(),
+                connector: None,
+            }
+        }
     }
 
     impl StatePayload for Identity {
@@ -78,20 +134,41 @@ pub mod payload {
     #[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
     pub struct Meta {
         pub managed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub system_profile: Option<uuid::Uuid>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub primary_input: Option<String>,
+        pub automate_when: String,
+    }
+
+    impl Meta {
+        pub fn new(managed: bool) -> Self {
+            Self {
+                managed,
+                system_profile: None,
+                primary_input: None,
+                automate_when: "always".into(),
+            }
+        }
     }
 
     impl StatePayload for Meta {
         const PATH: &'static str = "meta/config";
     }
 
-    /// Every per-TV key tail — the DELETE sweep on TV removal.
-    pub const TV_PATHS: [&str; 5] = [
+    /// Every per-TV cached-state key tail — the DELETE sweep on TV removal.
+    pub const TV_PATHS: [&str; 7] = [
         Power::PATH,
         Volume::PATH,
         Link::PATH,
+        Input::PATH,
+        Backlight::PATH,
         Identity::PATH,
         Meta::PATH,
     ];
+
+    /// Non-payload per-TV keys included in the removal sweep.
+    pub const TV_EXTRA_PATHS: [&str; 1] = ["progress/power"];
 
     /// Pairing progress on `tisvlay/<site>/pairing/<uuid>/progress` — the
     /// redacted projection of the core pairing state: credentials never
@@ -312,6 +389,48 @@ pub mod rpc {
     #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
     pub struct SetMuted {
         pub muted: bool,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct SetName {
+        pub name: String,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SetManaged {
+        pub managed: bool,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct SetSystemProfile {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub profile: Option<Uuid>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct SetPrimaryInput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub input: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct SetAutomateWhen {
+        pub when: String,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct SwitchInput {
+        pub input: String,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SetBacklight {
+        pub level: u8,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SetScreen {
+        pub on: bool,
     }
 
     /// Body for `manager/rpc/discover` — a bounded scan whose findings

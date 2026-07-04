@@ -3699,6 +3699,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "directories",
  "serde",
  "serde_json",
  "tempfile",
@@ -3734,6 +3735,7 @@ dependencies = [
 name = "tvnext-world"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "bevy_ecs",
  "serde",
  "serde_json",

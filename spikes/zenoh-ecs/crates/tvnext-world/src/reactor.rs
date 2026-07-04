@@ -12,9 +12,9 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, Effect, KnownVendors, Outbox, PairingIndex, Site, SystemProfile, TvIndex,
+    Clock, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, Site, SystemProfile, TvIndex,
 };
-use crate::events::{BackendEvent, Command, InEvent, PairingUpdate, WireEffect};
+use crate::events::{BackendEvent, Command, InEvent, PairingUpdate, TvRecord, WireEffect};
 use crate::systems::build_schedule;
 
 pub struct Reactor {
@@ -24,6 +24,7 @@ pub struct Reactor {
     inbox_tx: mpsc::UnboundedSender<InEvent>,
     connectors: HashMap<String, Arc<dyn TvConnector>>,
     effects_tx: mpsc::UnboundedSender<WireEffect>,
+    persist_tx: Option<mpsc::UnboundedSender<Vec<TvRecord>>>,
 }
 
 impl fmt::Debug for Reactor {
@@ -80,6 +81,7 @@ impl Reactor {
         world.insert_resource(SystemProfile::stock());
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
+        world.init_resource::<DirtyStore>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
 
@@ -94,10 +96,18 @@ impl Reactor {
                 inbox_tx,
                 connectors,
                 effects_tx,
+                persist_tx: None,
             },
             effects_rx,
             client,
         )
+    }
+
+    /// Attach the store outlet: `Persist` effects (full TV-table
+    /// snapshots) flow here. Without one they are dropped — fine for
+    /// ephemeral worlds like tests.
+    pub fn set_persist(&mut self, tx: mpsc::UnboundedSender<Vec<TvRecord>>) {
+        self.persist_tx = Some(tx);
     }
 
     /// Run until every inbox sender is dropped.
@@ -206,7 +216,142 @@ impl Reactor {
                         .inbox_tx
                         .send(InEvent::PairingUpdate { id: tv, update });
                 }
+                Effect::Persist(records) => match &self.persist_tx {
+                    Some(tx) => {
+                        let _ = tx.send(records);
+                    }
+                    None => tracing::debug!("no store attached, persist snapshot dropped"),
+                },
+                Effect::RedactConfig { reply, record } => {
+                    let payload = redacted_config(&self.connectors, record);
+                    let _ = self.effects_tx.send(WireEffect::Reply {
+                        to: reply,
+                        result: Ok(payload),
+                    });
+                }
             }
         }
+    }
+}
+
+/// Project a TV record into its wire-safe config reply: top-level fields
+/// plus the vendor table minus `Secret`-visibility fields (per the vendor
+/// schema). Credentials never leave the process.
+fn redacted_config(
+    connectors: &HashMap<String, Arc<dyn TvConnector>>,
+    record: TvRecord,
+) -> serde_json::Value {
+    let mut config = serde_json::Map::new();
+    if let Some(connector) = connectors.get(&record.vendor) {
+        let secret: HashSet<String> = connector
+            .config_schema()
+            .into_iter()
+            .filter(|field| field.visibility == tisvlay_core::FieldVisibility::Secret)
+            .map(|field| field.name)
+            .collect();
+        if let Some(table) = record.config.as_table() {
+            for (key, value) in table {
+                if secret.contains(key) {
+                    continue;
+                }
+                if let Ok(json) = serde_json::to_value(value) {
+                    config.insert(key.clone(), json);
+                }
+            }
+        }
+    }
+    serde_json::json!({
+        "id": record.id,
+        "name": record.name,
+        "vendor": record.vendor,
+        "managed": record.managed,
+        "system_profile": record.system_profile,
+        "primary_input": record.primary_input,
+        "automate_when": record.automate_when,
+        "config": config,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use tisvlay_core::{FieldVisibility, PairingField};
+
+    struct StubConnector;
+
+    #[async_trait]
+    impl TvConnector for StubConnector {
+        fn transport(&self) -> tisvlay_core::Transport {
+            tisvlay_core::Transport::Network
+        }
+        async fn connect(
+            &self,
+            _: &toml::Value,
+        ) -> tisvlay_core::Result<Box<dyn tisvlay_core::TvConnection>> {
+            unimplemented!("redaction test never connects")
+        }
+        fn supports_wake(&self, _: &toml::Value) -> bool {
+            false
+        }
+        async fn wake(&self, _: &toml::Value) -> tisvlay_core::Result<()> {
+            Ok(())
+        }
+        async fn wake_and_connect(
+            &self,
+            _: &toml::Value,
+        ) -> tisvlay_core::Result<Box<dyn tisvlay_core::TvConnection>> {
+            unimplemented!("redaction test never connects")
+        }
+        fn start_pairing(
+            &self,
+            _: &toml::Value,
+        ) -> tisvlay_core::Result<tisvlay_core::PairingSession> {
+            unimplemented!("redaction test never pairs")
+        }
+        fn build_config_from_pairing(
+            &self,
+            _: &toml::Value,
+            _: &tisvlay_core::Credentials,
+        ) -> tisvlay_core::Result<toml::Value> {
+            unimplemented!("redaction test never pairs")
+        }
+        fn config_schema(&self) -> Vec<PairingField> {
+            vec![
+                PairingField {
+                    name: "ip".into(),
+                    ..Default::default()
+                },
+                PairingField {
+                    name: "client_key".into(),
+                    visibility: FieldVisibility::Secret,
+                    ..Default::default()
+                },
+            ]
+        }
+    }
+
+    #[test]
+    fn redaction_strips_secret_fields() {
+        let mut connectors: HashMap<String, Arc<dyn TvConnector>> = HashMap::new();
+        connectors.insert("stub".into(), Arc::new(StubConnector));
+        let mut table = toml::value::Table::new();
+        table.insert("ip".into(), toml::Value::String("192.0.2.1".into()));
+        table.insert("client_key".into(), toml::Value::String("SECRET".into()));
+        let record = TvRecord {
+            id: uuid::Uuid::nil(),
+            name: "T".into(),
+            vendor: "stub".into(),
+            managed: true,
+            system_profile: None,
+            primary_input: None,
+            automate_when: "always".into(),
+            config: toml::Value::Table(table),
+        };
+        let json = redacted_config(&connectors, record);
+        assert_eq!(json["config"]["ip"], "192.0.2.1");
+        assert!(json["config"].get("client_key").is_none());
+        assert!(!json.to_string().contains("SECRET"));
+        assert_eq!(json["name"], "T");
     }
 }

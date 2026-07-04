@@ -321,11 +321,16 @@ impl Bridge {
                     let config = enrich_config_mac(req.config);
                     Ok((
                         Command::AddTv {
-                            id,
-                            name: req.name,
-                            vendor: req.vendor,
-                            config: json_to_toml(&config)?,
-                            managed: req.managed,
+                            record: Box::new(tvnext_world::TvRecord {
+                                id,
+                                name: req.name,
+                                vendor: req.vendor,
+                                managed: req.managed,
+                                system_profile: None,
+                                primary_input: None,
+                                automate_when: "always".into(),
+                                config: json_to_toml(&config)?,
+                            }),
                             reply: Some(reply),
                         },
                         Some(json!({ "id": id })),
@@ -378,6 +383,88 @@ impl Bridge {
                         reply: Some(reply),
                     }
                 }
+                "set-name" => {
+                    let req: rpc::SetName = parse(body)?;
+                    Command::SetName {
+                        id,
+                        name: req.name,
+                        reply: Some(reply),
+                    }
+                }
+                "set-managed" => {
+                    let req: rpc::SetManaged = parse(body)?;
+                    Command::SetManaged {
+                        id,
+                        managed: req.managed,
+                        reply: Some(reply),
+                    }
+                }
+                "set-system-profile" => {
+                    let req: rpc::SetSystemProfile = parse(body)?;
+                    Command::SetSystemProfile {
+                        id,
+                        profile: req.profile,
+                        reply: Some(reply),
+                    }
+                }
+                "set-primary-input" => {
+                    let req: rpc::SetPrimaryInput = parse(body)?;
+                    Command::SetPrimaryInput {
+                        id,
+                        input: req.input,
+                        reply: Some(reply),
+                    }
+                }
+                "set-automate-when" => {
+                    let req: rpc::SetAutomateWhen = parse(body)?;
+                    Command::SetAutomateWhen {
+                        id,
+                        when: req.when,
+                        reply: Some(reply),
+                    }
+                }
+                "switch-input" => {
+                    let req: rpc::SwitchInput = parse(body)?;
+                    Command::SwitchInput {
+                        id,
+                        input: req.input,
+                        reply: Some(reply),
+                    }
+                }
+                "set-backlight" => {
+                    let req: rpc::SetBacklight = parse(body)?;
+                    Command::SetBacklight {
+                        id,
+                        level: req.level,
+                        reply: Some(reply),
+                    }
+                }
+                "set-screen" => {
+                    let req: rpc::SetScreen = parse(body)?;
+                    Command::SetScreen {
+                        id,
+                        on: req.on,
+                        reply: Some(reply),
+                    }
+                }
+                "get-config" => Command::GetConfig {
+                    id,
+                    reply: Some(reply),
+                },
+                "update-config" => {
+                    if !body.is_object() {
+                        return Err(bad_request("config patch must be a JSON object".into()));
+                    }
+                    Command::UpdateConfig {
+                        id,
+                        patch: body.clone(),
+                        reply: Some(reply),
+                    }
+                }
+                "re-pair" => Command::RePair {
+                    id,
+                    reply: Some(reply),
+                },
                 "power-on" => Command::PowerOn {
                     id,
                     reply: Some(reply),

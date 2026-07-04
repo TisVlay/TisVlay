@@ -36,6 +36,7 @@ async fn wire() -> Wire {
         "t",
         vec![("mock", Arc::new(connector))],
         vec![("mock", Arc::new(discovery))],
+        None,
     )
     .await
     .unwrap();
@@ -214,6 +215,338 @@ async fn volume_rpc_lands_as_state_publish() {
     .await;
     // The push originated from the backend, proving the full loop:
     // rpc → world → connection task → mock → subscription → publish.
+}
+
+/// P1's exit criterion: a daemon restart keeps its TVs. The store file is
+/// written debounced+atomic; a second stack replaying it (the `run()` boot
+/// path) hydrates the same TV for a late client.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_preserves_tvs_via_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("state.toml");
+    let socket1 = dir.path().join("a.sock");
+    let (connector, discovery, _handle) = new_test_parts();
+    let stack1 = tvnext_daemon::serve(
+        &socket1,
+        "t",
+        vec![("mock", Arc::new(connector))],
+        vec![("mock", Arc::new(discovery))],
+        Some(&store),
+    )
+    .await
+    .unwrap();
+    let client1 = zenoh::open(bootstrap::client_config(&socket1).unwrap())
+        .await
+        .unwrap();
+    let ok = call(
+        &client1,
+        &keys::manager_rpc("t", "add-tv"),
+        add_body("Persisted", "mock://persist"),
+    )
+    .await
+    .expect("add-tv ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+
+    // Wait for the debounced write to land.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if std::fs::read_to_string(&store).is_ok_and(|t| t.contains(&id.to_string())) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "store file never appeared"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    drop(client1);
+    stack1.daemon.close().await.unwrap();
+
+    // Second life: fresh stack + mock, same store, replayed like run() does.
+    let socket2 = dir.path().join("b.sock");
+    let (connector2, discovery2, _handle2) = new_test_parts();
+    let stack2 = tvnext_daemon::serve(
+        &socket2,
+        "t",
+        vec![("mock", Arc::new(connector2))],
+        vec![("mock", Arc::new(discovery2))],
+        Some(&store),
+    )
+    .await
+    .unwrap();
+    for record in tvnext_daemon::load_store(&store).unwrap() {
+        stack2.world.command(tvnext_world::Command::AddTv {
+            record: Box::new(record),
+            reply: None,
+        });
+    }
+    let late = zenoh::open(bootstrap::client_config(&socket2).unwrap())
+        .await
+        .unwrap();
+    let sub = history_sub(&late, keys::tv_all("t")).await;
+    let mut name_seen = false;
+    let mut connected_seen = false;
+    recv_until(&sub, |sample| {
+        if let Some((tv, path)) = keys::parse_tv_path("t", sample.key_expr().as_str())
+            && tv == id
+        {
+            let value = payload_json(sample);
+            match path {
+                "meta/identity" if value["name"] == "Persisted" => name_seen = true,
+                "state/link" if value["connected"] == true => connected_seen = true,
+                _ => {}
+            }
+        }
+        name_seen && connected_seen
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_rpcs_publish_and_unmanage_disconnects() {
+    let w = wire().await;
+    let ok = call(
+        &w.client,
+        &keys::manager_rpc(&w.site, "add-tv"),
+        add_body("Old Name", "mock://settings"),
+    )
+    .await
+    .expect("add-tv ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "set-name"),
+        json!({ "name": "New Name" }),
+    )
+    .await
+    .expect("set-name ok");
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "meta/identity")
+            && payload_json(s)["name"] == "New Name"
+    })
+    .await;
+
+    // Unmanaging drops the connection.
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "set-managed"),
+        json!({ "managed": false }),
+    )
+    .await
+    .expect("set-managed ok");
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == false
+    })
+    .await;
+
+    // Managing again reconnects.
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "set-managed"),
+        json!({ "managed": true }),
+    )
+    .await
+    .expect("set-managed ok");
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_backlight_screen_round_trip() {
+    let w = wire().await;
+    let ok = call(
+        &w.client,
+        &keys::manager_rpc(&w.site, "add-tv"),
+        add_body("Den", "mock://ibs"),
+    )
+    .await
+    .expect("add-tv ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "switch-input"),
+        json!({ "input": "HDMI_2" }),
+    )
+    .await
+    .expect("switch-input ok");
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/input")
+            && payload_json(s)["current"] == "HDMI_2"
+    })
+    .await;
+
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "set-backlight"),
+        json!({ "level": 42 }),
+    )
+    .await
+    .expect("set-backlight ok");
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/backlight")
+            && payload_json(s)["level"] == 42
+    })
+    .await;
+
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "set-screen"),
+        json!({ "on": false }),
+    )
+    .await
+    .expect("set-screen ok");
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/power")
+            && payload_json(s)["state"] == "screenoff"
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_config_reads_and_update_config_moves_the_tv() {
+    let w = wire().await;
+    let ok = call(
+        &w.client,
+        &keys::manager_rpc(&w.site, "add-tv"),
+        add_body("Movable", "mock://before"),
+    )
+    .await
+    .expect("add-tv ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+
+    let config = call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "get-config"),
+        Value::Null,
+    )
+    .await
+    .expect("get-config ok");
+    assert_eq!(config["name"], "Movable");
+    assert_eq!(config["config"]["address"], "mock://before");
+
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "update-config"),
+        json!({ "address": "mock://after", "name": "Moved" }),
+    )
+    .await
+    .expect("update-config ok");
+    // Vendor change forces a reconnect against the new address.
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == false
+    })
+    .await;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+    assert!(w.handle.connect_call_count("mock://after") >= 1);
+    let config = call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "get-config"),
+        Value::Null,
+    )
+    .await
+    .expect("get-config ok");
+    assert_eq!(config["name"], "Moved");
+    assert_eq!(config["config"]["address"], "mock://after");
+
+    // Immutable and malformed patches are typed errors.
+    let err = call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "update-config"),
+        json!({ "vendor": "lg" }),
+    )
+    .await
+    .expect_err("vendor is immutable");
+    assert_eq!(err["code"], "bad-request");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn re_pair_refreshes_credentials_in_place() {
+    let w = wire().await;
+    let body = serde_json::to_value(rpc::AddTv {
+        id: None,
+        name: "Repairable".into(),
+        vendor: "mock".into(),
+        managed: true,
+        config: json!({ "address": "mock://rp", "pairing": "accept" }),
+    })
+    .unwrap();
+    let ok = call(&w.client, &keys::manager_rpc(&w.site, "pair"), body)
+        .await
+        .expect("pair ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+
+    let progress = history_sub(&w.client, keys::pairing_progress(&w.site, &id)).await;
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "re-pair"),
+        Value::Null,
+    )
+    .await
+    .expect("re-pair ok");
+    // The progress cache replays the original session's `complete` too —
+    // the re-pair's is the second one.
+    let mut completes = 0;
+    recv_until(&progress, |s| {
+        if payload_json(s)["phase"] == "complete" {
+            completes += 1;
+        }
+        completes >= 2
+    })
+    .await;
+    // Credentials refreshed in place: same uuid, reconnected.
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
 }
 
 /// The M2b shape in action: one discover query, one reply per finding.
