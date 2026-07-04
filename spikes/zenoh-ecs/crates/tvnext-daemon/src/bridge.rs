@@ -276,7 +276,15 @@ impl Bridge {
                 }
                 match discovery.discover(window).await {
                     Ok(found) => {
-                        for tv in found {
+                        for mut tv in found {
+                            // The scan itself primed the ARP cache — attach
+                            // the MAC so pairing configs built from this
+                            // finding are WoL-capable.
+                            if !tv.vendor_data.contains_key("mac")
+                                && let Some(mac) = crate::arp::lookup_mac(&tv.address)
+                            {
+                                tv.vendor_data.insert("mac".into(), mac);
+                            }
                             let Ok(bytes) = serde_json::to_vec(&tv) else {
                                 continue;
                             };
@@ -310,12 +318,13 @@ impl Bridge {
                 "add-tv" => {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
+                    let config = enrich_config_mac(req.config);
                     Ok((
                         Command::AddTv {
                             id,
                             name: req.name,
                             vendor: req.vendor,
-                            config: json_to_toml(&req.config)?,
+                            config: json_to_toml(&config)?,
                             managed: req.managed,
                             reply: Some(reply),
                         },
@@ -325,12 +334,13 @@ impl Bridge {
                 "pair" => {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
+                    let config = enrich_config_mac(req.config);
                     Ok((
                         Command::Pair {
                             id,
                             name: req.name,
                             vendor: req.vendor,
-                            config: json_to_toml(&req.config)?,
+                            config: json_to_toml(&config)?,
                             managed: req.managed,
                             reply: Some(reply),
                         },
@@ -425,4 +435,18 @@ fn unknown_rpc(what: &str) -> WireError {
 /// seam — a pure serde transcode (JSON `null` has no TOML form and errors).
 fn json_to_toml(value: &Value) -> Result<toml::Value, WireError> {
     toml::Value::try_from(value).map_err(|e| bad_request(format!("vendor config: {e}")))
+}
+
+/// An IP-addressed vendor config without a `mac` can't Wake-on-LAN. The
+/// pairing/connect traffic primes the ARP cache, so fill it in here — an
+/// explicit `mac` from the caller always wins.
+fn enrich_config_mac(mut config: Value) -> Value {
+    if let Some(object) = config.as_object_mut()
+        && !object.contains_key("mac")
+        && let Some(ip) = object.get("ip").and_then(Value::as_str)
+        && let Some(mac) = crate::arp::lookup_mac(ip)
+    {
+        object.insert("mac".into(), Value::String(mac));
+    }
+    config
 }

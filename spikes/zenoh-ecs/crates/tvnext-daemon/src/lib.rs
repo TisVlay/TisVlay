@@ -1,6 +1,7 @@
 //! Daemon library: zenoh session lifecycle (M0), and the full stack —
 //! world reactor + zenoh bridge (M2).
 
+mod arp;
 mod boot;
 mod bridge;
 mod discovery;
