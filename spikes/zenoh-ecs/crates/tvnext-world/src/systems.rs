@@ -29,6 +29,9 @@ pub const CONNECT_MAX_ATTEMPTS: u8 = 3;
 pub const CONNECT_BACKOFF: Duration = Duration::from_secs(3);
 
 pub(crate) fn build_schedule() -> Schedule {
+    // Two chains (the all-tuples chain caps at 20 systems): ingest +
+    // dispatch first, then the derive/publish tail — ordered by the
+    // `.before()` bridge so publish order stays deterministic.
     let mut schedule = Schedule::default();
     schedule.add_systems(
         (
@@ -42,7 +45,15 @@ pub(crate) fn build_schedule() -> Schedule {
             verify_dispatch,
             dispatch_system_events,
             reconcile_connections,
+        )
+            .chain()
+            .before(derive_link_state),
+    );
+    schedule.add_systems(
+        (
             derive_link_state,
+            derive_automated,
+            publish_greeter_timeout,
             publish_changed::<payload::Power>,
             publish_changed::<payload::Volume>,
             publish_changed::<payload::Link>,
@@ -96,6 +107,8 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
             system_profile: record.system_profile,
             primary_input: record.primary_input.clone(),
             automate_when: record.automate_when.clone(),
+            // derive_automated refines this once input state exists.
+            automated: record.managed,
         },
         payload::Link {
             connected: false,
@@ -996,6 +1009,12 @@ fn profile_wire_map(
         "on_shutdown": field(body.and_then(|b| b.on_shutdown), SystemEvent::Shutdown),
         "on_dpms_off": field(body.and_then(|b| b.on_dpms_off), SystemEvent::DpmsOff),
         "on_dpms_on": field(body.and_then(|b| b.on_dpms_on), SystemEvent::DpmsOn),
+        "on_idle_timeout": field(body.and_then(|b| b.on_idle_timeout), SystemEvent::GreeterIdle),
+        "on_idle_resume": field(body.and_then(|b| b.on_idle_resume), SystemEvent::GreeterResume),
+        // The greeter idle timer is opt-in: 0 = disabled.
+        "idle_timeout_seconds": body.and_then(|b| b.idle_timeout_seconds).unwrap_or(0),
+        "automate_when": serde_json::to_value(body.and_then(|b| b.automate_when).unwrap_or_default())
+            .unwrap_or_default(),
     })
 }
 
@@ -1378,10 +1397,10 @@ fn apply_connector_matches(
     }
 }
 
-/// Map system events (lock, DPMS, sleep) through the profile onto every
-/// managed TV — screen actions ride the reliable tier, and wake-capable
-/// power/screen-on reach even disconnected TVs via the wake dial.
-/// Connector-scoped events skip TVs mapped to a different connector;
+/// Map system events (DPMS, sleep, greeter idle) through the profile onto
+/// every automated TV — screen actions ride the reliable tier, and
+/// wake-capable power/screen-on reach even disconnected TVs via the wake
+/// dial. Connector-scoped events skip TVs mapped to a different connector;
 /// unmapped TVs treat every event as global.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
@@ -1402,6 +1421,7 @@ fn dispatch_system_events(
             Option<&DispatchRetry>,
             Option<&MirrorsConnector>,
             Option<&payload::Meta>,
+            Option<&payload::Input>,
         ),
         With<Managed>,
     >,
@@ -1412,10 +1432,14 @@ fn dispatch_system_events(
         let InEvent::System { event, connector } = msg else {
             continue;
         };
-        for (entity, id, handle, pending, traits, link, retry, mirrors, meta) in &q {
+        for (entity, id, handle, pending, traits, link, retry, mirrors, meta, input) in &q {
             if let (Some(scope), Some(MirrorsConnector(mapped))) = (connector, mirrors)
                 && scope != mapped
             {
+                continue;
+            }
+            if !meta.is_none_or(|m| is_automated(m, input)) {
+                tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
             let Some(action) = resolve_action(event, meta, &profile_index, &bodies, &profile)
@@ -1466,6 +1490,68 @@ fn dispatch_system_events(
     }
 }
 
+/// The root stack's `Automated` gate: managed AND `automate_when` holds
+/// against the current input (unknowns get the benefit of the doubt —
+/// input can't be checked in standby).
+fn is_automated(meta: &payload::Meta, input: Option<&payload::Input>) -> bool {
+    if !meta.managed {
+        return false;
+    }
+    let when: tisvlay_core::AutomateWhen =
+        serde_json::from_value(serde_json::Value::String(meta.automate_when.clone()))
+            .unwrap_or_default();
+    when.should_automate(
+        meta.primary_input.as_deref(),
+        input.and_then(|i| i.current.as_deref()),
+    )
+}
+
+/// Keep the published `automated` flag in step with config edits and
+/// input changes.
+fn derive_automated(mut q: Query<(&mut payload::Meta, Option<&payload::Input>)>) {
+    for (mut meta, input) in &mut q {
+        let automated = is_automated(&meta, input);
+        if meta.automated != automated {
+            meta.automated = automated;
+        }
+    }
+}
+
+/// Publish the shortest enabled greeter idle timeout across automated TVs
+/// (`{seconds}`, 0 = disabled) — the cached key `tvnext-greeter` sizes its
+/// `ext-idle-notify` registration from.
+fn publish_greeter_timeout(
+    mut outbox: ResMut<Outbox>,
+    site: Res<Site>,
+    q: Query<(&payload::Meta, Option<&payload::Input>), With<Managed>>,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+    mut last: Local<Option<u64>>,
+) {
+    let mut timeout = 0u64;
+    for (meta, input) in &q {
+        if !is_automated(meta, input) {
+            continue;
+        }
+        let seconds = meta
+            .system_profile
+            .and_then(|id| profile_index.0.get(&id))
+            .and_then(|&entity| bodies.get(entity).ok())
+            .and_then(|body| body.0.idle_timeout_seconds)
+            .unwrap_or(0);
+        if seconds > 0 && (timeout == 0 || seconds < timeout) {
+            timeout = seconds;
+        }
+    }
+    if *last != Some(timeout) {
+        *last = Some(timeout);
+        outbox.0.push(Effect::Wire(WireEffect::Publish {
+            key: keys::greeter_timeout(&site.0),
+            payload: json!({ "seconds": timeout }),
+        }));
+    }
+}
+
 /// The TV's assigned profile decides the action; unset fields (and TVs
 /// without a profile) fall back to the stock mapping.
 fn resolve_action(
@@ -1495,9 +1581,8 @@ fn profile_event_action(
         SystemEvent::Shutdown => body.on_shutdown,
         SystemEvent::DpmsOff => body.on_dpms_off,
         SystemEvent::DpmsOn => body.on_dpms_on,
-        // Lock/unlock are user-profile actions (session service); the
-        // system profile has no fields for them — stock fallback applies.
-        SystemEvent::Lock | SystemEvent::Unlock => None,
+        SystemEvent::GreeterIdle => body.on_idle_timeout,
+        SystemEvent::GreeterResume => body.on_idle_resume,
     }
 }
 

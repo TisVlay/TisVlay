@@ -56,10 +56,11 @@ async fn add_tv_connects_and_publishes_initial_state() {
     let key_prefix = format!("tisvlay/test/tv/{id}/");
     assert!(
         seen.iter().all(|e| match e {
-            WireEffect::Publish { key, .. } => key.starts_with(&key_prefix),
+            WireEffect::Publish { key, .. } =>
+                key.starts_with(&key_prefix) || key == "tisvlay/test/greeter/timeout",
             _ => true,
         }),
-        "all publishes live under the TV's key prefix"
+        "all publishes live under the TV's key prefix (or the greeter timeout)"
     );
 }
 

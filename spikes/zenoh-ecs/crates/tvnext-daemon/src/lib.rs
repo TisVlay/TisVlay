@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use tisvlay_core::TvConnector;
 use tokio::sync::mpsc;
 use tracing::info;
-use tvnext_world::{Command, Reactor, TvRecord, WorldClient};
+use tvnext_world::{Command, InEvent, Reactor, SystemEvent, TvRecord, WorldClient};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
@@ -201,6 +201,40 @@ pub async fn serve(
         .await
         {
             tracing::error!(%e, "zenoh bridge exited");
+        }
+    });
+    // Greeter idle transitions arrive as plain puts from `tvnext-greeter`
+    // (or any client standing in for it) — forward them into the world.
+    let greeter_session = daemon.session().clone();
+    let greeter_site = site.to_string();
+    let greeter_world = world.clone();
+    tokio::spawn(async move {
+        let sub = match greeter_session
+            .declare_subscriber(tvnext_wire::keys::greeter_idle(&greeter_site))
+            .await
+        {
+            Ok(sub) => sub,
+            Err(e) => {
+                tracing::warn!(%e, "greeter idle subscriber failed");
+                return;
+            }
+        };
+        while let Ok(sample) = sub.recv_async().await {
+            let idle = serde_json::from_slice::<serde_json::Value>(&sample.payload().to_bytes())
+                .ok()
+                .and_then(|value| value.get("idle").and_then(serde_json::Value::as_bool));
+            let Some(idle) = idle else { continue };
+            let event = if idle {
+                SystemEvent::GreeterIdle
+            } else {
+                SystemEvent::GreeterResume
+            };
+            if !greeter_world.send(InEvent::System {
+                event,
+                connector: None,
+            }) {
+                return;
+            }
         }
     });
     Ok(Stack { daemon, world })

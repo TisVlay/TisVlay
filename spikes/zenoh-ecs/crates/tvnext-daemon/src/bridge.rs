@@ -623,6 +623,12 @@ impl Bridge {
                 }
                 "set-automate-when" => {
                     let req: rpc::SetAutomateWhen = parse(body)?;
+                    // Validate against the enum here so the world only
+                    // ever stores gate values `is_automated` understands.
+                    serde_json::from_value::<tisvlay_core::AutomateWhen>(Value::String(
+                        req.when.clone(),
+                    ))
+                    .map_err(|_| bad_request(format!("unknown automate_when '{}'", req.when)))?;
                     Command::SetAutomateWhen {
                         id,
                         when: req.when,

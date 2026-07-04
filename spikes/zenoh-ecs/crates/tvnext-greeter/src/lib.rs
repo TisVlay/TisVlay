@@ -1,0 +1,250 @@
+//! tvnext-greeter — login-screen idle client, the root `tisvlay-greeter`
+//! reshaped for zenoh.
+//!
+//! Runs inside the greeter session and watches the greeter compositor's
+//! `ext-idle-notify-v1`. Idle/resume edges become `{idle}` puts on
+//! `tisvlay/<site>/greeter/idle`; the daemon maps them to each automated
+//! TV's system-profile `on_idle_timeout` / `on_idle_resume`. This is the
+//! only component running before login, so it's what protects an OLED
+//! panel at an unattended login screen.
+//!
+//! The timeout to register comes from the daemon's cached
+//! `greeter/timeout` key (`0` = disabled: assert presence, then exit).
+//! The idle key itself is a cached publish, so a daemon restarting under
+//! a live greeter re-hydrates the current idle state instead of needing
+//! the D-Bus stack's notify-with-retry loop.
+
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow};
+use serde_json::json;
+use tisvlay_core::wayland::{
+    IdleNotification, IdleTransition, WatchHandle, start_idle_watch_on_socket,
+};
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+use tvnext_wire::keys;
+use zenoh_ext::{
+    AdvancedPublisherBuilderExt, AdvancedSubscriberBuilderExt, CacheConfig, HistoryConfig,
+    MissDetectionConfig,
+};
+
+/// Decide what (if anything) to publish for a transition, given the last
+/// idle state successfully sent. Skips redundant repeats — dispatch is
+/// idempotent daemon-side, but the de-dup keeps the wire quiet.
+fn next_notify(transition: IdleTransition, last_sent: Option<bool>) -> Option<bool> {
+    let idle = matches!(transition, IdleTransition::Idled);
+    if last_sent == Some(idle) {
+        None
+    } else {
+        Some(idle)
+    }
+}
+
+/// Connect the greeter compositor's idle notifications to the daemon.
+///
+/// On startup it publishes `{idle: false}` to assert the login screen is
+/// present (lit), so a screen-off latched by the prior user session
+/// doesn't strand it dark — regardless of the idle timer. It then reads
+/// the daemon's greeter timeout; `0` returns immediately. Otherwise it
+/// registers the idle watch and forwards each edge until the compositor
+/// disconnects (greeter session ended), which is a clean exit.
+pub async fn run(socket: &Path, site: &str) -> Result<()> {
+    let session = zenoh::open(
+        tvnext_wire::bootstrap::client_config(socket).context("greeter session config")?,
+    )
+    .await
+    .map_err(|e| anyhow!("connect to daemon socket {}: {e}", socket.display()))?;
+
+    let publisher = session
+        .declare_publisher(keys::greeter_idle(site))
+        .encoding(zenoh::bytes::Encoding::APPLICATION_JSON)
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
+        .publisher_detection()
+        .await
+        .map_err(|e| anyhow!("declare greeter idle publisher: {e}"))?;
+    let publish = |idle: bool| {
+        let publisher = &publisher;
+        async move {
+            let payload = serde_json::to_vec(&json!({ "idle": idle })).unwrap_or_default();
+            if let Err(e) = publisher.put(payload).await {
+                warn!(idle, %e, "greeter idle publish failed");
+                false
+            } else {
+                true
+            }
+        }
+    };
+
+    // Assert presence first — a prior session may have latched the panel
+    // off; the resume mapping lights the login screen for whoever is at it.
+    let mut last_sent: Option<bool> = None;
+    if publish(false).await {
+        last_sent = Some(false);
+    }
+
+    let timeout_secs = read_timeout(&session, site).await;
+    if timeout_secs == 0 {
+        info!("greeter idle timeout is 0 (disabled); presence asserted, nothing to watch");
+        return Ok(());
+    }
+    let timeout_ms = u32::try_from(timeout_secs.saturating_mul(1000)).unwrap_or(u32::MAX);
+    info!(timeout_secs, "starting greeter idle watch");
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
+    // Held for the lifetime of `run` — dropping it stops the watch. One
+    // process per greeter session, so there is no re-register path.
+    let _watch = connect_idle_watch(timeout_ms, &tx).await?;
+    drop(tx);
+
+    while let Some((_tag, transition)) = rx.recv().await {
+        let Some(idle) = next_notify(transition, last_sent) else {
+            continue;
+        };
+        if publish(idle).await {
+            last_sent = Some(idle);
+        }
+    }
+
+    // The compositor socket closed — normally the greeter session ending
+    // at login, where systemd is already stopping this unit.
+    warn!("greeter idle watch ended (compositor disconnected); exiting");
+    Ok(())
+}
+
+/// Read the daemon-computed timeout from the cached `greeter/timeout`
+/// key. Read once at greeter start (each greeter session is a fresh
+/// process); absent daemon or key means 0 (disabled).
+async fn read_timeout(session: &zenoh::Session, site: &str) -> u64 {
+    let sub = match session
+        .declare_subscriber(keys::greeter_timeout(site))
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+    {
+        Ok(sub) => sub,
+        Err(e) => {
+            warn!(%e, "greeter timeout subscribe failed; treating as disabled");
+            return 0;
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(3), sub.recv_async()).await {
+        Ok(Ok(sample)) => serde_json::from_slice::<serde_json::Value>(&sample.payload().to_bytes())
+            .ok()
+            .and_then(|value| value.get("seconds").and_then(serde_json::Value::as_u64))
+            .unwrap_or(0),
+        _ => {
+            warn!("no greeter timeout sample; treating as disabled");
+            0
+        }
+    }
+}
+
+/// Discover the greeter compositor's wayland socket under
+/// `XDG_RUNTIME_DIR` and start the idle watch, retrying while the socket
+/// appears. Greeter units carry no `WAYLAND_DISPLAY`, and wayland-client's
+/// `connect_to_env` requires it, so the `wayland-<n>` socket is found and
+/// connected explicitly.
+async fn connect_idle_watch(
+    timeout_ms: u32,
+    tx: &mpsc::UnboundedSender<(u32, IdleTransition)>,
+) -> Result<WatchHandle> {
+    const MAX_ATTEMPTS: u32 = 15;
+    let mut last_err = anyhow!("no connection attempt made");
+    for attempt in 1..=MAX_ATTEMPTS {
+        match try_connect(timeout_ms, tx.clone()) {
+            Ok(handle) => return Ok(handle),
+            Err(e) => {
+                debug!(attempt, error = %e, "greeter compositor not ready; retrying");
+                last_err = e;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    warn!(
+        xdg_runtime_dir = ?std::env::var("XDG_RUNTIME_DIR").ok(),
+        wayland_display = ?std::env::var("WAYLAND_DISPLAY").ok(),
+        sockets = ?wayland_sockets(),
+        "could not connect to the greeter compositor after retries"
+    );
+    Err(last_err.context("connect to greeter compositor"))
+}
+
+fn try_connect(
+    timeout_ms: u32,
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
+) -> Result<WatchHandle> {
+    let path =
+        greeter_socket_path().ok_or_else(|| anyhow!("no wayland socket under XDG_RUNTIME_DIR"))?;
+    let stream = UnixStream::connect(&path)
+        .with_context(|| format!("connect wayland socket {}", path.display()))?;
+    start_idle_watch_on_socket(stream, vec![IdleNotification { tag: 0, timeout_ms }], tx)
+        .map_err(|e| anyhow!("{e}"))
+}
+
+/// Resolve the compositor socket path: `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`
+/// when set, else the first `wayland-<n>` socket in `$XDG_RUNTIME_DIR`.
+fn greeter_socket_path() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    if let Some(display) = std::env::var_os("WAYLAND_DISPLAY") {
+        let display = PathBuf::from(display);
+        return Some(if display.is_absolute() {
+            display
+        } else {
+            dir.join(display)
+        });
+    }
+    wayland_sockets()
+        .into_iter()
+        .next()
+        .map(|name| dir.join(name))
+}
+
+/// Sorted `wayland-<n>` socket names in `$XDG_RUNTIME_DIR` (`.lock`
+/// companions excluded). Also used for failure diagnostics.
+fn wayland_sockets() -> Vec<String> {
+    let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| {
+            name.strip_prefix("wayland-")
+                .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_transition_always_sends() {
+        assert_eq!(next_notify(IdleTransition::Idled, None), Some(true));
+        assert_eq!(next_notify(IdleTransition::Resumed, None), Some(false));
+    }
+
+    #[test]
+    fn repeated_same_state_is_skipped() {
+        assert_eq!(next_notify(IdleTransition::Idled, Some(true)), None);
+        assert_eq!(next_notify(IdleTransition::Resumed, Some(false)), None);
+    }
+
+    #[test]
+    fn opposite_state_sends() {
+        assert_eq!(
+            next_notify(IdleTransition::Resumed, Some(true)),
+            Some(false)
+        );
+        assert_eq!(next_notify(IdleTransition::Idled, Some(false)), Some(true));
+    }
+}

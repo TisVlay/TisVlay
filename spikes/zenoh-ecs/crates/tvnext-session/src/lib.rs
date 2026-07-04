@@ -1,0 +1,674 @@
+//! Per-user session service: the gateway between the system daemon's
+//! socket and a private per-user socket.
+//!
+//! Two zenoh sessions, no routing between them — that is the isolation
+//! design. Session A (client → system socket) mirrors TV meta, publishes
+//! session-event taps, and calls TV rpcs. Session B (peer listening on
+//! the user socket, 0700 runtime dir) owns everything under
+//! `tisvlay/<site>/user/**`: profile bodies, per-TV assignments, the rpc
+//! queryable, and the service's liveliness token. User-private keys
+//! physically never reach the system peer.
+
+mod screensaver;
+mod store;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
+use tokio::sync::{mpsc, watch};
+use tracing::{debug, info, warn};
+use tvnext_wire::error::WireError;
+use tvnext_wire::{keys, payload, rpc};
+use uuid::Uuid;
+use zenoh::Session;
+use zenoh::bytes::Encoding;
+use zenoh::query::Query;
+use zenoh::sample::SampleKind;
+use zenoh_ext::{
+    AdvancedPublisher, AdvancedPublisherBuilderExt, AdvancedSubscriberBuilderExt, CacheConfig,
+    HistoryConfig, MissDetectionConfig,
+};
+
+pub use screensaver::watch_screensaver;
+pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
+
+/// Heartbeat period for sample-miss recovery on cached publishers.
+const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
+
+/// A session-scoped desktop event, from whichever adapter saw it
+/// (ScreenSaver D-Bus, wayland idle, or a test driver).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEvent {
+    Lock,
+    Unlock,
+    IdleTimeout,
+    IdleResume,
+}
+
+impl SessionEvent {
+    /// The tap key name under `event/session/`.
+    fn tap_name(self) -> &'static str {
+        match self {
+            Self::Lock => "lock",
+            Self::Unlock => "unlock",
+            Self::IdleTimeout => "idle",
+            Self::IdleResume => "resume",
+        }
+    }
+}
+
+/// Handle for injecting session events — adapters and tests alike.
+#[derive(Debug, Clone)]
+pub struct SessionClient {
+    tx: mpsc::UnboundedSender<SessionEvent>,
+}
+
+impl SessionClient {
+    /// Returns false if the core loop is gone.
+    pub fn send(&self, event: SessionEvent) -> bool {
+        self.tx.send(event).is_ok()
+    }
+}
+
+#[derive(Debug)]
+pub struct SessionOptions {
+    pub system_socket: PathBuf,
+    pub user_socket: PathBuf,
+    pub site: String,
+    /// Persisted user profiles + assignments. `None` = ephemeral.
+    pub store: Option<PathBuf>,
+}
+
+/// A running session service.
+#[derive(Debug)]
+pub struct SessionStack {
+    pub client: SessionClient,
+    /// Resolved user idle timeout (seconds, min enabled across automated
+    /// TVs; 0 = disabled) — the wayland idle adapter re-registers on
+    /// change.
+    pub idle_timeout: watch::Receiver<u64>,
+}
+
+/// Boot the session service: open both sessions, replay the store, and
+/// run the core loop for the process lifetime.
+pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
+    let system = zenoh::open(
+        tvnext_wire::bootstrap::client_config(&options.system_socket)
+            .context("system session config")?,
+    )
+    .await
+    .map_err(|e| {
+        anyhow!(
+            "connect to system socket {}: {e}",
+            options.system_socket.display()
+        )
+    })?;
+    if let Some(parent) = options.user_socket.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create user socket dir {}", parent.display()))?;
+    }
+    let user = zenoh::open(
+        tvnext_wire::bootstrap::peer_config(&options.user_socket).context("user session config")?,
+    )
+    .await
+    .map_err(|e| {
+        anyhow!(
+            "listen on user socket {}: {e}",
+            options.user_socket.display()
+        )
+    })?;
+    let alive = user
+        .liveliness()
+        .declare_token(keys::user_alive_session(&options.site))
+        .await
+        .map_err(|e| anyhow!("declare session liveliness: {e}"))?;
+
+    let snapshot = match &options.store {
+        Some(path) => load_user_store(path)?,
+        None => UserStoreSnapshot::default(),
+    };
+    let persist = options.store.as_ref().map(|path| {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(store::store_task(path.clone(), rx));
+        tx
+    });
+
+    // RPC queries land in the core loop through a channel, like the
+    // daemon bridge — one task owns all state, no locks.
+    let (query_tx, queries) = mpsc::unbounded_channel::<Query>();
+    let queryable = user
+        .declare_queryable(keys::user_profile_rpc_wild(&options.site))
+        .complete(true)
+        .callback(move |query| {
+            let _ = query_tx.send(query);
+        })
+        .await
+        .map_err(|e| anyhow!("declare user rpc queryable: {e}"))?;
+
+    // Fleet mirror: every TV's meta/config, hydrated from history.
+    let meta_sub = system
+        .declare_subscriber(keys::tv_meta_wild(&options.site))
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+        .map_err(|e| anyhow!("subscribe tv meta: {e}"))?;
+
+    let (event_tx, events) = mpsc::unbounded_channel();
+    let (idle_tx, idle_rx) = watch::channel(0u64);
+
+    let mut core = Core {
+        system,
+        user,
+        site: options.site,
+        profiles: snapshot
+            .profile
+            .into_iter()
+            .map(|record| (record.id, record.body))
+            .collect(),
+        assignments: snapshot
+            .assignment
+            .into_iter()
+            .map(|assignment| (assignment.tv, assignment.profile))
+            .collect(),
+        tvs: HashMap::new(),
+        publishers: HashMap::new(),
+        persist,
+        idle_tx,
+        _alive: alive,
+    };
+    tokio::spawn(async move {
+        core.run(events, queries, meta_sub).await;
+        drop(queryable);
+    });
+
+    Ok(SessionStack {
+        client: SessionClient { tx: event_tx },
+        idle_timeout: idle_rx,
+    })
+}
+
+struct Core {
+    system: Session,
+    user: Session,
+    site: String,
+    profiles: HashMap<Uuid, UserProfileConfig>,
+    assignments: HashMap<Uuid, Uuid>,
+    tvs: HashMap<Uuid, payload::Meta>,
+    publishers: HashMap<String, AdvancedPublisher<'static>>,
+    persist: Option<mpsc::UnboundedSender<UserStoreSnapshot>>,
+    idle_tx: watch::Sender<u64>,
+    _alive: zenoh::liveliness::LivelinessToken,
+}
+
+impl Core {
+    async fn run(
+        &mut self,
+        mut events: mpsc::UnboundedReceiver<SessionEvent>,
+        mut queries: mpsc::UnboundedReceiver<Query>,
+        meta_sub: zenoh_ext::AdvancedSubscriber<
+            zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
+        >,
+    ) {
+        // Late joiners hydrate the catalog from these caches.
+        for (id, body) in self.profiles.clone() {
+            self.publish_profile(&id, &body).await;
+        }
+        for (tv, profile) in self.assignments.clone() {
+            self.publish_assignment(&tv, Some(profile)).await;
+        }
+        self.recompute_idle();
+        info!(site = %self.site, "session core running");
+        loop {
+            tokio::select! {
+                event = events.recv() => match event {
+                    None => return,
+                    Some(event) => self.dispatch(event).await,
+                },
+                query = queries.recv() => match query {
+                    None => return,
+                    Some(query) => self.handle_query(query).await,
+                },
+                sample = meta_sub.recv_async() => match sample {
+                    Err(_) => return,
+                    Ok(sample) => self.apply_meta(&sample),
+                },
+            }
+        }
+    }
+
+    fn apply_meta(&mut self, sample: &zenoh::sample::Sample) {
+        let Some((tv, "meta/config")) = keys::parse_tv_path(&self.site, sample.key_expr().as_str())
+        else {
+            return;
+        };
+        match sample.kind() {
+            SampleKind::Put => {
+                match serde_json::from_slice::<payload::Meta>(&sample.payload().to_bytes()) {
+                    Ok(meta) => {
+                        self.tvs.insert(tv, meta);
+                    }
+                    Err(e) => warn!(%tv, %e, "undecodable tv meta"),
+                }
+            }
+            SampleKind::Delete => {
+                self.tvs.remove(&tv);
+            }
+        }
+        self.recompute_idle();
+    }
+
+    /// Session event → per-TV user-profile action, called through the
+    /// system daemon's rpcs. The tap publish comes first so observers see
+    /// the cause before the effects.
+    async fn dispatch(&mut self, event: SessionEvent) {
+        let tap = keys::session_event(&self.site, event.tap_name());
+        if let Err(e) = self
+            .system
+            .put(tap.as_str(), b"{}".to_vec())
+            .encoding(Encoding::APPLICATION_JSON)
+            .await
+        {
+            warn!(%tap, %e, "session tap publish failed");
+        }
+        for (tv, meta) in &self.tvs {
+            if !meta.automated {
+                debug!(%tv, ?event, "automation gated off");
+                continue;
+            }
+            let action = self.action_for(tv, event);
+            if action == SessionAction::None {
+                continue;
+            }
+            debug!(%tv, ?event, ?action, "user profile action");
+            call_tv(&self.system, &self.site, *tv, action);
+        }
+    }
+
+    /// Assignment → profile field → hard defaults, per field.
+    fn action_for(&self, tv: &Uuid, event: SessionEvent) -> SessionAction {
+        let resolved = self
+            .assignments
+            .get(tv)
+            .and_then(|profile| self.profiles.get(profile))
+            .map(UserProfileConfig::resolve)
+            .unwrap_or_default();
+        match event {
+            SessionEvent::Lock => resolved.on_session_lock,
+            SessionEvent::Unlock => resolved.on_session_unlock,
+            SessionEvent::IdleTimeout => resolved.on_idle_timeout,
+            SessionEvent::IdleResume => resolved.on_idle_resume,
+        }
+    }
+
+    /// Shortest enabled idle timeout across automated TVs' resolved
+    /// profiles — the wayland adapter's registration value.
+    fn recompute_idle(&self) {
+        let mut timeout = 0u64;
+        for (tv, meta) in &self.tvs {
+            if !meta.automated {
+                continue;
+            }
+            let seconds = self
+                .assignments
+                .get(tv)
+                .and_then(|profile| self.profiles.get(profile))
+                .map(UserProfileConfig::resolve)
+                .unwrap_or_default()
+                .idle_timeout_seconds;
+            if seconds > 0 && (timeout == 0 || seconds < timeout) {
+                timeout = seconds;
+            }
+        }
+        self.idle_tx.send_if_modified(|current| {
+            let changed = *current != timeout;
+            *current = timeout;
+            changed
+        });
+    }
+
+    fn snapshot(&self) -> UserStoreSnapshot {
+        UserStoreSnapshot {
+            profile: self
+                .profiles
+                .iter()
+                .map(|(id, body)| UserProfileRecord {
+                    id: *id,
+                    body: body.clone(),
+                })
+                .collect(),
+            assignment: self
+                .assignments
+                .iter()
+                .map(|(tv, profile)| Assignment {
+                    tv: *tv,
+                    profile: *profile,
+                })
+                .collect(),
+        }
+    }
+
+    fn persist(&self) {
+        if let Some(tx) = &self.persist {
+            let _ = tx.send(self.snapshot());
+        }
+    }
+
+    async fn handle_query(&mut self, query: Query) {
+        let key = query.key_expr().as_str().to_string();
+        let Some(verb) = keys::parse_user_profile_rpc(&self.site, &key).map(str::to_string) else {
+            reply_err(
+                &query,
+                &WireError::bad_request(format!("no such rpc: {key}")),
+            )
+            .await;
+            return;
+        };
+        let body: Value = match query.payload() {
+            Some(bytes) => match serde_json::from_slice(&bytes.to_bytes()) {
+                Ok(value) => value,
+                Err(e) => {
+                    reply_err(
+                        &query,
+                        &WireError::bad_request(format!("invalid JSON: {e}")),
+                    )
+                    .await;
+                    return;
+                }
+            },
+            None => Value::Null,
+        };
+        match self.route(&query, verb.as_str(), &body).await {
+            Ok(payload) => reply_json(&query, &payload).await,
+            Err(error) => reply_err(&query, &error).await,
+        }
+    }
+
+    async fn route(
+        &mut self,
+        _query: &Query,
+        verb: &str,
+        body: &Value,
+    ) -> Result<Value, WireError> {
+        match verb {
+            "create" => {
+                let req: rpc::UserProfileCreate = parse(body)?;
+                let id = req.id.unwrap_or_else(Uuid::new_v4);
+                if self.profiles.contains_key(&id) {
+                    return Err(WireError::profile_exists(id));
+                }
+                self.profiles.insert(id, req.body.clone());
+                self.publish_profile(&id, &req.body).await;
+                self.persist();
+                self.recompute_idle();
+                Ok(json!({ "id": id }))
+            }
+            "update" => {
+                let req: rpc::UserProfileUpdate = parse(body)?;
+                if !self.profiles.contains_key(&req.id) {
+                    return Err(WireError::profile_not_found(req.id));
+                }
+                self.profiles.insert(req.id, req.body.clone());
+                self.publish_profile(&req.id, &req.body).await;
+                self.persist();
+                self.recompute_idle();
+                Ok(json!({}))
+            }
+            "duplicate" => {
+                let req: rpc::ProfileDuplicate = parse(body)?;
+                let Some(source) = self.profiles.get(&req.id).cloned() else {
+                    return Err(WireError::profile_not_found(req.id));
+                };
+                let id = Uuid::new_v4();
+                let mut body = source;
+                body.name = req.name;
+                self.profiles.insert(id, body.clone());
+                self.publish_profile(&id, &body).await;
+                self.persist();
+                Ok(json!({ "id": id }))
+            }
+            "delete" => {
+                let req: rpc::TvRef = parse(body)?;
+                if !self.profiles.contains_key(&req.id) {
+                    return Err(WireError::profile_not_found(req.id));
+                }
+                if self.assignments.values().any(|profile| *profile == req.id) {
+                    return Err(WireError::profile_in_use(req.id));
+                }
+                self.profiles.remove(&req.id);
+                self.delete_key(&keys::user_profile(&self.site, &req.id))
+                    .await;
+                self.persist();
+                self.recompute_idle();
+                Ok(json!({}))
+            }
+            "defaults" => Ok(resolved_json(&ResolvedUserProfile::default())),
+            "effective" => {
+                let req: rpc::TvRef = parse(body)?;
+                let resolved = self
+                    .assignments
+                    .get(&req.id)
+                    .and_then(|profile| self.profiles.get(profile))
+                    .map(UserProfileConfig::resolve)
+                    .unwrap_or_default();
+                Ok(resolved_json(&resolved))
+            }
+            "assign" => {
+                let req: rpc::UserAssign = parse(body)?;
+                if let Some(profile) = req.profile {
+                    if !self.profiles.contains_key(&profile) {
+                        return Err(WireError::profile_not_found(profile));
+                    }
+                    self.assignments.insert(req.tv, profile);
+                    self.publish_assignment(&req.tv, Some(profile)).await;
+                } else {
+                    self.assignments.remove(&req.tv);
+                    self.delete_key(&keys::user_tv_profile(&self.site, &req.tv))
+                        .await;
+                }
+                self.persist();
+                self.recompute_idle();
+                Ok(json!({}))
+            }
+            other => Err(WireError::bad_request(format!("no such rpc: {other}"))),
+        }
+    }
+
+    async fn publish_profile(&mut self, id: &Uuid, body: &UserProfileConfig) {
+        match serde_json::to_value(body) {
+            Ok(payload) => {
+                let key = keys::user_profile(&self.site, id);
+                self.publish(&key, &payload).await;
+            }
+            Err(e) => warn!(%e, "user profile serialize failed"),
+        }
+    }
+
+    async fn publish_assignment(&mut self, tv: &Uuid, profile: Option<Uuid>) {
+        let key = keys::user_tv_profile(&self.site, tv);
+        self.publish(&key, &json!({ "profile": profile })).await;
+    }
+
+    async fn publish(&mut self, key: &str, payload: &Value) {
+        if !self.publishers.contains_key(key) {
+            let declared = self
+                .user
+                .declare_publisher(key.to_string())
+                .encoding(Encoding::APPLICATION_JSON)
+                .cache(CacheConfig::default().max_samples(1))
+                .sample_miss_detection(MissDetectionConfig::default().heartbeat(MISS_HEARTBEAT))
+                .publisher_detection()
+                .await;
+            match declared {
+                Ok(publisher) => {
+                    self.publishers.insert(key.to_string(), publisher);
+                }
+                Err(e) => {
+                    warn!(%key, %e, "declare publisher failed, sample dropped");
+                    return;
+                }
+            }
+        }
+        let publisher = self.publishers.get(key).expect("just inserted");
+        match serde_json::to_vec(payload) {
+            Ok(bytes) => {
+                if let Err(e) = publisher.put(bytes).await {
+                    warn!(%key, %e, "publish failed");
+                }
+            }
+            Err(e) => warn!(%key, %e, "payload encode failed"),
+        }
+    }
+
+    /// Delete through the owning publisher so its cache records the
+    /// tombstone — late joiners see nothing.
+    async fn delete_key(&mut self, key: &str) {
+        match self.publishers.remove(key) {
+            Some(publisher) => {
+                if let Err(e) = publisher.delete().await {
+                    warn!(%key, %e, "delete failed");
+                }
+            }
+            None => {
+                if let Err(e) = self.user.delete(key).await {
+                    warn!(%key, %e, "session delete failed");
+                }
+            }
+        }
+    }
+}
+
+/// Fire a TV rpc on the system socket; failures are logged, not fatal —
+/// the daemon's own retry tier owns delivery.
+fn call_tv(system: &Session, site: &str, tv: Uuid, action: SessionAction) {
+    let (verb, body) = match action {
+        SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
+        SessionAction::ScreenOn => ("set-screen", json!({ "on": true })),
+        SessionAction::PowerOff => ("power-off", Value::Null),
+        SessionAction::PowerOn => ("power-on", Value::Null),
+        SessionAction::None => return,
+    };
+    let session = system.clone();
+    let key = keys::tv_rpc(site, &tv, verb);
+    tokio::spawn(async move {
+        let replies = match session
+            .get(key.as_str())
+            .payload(serde_json::to_vec(&body).unwrap_or_default())
+            .encoding(Encoding::APPLICATION_JSON)
+            .timeout(Duration::from_secs(5))
+            .await
+        {
+            Ok(replies) => replies,
+            Err(e) => {
+                warn!(%key, %e, "tv rpc failed to send");
+                return;
+            }
+        };
+        match replies.recv_async().await {
+            Ok(reply) => {
+                if let Err(err) = reply.result() {
+                    let detail: Value =
+                        serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null);
+                    warn!(%key, %detail, "tv rpc rejected");
+                }
+            }
+            Err(_) => warn!(%key, "tv rpc got no reply"),
+        }
+    });
+}
+
+/// The wire projection of a resolved user profile — same field names as
+/// the config, every value concrete.
+fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
+    let action = |a: SessionAction| serde_json::to_value(a).unwrap_or_default();
+    json!({
+        "on_session_lock": action(resolved.on_session_lock),
+        "on_session_unlock": action(resolved.on_session_unlock),
+        "on_lock_wake": action(resolved.on_lock_wake),
+        "idle_timeout_seconds": resolved.idle_timeout_seconds,
+        "on_idle_timeout": action(resolved.on_idle_timeout),
+        "on_idle_resume": action(resolved.on_idle_resume),
+    })
+}
+
+fn parse<T: DeserializeOwned>(body: &Value) -> Result<T, WireError> {
+    serde_json::from_value(body.clone()).map_err(|e| WireError::bad_request(e.to_string()))
+}
+
+async fn reply_json(query: &Query, payload: &Value) {
+    let bytes = serde_json::to_vec(payload).unwrap_or_default();
+    let key = query.key_expr().clone().into_owned();
+    if let Err(e) = query
+        .reply(key, bytes)
+        .encoding(Encoding::APPLICATION_JSON)
+        .await
+    {
+        warn!(%e, "reply failed");
+    }
+}
+
+async fn reply_err(query: &Query, error: &WireError) {
+    let bytes = serde_json::to_vec(error).unwrap_or_default();
+    if let Err(e) = query
+        .reply_err(bytes)
+        .encoding(Encoding::APPLICATION_JSON)
+        .await
+    {
+        warn!(%e, "reply_err failed");
+    }
+}
+
+/// Wayland idle adapter: register an `ext-idle-notify` notification at
+/// the resolved timeout, re-registering whenever it changes; forward
+/// transitions as session events. Runs until the client or watch closes.
+pub async fn idle_adapter(mut timeout: watch::Receiver<u64>, client: SessionClient) {
+    loop {
+        let seconds = *timeout.borrow_and_update();
+        if seconds == 0 {
+            if timeout.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+        let (wl_tx, mut transitions) = mpsc::unbounded_channel();
+        let handle = tisvlay_core::wayland::start_idle_watch(
+            vec![tisvlay_core::wayland::IdleNotification {
+                tag: 1,
+                timeout_ms: u32::try_from(seconds.saturating_mul(1000)).unwrap_or(u32::MAX),
+            }],
+            wl_tx,
+        );
+        let _guard = match handle {
+            Ok(guard) => guard,
+            Err(e) => {
+                warn!(%e, "wayland idle watch unavailable; waiting for timeout change");
+                if timeout.changed().await.is_err() {
+                    return;
+                }
+                continue;
+            }
+        };
+        loop {
+            tokio::select! {
+                transition = transitions.recv() => match transition {
+                    None => break,
+                    Some((_tag, tisvlay_core::wayland::IdleTransition::Idled)) => {
+                        client.send(SessionEvent::IdleTimeout);
+                    }
+                    Some((_tag, tisvlay_core::wayland::IdleTransition::Resumed)) => {
+                        client.send(SessionEvent::IdleResume);
+                    }
+                },
+                changed = timeout.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break; // re-register at the new timeout
+                }
+            }
+        }
+    }
+}

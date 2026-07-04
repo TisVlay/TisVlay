@@ -1,0 +1,23 @@
+[package]
+name = "tvnext-greeter"
+description = "zenoh-ecs spike: login-greeter idle client — wayland ext-idle-notify to greeter/idle puts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+tisvlay-core = { workspace = true, features = ["wayland"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tvnext-wire = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
+
+[lints]
+workspace = true

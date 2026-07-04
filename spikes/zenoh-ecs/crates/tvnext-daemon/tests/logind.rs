@@ -74,8 +74,10 @@ async fn logind_sleep_resume_drive_profile_actions() {
 
     // Give the watcher a beat to be subscribed before emitting.
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // Stock mapping (root-parity): sleep powers the TV off, resume wakes
+    // it back through the wake dial.
     fake.emit_prepare_for_sleep(true).await.unwrap();
-    wait_power(&sub, id, "screenoff").await;
+    wait_power(&sub, id, "standby").await;
 
     fake.emit_prepare_for_sleep(false).await.unwrap();
     wait_power(&sub, id, "active").await;

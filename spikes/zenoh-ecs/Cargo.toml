@@ -4,6 +4,8 @@ members = [
     "crates/tvnext-wire",
     "crates/tvnext-world",
     "crates/tvnext-daemon",
+    "crates/tvnext-session",
+    "crates/tvnext-greeter",
     "crates/tvnext-cli",
 ]
 
@@ -54,6 +56,7 @@ tisvlay-mock = { path = "../../crates/tisvlay-mock" }
 tvnext-wire = { path = "crates/tvnext-wire" }
 tvnext-world = { path = "crates/tvnext-world" }
 tvnext-daemon = { path = "crates/tvnext-daemon" }
+tvnext-session = { path = "crates/tvnext-session" }
 
 [workspace.lints.rust]
 unreachable_pub = "warn"

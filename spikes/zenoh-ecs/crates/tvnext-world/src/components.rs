@@ -123,25 +123,25 @@ pub(crate) enum ProfileAction {
     PowerOn,
 }
 
-/// Event → action mapping dispatched to every managed, connected TV. A
-/// plain data resource: the stock mapping below is the default profile,
-/// replaced wholesale once per-TV profile entities land (M2 CRUD).
+/// Event → action mapping applied when a TV has no assigned profile or
+/// its profile leaves the event's field unset — the inheritance base the
+/// `profile/rpc/defaults` projection serves.
 #[derive(Resource, Debug)]
 pub(crate) struct SystemProfile(pub HashMap<SystemEvent, ProfileAction>);
 
 impl SystemProfile {
-    /// Stock mapping — parity with today's default system profile
-    /// (screen-blank on lock/sleep/DPMS-off, wake the panel on the way
-    /// back, full power-off on shutdown).
+    /// Stock mapping — parity with the root stack's hard-coded resolved
+    /// defaults: full power-off on sleep/shutdown, wake-on-LAN on resume,
+    /// screen-blank mirroring for DPMS and the login greeter's idle timer.
     pub(crate) fn stock() -> Self {
         Self(HashMap::from([
-            (SystemEvent::Lock, ProfileAction::ScreenOff),
-            (SystemEvent::Unlock, ProfileAction::ScreenOn),
-            (SystemEvent::Sleep, ProfileAction::ScreenOff),
-            (SystemEvent::Resume, ProfileAction::ScreenOn),
+            (SystemEvent::Sleep, ProfileAction::PowerOff),
+            (SystemEvent::Resume, ProfileAction::PowerOn),
             (SystemEvent::Shutdown, ProfileAction::PowerOff),
             (SystemEvent::DpmsOff, ProfileAction::ScreenOff),
             (SystemEvent::DpmsOn, ProfileAction::ScreenOn),
+            (SystemEvent::GreeterIdle, ProfileAction::ScreenOff),
+            (SystemEvent::GreeterResume, ProfileAction::ScreenOn),
         ]))
     }
 }

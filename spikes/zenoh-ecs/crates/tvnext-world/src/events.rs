@@ -43,13 +43,15 @@ pub enum InEvent {
 /// Desktop/power events the profile dispatcher maps to TV actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SystemEvent {
-    Lock,
-    Unlock,
     Sleep,
     Resume,
     Shutdown,
     DpmsOff,
     DpmsOn,
+    /// Login greeter went idle (published by `tvnext-greeter`).
+    GreeterIdle,
+    /// Login greeter activity resumed.
+    GreeterResume,
 }
 
 /// Updates flowing from a pairing session into the world.
@@ -326,89 +328,4 @@ pub enum WireEffect {
     },
 }
 
-/// Typed failure reason for a command reply — serialized into the zenoh
-/// `reply_err` payload.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct WireError {
-    pub code: String,
-    pub message: String,
-}
-
-impl WireError {
-    pub fn tv_not_found(id: Uuid) -> Self {
-        Self {
-            code: "tv-not-found".into(),
-            message: format!("no TV with id {id}"),
-        }
-    }
-
-    pub fn tv_exists(id: Uuid) -> Self {
-        Self {
-            code: "tv-exists".into(),
-            message: format!("a TV with id {id} already exists"),
-        }
-    }
-
-    pub fn not_connected(id: Uuid) -> Self {
-        Self {
-            code: "not-connected".into(),
-            message: format!("TV {id} has no live connection"),
-        }
-    }
-
-    pub fn unknown_vendor(vendor: &str) -> Self {
-        Self {
-            code: "unknown-vendor".into(),
-            message: format!("no backend registered for vendor '{vendor}'"),
-        }
-    }
-
-    pub fn pairing_exists(id: Uuid) -> Self {
-        Self {
-            code: "pairing-exists".into(),
-            message: format!("a pairing session for {id} is already running"),
-        }
-    }
-
-    pub fn pairing_not_found(id: Uuid) -> Self {
-        Self {
-            code: "pairing-not-found".into(),
-            message: format!("no pairing session for {id}"),
-        }
-    }
-
-    pub fn wake_not_supported(id: Uuid) -> Self {
-        Self {
-            code: "wake-not-supported".into(),
-            message: format!("TV {id} is disconnected and its transport cannot wake it"),
-        }
-    }
-
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self {
-            code: "bad-request".into(),
-            message: message.into(),
-        }
-    }
-
-    pub fn profile_not_found(id: Uuid) -> Self {
-        Self {
-            code: "profile-not-found".into(),
-            message: format!("no system profile with id {id}"),
-        }
-    }
-
-    pub fn profile_exists(id: Uuid) -> Self {
-        Self {
-            code: "profile-exists".into(),
-            message: format!("a system profile with id {id} already exists"),
-        }
-    }
-
-    pub fn profile_in_use(id: Uuid) -> Self {
-        Self {
-            code: "profile-in-use".into(),
-            message: format!("system profile {id} is referenced by at least one TV"),
-        }
-    }
-}
+pub use tvnext_wire::error::WireError;

@@ -139,6 +139,10 @@ pub mod payload {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub primary_input: Option<String>,
         pub automate_when: String,
+        /// The evaluated automation gate: `managed` AND `automate_when`
+        /// holds against the current input. Consumers (session service,
+        /// tray) act only on automated TVs.
+        pub automated: bool,
     }
 
     impl Meta {
@@ -148,6 +152,9 @@ pub mod payload {
                 system_profile: None,
                 primary_input: None,
                 automate_when: "always".into(),
+                // `should_automate` gives unknown inputs the benefit of
+                // the doubt, so a fresh managed TV starts automated.
+                automated: managed,
             }
         }
     }
@@ -214,6 +221,67 @@ pub mod keys {
     /// Observability tap: `tisvlay/<site>/event/<name>`.
     pub fn event(site: &str, name: &str) -> String {
         format!("tisvlay/{site}/event/{name}")
+    }
+
+    /// Session-event tap published by the session service on the system
+    /// socket: `tisvlay/<site>/event/session/<name>`.
+    pub fn session_event(site: &str, name: &str) -> String {
+        format!("tisvlay/{site}/event/session/{name}")
+    }
+
+    /// Greeter idle transitions, published by `tvnext-greeter`:
+    /// `tisvlay/<site>/greeter/idle` with `{idle: bool}`.
+    pub fn greeter_idle(site: &str) -> String {
+        format!("tisvlay/{site}/greeter/idle")
+    }
+
+    /// The daemon-computed greeter idle timeout (shortest enabled across
+    /// automated TVs, `{seconds}`; 0 = disabled): cached pub the greeter
+    /// subscribes to.
+    pub fn greeter_timeout(site: &str) -> String {
+        format!("tisvlay/{site}/greeter/timeout")
+    }
+
+    /// User-profile body on the user socket:
+    /// `tisvlay/<site>/user/profile/<uuid>`.
+    pub fn user_profile(site: &str, id: &Uuid) -> String {
+        format!("tisvlay/{site}/user/profile/{id}")
+    }
+
+    /// Per-TV user-profile assignment on the user socket.
+    pub fn user_tv_profile(site: &str, tv: &Uuid) -> String {
+        format!("tisvlay/{site}/user/tv/{tv}/profile")
+    }
+
+    /// User-profile RPC key + the wildcard its queryable declares.
+    pub fn user_profile_rpc(site: &str, verb: &str) -> String {
+        format!("tisvlay/{site}/user/profile/rpc/{verb}")
+    }
+
+    pub fn user_profile_rpc_wild(site: &str) -> String {
+        format!("tisvlay/{site}/user/profile/rpc/*")
+    }
+
+    pub fn parse_user_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/user/profile/rpc/")
+    }
+
+    /// Liveliness token for a running session service (user socket).
+    pub fn user_alive_session(site: &str) -> String {
+        format!("tisvlay/{site}/user/alive/session")
+    }
+
+    /// Everything under the user subtree — must never be visible through
+    /// the system socket (gateway isolation invariant).
+    pub fn user_all(site: &str) -> String {
+        format!("tisvlay/{site}/user/**")
+    }
+
+    /// Every TV's `meta/config` key — the session service's fleet mirror.
+    pub fn tv_meta_wild(site: &str) -> String {
+        format!("tisvlay/{site}/tv/*/meta/config")
     }
 
     /// Pairing progress stream: `tisvlay/<site>/pairing/<uuid>/progress`.
@@ -395,6 +463,101 @@ pub mod keys {
     }
 }
 
+pub mod error {
+    //! The rpc error contract: every `reply_err` payload is this shape,
+    //! clients branch on `code` and show `message`.
+
+    use serde::{Deserialize, Serialize};
+    use uuid::Uuid;
+
+    /// Typed failure reason for a command reply — serialized into the
+    /// zenoh `reply_err` payload.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct WireError {
+        pub code: String,
+        pub message: String,
+    }
+
+    impl WireError {
+        pub fn tv_not_found(id: Uuid) -> Self {
+            Self {
+                code: "tv-not-found".into(),
+                message: format!("no TV with id {id}"),
+            }
+        }
+
+        pub fn tv_exists(id: Uuid) -> Self {
+            Self {
+                code: "tv-exists".into(),
+                message: format!("a TV with id {id} already exists"),
+            }
+        }
+
+        pub fn not_connected(id: Uuid) -> Self {
+            Self {
+                code: "not-connected".into(),
+                message: format!("TV {id} has no live connection"),
+            }
+        }
+
+        pub fn unknown_vendor(vendor: &str) -> Self {
+            Self {
+                code: "unknown-vendor".into(),
+                message: format!("no backend registered for vendor '{vendor}'"),
+            }
+        }
+
+        pub fn pairing_exists(id: Uuid) -> Self {
+            Self {
+                code: "pairing-exists".into(),
+                message: format!("a pairing session for {id} is already running"),
+            }
+        }
+
+        pub fn pairing_not_found(id: Uuid) -> Self {
+            Self {
+                code: "pairing-not-found".into(),
+                message: format!("no pairing session for {id}"),
+            }
+        }
+
+        pub fn wake_not_supported(id: Uuid) -> Self {
+            Self {
+                code: "wake-not-supported".into(),
+                message: format!("TV {id} is disconnected and its transport cannot wake it"),
+            }
+        }
+
+        pub fn bad_request(message: impl Into<String>) -> Self {
+            Self {
+                code: "bad-request".into(),
+                message: message.into(),
+            }
+        }
+
+        pub fn profile_not_found(id: Uuid) -> Self {
+            Self {
+                code: "profile-not-found".into(),
+                message: format!("no system profile with id {id}"),
+            }
+        }
+
+        pub fn profile_exists(id: Uuid) -> Self {
+            Self {
+                code: "profile-exists".into(),
+                message: format!("a system profile with id {id} already exists"),
+            }
+        }
+
+        pub fn profile_in_use(id: Uuid) -> Self {
+            Self {
+                code: "profile-in-use".into(),
+                message: format!("system profile {id} is referenced by at least one TV"),
+            }
+        }
+    }
+}
+
 /// Request bodies for the RPC queryables — shared by the daemon bridge and
 /// clients so the wire shape exists in exactly one place.
 pub mod rpc {
@@ -498,6 +661,30 @@ pub mod rpc {
         pub name: String,
     }
 
+    /// Bodies for the user-profile rpcs served by the session service on
+    /// the user socket. Duplicate/delete/effective reuse [`ProfileDuplicate`]
+    /// and [`TvRef`].
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct UserProfileCreate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub id: Option<Uuid>,
+        pub body: tisvlay_core::UserProfileConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct UserProfileUpdate {
+        pub id: Uuid,
+        pub body: tisvlay_core::UserProfileConfig,
+    }
+
+    /// Assign (or with `profile: null` unassign) a user profile to a TV.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct UserAssign {
+        pub tv: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub profile: Option<Uuid>,
+    }
+
     /// Body for `manager/rpc/discover-start`: an open-ended scan session
     /// publishing findings on `discovery/<session>/found/*` with a
     /// liveliness token until `discover-stop`.
@@ -547,13 +734,23 @@ pub mod bootstrap {
             .join("next.sock")
     }
 
+    /// Default session-service user socket: `$XDG_RUNTIME_DIR/tisvlay/
+    /// session.sock`. The 0700 runtime dir is the privacy boundary.
+    pub fn default_session_socket_path() -> PathBuf {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tisvlay")
+            .join("session.sock")
+    }
+
     /// Peer-mode config listening on `socket` — the daemon side.
     /// Timestamping is on: the advanced-publisher caches order and replay
     /// samples by timestamp.
     pub fn peer_config(socket: &Path) -> Result<Config> {
         let mut config = base_config()?;
         insert(&mut config, "mode", "\"peer\"")?;
-        insert(&mut config, "listen/endpoints", &endpoint_list(socket)?)?;
+        insert(&mut config, "listen/endpoints", &endpoint_list(&[socket])?)?;
         insert(&mut config, "timestamping/enabled", "true")?;
         Ok(config)
     }
@@ -561,10 +758,16 @@ pub mod bootstrap {
     /// Client-mode config connecting to `socket` — CLI/GUI/test side.
     /// Client `connect.timeout_ms` defaults to 0 (no retry), so an absent
     /// daemon fails fast at `zenoh::open`.
+    ///
+    /// One socket per session: a zenoh client maintains a single link
+    /// (multiple connect endpoints are a failover list, not fan-out), so
+    /// clients that span the system and user worlds open one session per
+    /// socket. That is the gateway isolation made structural — nothing a
+    /// client does can bridge the two key spaces.
     pub fn client_config(socket: &Path) -> Result<Config> {
         let mut config = base_config()?;
         insert(&mut config, "mode", "\"client\"")?;
-        insert(&mut config, "connect/endpoints", &endpoint_list(socket)?)?;
+        insert(&mut config, "connect/endpoints", &endpoint_list(&[socket])?)?;
         Ok(config)
     }
 
@@ -582,11 +785,17 @@ pub mod bootstrap {
     }
 
     /// JSON-encoded single-element endpoint list for `insert_json5`.
-    fn endpoint_list(socket: &Path) -> Result<String> {
-        let path = socket
-            .to_str()
-            .context("socket path must be valid UTF-8 for a zenoh endpoint")?;
-        serde_json::to_string(&[format!("unixsock-stream/{path}")]).context("encode endpoint list")
+    fn endpoint_list(sockets: &[&Path]) -> Result<String> {
+        let endpoints = sockets
+            .iter()
+            .map(|socket| {
+                let path = socket
+                    .to_str()
+                    .context("socket path must be valid UTF-8 for a zenoh endpoint")?;
+                Ok(format!("unixsock-stream/{path}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        serde_json::to_string(&endpoints).context("encode endpoint list")
     }
 
     #[cfg(test)]
@@ -595,7 +804,7 @@ pub mod bootstrap {
 
         #[test]
         fn endpoint_list_embeds_absolute_path() {
-            let list = endpoint_list(Path::new("/run/user/1000/tisvlay/next.sock")).unwrap();
+            let list = endpoint_list(&[Path::new("/run/user/1000/tisvlay/next.sock")]).unwrap();
             assert_eq!(
                 list,
                 r#"["unixsock-stream//run/user/1000/tisvlay/next.sock"]"#

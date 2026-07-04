@@ -293,11 +293,15 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
 async fn defaults_and_effective_expose_field_resolution() {
     let w = wire().await;
     let stock_map = json!({
-        "on_sleep": "screen_off",
-        "on_wake": "screen_on",
+        "on_sleep": "power_off",
+        "on_wake": "power_on",
         "on_shutdown": "power_off",
         "on_dpms_off": "screen_off",
         "on_dpms_on": "screen_on",
+        "on_idle_timeout": "screen_off",
+        "on_idle_resume": "screen_on",
+        "idle_timeout_seconds": 0,
+        "automate_when": "always",
     });
 
     let defaults = call(
@@ -323,7 +327,12 @@ async fn defaults_and_effective_expose_field_resolution() {
     let ok = call(
         &w.client,
         &keys::profile_rpc(&w.site, "create"),
-        json!({ "body": { "name": "Quiet", "on_dpms_off": "none", "on_sleep": "power_off" } }),
+        json!({ "body": {
+            "name": "Quiet",
+            "on_dpms_off": "none",
+            "on_sleep": "screen_off",
+            "idle_timeout_seconds": 300,
+        } }),
     )
     .await
     .expect("create ok");
@@ -346,11 +355,15 @@ async fn defaults_and_effective_expose_field_resolution() {
     assert_eq!(
         effective,
         json!({
-            "on_sleep": "power_off",
-            "on_wake": "screen_on",
+            "on_sleep": "screen_off",
+            "on_wake": "power_on",
             "on_shutdown": "power_off",
             "on_dpms_off": "none",
             "on_dpms_on": "screen_on",
+            "on_idle_timeout": "screen_off",
+            "on_idle_resume": "screen_on",
+            "idle_timeout_seconds": 300,
+            "automate_when": "always",
         })
     );
 
