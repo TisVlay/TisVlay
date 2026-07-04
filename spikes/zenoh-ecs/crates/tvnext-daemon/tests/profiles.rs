@@ -292,10 +292,15 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
 #[tokio::test(flavor = "multi_thread")]
 async fn defaults_and_effective_expose_field_resolution() {
     let w = wire().await;
+    // The hard-coded floor as a full body — the editable default
+    // profile is seeded from this at first boot.
     let stock_map = json!({
+        "name": "default",
+        "on_startup": "power_on",
+        "on_shutdown": "power_off",
+        "on_reboot": "none",
         "on_sleep": "power_off",
         "on_wake": "power_on",
-        "on_shutdown": "power_off",
         "on_dpms_off": "screen_off",
         "on_dpms_on": "screen_on",
         "on_idle_timeout": "screen_off",
@@ -355,9 +360,12 @@ async fn defaults_and_effective_expose_field_resolution() {
     assert_eq!(
         effective,
         json!({
+            "name": "Quiet",
+            "on_startup": "power_on",
+            "on_shutdown": "power_off",
+            "on_reboot": "none",
             "on_sleep": "screen_off",
             "on_wake": "power_on",
-            "on_shutdown": "power_off",
             "on_dpms_off": "none",
             "on_dpms_on": "screen_on",
             "on_idle_timeout": "screen_off",

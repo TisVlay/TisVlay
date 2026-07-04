@@ -559,11 +559,13 @@ pub fn run() -> Result<()> {
             .context("Failed to create daemon client")?;
         let daemon = Arc::new(daemon);
 
+        // Built unconditionally: the link dials in the background and
+        // liveliness events drive availability, so no start order is
+        // assumed (root parity via NameOwnerChanged-equivalent).
         let session: Arc<RwLock<Option<SessionClient>>> = Arc::new(RwLock::new(
-            match SessionClient::connect(&endpoints.user_socket, &endpoints.site).await {
-                Ok(client) if client.is_available().await => Some(client),
-                _ => None,
-            },
+            SessionClient::connect(&endpoints.user_socket, &endpoints.site)
+                .await
+                .ok(),
         ));
 
         let tray: Arc<RwLock<Option<TrayClient>>> =

@@ -62,7 +62,8 @@ pub struct TrayOptions {
 /// processor. Runs until ctrl-c.
 pub async fn run(options: TrayOptions) -> Result<()> {
     let system = zenoh::open(
-        bootstrap::client_config(&options.system_socket).context("system session config")?,
+        bootstrap::client_config_resilient(&options.system_socket)
+            .context("system session config")?,
     )
     .await
     .map_err(|e| {
@@ -71,11 +72,13 @@ pub async fn run(options: TrayOptions) -> Result<()> {
             options.system_socket.display()
         )
     })?;
-    let user = match bootstrap::client_config(&options.user_socket) {
+    // Background-retry link: the session service may start (or restart)
+    // any time; user keys hydrate whenever it appears.
+    let user = match bootstrap::client_config_resilient(&options.user_socket) {
         Ok(config) => match zenoh::open(config).await {
             Ok(session) => Some(session),
             Err(e) => {
-                info!(%e, "no session service socket; user profiles hidden");
+                warn!(%e, "user socket session failed; user profiles hidden");
                 None
             }
         },

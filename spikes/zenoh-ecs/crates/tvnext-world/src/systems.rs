@@ -899,7 +899,6 @@ fn handle_profile_commands(
     mut outbox: ResMut<Outbox>,
     mut dirty: ResMut<DirtyStore>,
     site: Res<Site>,
-    stock: Res<SystemProfile>,
     tvs: Res<TvIndex>,
     mut bodies: Query<&mut ProfileBody>,
     metas: Query<&payload::Meta>,
@@ -908,20 +907,48 @@ fn handle_profile_commands(
         let InEvent::Command(cmd) = msg else { continue };
         match cmd {
             Command::AddProfile { record, reply } => {
-                if index.0.contains_key(&record.id) {
+                let mut body = record.body.clone();
+                if record.id == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID {
+                    // The reserved default always renders under its pinned
+                    // name, and re-adding it (boot seed vs store replay,
+                    // whichever lands second) is an upsert, not a conflict.
+                    body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+                    if let Some(&entity) = index.0.get(&record.id) {
+                        if let Ok(mut current) = bodies.get_mut(entity) {
+                            current.0 = body.clone();
+                        }
+                        publish_profile(&mut outbox, &site, &record.id, &body);
+                        dirty.0 = true;
+                        reply_ok(&mut outbox, *reply);
+                        continue;
+                    }
+                } else if index.0.contains_key(&record.id) {
                     reply_err(&mut outbox, *reply, WireError::profile_exists(record.id));
                     continue;
                 }
                 let entity = commands
-                    .spawn((ProfileId(record.id), ProfileBody(record.body.clone())))
+                    .spawn((ProfileId(record.id), ProfileBody(body.clone())))
                     .id();
                 index.0.insert(record.id, entity);
-                publish_profile(&mut outbox, &site, &record.id, &record.body);
+                publish_profile(&mut outbox, &site, &record.id, &body);
                 dirty.0 = true;
                 reply_ok(&mut outbox, *reply);
             }
             Command::UpdateProfile { id, body, reply } => match index.0.get(id) {
                 Some(&entity) => {
+                    if *id == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+                        && body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
+                    {
+                        reply_err(
+                            &mut outbox,
+                            *reply,
+                            WireError::bad_request(format!(
+                                "default profile's name must be \"{}\"",
+                                tisvlay_core::DEFAULT_PROFILE_NAME
+                            )),
+                        );
+                        continue;
+                    }
                     if let Ok(mut current) = bodies.get_mut(entity) {
                         current.0 = (**body).clone();
                         publish_profile(&mut outbox, &site, id, &current.0);
@@ -957,6 +984,10 @@ fn handle_profile_commands(
             }
             Command::DeleteProfile { id, reply } => match index.0.get(id).copied() {
                 Some(entity) => {
+                    if *id == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID {
+                        reply_err(&mut outbox, *reply, WireError::profile_reserved(*id));
+                        continue;
+                    }
                     if metas.iter().any(|m| m.system_profile == Some(*id)) {
                         reply_err(&mut outbox, *reply, WireError::profile_in_use(*id));
                         continue;
@@ -972,60 +1003,59 @@ fn handle_profile_commands(
                 None => reply_err(&mut outbox, *reply, WireError::profile_not_found(*id)),
             },
             Command::ProfileDefaults { reply } => {
-                reply_value(&mut outbox, *reply, profile_wire_map(None, &stock));
+                // The hard-coded floor every unset field ultimately
+                // resolves to — the editable default profile sits between
+                // this and child profiles.
+                let mut floor = tisvlay_core::SystemProfileConfig::full_default();
+                floor.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+                match serde_json::to_value(&floor) {
+                    Ok(value) => reply_value(&mut outbox, *reply, value),
+                    Err(error) => reply_err(
+                        &mut outbox,
+                        *reply,
+                        WireError::bad_request(format!("encode defaults: {error}")),
+                    ),
+                }
             }
             Command::EffectiveProfile { id, reply } => match tvs.0.get(id) {
                 Some(&entity) => {
+                    // Root chain: per-TV profile -> default profile ->
+                    // hard-coded floor, merged per field.
                     let assigned = metas
                         .get(entity)
                         .ok()
                         .and_then(|m| m.system_profile)
                         .and_then(|profile| index.0.get(&profile))
-                        .and_then(|&e| bodies.get(e).ok());
-                    reply_value(
-                        &mut outbox,
-                        *reply,
-                        profile_wire_map(assigned.map(|b| &b.0), &stock),
-                    );
+                        .and_then(|&e| bodies.get(e).ok())
+                        .map(|b| b.0.clone())
+                        .unwrap_or_default();
+                    let default_body = index
+                        .0
+                        .get(&tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
+                        .and_then(|&e| bodies.get(e).ok())
+                        .map(|b| b.0.clone())
+                        .unwrap_or_default();
+                    let floor = tisvlay_core::SystemProfileConfig::full_default();
+                    let mut merged = assigned
+                        .merge_with_base(&default_body)
+                        .merge_with_base(&floor);
+                    if merged.name.trim().is_empty() {
+                        merged.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+                    }
+                    match serde_json::to_value(&merged) {
+                        Ok(value) => reply_value(&mut outbox, *reply, value),
+                        Err(error) => reply_err(
+                            &mut outbox,
+                            *reply,
+                            WireError::bad_request(format!("encode effective: {error}")),
+                        ),
+                    }
                 }
                 None => reply_err(&mut outbox, *reply, WireError::tv_not_found(*id)),
             },
             _ => {}
         }
     }
-}
-
-/// The wire projection of a mapping: system-profile field names carrying
-/// the profile's own value where set, the stock action everywhere else.
-/// `None` body = the pure defaults.
-fn profile_wire_map(
-    body: Option<&tisvlay_core::SystemProfileConfig>,
-    stock: &SystemProfile,
-) -> serde_json::Value {
-    use tisvlay_core::SessionAction;
-    let stock_action = |event: SystemEvent| match stock.0.get(&event) {
-        Some(ProfileAction::ScreenOff) => SessionAction::ScreenOff,
-        Some(ProfileAction::ScreenOn) => SessionAction::ScreenOn,
-        Some(ProfileAction::PowerOff) => SessionAction::PowerOff,
-        Some(ProfileAction::PowerOn) => SessionAction::PowerOn,
-        None => SessionAction::None,
-    };
-    let field = |set: Option<SessionAction>, event: SystemEvent| {
-        serde_json::to_value(set.unwrap_or_else(|| stock_action(event))).unwrap_or_default()
-    };
-    json!({
-        "on_sleep": field(body.and_then(|b| b.on_sleep), SystemEvent::Sleep),
-        "on_wake": field(body.and_then(|b| b.on_wake), SystemEvent::Resume),
-        "on_shutdown": field(body.and_then(|b| b.on_shutdown), SystemEvent::Shutdown),
-        "on_dpms_off": field(body.and_then(|b| b.on_dpms_off), SystemEvent::DpmsOff),
-        "on_dpms_on": field(body.and_then(|b| b.on_dpms_on), SystemEvent::DpmsOn),
-        "on_idle_timeout": field(body.and_then(|b| b.on_idle_timeout), SystemEvent::GreeterIdle),
-        "on_idle_resume": field(body.and_then(|b| b.on_idle_resume), SystemEvent::GreeterResume),
-        // The greeter idle timer is opt-in: 0 = disabled.
-        "idle_timeout_seconds": body.and_then(|b| b.idle_timeout_seconds).unwrap_or(0),
-        "automate_when": serde_json::to_value(body.and_then(|b| b.automate_when).unwrap_or_default())
-            .unwrap_or_default(),
-    })
 }
 
 /// Random-access writes into per-TV state components, bundled to keep
@@ -1551,12 +1581,17 @@ fn publish_greeter_timeout(
         if !is_automated(meta, input) {
             continue;
         }
-        let seconds = meta
+        let assigned = meta
             .system_profile
             .and_then(|id| profile_index.0.get(&id))
             .and_then(|&entity| bodies.get(entity).ok())
-            .and_then(|body| body.0.idle_timeout_seconds)
-            .unwrap_or(0);
+            .and_then(|body| body.0.idle_timeout_seconds);
+        let inherited = profile_index
+            .0
+            .get(&tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
+            .and_then(|&entity| bodies.get(entity).ok())
+            .and_then(|body| body.0.idle_timeout_seconds);
+        let seconds = assigned.or(inherited).unwrap_or(0);
         if seconds > 0 && (timeout == 0 || seconds < timeout) {
             timeout = seconds;
         }
@@ -1579,13 +1614,25 @@ fn resolve_action(
     bodies: &Query<&ProfileBody>,
     stock: &SystemProfile,
 ) -> Option<ProfileAction> {
+    // Per-TV profile field wins outright (explicit `none` suppresses).
     if let Some(profile_id) = meta.and_then(|m| m.system_profile)
+        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
         && let Some(&entity) = profile_index.0.get(&profile_id)
         && let Ok(body) = bodies.get(entity)
         && let Some(action) = profile_event_action(&body.0, event)
     {
         return session_action(action);
     }
+    // Unset fields inherit the *editable* default profile…
+    if let Some(&entity) = profile_index
+        .0
+        .get(&tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
+        && let Ok(body) = bodies.get(entity)
+        && let Some(action) = profile_event_action(&body.0, event)
+    {
+        return session_action(action);
+    }
+    // …and only then the hard-coded stock floor.
     stock.0.get(event).copied()
 }
 

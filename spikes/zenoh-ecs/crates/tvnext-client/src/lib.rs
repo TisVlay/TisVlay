@@ -214,7 +214,7 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Connect to the daemon socket and start mirroring.
     pub async fn connect(socket: &Path, site: &str) -> Result<Self> {
-        let session = zenoh::open(bootstrap::client_config(socket)?)
+        let session = zenoh::open(bootstrap::client_config_resilient(socket)?)
             .await
             .map_err(|e| anyhow!("connect to daemon socket {}: {e}", socket.display()))?;
         let mirror = Arc::new(Mutex::new(SystemMirror::default()));
@@ -815,7 +815,7 @@ pub struct SessionClient {
 
 impl SessionClient {
     pub async fn connect(socket: &Path, site: &str) -> Result<Self> {
-        let session = zenoh::open(bootstrap::client_config(socket)?)
+        let session = zenoh::open(bootstrap::client_config_resilient(socket)?)
             .await
             .map_err(|e| anyhow!("connect to session socket {}: {e}", socket.display()))?;
         let mirror = Arc::new(Mutex::new(UserMirror::default()));

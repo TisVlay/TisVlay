@@ -40,6 +40,17 @@ async fn sdk_mirrors_rpcs_and_watches() {
     let session = SessionClient::connect(&user_socket, "t").await.unwrap();
     let mut watcher = StateWatcher::new(&daemon, Some(&session), StateWatcherConfig::default());
 
+    // The resilient link dials in the background; wait for liveliness
+    // before the first rpc (real clients ride availability the same way).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !daemon.is_available().await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "daemon never became available"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
     // Catalog reads work before any TV exists.
     let vendors = daemon.get_supported_vendors().await.unwrap();
     assert_eq!(vendors, vec![("mock".to_string(), "Mock".to_string())]);
@@ -160,6 +171,63 @@ async fn wait_for(daemon: &DaemonClient, pred: impl Fn(&[tvnext_client::TvInfo])
         assert!(
             tokio::time::Instant::now() < deadline,
             "mirror never converged; last: {tvs:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// No start-order assumptions: a client opened before the daemon's
+/// socket even exists must connect once the daemon appears (background
+/// retry), flip availability via liveliness, and hydrate the catalog —
+/// including the seeded editable default profile.
+#[tokio::test(flavor = "multi_thread")]
+async fn client_before_daemon_connects_when_it_appears() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("late.sock");
+
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    assert!(!daemon.is_available().await, "nothing is listening yet");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let (connector, discovery, _handle) = new_test_parts();
+    let _stack = tvnext_daemon::serve(
+        &socket,
+        "t",
+        vec![
+            tvnext_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !daemon.is_available().await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "client never noticed the daemon appearing"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Catalog hydration through the late-established link: the seeded
+    // default profile is visible and editable-shaped.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(body) = daemon
+            .get_system_profile(tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
+            .await
+        {
+            assert_eq!(body.name, "default");
+            assert_eq!(
+                body.on_dpms_off,
+                Some(tisvlay_core::SessionAction::ScreenOff)
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "default profile never hydrated"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

@@ -297,17 +297,25 @@ async fn lock_and_unlock_dispatch_default_actions() {
     drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
     drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
 
-    // The tap subscriber has been live since before the lock drive, so at
-    // minimum the unlock tap (published seconds after it settled) shows.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let sample = tokio::time::timeout_at(deadline, tap.recv_async())
-            .await
-            .expect("tap timed out")
-            .expect("tap closed");
-        if sample.key_expr().as_str().ends_with("/session/unlock") {
-            break;
+    // The tap is a plain put racing the subscriber's interest
+    // propagation, so keep re-driving (dispatch is idempotent) until
+    // one lands.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    'outer: loop {
+        assert!(
+            rig.stack.client.send(SessionEvent::Unlock),
+            "session core gone"
+        );
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, tap.recv_async()).await {
+            if sample.key_expr().as_str().ends_with("/session/unlock") {
+                break 'outer;
+            }
         }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "unlock tap never observed"
+        );
     }
 }
 
@@ -335,6 +343,7 @@ async fn user_profile_overrides_and_guards() {
     assert_eq!(
         defaults,
         json!({
+            "name": "default",
             "on_session_lock": "screen_off",
             "on_session_unlock": "screen_on",
             "on_lock_wake": "screen_on",

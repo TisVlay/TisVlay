@@ -409,6 +409,7 @@ impl TvTray {
                 "im-user",
                 &self.mirror.user_profiles,
                 tv.user_profile,
+                tisvlay_core::DEFAULT_USER_PROFILE_UUID,
                 move |profile| TrayCommand::SetUserProfile(id, profile),
             ),
             profile_picker(
@@ -417,6 +418,7 @@ impl TvTray {
                 "system-users",
                 &self.mirror.system_profiles,
                 tv.system_profile,
+                tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
                 move |profile| TrayCommand::SetSystemProfile(id, profile),
             ),
         ];
@@ -431,30 +433,31 @@ impl TvTray {
 }
 
 /// One "User: {current}" / "System: {current}" picker: a radio over
-/// "default" + the catalog, selection derived from the assignment.
+/// the catalog (the reserved default is a real, editable entity; an
+/// unassigned TV renders as the default selected).
 fn profile_picker(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     kind: &str,
     icon: &str,
     catalog: &std::collections::BTreeMap<Uuid, String>,
     assigned: Option<Uuid>,
+    default_id: Uuid,
     command: impl Fn(Option<Uuid>) -> TrayCommand + Send + Sync + 'static,
 ) -> MenuItem<TvTray> {
     let ids: Vec<Uuid> = catalog.keys().copied().collect();
-    let selected = assigned
-        .and_then(|profile| ids.iter().position(|id| *id == profile).map(|i| i + 1))
-        .unwrap_or(0);
-    let current = assigned
-        .and_then(|profile| catalog.get(&profile).map(String::as_str))
+    let effective = assigned.unwrap_or(default_id);
+    let selected = ids.iter().position(|id| *id == effective).unwrap_or(0);
+    let current = catalog
+        .get(&effective)
+        .map(String::as_str)
         .unwrap_or("default");
-    let mut options = vec![RadioItem {
-        label: "default".into(),
-        ..Default::default()
-    }];
-    options.extend(catalog.values().map(|name| RadioItem {
-        label: name.clone(),
-        ..Default::default()
-    }));
+    let options: Vec<RadioItem> = catalog
+        .values()
+        .map(|name| RadioItem {
+            label: name.clone(),
+            ..Default::default()
+        })
+        .collect();
     let tx = tx.clone();
     SubMenu {
         label: format!("{kind}: {current}"),
@@ -463,12 +466,7 @@ fn profile_picker(
             RadioGroup {
                 selected,
                 select: Box::new(move |_tray: &mut TvTray, index| {
-                    let profile = if index == 0 {
-                        None
-                    } else {
-                        ids.get(index - 1).copied()
-                    };
-                    let _ = tx.send(command(profile));
+                    let _ = tx.send(command(ids.get(index).copied()));
                 }),
                 options,
             }

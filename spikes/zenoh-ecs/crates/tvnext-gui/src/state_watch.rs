@@ -33,7 +33,12 @@ pub(crate) async fn initial_fetch_and_watch(
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
 ) {
-    let initial_session_available = session.read().await.is_some();
+    // The client always exists (background-retry link); availability is
+    // the liveliness state, not the client's existence.
+    let initial_session_available = match session.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
     let initial_tray_available = tray.read().await.is_some();
     let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
         Ok(mut s) => {
@@ -317,19 +322,16 @@ async fn watch_state(
                 refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
-                let endpoints = crate::endpoints();
-                if let Ok(client) =
-                    SessionClient::connect(&endpoints.user_socket, &endpoints.site).await
-                    && client.is_available().await
-                {
-                    profiles::prime_user_layers(&client, &editor).await;
-                    *session.write().await = Some(client);
-                    on_ui(&app_weak, move |app| {
-                        app.set_session_available(true);
-                        app.global::<Profiles>().set_session_available(true);
-                    });
-                    trigger_refresh();
+                // The client exists from startup (background-retry link);
+                // the token arriving means the service is answering now.
+                if let Some(client) = session.read().await.as_ref() {
+                    profiles::prime_user_layers(client, &editor).await;
                 }
+                on_ui(&app_weak, move |app| {
+                    app.set_session_available(true);
+                    app.global::<Profiles>().set_session_available(true);
+                });
+                trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;

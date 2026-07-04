@@ -562,6 +562,14 @@ pub mod error {
             }
         }
 
+        /// The reserved default profile cannot be deleted.
+        pub fn profile_reserved(id: Uuid) -> Self {
+            Self {
+                code: "profile-reserved".into(),
+                message: format!("profile {id} is the reserved default and cannot be deleted"),
+            }
+        }
+
         /// The backend accepted the command but the device call failed.
         pub fn command_failed(message: impl Into<String>) -> Self {
             Self {
@@ -790,9 +798,9 @@ pub mod bootstrap {
         Ok(config)
     }
 
-    /// Client-mode config connecting to `socket` — CLI/GUI/test side.
-    /// Client `connect.timeout_ms` defaults to 0 (no retry), so an absent
-    /// daemon fails fast at `zenoh::open`.
+    /// Client-mode config connecting to `socket` — one-shot callers
+    /// (CLI, tests). Client `connect.timeout_ms` defaults to 0 (no
+    /// retry), so an absent daemon fails fast at `zenoh::open`.
     ///
     /// One socket per session: a zenoh client maintains a single link
     /// (multiple connect endpoints are a failover list, not fan-out), so
@@ -803,6 +811,33 @@ pub mod bootstrap {
         let mut config = base_config()?;
         insert(&mut config, "mode", "\"client\"")?;
         insert(&mut config, "connect/endpoints", &endpoint_list(&[socket])?)?;
+        Ok(config)
+    }
+
+    /// Config for long-running consumers (GUI, tray, session service's
+    /// system link): `zenoh::open` returns immediately and the link
+    /// dials in the background forever, so no start or restart order is
+    /// assumed — liveliness tokens are the availability signal, the role
+    /// D-Bus's NameOwnerChanged played in the root stack.
+    ///
+    /// Shape: a connect-only *peer* (client mode requires a live link at
+    /// open; peer mode backgrounds the dial). A session with exactly one
+    /// endpoint and no listener cannot route between sockets, so the
+    /// gateway isolation is untouched — processes spanning both worlds
+    /// still hold one session per socket.
+    pub fn client_config_resilient(socket: &Path) -> Result<Config> {
+        let mut config = base_config()?;
+        insert(&mut config, "mode", "\"peer\"")?;
+        insert(&mut config, "listen/endpoints", "[]")?;
+        insert(&mut config, "connect/endpoints", &endpoint_list(&[socket])?)?;
+        insert(&mut config, "connect/exit_on_failure", "false")?;
+        // Retry forever; don't gate open() on the first connect landing.
+        insert(&mut config, "connect/timeout_ms", "-1")?;
+        insert(
+            &mut config,
+            "open/return_conditions/connect_scouted",
+            "false",
+        )?;
         Ok(config)
     }
 

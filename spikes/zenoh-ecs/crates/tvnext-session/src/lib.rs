@@ -98,7 +98,7 @@ pub struct SessionStack {
 /// run the core loop for the process lifetime.
 pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let system = zenoh::open(
-        tvnext_wire::bootstrap::client_config(&options.system_socket)
+        tvnext_wire::bootstrap::client_config_resilient(&options.system_socket)
             .context("system session config")?,
     )
     .await
@@ -128,10 +128,30 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("declare session liveliness: {e}"))?;
 
-    let snapshot = match &options.store {
+    let mut snapshot = match &options.store {
         Some(path) => load_user_store(path)?,
         None => UserStoreSnapshot::default(),
     };
+    // Root ensure_default parity: the editable default profile exists
+    // from first boot; stored edits to it survive (seed only if absent),
+    // and its name stays pinned.
+    if !snapshot
+        .profile
+        .iter()
+        .any(|record| record.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID)
+    {
+        let mut body = UserProfileConfig::full_default();
+        body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+        snapshot.profile.push(UserProfileRecord {
+            id: tisvlay_core::DEFAULT_USER_PROFILE_UUID,
+            body,
+        });
+    }
+    for record in &mut snapshot.profile {
+        if record.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
+            record.body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+        }
+    }
     let persist = options.store.as_ref().map(|path| {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(store::store_task(path.clone(), rx));
@@ -288,20 +308,34 @@ impl Core {
         }
     }
 
-    /// Assignment → profile field → hard defaults, per field.
+    /// Root chain per field: assignment → profile → editable default
+    /// profile → hard-coded floor.
     fn action_for(&self, tv: &Uuid, event: SessionEvent) -> SessionAction {
-        let resolved = self
-            .assignments
-            .get(tv)
-            .and_then(|profile| self.profiles.get(profile))
-            .map(UserProfileConfig::resolve)
-            .unwrap_or_default();
+        let resolved = self.resolve_for(tv);
         match event {
             SessionEvent::Lock => resolved.on_session_lock,
             SessionEvent::Unlock => resolved.on_session_unlock,
             SessionEvent::IdleTimeout => resolved.on_idle_timeout,
             SessionEvent::IdleResume => resolved.on_idle_resume,
         }
+    }
+
+    /// Merge an assignment through the editable default profile down to
+    /// the hard-coded floor (root resolve chain).
+    fn resolve_for(&self, tv: &Uuid) -> ResolvedUserProfile {
+        let assigned = self
+            .assignments
+            .get(tv)
+            .filter(|profile| **profile != tisvlay_core::DEFAULT_USER_PROFILE_UUID)
+            .and_then(|profile| self.profiles.get(profile))
+            .cloned()
+            .unwrap_or_default();
+        let default_body = self
+            .profiles
+            .get(&tisvlay_core::DEFAULT_USER_PROFILE_UUID)
+            .cloned()
+            .unwrap_or_default();
+        assigned.merge_with_base(&default_body).resolve()
     }
 
     /// Shortest enabled idle timeout across automated TVs' resolved
@@ -312,13 +346,7 @@ impl Core {
             if !meta.automated {
                 continue;
             }
-            let seconds = self
-                .assignments
-                .get(tv)
-                .and_then(|profile| self.profiles.get(profile))
-                .map(UserProfileConfig::resolve)
-                .unwrap_or_default()
-                .idle_timeout_seconds;
+            let seconds = self.resolve_for(tv).idle_timeout_seconds;
             if seconds > 0 && (timeout == 0 || seconds < timeout) {
                 timeout = seconds;
             }
@@ -397,9 +425,18 @@ impl Core {
             "create" => {
                 let req: rpc::UserProfileCreate = parse(body)?;
                 let id = req.id.unwrap_or_else(Uuid::new_v4);
-                if self.profiles.contains_key(&id) {
+                let mut new_body = req.body.clone();
+                if id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
+                    // Re-creating the reserved default is an upsert with
+                    // the name pinned (root ensure_default parity).
+                    new_body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+                } else if self.profiles.contains_key(&id) {
                     return Err(WireError::profile_exists(id));
                 }
+                let req = rpc::UserProfileCreate {
+                    id: Some(id),
+                    body: new_body,
+                };
                 self.profiles.insert(id, req.body.clone());
                 self.publish_profile(&id, &req.body).await;
                 self.persist();
@@ -410,6 +447,14 @@ impl Core {
                 let req: rpc::UserProfileUpdate = parse(body)?;
                 if !self.profiles.contains_key(&req.id) {
                     return Err(WireError::profile_not_found(req.id));
+                }
+                if req.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID
+                    && req.body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
+                {
+                    return Err(WireError::bad_request(format!(
+                        "default profile's name must be \"{}\"",
+                        tisvlay_core::DEFAULT_PROFILE_NAME
+                    )));
                 }
                 self.profiles.insert(req.id, req.body.clone());
                 self.publish_profile(&req.id, &req.body).await;
@@ -432,6 +477,9 @@ impl Core {
             }
             "delete" => {
                 let req: rpc::TvRef = parse(body)?;
+                if req.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
+                    return Err(WireError::profile_reserved(req.id));
+                }
                 if !self.profiles.contains_key(&req.id) {
                     return Err(WireError::profile_not_found(req.id));
                 }
@@ -445,16 +493,17 @@ impl Core {
                 self.recompute_idle();
                 Ok(json!({}))
             }
-            "defaults" => Ok(resolved_json(&ResolvedUserProfile::default())),
+            "defaults" => {
+                // The hard-coded floor as a Body — the editable default
+                // profile sits between this and child profiles.
+                let mut floor = UserProfileConfig::full_default();
+                floor.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+                serde_json::to_value(&floor)
+                    .map_err(|error| WireError::bad_request(format!("encode defaults: {error}")))
+            }
             "effective" => {
                 let req: rpc::TvRef = parse(body)?;
-                let resolved = self
-                    .assignments
-                    .get(&req.id)
-                    .and_then(|profile| self.profiles.get(profile))
-                    .map(UserProfileConfig::resolve)
-                    .unwrap_or_default();
-                Ok(resolved_json(&resolved))
+                Ok(resolved_json(&self.resolve_for(&req.id)))
             }
             "assign" => {
                 let req: rpc::UserAssign = parse(body)?;

@@ -156,6 +156,18 @@ pub async fn serve(
         tokio::spawn(store::store_task(path.to_path_buf(), rx));
     }
     tokio::spawn(reactor.run());
+    // Seed the editable default profile (root ensure_default parity).
+    // AddTv-style replay from the store lands later and upserts over
+    // this, so user edits to the default survive restarts.
+    let mut default_profile = tisvlay_core::SystemProfileConfig::full_default();
+    default_profile.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+    world.command(Command::AddProfile {
+        record: Box::new(tvnext_world::ProfileRecord {
+            id: tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+            body: default_profile,
+        }),
+        reply: None,
+    });
     // Production tick source: drives verify timers and dial backoff. Tests
     // can still inject future instants — the world clock is monotonic.
     let ticker = world.clone();
