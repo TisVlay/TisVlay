@@ -1142,7 +1142,18 @@ fn apply_backend_events(
                     .entity(entity)
                     .remove::<(ConnectionHandle, DispatchVerify)>();
             }
-            BackendEvent::ConnectFailed { error } => {
+            BackendEvent::ConnectFailed {
+                error,
+                supports_wake,
+            } => {
+                // The dial failed, but wake support is known from config —
+                // reflect it so the GUI's power row can tell "unreachable
+                // but wakeable" (CEC, LG-with-MAC) from "no wake path".
+                if let Ok(mut link) = writes.link.get_mut(entity)
+                    && link.supports_wake != *supports_wake
+                {
+                    link.supports_wake = *supports_wake;
+                }
                 let (attempts, wake_dial) = writes
                     .pending
                     .get(entity)
@@ -1361,6 +1372,7 @@ fn apply_pairing_updates(
                         phase: "failed".into(),
                         message: error.clone(),
                         code: Some("pairing.unknown".into()),
+                        path: None,
                     },
                 );
                 commands.entity(entity).despawn();

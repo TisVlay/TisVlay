@@ -185,18 +185,58 @@ pub mod payload {
         /// `awaiting_tv` | `awaiting_input` | `complete` | `failed`.
         pub phase: String,
         pub message: String,
-        /// Namespaced failure reason (e.g. `pairing.rejected`), `failed` only.
+        /// Namespaced failure reason (e.g. `pairing.rejected`,
+        /// `device.permission-denied`), `failed` only.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub code: Option<String>,
+        /// Reason-specific parameter — the device-node path on a
+        /// permission-denied failure. Clients name the node in the fix
+        /// hint. Absent for reasons that carry none.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub path: Option<String>,
     }
 
     impl From<&tisvlay_core::PairingState> for PairingProgress {
         fn from(state: &tisvlay_core::PairingState) -> Self {
+            let error = state.error();
             Self {
                 phase: state.to_dbus_state().into(),
                 message: state.message().into(),
-                code: state.error().map(|e| e.code.as_str().into()),
+                code: error.map(|e| e.wire_code().into()),
+                path: error.and_then(|e| e.path.clone()),
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tisvlay_core::{PairingError, PairingState};
+
+        #[test]
+        fn pairing_progress_carries_permission_reason_and_path() {
+            // A permission-denied pairing failure must reach the wire as
+            // the device reason code plus the node path, so the wizard
+            // localizes and names the node rather than showing a generic
+            // "connection failed".
+            let state =
+                PairingState::failed(PairingError::permission_denied("/dev/cec0", "no access"));
+            let progress = PairingProgress::from(&state);
+            assert_eq!(progress.phase, "failed");
+            assert_eq!(progress.code.as_deref(), Some("device.permission-denied"));
+            assert_eq!(progress.path.as_deref(), Some("/dev/cec0"));
+
+            let json = serde_json::to_value(&progress).unwrap();
+            assert_eq!(json["code"], "device.permission-denied");
+            assert_eq!(json["path"], "/dev/cec0");
+        }
+
+        #[test]
+        fn pairing_progress_falls_back_to_coarse_code_without_a_reason() {
+            let state = PairingState::failed(PairingError::rejected());
+            let progress = PairingProgress::from(&state);
+            assert_eq!(progress.code.as_deref(), Some("pairing.rejected"));
+            assert!(progress.path.is_none());
         }
     }
 }
