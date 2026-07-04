@@ -184,7 +184,6 @@ impl Reactor {
                             tv,
                             event: BackendEvent::ConnectFailed {
                                 error: format!("no connector for vendor '{vendor}'"),
-                                supports_wake: false,
                             },
                         });
                     }

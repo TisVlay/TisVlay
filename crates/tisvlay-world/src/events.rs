@@ -247,12 +247,8 @@ pub enum BackendEvent {
         traits: TransportInfo,
         retry: tisvlay_core::RetryConfig,
     },
-    /// Dial failed before a connection existed. Carries the connector's
-    /// static wake support (known from config, independent of the dial)
-    /// so a TV that never connects still reports whether it can be woken
-    /// — the GUI's power row needs it to distinguish "unreachable, no
-    /// wake path" from "reachable via wake".
-    ConnectFailed { error: String, supports_wake: bool },
+    /// Dial failed before a connection existed.
+    ConnectFailed { error: String },
     /// A state snapshot pushed by the device (subscription update).
     State(Box<TvState>),
     /// The connection ended (device closed it, or `power_off` on a

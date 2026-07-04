@@ -133,17 +133,6 @@ pub struct PairingError {
     pub code: PairingErrorCode,
     /// Human-readable error message.
     pub message: String,
-    /// A more specific namespaced reason code (e.g.
-    /// [`DeviceErrorCode::PermissionDenied`](crate::errors::DeviceErrorCode)'s
-    /// `device.permission-denied`) that overrides the coarse `code` on the
-    /// wire when present, so clients can localize and branch on the true
-    /// cause. `None` falls back to `code`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason_code: Option<String>,
-    /// Reason-specific parameter — the device-node path for a
-    /// permission-denied failure. `None` for reasons that carry none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 }
 
 impl PairingError {
@@ -152,34 +141,7 @@ impl PairingError {
         Self {
             code,
             message: message.into(),
-            reason_code: None,
-            path: None,
         }
-    }
-
-    /// The daemon can't open the device node (permission denied). Carries
-    /// the node path so clients name it and the `device.permission-denied`
-    /// reason code so they can offer the group/udev fix.
-    pub fn permission_denied(path: impl Into<String>, message: impl Into<String>) -> Self {
-        let path = path.into();
-        Self {
-            code: PairingErrorCode::ConnectionFailed,
-            message: message.into(),
-            reason_code: Some(
-                crate::errors::DeviceErrorCode::PermissionDenied
-                    .as_str()
-                    .into(),
-            ),
-            path: Some(path),
-        }
-    }
-
-    /// The namespaced reason code that reaches the wire: the specific
-    /// `reason_code` when set, else the coarse `code`.
-    pub fn wire_code(&self) -> &str {
-        self.reason_code
-            .as_deref()
-            .unwrap_or_else(|| self.code.as_str())
     }
 
     /// User rejected the pairing prompt on the TV.

@@ -48,7 +48,6 @@ pub(crate) async fn connect_flow(
                 tv,
                 event: BackendEvent::ConnectFailed {
                     error: error.to_string(),
-                    supports_wake,
                 },
             });
             return;
@@ -61,7 +60,6 @@ pub(crate) async fn connect_flow(
                 tv,
                 event: BackendEvent::ConnectFailed {
                     error: format!("initial state read failed: {error}"),
-                    supports_wake,
                 },
             });
             return;

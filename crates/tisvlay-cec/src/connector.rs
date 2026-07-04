@@ -65,19 +65,6 @@ impl Default for CecConnector {
     }
 }
 
-/// Map a probe/open failure into a pairing failure, preserving the
-/// permission-denied case (with its node path) so the wizard can offer
-/// the group/udev fix rather than a generic "connection failed".
-fn pairing_error(error: Error) -> tisvlay_core::PairingError {
-    use tisvlay_core::PairingError;
-    match &error {
-        Error::PermissionDenied { path } => {
-            PairingError::permission_denied(path.clone(), error.to_string())
-        }
-        _ => PairingError::connection_failed(error.to_string()),
-    }
-}
-
 /// Parse a `toml::Value` into a [`CecVendorConfig`], with a helpful error.
 fn parse_config(value: &toml::Value) -> Result<CecVendorConfig> {
     value
@@ -212,25 +199,13 @@ impl TvConnector for CecConnector {
 
     #[instrument(skip(self, vendor_config))]
     fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
-        // CEC has no credentials, so "pairing" can only validate one
-        // thing: that the daemon can actually open and talk to the
-        // node. Do exactly that — open the device and probe power —
-        // rather than completing blind, so a node the user can't
-        // access (permission denied) or that isn't a live CEC bus
-        // fails pairing instead of persisting a TV that can never
-        // connect. Config-parse errors stay synchronous.
-        let config = parse_config(vendor_config)?;
-        let opener = Arc::clone(&self.opener);
+        // CEC has no authentication — any device on the bus is reachable.
+        // Validate the config parses, then complete immediately with empty
+        // credentials (the trivial end of the pairing state machine).
+        let _config = parse_config(vendor_config)?;
         let (session, _command_rx, state_tx) = PairingSession::create();
         tokio::spawn(async move {
-            let state = match opener.open(&config.device, config.physical_address).await {
-                Ok(link) => match link.query_power().await {
-                    Ok(_) => PairingState::complete(Credentials::new("")),
-                    Err(e) => PairingState::failed(pairing_error(e)),
-                },
-                Err(e) => PairingState::failed(pairing_error(e)),
-            };
-            let _ = state_tx.send(state);
+            let _ = state_tx.send(PairingState::complete(Credentials::new("")));
         });
         Ok(session)
     }
@@ -416,7 +391,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_pairing_completes_when_device_opens() {
+    async fn start_pairing_completes_with_empty_credentials() {
         let session = connector(PowerStatus::On)
             .start_pairing(&cfg())
             .expect("pairing session starts");
@@ -424,34 +399,6 @@ mod tests {
         loop {
             if let PairingState::Complete { credentials } = rx.borrow_and_update().clone() {
                 assert_eq!(credentials.data, "", "CEC pairs with empty credentials");
-                return;
-            }
-            rx.changed()
-                .await
-                .expect("pairing state channel stays open");
-        }
-    }
-
-    #[tokio::test]
-    async fn start_pairing_fails_when_device_is_inaccessible() {
-        // The daemon can't open the node — pairing must fail (not
-        // persist an unusable TV), carrying the permission reason code
-        // and node path so the wizard can offer the group/udev fix.
-        let session = CecConnector::with_opener(Arc::new(FakeCecLinkOpener::permission_denied()))
-            .start_pairing(&cfg())
-            .expect("pairing session starts");
-        let mut rx = session.subscribe();
-        loop {
-            if let PairingState::Failed { error } = rx.borrow_and_update().clone() {
-                assert_eq!(
-                    error.reason_code.as_deref(),
-                    Some("device.permission-denied"),
-                    "permission failure carries the device reason code"
-                );
-                assert!(
-                    error.path.is_some(),
-                    "carries the node path for the fix hint"
-                );
                 return;
             }
             rx.changed()
