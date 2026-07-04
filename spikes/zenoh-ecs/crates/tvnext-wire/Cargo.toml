@@ -1,6 +1,6 @@
 [package]
 name = "tvnext-wire"
-description = "zenoh-ecs spike: shared key-space vocabulary and zenoh session bootstrap"
+description = "zenoh-ecs spike: shared key-space vocabulary, payload structs, and zenoh session bootstrap"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,11 @@ publish.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+bevy_ecs = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+tisvlay-core = { workspace = true }
+uuid = { workspace = true }
 zenoh = { workspace = true }
 
 [lints]

@@ -12,4 +12,4 @@ cargo run -p tvnext-cli -- status          # probe the daemon's liveliness token
 cargo test                                 # includes the client <-> daemon liveliness integration test
 ```
 
-Crate map: `tvnext-wire` (key-space vocabulary + session bootstrap), `tvnext-daemon` (world + wire host — M0: session + liveliness only), `tvnext-cli` (zenoh client).
+Crate map: `tvnext-wire` (key-space vocabulary, payload structs, session bootstrap), `tvnext-world` (bevy_ecs world + reactor + backend bridge; headless tests), `tvnext-daemon` (wire host — M0: session + liveliness only), `tvnext-cli` (zenoh client).
