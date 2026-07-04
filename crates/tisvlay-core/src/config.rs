@@ -6,7 +6,7 @@
 //!
 //! ## System Config (`/var/lib/tisvlay/config.toml`)
 //!
-//! Owned by `tisvlayd`. Contains TV definitions, credentials, system profiles
+//! Owned by the daemon. Contains TV definitions, credentials, system profiles
 //! for daemon lifecycle events, and user profile defaults inherited by users.
 //!
 //! ```toml
@@ -515,9 +515,9 @@ impl SystemSection {
     /// Materialize the reserved-default profile if missing, then force
     /// its `name` field to [`DEFAULT_PROFILE_NAME`]. Idempotent.
     ///
-    /// Called from `SystemConfig::load_from` (and the harness) so the
-    /// catalog always has the reserved-default profile available for
-    /// inheritance resolution and for `Tv1.SystemProfile` validation.
+    /// Called from `SystemConfig::load_from` so the catalog always has
+    /// the reserved-default profile available for inheritance
+    /// resolution and for system-profile assignment validation.
     pub fn ensure_default(&mut self) {
         self.profiles
             .entry(DEFAULT_SYSTEM_PROFILE_UUID)
@@ -788,7 +788,7 @@ pub struct DiscoveryConfig {
     pub bind_port: Option<u16>,
 
     /// Per-iteration timeout for the streaming discovery loop used by
-    /// `Manager1.StartDiscovery`. Each iteration sends one M-SEARCH
+    /// the `discover-start` rpc. Each iteration sends one M-SEARCH
     /// burst, waits for responses up to this duration, then starts the
     /// next iteration. Smaller values are more responsive to a TV
     /// being powered on mid-session; larger values reduce
@@ -890,10 +890,11 @@ impl SystemConfig {
         PathBuf::from("/var/lib/tisvlay/config.toml")
     }
 
-    /// Get the daemon's user-mode config file path (`tisvlayd --session`).
+    /// Get the daemon's user-mode config file path.
     ///
     /// Returns `~/.config/tisvlay/config.toml` via XDG. Used when the
-    /// daemon runs on the session bus for development without `--config`.
+    /// daemon runs on the user's runtime socket for development
+    /// without `--config`.
     /// Distinct from [`UserConfig::config_path`] (which resolves the
     /// *session service's* file) — daemon and session service own
     /// different files in the user domain.

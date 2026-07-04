@@ -119,8 +119,9 @@ pub(crate) async fn initial_fetch_and_watch(
     .await;
 }
 
-/// Fetch the daemon's supported-vendor list (`Manager1.GetSupportedVendors`)
-/// and publish it to the pairing-wizard global plus the diagnostic-blob
+/// Fetch the daemon's supported-vendor list (the `manager/vendors`
+/// catalog) and publish it to the pairing-wizard global plus the
+/// diagnostic-blob
 /// cache. Sorted by display name (case-insensitive) so the wizard's
 /// ComboBox renders in stable, scannable order regardless of registration
 /// order.
@@ -146,8 +147,8 @@ async fn fetch_and_publish_vendors(
         *cache = vendor_pairs.iter().map(|(id, _)| id.clone()).collect();
     }
 
-    // Per-vendor capability fetch in a second pass — keeps the wire
-    // payload of `GetSupportedVendors` unchanged (still `a(ss)`) and
+    // Per-vendor capability fetch in a second pass — keeps the
+    // vendor-catalog payload unchanged (still `(id, name)` pairs) and
     // lets vendors come and go without renegotiating shape. Vendor
     // counts are O(1) in practice (one to a handful), so the extra
     // round-trips are negligible against the cost of any user-visible

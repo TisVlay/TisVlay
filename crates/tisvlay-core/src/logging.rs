@@ -14,7 +14,7 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, registry::
 /// Initialize tracing with journald support, EnvFilter directives, and
 /// per-crate bridge-level suppression for noisy `log::warn!()` callers.
 ///
-/// `directives` — tracing filter strings like `"tisvlayd=info"` /
+/// `directives` — tracing filter strings like `"tisvlay_daemon=info"` /
 /// `"zenoh=warn"`. Applied via `EnvFilter`, the standard target+level
 /// matcher. RUST_LOG overrides these entirely when set.
 ///

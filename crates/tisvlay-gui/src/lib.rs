@@ -1,11 +1,11 @@
 //! tisvlay-gui — Slint-based settings + management window.
 //!
-//! Reads state from `tisvlayd` over the system bus (or session bus
-//! with `--user`) and from `tisvlay-session` over the user bus. M2
+//! Reads state from the daemon over the system zenoh socket and from
+//! `tisvlay-session` over the user socket. M2
 //! adds writeable controls (volume, backlight, mute, screen toggle,
 //! input switcher, profile dropdowns, managed checkbox, remove,
-//! reload-config) plus staged power-on feedback via the
-//! `Tv1.Power.PowerCycleProgress` signal.
+//! reload-config) plus staged power-on feedback via the per-TV
+//! `progress/power` key.
 
 // Slint's `include_modules!()` expands a large block of generated code
 // (`InnerAppWindow`, repeater types, etc.) that we don't get to
@@ -29,18 +29,6 @@ mod state;
 mod state_watch;
 mod toast;
 mod wizard;
-
-/// Test-only re-exports for `tisvlay-harness::TestGui` consumers.
-/// Mirrors the `__internals` pattern used by `tisvlayd` and
-/// `tisvlay-session` — these surfaces are not part of the GUI's
-/// public API and may change without notice.
-#[doc(hidden)]
-pub mod __internals {
-    pub use crate::state::{
-        ProfileRowRaw, ProfileTvRefRaw, SnapshotInputs, StateSnapshot, TvViewRaw, convert_snapshot,
-        fetch_system_profile_body, fetch_user_profile_body,
-    };
-}
 
 use about::{
     GUI_VERSION, REPO_URL, SupportedVendorsCache, build_diagnostic_blob, make_about_components,
@@ -113,7 +101,7 @@ where
 }
 
 /// Look up a vendor's display name in the `supported-vendors` model
-/// shipped from the daemon's `Manager1.GetSupportedVendors`. Falls
+/// shipped from the daemon's `manager/vendors` catalog. Falls
 /// back to `id` if no row matches — keeps the GUI rendering through a
 /// transient empty model on startup.
 pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> SharedString {
@@ -245,8 +233,8 @@ pub(crate) fn endpoints() -> &'static Endpoints {
 }
 
 /// Process entry point. The `tisvlay-gui` binary's `main()` is a
-/// thin shim that calls this; integration tests in `tisvlay-harness`
-/// reach the types and submodules behind this library crate directly.
+/// thin shim that calls this; the GUI's own integration tests reach
+/// the types and submodules behind this library crate directly.
 pub fn run() -> Result<()> {
     tisvlay_core::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"], &[])?;
 
@@ -414,7 +402,7 @@ pub fn run() -> Result<()> {
     // Reload glyph for the sidebar's "Reload daemon config" button.
     // `view-refresh` is the canonical freedesktop name (per the icon
     // naming spec) and is present in every shipped theme. Same icon
-    // the Tray uses for its `Manager1.ReloadConfig` affordance.
+    // the Tray uses for its reload-config affordance.
     icons.set_reload(load_themed_icon(&["view-refresh"]));
     // `edit-copy` is the canonical freedesktop name for the
     // duplicate / copy glyph; `Clipboard.copy-icon` carries the
@@ -1238,10 +1226,10 @@ fn register_callbacks(
         });
     });
 
-    // Power-on subscribes to PowerCycleProgress for the duration of
+    // Power-on subscribes to `progress/power` for the duration of
     // the call so the GUI can show staged feedback. External wakes
     // (CLI, tray, other GUI) don't surface their progress here —
-    // they'll reflect via the regular Connected state refresh.
+    // they'll reflect via the regular link-state refresh.
     let d = daemon.clone();
     let app_weak = app.as_weak();
     daemon_global.on_power_on(move |tv_id| {
@@ -1291,7 +1279,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_set_system_profile(move |tv_id, profile| {
         // The ComboBox emits the display name; the daemon's
-        // `Tv1.SystemProfile` setter wants a UUID. Translate via a
+        // `set-system-profile` rpc wants a UUID. Translate via a
         // fresh catalog fetch (profile catalogs are small; an on-click
         // round-trip is cheaper than threading a shared name->UUID
         // cache through every callback). The match predicate goes
@@ -1341,7 +1329,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_set_user_profile(move |tv_id, profile| {
         // Same translation as `on_set_system_profile`, but the
-        // user-profile catalog lives on the session bus.
+        // user-profile catalog lives with the session service.
         let s = s.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
@@ -1466,7 +1454,7 @@ fn register_callbacks(
             drop(session_ref);
             // Tell the tray to re-read `tray.toml` too, then pull the
             // body immediately rather than waiting only on the tray's
-            // `PropertiesChanged` echo — keeps the settings pane in sync
+            // settings-key echo — keeps the settings pane in sync
             // with a hand-edited config on the same click.
             let tray_ref = tr.read().await;
             if let Some(client) = tray_ref.as_ref()
@@ -1523,9 +1511,9 @@ fn register_callbacks(
 
     // Re-pair an existing TV: open the wizard directly at StepPair
     // with vendor / address / name prefilled from the existing TV's
-    // state, then kick off `Tv1.RePair(tv_id)`. Mirrors the post-
+    // state, then kick off the `re-pair` rpc. Mirrors the post-
     // StepConfigure entry into the pair flow that `on_step_next`
-    // step-2 → step-3 transition uses for AddTv.
+    // step-2 → step-3 transition uses for a fresh pair.
     let d = daemon.clone();
     let app_weak = app.as_weak();
     let wg = wizard_gen.clone();
@@ -1543,9 +1531,9 @@ fn register_callbacks(
         // Look up the existing TV's metadata so the wizard's
         // StepPair UI renders with familiar vendor / address /
         // name labels. The GUI's `tvs` model is the authoritative
-        // source — it was populated from the daemon's
-        // `ObjectManager.GetManagedObjects` at startup and stays
-        // in sync via signals.
+        // source — it was populated from the daemon's cached per-TV
+        // keys at startup and stays
+        // in sync via the state watcher.
         let tvs = app.get_tvs();
         let mut tv_row: Option<TvViewModel> = None;
         for i in 0..tvs.row_count() {
@@ -1588,11 +1576,11 @@ fn register_callbacks(
     });
 
     // Wizard cancel: route the in-flight pair's tv_id (if any) to
-    // `Manager1.CancelPair` so the daemon-side handshake actually
+    // the `cancel-pair` rpc so the daemon-side handshake actually
     // aborts rather than continuing until natural completion/
     // timeout. Then reset the wizard's UI state. Works for both
-    // re-pair (tv_id is set at invoke time) and AddTv (tv_id is
-    // set by `run_wizard_pair` from the pair_tv RPC return).
+    // re-pair (tv_id is set at invoke time) and fresh pair (tv_id
+    // is set by `run_wizard_pair` from the pair_tv RPC return).
     // Empty `pair-tv-id` means no in-flight pair to cancel —
     // common when cancelling from steps 1 or 2 of the wizard.
     let d = daemon.clone();
@@ -1722,7 +1710,7 @@ fn register_callbacks(
                 // Configure → Pair: kick off pair_tv. Collected
                 // pairing-form values come from the dynamic
                 // `schema-fields` model; the daemon validates each
-                // field server-side in `Manager1.AddTv`.
+                // field server-side in the `pair` rpc handler.
                 let name = wizard.get_tv_name().to_string();
                 if name.is_empty() {
                     return;
@@ -1902,7 +1890,8 @@ fn register_callbacks(
     // parallel, builds an [`AutofilledRow`] list with the existing
     // values prefilled, and pushes the result onto the global so the
     // matching `TvDetail` flips into edit mode. `save()` collects the
-    // draft into a JSON patch and routes through `Tv1.UpdateConfig`;
+    // draft into a JSON patch and routes through the `update-config`
+    // rpc;
     // server-side per-field validation errors are routed back to the
     // originating row so the user sees them inline. `cancel()` discards
     // the draft.
@@ -2062,8 +2051,8 @@ fn register_callbacks(
                 match result {
                     Ok(()) => {
                         // Success: clear edit state so the view flips
-                        // back to read-only. The TV's PropertiesChanged
-                        // signals will push the new values into the
+                        // back to read-only. The TV's republished
+                        // state keys will push the new values into the
                         // visible labels.
                         edit_pane.set_tv_uuid(SharedString::default());
                         edit_pane.set_name(SharedString::default());
@@ -2088,8 +2077,8 @@ fn register_callbacks(
     });
 
     // Manual-add: synthesize an entry from the user's typed vendor +
-    // IP, optionally enrich it with the daemon's `EnrichManualEntry`
-    // RPC (auto-detects the MAC via kernel ARP cache + active probe),
+    // IP, optionally enrich it with the daemon's `enrich`
+    // rpc (auto-detects the MAC via kernel ARP cache + active probe),
     // append it to the Rust source-of-truth + Slint model, select it,
     // and advance to Configure where the schema-driven form takes
     // over. From step 2 on the flow is identical to the SSDP path —
@@ -2227,14 +2216,13 @@ fn register_callbacks(
     let tray_global = app.global::<Tray>();
     let t = tray.clone();
     tray_global.on_set_notification(move |category, enabled| {
-        // Fire-and-forget the D-Bus write. The tray emits
-        // `PropertiesChanged`, which `StateWatcher` turns into a
+        // Fire-and-forget the rpc write. The tray republishes its
+        // settings key, which `StateWatcher` turns into a
         // `TrayNotificationSettingsChanged` refresh that pushes the
         // canonical body back into `Tray.notifications`. That refresh
-        // reads the tray's live value (the proxy is built
-        // `CacheProperties::No`), so the settings pane reflects the new
-        // state even after a pane rebuild — no optimistic local write
-        // needed.
+        // reads the tray's live value, so the settings pane reflects
+        // the new state even after a pane rebuild — no optimistic
+        // local write needed.
         let t = t.clone();
         let category = category.to_string();
         tokio::spawn(async move {

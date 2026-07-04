@@ -184,7 +184,8 @@ impl std::error::Error for PairingError {}
 /// Error codes for pairing failures.
 ///
 /// The wire/routing form is [`Self::as_str`] (namespaced `pairing.<kebab>`),
-/// used by `tv_manager::failure_reason` and matched by clients. The derived
+/// carried as the pairing-progress payload's `code` field and matched
+/// by clients. The derived
 /// serde impl exists only because the in-process [`PairingError`] /
 /// [`PairingState`] derive it — those are never serialized across a
 /// boundary, so its (snake_case) form is not a wire contract.
@@ -458,10 +459,9 @@ impl PairingSession {
     ///
     /// Allows callers outside the session's owning scope to send
     /// `PairingCommand::Cancel` (and future commands) without holding
-    /// the session itself. Used by `tisvlayd::tv_manager`'s
-    /// `pairing_sessions` map so `Manager1.CancelPair(tv_id)` can
-    /// reach in-flight pair handshakes owned by `pair_tv` /
-    /// `re_pair_tv`.
+    /// the session itself. The daemon's world keeps this sender on
+    /// the pairing entity so the `cancel-pair` rpc can reach
+    /// in-flight pair and re-pair handshakes.
     pub fn command_sender(&self) -> mpsc::Sender<PairingCommand> {
         self.command_tx.clone()
     }

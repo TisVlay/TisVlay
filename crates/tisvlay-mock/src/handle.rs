@@ -178,9 +178,9 @@ impl MockHandle {
     /// daemon having asked — for example, an LG TV that auto-powers-off
     /// after sitting in Screen Off too long. The mutation is applied to
     /// the live `TvState` and pushed through every active subscription
-    /// for `address`, so the daemon's `state_forwarder` updates the
-    /// cached `Tv1.Power.PowerState` property the same way it would for
-    /// a real backend-initiated state change.
+    /// for `address`, so the daemon republishes the cached
+    /// `state/power` key the same way it would for a real
+    /// backend-initiated state change.
     ///
     /// `address` is the mock vendor address (e.g. `mock://living_room`).
     /// No-op if no connection is currently open for that address.

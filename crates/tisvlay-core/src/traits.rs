@@ -548,8 +548,8 @@ pub trait TvConnector: Send + Sync {
     /// Pairing form schema — declares the input fields the user
     /// must provide before pairing can start.
     ///
-    /// The daemon exposes this over D-Bus
-    /// (`Manager1.GetPairingSchema(vendor)`) as JSON; the GUI's
+    /// The daemon serves this as JSON from its
+    /// `manager/vendors/<id>/schema` queryable; the GUI's
     /// pairing wizard renders the form dynamically from the
     /// returned [`PairingField`] list. See
     /// [`pairing_schema`](crate::pairing_schema) for the field

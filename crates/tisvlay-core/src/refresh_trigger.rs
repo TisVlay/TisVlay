@@ -53,12 +53,14 @@
 /// in the kernel recv buffer. Subsequent client commands hang waiting
 /// for replies that can't be read.
 ///
-/// Verified repro for the bug fixed by introducing this helper: a
-/// fast volume-slider drag in the GUI flooded the daemon, the tray's
-/// recv-q grew to 36 KB, and a subsequent ScrollBy command hung
-/// indefinitely while `busctl` against the same daemon replied in
-/// 4 ms — confirming the daemon was healthy and the tray's
-/// connection was wedged on its own consumption pattern.
+/// Verified repro for the bug fixed by introducing this helper
+/// (observed on the root project's D-Bus stack; the failure mode is
+/// transport-agnostic): a fast volume-slider drag in the GUI flooded
+/// the daemon, the tray's recv-q grew to 36 KB, and a subsequent
+/// ScrollBy command hung indefinitely while an out-of-band probe of
+/// the same daemon replied in 4 ms — confirming the daemon was
+/// healthy and the tray's connection was wedged on its own
+/// consumption pattern.
 pub struct RefreshTrigger {
     in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,

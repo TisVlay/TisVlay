@@ -68,11 +68,12 @@ pub struct TvSnap {
 pub struct Inputs<'a> {
     pub components: &'a [ComponentSnap],
     pub tvs: &'a [TvSnap],
-    /// `true` when the GUI is bound to the session bus (`--user`),
-    /// `false` for the system bus (production).
+    /// `true` when the GUI is dialed into the per-user dev daemon
+    /// socket, `false` for the packaged system socket.
     pub user_bus: bool,
-    /// Cached `Manager1.GetSupportedVendors` IDs. Empty before the
-    /// startup fetch returns; renderer sorts a copy for stable diffs.
+    /// Cached supported-vendor IDs (the daemon's `manager/vendors`
+    /// catalog). Empty before the startup fetch returns; renderer
+    /// sorts a copy for stable diffs.
     pub supported_vendors: &'a [String],
 }
 

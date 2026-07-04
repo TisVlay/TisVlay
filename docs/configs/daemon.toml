@@ -1,39 +1,15 @@
-[system.profiles.00000000-0000-0000-0000-000000005159]
-name = "default"
-on_startup = "power_on"
-on_shutdown = "screen_off"
-on_reboot = "none"
-on_sleep = "power_off"
-on_wake = "power_on"
-on_dpms_off = "screen_off"
-on_dpms_on = "screen_on"
-automate_when = "always"
-
-[user.profiles.00000000-0000-0000-0000-00000000515a]
-name = "default"
-on_session_lock = "screen_off"
-on_session_unlock = "screen_on"
-on_lock_wake = "screen_on"
-idle_timeout_seconds = 0
-on_idle_timeout = "screen_off"
-on_idle_resume = "screen_on"
-
-[discovery]
-bind_port = 1901
-poll_interval_ms = 8000
+# Sample boot config for tisvlay-daemon (--config). Additive: entries
+# seed TVs at start, but ids already present in the daemon's writable
+# state file win, and pairing/state changes persist to the state file
+# regardless. Managed TVs live in the state file (state.toml), written
+# by the daemon itself — this file is only for declarative seeding.
 
 [[tv]]
-uuid = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"
-name = "office"
+name = "Den"
+vendor = "mock"
+config = { address = "mock://den" }
+
+[[tv]]
+name = "Living Room"
 vendor = "lg"
-primary_input = "HDMI_1"
-managed = false
-
-[tv.profile]
-system = "00000000-0000-0000-0000-000000005159"
-
-[tv.lg]
-client_key = "bec7b2f5afe657547d367e84cbf59095"
-ip = "192.168.1.170"
-mac = "84:90:0a:63:a9:94"
-scheme = "wss"
+config = { ip = "192.168.1.170", mac = "84:90:0a:63:a9:94" }

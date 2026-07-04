@@ -258,8 +258,9 @@ pub(crate) fn make_about_components(
         .collect()
 }
 
-/// Cached `Manager1.GetSupportedVendors` IDs, populated once at
-/// startup and read by the diagnostic-blob builder. `RwLock` rather
+/// Cached supported-vendor IDs (the daemon's `manager/vendors`
+/// catalog), populated once at startup and read by the
+/// diagnostic-blob builder. `RwLock` rather
 /// than `OnceCell` because the value is written from the async
 /// startup path while the Slint callback reads from the main thread;
 /// `std::sync::RwLock` avoids dragging tokio's flavor across the

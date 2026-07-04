@@ -3,7 +3,8 @@
 //! reimplemented over zenoh so the forked GUI ports with import swaps.
 //!
 //! Reads come from client-side mirrors (history subscribers over the
-//! cached keys — the wire's `GetManagedObjects`); writes are rpcs;
+//! cached keys — this stack's `GetManagedObjects` equivalent); writes
+//! are rpcs;
 //! change signals are the mirrors' own deltas. TV ids stay strings at
 //! this boundary, matching the root client the GUI was written against.
 

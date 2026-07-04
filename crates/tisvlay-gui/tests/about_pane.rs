@@ -6,9 +6,7 @@
 //! component graph.
 //!
 //! Imports the `AppWindow` and row types from the `tisvlay_gui`
-//! library target. Layer-C end-to-end tests that need a live D-Bus
-//! daemon use `tisvlay_harness::gui::TestGui` instead — see
-//! `tisvlay-harness/tests/gui_*.rs`.
+//! library target.
 
 use i_slint_backend_testing::{ElementHandle, ElementQuery};
 use slint::{ModelRc, SharedString, VecModel};

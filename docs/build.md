@@ -1,6 +1,6 @@
 # Build system
 
-Developer-facing reference for how the workspace compiles, what gets pulled into the dep graph, and the conventions that keep the build fast on stable Rust + 2-core CI. Audience: someone touching the test pipeline, adjusting a profile, swapping a dep, or investigating "why does this take so long?". For the testing surface (mock backends, harness fixtures, observability) see [testing.md](testing.md); for license attribution + policy see [licensing.md](licensing.md); for architectural decisions see [design.md](design.md).
+Developer-facing reference for how the workspace compiles, what gets pulled into the dep graph, and the conventions that keep the build fast on stable Rust + 2-core CI. Audience: someone touching the test pipeline, adjusting a profile, swapping a dep, or investigating "why does this take so long?". For the testing surface (mock backends, wire tests, observability) see [testing.md](testing.md); for license attribution + policy see [licensing.md](licensing.md); for architectural decisions see [design.md](design.md).
 
 ## Build pipeline
 
@@ -12,13 +12,9 @@ There's a residual dual-compile that *can't* be eliminated on stable today (veri
 
 `tisvlay-gui` looks uniquely doubly-compiled when grepping for `Compiling X` lines because it's the only workspace crate with a `build.rs` — its build-script binary forces a "Compiling" verb in the clippy step where every other workspace crate gets "Checking" (rmeta-only). Cosmetic, not actual extra duplication.
 
-### `ci_features` justfile variable
+### CI feature scope
 
-The mock-feature subset CI uses (`tisvlay-backends/mock,tisvlayd/mock`) lives as `ci_features` in the [`justfile`](../justfile). Comment block on the variable is the canonical place for rationale and extension triggers — when to add a new feature to the list, when a new workspace crate's mock-style feature should join, etc.
-
-Audit (as of writing): every `#[cfg(feature = "X")]` block in `crates/*/src/` is reached by `mock` or its transitive defaults (`discovery`, `dbus`, `logging` are activated through `tisvlayd/mock`'s consumer chain). The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source, so the mock subset loses no lint coverage by omitting it.
-
-Local `prek` still runs `--all-features` clippy via `just clippy` to catch dev-only feature paths CI doesn't lint.
+CI lints and tests with `--all-features` — the same flags as local `prek`. The workspace's feature surface is small (core's `logging`/`wayland`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled), so the instrumented all-features build fits the runner comfortably and there is exactly one feature configuration to reason about. The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
 
 ## Profile knobs
 
@@ -77,7 +73,6 @@ Patterns to revisit when their gating condition fires:
 - **Cargo cross-workspace-cache (2026 goal)** — tracked in [concerns/test-ci-cargo-llvm-cov-show-env.md](concerns/test-ci-cargo-llvm-cov-show-env.md). When the nightly preview lands, evaluate whether its cache-key design generalizes to "instrumented vs not"; that would obsolete the show-env workaround.
 - **`LLVM_PROFILE_FILE` defaulting in `.cargo/config.toml`** — tracked in [concerns/profraw-stray-files-outside-target.md](concerns/profraw-stray-files-outside-target.md). The workspace defaults this env var so stray instrumented runs (lingering binaries in `target/debug/deps/` from past coverage builds) write under `target/profraw/` instead of leaking `default_<hash>_<pid>.profraw` to per-crate cwds. Cargo-team posture is "user-side responsibility"; revisit if [rust-lang/cargo#13040](https://github.com/rust-lang/cargo/issues/13040) or [#13136](https://github.com/rust-lang/cargo/issues/13136) progress.
 - **Switching to nightly Rust** — tracked in [ideas/ci-nightly-build-knobs.md](ideas/ci-nightly-build-knobs.md). Worth re-opening if CI cycle time becomes a real bottleneck for PR turnaround.
-- **`tisvlayd` integration test consolidation** — tracked in [ideas/tisvlayd-test-consolidation.md](ideas/tisvlayd-test-consolidation.md). Same trigger.
 
 ## Re-running the build-time bench
 
@@ -93,7 +88,7 @@ nix shell nixpkgs#python3 --command python3 scripts/bench_build_baselines.py
 
 - [`packaging/licensing/deny.toml`](../packaging/licensing/deny.toml) — `[graph]` / `[licenses]` / `[bans]` config with per-entry rationale.
 - [`crates/tisvlay-gui/build.rs`](../crates/tisvlay-gui/build.rs) — slint-build, env-var emitter, cargo-about wrapper with stub fallback.
-- [`justfile`](../justfile) — `test-ci` recipe (show-env entry point), `ci_features` variable, `deny` recipe.
+- [`justfile`](../justfile) — `test-ci` recipe (show-env entry point), `deny` recipe.
 - [Cargo cross-workspace-cache 2026 goal](https://rust-lang.github.io/rust-project-goals/2026/cargo-cross-workspace-cache.html) — upstream work that may obsolete the share-target workaround.
 - [taiki-e/cargo-llvm-cov `show-env`](https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#get-coverage-of-cc-code-linked-to-rust-libtest-binary) — the `--sh` invocation our pipeline depends on.
 - Sibling docs: [testing.md](testing.md), [licensing.md](licensing.md), [diagnostics.md](diagnostics.md), [design.md](design.md).

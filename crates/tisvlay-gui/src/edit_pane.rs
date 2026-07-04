@@ -12,10 +12,9 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use crate::schema_form::compute_schema_valid;
 use crate::{AppWindow, EditPane, PairingFieldRow, on_ui};
 
-/// Parse a `ConfigInvalidVendorConfig` D-Bus error message into
+/// Parse a `ConfigInvalidVendorConfig` error message into
 /// `(field_name, reason)`. The daemon emits the message as
-/// `"<field>: <reason>"` (per `DaemonError::ConfigInvalidVendorConfig`
-/// in `tisvlayd::dbus::mod`); split on the first `": "` so reasons
+/// `"<field>: <reason>"`; split on the first `": "` so reasons
 /// carrying further colons (e.g. IPv6 addresses) stay intact in the
 /// reason half.
 fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {

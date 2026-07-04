@@ -2,6 +2,8 @@
 
 ## Open
 
+- [GUI power-state gate misses the wire's new power-state spellings](bugs/power-state-vocabulary-drift.md)
+- [Per-field config-validation error routing is dead in the GUI](bugs/edit-pane-field-error-routing-dead.md)
 - [Session event handler `last_action` cache survives daemon reconnects](bugs/last-action-cache-survives-reconnect.md)
 - [`run_pairing_handshake` has no timeout on `wait_for_completion`](bugs/pair-tv-no-timeout.md)
 

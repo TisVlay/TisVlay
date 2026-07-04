@@ -41,7 +41,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 ## Build & CI
 
-- [Consolidate `tisvlayd` integration test binaries](ideas/tisvlayd-test-consolidation.md)
+- [Switchover follow-ups: tray gettext, mock-backend gating, coverage baseline, fresh design doc](ideas/switchover-followups.md)
 - [Move the pre-publish artifact smoke-test into CI](ideas/ci-artifact-smoke-test.md)
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
 - [Replace hardcoded sleeps in dispatch integration tests with poll-with-deadline](ideas/dispatch-test-event-driven-waits.md)

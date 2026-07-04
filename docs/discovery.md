@@ -76,11 +76,10 @@ Per-protocol scope: this coalescing is within one discovery protocol (SSDP). A f
 
 ## Deployment-knob CLI pattern
 
-Discovery's bind-port story exposes a pattern worth naming: **deployment-knob CLI flags override config when declarative wrappers can't accept a writable file**. The shape:
+Discovery's bind-port story exposes a pattern worth naming: **deployment-knob CLI flags stay out of the daemon's writable state**. The shape:
 
-- Daemon's writable config file (`/var/lib/tisvlay/config.toml`) is read/written by `tisvlayd` itself — the pairing wizard persists vendor credentials here. Owned by the daemon, not by any declarative-config tool.
-- A NixOS user who wants to manage the bind port declaratively via the NixOS module ([`packaging/nix/module.nix`](../packaging/nix/module.nix)) can't put it in `services.tisvlay.settings` without making the whole config file read-only — which breaks the pairing wizard's write path.
-- The CLI flag (`tisvlayd --bind-port <PORT>`) overrides `[discovery] bind_port` from the config, which in turn overrides the built-in default (1901, `tisvlay_core::DEFAULT_BIND_PORT`) — so an unset port still resolves to a known, firewall-targetable value. The NixOS module's `bindPort` option (itself defaulting to 1901) translates to a `--bind-port` arg on `ExecStart`. Config file stays writable; declarative deployment still controls the firewall-shaped knob.
+- The daemon's writable state file (`/var/lib/tisvlay/state.toml`) is read/written by `tisvlay-daemon` itself — pairing persists vendor credentials there. Owned by the daemon, not by any declarative-config tool.
+- The CLI flag (`tisvlay-daemon --ssdp-port <PORT>`) overrides the built-in default (1901) — so an unset port still resolves to a known, firewall-targetable value. The NixOS module's `bindPort` option (itself defaulting to 1901) translates to an `--ssdp-port` arg on `ExecStart`. The state file stays fully daemon-owned; declarative deployment still controls the firewall-shaped knob.
 
 `services.tisvlay.openFirewall = true` then adds the port to `networking.firewall.allowedUDPPorts`. The two options are asserted together — `openFirewall` without `bindPort` is rejected at NixOS evaluation time.
 

@@ -131,8 +131,8 @@ impl PairingFieldType {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PairingField {
     /// Internal identifier. Used as:
-    /// - The JSON key in the pairing-config payload sent back to
-    ///   `Manager1.AddTv`.
+    /// - The JSON key in the pairing-config payload sent back on
+    ///   the `add-tv` / `pair` rpcs.
     /// - The `field` token in
     ///   [`ConfigError::InvalidVendorConfig`][1] so the GUI can
     ///   route validation errors back to the originating widget.
@@ -212,7 +212,7 @@ impl PairingField {
     /// Checks `required` + the type-specific format (IP / MAC /
     /// port-range / select-options). Empty `value` means
     /// "user left the field blank"; the JSON-on-the-wire shape
-    /// (`Manager1.AddTv` config_json) typically simply omits
+    /// (the `add-tv` rpc's `config` object) typically simply omits
     /// optional fields, so callers should pass `""` for absent
     /// values.
     ///

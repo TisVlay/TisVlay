@@ -101,7 +101,7 @@ pub fn parse_field_type(s: &str) -> PairingFieldType {
 /// Compute `(state, error)` for one row's `value` by reusing the
 /// daemon's canonical [`PairingField::validate`] — same checks the
 /// daemon will run server-side, so a value that passes here also
-/// passes in `Manager1.AddTv` / `Manager1.UpdateTvConfig`. Empty +
+/// passes the `pair` / `update-config` rpcs. Empty +
 /// non-required → "pristine" (no opinion yet); otherwise validation
 /// routes us into "valid" or "invalid".
 pub fn validate_value(
@@ -217,7 +217,7 @@ pub(crate) fn autofill_schema(
 }
 
 /// Build an [`AutofilledRow`] list by projecting current values from
-/// a `Tv1.GetConfig` JSON payload through a schema.
+/// a `get-config` rpc JSON payload through a schema.
 ///
 /// Mirrors [`autofill_schema`] but the value source is the daemon's
 /// existing config rather than a freshly-discovered TV: each
@@ -271,8 +271,8 @@ pub(crate) fn prefill_schema_from_config(
 /// Build a config-payload JSON object from the schema-fields model.
 /// Walks each row, drops empty optional fields, and emits
 /// `{ <name>: <value>, ... }` matching the schema's `name` keys.
-/// The daemon then validates each value server-side via
-/// `Manager1.AddTv` (pairing) or `Manager1.UpdateTvConfig` (edit).
+/// The daemon then validates each value server-side via the
+/// `pair` rpc (pairing) or the `update-config` rpc (edit).
 ///
 /// Bool fields convert to JSON booleans; numeric fields (port /
 /// int) convert to JSON numbers when parseable, falling back to

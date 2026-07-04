@@ -1,6 +1,6 @@
 # Testing
 
-This is the single source of truth for how testing works in tisvlay. For quick-reference commands, see the `Tasks & Commands` section in [CLAUDE.md](../.claude/CLAUDE.md). For architecture and D-Bus interface specs, see [design.md](design.md).
+This is the single source of truth for how testing works in tisvlay. For quick-reference commands, see the `Tasks & Commands` section in [CLAUDE.md](../.claude/CLAUDE.md). For the architecture (two-socket topology, key space, persistence), see [plans/parity-zenoh-ecs.md](plans/parity-zenoh-ecs.md).
 
 ## Overview
 
@@ -29,7 +29,7 @@ Configuration: `.config/nextest.toml` with two profiles:
 | `default` | 0 | 60s | terminal |
 | `ci` | 1 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
 
-**Process-per-test isolation** matters because daemon code uses global state (D-Bus well-known names, netlink sockets, config file paths). `cargo test`'s shared-process model would have tests stepping on each other.
+**Process-per-test isolation** matters because wire tests each boot a full daemon (or daemon + session service) stack — a zenoh runtime listening on a per-test temp Unix socket, netlink sockets, and for the consumed-D-Bus adapters a private `dbus-daemon`. `cargo test`'s shared-process model would have those runtimes stepping on each other.
 
 ### Test execution pipeline
 
@@ -58,7 +58,7 @@ flowchart LR
 | Parameterized | unit/integration | `rstest` | every change |
 | Property | unit/integration | `proptest` | every change |
 | Snapshot | `crates/*/tests/snapshots/` | `insta` | every change |
-| Mock backend | `tisvlay-backends/tests/`, `tisvlayd/tests/` | mock crate | every change |
+| Mock backend | `tisvlay-world/tests/`, `tisvlay-daemon/tests/`, other binary crates' `tests/` | mock crate | every change |
 
 ### Parameterized tests (rstest)
 
@@ -68,11 +68,11 @@ One test function, many inputs. Each case reported individually by nextest.
 use rstest::rstest;
 
 #[rstest]
-#[case::simple("living_room", "/org/tisvlay/Tv/living_room")]
-#[case::with_dash("living-room", "/org/tisvlay/Tv/living_room")]
-#[case::with_space("living room", "/org/tisvlay/Tv/living_room")]
-fn tv_path_sanitization(#[case] tv_id: &str, #[case] expected: &str) {
-    assert_eq!(tv_path(tv_id), expected);
+#[case::colons("AA:BB:CC:DD:EE:FF")]
+#[case::dashes("AA-BB-CC-DD-EE-FF")]
+#[case::plain("AABBCCDDEEFF")]
+fn mac_parse_accepts_separator_styles(#[case] input: &str) {
+    assert!(MacAddress::parse(input).is_ok());
 }
 ```
 
@@ -85,10 +85,10 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
-    fn tv_path_suffix_is_valid(tv_id in ".*") {
-        let path = tv_path(&tv_id);
-        let suffix = path.strip_prefix(&format!("{}/", TV_BASE_PATH)).unwrap();
-        prop_assert!(suffix.chars().all(|c| c.is_alphanumeric() || c == '_'));
+    fn mac_parse_display_roundtrip(bytes in any::<[u8; 6]>()) {
+        let original = MacAddress(bytes);
+        let parsed = MacAddress::parse(&original.to_string()).unwrap();
+        prop_assert_eq!(parsed, original);
     }
 }
 ```
@@ -106,24 +106,6 @@ Compare generated output against saved reference files. Workflow:
 
 Snapshots live in `crates/*/tests/snapshots/`.
 
-### CLI snapshot tests (insta-cmd)
-
-`crates/tisvlay-cli/tests/pair_snapshot.rs` snapshots the `tisvlay pair` and `tisvlay list` CLI output. A `TestDaemon` runs in-process on the private bus; the CLI binary is spawned as a subprocess with `DBUS_SESSION_BUS_ADDRESS` pointing at the test bus.
-
-```rust
-assert_cmd_snapshot!(Command::new(cli_bin())
-    .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-    .arg("--user")
-    .arg("pair")
-    .arg("mock://living_room")
-    .arg("--vendor")
-    .arg("mock")
-    .arg("--name")
-    .arg("Living Room"));
-```
-
-These tests use `#[tokio::test(flavor = "multi_thread")]` because `assert_cmd_snapshot!` blocks the current thread with `std::process::Command::output()` — the TestDaemon's D-Bus server tasks need other threads to handle incoming calls from the subprocess.
-
 ## LG backend testing
 
 The `tisvlay-lg` crate has its own fake SSAP server for testing without a real TV. See [docs/lg/testing.md](lg/testing.md) for details.
@@ -133,7 +115,7 @@ The `tisvlay-lg` crate has its own fake SSAP server for testing without a real T
 Two Python scripts under `scripts/` complement the in-process LG tests by talking to a real TV. Both open their own SSAP WebSocket using the daemon's stored client key — stop the daemon (or stop the tray/GUI/session, leaving the daemon alone is OK too if it isn't holding the only registration) before running, so two clients don't fight over the same key.
 
 - [`scripts/probe_power_state_timing.py`](../scripts/probe_power_state_timing.py) — wide-net probe of the SSAP power/screen subscription endpoints. Discovers what the firmware exposes (`getServiceList`), subscribes to a candidate set, fires SSAP `turnOff`, and prints every subscription push with elapsed time from the trigger. Used to characterize the `processing` / `onOff` discriminator behavior in the `getPowerState` payload — see [docs/lg/firmware-quirks.md](lg/firmware-quirks.md) for the captured payloads that motivated the parser changes.
-- [`scripts/triage_dispatch_perf.py`](../scripts/triage_dispatch_perf.py) — autonomous cold-start latency measurement. Induces a bad state (SSAP `turnOff` or a manual prompt for kernel-level packet drops), subscribes to `PropertiesChanged` for `Tv1.Power.PowerState`, calls `Tv1.Screen.SetScreen(true)`, and times the transition to `"active"`. Useful for benchmarking changes to the dispatch hot path without driving the desktop lock/unlock flow by hand. The 10 s `REQUEST_MS` "with_retry knock" finding in firmware-quirks.md was characterized with this script.
+- [`scripts/triage_dispatch_perf.py`](../scripts/triage_dispatch_perf.py) — autonomous cold-start latency measurement. Induces a bad state (SSAP `turnOff` or a manual prompt for kernel-level packet drops), watches the daemon's published power state, requests screen-on — the user-facing entry point — and times the transition to `"active"`. Useful for benchmarking changes to the dispatch hot path without driving the desktop lock/unlock flow by hand. The 10 s `REQUEST_MS` "with_retry knock" finding in firmware-quirks.md was characterized with this script.
 
 ## Coverage
 
@@ -148,11 +130,14 @@ just cov-ratchet  # fails if below baseline (CI uses this)
 
 The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Run `just cov` to see the current number.
 
-CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. The mock-only feature subset CI uses lives in `justfile` as `ci_features`; its comment block is the canonical place to document feature-graph trade-offs and trigger conditions for extending the set. Local `prek` still runs `--all-features` clippy via `just clippy`. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
+CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. Every stage runs `--all-features`, same as local `just test`. Dev-only code is excluded from the coverage denominator via the `cov_exclude` regex in the justfile — `(tisvlay-(test|mock)/|test_server)` — so test infrastructure doesn't count against the ratchet. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
 
 ## Mock backend (tisvlay-mock)
 
-Implements the full `TvBackend` / `TvConnector` / `TvConnection` / `TvDiscovery` trait surface with an in-memory state machine. Feature-gated behind `mock` on `tisvlay-backends` (default-off in release, default-on in workspace dev/test builds).
+Implements the full `TvBackend` / `TvConnector` / `TvConnection` / `TvDiscovery` trait surface with an in-memory state machine. The mock is always compiled into the daemon — no feature gate. Two constructors split test and production use:
+
+- `new_test_parts()` → `(MockConnector, MockDiscovery, MockHandle)` sharing a fresh state — tests drive discovery and pairing via the handle.
+- `new_production_parts()` → `(MockConnector, MockDiscovery)` with no handle — the daemon's production vendor list registers this pair, so production code cannot reach the test hooks. Discovery returns an empty list; pairing falls back to the config shorthand.
 
 Key properties:
 - Reports `Transport::Network` and `survives_source_ip_change() -> false` (same paths as LG)
@@ -161,11 +146,11 @@ Key properties:
 
 ### Shared state architecture
 
-The mock's three consumers share a single `Arc<Mutex<MockState>>`. The handle is the test's control surface; the connector and discovery are the trait implementations the daemon calls.
+The mock's three consumers share a single `Arc<Mutex<MockState>>`. The handle is the test's control surface; the connector and discovery are the trait implementations the world reactor calls.
 
 ```mermaid
 flowchart TD
-    STATE["Arc&lt;Mutex&lt;MockState&gt;&gt;<br/><br/>discovered: Vec&lt;DiscoveredTv&gt;<br/>pairing_outcomes: HashMap&lt;String, PairingOutcome&gt;<br/>live_states: HashMap&lt;String, Arc&lt;Mutex&lt;TvState&gt;&gt;&gt;<br/>subscription_txs: HashMap&lt;String, Vec&lt;Sender&gt;&gt;"]
+    STATE["Arc&lt;Mutex&lt;MockState&gt;&gt;<br/><br/>discovered: Vec&lt;DiscoveredTv&gt;<br/>pairing_outcomes: HashMap&lt;String, PairingOutcome&gt;<br/>live_states: HashMap&lt;String, Arc&lt;Mutex&lt;TvState&gt;&gt;&gt;<br/>subscription_txs: HashMap&lt;String, Vec&lt;Sender&gt;&gt;<br/>+ noop sets, call counters, overrides"]
 
     HANDLE["MockHandle<br/>(test code)"]
     CONN["MockConnector<br/>(TvConnector trait)"]
@@ -178,10 +163,10 @@ flowchart TD
     MC -- "subscribe_state()<br/>registers subscription tx" --> STATE
     DISC -- "discover()<br/>reads discovered list" --> STATE
 
-    REG["BackendRegistry"] --> CONN
+    REG["VendorReg (daemon serve)<br/>/ Reactor vendor list"] --> CONN
     REG --> DISC
 
-    subgraph "create_test_registry()"
+    subgraph "new_test_parts()"
         STATE
         HANDLE
         CONN
@@ -212,91 +197,91 @@ stateDiagram-v2
 Tests drive discovery and pairing via `MockHandle`:
 
 ```rust
-let (registry, mock) = create_test_registry();
+let (connector, discovery, mock) = tisvlay_mock::new_test_parts();
 
 mock.publish_tv(DiscoveredTv::new("lr", "Living Room", "mock://lr", "mock"));
 mock.simulate_user_accept("mock://lr");
 
-let tvs = registry.discover_tvs("mock", Duration::from_secs(1)).await?;
-// ... start pairing — it auto-accepts ...
+// Register the parts with the daemon (VendorReg) or the world reactor,
+// then start a discovery session / pairing — it auto-accepts.
 ```
 
 **Methods:**
-- `publish_tv(DiscoveredTv)` / `clear_discovered()` — populate/clear the "network"
+- `publish_tv(DiscoveredTv)` / `clear_discovered()` / `discovered_count()` — populate/inspect the "network"
 - `simulate_user_accept(tv_id)` / `simulate_user_reject(tv_id)` / `simulate_pairing_timeout(tv_id)` — drive pairing
 - `set_hardware_id(tv_id, HardwareId)` / `clear_hardware_id(tv_id)` — seed the identity reported by a future connection (applied on every connect, not consumed)
 - `set_connect_delay(Duration)` / `clear_connect_delay()` — simulate a slow/unreachable TV
-- `inject_power_state(address, PowerState)` — push a power-state change onto a live mock connection. Mutates the in-flight `TvState` and pushes the snapshot through every active subscription for that address, so the daemon's `state_forwarder` updates the cached `Tv1.Power.PowerState` property the same way it would for a real backend-initiated change. Used by `tisvlay-session/tests/session_events.rs::reliable_screen_on_escalates_when_tv_slipped_past_screen_off` to simulate the TV silently slipping past Screen Off to Standby.
+- `inject_power_state(address, PowerState)` — push a power-state change onto a live mock connection. Mutates the in-flight `TvState` and pushes the snapshot through every active subscription for that address, so the world publishes the new state on the wire the same way it would for a real backend-initiated change.
+- `inject_power_state_silent(address, PowerState)` — same mutation, no subscription push — simulates a TV whose state drifted without telling us
+- `set_screen_on_noop(address, bool)` / `set_screen_off_noop(address, bool)` — make screen commands accept-but-do-nothing, for the retry/escalation dispatch tests
+- `set_initial_power_state_override(address, PowerState)` — power state the next connect reports (e.g., connect straight into standby, CEC-style)
+- `screen_on_call_count(address)` / `screen_off_call_count(address)` / `connect_call_count(address)` — assert how many times the backend was actually driven
 
-**Config shorthand:** tests that don't need fine-grained control can set `[tv.mock] pairing = "accept"|"reject"|"timeout"`. If both shorthand and handle are set, **the handle wins**.
+**Config shorthand:** tests (and dev configs) that don't need fine-grained control can set `pairing = "accept" | "reject" | "timeout"` in the mock vendor config. If both shorthand and handle are set, **the handle wins**.
 
-Each test gets its own `(registry, handle)` pair — parallel by construction.
+Each test gets its own `(connector, discovery, handle)` triple from `new_test_parts()` — parallel by construction.
 
 ### Running the mock in development
 
+The production daemon registers the mock vendor alongside LG and CEC, so a mock TV can be seeded declaratively via the boot config (see [docs/configs/daemon.toml](configs/daemon.toml)):
+
 ```toml
 [[tv]]
-uuid = "00000000-0000-4000-8000-000000000001"
-name = "Mock Living Room"
+name = "Den"
 vendor = "mock"
-managed = true
-
-[tv.mock]
-address = "mock://living_room"
-initial_volume = 30
-initial_input = "HDMI_1"
-inputs = [["HDMI_1", "HDMI 1"], ["HDMI_2", "HDMI 2"]]
+config = { address = "mock://den" }
 ```
 
 ```bash
-cargo run --bin tisvlayd --features mock -- --session
+cargo run --bin tisvlay-daemon -- --config docs/configs/daemon.toml
+# or, with the dev defaults (socket, site, state dir):
+just daemon-start
 ```
 
-## Test infrastructure: three layers
+Boot-config entries are additive seeds; TVs already in the daemon's writable state file win, and anything paired at runtime (e.g., `tisvlay pair` with vendor `mock` and `pairing = "accept"`) persists to the state file regardless.
 
-Test-related crates are `publish = false` and split by what they fake:
+## Test infrastructure: two crates
+
+Test-only crates are `publish = false` and split by what they fake:
 
 | Crate | Fakes | Example |
 |---|---|---|
 | `tisvlay-test` | OS environment (the system tisvlay runs on) | `PrivateBus`, `FakeLogind`, `FakeScreenSaver` |
 | `tisvlay-mock` | TV protocol peer (fake vendor backend) | `MockConnector`, `MockHandle` |
-| `tisvlay-harness` | Binary lifecycle (orchestrates the whole daemon/session process) | `TestDaemon`, `TestSession`, `TestTray` |
 
-`tisvlay-harness` reaches into `tisvlayd` and `tisvlay-session` internals through each binary crate's `#[doc(hidden)] pub mod __internals` re-export surface (same idiom `serde::__private` uses). Those items are explicitly not part of any published API.
+There is no separate orchestration crate: integration tests live in each binary crate's own `tests/` directory and boot the real `serve()` entry points — the same functions the production binaries call — on per-test temp sockets. See [Wire-level integration tests](#wire-level-integration-tests).
 
-### How the three crates relate
+### How the pieces relate
 
-Each crate fakes a different *direction* relative to the code under test. The harness sits above (orchestrates a binary), the mock sits across (the TV on the other side of the protocol), and the test crate sits below (the OS environment the daemon runs inside).
+Each fake sits in a different *direction* relative to the code under test. The test file sits above (drives the daemon through the wire, exactly like a real client), the mock sits across (the TV on the other side of the protocol), and the test crate sits below (the OS environment the daemon runs inside).
 
 ```mermaid
 flowchart TD
-    H["<b>tisvlay-harness</b><br/>caller / orchestrator<br/><i>TestDaemon · TestSession · TestTray</i>"]
-    D["<b>tisvlayd / tisvlay-session</b><br/>the daemon under test"]
+    W["<b>crates/*/tests/*.rs</b><br/>wire tests: real zenoh clients<br/>over a per-test Unix socket"]
+    D["<b>tisvlay-daemon / tisvlay-session</b><br/>the real serve() stack under test"]
     M["<b>tisvlay-mock</b><br/>fake TV (peer side)<br/><i>MockConnector · MockHandle</i>"]
     T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · FakeScreenSaver</i>"]
 
-    H -->|"boots binary<br/>via __internals"| D
+    W -->|"rpcs + subscribers<br/>(zenoh)"| D
     D -->|"TvBackend / TvConnection traits"| M
-    D -->|"D-Bus / logind / screensaver"| T
-    H -.->|"composes"| M
-    H -.->|"composes"| T
+    D -->|"consumed D-Bus: logind / ScreenSaver"| T
+    W -.->|"drives via MockHandle"| M
+    W -.->|"drives via fake emit_*"| T
 ```
 
-### Three rules for deciding where new test code lives
+### Rules for deciding where new test code lives
 
-1. **Does it implement a `tisvlay-core` trait?** → `tisvlay-mock`. It's a backend, just a fake one — same tier as `tisvlay-lg`, not a harness.
+1. **Does it implement a `tisvlay-core` trait?** → `tisvlay-mock`. It's a backend, just a fake one — same tier as `tisvlay-lg`, not test scaffolding.
 2. **Does it fake a system service we don't own (dbus-daemon, logind, ScreenSaver, etc.)?** → `tisvlay-test`.
-3. **Does it orchestrate a binary (`tisvlayd`, `tisvlay-session`, `tisvlay-tray`) and reach into its `__internals`?** → `tisvlay-harness`.
+3. **Does it exercise a binary end to end?** → that binary crate's own `tests/` directory, booting the crate's public `serve()` and asserting over the wire.
 
-### Why these boundaries, not fewer
+### Why these boundaries
 
-**`tisvlay-mock` is separate from `tisvlay-harness`** because mock is library-level and reusable from any test that needs a fake backend — `tisvlay-core` unit tests, `tisvlay-cli` snapshot tests, or a hypothetical downstream consumer's integration tests. Folding it into the harness would tie a useful library-level tool to "spin up the whole daemon" ceremony.
-
-**`tisvlay-test` is separate from `tisvlay-mock`** because they answer different questions. A backend-trait-contract test needs `tisvlay-mock` but no `dbus-daemon`; a service-lifecycle test needs `PrivateBus` + `FakeLogind` but no TV protocol stack. Split crates let each test pull in only what it needs.
+**`tisvlay-test` is separate from `tisvlay-mock`** because they answer different questions. A backend-trait-contract test needs `tisvlay-mock` but no `dbus-daemon`; a consumed-D-Bus adapter test needs `PrivateBus` + `FakeLogind` but no TV protocol stack. Split crates let each test pull in only what it needs.
 
 ## Test utilities: tisvlay-test
 
-Dev-only crate providing shared infrastructure. Never shipped in release.
+Dev-only crate providing shared infrastructure for the consumed-D-Bus adapters. Never shipped in release.
 
 ### PrivateBus
 
@@ -315,12 +300,12 @@ Key design:
 
 ### Fake D-Bus services
 
-Hand-rolled stubs for system services the daemon depends on:
+Hand-rolled stubs for the system services tisvlay consumes over D-Bus:
 
-| Fake | Real service | Key capability |
-|------|-------------|----------------|
-| `FakeLogind` | `org.freedesktop.login1.Manager` | `Inhibit` method + `PrepareForSleep` signal |
-| `FakeScreenSaver` | `org.freedesktop.ScreenSaver` | `GetSessionIdleTime` + `ActiveChanged` signal |
+| Fake | Real service | Consumed by | Key capability |
+|------|-------------|-------------|----------------|
+| `FakeLogind` | `org.freedesktop.login1.Manager` | daemon's logind watcher (`watch_logind`) | `Inhibit` method + `PrepareForSleep` signal |
+| `FakeScreenSaver` | `org.freedesktop.ScreenSaver` | session service's ScreenSaver adapter | `GetSessionIdleTime` + `ActiveChanged` signal |
 
 Register on any bus connection:
 
@@ -336,185 +321,81 @@ ss.emit_active_changed(true).await?;  // simulate lock
 
 `tisvlay-test` re-exports `tracing_test::traced_test` and `tracing_mock` so consumers don't need separate dep entries.
 
-## Daemon testing (TestDaemon)
+## Wire-level integration tests
 
-`tisvlay_harness::daemon::TestDaemon` builds a fully wired daemon on the shared private bus. Lives in the `tisvlay-harness` crate; pulled into the daemon crate's `[dev-dependencies]`.
+Each binary crate's `tests/` directory boots the real stack and drives it exactly like a production client: `tisvlay_daemon::serve()` (and `tisvlay_session::serve()` where the user subtree is involved) on a Unix socket inside a per-test `tempfile::tempdir()`, the mock backend registered via `VendorReg`, and one or more real zenoh client sessions opened against the socket. **The wire is the observable contract** — tests assert on published samples and rpc replies, never on world internals.
 
-### Test harness wiring
+### Wiring
 
 ```mermaid
 flowchart TD
     subgraph PROCESS["Test binary process"]
-        subgraph BUS["PrivateBus::shared()"]
-            DBUS["dbus-daemon<br/>unix:path=/tmp/.../bus.sock"]
+        subgraph STACK["tisvlay_daemon::serve(&socket, site, vendors, …)"]
+            WORLD["world reactor<br/>(bevy_ecs)"]
+            BRIDGE["wire bridge<br/>(queryables + cached pubs)"]
         end
-
-        subgraph TD["TestDaemon"]
-            MGR["TvManager<br/>(SystemConfig + MockConnector)"]
-            DBSURF["D-Bus surface<br/>Manager1 + ObjectManager<br/>+ Tv1.* per TV"]
-            FWD["state_change_forwarder<br/>(tokio::spawn)"]
-            MH["MockHandle"]
-        end
-
-        subgraph CLIENT["Test assertions"]
-            DC["DaemonClient<br/>::from_connection()"]
-        end
-
-        LOGIND["FakeLogind"]
+        SOCK[/"tempdir Unix socket"/]
+        CLIENT["zenoh client Session<br/>(test assertions: get / subscribe)"]
+        MH["MockHandle"]
+        BUS["PrivateBus + FakeLogind<br/>(logind adapter tests only)"]
     end
 
-    DBUS <--> DBSURF
-    DBUS <--> DC
-    DBUS <--> LOGIND
-    MGR --> FWD
-    FWD --> DBSURF
-    MH -.->|"shares Arc&lt;Mutex&lt;MockState&gt;&gt;"| MGR
+    BRIDGE <--> SOCK
+    CLIENT <--> SOCK
+    MH -.->|"shares Arc&lt;Mutex&lt;MockState&gt;&gt;"| WORLD
+    BUS --> WORLD
 ```
 
+The shared setup helper in `tisvlay-daemon/tests/wire.rs` is the template:
+
 ```rust
-use tisvlay_harness::daemon::TestDaemon;
-use tisvlay_core::DaemonClient;
-
-#[tokio::test]
-async fn my_test() {
-    let daemon = TestDaemon::with_one_mock_tv("my_tv").await.unwrap();
-    let client = DaemonClient::from_connection(
-        tisvlay_test::PrivateBus::shared().connect().await.unwrap(),
-    ).await.unwrap();
-
-    daemon.manager().reconnect("my_tv").await.unwrap();
-    // ... assert via client.list_tvs(), daemon.handle(), etc.
+async fn wire() -> Wire {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("w.sock");
+    let (connector, discovery, handle) = new_test_parts();
+    let stack = tisvlay_daemon::serve(
+        &socket,
+        "t",
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+    let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .unwrap();
+    Wire { _dir: dir, socket, stack, handle, client, site: "t".into() }
 }
 ```
 
-**Constructors:**
-- `with_one_mock_tv(tv_id)` — one managed mock TV, default profile
-- `with_config(SystemConfig)` — fully custom config
-- `mock_tv_config(tv_id, managed, primary_input)` — helper for SystemConfig
+### Test inventory
 
-**Holds:** `MockHandle`, `Arc<TvManager>`, `zbus::Connection`. Forwarder task aborted on drop; connection release unregisters the name.
+- `tisvlay-world/tests/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `pairing_profiles.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
+- `tisvlay-daemon/tests/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
+- `tisvlay-daemon/tests/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
+- `tisvlay-daemon/tests/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
+- `tisvlay-daemon/tests/greeter.rs` — the greeter contract (timeout key + idle puts driving system-profile actions) and the `automate_when` gate.
+- `tisvlay-daemon/tests/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
+- `tisvlay-daemon/tests/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
+- `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the ScreenSaver adapter (via `FakeScreenSaver`), user-store persistence, and the idle-timeout watch.
+- `tisvlay-tray/tests/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
+- `tisvlay-tray/tests/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
+- `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, and connect-before-daemon resilience.
 
-**Integration tests:**
-- `tests/test_harness_smoke.rs` — basic wiring
-- `tests/profile_dispatch.rs` — system event dispatch
-- `tests/automated_gate.rs` — managed x automate_when gate
-- `tests/concurrent_tvs.rs` — multi-TV independence
-- `tests/dbus_contract.rs` — property cache + command round-trips
-- `tests/pair_round_trip.rs` — full pairing flow through D-Bus
+### Zenoh testing gotchas
 
-### Pairing round-trip flow
+- **Multi-threaded runtime required.** zenoh's runtime layer rejects Tokio's current-thread scheduler, so every test that opens a zenoh session must be `#[tokio::test(flavor = "multi_thread")]`.
+- **No cross-key sample ordering.** Per-key publishers give no ordering guarantees across keys — e.g., the enrollment dial's `link{connected:false}` can land after the first power reading. Tests drain **one subscriber** with a combined predicate (`recv_until(&sub, |sample| ...)` tracking all the conditions in closure state) instead of waiting on multiple subscribers sequentially.
+- **A get matching zero queryables completes instantly with no reply.** The bridge may still be declaring its queryables right after `serve()` returns, so the shared `call()` helpers retry the no-reply case under a deadline. Only the first rpc after boot needs this; a reply (even an error reply) proves the queryable is up.
+- **Hydration is subscriber-history-only.** The daemon's cached publications replay to late joiners only through an `AdvancedSubscriber` with history enabled (`.history(HistoryConfig::default().detect_late_publishers())`). A plain subscriber sees only live samples; a `get` does not serve the cache.
+- **Deadline-bounded drains, not sleeps.** `recv_until` / `assert_no_sample` helpers time out against a deadline and panic with everything they saw, so a hang produces a diagnosable failure instead of a silent stall.
 
-This is the full code path exercised by `pair_round_trip.rs`. With the async-spawn AddTv contract, the test subscribes to `PairingProgress` first, calls `AddTv` to get the reserved tv_id immediately, then drains the filtered stream to a terminal phase. The handshake itself + post-handshake setup (config persist, install in `tvs` map, register per-TV D-Bus interfaces) all run in a daemon-side spawned `run_pair_task`; the terminal `complete` only fires after every step finishes, so the test can call into the new TV's `Tv1.*` interfaces immediately after `drain_pair_to_terminal` returns `Complete`.
+## GUI testing (i-slint-backend-testing)
 
-```mermaid
-sequenceDiagram
-    participant Test
-    participant Handle as MockHandle
-    participant Client as DaemonClient
-    participant DBus as D-Bus (private bus)
-    participant Mgr as TvManager
-    participant Task as run_pair_task (spawned)
-    participant Conn as MockConnector
-
-    Test->>Handle: simulate_user_accept("mock://lr")
-    Note over Handle: seeds PairingOutcome::Accept<br/>in shared MockState
-
-    Test->>Client: pairing_progress_stream()
-    Client-->>Test: Stream
-
-    Test->>Client: pair_tv("Living Room", "mock", config, true)
-    Client->>DBus: AddTv(name, vendor, json, managed)
-    DBus->>Mgr: pair_tv(self_arc, ..., connection.clone())
-    Mgr->>Mgr: validate vendor, generate tv_id
-    Mgr->>Task: tokio::spawn(run_pair_task(...))
-    Mgr-->>DBus: (ObjectPath, tv_id)
-    DBus-->>Client: (ObjectPath, tv_id)
-    Client-->>Test: Ok(tv_id)
-
-    Task->>Conn: start_pairing(vendor_config)
-    Note over Conn: removes pre-seeded Accept<br/>from MockState
-    Conn-->>Task: PairingSession (emits non-terminal phases<br/>via state_change_tx → PairingProgress signal)
-    Task->>Task: wait_for_completion → Credentials
-    Task->>Task: connect, install in tvs map, save config
-    Task->>DBus: register_tv_interfaces(tv_id)
-    Task->>DBus: emit PairingProgress(tv_id, "complete", ...)
-
-    Test->>Client: drain_pair_to_terminal(stream, tv_id, ...)
-    Client-->>Test: PairTerminal::Complete { tv_id, ... }
-```
-
-### BusKind and from_connection constructors
-
-`tisvlay_core::BusKind` enum (`Session | System | Address(&str)`) is shared by both services. Tests use `BusKind::Address(bus.address())` to point at the private bus.
-
-`DaemonClient::from_connection(conn)` and `StateWatcher::from_connections(daemon_conn, session_conn, config)` bypass the zbus `OnceCell` cache so each test gets an isolated connection.
-
-## Session testing (TestSession)
-
-`tisvlay_harness::session::TestSession` wires a `TestDaemon` + `DaemonClient` + `SessionState` + `FakeScreenSaver` + event handler on the shared private bus. Lives in the `tisvlay-harness` crate.
-
-```rust
-use tisvlay_harness::session::TestSession;
-use tisvlay_session::session_monitor::SessionEvent;
-
-#[tokio::test]
-async fn session_lock_dispatches_screen_off() {
-    let session = TestSession::new("my_tv").await.unwrap();
-    session.inject_event(SessionEvent::SessionLocked);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let tvs = session.client().list_tvs().await.unwrap();
-    assert!(!tvs[0].is_screen_on);
-}
-```
-
-**Methods:**
-- `inject_event(SessionEvent)` — push directly into event handler (deterministic)
-- `screensaver()` — access FakeScreenSaver for round-trip signal tests
-- `client()` / `daemon()` / `state()` — access internals for assertions
-
-**Integration tests:**
-- `tests/session_events.rs` — lock/unlock/idle/greeter dispatch
-- `tests/session_dbus_contract.rs` — Session1 interface methods + signals
-
-### Session event dispatch flow
-
-This is the round-trip exercised by `session_events.rs` when a `SessionLocked` event is injected.
-
-```mermaid
-sequenceDiagram
-    participant Test
-    participant EH as event_handler
-    participant Client as DaemonClient
-    participant DBus as D-Bus (private bus)
-    participant Mgr as TvManager
-    participant Mock as MockConnection
-    participant Fwd as state_change_forwarder
-
-    Test->>EH: inject_event(SessionLocked)
-    EH->>Client: list_tvs()
-    Client->>DBus: GetManagedObjects
-    DBus-->>Client: TV list (filter automated)
-    EH->>EH: resolve profile → on_session_lock = ScreenOff
-    EH->>Client: screen_off(tv_id)
-    Client->>DBus: Set IsScreenOn = false
-    DBus->>Mgr: screen_off(tv_id)
-    Mgr->>Mock: screen_off()
-    Mock->>Mock: update TvState, push to subscriber
-    Mock-->>Fwd: TvState snapshot via mpsc
-    Fwd->>DBus: update cached property + PropertiesChanged
-    Note over Test: settle() — wait 50ms for<br/>D-Bus property propagation
-    Test->>Client: list_tvs()
-    Client->>DBus: GetManagedObjects
-    DBus-->>Client: is_screen_on = false
-    Test->>Test: assert!(!tv.is_screen_on)
-```
-
-## GUI testing (TestGui + i-slint-backend-testing)
-
-The `tisvlay-gui` test surface has two layers, mirroring the broader Slint ecosystem split between unit-style element-tree assertions and live-bus end-to-end runs.
-
-**Layer B — `tisvlay-gui/tests/`**: instantiate an `AppWindow` against synthetic models, query the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no D-Bus, no daemon, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+`tisvlay-gui/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
 
 ```rust
 use slint::{ModelRc, SharedString, VecModel};
@@ -529,26 +410,6 @@ fn diagnostics_button_announces_its_label() {
 
     let elem = ElementHandle::find_by_accessible_label(&app, "Diagnostics").next().unwrap();
     assert!(elem.is_valid());
-}
-```
-
-**Layer C — `tisvlay-harness/tests/gui_*.rs`**: `TestGui` composes a [`TestSession`](#session-testing-testsession) with the Slint testing backend so end-to-end tests drive the daemon through real D-Bus and assert against the resulting UI state. Uses `init_integration_test_with_system_time()` — Slint panics if called twice in a process, so **one `#[test]` per integration-test binary**. Author new e2e scenarios as sibling files (`gui_pair_flow.rs`, future `gui_remove_flow.rs`, etc.), not additional `#[test]` functions in one file.
-
-```rust
-use tisvlay_gui::__internals::{SnapshotInputs, convert_snapshot};
-use tisvlay_gui::AppWindow;
-use tisvlay_harness::gui::TestGui;
-
-#[test]
-fn paired_tv_renders_in_master_list() {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let gui = TestGui::with_one_mock_tv("Living Room").await.unwrap();
-        let tvs = gui.session().client().list_tvs().await.unwrap();
-        let snapshot = convert_snapshot(SnapshotInputs { tvs, ..Default::default() });
-        let app = AppWindow::new().unwrap();
-        // ... push snapshot, assert via app.get_tvs()
-    });
 }
 ```
 
@@ -572,7 +433,7 @@ Slint propagates accessibility properties to descendants, so an `accessible-id` 
 
 ### Pin
 
-`i-slint-backend-testing` is pinned `=1.17.0` in both `tisvlay-gui` and `tisvlay-harness` Cargo.toml because the crate's README warns "preliminary API, no semver" — it moves test helpers between modules across minors (e.g. [slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516)), so upstream bumps are treated as breaking and re-pinned deliberately.
+`i-slint-backend-testing` is pinned `=1.17.0` in `tisvlay-gui`'s Cargo.toml because the crate's README warns "preliminary API, no semver" — it moves test helpers between modules across minors (e.g. [slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516)), so upstream bumps are treated as breaking and re-pinned deliberately.
 
 ## Test observability
 
@@ -625,28 +486,17 @@ fn publish_tv_emits_instrumented_debug_event() {
 
 Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
-**Caveat:** zbus uses internal timers that don't cooperate with Tokio's paused clock. Tests involving real D-Bus round-trips (e.g., session event tests) must use real-time sleeps. See [docs/todo.md](todo.md#session-event-tests-use-real-time-sleeps).
-
-## TV ID rules
-
-TV IDs must match `[A-Za-z0-9_]+` — validated at config load time. This ensures the ID can be used directly as a D-Bus object path component without lossy sanitization.
-
-- `is_valid_tv_id(id)` — validation
-- `tv_id_from_name(name)` — generation (lowercases, `_` for spaces, strips rest)
-- Config load rejects invalid IDs with a suggested fix
-- Duplicate IDs rejected at load time
-
-Background: see [ruffsl/TisVlay#22](https://github.com/ruffsl/TisVlay/issues/22).
+**Caveat:** zenoh and zbus both run internal timers that don't cooperate with Tokio's paused clock, so wire tests and consumed-D-Bus tests run in real time. The mitigation is deadline-bounded drains (`recv_until` and friends) rather than fixed sleeps, so waits end as soon as the expected sample arrives.
 
 ## Known constraints
 
-### Name ownership is bus-global
+### D-Bus name ownership is bus-global
 
-`TestDaemon` and `TestSession` each register a well-known D-Bus name. Only one can exist per bus. Nextest's process-per-test model means this works today, but tests within a single binary that both create a `TestDaemon` would collide.
+Each fake D-Bus service (`FakeLogind`, `FakeScreenSaver`) claims a well-known name, and only one owner can exist per bus. Tests within a single binary share one `PrivateBus`, so two tests that both register the same fake cannot run in parallel in that binary; nextest's process-per-binary model keeps separate binaries isolated for free.
 
-### Real-time sleeps in D-Bus tests
+### Real-time waits in wire tests
 
-Session event tests use `sleep(50ms)` after injecting events. This is a pragmatic trade-off — deterministic time doesn't work with zbus. See [docs/todo.md](todo.md) for mitigation options (poll-with-timeout recommended for future improvement).
+Deterministic time doesn't apply to zenoh or zbus round-trips, so wire tests wait on real time. Every wait is a bounded drain with a deadline and a diagnostic panic — no bare `sleep`-then-assert.
 
 ## Architecture decisions
 
@@ -658,13 +508,11 @@ These document **why** the framework is shaped this way:
 
 3. **Rust-native fakes** (not Python dbusmock). Keeps toolchain Rust-only; zbus `ObjectServer` is expressive enough for the few services we mock.
 
-4. **`from_connection` constructors** (not feature flags or doc(hidden)). General-purpose, useful outside tests. No dead code risk.
+4. **The wire is the contract.** Integration tests boot the real `serve()` and assert on zenoh samples and rpc replies — never on world internals. This keeps tests honest about what clients can actually observe, and lets the world's internals refactor freely. The headless world tests get one privileged tap (`WireEffect`), which is itself the world's output boundary.
 
-5. **ID → path allowed, path → ID never.** The D-Bus path is a derived artifact. `AddTv` returns the canonical ID; `DaemonClient::pair_tv` uses it directly.
+5. **Handle wins over shorthand.** When both `MockHandle::simulate_user_*` and the config `pairing = "..."` shorthand are set, the handle takes precedence — it's the authoritative state machine input.
 
-6. **Handle wins over shorthand.** When both `MockHandle::simulate_user_*` and the config `pairing = "..."` shorthand are set, the handle takes precedence — it's the authoritative state machine input.
-
-7. **`no-env-filter` on tracing-test.** Without it, events from dependency crates are invisible in test output. This is a non-obvious default that caused a test failure before being pinned.
+6. **`no-env-filter` on tracing-test.** Without it, events from dependency crates are invisible in test output. This is a non-obvious default that caused a test failure before being pinned.
 
 ## Future work
 
@@ -673,5 +521,4 @@ Deferred until the framework matures or a specific need arises:
 - **Codecov upload** — pre-written in `.github/workflows/ci.yml`, commented out. Uncomment when the repo goes public (one-line change).
 - **Mutation testing** (`cargo-mutants`) — worth running once coverage stabilizes; would surface tests that pass but don't actually assert meaningful properties.
 - **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points; defer until something obvious emerges (e.g., SSAP message parsing).
-- **Benchmark infrastructure** (`criterion`, `bencher`) — performance is not a current concern for tisvlay.
-- **`cargo-deny` / `cargo-audit`** — supply chain security; separate concern from testing, tracked elsewhere.
+- **Benchmark infrastructure** (`criterion`, `bencher`) — ad-hoc measurement is script-driven today (`scripts/bench_network.py`, the triage scripts); a maintained benchmark suite waits for a recurring performance question.
