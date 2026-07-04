@@ -34,8 +34,10 @@ async fn wire() -> Wire {
     let stack = tvnext_daemon::serve(
         &socket,
         "t",
-        vec![("mock", Arc::new(connector))],
-        vec![("mock", Arc::new(discovery))],
+        vec![
+            tvnext_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
         None,
     )
     .await
@@ -229,8 +231,10 @@ async fn restart_preserves_tvs_via_store() {
     let stack1 = tvnext_daemon::serve(
         &socket1,
         "t",
-        vec![("mock", Arc::new(connector))],
-        vec![("mock", Arc::new(discovery))],
+        vec![
+            tvnext_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
         Some(&store),
     )
     .await
@@ -268,13 +272,15 @@ async fn restart_preserves_tvs_via_store() {
     let stack2 = tvnext_daemon::serve(
         &socket2,
         "t",
-        vec![("mock", Arc::new(connector2))],
-        vec![("mock", Arc::new(discovery2))],
+        vec![
+            tvnext_daemon::VendorReg::new("mock", "Mock", Arc::new(connector2))
+                .with_discovery(Arc::new(discovery2)),
+        ],
         Some(&store),
     )
     .await
     .unwrap();
-    for record in tvnext_daemon::load_store(&store).unwrap() {
+    for record in tvnext_daemon::load_store(&store).unwrap().tv {
         stack2.world.command(tvnext_world::Command::AddTv {
             record: Box::new(record),
             reply: None,

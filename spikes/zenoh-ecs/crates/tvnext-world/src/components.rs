@@ -8,7 +8,9 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{BackendCmd, ReplyTo, SystemEvent, TransportInfo, TvRecord, WireEffect};
+use crate::events::{
+    BackendCmd, ReplyTo, StoreSnapshot, SystemEvent, TransportInfo, TvRecord, WireEffect,
+};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
 #[derive(Component, Debug)]
@@ -157,6 +159,19 @@ pub(crate) struct Clock(pub Instant);
 #[derive(Resource, Debug, Default)]
 pub(crate) struct TvIndex(pub HashMap<Uuid, Entity>);
 
+/// A system profile's stable identity.
+#[derive(Component, Debug)]
+pub(crate) struct ProfileId(pub Uuid);
+
+/// A system profile's body (name + event→action mapping) — the wire
+/// payload at `profile/system/<uuid>` verbatim.
+#[derive(Component, Debug)]
+pub(crate) struct ProfileBody(pub tisvlay_core::SystemProfileConfig);
+
+/// Uuid → profile entity index.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct ProfileIndex(pub HashMap<Uuid, Entity>);
+
 /// Vendors the reactor has connectors for — AddTv validation.
 #[derive(Resource, Debug)]
 pub(crate) struct KnownVendors(pub HashSet<String>);
@@ -194,8 +209,9 @@ pub(crate) enum Effect {
         params: toml::Value,
         credentials: Box<tisvlay_core::Credentials>,
     },
-    /// Persist the full TV table (reactor debounces and writes atomically).
-    Persist(Vec<TvRecord>),
+    /// Persist the full state snapshot (reactor debounces and writes
+    /// atomically).
+    Persist(Box<StoreSnapshot>),
     /// Redact a TV's config against its vendor schema and reply — the
     /// reactor owns the connectors (and thus the schemas), so the Secret
     /// filtering happens there and credentials never reach the bridge.

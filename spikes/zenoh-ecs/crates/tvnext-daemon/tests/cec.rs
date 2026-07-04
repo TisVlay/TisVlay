@@ -26,8 +26,11 @@ async fn cec_power_cycle_keeps_the_link_up() {
     let _stack = tvnext_daemon::serve(
         &socket,
         "t",
-        vec![("cec", Arc::new(connector))],
-        vec![],
+        vec![tvnext_daemon::VendorReg::new(
+            "cec",
+            "HDMI CEC",
+            Arc::new(connector),
+        )],
         None,
     )
     .await

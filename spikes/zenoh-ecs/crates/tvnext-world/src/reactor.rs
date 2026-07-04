@@ -12,9 +12,12 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, Site, SystemProfile, TvIndex,
+    Clock, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, ProfileIndex, Site,
+    SystemProfile, TvIndex,
 };
-use crate::events::{BackendEvent, Command, InEvent, PairingUpdate, TvRecord, WireEffect};
+use crate::events::{
+    BackendEvent, Command, InEvent, PairingUpdate, StoreSnapshot, TvRecord, WireEffect,
+};
 use crate::systems::build_schedule;
 
 pub struct Reactor {
@@ -24,7 +27,7 @@ pub struct Reactor {
     inbox_tx: mpsc::UnboundedSender<InEvent>,
     connectors: HashMap<String, Arc<dyn TvConnector>>,
     effects_tx: mpsc::UnboundedSender<WireEffect>,
-    persist_tx: Option<mpsc::UnboundedSender<Vec<TvRecord>>>,
+    persist_tx: Option<mpsc::UnboundedSender<StoreSnapshot>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
@@ -82,6 +85,7 @@ impl Reactor {
         world.insert_resource(SystemProfile::stock());
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
+        world.init_resource::<ProfileIndex>();
         world.init_resource::<DirtyStore>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
@@ -108,7 +112,7 @@ impl Reactor {
     /// Attach the store outlet: `Persist` effects (full TV-table
     /// snapshots) flow here. Without one they are dropped — fine for
     /// ephemeral worlds like tests.
-    pub fn set_persist(&mut self, tx: mpsc::UnboundedSender<Vec<TvRecord>>) {
+    pub fn set_persist(&mut self, tx: mpsc::UnboundedSender<StoreSnapshot>) {
         self.persist_tx = Some(tx);
     }
 
@@ -232,9 +236,9 @@ impl Reactor {
                         .inbox_tx
                         .send(InEvent::PairingUpdate { id: tv, update });
                 }
-                Effect::Persist(records) => match &self.persist_tx {
+                Effect::Persist(snapshot) => match &self.persist_tx {
                     Some(tx) => {
-                        let _ = tx.send(records);
+                        let _ = tx.send(*snapshot);
                     }
                     None => tracing::debug!("no store attached, persist snapshot dropped"),
                 },

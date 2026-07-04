@@ -28,8 +28,10 @@ async fn logind_sleep_resume_drive_profile_actions() {
     let stack = tvnext_daemon::serve(
         &socket,
         "t",
-        vec![("mock", Arc::new(connector))],
-        vec![("mock", Arc::new(discovery))],
+        vec![
+            tvnext_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
         None,
     )
     .await

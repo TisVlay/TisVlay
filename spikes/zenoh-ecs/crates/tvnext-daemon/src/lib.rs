@@ -91,17 +91,64 @@ pub struct Stack {
     pub world: WorldClient,
 }
 
-/// Boot the stack on `socket` with the given vendor connectors and
-/// discovery backends. The reactor and bridge run as detached tasks for
-/// the process lifetime.
+/// One vendor backend's registration: identity + capabilities for the
+/// catalog queryables, the connector, and (optionally) discovery.
+pub struct VendorReg {
+    pub id: String,
+    pub name: String,
+    pub capabilities: Vec<String>,
+    pub connector: Arc<dyn TvConnector>,
+    pub discovery: Option<Arc<dyn DynDiscovery>>,
+}
+
+impl std::fmt::Debug for VendorReg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VendorReg")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VendorReg {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        connector: Arc<dyn TvConnector>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            capabilities: Vec::new(),
+            connector,
+            discovery: None,
+        }
+    }
+
+    pub fn with_discovery(mut self, discovery: Arc<dyn DynDiscovery>) -> Self {
+        self.discovery = Some(discovery);
+        self
+    }
+
+    pub fn with_capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+}
+
+/// Boot the stack on `socket` with the given vendor registrations. The
+/// reactor and bridge run as detached tasks for the process lifetime.
 pub async fn serve(
     socket: &Path,
     site: &str,
-    connectors: Vec<(&str, Arc<dyn TvConnector>)>,
-    discoveries: Vec<(&str, Arc<dyn DynDiscovery>)>,
+    vendors: Vec<VendorReg>,
     store_path: Option<&Path>,
 ) -> Result<Stack> {
     let daemon = open(socket, site).await?;
+    let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vendors
+        .iter()
+        .map(|v| (v.id.as_str(), Arc::clone(&v.connector)))
+        .collect();
     let (mut reactor, effects, world) = Reactor::new(site, connectors);
     if let Some(path) = store_path {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -123,9 +170,20 @@ pub async fn serve(
         }
     });
     let discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>> = Arc::new(
-        discoveries
-            .into_iter()
-            .map(|(vendor, discovery)| (vendor.to_string(), discovery))
+        vendors
+            .iter()
+            .filter_map(|v| v.discovery.as_ref().map(|d| (v.id.clone(), Arc::clone(d))))
+            .collect(),
+    );
+    let catalog: Arc<Vec<bridge::VendorMeta>> = Arc::new(
+        vendors
+            .iter()
+            .map(|v| bridge::VendorMeta {
+                id: v.id.clone(),
+                name: v.name.clone(),
+                capabilities: v.capabilities.clone(),
+                connector: Arc::clone(&v.connector),
+            })
             .collect(),
     );
     let bridge_session = daemon.session().clone();
@@ -138,6 +196,7 @@ pub async fn serve(
             effects,
             bridge_world,
             discoveries,
+            catalog,
         )
         .await
         {
@@ -169,28 +228,41 @@ pub struct DaemonOptions {
 /// mock for play), replay the store, seed extras from the boot config,
 /// optionally watch a DRM connector's DPMS state, run until ctrl-c.
 pub async fn run(options: DaemonOptions) -> Result<()> {
+    use tisvlay_core::TvBackend;
+    fn caps(backend: &dyn TvBackend) -> Vec<String> {
+        backend
+            .capabilities()
+            .iter_names()
+            .map(|(name, _)| name.to_lowercase())
+            .collect()
+    }
     let (mock_connector, mock_discovery) = tisvlay_mock::new_production_parts();
-    let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vec![
-        ("mock", Arc::new(mock_connector)),
-        ("lg", Arc::new(tisvlay_lg::LgConnector::new())),
-        ("cec", Arc::new(tisvlay_cec::CecConnector::new())),
-    ];
-    let discoveries: Vec<(&str, Arc<dyn DynDiscovery>)> = vec![
-        ("mock", Arc::new(mock_discovery)),
+    let vendors = vec![
+        VendorReg::new("mock", tisvlay_mock::VENDOR_NAME, Arc::new(mock_connector))
+            .with_capabilities(caps(&tisvlay_mock::MockBackend))
+            .with_discovery(Arc::new(mock_discovery)),
+        VendorReg::new(
+            "lg",
+            tisvlay_lg::VENDOR_NAME,
+            Arc::new(tisvlay_lg::LgConnector::new()),
+        )
+        .with_capabilities(caps(&tisvlay_lg::LgBackend))
         // Pinned SSDP source port: LG TVs reply unicast from ephemeral
         // ports TO this port, so it must match the firewall's allowed UDP
         // port — see docs/firewall.md at the repo root.
-        (
-            "lg",
-            Arc::new(tisvlay_lg::LgDiscovery::new(options.ssdp_port)),
-        ),
-        ("cec", Arc::new(tisvlay_cec::CecDiscovery::new())),
+        .with_discovery(Arc::new(tisvlay_lg::LgDiscovery::new(options.ssdp_port))),
+        VendorReg::new(
+            "cec",
+            tisvlay_cec::VENDOR_NAME,
+            Arc::new(tisvlay_cec::CecConnector::new()),
+        )
+        .with_capabilities(caps(&tisvlay_cec::CecBackend))
+        .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
     let stack = serve(
         &options.socket,
         &options.site,
-        connectors,
-        discoveries,
+        vendors,
         options.state.as_deref(),
     )
     .await?;
@@ -224,7 +296,15 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
 
     let mut seeded: HashSet<Uuid> = HashSet::new();
     if let Some(path) = &options.state {
-        for record in load_store(path)? {
+        let snapshot = load_store(path)?;
+        for profile in snapshot.system_profile {
+            info!(id = %profile.id, name = %profile.body.name, "store profile");
+            stack.world.command(Command::AddProfile {
+                record: Box::new(profile),
+                reply: None,
+            });
+        }
+        for record in snapshot.tv {
             info!(id = %record.id, name = %record.name, vendor = %record.vendor, "store TV");
             seeded.insert(record.id);
             stack.world.command(Command::AddTv {

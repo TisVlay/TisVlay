@@ -14,12 +14,12 @@ use uuid::Uuid;
 use crate::components::{
     CarrierParked, Clock, ConnectionHandle, DirtyStore, DispatchRetry, DispatchVerify, Effect,
     KnownVendors, Managed, MirrorsConnector, Outbox, PairingEnroll, PairingIndex, PairingRef,
-    PendingConnect, ProfileAction, Reconnecting, RetryAt, Site, SystemProfile, TransportTraits,
-    TvId, TvIndex, VendorRef,
+    PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt,
+    Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
-    BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ReplyTo, TvRecord, WireEffect,
-    WireError,
+    BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
+    StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.
@@ -34,6 +34,7 @@ pub(crate) fn build_schedule() -> Schedule {
         (
             handle_lifecycle_commands,
             handle_tv_commands,
+            handle_profile_commands,
             apply_backend_events,
             apply_connector_matches,
             apply_pairing_updates,
@@ -57,10 +58,14 @@ pub(crate) fn build_schedule() -> Schedule {
 }
 
 fn reply_ok(outbox: &mut Outbox, reply: Option<ReplyTo>) {
+    reply_value(outbox, reply, json!({}));
+}
+
+fn reply_value(outbox: &mut Outbox, reply: Option<ReplyTo>, value: serde_json::Value) {
     if let Some(to) = reply {
         outbox.0.push(Effect::Wire(WireEffect::Reply {
             to,
-            result: Ok(json!({})),
+            result: Ok(value),
         }));
     }
 }
@@ -845,6 +850,155 @@ fn verify_dispatch(
     }
 }
 
+fn publish_profile(
+    outbox: &mut Outbox,
+    site: &Site,
+    id: &Uuid,
+    body: &tisvlay_core::SystemProfileConfig,
+) {
+    match serde_json::to_value(body) {
+        Ok(payload) => outbox.0.push(Effect::Wire(WireEffect::Publish {
+            key: keys::profile_system(&site.0, id),
+            payload,
+        })),
+        Err(error) => tracing::error!(%error, "profile serialization failed"),
+    }
+}
+
+/// System-profile CRUD plus the two read projections (`defaults`,
+/// `effective`). Bodies live on entities (PUT/DELETE lifecycle on the
+/// wire); deletion is refused while any TV references the profile.
+#[allow(clippy::too_many_arguments)]
+fn handle_profile_commands(
+    mut reader: MessageReader<InEvent>,
+    mut commands: Commands,
+    mut index: ResMut<ProfileIndex>,
+    mut outbox: ResMut<Outbox>,
+    mut dirty: ResMut<DirtyStore>,
+    site: Res<Site>,
+    stock: Res<SystemProfile>,
+    tvs: Res<TvIndex>,
+    mut bodies: Query<&mut ProfileBody>,
+    metas: Query<&payload::Meta>,
+) {
+    for msg in reader.read() {
+        let InEvent::Command(cmd) = msg else { continue };
+        match cmd {
+            Command::AddProfile { record, reply } => {
+                if index.0.contains_key(&record.id) {
+                    reply_err(&mut outbox, *reply, WireError::profile_exists(record.id));
+                    continue;
+                }
+                let entity = commands
+                    .spawn((ProfileId(record.id), ProfileBody(record.body.clone())))
+                    .id();
+                index.0.insert(record.id, entity);
+                publish_profile(&mut outbox, &site, &record.id, &record.body);
+                dirty.0 = true;
+                reply_ok(&mut outbox, *reply);
+            }
+            Command::UpdateProfile { id, body, reply } => match index.0.get(id) {
+                Some(&entity) => {
+                    if let Ok(mut current) = bodies.get_mut(entity) {
+                        current.0 = (**body).clone();
+                        publish_profile(&mut outbox, &site, id, &current.0);
+                        dirty.0 = true;
+                    }
+                    reply_ok(&mut outbox, *reply);
+                }
+                None => reply_err(&mut outbox, *reply, WireError::profile_not_found(*id)),
+            },
+            Command::DuplicateProfile {
+                id,
+                new_id,
+                name,
+                reply,
+            } => {
+                if index.0.contains_key(new_id) {
+                    reply_err(&mut outbox, *reply, WireError::profile_exists(*new_id));
+                    continue;
+                }
+                let Some(source) = index.0.get(id).and_then(|&e| bodies.get(e).ok()) else {
+                    reply_err(&mut outbox, *reply, WireError::profile_not_found(*id));
+                    continue;
+                };
+                let mut body = source.0.clone();
+                body.name = name.clone();
+                let entity = commands
+                    .spawn((ProfileId(*new_id), ProfileBody(body.clone())))
+                    .id();
+                index.0.insert(*new_id, entity);
+                publish_profile(&mut outbox, &site, new_id, &body);
+                dirty.0 = true;
+                reply_ok(&mut outbox, *reply);
+            }
+            Command::DeleteProfile { id, reply } => match index.0.get(id).copied() {
+                Some(entity) => {
+                    if metas.iter().any(|m| m.system_profile == Some(*id)) {
+                        reply_err(&mut outbox, *reply, WireError::profile_in_use(*id));
+                        continue;
+                    }
+                    commands.entity(entity).despawn();
+                    index.0.remove(id);
+                    outbox.0.push(Effect::Wire(WireEffect::Delete {
+                        key: keys::profile_system(&site.0, id),
+                    }));
+                    dirty.0 = true;
+                    reply_ok(&mut outbox, *reply);
+                }
+                None => reply_err(&mut outbox, *reply, WireError::profile_not_found(*id)),
+            },
+            Command::ProfileDefaults { reply } => {
+                reply_value(&mut outbox, *reply, profile_wire_map(None, &stock));
+            }
+            Command::EffectiveProfile { id, reply } => match tvs.0.get(id) {
+                Some(&entity) => {
+                    let assigned = metas
+                        .get(entity)
+                        .ok()
+                        .and_then(|m| m.system_profile)
+                        .and_then(|profile| index.0.get(&profile))
+                        .and_then(|&e| bodies.get(e).ok());
+                    reply_value(
+                        &mut outbox,
+                        *reply,
+                        profile_wire_map(assigned.map(|b| &b.0), &stock),
+                    );
+                }
+                None => reply_err(&mut outbox, *reply, WireError::tv_not_found(*id)),
+            },
+            _ => {}
+        }
+    }
+}
+
+/// The wire projection of a mapping: system-profile field names carrying
+/// the profile's own value where set, the stock action everywhere else.
+/// `None` body = the pure defaults.
+fn profile_wire_map(
+    body: Option<&tisvlay_core::SystemProfileConfig>,
+    stock: &SystemProfile,
+) -> serde_json::Value {
+    use tisvlay_core::SessionAction;
+    let stock_action = |event: SystemEvent| match stock.0.get(&event) {
+        Some(ProfileAction::ScreenOff) => SessionAction::ScreenOff,
+        Some(ProfileAction::ScreenOn) => SessionAction::ScreenOn,
+        Some(ProfileAction::PowerOff) => SessionAction::PowerOff,
+        Some(ProfileAction::PowerOn) => SessionAction::PowerOn,
+        None => SessionAction::None,
+    };
+    let field = |set: Option<SessionAction>, event: SystemEvent| {
+        serde_json::to_value(set.unwrap_or_else(|| stock_action(event))).unwrap_or_default()
+    };
+    json!({
+        "on_sleep": field(body.and_then(|b| b.on_sleep), SystemEvent::Sleep),
+        "on_wake": field(body.and_then(|b| b.on_wake), SystemEvent::Resume),
+        "on_shutdown": field(body.and_then(|b| b.on_shutdown), SystemEvent::Shutdown),
+        "on_dpms_off": field(body.and_then(|b| b.on_dpms_off), SystemEvent::DpmsOff),
+        "on_dpms_on": field(body.and_then(|b| b.on_dpms_on), SystemEvent::DpmsOn),
+    })
+}
+
 /// Random-access writes into per-TV state components, bundled to keep
 /// system signatures within reason.
 #[derive(SystemParam)]
@@ -1230,6 +1384,7 @@ fn apply_connector_matches(
 /// Connector-scoped events skip TVs mapped to a different connector;
 /// unmapped TVs treat every event as global.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn dispatch_system_events(
     mut reader: MessageReader<InEvent>,
     profile: Res<SystemProfile>,
@@ -1246,24 +1401,29 @@ fn dispatch_system_events(
             Option<&payload::Link>,
             Option<&DispatchRetry>,
             Option<&MirrorsConnector>,
+            Option<&payload::Meta>,
         ),
         With<Managed>,
     >,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
 ) {
     for msg in reader.read() {
         let InEvent::System { event, connector } = msg else {
             continue;
         };
-        let Some(action) = profile.0.get(event) else {
-            tracing::debug!(?event, "no profile action for system event");
-            continue;
-        };
-        for (entity, id, handle, pending, traits, link, retry, mirrors) in &q {
+        for (entity, id, handle, pending, traits, link, retry, mirrors, meta) in &q {
             if let (Some(scope), Some(MirrorsConnector(mapped))) = (connector, mirrors)
                 && scope != mapped
             {
                 continue;
             }
+            let Some(action) = resolve_action(event, meta, &profile_index, &bodies, &profile)
+            else {
+                tracing::debug!(tv = %id.0, ?event, "no action for system event");
+                continue;
+            };
+            let action = &action;
             tracing::debug!(tv = %id.0, ?event, ?action, "profile action dispatched");
             match action {
                 ProfileAction::ScreenOff => dispatch_screen(
@@ -1303,6 +1463,52 @@ fn dispatch_system_events(
                 ),
             }
         }
+    }
+}
+
+/// The TV's assigned profile decides the action; unset fields (and TVs
+/// without a profile) fall back to the stock mapping.
+fn resolve_action(
+    event: &SystemEvent,
+    meta: Option<&payload::Meta>,
+    profile_index: &ProfileIndex,
+    bodies: &Query<&ProfileBody>,
+    stock: &SystemProfile,
+) -> Option<ProfileAction> {
+    if let Some(profile_id) = meta.and_then(|m| m.system_profile)
+        && let Some(&entity) = profile_index.0.get(&profile_id)
+        && let Ok(body) = bodies.get(entity)
+        && let Some(action) = profile_event_action(&body.0, event)
+    {
+        return session_action(action);
+    }
+    stock.0.get(event).copied()
+}
+
+fn profile_event_action(
+    body: &tisvlay_core::SystemProfileConfig,
+    event: &SystemEvent,
+) -> Option<tisvlay_core::SessionAction> {
+    match event {
+        SystemEvent::Sleep => body.on_sleep,
+        SystemEvent::Resume => body.on_wake,
+        SystemEvent::Shutdown => body.on_shutdown,
+        SystemEvent::DpmsOff => body.on_dpms_off,
+        SystemEvent::DpmsOn => body.on_dpms_on,
+        // Lock/unlock are user-profile actions (session service); the
+        // system profile has no fields for them — stock fallback applies.
+        SystemEvent::Lock | SystemEvent::Unlock => None,
+    }
+}
+
+fn session_action(action: tisvlay_core::SessionAction) -> Option<ProfileAction> {
+    use tisvlay_core::SessionAction as S;
+    match action {
+        S::ScreenOff => Some(ProfileAction::ScreenOff),
+        S::ScreenOn => Some(ProfileAction::ScreenOn),
+        S::PowerOff => Some(ProfileAction::PowerOff),
+        S::PowerOn => Some(ProfileAction::PowerOn),
+        _ => None,
     }
 }
 
@@ -1386,13 +1592,14 @@ fn publish_changed<T: payload::StatePayload>(
 fn snapshot_store(
     mut dirty: ResMut<DirtyStore>,
     q: Query<(&TvId, &VendorRef, &payload::Identity, &payload::Meta)>,
+    profiles: Query<(&ProfileId, &ProfileBody)>,
     mut outbox: ResMut<Outbox>,
 ) {
     if !dirty.0 {
         return;
     }
     dirty.0 = false;
-    let mut records: Vec<TvRecord> = q
+    let mut tv: Vec<TvRecord> = q
         .iter()
         .map(|(id, vendor, identity, meta)| TvRecord {
             id: id.0,
@@ -1405,6 +1612,17 @@ fn snapshot_store(
             config: vendor.config.clone(),
         })
         .collect();
-    records.sort_by_key(|r| r.id);
-    outbox.0.push(Effect::Persist(records));
+    tv.sort_by_key(|r| r.id);
+    let mut system_profile: Vec<ProfileRecord> = profiles
+        .iter()
+        .map(|(id, body)| ProfileRecord {
+            id: id.0,
+            body: body.0.clone(),
+        })
+        .collect();
+    system_profile.sort_by_key(|r| r.id);
+    outbox.0.push(Effect::Persist(Box::new(StoreSnapshot {
+        tv,
+        system_profile,
+    })));
 }

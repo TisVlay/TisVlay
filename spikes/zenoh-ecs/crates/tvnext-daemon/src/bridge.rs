@@ -30,16 +30,32 @@ const PAIRING_HISTORY: usize = 64;
 /// Heartbeat period for sample-miss recovery on cached publishers.
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
 
+/// One vendor's catalog entry: identity, capabilities, and the connector
+/// whose schema the catalog queryables serve.
+pub(crate) struct VendorMeta {
+    pub id: String,
+    pub name: String,
+    pub capabilities: Vec<String>,
+    pub connector: Arc<dyn tisvlay_core::TvConnector>,
+}
+
 pub(crate) async fn run(
     session: Session,
     site: String,
     mut effects: mpsc::UnboundedReceiver<WireEffect>,
     world: WorldClient,
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
+    catalog: Arc<Vec<VendorMeta>>,
 ) -> anyhow::Result<()> {
     let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
     let mut queryables: Vec<Queryable<()>> = Vec::new();
-    for key in [keys::manager_rpc_wild(&site), keys::tv_rpc_wild(&site)] {
+    for key in [
+        keys::manager_rpc_wild(&site),
+        keys::tv_rpc_wild(&site),
+        keys::profile_rpc_wild(&site),
+        keys::vendors_wild(&site),
+        keys::vendors(&site),
+    ] {
         let tx = query_tx.clone();
         let queryable = session
             .declare_queryable(key.as_str())
@@ -57,10 +73,12 @@ pub(crate) async fn run(
         site,
         world,
         discoveries,
+        catalog,
         publishers: HashMap::new(),
         pending: HashMap::new(),
         next_reply: 1,
         pairing_tokens: HashMap::new(),
+        discovery_sessions: HashMap::new(),
     };
 
     loop {
@@ -89,10 +107,12 @@ struct Bridge {
     site: String,
     world: WorldClient,
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
+    catalog: Arc<Vec<VendorMeta>>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
     pending: HashMap<ReplyTo, PendingQuery>,
     next_reply: ReplyTo,
     pairing_tokens: HashMap<String, LivelinessToken>,
+    discovery_sessions: HashMap<Uuid, tokio::task::JoinHandle<()>>,
 }
 
 impl Bridge {
@@ -218,11 +238,44 @@ impl Bridge {
             },
             None => Value::Null,
         };
-        // Discovery is a stateless read — served bridge-side with streamed
-        // replies, never touching the world.
-        if keys::parse_manager_rpc(&self.site, &key) == Some("discover") {
-            self.handle_discover(query, &body);
+        // Catalog reads and discovery are served bridge-side, never
+        // touching the world.
+        if key == keys::vendors(&self.site) {
+            let list: Vec<Value> = self
+                .catalog
+                .iter()
+                .map(|v| json!({ "id": v.id, "name": v.name, "capabilities": v.capabilities }))
+                .collect();
+            reply_json(&query, &Value::Array(list)).await;
             return;
+        }
+        if let Some(rest) = key.strip_prefix(&format!("tisvlay/{}/manager/vendors/", self.site))
+            && let Some(vendor) = rest.strip_suffix("/schema")
+        {
+            match self.catalog.iter().find(|v| v.id == vendor) {
+                Some(meta) => {
+                    let schema =
+                        serde_json::to_value(meta.connector.pairing_schema()).unwrap_or_default();
+                    reply_json(&query, &schema).await;
+                }
+                None => reply_err(&query, &WireError::unknown_vendor(vendor)).await,
+            }
+            return;
+        }
+        match keys::parse_manager_rpc(&self.site, &key) {
+            Some("discover") => {
+                self.handle_discover(query, &body);
+                return;
+            }
+            Some("discover-start") => {
+                self.handle_discover_start(query, &body).await;
+                return;
+            }
+            Some("discover-stop") => {
+                self.handle_discover_stop(query, &body).await;
+                return;
+            }
+            _ => {}
         }
         let reply_id = self.next_reply;
         self.next_reply += 1;
@@ -245,6 +298,98 @@ impl Bridge {
                 }
             }
             Err(error) => reply_err(&query, &error).await,
+        }
+    }
+
+    /// Open-ended scan session: publish findings until stopped, with a
+    /// liveliness token marking the session alive (dropped tokens tell
+    /// wizards the daemon or session died).
+    async fn handle_discover_start(&mut self, query: Query, body: &Value) {
+        let request: rpc::DiscoverStart = match parse(body) {
+            Ok(request) => request,
+            Err(error) => {
+                reply_err(&query, &error).await;
+                return;
+            }
+        };
+        if let Some(vendor) = &request.vendor
+            && !self.discoveries.contains_key(vendor)
+        {
+            reply_err(&query, &WireError::unknown_vendor(vendor)).await;
+            return;
+        }
+        let session_id = Uuid::new_v4();
+        let discoveries = Arc::clone(&self.discoveries);
+        let zenoh = self.session.clone();
+        let site = self.site.clone();
+        let handle = tokio::spawn(async move {
+            let alive = zenoh
+                .liveliness()
+                .declare_token(keys::alive_discovery(&site, &session_id).as_str())
+                .await;
+            if let Err(e) = &alive {
+                warn!(%e, "discovery session liveliness failed");
+            }
+            loop {
+                for (vendor, discovery) in discoveries.iter() {
+                    if request.vendor.as_deref().is_some_and(|v| v != vendor) {
+                        continue;
+                    }
+                    match discovery.discover(Duration::from_secs(3)).await {
+                        Ok(found) => {
+                            for mut tv in found {
+                                if !tv.vendor_data.contains_key("mac")
+                                    && let Some(mac) = crate::arp::lookup_mac(&tv.address)
+                                {
+                                    tv.vendor_data.insert("mac".into(), mac);
+                                }
+                                let Ok(bytes) = serde_json::to_vec(&tv) else {
+                                    continue;
+                                };
+                                let key = keys::discovery_found(&site, &session_id, &tv.id);
+                                if let Err(e) = zenoh
+                                    .put(key.as_str(), bytes)
+                                    .encoding(Encoding::APPLICATION_JSON)
+                                    .await
+                                {
+                                    warn!(%e, "discovery finding publish failed");
+                                }
+                            }
+                        }
+                        Err(error) => warn!(vendor, %error, "discovery scan failed"),
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+        self.discovery_sessions.insert(session_id, handle);
+        reply_json(&query, &json!({ "session": session_id })).await;
+    }
+
+    async fn handle_discover_stop(&mut self, query: Query, body: &Value) {
+        let request: rpc::DiscoverStop = match parse(body) {
+            Ok(request) => request,
+            Err(error) => {
+                reply_err(&query, &error).await;
+                return;
+            }
+        };
+        match self.discovery_sessions.remove(&request.session) {
+            Some(handle) => {
+                // Aborting drops the task's liveliness token with it.
+                handle.abort();
+                reply_json(&query, &json!({})).await;
+            }
+            None => {
+                reply_err(
+                    &query,
+                    &WireError {
+                        code: "discovery-not-found".into(),
+                        message: format!("no discovery session {}", request.session),
+                    },
+                )
+                .await;
+            }
         }
     }
 
@@ -356,6 +501,67 @@ impl Bridge {
                     let req: rpc::TvRef = parse(body)?;
                     Ok((
                         Command::CancelPair {
+                            id: req.id,
+                            reply: Some(reply),
+                        },
+                        None,
+                    ))
+                }
+                _ => Err(unknown_rpc(verb)),
+            };
+        }
+        if let Some(verb) = keys::parse_profile_rpc(&self.site, key) {
+            return match verb {
+                "create" => {
+                    let req: rpc::ProfileCreate = parse(body)?;
+                    let id = req.id.unwrap_or_else(Uuid::new_v4);
+                    Ok((
+                        Command::AddProfile {
+                            record: Box::new(tvnext_world::ProfileRecord { id, body: req.body }),
+                            reply: Some(reply),
+                        },
+                        Some(json!({ "id": id })),
+                    ))
+                }
+                "update" => {
+                    let req: rpc::ProfileUpdate = parse(body)?;
+                    Ok((
+                        Command::UpdateProfile {
+                            id: req.id,
+                            body: Box::new(req.body),
+                            reply: Some(reply),
+                        },
+                        None,
+                    ))
+                }
+                "duplicate" => {
+                    let req: rpc::ProfileDuplicate = parse(body)?;
+                    let new_id = Uuid::new_v4();
+                    Ok((
+                        Command::DuplicateProfile {
+                            id: req.id,
+                            new_id,
+                            name: req.name,
+                            reply: Some(reply),
+                        },
+                        Some(json!({ "id": new_id })),
+                    ))
+                }
+                "delete" => {
+                    let req: rpc::TvRef = parse(body)?;
+                    Ok((
+                        Command::DeleteProfile {
+                            id: req.id,
+                            reply: Some(reply),
+                        },
+                        None,
+                    ))
+                }
+                "defaults" => Ok((Command::ProfileDefaults { reply: Some(reply) }, None)),
+                "effective" => {
+                    let req: rpc::TvRef = parse(body)?;
+                    Ok((
+                        Command::EffectiveProfile {
                             id: req.id,
                             reply: Some(reply),
                         },
@@ -486,6 +692,18 @@ impl Bridge {
             return Ok((command, None));
         }
         Err(unknown_rpc(key))
+    }
+}
+
+async fn reply_json(query: &Query, payload: &Value) {
+    let bytes = serde_json::to_vec(payload).unwrap_or_default();
+    let key = query.key_expr().clone().into_owned();
+    if let Err(e) = query
+        .reply(key, bytes)
+        .encoding(Encoding::APPLICATION_JSON)
+        .await
+    {
+        warn!(%e, "reply failed");
     }
 }
 

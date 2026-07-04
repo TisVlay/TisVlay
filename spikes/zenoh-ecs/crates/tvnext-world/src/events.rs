@@ -179,6 +179,38 @@ pub enum Command {
         patch: serde_json::Value,
         reply: Option<ReplyTo>,
     },
+    /// Create (or boot-replay) a system profile.
+    AddProfile {
+        record: Box<ProfileRecord>,
+        reply: Option<ReplyTo>,
+    },
+    UpdateProfile {
+        id: Uuid,
+        body: Box<tisvlay_core::SystemProfileConfig>,
+        reply: Option<ReplyTo>,
+    },
+    DuplicateProfile {
+        id: Uuid,
+        new_id: Uuid,
+        name: String,
+        reply: Option<ReplyTo>,
+    },
+    /// Refused while any TV references the profile.
+    DeleteProfile {
+        id: Uuid,
+        reply: Option<ReplyTo>,
+    },
+    /// The stock event → action mapping, as system-profile field values —
+    /// what an unset profile field inherits.
+    ProfileDefaults {
+        reply: Option<ReplyTo>,
+    },
+    /// One TV's resolved mapping: its assigned profile's fields where set,
+    /// the stock values everywhere else.
+    EffectiveProfile {
+        id: Uuid,
+        reply: Option<ReplyTo>,
+    },
 }
 
 /// Transport characteristics resolved at dial time — the connector knows,
@@ -261,6 +293,22 @@ fn default_automate_when() -> String {
     "always".into()
 }
 
+/// One system profile's persistable row.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProfileRecord {
+    pub id: Uuid,
+    pub body: tisvlay_core::SystemProfileConfig,
+}
+
+/// The full persisted state: everything the store file holds.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct StoreSnapshot {
+    #[serde(default)]
+    pub tv: Vec<TvRecord>,
+    #[serde(default)]
+    pub system_profile: Vec<ProfileRecord>,
+}
+
 /// Outbound wire-facing effects. The bridge maps these 1:1 onto zenoh
 /// operations (put / delete / query reply).
 #[derive(Debug, Clone, PartialEq)]
@@ -340,6 +388,27 @@ impl WireError {
         Self {
             code: "bad-request".into(),
             message: message.into(),
+        }
+    }
+
+    pub fn profile_not_found(id: Uuid) -> Self {
+        Self {
+            code: "profile-not-found".into(),
+            message: format!("no system profile with id {id}"),
+        }
+    }
+
+    pub fn profile_exists(id: Uuid) -> Self {
+        Self {
+            code: "profile-exists".into(),
+            message: format!("a system profile with id {id} already exists"),
+        }
+    }
+
+    pub fn profile_in_use(id: Uuid) -> Self {
+        Self {
+            code: "profile-in-use".into(),
+            message: format!("system profile {id} is referenced by at least one TV"),
         }
     }
 }

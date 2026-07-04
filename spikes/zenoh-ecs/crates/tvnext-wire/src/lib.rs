@@ -221,6 +221,50 @@ pub mod keys {
         format!("tisvlay/{site}/pairing/{tv}/progress")
     }
 
+    /// System-profile body: `tisvlay/<site>/profile/system/<uuid>`.
+    pub fn profile_system(site: &str, id: &Uuid) -> String {
+        format!("tisvlay/{site}/profile/system/{id}")
+    }
+
+    /// Profile RPC key + the wildcard its queryable declares.
+    pub fn profile_rpc(site: &str, verb: &str) -> String {
+        format!("tisvlay/{site}/profile/rpc/{verb}")
+    }
+
+    pub fn profile_rpc_wild(site: &str) -> String {
+        format!("tisvlay/{site}/profile/rpc/*")
+    }
+
+    pub fn parse_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/profile/rpc/")
+    }
+
+    /// Vendor catalog queryables: `manager/vendors` and
+    /// `manager/vendors/<id>/schema`.
+    pub fn vendors(site: &str) -> String {
+        format!("tisvlay/{site}/manager/vendors")
+    }
+
+    pub fn vendor_schema(site: &str, vendor: &str) -> String {
+        format!("tisvlay/{site}/manager/vendors/{vendor}/schema")
+    }
+
+    pub fn vendors_wild(site: &str) -> String {
+        format!("tisvlay/{site}/manager/vendors/**")
+    }
+
+    /// A discovery session's finding key.
+    pub fn discovery_found(site: &str, session: &Uuid, finding: &str) -> String {
+        format!("tisvlay/{site}/discovery/{session}/found/{finding}")
+    }
+
+    /// Liveliness token for a running discovery session.
+    pub fn alive_discovery(site: &str, session: &Uuid) -> String {
+        format!("tisvlay/{site}/alive/discovery/{session}")
+    }
+
     /// Liveliness token for a running pairing session.
     pub fn alive_pairing(site: &str, tv: &Uuid) -> String {
         format!("tisvlay/{site}/alive/pairing/{tv}")
@@ -431,6 +475,41 @@ pub mod rpc {
     #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
     pub struct SetScreen {
         pub on: bool,
+    }
+
+    /// Body for `profile/rpc/create` (and boot replay): omitted `id`
+    /// means "daemon generates one"; the reply carries it.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct ProfileCreate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub id: Option<Uuid>,
+        pub body: tisvlay_core::SystemProfileConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct ProfileUpdate {
+        pub id: Uuid,
+        pub body: tisvlay_core::SystemProfileConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct ProfileDuplicate {
+        pub id: Uuid,
+        pub name: String,
+    }
+
+    /// Body for `manager/rpc/discover-start`: an open-ended scan session
+    /// publishing findings on `discovery/<session>/found/*` with a
+    /// liveliness token until `discover-stop`.
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct DiscoverStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub vendor: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct DiscoverStop {
+        pub session: Uuid,
     }
 
     /// Body for `manager/rpc/discover` — a bounded scan whose findings
