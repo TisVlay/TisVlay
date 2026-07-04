@@ -48,6 +48,15 @@ impl CecConnector {
     pub(crate) fn with_opener(opener: Arc<dyn CecLinkOpener>) -> Self {
         Self { opener }
     }
+
+    /// Construct with an injected fake link opener — the out-of-crate
+    /// test seam (`test-link` feature).
+    #[cfg(any(test, feature = "test-link"))]
+    pub fn with_fake_opener(opener: crate::link::FakeCecLinkOpener) -> Self {
+        Self {
+            opener: Arc::new(opener),
+        }
+    }
 }
 
 impl Default for CecConnector {

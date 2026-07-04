@@ -31,6 +31,10 @@ toml = { workspace = true }
 
 tracing = { workspace = true }
 
+# Interior mutability for the scripted FakeCecLink; a dev-dependency for
+# in-crate tests, pulled into normal builds only by `test-link`.
+parking_lot = { workspace = true, optional = true }
+
 [dev-dependencies]
 # `test-util` gives `#[tokio::test(start_paused = true)]` so the
 # wake-and-connect verify loop's sleeps run in virtual time.
@@ -42,3 +46,8 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+# Exposes the FakeCecLink/FakeCecLinkOpener test doubles and the
+# CecConnector::with_fake_opener constructor for out-of-crate tests.
+test-link = ["dep:parking_lot"]
