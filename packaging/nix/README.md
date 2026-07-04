@@ -14,7 +14,7 @@ Companion files outside this directory:
 
 | File | Purpose |
 |---|---|
-| [`../systemd/tisvlayd.service`](../systemd/tisvlayd.service) | Distro (.deb/.rpm/.archlinux) unit file. Hardening kept in sync with `module.nix`. |
+| [`../systemd/tisvlay-daemon.service`](../systemd/tisvlay-daemon.service) | Distro (.deb/.rpm/.archlinux) unit file. Hardening kept in sync with `module.nix`. |
 | [`../systemd/tisvlay-{session,tray}.service`](../systemd/) | Distro user-service unit files. Unhardened (see "User services" below). |
 | [`../scripts/{post,pre}install.sh`](../scripts/) | Distro package lifecycle hooks — create the `tisvlay` system user, reload systemd / D-Bus. |
 
@@ -51,7 +51,7 @@ Authoritative option reference: read [`module.nix`](module.nix) directly — eve
 
 ## Security posture
 
-`tisvlayd.service` is hardened to an `systemd-analyze security` score of **≤ 2.0** ("OK" band, currently 1.3).
+`tisvlay-daemon.service` is hardened to an `systemd-analyze security` score of **≤ 2.0** ("OK" band, currently 1.3).
 
 Directive families applied in `module.nix`:
 
@@ -74,10 +74,10 @@ systemd-analyze security --offline=true \
       imports = [ ./packaging/nix/module.nix ];
       services.tisvlay.enable = true;
       # ... stubs required by nixos builder: stateVersion, boot, fs
-    }' ).config.systemd.units."tisvlayd.service".unit"/tisvlayd.service
+    }' ).config.systemd.units."tisvlay-daemon.service".unit"/tisvlay-daemon.service
 
 # Or score the distro unit directly:
-systemd-analyze security --offline=true packaging/systemd/tisvlayd.service
+systemd-analyze security --offline=true packaging/systemd/tisvlay-daemon.service
 ```
 
 ## VM test
@@ -89,7 +89,7 @@ nix build .#checks.x86_64-linux.vm --no-link # VM test in isolation
 
 The test boots a minimal NixOS VM with `services.tisvlay.enable = true` and asserts:
 
-1. `tisvlayd.service` reaches `active (running)`.
+1. `tisvlay-daemon.service` reaches `active (running)`.
 2. `org.tisvlay.Daemon` is owned on the system bus.
 3. `Manager1` introspection at `/org/tisvlay/Manager` exposes the expected interface.
 4. `GetSupportedVendors` returns the LG backend (mock is feature-gated off in production builds).
@@ -97,13 +97,13 @@ The test boots a minimal NixOS VM with `services.tisvlay.enable = true` and asse
 6. `tisvlay-session.service` and `tisvlay-tray.service` user unit files are loaded.
 7. `/var/lib/tisvlay/` exists with owner `tisvlay:tisvlay`.
 8. `tisvlay` user exists with a system-range UID (< 1000). Exact value is NixOS-allocated unless pinned via `services.tisvlay.uid`.
-9. `systemd-analyze security tisvlayd.service` score ≤ 2.0. The full breakdown is logged via `machine.log()` so the VM build log preserves which settings pass / fail without a manual re-run.
+9. `systemd-analyze security tisvlay-daemon.service` score ≤ 2.0. The full breakdown is logged via `machine.log()` so the VM build log preserves which settings pass / fail without a manual re-run.
 
 **Deliberately not covered**: `tisvlay-session` / `tisvlay-tray` auto-start via `graphical-session.target`. Exercising that path needs a real display manager in the VM. The units are verified to load (they are reachable via `systemctl --global`) but not executed.
 
 ## Consistency with distro packaging
 
-These hardening directives are mirrored in [`../systemd/tisvlayd.service`](../systemd/tisvlayd.service), so .deb/.rpm/.archlinux installs hit the same `systemd-analyze` score as NixOS.
+These hardening directives are mirrored in [`../systemd/tisvlay-daemon.service`](../systemd/tisvlay-daemon.service), so .deb/.rpm/.archlinux installs hit the same `systemd-analyze` score as NixOS.
 
 NixOS-only (not backported):
 

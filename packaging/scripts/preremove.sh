@@ -5,8 +5,8 @@
 set -e
 
 # Stop and disable system daemon
-systemctl stop tisvlayd.service 2>/dev/null || true
-systemctl disable tisvlayd.service 2>/dev/null || true
+systemctl stop tisvlay-daemon.service 2>/dev/null || true
+systemctl disable tisvlay-daemon.service 2>/dev/null || true
 
 # Reload systemd
 systemctl daemon-reload || true
