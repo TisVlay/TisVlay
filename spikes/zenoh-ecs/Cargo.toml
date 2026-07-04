@@ -27,6 +27,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zenoh = "1.9"
+# The advanced pub/sub API (caches, history, recovery) is behind `unstable` —
+# an accepted spike risk, tracked in the plan's watch items.
+zenoh-ext = { version = "1.9", features = ["unstable"] }
 
 # Path deps into the parent workspace: the vendor-agnostic core and the mock
 # backend. Both build without D-Bus (core's `dbus` feature is opt-in).

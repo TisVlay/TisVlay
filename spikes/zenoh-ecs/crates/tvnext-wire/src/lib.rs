@@ -144,6 +144,75 @@ pub mod keys {
         format!("tisvlay/{site}/pairing/{tv}/progress")
     }
 
+    /// Liveliness token for a running pairing session.
+    pub fn alive_pairing(site: &str, tv: &Uuid) -> String {
+        format!("tisvlay/{site}/alive/pairing/{tv}")
+    }
+
+    /// Manager RPC key: `tisvlay/<site>/manager/rpc/<verb>`.
+    pub fn manager_rpc(site: &str, verb: &str) -> String {
+        format!("tisvlay/{site}/manager/rpc/{verb}")
+    }
+
+    /// Per-TV RPC key: `tisvlay/<site>/tv/<uuid>/rpc/<verb>`.
+    pub fn tv_rpc(site: &str, tv: &Uuid, verb: &str) -> String {
+        format!("tisvlay/{site}/tv/{tv}/rpc/{verb}")
+    }
+
+    /// Wildcard the daemon's manager-RPC queryable is declared on.
+    pub fn manager_rpc_wild(site: &str) -> String {
+        format!("tisvlay/{site}/manager/rpc/*")
+    }
+
+    /// Wildcard the daemon's per-TV-RPC queryable is declared on.
+    pub fn tv_rpc_wild(site: &str) -> String {
+        format!("tisvlay/{site}/tv/*/rpc/*")
+    }
+
+    /// Every per-TV data key — client hydration subscriptions.
+    pub fn tv_all(site: &str) -> String {
+        format!("tisvlay/{site}/tv/**")
+    }
+
+    /// Every data key for a site (`@adv` protocol chunks are verbatim and
+    /// deliberately not matched by `**`).
+    pub fn all(site: &str) -> String {
+        format!("tisvlay/{site}/**")
+    }
+
+    /// Parse `tisvlay/<site>/tv/<uuid>/<path…>` into `(uuid, path)`.
+    pub fn parse_tv_path<'a>(site: &str, key: &'a str) -> Option<(Uuid, &'a str)> {
+        let rest = key
+            .strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/tv/")?;
+        let (id, path) = rest.split_once('/')?;
+        Some((Uuid::parse_str(id).ok()?, path))
+    }
+
+    /// Parse a per-TV RPC key into `(uuid, verb)`.
+    pub fn parse_tv_rpc<'a>(site: &str, key: &'a str) -> Option<(Uuid, &'a str)> {
+        let (id, path) = parse_tv_path(site, key)?;
+        Some((id, path.strip_prefix("rpc/")?))
+    }
+
+    /// Parse a manager RPC key into its verb.
+    pub fn parse_manager_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/manager/rpc/")
+    }
+
+    /// Parse a pairing-progress key into the pairing uuid.
+    pub fn parse_pairing_progress(site: &str, key: &str) -> Option<Uuid> {
+        let rest = key
+            .strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/pairing/")?
+            .strip_suffix("/progress")?;
+        Uuid::parse_str(rest).ok()
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -170,6 +239,79 @@ pub mod keys {
                 "tisvlay/main/event/connect-failed"
             );
         }
+
+        #[test]
+        fn rpc_keys_round_trip_through_parsers() {
+            let id = Uuid::nil();
+            assert_eq!(
+                parse_tv_rpc("main", &tv_rpc("main", &id, "set-volume")),
+                Some((id, "set-volume"))
+            );
+            assert_eq!(
+                parse_manager_rpc("main", &manager_rpc("main", "pair")),
+                Some("pair")
+            );
+            assert_eq!(
+                parse_pairing_progress("main", &pairing_progress("main", &id)),
+                Some(id)
+            );
+            assert_eq!(
+                parse_tv_path("main", &tv_path("main", &id, "state/volume")),
+                Some((id, "state/volume"))
+            );
+        }
+
+        #[test]
+        fn parsers_reject_foreign_sites_and_shapes() {
+            let id = Uuid::nil();
+            assert_eq!(parse_tv_rpc("other", &tv_rpc("main", &id, "remove")), None);
+            assert_eq!(parse_manager_rpc("main", "tisvlay/main/tv/x/rpc/y"), None);
+            assert_eq!(
+                parse_pairing_progress("main", "tisvlay/main/pairing/not-a-uuid/progress"),
+                None
+            );
+        }
+    }
+}
+
+/// Request bodies for the RPC queryables — shared by the daemon bridge and
+/// clients so the wire shape exists in exactly one place.
+pub mod rpc {
+    use serde::{Deserialize, Serialize};
+    use uuid::Uuid;
+
+    fn default_true() -> bool {
+        true
+    }
+
+    /// Body for `manager/rpc/add-tv` and `manager/rpc/pair`. The `config`
+    /// is the vendor config (JSON on the wire, TOML at the backend seam).
+    /// Omitted `id` means "daemon generates one"; the reply carries it.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct AddTv {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub id: Option<Uuid>,
+        pub name: String,
+        pub vendor: String,
+        #[serde(default = "default_true")]
+        pub managed: bool,
+        pub config: serde_json::Value,
+    }
+
+    /// Body for RPCs that only reference a TV / pairing session by id.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct TvRef {
+        pub id: Uuid,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SetVolume {
+        pub level: u8,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SetMuted {
+        pub muted: bool,
     }
 }
 
@@ -194,10 +336,13 @@ pub mod bootstrap {
     }
 
     /// Peer-mode config listening on `socket` — the daemon side.
+    /// Timestamping is on: the advanced-publisher caches order and replay
+    /// samples by timestamp.
     pub fn peer_config(socket: &Path) -> Result<Config> {
         let mut config = base_config()?;
         insert(&mut config, "mode", "\"peer\"")?;
         insert(&mut config, "listen/endpoints", &endpoint_list(socket)?)?;
+        insert(&mut config, "timestamping/enabled", "true")?;
         Ok(config)
     }
 

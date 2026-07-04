@@ -52,7 +52,7 @@ The load-bearing design sentence: **each unit of TV state is one serde struct th
 
 - `#[derive(Component, Serialize, Deserialize)] struct VolumeState { level: u8, muted: bool }` lives at `tisvlay/<site>/tv/<uuid>/state/volume`.
 - A `publish_changes` system queries `Changed<VolumeState>` and emits a put on exactly that key. This replaces the entire `state_forwarder.rs` pipeline.
-- The `AdvancedPublisher` cache makes the key self-snapshotting; `z get 'tisvlay/**'` in a shell dumps the whole world state, human-readable (payload encoding: `Encoding::APPLICATION_JSON` + `serde_json` for the spike — debuggability first; a compact encoding is a later payload-crate-local swap).
+- The `AdvancedPublisher` cache makes the key self-snapshotting — with an M2 ground-truth correction: the cache's queryable lives under the verbatim `@adv` suffix, so **plain wildcard gets cannot reach it**; late-joiner hydration is exclusively the AdvancedSubscriber-with-history protocol (`tvnext list`/`watch` in the CLI, `z_advanced_sub` in a shell). Payload encoding: `Encoding::APPLICATION_JSON` + `serde_json` for the spike — debuggability first; a compact encoding is a later payload-crate-local swap.
 - Coupling the wire crate to `bevy_ecs` (dual derive) is intentional lean-in, not an accident to fix.
 
 ### Process topology
@@ -129,7 +129,7 @@ liveliness:  tisvlay/<site>/alive/daemon · alive/pairing/<uuid> · alive/discov
 
 Dies with the rewrite: `ObjectServer::at` `Ok(false)` trap + unregister-dance + collision test; deferred-complete-until-registered; per-TV Mutex drain layer + invariant test; `a{sv}` coercion + `PairingProgressDetail` encoding + `json_toml.rs` (wire half; disk TOML stays trivially serde); underscore-encoded object paths + `dbus_paths.rs`; `state_forwarder.rs`; most of `dbus_client.rs` (StateWatcher machinery); `PrivateBus`-based wire tests (per-test UDS endpoints need no external `dbus-daemon`).
 
-New theorems we take on (honesty ledger): cache/history sizing and staleness semantics; miss-recovery cadence (heartbeat vs periodic queries); bridge backpressure and inbox ordering; query-timeout tuning; zenoh session behavior across suspend/resume; keeping the reactor loop responsive under slow backend effects.
+New theorems we take on (honesty ledger): cache/history sizing and staleness semantics; miss-recovery cadence (heartbeat vs periodic queries); bridge backpressure and inbox ordering; query-timeout tuning; zenoh session behavior across suspend/resume; keeping the reactor loop responsive under slow backend effects; the advanced pub/sub API rides zenoh-ext's `unstable` feature; cache hydration is subscriber-history only (the cache queryable lives under the verbatim `@adv` suffix); advanced caches require `timestamping/enabled` in the daemon's zenoh config.
 
 ## Security stance
 
@@ -143,7 +143,8 @@ Cross-host operation (the `<site>` chunk is the only concession), session-servic
 
 - [x] **M0 — scaffold**: spike workspace, deps pinned (zenoh 1.9.x, latest bevy_ecs), path-deps building with core's D-Bus features off, daemon opens a zenoh peer session on a UDS endpoint with scouting disabled, liveliness token visible from `z sub`.
 - [x] **M1 — world core (no wire)**: TV entities from config, mock-backend connect/reconnect/pairing as systems + tasks through the reactor, WoL-retry and profile-dispatch systems, headless world tests (feed `InEvent`s, run schedule, assert components + Outbox). Exit: the remove-during-in-flight scenario is a boring test, not an invariant essay.
-- [ ] **M2 — wire**: state keys with AdvancedPublisher caches, rpc queryables with typed errors, PUT/DELETE lifecycle, pairing progress + liveliness, late-joiner hydration demo (`z get 'tisvlay/**'`, `z sub` with history), discovery both ways (session pubs vs streamed-reply get) with a decision recorded.
+- [x] **M2 — wire**: state keys with AdvancedPublisher caches, rpc queryables with typed errors, PUT/DELETE lifecycle, pairing progress + liveliness, boot config seeding TVs at daemon start, late-joiner hydration demo (`tvnext list`/`watch` via subscriber history — plain `z get` can't reach the caches, see the `@adv` finding above).
+- [ ] **M2b — discovery over the wire**: session pubs vs streamed-reply get, tried against the wizard flow; decision recorded. Provisional lean: bounded one-shot scans as a multi-reply queryable, open-ended wizard scans as session pubs + liveliness (the query-timeout ceiling rules streamed replies out there).
 - [ ] **M3 — hardware in the loop**: LG backend via path-dep, pair the C3, power/volume/input round-trip, WoL retry against the real quirks, DPMS watcher feeding the world; CEC at least via `FakeCecLink`.
 - [ ] **M4 — first real client**: CLI subset (list/status/power/volume/watch) as a pure zenoh client; side-by-side DX comparison against `dbus_client.rs` equivalents.
 - [ ] **Exit review**: score keep/kill criteria below; append verdict + war stories here; then either draft the continuation plan (session/GUI ports) or the zlink spike plan.
