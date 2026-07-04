@@ -105,6 +105,19 @@ pub async fn serve(
         tokio::spawn(store::store_task(path.to_path_buf(), rx));
     }
     tokio::spawn(reactor.run());
+    // Production tick source: drives verify timers and dial backoff. Tests
+    // can still inject future instants — the world clock is monotonic.
+    let ticker = world.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if !ticker.tick(std::time::Instant::now()) {
+                return;
+            }
+        }
+    });
     let discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>> = Arc::new(
         discoveries
             .into_iter()

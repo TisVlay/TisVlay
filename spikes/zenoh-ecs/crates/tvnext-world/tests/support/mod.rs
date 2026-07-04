@@ -30,6 +30,10 @@ pub(crate) fn tv_record(id: Uuid, name: &str, config: toml::Value) -> TvRecord {
 }
 
 pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
+    // RUST_LOG-driven diagnostics for failing runs; idempotent.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
     let (connector, _discovery, handle) = new_test_parts();
     let (reactor, effects, client) = Reactor::new("test", vec![("mock", Arc::new(connector))]);
     tokio::spawn(reactor.run());

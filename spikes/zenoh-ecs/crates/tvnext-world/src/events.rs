@@ -170,6 +170,22 @@ pub enum Command {
     },
 }
 
+/// Transport characteristics resolved at dial time — the connector knows,
+/// the world reacts (CEC standby model, screen-via-power emulation,
+/// carrier-event scoping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportInfo {
+    /// Connection survives standby (CEC): Connected ≠ power, wake happens
+    /// in place on the live handle.
+    pub reachable_in_standby: bool,
+    /// Goes down with the NIC — carrier events apply.
+    pub network_dependent: bool,
+    /// Survives a source-IP change (NIC failover keeps the connection).
+    pub survives_ip_change: bool,
+    /// No discrete screen-blank: dispatch screen actions as power.
+    pub emulate_screen_via_power: bool,
+}
+
 /// Facts pushed by a backend connection task into the world.
 #[derive(Debug)]
 pub enum BackendEvent {
@@ -183,6 +199,8 @@ pub enum BackendEvent {
         brand: Option<String>,
         hardware: Option<tisvlay_core::HardwareId>,
         capabilities: Vec<String>,
+        traits: TransportInfo,
+        retry: tisvlay_core::RetryConfig,
     },
     /// Dial failed before a connection existed.
     ConnectFailed { error: String },

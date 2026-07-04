@@ -8,7 +8,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{BackendCmd, ReplyTo, SystemEvent, TvRecord, WireEffect};
+use crate::events::{BackendCmd, ReplyTo, SystemEvent, TransportInfo, TvRecord, WireEffect};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
 #[derive(Component, Debug)]
@@ -50,6 +50,25 @@ pub(crate) struct RetryAt(pub Instant);
 #[derive(Component, Debug)]
 pub(crate) struct ConnectionHandle {
     pub cmd_tx: mpsc::UnboundedSender<BackendCmd>,
+}
+
+/// Transport characteristics of this TV's backend, resolved at dial time.
+#[derive(Component, Debug)]
+pub(crate) struct TransportTraits(pub TransportInfo);
+
+/// Per-backend verify-retry tuning, delivered with the connection.
+#[derive(Component, Debug)]
+pub(crate) struct DispatchRetry(pub tisvlay_core::RetryConfig);
+
+/// A screen action awaiting verification: after `verify_at`, the cached
+/// power state must agree or the action retries — and `screen_on`
+/// escalates to the wake path once attempts are spent (the panel saying
+/// "ok" while staying dark is real LG firmware behavior).
+#[derive(Component, Debug)]
+pub(crate) struct DispatchVerify {
+    pub target_on: bool,
+    pub attempts: u8,
+    pub verify_at: Instant,
 }
 
 /// A running pairing session, keyed by the TV's uuid. For a fresh pairing

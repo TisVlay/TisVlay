@@ -25,6 +25,7 @@ pub struct Reactor {
     connectors: HashMap<String, Arc<dyn TvConnector>>,
     effects_tx: mpsc::UnboundedSender<WireEffect>,
     persist_tx: Option<mpsc::UnboundedSender<Vec<TvRecord>>>,
+    vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
 impl fmt::Debug for Reactor {
@@ -97,6 +98,7 @@ impl Reactor {
                 connectors,
                 effects_tx,
                 persist_tx: None,
+                vendor_retry: HashMap::new(),
             },
             effects_rx,
             client,
@@ -108,6 +110,12 @@ impl Reactor {
     /// ephemeral worlds like tests.
     pub fn set_persist(&mut self, tx: mpsc::UnboundedSender<Vec<TvRecord>>) {
         self.persist_tx = Some(tx);
+    }
+
+    /// Per-vendor verify-retry tuning (from each backend's
+    /// `verify_retry_config`); vendors without an entry get the default.
+    pub fn set_vendor_retry(&mut self, retry: HashMap<String, tisvlay_core::RetryConfig>) {
+        self.vendor_retry = retry;
     }
 
     /// Run until every inbox sender is dropped.
@@ -125,9 +133,15 @@ impl Reactor {
     /// One sync point: apply a batch of events, run the schedule, execute
     /// drained effects.
     fn step(&mut self, batch: Vec<InEvent>) {
+        tracing::trace!(batch = batch.len(), "step");
         for event in batch {
             match event {
-                InEvent::Tick { now } => self.world.resource_mut::<Clock>().0 = now,
+                InEvent::Tick { now } => {
+                    // Monotonic: a production ticker and test-injected
+                    // future instants coexist without regressing time.
+                    let mut clock = self.world.resource_mut::<Clock>();
+                    clock.0 = clock.0.max(now);
+                }
                 other => {
                     self.world.write_message(other);
                 }
@@ -149,11 +163,13 @@ impl Reactor {
                     wake,
                 } => match self.connectors.get(&vendor) {
                     Some(connector) => {
+                        let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
                         tokio::spawn(backend::connect_flow(
                             tv,
                             Arc::clone(connector),
                             config,
                             wake,
+                            retry,
                             self.inbox_tx.clone(),
                         ));
                     }

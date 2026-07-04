@@ -16,9 +16,17 @@ pub(crate) async fn connect_flow(
     connector: Arc<dyn TvConnector>,
     config: toml::Value,
     wake: bool,
+    retry: tisvlay_core::RetryConfig,
     inbox: mpsc::UnboundedSender<InEvent>,
 ) {
+    debug!(%tv, wake, "connect_flow started");
     let supports_wake = connector.supports_wake(&config);
+    let traits = crate::events::TransportInfo {
+        reachable_in_standby: connector.reachable_in_standby(&config),
+        network_dependent: connector.transport().is_network_dependent(),
+        survives_ip_change: connector.survives_source_ip_change(),
+        emulate_screen_via_power: connector.emulate_screen_via_power(&config),
+    };
     let dial = if wake {
         let _ = inbox.send(InEvent::Backend {
             tv,
@@ -32,6 +40,7 @@ pub(crate) async fn connect_flow(
     } else {
         connector.connect(&config).await
     };
+    debug!(%tv, dialed = dial.is_ok(), "dial finished");
     let mut connection = match dial {
         Ok(connection) => connection,
         Err(error) => {
@@ -77,6 +86,8 @@ pub(crate) async fn connect_flow(
             brand,
             hardware,
             capabilities,
+            traits,
+            retry,
         },
     });
 

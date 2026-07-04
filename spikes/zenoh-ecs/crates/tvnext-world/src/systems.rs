@@ -12,9 +12,9 @@ use tvnext_wire::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    Clock, ConnectionHandle, DirtyStore, Effect, KnownVendors, Managed, Outbox, PairingEnroll,
-    PairingIndex, PairingRef, PendingConnect, ProfileAction, Reconnecting, RetryAt, Site,
-    SystemProfile, TvId, TvIndex, VendorRef,
+    Clock, ConnectionHandle, DirtyStore, DispatchRetry, DispatchVerify, Effect, KnownVendors,
+    Managed, Outbox, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
+    Reconnecting, RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
     BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ReplyTo, TvRecord, WireEffect,
@@ -35,6 +35,7 @@ pub(crate) fn build_schedule() -> Schedule {
             handle_tv_commands,
             apply_backend_events,
             apply_pairing_updates,
+            verify_dispatch,
             dispatch_system_events,
             reconcile_connections,
             derive_link_state,
@@ -123,7 +124,104 @@ type TvQuery<'a> = (
 /// The settings handler's slice of `TvQuery` — it must not read
 /// `VendorRef` here (it writes it through `SettingsWrites`, and bevy
 /// rejects the aliasing).
-type LinkQuery<'a> = (Option<&'a ConnectionHandle>, Has<PendingConnect>);
+type LinkQuery<'a> = (
+    Option<&'a ConnectionHandle>,
+    Has<PendingConnect>,
+    Option<&'a TransportTraits>,
+    Option<&'a payload::Link>,
+    Option<&'a DispatchRetry>,
+);
+
+/// Route a power-on request: in-band on a live handle, otherwise the wake
+/// dial for wake-capable transports.
+#[allow(clippy::too_many_arguments)]
+fn power_on_tv(
+    commands: &mut Commands,
+    outbox: &mut Outbox,
+    entity: Entity,
+    id: Uuid,
+    handle: Option<&ConnectionHandle>,
+    pending: bool,
+    link: Option<&payload::Link>,
+    reply: Option<ReplyTo>,
+) {
+    match handle {
+        Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOn).is_ok() => {
+            reply_ok(outbox, reply);
+        }
+        Some(_) => reply_err(outbox, reply, WireError::not_connected(id)),
+        None if link.is_some_and(|l| l.supports_wake) => {
+            if !pending {
+                commands
+                    .entity(entity)
+                    .insert(PendingConnect {
+                        attempts: 0,
+                        wake: true,
+                    })
+                    .remove::<RetryAt>();
+            }
+            reply_ok(outbox, reply);
+        }
+        None => reply_err(outbox, reply, WireError::wake_not_supported(id)),
+    }
+}
+
+/// Screen dispatch, reliable tier: send, then verify against the cached
+/// power state after the backend's verify delay (see `verify_dispatch`).
+/// Backends that emulate screen via power route straight to power actions.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_screen(
+    commands: &mut Commands,
+    outbox: &mut Outbox,
+    clock: &Clock,
+    entity: Entity,
+    id: Uuid,
+    on: bool,
+    row: (
+        Option<&ConnectionHandle>,
+        bool,
+        Option<&TransportTraits>,
+        Option<&payload::Link>,
+        Option<&DispatchRetry>,
+    ),
+    reply: Option<ReplyTo>,
+) {
+    let (handle, pending, traits, link, retry) = row;
+    if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
+        if on {
+            power_on_tv(commands, outbox, entity, id, handle, pending, link, reply);
+        } else if let Some(handle) = handle {
+            let _ = handle.cmd_tx.send(BackendCmd::PowerOff);
+            reply_ok(outbox, reply);
+        } else {
+            reply_err(outbox, reply, WireError::not_connected(id));
+        }
+        return;
+    }
+    match handle {
+        Some(handle)
+            if handle
+                .cmd_tx
+                .send(if on {
+                    BackendCmd::ScreenOn
+                } else {
+                    BackendCmd::ScreenOff
+                })
+                .is_ok() =>
+        {
+            let delay = retry
+                .map(|r| r.0.verify_delay)
+                .unwrap_or_else(|| tisvlay_core::RetryConfig::default().verify_delay);
+            commands.entity(entity).insert(DispatchVerify {
+                target_on: on,
+                attempts: 1,
+                verify_at: clock.0 + delay,
+            });
+            reply_ok(outbox, reply);
+        }
+        _ => reply_err(outbox, reply, WireError::not_connected(id)),
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn handle_lifecycle_commands(
@@ -289,26 +387,16 @@ fn handle_lifecycle_commands(
                     continue;
                 };
                 let (handle, pending, link, _) = q.get(entity).unwrap_or((None, false, None, None));
-                match handle {
-                    Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOn).is_ok() => {
-                        reply_ok(&mut outbox, *reply);
-                    }
-                    Some(_) => reply_err(&mut outbox, *reply, WireError::not_connected(*id)),
-                    // Wake path: dial via wake_and_connect (WoL / CEC wake).
-                    None if link.is_some_and(|l| l.supports_wake) => {
-                        if !pending {
-                            commands
-                                .entity(entity)
-                                .insert(PendingConnect {
-                                    attempts: 0,
-                                    wake: true,
-                                })
-                                .remove::<RetryAt>();
-                        }
-                        reply_ok(&mut outbox, *reply);
-                    }
-                    None => reply_err(&mut outbox, *reply, WireError::wake_not_supported(*id)),
-                }
+                power_on_tv(
+                    &mut commands,
+                    &mut outbox,
+                    entity,
+                    *id,
+                    handle,
+                    pending,
+                    link,
+                    *reply,
+                );
             }
             _ => {}
         }
@@ -329,6 +417,7 @@ fn handle_tv_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
     index: Res<TvIndex>,
+    clock: Res<Clock>,
     mut outbox: ResMut<Outbox>,
     mut dirty: ResMut<DirtyStore>,
     q: Query<LinkQuery>,
@@ -369,7 +458,8 @@ fn handle_tv_commands(
                 }
             }
             Command::SetManaged { managed, .. } => {
-                let (handle, pending) = q.get(entity).unwrap_or((None, false));
+                let (handle, pending, ..) =
+                    q.get(entity).unwrap_or((None, false, None, None, None));
                 apply_managed(&mut commands, entity, *managed, handle.is_some(), pending);
                 if let Ok(mut meta) = writes.meta.get_mut(entity)
                     && meta.managed != *managed
@@ -447,12 +537,17 @@ fn handle_tv_commands(
                 );
             }
             Command::SetScreen { on, .. } => {
-                let cmd = if *on {
-                    BackendCmd::ScreenOn
-                } else {
-                    BackendCmd::ScreenOff
-                };
-                send_backend(&q, &mut outbox, entity, id, cmd, reply);
+                let row = q.get(entity).unwrap_or((None, false, None, None, None));
+                dispatch_screen(
+                    &mut commands,
+                    &mut outbox,
+                    &clock,
+                    entity,
+                    id,
+                    *on,
+                    row,
+                    reply,
+                );
             }
             Command::PowerOff { .. } => {
                 send_backend(&q, &mut outbox, entity, id, BackendCmd::PowerOff, reply);
@@ -600,7 +695,8 @@ fn apply_config_patch(
             }
             "managed" => {
                 let managed = value.as_bool().unwrap_or(true);
-                let (handle, pending) = q.get(entity).unwrap_or((None, false));
+                let (handle, pending, ..) =
+                    q.get(entity).unwrap_or((None, false, None, None, None));
                 apply_managed(commands, entity, managed, handle.is_some(), pending);
                 if let Ok(mut meta) = writes.meta.get_mut(entity) {
                     meta.managed = managed;
@@ -638,7 +734,7 @@ fn apply_config_patch(
     if vendor_changed {
         // Transport parameters may have changed — reconnect with the new
         // config if this TV is being driven at all.
-        let (handle, pending) = q.get(entity).unwrap_or((None, false));
+        let (handle, pending, ..) = q.get(entity).unwrap_or((None, false, None, None, None));
         if handle.is_some() || pending {
             commands
                 .entity(entity)
@@ -663,9 +759,86 @@ fn send_backend(
     cmd: BackendCmd,
     reply: Option<ReplyTo>,
 ) {
-    match q.get(entity).ok().and_then(|(handle, _)| handle) {
+    match q.get(entity).ok().and_then(|(handle, ..)| handle) {
         Some(handle) if handle.cmd_tx.send(cmd).is_ok() => reply_ok(outbox, reply),
         _ => reply_err(outbox, reply, WireError::not_connected(id)),
+    }
+}
+
+/// Verify pending screen dispatches against the cached power state; retry
+/// within the backend's budget; escalate an unmet `screen_on` to the wake
+/// path (in place for standby-reachable transports, wake dial otherwise).
+#[allow(clippy::type_complexity)]
+fn verify_dispatch(
+    mut commands: Commands,
+    clock: Res<Clock>,
+    site: Res<Site>,
+    mut outbox: ResMut<Outbox>,
+    mut q: Query<(
+        Entity,
+        &TvId,
+        &mut DispatchVerify,
+        Option<&ConnectionHandle>,
+        Has<PendingConnect>,
+        Option<&payload::Power>,
+        Option<&payload::Link>,
+        Option<&TransportTraits>,
+        Option<&DispatchRetry>,
+    )>,
+) {
+    for (entity, id, mut verify, handle, pending, power, link, traits, retry) in &mut q {
+        if verify.verify_at > clock.0 {
+            continue;
+        }
+        if power.is_some_and(|p| p.is_screen_on == verify.target_on) {
+            tracing::debug!(tv = %id.0, target_on = verify.target_on, "screen dispatch verified");
+            commands.entity(entity).remove::<DispatchVerify>();
+            continue;
+        }
+        let config = retry.map(|r| r.0).unwrap_or_default();
+        if (verify.attempts as usize) < config.effective_max_attempts()
+            && let Some(handle) = handle
+        {
+            let cmd = if verify.target_on {
+                BackendCmd::ScreenOn
+            } else {
+                BackendCmd::ScreenOff
+            };
+            tracing::debug!(tv = %id.0, attempts = verify.attempts, "screen dispatch retry");
+            let _ = handle.cmd_tx.send(cmd);
+            verify.attempts += 1;
+            verify.verify_at = clock.0 + config.verify_delay;
+            continue;
+        }
+        tracing::debug!(tv = %id.0, target_on = verify.target_on, "screen dispatch budget spent");
+        commands.entity(entity).remove::<DispatchVerify>();
+        if verify.target_on {
+            if traits.is_some_and(|t| t.0.reachable_in_standby)
+                && let Some(handle) = handle
+            {
+                // Wake in place on the live standby connection (CEC).
+                let _ = handle.cmd_tx.send(BackendCmd::PowerOn);
+                continue;
+            }
+            if link.is_some_and(|l| l.supports_wake) {
+                let mut e = commands.entity(entity);
+                e.remove::<(ConnectionHandle, RetryAt)>();
+                if !pending {
+                    e.insert(PendingConnect {
+                        attempts: 0,
+                        wake: true,
+                    });
+                }
+                continue;
+            }
+        }
+        outbox.0.push(Effect::Wire(WireEffect::Publish {
+            key: keys::event(&site.0, "dispatch-failed"),
+            payload: json!({
+                "tv": id.0,
+                "action": if verify.target_on { "screen_on" } else { "screen_off" },
+            }),
+        }));
     }
 }
 
@@ -709,14 +882,21 @@ fn apply_backend_events(
                 brand,
                 hardware,
                 capabilities,
+                traits,
+                retry,
             } => {
+                tracing::debug!(%tv, "connected event applying");
                 let wake_dial = writes.pending.get(entity).is_ok_and(|p| p.wake);
                 commands
                     .entity(entity)
-                    .insert(ConnectionHandle {
-                        cmd_tx: cmd_tx.clone(),
-                    })
-                    .remove::<(Reconnecting, PendingConnect, RetryAt)>();
+                    .insert((
+                        ConnectionHandle {
+                            cmd_tx: cmd_tx.clone(),
+                        },
+                        TransportTraits(*traits),
+                        DispatchRetry(*retry),
+                    ))
+                    .remove::<(Reconnecting, PendingConnect, RetryAt, DispatchVerify)>();
                 apply_state(&mut commands, entity, state, &mut writes);
                 if let Ok(mut link) = writes.link.get_mut(entity)
                     && link.supports_wake != *supports_wake
@@ -742,7 +922,9 @@ fn apply_backend_events(
             }
             BackendEvent::State(state) => apply_state(&mut commands, entity, state, &mut writes),
             BackendEvent::Disconnected => {
-                commands.entity(entity).remove::<ConnectionHandle>();
+                commands
+                    .entity(entity)
+                    .remove::<(ConnectionHandle, DispatchVerify)>();
             }
             BackendEvent::ConnectFailed { error } => {
                 let (attempts, wake_dial) = writes
@@ -965,11 +1147,27 @@ fn apply_pairing_updates(
 }
 
 /// Map system events (lock, DPMS, sleep) through the profile onto every
-/// managed, connected TV.
+/// managed TV — screen actions ride the reliable tier, and wake-capable
+/// power/screen-on reach even disconnected TVs via the wake dial.
+#[allow(clippy::type_complexity)]
 fn dispatch_system_events(
     mut reader: MessageReader<InEvent>,
     profile: Res<SystemProfile>,
-    q: Query<(&TvId, &ConnectionHandle), With<Managed>>,
+    mut commands: Commands,
+    clock: Res<Clock>,
+    mut outbox: ResMut<Outbox>,
+    q: Query<
+        (
+            Entity,
+            &TvId,
+            Option<&ConnectionHandle>,
+            Has<PendingConnect>,
+            Option<&TransportTraits>,
+            Option<&payload::Link>,
+            Option<&DispatchRetry>,
+        ),
+        With<Managed>,
+    >,
 ) {
     for msg in reader.read() {
         let InEvent::System { event } = msg else {
@@ -979,15 +1177,44 @@ fn dispatch_system_events(
             tracing::debug!(?event, "no profile action for system event");
             continue;
         };
-        let cmd = match action {
-            ProfileAction::ScreenOff => BackendCmd::ScreenOff,
-            ProfileAction::ScreenOn => BackendCmd::ScreenOn,
-            ProfileAction::PowerOff => BackendCmd::PowerOff,
-            ProfileAction::PowerOn => BackendCmd::PowerOn,
-        };
-        for (id, handle) in &q {
-            if handle.cmd_tx.send(cmd.clone()).is_ok() {
-                tracing::debug!(tv = %id.0, ?event, ?cmd, "profile action dispatched");
+        for (entity, id, handle, pending, traits, link, retry) in &q {
+            tracing::debug!(tv = %id.0, ?event, ?action, "profile action dispatched");
+            match action {
+                ProfileAction::ScreenOff => dispatch_screen(
+                    &mut commands,
+                    &mut outbox,
+                    &clock,
+                    entity,
+                    id.0,
+                    false,
+                    (handle, pending, traits, link, retry),
+                    None,
+                ),
+                ProfileAction::ScreenOn => dispatch_screen(
+                    &mut commands,
+                    &mut outbox,
+                    &clock,
+                    entity,
+                    id.0,
+                    true,
+                    (handle, pending, traits, link, retry),
+                    None,
+                ),
+                ProfileAction::PowerOff => {
+                    if let Some(handle) = handle {
+                        let _ = handle.cmd_tx.send(BackendCmd::PowerOff);
+                    }
+                }
+                ProfileAction::PowerOn => power_on_tv(
+                    &mut commands,
+                    &mut outbox,
+                    entity,
+                    id.0,
+                    handle,
+                    pending,
+                    link,
+                    None,
+                ),
             }
         }
     }
@@ -1021,6 +1248,7 @@ fn reconcile_connections(
             continue;
         }
         pending.attempts += 1;
+        tracing::debug!(tv = %id.0, attempt = pending.attempts, wake = pending.wake, "dialing");
         commands
             .entity(entity)
             .insert(Reconnecting)
