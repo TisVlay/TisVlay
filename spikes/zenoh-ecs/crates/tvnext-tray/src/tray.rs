@@ -3,7 +3,7 @@
 //! rpcs. Structure ports the root `tisvlay-tray` menu; strings stay
 //! English literals until the workspace grows its i18n pass at promotion.
 
-use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
+use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -257,10 +257,8 @@ impl TvTray {
             "system-shutdown",
             move || TrayCommand::PowerOff(id),
         ));
-        if !self.mirror.system_profiles.is_empty() || !self.mirror.user_profiles.is_empty() {
-            items.push(self.profile_submenu(id, tv));
-        }
-        items.push(self.managed_toggle(id, tv));
+        items.push(self.profile_submenu(id, tv));
+        items.push(managed_toggle(tx, id, tv));
 
         if !tv.inputs.is_empty() {
             items.push(MenuItem::Separator);
@@ -272,18 +270,23 @@ impl TvTray {
         }
         if tv.has_backlight {
             if let Some(level) = tv.backlight {
-                items.push(disabled(&format!("Backlight: {level}")));
+                items.push(status_line(
+                    &format!("Backlight: {level}"),
+                    "high-brightness",
+                ));
             }
-            items.push(command_item(
+            items.push(backlight_item(
                 tx,
                 "Backlight Up (+10)",
                 "high-brightness",
+                id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, 10),
             ));
-            items.push(command_item(
+            items.push(backlight_item(
                 tx,
                 "Backlight Down (-10)",
                 "low-brightness",
+                id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, -10),
             ));
         }
@@ -304,59 +307,59 @@ impl TvTray {
         }
         if tv.has_volume {
             if let Some(volume) = tv.volume {
-                items.push(disabled(&format!("Volume: {volume}")));
+                let muted = if tv.muted == Some(true) {
+                    " (muted)"
+                } else {
+                    ""
+                };
+                items.push(status_line(
+                    &format!("Volume: {volume}{muted}"),
+                    "audio-volume-medium",
+                ));
             }
-            items.push(command_item(
+            items.push(volume_item(
                 tx,
-                "Volume Up (+5)",
+                "Volume Up (+10)",
                 "audio-volume-high",
-                move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, 5),
+                id,
+                move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, 10),
             ));
-            items.push(command_item(
+            items.push(volume_item(
                 tx,
-                "Volume Down (-5)",
-                "audio-volume-low",
-                move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, -5),
+                "Volume Down (-10)",
+                "audio-volume-medium",
+                id,
+                move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, -10),
             ));
         }
         if tv.has_mute {
             let muted = tv.muted == Some(true);
-            items.push(
-                CheckmarkItem {
-                    label: "Muted".into(),
-                    checked: muted,
-                    activate: activate(&self.cmd_tx, move || TrayCommand::ToggleMute(id)),
-                    ..Default::default()
-                }
-                .into(),
-            );
+            items.push(volume_item(
+                tx,
+                if muted { "Unmute" } else { "Mute" },
+                if muted {
+                    "audio-volume-high"
+                } else {
+                    "audio-volume-muted"
+                },
+                id,
+                move || TrayCommand::ToggleMute(id),
+            ));
         }
         items
     }
 
     fn down_tv_menu(&self, id: Uuid, tv: &TvView) -> Vec<MenuItem<Self>> {
+        let tx = &self.cmd_tx;
         let mut items = vec![command_item(
-            &self.cmd_tx,
+            tx,
             "Power On (Wake)",
             "system-run",
             move || TrayCommand::PowerOn(id),
         )];
-        if !self.mirror.system_profiles.is_empty() || !self.mirror.user_profiles.is_empty() {
-            items.push(self.profile_submenu(id, tv));
-        }
-        items.push(self.managed_toggle(id, tv));
+        items.push(self.profile_submenu(id, tv));
+        items.push(managed_toggle(tx, id, tv));
         items
-    }
-
-    fn managed_toggle(&self, id: Uuid, tv: &TvView) -> MenuItem<Self> {
-        let managed = tv.managed;
-        CheckmarkItem {
-            label: "Managed".into(),
-            checked: managed,
-            activate: activate(&self.cmd_tx, move || TrayCommand::SetManaged(id, !managed)),
-            ..Default::default()
-        }
-        .into()
     }
 
     fn input_submenu(&self, id: Uuid, tv: &TvView) -> MenuItem<Self> {
@@ -369,7 +372,7 @@ impl TvTray {
         let tx = self.cmd_tx.clone();
         SubMenu {
             label: "Input".into(),
-            icon_name: "video-television".into(),
+            icon_name: "input-tvremote-symbolic".into(),
             submenu: vec![
                 RadioGroup {
                     selected,
@@ -394,31 +397,32 @@ impl TvTray {
         .into()
     }
 
-    /// User + system profile pickers nested under one parent. Index 0 is
-    /// always the inherited default (no assignment).
+    /// Root shape: "Profiles" parent with nested "User: {current}" and
+    /// "System: {current}" pickers. The spike has no reserved-default
+    /// catalog entries, so a synthetic "default" first row stands in for
+    /// the unassigned (inherit-the-stock-mapping) state.
     fn profile_submenu(&self, id: Uuid, tv: &TvView) -> MenuItem<Self> {
-        let mut submenu: Vec<MenuItem<Self>> = Vec::new();
-        if !self.mirror.user_profiles.is_empty() {
-            submenu.push(disabled("User profile"));
-            submenu.push(profile_radio(
+        let submenu = vec![
+            profile_picker(
                 &self.cmd_tx,
+                "User",
+                "im-user",
                 &self.mirror.user_profiles,
                 tv.user_profile,
                 move |profile| TrayCommand::SetUserProfile(id, profile),
-            ));
-        }
-        if !self.mirror.system_profiles.is_empty() {
-            submenu.push(disabled("System profile"));
-            submenu.push(profile_radio(
+            ),
+            profile_picker(
                 &self.cmd_tx,
+                "System",
+                "system-users",
                 &self.mirror.system_profiles,
                 tv.system_profile,
                 move |profile| TrayCommand::SetSystemProfile(id, profile),
-            ));
-        }
+            ),
+        ];
         SubMenu {
             label: "Profiles".into(),
-            icon_name: "configure".into(),
+            icon_name: "system-user-list".into(),
             submenu,
             ..Default::default()
         }
@@ -426,8 +430,12 @@ impl TvTray {
     }
 }
 
-fn profile_radio(
+/// One "User: {current}" / "System: {current}" picker: a radio over
+/// "default" + the catalog, selection derived from the assignment.
+fn profile_picker(
     tx: &mpsc::UnboundedSender<TrayCommand>,
+    kind: &str,
+    icon: &str,
     catalog: &std::collections::BTreeMap<Uuid, String>,
     assigned: Option<Uuid>,
     command: impl Fn(Option<Uuid>) -> TrayCommand + Send + Sync + 'static,
@@ -436,8 +444,11 @@ fn profile_radio(
     let selected = assigned
         .and_then(|profile| ids.iter().position(|id| *id == profile).map(|i| i + 1))
         .unwrap_or(0);
+    let current = assigned
+        .and_then(|profile| catalog.get(&profile).map(String::as_str))
+        .unwrap_or("default");
     let mut options = vec![RadioItem {
-        label: "Default".into(),
+        label: "default".into(),
         ..Default::default()
     }];
     options.extend(catalog.values().map(|name| RadioItem {
@@ -445,17 +456,101 @@ fn profile_radio(
         ..Default::default()
     }));
     let tx = tx.clone();
-    RadioGroup {
-        selected,
-        select: Box::new(move |_tray: &mut TvTray, index| {
-            let profile = if index == 0 {
-                None
-            } else {
-                ids.get(index - 1).copied()
-            };
-            let _ = tx.send(command(profile));
+    SubMenu {
+        label: format!("{kind}: {current}"),
+        icon_name: icon.into(),
+        submenu: vec![
+            RadioGroup {
+                selected,
+                select: Box::new(move |_tray: &mut TvTray, index| {
+                    let profile = if index == 0 {
+                        None
+                    } else {
+                        ids.get(index - 1).copied()
+                    };
+                    let _ = tx.send(command(profile));
+                }),
+                options,
+            }
+            .into(),
+        ],
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Root's "Manage"/"Unmanage" toggle with the play/pause icon pair.
+fn managed_toggle(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    id: Uuid,
+    tv: &TvView,
+) -> MenuItem<TvTray> {
+    let managed = tv.managed;
+    command_item(
+        tx,
+        if managed { "Unmanage" } else { "Manage" },
+        if managed {
+            "media-playback-pause"
+        } else {
+            "media-playback-start"
+        },
+        move || TrayCommand::SetManaged(id, !managed),
+    )
+}
+
+/// Menu item that sends a command and points the scroll wheel at this
+/// TV's volume.
+fn volume_item(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    label: &str,
+    icon: &str,
+    id: Uuid,
+    command: impl Fn() -> TrayCommand + Send + Sync + 'static,
+) -> MenuItem<TvTray> {
+    let tx = tx.clone();
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: Box::new(move |tray: &mut TvTray| {
+            tray.scroll_target = ScrollTarget::Volume;
+            tray.scroll_tv = Some(id);
+            let _ = tx.send(command());
         }),
-        options,
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Menu item that sends a command and points the scroll wheel at this
+/// TV's backlight.
+fn backlight_item(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    label: &str,
+    icon: &str,
+    id: Uuid,
+    command: impl Fn() -> TrayCommand + Send + Sync + 'static,
+) -> MenuItem<TvTray> {
+    let tx = tx.clone();
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: Box::new(move |tray: &mut TvTray| {
+            tray.scroll_target = ScrollTarget::Backlight;
+            tray.scroll_tv = Some(id);
+            let _ = tx.send(command());
+        }),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Disabled informational row with an icon (current volume/backlight).
+fn status_line(label: &str, icon: &str) -> MenuItem<TvTray> {
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        enabled: false,
+        ..Default::default()
     }
     .into()
 }

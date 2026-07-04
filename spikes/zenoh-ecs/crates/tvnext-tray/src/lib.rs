@@ -6,12 +6,15 @@ pub mod state;
 pub mod tray;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
+use tisvlay_core::{Coalescer, ReconcilerMap};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+use tvnext_wire::payload::{self, StatePayload};
 use tvnext_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -20,6 +23,31 @@ use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use tray::{ScrollTarget, TrayCommand, TvTray};
+
+/// Optimistic per-TV intent for the scroll targets — the root stack's
+/// reconciler pattern: scroll math bases on what the user last asked
+/// for rather than the daemon cache bouncing during a TV-side ramp, and
+/// the observed echo releases the gate.
+#[derive(Clone)]
+struct Reconcilers {
+    volume: Arc<ReconcilerMap<Uuid, u8>>,
+    backlight: Arc<ReconcilerMap<Uuid, u8>>,
+}
+
+impl Reconcilers {
+    fn new() -> Self {
+        Self {
+            volume: Arc::new(ReconcilerMap::new()),
+            backlight: Arc::new(ReconcilerMap::new()),
+        }
+    }
+}
+
+impl std::fmt::Debug for Reconcilers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reconcilers").finish_non_exhaustive()
+    }
+}
 
 #[derive(Debug)]
 pub struct TrayOptions {
@@ -62,17 +90,36 @@ pub async fn run(options: TrayOptions) -> Result<()> {
         .await
         .context("register StatusNotifierItem")?;
 
-    spawn_system_pump(&system, &options.site, handle.clone()).await?;
+    let reconcilers = Reconcilers::new();
+    spawn_system_pump(&system, &options.site, handle.clone(), reconcilers.clone()).await?;
     spawn_liveliness_pump(&system, &options.site, handle.clone()).await?;
     if let Some(user_session) = &user {
         spawn_user_pump(user_session, &options.site, handle.clone()).await?;
     }
+    // One coalescer per scroll target: rapid ticks fold into one rpc per
+    // TV, based on reconciled intent, with at most one write in flight.
+    let volume_scroll = scroll_coalescer(
+        system.clone(),
+        options.site.clone(),
+        handle.clone(),
+        reconcilers.clone(),
+        ScrollTarget::Volume,
+    );
+    let backlight_scroll = scroll_coalescer(
+        system.clone(),
+        options.site.clone(),
+        handle.clone(),
+        reconcilers.clone(),
+        ScrollTarget::Backlight,
+    );
     tokio::spawn(process_commands(
         system.clone(),
         user.clone(),
         options.site.clone(),
         cmd_rx,
         handle.clone(),
+        volume_scroll,
+        backlight_scroll,
     ));
 
     tokio::signal::ctrl_c().await.context("wait for shutdown")?;
@@ -86,6 +133,7 @@ async fn spawn_system_pump(
     system: &Session,
     site: &str,
     handle: ksni::Handle<TvTray>,
+    reconcilers: Reconcilers,
 ) -> Result<()> {
     for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
         let sub = system
@@ -95,8 +143,27 @@ async fn spawn_system_pump(
             .map_err(|e| anyhow!("subscribe {key}: {e}"))?;
         let handle = handle.clone();
         let site = site.to_string();
+        let reconcilers = reconcilers.clone();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                // Echoed levels release the scroll-intent gates.
+                if sample.kind() == SampleKind::Put
+                    && let Some((tv, path)) = keys::parse_tv_path(&site, sample.key_expr().as_str())
+                {
+                    if path == payload::Volume::PATH {
+                        if let Ok(volume) =
+                            serde_json::from_slice::<payload::Volume>(&sample.payload().to_bytes())
+                        {
+                            let _ = reconcilers.volume.observe(&tv, volume.level);
+                        }
+                    } else if path == payload::Backlight::PATH
+                        && let Ok(backlight) = serde_json::from_slice::<payload::Backlight>(
+                            &sample.payload().to_bytes(),
+                        )
+                    {
+                        let _ = reconcilers.backlight.observe(&tv, backlight.level);
+                    }
+                }
                 handle
                     .update(|tray| tray.mirror.apply_system_sample(&site, &sample))
                     .await;
@@ -147,37 +214,87 @@ async fn spawn_liveliness_pump(
     Ok(())
 }
 
-/// Execute menu commands as rpcs, coalescing scroll bursts per TV +
-/// target into one write.
+/// Execute menu commands as rpcs. Scroll bursts hand off to the
+/// per-target coalescers without awaiting, so a slow set-volume can't
+/// block other commands behind it.
 async fn process_commands(
     system: Session,
     user: Option<Session>,
     site: String,
     mut rx: mpsc::UnboundedReceiver<TrayCommand>,
     handle: ksni::Handle<TvTray>,
+    volume_scroll: Coalescer<Uuid, i32>,
+    backlight_scroll: Coalescer<Uuid, i32>,
 ) {
-    while let Some(first) = rx.recv().await {
-        let mut batch = vec![first];
-        while let Ok(more) = rx.try_recv() {
-            batch.push(more);
-        }
-        // Fold scroll steps per (tv, target), preserving first position.
-        let mut folded: Vec<TrayCommand> = Vec::new();
-        for command in batch {
-            if let TrayCommand::ScrollBy(id, target, steps) = command
-                && let Some(TrayCommand::ScrollBy(_, _, folded_steps)) = folded.iter_mut().find(
-                    |c| matches!(c, TrayCommand::ScrollBy(i, t, _) if *i == id && *t == target),
-                )
-            {
-                *folded_steps += steps;
-                continue;
+    while let Some(command) = rx.recv().await {
+        if let TrayCommand::ScrollBy(id, target, steps) = command {
+            if steps != 0 {
+                match target {
+                    ScrollTarget::Volume => volume_scroll.fire(id, steps),
+                    ScrollTarget::Backlight => backlight_scroll.fire(id, steps),
+                }
             }
-            folded.push(command);
+            continue;
         }
-        for command in folded {
-            execute(&system, user.as_ref(), &site, command, &handle).await;
-        }
+        execute(&system, user.as_ref(), &site, command, &handle).await;
     }
+}
+
+/// Build the sum-merge coalescer for one scroll target. The apply reads
+/// the reconciled intent (mirror value only as first fallback), clamps,
+/// and dispatches the new intent *before* awaiting the rpc so the gate
+/// is in place before any subscription pushes arrive.
+fn scroll_coalescer(
+    system: Session,
+    site: String,
+    handle: ksni::Handle<TvTray>,
+    reconcilers: Reconcilers,
+    target: ScrollTarget,
+) -> Coalescer<Uuid, i32> {
+    Coalescer::new(
+        |old: i32, new: i32| old + new,
+        move |id: Uuid, steps: i32| {
+            let system = system.clone();
+            let site = site.clone();
+            let handle = handle.clone();
+            let reconcilers = reconcilers.clone();
+            async move {
+                let fallback = handle
+                    .update(|tray| {
+                        let tv = tray.mirror.tvs.get(&id)?;
+                        match target {
+                            ScrollTarget::Volume => tv.volume,
+                            ScrollTarget::Backlight => tv.backlight,
+                        }
+                    })
+                    .await
+                    .flatten();
+                let Some(fallback) = fallback else {
+                    return;
+                };
+                let map = match target {
+                    ScrollTarget::Volume => &reconcilers.volume,
+                    ScrollTarget::Backlight => &reconcilers.backlight,
+                };
+                let current = map.current(&id, fallback);
+                let level = (i32::from(current) + steps).clamp(0, 100) as u8;
+                if level == current {
+                    return;
+                }
+                map.dispatch(&id, level);
+                let verb = match target {
+                    ScrollTarget::Volume => "set-volume",
+                    ScrollTarget::Backlight => "set-backlight",
+                };
+                call(
+                    &system,
+                    &keys::tv_rpc(&site, &id, verb),
+                    json!({ "level": level }),
+                )
+                .await;
+            }
+        },
+    )
 }
 
 async fn execute(
@@ -260,57 +377,11 @@ async fn execute(
             )
             .await
         }
-        TrayCommand::ScrollBy(id, target, steps) => {
-            scroll_by(system, site, id, target, steps, handle).await
-        }
+        // Handled by the coalescers in process_commands.
+        TrayCommand::ScrollBy(..) => {}
         #[cfg(debug_assertions)]
         TrayCommand::Quit => std::process::exit(0),
     }
-}
-
-/// Read the mirror's current level, step + clamp, write once, and set
-/// the mirror optimistically so a fast follow-up batch bases on intent
-/// (the daemon's push overwrites either way).
-async fn scroll_by(
-    system: &Session,
-    site: &str,
-    id: Uuid,
-    target: ScrollTarget,
-    steps: i32,
-    handle: &ksni::Handle<TvTray>,
-) {
-    let current = handle
-        .update(|tray| {
-            let tv = tray.mirror.tvs.get(&id)?;
-            match target {
-                ScrollTarget::Volume => tv.volume,
-                ScrollTarget::Backlight => tv.backlight,
-            }
-        })
-        .await
-        .flatten();
-    let Some(current) = current else {
-        return;
-    };
-    let level = (i32::from(current) + steps).clamp(0, 100) as u8;
-    if level == current {
-        return;
-    }
-    handle
-        .update(move |tray| {
-            if let Some(tv) = tray.mirror.tvs.get_mut(&id) {
-                match target {
-                    ScrollTarget::Volume => tv.volume = Some(level),
-                    ScrollTarget::Backlight => tv.backlight = Some(level),
-                }
-            }
-        })
-        .await;
-    let (verb, body) = match target {
-        ScrollTarget::Volume => ("set-volume", json!({ "level": level })),
-        ScrollTarget::Backlight => ("set-backlight", json!({ "level": level })),
-    };
-    call(system, &keys::tv_rpc(site, &id, verb), body).await;
 }
 
 /// One rpc round-trip; failures land in the log, not the UI — the mirror
