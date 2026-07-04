@@ -7,6 +7,7 @@ members = [
     "crates/tvnext-session",
     "crates/tvnext-greeter",
     "crates/tvnext-tray",
+    "crates/tvnext-client",
     "crates/tvnext-cli",
 ]
 
@@ -60,6 +61,7 @@ tvnext-world = { path = "crates/tvnext-world" }
 tvnext-daemon = { path = "crates/tvnext-daemon" }
 tvnext-session = { path = "crates/tvnext-session" }
 tvnext-tray = { path = "crates/tvnext-tray" }
+tvnext-client = { path = "crates/tvnext-client" }
 
 [workspace.lints.rust]
 unreachable_pub = "warn"

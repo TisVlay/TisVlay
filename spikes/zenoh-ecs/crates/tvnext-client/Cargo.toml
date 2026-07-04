@@ -1,0 +1,29 @@
+[package]
+name = "tvnext-client"
+description = "zenoh-ecs spike: GUI-facing client SDK — the root DaemonClient/SessionClient/StateWatcher surface over zenoh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tisvlay-core = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tvnext-wire = { workspace = true }
+uuid = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tisvlay-mock = { workspace = true }
+tvnext-daemon = { workspace = true }
+tvnext-session = { workspace = true }
+
+[lints]
+workspace = true

@@ -3958,6 +3958,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tvnext-client"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tisvlay-core",
+ "tisvlay-mock",
+ "tokio",
+ "tracing",
+ "tvnext-daemon",
+ "tvnext-session",
+ "tvnext-wire",
+ "uuid",
+ "zenoh",
+ "zenoh-ext",
+]
+
+[[package]]
 name = "tvnext-daemon"
 version = "0.0.1"
 dependencies = [
