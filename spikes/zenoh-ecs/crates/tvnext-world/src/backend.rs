@@ -4,21 +4,27 @@
 //! the reactor inbox.
 
 use std::sync::Arc;
-use tisvlay_core::TvConnector;
+use tisvlay_core::{PairingError, PairingErrorCode, PairingSession, PairingState, TvConnector};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::events::{BackendCmd, BackendEvent, InEvent};
+use crate::events::{BackendCmd, BackendEvent, InEvent, PairingUpdate};
 
 pub(crate) async fn connect_flow(
     tv: Uuid,
     connector: Arc<dyn TvConnector>,
     config: toml::Value,
+    wake: bool,
     inbox: mpsc::UnboundedSender<InEvent>,
 ) {
     let supports_wake = connector.supports_wake(&config);
-    let mut connection = match connector.connect(&config).await {
+    let dial = if wake {
+        connector.wake_and_connect(&config).await
+    } else {
+        connector.connect(&config).await
+    };
+    let mut connection = match dial {
         Ok(connection) => connection,
         Err(error) => {
             let _ = inbox.send(InEvent::Backend {
@@ -74,12 +80,25 @@ pub(crate) async fn connect_flow(
                         BackendCmd::SetMuted(muted) => connection.set_mute(muted).await,
                         BackendCmd::PowerOn => connection.power_on().await,
                         BackendCmd::PowerOff => connection.power_off().await,
+                        BackendCmd::ScreenOn => connection.screen_on().await,
+                        BackendCmd::ScreenOff => connection.screen_off().await,
                     };
                     if let Err(error) = result {
                         warn!(%tv, ?cmd, %error, "backend command failed");
                     }
                     if !connection.is_connected() {
-                        // Network-style transports drop on power_off.
+                        // Network-style transports drop on power_off. Drain
+                        // state the command itself pushed (the standby
+                        // snapshot) so last-known state reflects it before
+                        // the link goes down.
+                        if let Some(rx) = subscription.as_mut() {
+                            while let Ok(state) = rx.try_recv() {
+                                let _ = inbox.send(InEvent::Backend {
+                                    tv,
+                                    event: BackendEvent::State(Box::new(state)),
+                                });
+                            }
+                        }
                         let _ = inbox.send(InEvent::Backend { tv, event: BackendEvent::Disconnected });
                         return;
                     }
@@ -106,5 +125,42 @@ async fn recv_update(
     match subscription {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+/// Stream a pairing session's state transitions into the world. Sends the
+/// cancel handle first so `CancelPair` can always reach the session, then
+/// every state (watch semantics coalesce intermediate transitions) until a
+/// terminal one.
+pub(crate) async fn pairing_task(
+    tv: Uuid,
+    session: PairingSession,
+    inbox: mpsc::UnboundedSender<InEvent>,
+) {
+    let _ = inbox.send(InEvent::PairingUpdate {
+        id: tv,
+        update: PairingUpdate::Handle(session.command_sender()),
+    });
+    let mut rx = session.subscribe();
+    loop {
+        let state = rx.borrow_and_update().clone();
+        let terminal = state.is_terminal();
+        let _ = inbox.send(InEvent::PairingUpdate {
+            id: tv,
+            update: PairingUpdate::State(Box::new(state)),
+        });
+        if terminal {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            let _ = inbox.send(InEvent::PairingUpdate {
+                id: tv,
+                update: PairingUpdate::State(Box::new(PairingState::failed(PairingError::new(
+                    PairingErrorCode::Unknown,
+                    "pairing session closed unexpectedly",
+                )))),
+            });
+            return;
+        }
     }
 }

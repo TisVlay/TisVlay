@@ -18,13 +18,59 @@ pub enum InEvent {
     Command(Command),
     /// A fact reported by a backend connection task.
     Backend { tv: Uuid, event: BackendEvent },
+    /// A fact reported by a pairing task (or the reactor's pairing glue).
+    PairingUpdate { id: Uuid, update: PairingUpdate },
+    /// A desktop/power event from an adapter (logind, DPMS, lock — tests
+    /// today), dispatched through the system profile to per-TV actions.
+    System { event: SystemEvent },
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.
     Tick { now: Instant },
 }
 
+/// Desktop/power events the profile dispatcher maps to TV actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SystemEvent {
+    Lock,
+    Unlock,
+    Sleep,
+    Resume,
+    Shutdown,
+    DpmsOff,
+    DpmsOn,
+}
+
+/// Updates flowing from a pairing session into the world.
+#[derive(Debug)]
+pub enum PairingUpdate {
+    /// The session's cancel channel, sent once at task start.
+    Handle(tokio::sync::mpsc::Sender<tisvlay_core::PairingCommand>),
+    /// A pairing state transition (progress or terminal).
+    State(Box<tisvlay_core::PairingState>),
+    /// The reactor built the final vendor config from credentials — spawn
+    /// the TV.
+    ConfigReady(toml::Value),
+    /// Config build failed after successful pairing.
+    ConfigFailed(String),
+}
+
 #[derive(Debug)]
 pub enum Command {
+    /// Pair a new TV. Async-spawn semantics: the reply acknowledges
+    /// validation; progress streams on `pairing/<uuid>/progress` and the
+    /// TV's keys appear once the handshake completes.
+    Pair {
+        id: Uuid,
+        name: String,
+        vendor: String,
+        config: toml::Value,
+        managed: bool,
+        reply: Option<ReplyTo>,
+    },
+    CancelPair {
+        id: Uuid,
+        reply: Option<ReplyTo>,
+    },
     AddTv {
         id: Uuid,
         name: String,
@@ -90,6 +136,8 @@ pub enum BackendCmd {
     SetMuted(bool),
     PowerOn,
     PowerOff,
+    ScreenOn,
+    ScreenOff,
 }
 
 /// Outbound wire-facing effects. In M2 these map 1:1 onto zenoh operations
@@ -144,6 +192,27 @@ impl WireError {
         Self {
             code: "unknown-vendor".into(),
             message: format!("no backend registered for vendor '{vendor}'"),
+        }
+    }
+
+    pub fn pairing_exists(id: Uuid) -> Self {
+        Self {
+            code: "pairing-exists".into(),
+            message: format!("a pairing session for {id} is already running"),
+        }
+    }
+
+    pub fn pairing_not_found(id: Uuid) -> Self {
+        Self {
+            code: "pairing-not-found".into(),
+            message: format!("no pairing session for {id}"),
+        }
+    }
+
+    pub fn wake_not_supported(id: Uuid) -> Self {
+        Self {
+            code: "wake-not-supported".into(),
+            message: format!("TV {id} is disconnected and its transport cannot wake it"),
         }
     }
 }

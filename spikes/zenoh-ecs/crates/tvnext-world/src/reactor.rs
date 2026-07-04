@@ -11,8 +11,10 @@ use tisvlay_core::TvConnector;
 use tokio::sync::mpsc;
 
 use crate::backend;
-use crate::components::{Clock, Effect, KnownVendors, Outbox, Site, TvIndex};
-use crate::events::{Command, InEvent, WireEffect};
+use crate::components::{
+    Clock, Effect, KnownVendors, Outbox, PairingIndex, Site, SystemProfile, TvIndex,
+};
+use crate::events::{BackendEvent, Command, InEvent, PairingUpdate, WireEffect};
 use crate::systems::build_schedule;
 
 pub struct Reactor {
@@ -75,7 +77,9 @@ impl Reactor {
         world.insert_resource(KnownVendors(
             connectors.keys().cloned().collect::<HashSet<_>>(),
         ));
+        world.insert_resource(SystemProfile::stock());
         world.init_resource::<TvIndex>();
+        world.init_resource::<PairingIndex>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
 
@@ -128,12 +132,18 @@ impl Reactor {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
                 }
-                Effect::SpawnConnect { tv, vendor, config } => match self.connectors.get(&vendor) {
+                Effect::SpawnConnect {
+                    tv,
+                    vendor,
+                    config,
+                    wake,
+                } => match self.connectors.get(&vendor) {
                     Some(connector) => {
                         tokio::spawn(backend::connect_flow(
                             tv,
                             Arc::clone(connector),
                             config,
+                            wake,
                             self.inbox_tx.clone(),
                         ));
                     }
@@ -142,12 +152,60 @@ impl Reactor {
                         // practice — surface it as a dial failure if it happens.
                         let _ = self.inbox_tx.send(InEvent::Backend {
                             tv,
-                            event: crate::events::BackendEvent::ConnectFailed {
+                            event: BackendEvent::ConnectFailed {
                                 error: format!("no connector for vendor '{vendor}'"),
                             },
                         });
                     }
                 },
+                Effect::StartPairing { tv, vendor, params } => {
+                    let update = match self.connectors.get(&vendor) {
+                        Some(connector) => match connector.start_pairing(&params) {
+                            Ok(session) => {
+                                tokio::spawn(backend::pairing_task(
+                                    tv,
+                                    session,
+                                    self.inbox_tx.clone(),
+                                ));
+                                continue;
+                            }
+                            Err(error) => {
+                                PairingUpdate::State(Box::new(tisvlay_core::PairingState::failed(
+                                    tisvlay_core::PairingError::connection_failed(
+                                        error.to_string(),
+                                    ),
+                                )))
+                            }
+                        },
+                        None => PairingUpdate::ConfigFailed(format!(
+                            "no connector for vendor '{vendor}'"
+                        )),
+                    };
+                    let _ = self
+                        .inbox_tx
+                        .send(InEvent::PairingUpdate { id: tv, update });
+                }
+                Effect::CompletePairing {
+                    tv,
+                    vendor,
+                    params,
+                    credentials,
+                } => {
+                    let update = match self.connectors.get(&vendor) {
+                        Some(connector) => {
+                            match connector.build_config_from_pairing(&params, &credentials) {
+                                Ok(config) => PairingUpdate::ConfigReady(config),
+                                Err(error) => PairingUpdate::ConfigFailed(error.to_string()),
+                            }
+                        }
+                        None => PairingUpdate::ConfigFailed(format!(
+                            "no connector for vendor '{vendor}'"
+                        )),
+                    };
+                    let _ = self
+                        .inbox_tx
+                        .send(InEvent::PairingUpdate { id: tv, update });
+                }
             }
         }
     }

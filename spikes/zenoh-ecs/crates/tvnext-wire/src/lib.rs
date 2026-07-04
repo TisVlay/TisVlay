@@ -92,6 +92,29 @@ pub mod payload {
         Identity::PATH,
         Meta::PATH,
     ];
+
+    /// Pairing progress on `tisvlay/<site>/pairing/<uuid>/progress` — the
+    /// redacted projection of the core pairing state: credentials never
+    /// reach the wire, clients branch on `phase` and localize by `code`.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct PairingProgress {
+        /// `awaiting_tv` | `awaiting_input` | `complete` | `failed`.
+        pub phase: String,
+        pub message: String,
+        /// Namespaced failure reason (e.g. `pairing.rejected`), `failed` only.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub code: Option<String>,
+    }
+
+    impl From<&tisvlay_core::PairingState> for PairingProgress {
+        fn from(state: &tisvlay_core::PairingState) -> Self {
+            Self {
+                phase: state.to_dbus_state().into(),
+                message: state.message().into(),
+                code: state.error().map(|e| e.code.as_str().into()),
+            }
+        }
+    }
 }
 
 pub mod keys {
@@ -114,6 +137,11 @@ pub mod keys {
     /// Observability tap: `tisvlay/<site>/event/<name>`.
     pub fn event(site: &str, name: &str) -> String {
         format!("tisvlay/{site}/event/{name}")
+    }
+
+    /// Pairing progress stream: `tisvlay/<site>/pairing/<uuid>/progress`.
+    pub fn pairing_progress(site: &str, tv: &Uuid) -> String {
+        format!("tisvlay/{site}/pairing/{tv}/progress")
     }
 
     #[cfg(test)]
