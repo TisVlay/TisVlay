@@ -68,16 +68,7 @@ use uuid::Uuid;
 // =============================================================================
 
 /// Actions the session service or daemon can take in response to events.
-//
-// SAFETY: the `signature = "s"` attribute is a hand-declared wire-format
-// promise that this enum stays unit-variant-only. Adding a struct variant
-// would silently diverge the declared signature from what serde emits
-// (string per-variant via `rename_all = "snake_case"`), with no compile
-// error — so the type stays append-only-of-unit-variants. Same goes for
-// `AutomateWhen` below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
-#[cfg_attr(feature = "dbus", zvariant(signature = "s"))]
 #[serde(rename_all = "snake_case")]
 pub enum SessionAction {
     /// Do nothing.
@@ -100,13 +91,8 @@ pub enum SessionAction {
 /// Controls when automation fires relative to the TV's current input.
 ///
 /// Combined with the per-TV `primary_input` and the global `managed` flag
-/// to produce the `Automated` D-Bus property.
-///
-/// See the SAFETY note on `SessionAction` — the `signature = "s"` attribute
-/// keeps this enum unit-variant-only as a wire-format invariant.
+/// to derive the TV's effective automated state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
-#[cfg_attr(feature = "dbus", zvariant(signature = "s"))]
 #[serde(rename_all = "snake_case")]
 pub enum AutomateWhen {
     /// Always apply automation regardless of current input.
@@ -158,22 +144,19 @@ impl std::fmt::Display for AutomateWhen {
 ///
 /// - `$config::full_default()` / `merge_with_base()` / `resolve()` — the
 ///   `Option<T>` inheritance chain (`Some(default)` / `or` / `unwrap_or`).
-/// - `$body::from_config()` and `From<&$body> for $config` — the
-///   lossless wire round-trip (feature-gated, like the body type).
 /// - `pub const $fields: &[&str]` — the field names in declaration
 ///   order, the single source of truth the GUI field tables are
 ///   validated against (see `tisvlay-gui`'s `*_field_table_*` tests).
 ///
 /// `name` is handled explicitly (it's identity-adjacent metadata, not an
 /// inheritable field) so it never appears in the list. The `Resolved`
-/// and `Body` structs, and `Resolved`'s `Default`, stay hand-written —
-/// adding a field still requires touching those, so the field set can't
-/// silently diverge from the resolved defaults or the wire shape.
+/// struct, and its `Default`, stay hand-written — adding a field still
+/// requires touching those, so the field set can't silently diverge
+/// from the resolved defaults.
 macro_rules! profile_plumbing {
     (
         config: $config:ident,
         resolved: $resolved:ident,
-        body: $body:ident,
         fields_const: $fields:ident,
         fields: [$($field:ident),+ $(,)?],
     ) => {
@@ -206,28 +189,6 @@ macro_rules! profile_plumbing {
                 let d = $resolved::default();
                 $resolved {
                     $($field: self.$field.unwrap_or(d.$field),)+
-                }
-            }
-        }
-
-        #[cfg(feature = "dbus")]
-        impl $body {
-            /// Construct a wire body from a config, cloning `name` across.
-            pub fn from_config(config: &$config) -> Self {
-                Self {
-                    name: config.name.clone(),
-                    $($field: config.$field,)+
-                }
-            }
-        }
-
-        #[cfg(feature = "dbus")]
-        impl From<&$body> for $config {
-            /// Round-trip: the body's `name` lands on the config's `name`.
-            fn from(body: &$body) -> Self {
-                $config {
-                    name: body.name.clone(),
-                    $($field: body.$field,)+
                 }
             }
         }
@@ -302,7 +263,6 @@ pub struct SystemProfileConfig {
 profile_plumbing! {
     config: SystemProfileConfig,
     resolved: ResolvedSystemProfile,
-    body: SystemProfileBody,
     fields_const: SYSTEM_PROFILE_FIELDS,
     fields: [
         on_startup,
@@ -422,7 +382,6 @@ pub struct UserProfileConfig {
 profile_plumbing! {
     config: UserProfileConfig,
     resolved: ResolvedUserProfile,
-    body: UserProfileBody,
     fields_const: USER_PROFILE_FIELDS,
     fields: [
         on_session_lock,
@@ -496,246 +455,6 @@ pub const DEFAULT_USER_PROFILE_UUID: Uuid = Uuid::from_u128(0x00000000_0000_0000
 /// free to render it through `gettext()` for localized display
 /// without the daemon ever seeing the localized string.
 pub const DEFAULT_PROFILE_NAME: &str = "default";
-
-// =============================================================================
-// SystemProfileBody — wire body for the D-Bus property-bag CRUD surface
-// =============================================================================
-
-/// Wire-format body for a system profile, exchanged across `Manager1`'s
-/// CRUD methods as an `a{sv}` dict.
-///
-/// `name` is the mutable display label (always present on the wire);
-/// every other field is `Option<T>` so an absent key signals
-/// "inherits from the chain below" — exactly the present-vs-absent
-/// semantic clients need without a separate `LocallySetFields`
-/// companion property. `deny_unknown_fields` rejects mis-spelled keys
-/// at the dict-derive boundary instead of silently absorbing them
-/// as `None`.
-///
-/// Lossless round-trip with [`SystemProfileConfig`] via the `From`
-/// impls below — the on-disk shape (TOML) keeps the same
-/// inheritable-`Option<T>` layout; only `name` lives here as a body
-/// field rather than the TOML section key.
-#[cfg(feature = "dbus")]
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    zbus::zvariant::Type,
-    zbus::zvariant::SerializeDict,
-    zbus::zvariant::DeserializeDict,
-)]
-#[zvariant(signature = "a{sv}", deny_unknown_fields)]
-pub struct SystemProfileBody {
-    /// Mutable display label. Always present on the wire (the dict-derive
-    /// emits it unconditionally). Renames are body updates with a new
-    /// `name`; UUID identity stays stable.
-    pub name: String,
-    pub on_startup: Option<SessionAction>,
-    pub on_shutdown: Option<SessionAction>,
-    pub on_reboot: Option<SessionAction>,
-    pub on_sleep: Option<SessionAction>,
-    pub on_wake: Option<SessionAction>,
-    pub on_dpms_off: Option<SessionAction>,
-    pub on_dpms_on: Option<SessionAction>,
-    pub idle_timeout_seconds: Option<u64>,
-    pub on_idle_timeout: Option<SessionAction>,
-    pub on_idle_resume: Option<SessionAction>,
-    pub automate_when: Option<AutomateWhen>,
-}
-
-// =============================================================================
-// UserProfileBody — mirror of SystemProfileBody on the session bus
-// =============================================================================
-
-/// Wire-format body for a user profile. Shape mirrors [`SystemProfileBody`]
-/// — `name` always present, every other field `Option<T>` for the
-/// inherit-from-chain semantic. `idle_timeout_seconds` is the only numeric
-/// field on either body; the rest are enum-typed `SessionAction`s.
-#[cfg(feature = "dbus")]
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    zbus::zvariant::Type,
-    zbus::zvariant::SerializeDict,
-    zbus::zvariant::DeserializeDict,
-)]
-#[zvariant(signature = "a{sv}", deny_unknown_fields)]
-pub struct UserProfileBody {
-    pub name: String,
-    pub on_session_lock: Option<SessionAction>,
-    pub on_session_unlock: Option<SessionAction>,
-    pub on_lock_wake: Option<SessionAction>,
-    pub on_idle_timeout: Option<SessionAction>,
-    pub on_idle_resume: Option<SessionAction>,
-    pub idle_timeout_seconds: Option<u64>,
-}
-
-// =============================================================================
-// NotificationSettingsBody — wire body for `Tray1.NotificationSettings`
-// =============================================================================
-
-/// Wire-format body for the tray's desktop-notification settings.
-///
-/// Each field is `Option<bool>` so that `Tray1.UpdateNotificationSettings`
-/// can be a partial update: only the keys the caller wants to change
-/// need to be set. The property getter (`Tray1.NotificationSettings`)
-/// returns every field as `Some` (an absent field on the read side
-/// would mean "this version of the tray doesn't know about this
-/// category" — forward-compat across version skew).
-///
-/// The on-disk twin (`tisvlay_tray::config::NotificationSettings`) lives
-/// in the tray crate; this body type is core's wire vocabulary so the
-/// GUI client and the tray server both speak it. Per the workspace
-/// convention in `docs/design.md`, wire bodies live in core; on-disk
-/// containers stay with their owner.
-#[cfg(feature = "dbus")]
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    PartialEq,
-    Eq,
-    zbus::zvariant::Type,
-    zbus::zvariant::SerializeDict,
-    zbus::zvariant::DeserializeDict,
-    zbus::zvariant::Value,
-    zbus::zvariant::OwnedValue,
-)]
-#[zvariant(signature = "a{sv}", deny_unknown_fields)]
-pub struct NotificationSettingsBody {
-    pub tv_connection: Option<bool>,
-    pub tv_pairing: Option<bool>,
-    pub tv_wake: Option<bool>,
-    pub daemon_offline: Option<bool>,
-}
-
-#[cfg(feature = "dbus")]
-impl NotificationSettingsBody {
-    /// Factory defaults — every category populated with its documented
-    /// default-on value. Single source of truth shared by:
-    /// - the tray, which uses this to seed a fresh `TrayConfig` when
-    ///   `tray.toml` doesn't exist yet;
-    /// - the GUI, which uses this to seed the Slint `Tray.notifications`
-    ///   global before any successful fetch lands (so a GUI launched
-    ///   while the tray is offline still shows sensible defaults).
-    ///
-    /// Distinct from the derived `Default` impl (all-`None`), which
-    /// represents the partial-update neutral for
-    /// `Tray1.UpdateNotificationSettings`.
-    pub fn defaults() -> Self {
-        let mut body = Self::default();
-        for cat in NotificationCategory::ALL {
-            cat.set(&mut body, cat.default_enabled());
-        }
-        body
-    }
-}
-
-/// The desktop-notification categories.
-///
-/// **Single source of truth** for the category vocabulary shared
-/// across three surfaces: the tray's emit gate + on-disk `TrayConfig`,
-/// the GUI's settings pane, and the `Tray1` D-Bus wire body. Lives in
-/// core (not the tray) because the GUI consumes it too and only core
-/// is on both their dependency paths — same rationale as
-/// [`NotificationSettingsBody`].
-///
-/// The `#[repr(u8)]` discriminant *is* the bit position in the
-/// runtime `u8` enable-bitset ([`bit`](Self::bit)); [`ALL`](Self::ALL)
-/// lists every variant in that order. The `key` /
-/// [`get`](Self::get) / [`set`](Self::set) accessors are exhaustive
-/// `match`es, so adding a variant without handling it everywhere is a
-/// compile error — there is no second hand-maintained bit-position
-/// table to drift against.
-#[cfg(feature = "dbus")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum NotificationCategory {
-    /// TV `connected` transitions true ↔ false.
-    TvConnection = 0,
-    /// Pairing terminal phase `complete` / `failed`.
-    TvPairing = 1,
-    /// `wol_sent` → `connected` / `failed` for a TV power cycle.
-    TvWake = 2,
-    /// Daemon disappeared from D-Bus.
-    DaemonOffline = 3,
-}
-
-#[cfg(feature = "dbus")]
-impl NotificationCategory {
-    /// Every category, in canonical (discriminant / bit-position)
-    /// order. Iterate this to walk all categories without open-coding
-    /// the field list at each call site.
-    pub const ALL: [Self; 4] = [
-        Self::TvConnection,
-        Self::TvPairing,
-        Self::TvWake,
-        Self::DaemonOffline,
-    ];
-
-    /// Bit position in the runtime `u8` enable-bitset, derived from the
-    /// `#[repr(u8)]` discriminant — the one and only bit-position
-    /// source.
-    pub const fn bit(self) -> u8 {
-        1u8 << (self as u8)
-    }
-
-    /// Stable snake_case wire identifier: the `Tray1` settings-pane
-    /// string key *and* the matching [`NotificationSettingsBody`]
-    /// field name. Internal — the canonical source for
-    /// [`from_key`](Self::from_key); external callers parse a key into a
-    /// category, never stringify one.
-    const fn key(self) -> &'static str {
-        match self {
-            Self::TvConnection => "tv_connection",
-            Self::TvPairing => "tv_pairing",
-            Self::TvWake => "tv_wake",
-            Self::DaemonOffline => "daemon_offline",
-        }
-    }
-
-    /// Parse a wire key back to a category. `None` for unrecognized
-    /// keys (version skew / typo) so callers can warn-and-ignore.
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.key() == key)
-    }
-
-    /// Read this category's value out of a wire body.
-    pub fn get(self, body: &NotificationSettingsBody) -> Option<bool> {
-        match self {
-            Self::TvConnection => body.tv_connection,
-            Self::TvPairing => body.tv_pairing,
-            Self::TvWake => body.tv_wake,
-            Self::DaemonOffline => body.daemon_offline,
-        }
-    }
-
-    /// Set this category's value in a wire body.
-    pub fn set(self, body: &mut NotificationSettingsBody, value: bool) {
-        match self {
-            Self::TvConnection => body.tv_connection = Some(value),
-            Self::TvPairing => body.tv_pairing = Some(value),
-            Self::TvWake => body.tv_wake = Some(value),
-            Self::DaemonOffline => body.daemon_offline = Some(value),
-        }
-    }
-
-    /// Whether this category defaults on in a fresh config. Drives
-    /// [`NotificationSettingsBody::defaults`]. One arm per variant so a
-    /// new category is a missing-arm compile error that forces a
-    /// deliberate on/off decision rather than inheriting a blanket
-    /// default.
-    pub const fn default_enabled(self) -> bool {
-        match self {
-            Self::TvConnection => true,
-            Self::TvPairing => true,
-            Self::TvWake => true,
-            Self::DaemonOffline => true,
-        }
-    }
-}
 
 // =============================================================================
 // Config sections
@@ -921,14 +640,12 @@ fn default_user_profile_uuid() -> Uuid {
 pub struct TvConfig {
     /// Stable identifier for this TV — RFC 4122 UUID v4
     /// generated at pair time. Decoupled from `name` so renames
-    /// don't churn cross-references (profile assignments, D-Bus
-    /// paths, `primary_input` keying, etc.). Matches
-    /// NetworkManager's connection-uuid pattern.
+    /// don't churn cross-references (profile assignments,
+    /// `primary_input` keying, etc.). Matches NetworkManager's
+    /// connection-uuid pattern.
     ///
     /// Serialized as the canonical hyphenated form
-    /// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) in TOML; D-Bus
-    /// paths substitute hyphens with underscores via the existing
-    /// [`tv_path`](crate::dbus_paths::tv_path) helper. Tests
+    /// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) in TOML. Tests
     /// needing deterministic UUIDs use
     /// [`with_uuid`](Self::with_uuid).
     pub uuid: Uuid,
@@ -2407,7 +2124,7 @@ ip = "192.168.1.1"
         let user_config = UserConfig::default(); // empty
 
         // Merge: system profiles as base, user profiles override.
-        // Keyed by body name — same shape the session_dbus list-merge uses.
+        // Keyed by profile name — same shape the session service's list-merge uses.
         let mut merged: HashMap<String, &UserProfileConfig> = HashMap::new();
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
@@ -2465,8 +2182,8 @@ ip = "192.168.1.1"
             },
         );
 
-        // Merge: system first, then user overrides. Body name is the
-        // wire-shape key (matches session_dbus's list_user_profiles merge).
+        // Merge: system first, then user overrides. Profile name is the
+        // key (matches the session service's user-profile list merge).
         let mut merged: HashMap<String, &UserProfileConfig> = HashMap::new();
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
@@ -2672,145 +2389,5 @@ ip = "192.168.1.1"
         config.tv.push(TvConfig::new("Living Room", "lg", true));
         config.tv.push(TvConfig::new("Office", "lg", true));
         config.validate_tv_ids().unwrap();
-    }
-
-    // =========================================================================
-    // SystemProfileBody / UserProfileBody dict-derive round-trip
-    // =========================================================================
-    //
-    // The wire shape rides on `Option<T>::None` ⇔ absent-key + `name`
-    // always-present. These tests pin both halves so a future zvariant or
-    // zbus bump that changes the dict-derive's skip-if-None or
-    // mandatory-field semantics fails loudly here instead of silently
-    // breaking the inherit-vs-locally-set distinction the GUI relies on.
-
-    use zbus::zvariant::{self, LE, serialized::Context, to_bytes};
-
-    fn round_trip<T>(value: &T) -> T
-    where
-        T: zvariant::Type + serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
-    {
-        let ctx = Context::new_dbus(LE, 0);
-        let encoded = to_bytes(ctx, value).expect("encode");
-        let (decoded, _): (T, usize) = encoded.deserialize().expect("decode");
-        decoded
-    }
-
-    #[test]
-    fn system_profile_body_round_trip_full() {
-        let body = SystemProfileBody {
-            name: "office".into(),
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: Some(SessionAction::PowerOff),
-            on_reboot: Some(SessionAction::None),
-            on_sleep: Some(SessionAction::PowerOff),
-            on_wake: Some(SessionAction::PowerOn),
-            on_dpms_off: Some(SessionAction::ScreenOff),
-            on_dpms_on: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(600),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
-            automate_when: Some(AutomateWhen::Always),
-        };
-
-        let decoded = round_trip(&body);
-
-        assert_eq!(decoded.name, body.name);
-        assert_eq!(decoded.on_startup, body.on_startup);
-        assert_eq!(decoded.on_dpms_off, body.on_dpms_off);
-        assert_eq!(decoded.on_dpms_on, body.on_dpms_on);
-        assert_eq!(decoded.idle_timeout_seconds, Some(600));
-        assert_eq!(decoded.on_idle_timeout, body.on_idle_timeout);
-        assert_eq!(decoded.on_idle_resume, body.on_idle_resume);
-        assert_eq!(decoded.automate_when, body.automate_when);
-    }
-
-    #[test]
-    fn system_profile_body_round_trip_minimal_omits_none() {
-        // Body with only `name` set; every optional field is None.
-        // The dict-derive must serialize *only* the `name` key on the wire,
-        // and the round-trip must come back with the same None fields.
-        let body = SystemProfileBody {
-            name: "guest".into(),
-            ..Default::default()
-        };
-
-        let decoded = round_trip(&body);
-
-        assert_eq!(decoded.name, "guest");
-        assert!(decoded.on_startup.is_none());
-        assert!(decoded.on_shutdown.is_none());
-        assert!(decoded.automate_when.is_none());
-    }
-
-    #[test]
-    fn user_profile_body_round_trip_with_numeric() {
-        let body = UserProfileBody {
-            name: "default".into(),
-            on_session_lock: Some(SessionAction::ScreenOff),
-            on_session_unlock: Some(SessionAction::ScreenOn),
-            on_lock_wake: None,
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(600),
-        };
-
-        let decoded = round_trip(&body);
-
-        assert_eq!(decoded.idle_timeout_seconds, Some(600));
-        assert!(decoded.on_lock_wake.is_none());
-        assert_eq!(decoded.on_idle_timeout, Some(SessionAction::ScreenOff));
-    }
-
-    #[test]
-    fn system_profile_body_from_config_preserves_options() {
-        let cfg = SystemProfileConfig {
-            name: "office".to_string(),
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: None,
-            on_reboot: Some(SessionAction::None),
-            on_sleep: Some(SessionAction::PowerOff),
-            on_wake: None,
-            on_dpms_off: Some(SessionAction::ScreenOff),
-            on_dpms_on: None,
-            idle_timeout_seconds: Some(900),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: None,
-            automate_when: Some(AutomateWhen::OnPrimary),
-        };
-        let body = SystemProfileBody::from_config(&cfg);
-        assert_eq!(body.name, "office");
-        assert_eq!(body.on_startup, cfg.on_startup);
-        assert_eq!(body.on_shutdown, cfg.on_shutdown);
-        assert_eq!(body.on_dpms_off, cfg.on_dpms_off);
-        assert_eq!(body.on_dpms_on, cfg.on_dpms_on);
-        assert_eq!(body.idle_timeout_seconds, cfg.idle_timeout_seconds);
-        assert_eq!(body.on_idle_timeout, cfg.on_idle_timeout);
-        assert_eq!(body.on_idle_resume, cfg.on_idle_resume);
-        assert_eq!(body.automate_when, cfg.automate_when);
-
-        // Reverse: full round-trip including name.
-        let back: SystemProfileConfig = (&body).into();
-        assert_eq!(back.name, "office");
-        assert_eq!(back.on_startup, cfg.on_startup);
-        assert_eq!(back.on_shutdown, cfg.on_shutdown);
-        assert_eq!(back.on_dpms_off, cfg.on_dpms_off);
-        assert_eq!(back.on_dpms_on, cfg.on_dpms_on);
-        assert_eq!(back.automate_when, cfg.automate_when);
-    }
-
-    #[test]
-    fn system_profile_body_dict_signature_is_a_sv() {
-        // Pin the wire signature so a future struct-variant addition to
-        // `SessionAction` (which would silently change the variant signature
-        // from "s" to "us" or similar) is caught at test time.
-        assert_eq!(
-            <SystemProfileBody as zvariant::Type>::SIGNATURE.to_string(),
-            "a{sv}"
-        );
-        assert_eq!(
-            <UserProfileBody as zvariant::Type>::SIGNATURE.to_string(),
-            "a{sv}"
-        );
     }
 }

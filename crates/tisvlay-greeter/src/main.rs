@@ -1,36 +1,27 @@
-//! tisvlay-greeter binary — thin entry point; logic lives in the lib.
+use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use clap::Parser;
-use tisvlay_core::DaemonClient;
-use tracing::info;
 
-/// tisvlay greeter idle client — blanks managed TVs at an idle login screen.
 #[derive(Parser, Debug)]
-#[command(name = "tisvlay-greeter", version, about)]
+#[command(name = "tisvlay-greeter", about = "TisVlay greeter idle client")]
 struct Args {
-    /// Use the session bus instead of the system bus (dev: with `tisvlayd --session`).
-    ///
-    /// By default the greeter client talks to `tisvlayd` on the system bus.
+    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
     #[arg(long)]
-    user: bool,
+    socket: Option<PathBuf>,
+
+    /// Site chunk used in all key expressions.
+    #[arg(long, default_value = "main")]
+    site: String,
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    tisvlay_core::logging::init(&["tisvlay_greeter=info", "zbus=warn"], &[])?;
-
+async fn main() -> anyhow::Result<()> {
+    // journald when non-TTY (systemd service), stderr when interactive;
+    // RUST_LOG overrides these defaults entirely (see the justfile).
+    tisvlay_core::logging::init(&["tisvlay_greeter=info"], &[])?;
     let args = Args::parse();
-    info!("tisvlay-greeter starting...");
-
-    let daemon = if args.user {
-        info!("Using user/session bus for daemon communication (development mode)");
-        DaemonClient::new_session().await
-    } else {
-        info!("Using system bus for daemon communication");
-        DaemonClient::new_system().await
-    }
-    .context("Failed to create daemon client")?;
-
-    tisvlay_greeter::run(daemon).await
+    let socket = args
+        .socket
+        .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path);
+    tisvlay_greeter::run(&socket, &args.site).await
 }

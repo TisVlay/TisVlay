@@ -22,32 +22,14 @@
 //!
 //! # Features
 //!
-//! - `dbus` - D-Bus client for communicating with tisvlayd
 //! - `logging` - Shared logging init with journald support for binaries
-//!
-//! # Example
-//!
-//! ```ignore
-//! use tisvlay_core::DaemonClient;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     // Connect to the running tisvlayd daemon via D-Bus
-//!     let daemon = DaemonClient::new_system().await?;
-//!     let tvs = daemon.list_tvs().await?;
-//!     for tv in &tvs {
-//!         println!("{}: {} ({})", tv.uuid, tv.name, if tv.connected { "connected" } else { "offline" });
-//!     }
-//!     Ok(())
-//! }
-//! ```
+//! - `wayland` - ext-idle-notify-v1 idle-detection transport
 
 // Core modules (always available)
 mod action;
 mod capabilities;
 mod coalescer;
 mod config;
-pub mod dbus_paths;
 mod desktop;
 mod error;
 pub mod errors;
@@ -62,8 +44,6 @@ mod traits;
 pub mod wol;
 
 // Optional modules
-#[cfg(feature = "dbus")]
-mod dbus_client;
 #[cfg(feature = "logging")]
 pub mod logging;
 #[cfg(feature = "wayland")]
@@ -87,8 +67,6 @@ pub use hardware_id::HardwareId;
 pub use desktop::DesktopMapping;
 
 // Pairing
-#[cfg(feature = "dbus")]
-pub use pairing::PairingProgressDetail;
 pub use pairing::{
     Credentials, InputType, PairingCommand, PairingError, PairingErrorCode, PairingSession,
     PairingState,
@@ -102,10 +80,6 @@ pub use config::{
     SYSTEM_PROFILE_FIELDS, SessionAction, SystemConfig, SystemProfileConfig, SystemSection,
     TvConfig, TvProfileAssignment, USER_PROFILE_FIELDS, UserConfig, UserProfileConfig, UserSection,
     UserTvConfig, UserTvProfileAssignment, absolutize,
-};
-#[cfg(feature = "dbus")]
-pub use config::{
-    NotificationCategory, NotificationSettingsBody, SystemProfileBody, UserProfileBody,
 };
 
 // Profile-reference computation (used by daemon + clients)
@@ -122,25 +96,7 @@ pub use error::{Error, Result};
 // Wake-on-LAN
 pub use wol::{MacAddress, WakeOptions, wake, wake_with_options};
 
-// Concurrency helpers (always available — async tokio utilities,
-// not D-Bus-specific).
+// Concurrency helpers (async tokio utilities)
 pub use coalescer::Coalescer;
 pub use reconciler::{Reconciler, ReconcilerMap};
 pub use refresh_trigger::RefreshTrigger;
-
-// =============================================================================
-// Public re-exports: Optional features
-// =============================================================================
-
-// D-Bus path constants (always available, no feature gate)
-pub use dbus_paths::{
-    DAEMON_SERVICE, MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE, TV_BASE_PATH,
-    tv_path,
-};
-
-#[cfg(feature = "dbus")]
-pub use dbus_client::{
-    BusKind, DaemonClient, GuiClient, PairTerminal, ServiceEvent, SessionClient, StateEvent,
-    StateWatcher, StateWatcherConfig, TrayClient, TvInfo, TvStateChange, add_signal_match,
-    subscribe_signals, watch_service,
-};

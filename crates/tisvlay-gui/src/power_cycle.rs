@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
+use crate::compat::{DaemonClient, PowerCyclePhase};
 use anyhow::Result;
 use slint::{Model, SharedString};
-use tisvlay_core::{DaemonClient, PowerCyclePhase};
 
 use crate::{AppWindow, on_ui};
 

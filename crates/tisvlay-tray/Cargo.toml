@@ -1,61 +1,36 @@
 [package]
 name = "tisvlay-tray"
-description = "System tray app for TV control"
+description = "TisVlay system tray: ksni StatusNotifierItem over a live zenoh state mirror"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-authors.workspace = true
 license.workspace = true
-publish = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
-
-[[bin]]
-name = "tisvlay-tray"
-path = "src/main.rs"
+publish.workspace = true
 
 [dependencies]
-tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
-tokio = { workspace = true }
-ksni = "0.3"
-tracing = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-# Hosts our own minimal `org.tisvlay.Tray1` introspection surface so
-# the GUI's About pane can report the tray's online status, version,
-# and resolved config path symmetrically with the daemon and session.
-zbus = { workspace = true }
-# Localization for the tray's menu / tooltip / status / error strings.
-# Pinned to the same version the GUI uses so a single `.po`/`.pot`
-# workflow covers both crates. `build.rs` next to this Cargo.toml
-# compiles per-locale `.po` files to `.mo` so dev runs out of the
-# source tree pick them up; installed builds fall back to
-# `/usr/share/locale/<lang>/LC_MESSAGES/tisvlay-tray.mo`.
-gettext-rs = "0.7"
-# Desktop notifications via the freedesktop `org.freedesktop.Notifications`
-# bus name. `default-features = false` + `z-with-tokio` selects the zbus
-# backend on tokio (matching our existing tokio runtime) and skips the
-# `dbus`-crate path notify-rust would otherwise bring in by default.
-notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
-# Stream consumption for per-TV `Tv1.Power.PowerCycleProgress` and the
-# bus-wide `Manager1.PairingProgress` subscriptions in the notifier
-# emission path.
-futures-util = { workspace = true }
-# `tisvlay-tray::config::TrayConfig` needs:
+ksni = { workspace = true }
 serde = { workspace = true }
-toml = { workspace = true }
+serde_json = { workspace = true }
 directories = { workspace = true }
+notify-rust = { workspace = true }
+tisvlay-core = { workspace = true, features = ["logging"] }
+toml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tisvlay-wire = { workspace = true }
+uuid = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
 
 [dev-dependencies]
+serde = { workspace = true }
 tempfile = { workspace = true }
+tisvlay-mock = { workspace = true }
+tisvlay-daemon = { workspace = true }
+tisvlay = { workspace = true }
+tisvlay-session = { workspace = true }
 
 [lints]
 workspace = true
-
-# `cargo machete` flags `gettext-rs` as unused because the Rust
-# source imports it via the `gettextrs::` alias (Cargo crate names
-# use `-`, the Rust alias drops it; machete doesn't reconcile).
-[package.metadata.cargo-machete]
-ignored = ["gettext-rs"]

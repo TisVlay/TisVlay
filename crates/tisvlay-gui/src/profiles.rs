@@ -34,13 +34,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gettextrs::pgettext;
-use parking_lot::Mutex;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{
+use crate::compat::{
     AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     SessionAction, SessionClient, SystemProfileBody, UserProfileBody,
 };
+use gettextrs::pgettext;
+use parking_lot::Mutex;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -543,18 +543,23 @@ pub(crate) fn new_editor() -> ProfileEditor {
 /// rejects on dispatch with a `None` action (the same outcome a body
 /// with no fields produces today).
 pub(crate) async fn prime_system_layers(daemon: &DaemonClient, editor: &ProfileEditor) {
+    // Fallbacks are the hard-coded floor, never an empty body: a prime
+    // that races the background-dialing link (or a mirror that has not
+    // hydrated the default profile yet) must not leave inheriting rows
+    // rendering blank until the next re-prime.
+    let floor = || SystemProfileBody::full_default();
     let baseline = match daemon.get_resolved_system_profile_defaults().await {
         Ok(b) => b,
         Err(e) => {
-            warn!(error = %e, "Priming system baseline failed; falling back to empty");
-            SystemProfileBody::default()
+            warn!(error = %e, "Priming system baseline failed; falling back to the floor");
+            floor()
         }
     };
     let default_body = match daemon.get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID).await {
         Ok(b) => b,
         Err(e) => {
-            debug!(error = %e, "Default system profile body fetch failed; using empty");
-            SystemProfileBody::default()
+            debug!(error = %e, "Default system profile body fetch failed; using the floor");
+            floor()
         }
     };
     let mut state = editor.lock();
@@ -564,18 +569,19 @@ pub(crate) async fn prime_system_layers(daemon: &DaemonClient, editor: &ProfileE
 
 /// User-side mirror of [`prime_system_layers`].
 pub(crate) async fn prime_user_layers(session: &SessionClient, editor: &ProfileEditor) {
+    let floor = || UserProfileBody::full_default();
     let baseline = match session.get_resolved_user_profile_defaults().await {
         Ok(b) => b,
         Err(e) => {
-            warn!(error = %e, "Priming user baseline failed; falling back to empty");
-            UserProfileBody::default()
+            warn!(error = %e, "Priming user baseline failed; falling back to the floor");
+            floor()
         }
     };
     let default_body = match session.get_user_profile(DEFAULT_USER_PROFILE_UUID).await {
         Ok(b) => b,
         Err(e) => {
-            debug!(error = %e, "Default user profile body fetch failed; using empty");
-            UserProfileBody::default()
+            debug!(error = %e, "Default user profile body fetch failed; using the floor");
+            floor()
         }
     };
     let mut state = editor.lock();
@@ -957,7 +963,15 @@ pub(crate) async fn handle_system_added(
 ) {
     match fetch_system_profile_body(&daemon, uuid).await {
         Ok(body) => {
-            editor.lock().system.bodies.insert(uuid, body);
+            let mut state = editor.lock();
+            // In a fresh launch the default profile lands here (mirror
+            // hydration finishes after the startup prime), so the
+            // inherit-chain slot must refresh too or inheriting rows
+            // resolve against the stale prime fallback.
+            if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
+                state.system.default_body = body.clone();
+            }
+            state.system.bodies.insert(uuid, body);
         }
         Err(e) => {
             // Non-fatal — the next select on this UUID will re-fetch
@@ -1047,7 +1061,11 @@ pub(crate) async fn handle_user_added(
     };
     match fetch_user_profile_body(client, uuid).await {
         Ok(body) => {
-            editor.lock().user.bodies.insert(uuid, body);
+            let mut state = editor.lock();
+            if uuid == DEFAULT_USER_PROFILE_UUID {
+                state.user.default_body = body.clone();
+            }
+            state.user.bodies.insert(uuid, body);
         }
         Err(e) => {
             debug!(uuid = %uuid, error = %e, "Eager fetch after UserProfileAdded failed");

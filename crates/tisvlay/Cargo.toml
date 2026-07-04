@@ -1,26 +1,31 @@
 [package]
 name = "tisvlay"
-description = "Rust client SDK for the tisvlay TV-control daemon (over D-Bus)"
+description = "TisVlay client SDK: DaemonClient/SessionClient/TrayClient + StateWatcher over zenoh"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-authors.workspace = true
 license.workspace = true
-publish = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories = ["api-bindings", "hardware-support"]
-
-[features]
-# The client surface needs D-Bus; on by default so `cargo add tisvlay`
-# gives you `DaemonClient` out of the box. Disable for the state/error
-# types alone.
-default = ["dbus"]
-dbus = ["tisvlay-core/dbus"]
+publish.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tisvlay-core = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+tracing = { workspace = true }
+tisvlay-wire = { workspace = true }
+uuid = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tisvlay-mock = { workspace = true }
+tisvlay-daemon = { workspace = true }
+tisvlay-session = { workspace = true }
 
 [lints]
 workspace = true

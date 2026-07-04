@@ -18,8 +18,8 @@
 
 use std::collections::HashMap;
 
+use crate::compat::{PairingField, PairingFieldType};
 use slint::{Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{PairingField, PairingFieldType};
 
 use crate::PairingFieldRow;
 

@@ -4,13 +4,13 @@
 
 use std::sync::Arc;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{
+use crate::compat::{
     DaemonClient, NotificationSettingsBody, RefreshTrigger, SessionClient, StateEvent,
     StateWatcher, TrayClient,
 };
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
 use crate::profiles::{self, ProfileEditor};
@@ -33,8 +33,16 @@ pub(crate) async fn initial_fetch_and_watch(
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
 ) {
-    let initial_session_available = session.read().await.is_some();
-    let initial_tray_available = tray.read().await.is_some();
+    // The client always exists (background-retry link); availability is
+    // the liveliness state, not the client's existence.
+    let initial_session_available = match session.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
+    let initial_tray_available = match tray.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
     let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
         Ok(mut s) => {
             reconcilers.reconcile(&mut s);
@@ -208,17 +216,19 @@ async fn watch_state(
     // `invoke_from_event_loop` is cheap; the property tracker dedups
     // and only one paint per frame happens regardless of how many
     // updates feed in.
-    let watcher_config = tisvlay_core::StateWatcherConfig {
+    let watcher_config = crate::compat::StateWatcherConfig {
         signal_debounce: std::time::Duration::ZERO,
         ..Default::default()
     };
-    let mut watcher = match StateWatcher::new(&daemon, watcher_config).await {
-        Ok(w) => w,
-        Err(e) => {
-            warn!(error = %e, "Failed to create state watcher; live updates disabled");
-            return;
-        }
-    };
+    // Session events ride the SessionClient built at startup; one that
+    // appears later is picked up by the reconnect arm below, with the
+    // fallback poll covering its catalog until then.
+    let mut watcher = StateWatcher::new(
+        &daemon,
+        session.read().await.as_ref(),
+        tray.read().await.as_ref(),
+        watcher_config,
+    );
 
     // `watcher.next() → refresh.await` inline halts signal_stream
     // draining and wedges the connection under flood. See
@@ -320,17 +330,16 @@ async fn watch_state(
                 refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
-                if let Ok(client) = SessionClient::new().await
-                    && client.is_available().await
-                {
-                    profiles::prime_user_layers(&client, &editor).await;
-                    *session.write().await = Some(client);
-                    on_ui(&app_weak, move |app| {
-                        app.set_session_available(true);
-                        app.global::<Profiles>().set_session_available(true);
-                    });
-                    trigger_refresh();
+                // The client exists from startup (background-retry link);
+                // the token arriving means the service is answering now.
+                if let Some(client) = session.read().await.as_ref() {
+                    profiles::prime_user_layers(client, &editor).await;
                 }
+                on_ui(&app_weak, move |app| {
+                    app.set_session_available(true);
+                    app.global::<Profiles>().set_session_available(true);
+                });
+                trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;
@@ -341,10 +350,8 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
-                if let Ok(client) = TrayClient::new().await
-                    && client.is_available().await
+                // The client exists from startup (background-retry link).
                 {
-                    *tray.write().await = Some(client);
                     on_ui(&app_weak, move |app| {
                         app.set_tray_available(true);
                         app.global::<Tray>().set_available(true);

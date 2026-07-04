@@ -15,6 +15,7 @@
 
 mod about;
 mod accent;
+mod compat;
 mod dbus;
 mod diagnostic;
 mod edit_pane;
@@ -81,12 +82,12 @@ use clap::Parser;
 // Slint properties (e.g. wizard pair-flow messages) wrap their
 // literals with `gettext("…")` so the slint-tr-extractor and
 // xgettext both find the same source-of-truth in the .pot file.
-use gettextrs::gettext;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{
+use crate::compat::{
     Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     NotificationCategory, NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
 };
+use gettextrs::gettext;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -214,10 +215,33 @@ impl Reconcilers {
 #[derive(Parser, Debug)]
 #[command(name = "tisvlay-gui", version, about)]
 struct Args {
-    /// Use the session bus instead of the system bus (for development
-    /// against `tisvlayd --session`).
+    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
     #[arg(long)]
-    user: bool,
+    socket: Option<std::path::PathBuf>,
+
+    /// Session-service user socket (default: $XDG_RUNTIME_DIR/tisvlay/
+    /// session.sock). Missing socket hides user profiles.
+    #[arg(long)]
+    user_socket: Option<std::path::PathBuf>,
+
+    /// Site chunk used in all key expressions.
+    #[arg(long, default_value = "main")]
+    site: String,
+}
+
+/// Sockets + site resolved from the CLI args once at startup — the
+/// reconnect paths (state_watch) re-dial with the same endpoints.
+#[derive(Debug)]
+pub(crate) struct Endpoints {
+    pub(crate) system_socket: std::path::PathBuf,
+    pub(crate) user_socket: std::path::PathBuf,
+    pub(crate) site: String,
+}
+
+pub(crate) static ENDPOINTS: std::sync::OnceLock<Endpoints> = std::sync::OnceLock::new();
+
+pub(crate) fn endpoints() -> &'static Endpoints {
+    ENDPOINTS.get().expect("endpoints set in run()")
 }
 
 /// Process entry point. The `tisvlay-gui` binary's `main()` is a
@@ -238,6 +262,17 @@ pub fn run() -> Result<()> {
     slint::init_translations!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang"));
 
     let args = Args::parse();
+    let _ = ENDPOINTS.set(Endpoints {
+        system_socket: args
+            .socket
+            .clone()
+            .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path),
+        user_socket: args
+            .user_socket
+            .clone()
+            .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path),
+        site: args.site.clone(),
+    });
     info!("tisvlay-gui starting");
 
     // Slint's event loop owns the main thread once `run()` is called.
@@ -490,7 +525,9 @@ pub fn run() -> Result<()> {
         Arc::new(std::sync::RwLock::new(Vec::new()));
     {
         let app_weak = app.as_weak();
-        let user_bus = args.user;
+        // The zenoh stack has sockets, not buses; the diagnostic blob's
+        // runtime.bus field reads "user" for the per-user dev socket.
+        let user_bus = true;
         let vendors = supported_vendors_cache.clone();
         app.on_copy_diagnostic_clicked(move || {
             let Some(app) = app_weak.upgrade() else {
@@ -515,27 +552,27 @@ pub fn run() -> Result<()> {
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
     let (daemon, session, tray) = rt.block_on(async move {
-        let daemon = if args.user {
-            info!("Connecting to daemon on session bus (development mode)");
-            DaemonClient::new_session().await
-        } else {
-            info!("Connecting to daemon on system bus");
-            DaemonClient::new_system().await
-        }
-        .context("Failed to create daemon client")?;
+        let endpoints = endpoints();
+        info!(socket = %endpoints.system_socket.display(), site = %endpoints.site, "Connecting to daemon");
+        let daemon = DaemonClient::connect(&endpoints.system_socket, &endpoints.site)
+            .await
+            .context("Failed to create daemon client")?;
         let daemon = Arc::new(daemon);
 
-        let session: Arc<RwLock<Option<SessionClient>>> =
-            Arc::new(RwLock::new(match SessionClient::new().await {
-                Ok(client) if client.is_available().await => Some(client),
-                _ => None,
-            }));
+        // Built unconditionally: the link dials in the background and
+        // liveliness events drive availability, so no start order is
+        // assumed (root parity via NameOwnerChanged-equivalent).
+        let session: Arc<RwLock<Option<SessionClient>>> = Arc::new(RwLock::new(
+            SessionClient::connect(&endpoints.user_socket, &endpoints.site)
+                .await
+                .ok(),
+        ));
 
-        let tray: Arc<RwLock<Option<TrayClient>>> =
-            Arc::new(RwLock::new(match TrayClient::new().await {
-                Ok(client) if client.is_available().await => Some(client),
-                _ => None,
-            }));
+        let tray: Arc<RwLock<Option<TrayClient>>> = Arc::new(RwLock::new(
+            TrayClient::connect(&endpoints.user_socket, &endpoints.site)
+                .await
+                .ok(),
+        ));
 
         anyhow::Ok((daemon, session, tray))
     })?;
