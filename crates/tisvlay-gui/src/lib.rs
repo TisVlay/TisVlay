@@ -485,7 +485,11 @@ pub fn run() -> Result<()> {
     // versions are known — see `push_about_components` below.
     app.set_gui_version(GUI_VERSION.into());
     app.set_about_components(ModelRc::new(VecModel::from(make_about_components(
-        None, None, None, None,
+        &endpoints().site,
+        None,
+        None,
+        None,
+        None,
     ))));
     app.on_view_notices_clicked(|| {
         if let Err(e) = open_notices_html() {

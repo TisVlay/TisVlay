@@ -38,7 +38,7 @@ struct Args {
 
 fn default_state_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "tisvlay")
-        .map(|dirs| dirs.data_dir().join("state.toml"))
+        .map(|dirs| dirs.config_dir().join("state.toml"))
         .unwrap_or_else(|| PathBuf::from("tisvlay-state.toml"))
 }
 

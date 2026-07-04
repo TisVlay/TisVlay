@@ -18,7 +18,7 @@ struct Args {
     #[arg(long, default_value = "main")]
     site: String,
 
-    /// Persisted user profiles + assignments (default: XDG data dir);
+    /// Persisted user profiles + assignments (default: XDG config dir);
     /// --ephemeral disables.
     #[arg(long)]
     state: Option<PathBuf>,
@@ -30,7 +30,7 @@ struct Args {
 
 fn default_state_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "tisvlay")
-        .map(|dirs| dirs.data_dir().join("session.toml"))
+        .map(|dirs| dirs.config_dir().join("session.toml"))
         .unwrap_or_else(|| PathBuf::from("tisvlay-session.toml"))
 }
 

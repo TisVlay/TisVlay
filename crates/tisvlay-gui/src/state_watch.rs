@@ -489,6 +489,7 @@ async fn refresh_about_components(
     };
     let cli_version = probe_cli_version().await;
     let rows = make_about_components(
+        &crate::endpoints().site,
         daemon_info.as_ref(),
         session_info.as_ref(),
         tray_info.as_ref(),

@@ -44,7 +44,7 @@ const GUI_GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 const VERGEN_IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
 
 /// Per-component snapshot. One of these per row in the About pane's
-/// COMPONENTS table. `name` is the catalogue id (`"tisvlayd"`,
+/// COMPONENTS table. `name` is the catalogue id (`"tisvlay-daemon"`,
 /// `"tisvlay-session"`, `"tisvlay-tray"`); the renderer routes by it.
 #[derive(Debug, Clone, Default)]
 pub struct ComponentSnap {
@@ -133,7 +133,7 @@ fn components_section(components: &[ComponentSnap]) -> Value {
             .unwrap_or_else(|| json!({ "version": "", "connected": false, "config": false }))
     };
     json!({
-        "daemon": lookup("tisvlayd"),
+        "daemon": lookup("tisvlay-daemon"),
         "session": lookup("tisvlay-session"),
         "tray": lookup("tisvlay-tray"),
     })
@@ -202,7 +202,7 @@ mod tests {
     fn sample_inputs() -> (Vec<ComponentSnap>, Vec<TvSnap>, Vec<String>) {
         let components = vec![
             ComponentSnap {
-                name: "tisvlayd".into(),
+                name: "tisvlay-daemon".into(),
                 version: "0.1.0".into(),
                 connected: true,
                 has_config: true,

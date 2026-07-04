@@ -90,38 +90,35 @@ pub(crate) fn open_notices_html() -> anyhow::Result<()> {
 /// Static catalogue of every binary that ships in the package.
 /// `name` is the binary identifier (kept for diagnostic-blob lookup);
 /// `friendly` is the human-readable label shown as the row title;
-/// `bus` is the D-Bus well-known name shown in monospace parens
-/// (empty for the CLI row); `description` is the rich one-line
-/// sentence describing what the component does.
-const COMPONENT_CATALOGUE: &[(&str, &str, &str, &str)] = &[
+/// `description` is the rich one-line sentence describing what the
+/// component does. The monospace parens text (each peer's wire
+/// identity: its liveliness key, or the GUI's real D-Bus activation
+/// name) is computed per row in [`make_about_components`] — it
+/// carries the runtime site, so it can't live in this const.
+const COMPONENT_CATALOGUE: &[(&str, &str, &str)] = &[
     (
-        "tisvlayd",
+        "tisvlay-daemon",
         "Daemon",
-        "org.tisvlay.Daemon",
         "Device management, WoL at boot, system profiles.",
     ),
     (
         "tisvlay-session",
         "Session",
-        "org.tisvlay.Session",
         "User-profile assignments and session-event dispatch.",
     ),
     (
         "tisvlay-tray",
         "Tray",
-        "org.tisvlay.Tray",
         "Tray icon, menu actions, real-time TV state.",
     ),
     (
         "tisvlay-gui",
         "GUI",
-        "org.tisvlay.Gui",
         "Graphical interface for TisVlay management.",
     ),
     (
         "tisvlay",
         "CLI",
-        "",
         "Command-line interface for TisVlay management.",
     ),
 ];
@@ -180,24 +177,35 @@ pub(crate) async fn probe_cli_version() -> Option<String> {
 /// its compile-time `CARGO_PKG_VERSION`; CLI's row reflects the
 /// shell-out result.
 pub(crate) fn make_about_components(
+    site: &str,
     daemon: Option<&PeerInfo>,
     session: Option<&PeerInfo>,
     tray: Option<&PeerInfo>,
     cli_version: Option<&str>,
 ) -> Vec<AboutComponentRow> {
-    let bus_parens = |bus: &str| {
-        if bus.is_empty() {
+    let parens = |identity: String| {
+        if identity.is_empty() {
             String::new()
         } else {
-            format!("({bus})")
+            format!("({identity})")
         }
     };
 
     COMPONENT_CATALOGUE
         .iter()
-        .map(|(name, friendly, bus, description)| {
+        .map(|(name, friendly, description)| {
+            // The wire identity shown in monospace parens: the peer's
+            // liveliness key (presence on the zenoh bus), except the
+            // GUI, whose identity is its real D-Bus activation name.
+            let identity = match *name {
+                "tisvlay-daemon" => tisvlay_wire::keys::daemon_alive(site),
+                "tisvlay-session" => tisvlay_wire::keys::user_alive_session(site),
+                "tisvlay-tray" => tisvlay_wire::keys::user_alive_tray(site),
+                "tisvlay-gui" => "org.tisvlay.Gui".to_string(),
+                _ => String::new(),
+            };
             let (version, tone, online, config_path) = match *name {
-                "tisvlayd" => match daemon {
+                "tisvlay-daemon" => match daemon {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
@@ -247,7 +255,7 @@ pub(crate) fn make_about_components(
             AboutComponentRow {
                 name: SharedString::from(*name),
                 friendly_name: SharedString::from(*friendly),
-                bus_address: SharedString::from(bus_parens(bus)),
+                bus_address: SharedString::from(parens(identity)),
                 description: SharedString::from(*description),
                 version: SharedString::from(version),
                 tone: SharedString::from(tone),

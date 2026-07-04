@@ -29,15 +29,27 @@ fn make_synthetic_components() -> Vec<AboutComponentRow> {
             config_path: SharedString::from(""),
         };
     vec![
-        row("tisvlayd", "Daemon", "(org.tisvlay.Daemon)", true, "0.1.0"),
         row(
-            "tisvlay-session",
-            "Session",
-            "(org.tisvlay.Session)",
+            "tisvlay-daemon",
+            "Daemon",
+            "(tisvlay/main/alive/daemon)",
             true,
             "0.1.0",
         ),
-        row("tisvlay-tray", "Tray", "(org.tisvlay.Tray)", false, ""),
+        row(
+            "tisvlay-session",
+            "Session",
+            "(tisvlay/main/user/alive/session)",
+            true,
+            "0.1.0",
+        ),
+        row(
+            "tisvlay-tray",
+            "Tray",
+            "(tisvlay/main/user/alive/tray)",
+            false,
+            "",
+        ),
         row("tisvlay-gui", "GUI", "(org.tisvlay.Gui)", true, "0.1.0"),
         row("tisvlay", "CLI", "", true, "0.1.0"),
     ]
@@ -120,12 +132,17 @@ fn per_component_config_buttons_render_for_peers_with_bus_address() {
     i_slint_backend_testing::init_no_event_loop();
     let app = boot_app_with_about_active();
 
-    // Synthetic state has bus_address set on tisvlayd / session / tray /
+    // Synthetic state has a wire identity set on daemon / session / tray /
     // gui (all four daemons), but config_path empty. The IconBtn
     // renders for every row with a bus_address; `enabled: false`
     // when config_path is empty. Test focuses on render presence,
     // not enabled state.
-    for component in ["tisvlayd", "tisvlay-session", "tisvlay-tray", "tisvlay-gui"] {
+    for component in [
+        "tisvlay-daemon",
+        "tisvlay-session",
+        "tisvlay-tray",
+        "tisvlay-gui",
+    ] {
         let id = format!("about-component-{component}-config-button");
         assert!(
             find_by_accessible_id(&app, &id).is_some(),
