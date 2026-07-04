@@ -18,9 +18,10 @@ struct Args {
     #[arg(long, default_value = "main")]
     site: String,
 
-    /// Notification-settings file (default: XDG config dir tray.toml).
+    /// The tray's own file — notification settings (default:
+    /// $XDG_CONFIG_HOME/tisvlay/tray.toml).
     #[arg(long)]
-    tray_config: Option<PathBuf>,
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -37,8 +38,8 @@ async fn main() -> anyhow::Result<()> {
             .user_socket
             .unwrap_or_else(tisvlay_tray::default_user_socket),
         site: args.site,
-        tray_config: args
-            .tray_config
+        config: args
+            .config
             .unwrap_or_else(tisvlay_tray::notify::default_config_path),
     })
     .await

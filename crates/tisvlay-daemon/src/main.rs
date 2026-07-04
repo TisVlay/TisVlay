@@ -13,17 +13,20 @@ struct Args {
     #[arg(long, default_value = "main")]
     site: String,
 
-    /// Persisted TV table (default: XDG config dir); --ephemeral disables.
+    /// The daemon's own file — persisted TV table with credentials
+    /// (default: $XDG_CONFIG_HOME/tisvlay/daemon.toml); --ephemeral
+    /// disables.
     #[arg(long)]
-    state: Option<PathBuf>,
+    config: Option<PathBuf>,
 
     /// Run without persistence (state lives only in the world).
     #[arg(long)]
     ephemeral: bool,
 
-    /// Boot config (TOML) seeding extra TVs at start (store ids win).
+    /// Boot seed (TOML) adding extra TVs at start; ids already in the
+    /// daemon's own file win.
     #[arg(long)]
-    config: Option<PathBuf>,
+    boot: Option<PathBuf>,
 
     /// DRM connector whose sysfs DPMS state drives screen actions
     /// (e.g. card1-HDMI-A-1).
@@ -36,7 +39,7 @@ struct Args {
     ssdp_port: u16,
 }
 
-fn default_state_path() -> PathBuf {
+fn default_config_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "tisvlay")
         .map(|dirs| dirs.config_dir().join("daemon.toml"))
         .unwrap_or_else(|| PathBuf::from("tisvlay-daemon.toml"))
@@ -51,18 +54,18 @@ async fn main() -> anyhow::Result<()> {
         &["netlink_packet_route"],
     )?;
     let args = Args::parse();
-    let state = if args.ephemeral {
+    let store = if args.ephemeral {
         None
     } else {
-        Some(args.state.unwrap_or_else(default_state_path))
+        Some(args.config.unwrap_or_else(default_config_path))
     };
     tisvlay_daemon::run(tisvlay_daemon::DaemonOptions {
         socket: args
             .socket
             .unwrap_or_else(tisvlay_wire::bootstrap::default_socket_path),
         site: args.site,
-        state,
-        boot: args.config,
+        store,
+        boot: args.boot,
         dpms_connector: args.dpms_connector,
         ssdp_port: args.ssdp_port,
     })

@@ -297,9 +297,10 @@ const DPMS_PERIOD: Duration = Duration::from_secs(2);
 pub struct DaemonOptions {
     pub socket: PathBuf,
     pub site: String,
-    /// Persisted TV table (credentials included). `None` = ephemeral.
-    pub state: Option<PathBuf>,
-    /// Additive dev seeds; ids already in the store win.
+    /// The daemon's own file — persisted TV table (credentials
+    /// included). `None` = ephemeral.
+    pub store: Option<PathBuf>,
+    /// Additive boot seeds; ids already in the store win.
     pub boot: Option<PathBuf>,
     pub dpms_connector: Option<String>,
     pub ssdp_port: u16,
@@ -344,7 +345,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         &options.socket,
         &options.site,
         vendors,
-        options.state.as_deref(),
+        options.store.as_deref(),
     )
     .await?;
     if let Some(connector) = &options.dpms_connector {
@@ -376,7 +377,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
     }
 
     let mut seeded: HashSet<Uuid> = HashSet::new();
-    if let Some(path) = &options.state {
+    if let Some(path) = &options.store {
         let snapshot = load_store(path)?;
         for profile in snapshot.system_profile {
             info!(id = %profile.id, name = %profile.body.name, "store profile");

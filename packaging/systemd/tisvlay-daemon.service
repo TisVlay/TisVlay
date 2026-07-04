@@ -10,7 +10,7 @@ Type=simple
 # membership in the tisvlay group (the daemon chmods the socket 0660
 # after bind). State (TV table, pairing credentials) persists in
 # StateDirectory.
-ExecStart=/usr/bin/tisvlay-daemon --socket /run/tisvlay/zenoh.sock --state /var/lib/tisvlay/daemon.toml
+ExecStart=/usr/bin/tisvlay-daemon --socket /run/tisvlay/zenoh.sock --config /var/lib/tisvlay/daemon.toml
 User=tisvlay
 Group=tisvlay
 Restart=on-failure

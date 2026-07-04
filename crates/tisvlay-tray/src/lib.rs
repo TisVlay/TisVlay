@@ -57,8 +57,8 @@ pub struct TrayOptions {
     /// profiles in the menu this run.
     pub user_socket: PathBuf,
     pub site: String,
-    /// Notification-settings file (tray.toml).
-    pub tray_config: PathBuf,
+    /// The tray's own file — notification settings (tray.toml).
+    pub config: PathBuf,
 }
 
 /// Wire the tray: zenoh sessions, ksni item, mirror pumps, command
@@ -99,7 +99,7 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     // Notifications: category-gated toasts behind one emit worker; the
     // switches persist to tray.toml and are served on the user socket.
     let notifier =
-        notify::Notifier::new(notify::load_settings(&options.tray_config).unwrap_or_default());
+        notify::Notifier::new(notify::load_settings(&options.config).unwrap_or_default());
     // The settings service SERVES (queryable + token + cached pub), and
     // leaf peers are consume-only in this topology — so it runs on a
     // supervised client-mode link to the user hub: fail-fast opens in a
@@ -107,7 +107,7 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     tokio::spawn({
         let user_socket = options.user_socket.clone();
         let site = options.site.clone();
-        let config = options.tray_config.clone();
+        let config = options.config.clone();
         let notifier = notifier.clone();
         async move {
             loop {

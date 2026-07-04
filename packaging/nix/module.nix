@@ -107,8 +107,8 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       example = [
-        "--config"
-        "/etc/tisvlay/custom.toml"
+        "--boot"
+        "/etc/tisvlay/seed.toml"
       ];
       description = ''
         Extra command-line arguments appended to `tisvlay-daemon`'s
@@ -178,7 +178,7 @@ in
       '';
       description = ''
         Declarative boot config for tisvlay-daemon, rendered to a TOML
-        file in the Nix store and passed via `--config`. Its `[[tv]]`
+        file in the Nix store and passed via `--boot`. Its `[[tv]]`
         entries seed extra TVs at start; entries already present in
         the daemon's writable state file win, and pairing/state
         changes still persist to `/var/lib/tisvlay/daemon.toml`
@@ -395,11 +395,11 @@ in
             (lib.getExe' cfg.package "tisvlay-daemon")
             "--socket"
             systemSocket
-            "--state"
+            "--config"
             "/var/lib/tisvlay/daemon.toml"
           ]
           ++ lib.optionals (configFile != null) [
-            "--config"
+            "--boot"
             "${configFile}"
           ]
           ++ lib.optionals (cfg.bindPort != null) [

@@ -39,7 +39,7 @@ Authoritative option reference: read [`module.nix`](module.nix) directly — eve
 
 - `services.tisvlay.logLevel` — maps to `RUST_LOG` on all three systemd units.
 - `services.tisvlay.extraArgs` — appended to the daemon's `ExecStart`.
-- `services.tisvlay.settings` — declarative TOML config, rendered to the Nix store and passed as `--config <path>`. When set, the daemon cannot persist pairing changes; leave `null` to keep `StateDirectory` mutable.
+- `services.tisvlay.settings` — declarative boot seed (TOML), rendered to the Nix store and passed as `--boot <path>`. Additive: entries seed TVs at start, ids already in the daemon-owned `/var/lib/tisvlay/daemon.toml` win, and pairing still persists there.
 - `services.tisvlay.user` / `group` — defaults `"tisvlay"` / `"tisvlay"`. `uid` / `gid` default to `null`, letting NixOS pick a system UID and pin it via `/var/lib/nixos/uid-map`. Override only if you need the UID fixed across multiple hosts.
 
 ## How the package builds

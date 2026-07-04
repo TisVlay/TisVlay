@@ -18,17 +18,18 @@ struct Args {
     #[arg(long, default_value = "main")]
     site: String,
 
-    /// Persisted user profiles + assignments (default: XDG config dir);
+    /// The session service's own file — persisted user profiles +
+    /// assignments (default: $XDG_CONFIG_HOME/tisvlay/session.toml);
     /// --ephemeral disables.
     #[arg(long)]
-    state: Option<PathBuf>,
+    config: Option<PathBuf>,
 
     /// Run without persistence.
     #[arg(long)]
     ephemeral: bool,
 }
 
-fn default_state_path() -> PathBuf {
+fn default_config_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "tisvlay")
         .map(|dirs| dirs.config_dir().join("session.toml"))
         .unwrap_or_else(|| PathBuf::from("tisvlay-session.toml"))
@@ -43,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let store = if args.ephemeral {
         None
     } else {
-        Some(args.state.unwrap_or_else(default_state_path))
+        Some(args.config.unwrap_or_else(default_config_path))
     };
     let stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
         system_socket: args
