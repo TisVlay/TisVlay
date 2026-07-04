@@ -13,7 +13,7 @@ struct Args {
     #[arg(long, default_value = "main")]
     site: String,
 
-    /// Persisted TV table (default: XDG data dir); --ephemeral disables.
+    /// Persisted TV table (default: XDG config dir); --ephemeral disables.
     #[arg(long)]
     state: Option<PathBuf>,
 
