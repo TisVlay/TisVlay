@@ -281,12 +281,28 @@ fn field_label(wire: &str) -> String {
 /// - `bodies` — the per-profile catalog keyed by UUID. Each entry
 ///   refreshes when its own `Changed` signal arrives. Filled lazily
 ///   on selection so a session with hundreds of profiles doesn't
-///   pay a fan-out fetch up front.
+///   pay a fan-out fetch up front. The reserved-default UUID never
+///   lives here — [`ProfileLayers::cache_body`] routes it to the
+///   `default_body` slot, keeping exactly one copy. A map entry for
+///   it would shadow the slot in the resolve walk and go stale the
+///   next time only the slot refreshes.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ProfileLayers {
     pub baseline: SystemProfileBody,
     pub default_body: SystemProfileBody,
     pub bodies: HashMap<Uuid, SystemProfileBody>,
+}
+
+impl ProfileLayers {
+    /// Cache a fetched body under its UUID, routing the reserved
+    /// default to its dedicated slot.
+    pub(crate) fn cache_body(&mut self, uuid: Uuid, body: SystemProfileBody) {
+        if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
+            self.default_body = body;
+        } else {
+            self.bodies.insert(uuid, body);
+        }
+    }
 }
 
 /// User-side mirror of [`ProfileLayers`].
@@ -295,6 +311,17 @@ pub(crate) struct UserProfileLayers {
     pub baseline: UserProfileBody,
     pub default_body: UserProfileBody,
     pub bodies: HashMap<Uuid, UserProfileBody>,
+}
+
+impl UserProfileLayers {
+    /// User-side mirror of [`ProfileLayers::cache_body`].
+    pub(crate) fn cache_body(&mut self, uuid: Uuid, body: UserProfileBody) {
+        if uuid == DEFAULT_USER_PROFILE_UUID {
+            self.default_body = body;
+        } else {
+            self.bodies.insert(uuid, body);
+        }
+    }
 }
 
 // =============================================================================
@@ -666,10 +693,10 @@ pub(crate) async fn select(
 
         match fetch_result {
             Ok(SystemOrUser::System(body)) => {
-                editor.lock().system.bodies.insert(uuid, body);
+                editor.lock().system.cache_body(uuid, body);
             }
             Ok(SystemOrUser::User(body)) => {
-                editor.lock().user.bodies.insert(uuid, body);
+                editor.lock().user.cache_body(uuid, body);
             }
             Err(e) => {
                 warn!(uuid = %uuid, ?kind, error = %e, "Profile body fetch failed");
@@ -963,15 +990,11 @@ pub(crate) async fn handle_system_added(
 ) {
     match fetch_system_profile_body(&daemon, uuid).await {
         Ok(body) => {
-            let mut state = editor.lock();
             // In a fresh launch the default profile lands here (mirror
-            // hydration finishes after the startup prime), so the
-            // inherit-chain slot must refresh too or inheriting rows
-            // resolve against the stale prime fallback.
-            if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
-                state.system.default_body = body.clone();
-            }
-            state.system.bodies.insert(uuid, body);
+            // hydration finishes after the startup prime); `cache_body`
+            // routes it to the inherit-chain slot so inheriting rows
+            // stop resolving against the stale prime fallback.
+            editor.lock().system.cache_body(uuid, body);
         }
         Err(e) => {
             // Non-fatal — the next select on this UUID will re-fetch
@@ -1061,11 +1084,7 @@ pub(crate) async fn handle_user_added(
     };
     match fetch_user_profile_body(client, uuid).await {
         Ok(body) => {
-            let mut state = editor.lock();
-            if uuid == DEFAULT_USER_PROFILE_UUID {
-                state.user.default_body = body.clone();
-            }
-            state.user.bodies.insert(uuid, body);
+            editor.lock().user.cache_body(uuid, body);
         }
         Err(e) => {
             debug!(uuid = %uuid, error = %e, "Eager fetch after UserProfileAdded failed");
@@ -1534,7 +1553,7 @@ pub(crate) async fn dispatch_select_after_create(
     match kind {
         EditorKind::System => {
             if let Ok(body) = fetch_system_profile_body(&daemon, uuid).await {
-                editor.lock().system.bodies.insert(uuid, body);
+                editor.lock().system.cache_body(uuid, body);
             }
         }
         EditorKind::User => {
@@ -1542,7 +1561,7 @@ pub(crate) async fn dispatch_select_after_create(
             if let Some(client) = session_ref.as_ref()
                 && let Ok(body) = fetch_user_profile_body(client, uuid).await
             {
-                editor.lock().user.bodies.insert(uuid, body);
+                editor.lock().user.cache_body(uuid, body);
             }
         }
     }
@@ -1897,6 +1916,78 @@ mod tests {
         };
         let (_rows, can_reset) = build_system_rows(&layers, uuid);
         assert!(!can_reset);
+    }
+
+    // -----------------------------------------------------------------
+    // Default-profile body caching
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn cache_body_routes_the_reserved_default_to_the_slot() {
+        let mut layers = ProfileLayers::default();
+        layers.cache_body(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileBody {
+                name: "default".into(),
+                on_startup: Some(SessionAction::PowerOn),
+                ..Default::default()
+            },
+        );
+        assert!(
+            layers.bodies.is_empty(),
+            "reserved default must not shadow the slot from the bodies map"
+        );
+        assert_eq!(layers.default_body.on_startup, Some(SessionAction::PowerOn));
+
+        let mut user = UserProfileLayers::default();
+        user.cache_body(
+            DEFAULT_USER_PROFILE_UUID,
+            UserProfileBody {
+                name: "default".into(),
+                on_session_lock: Some(SessionAction::ScreenOff),
+                ..Default::default()
+            },
+        );
+        assert!(user.bodies.is_empty());
+        assert_eq!(
+            user.default_body.on_session_lock,
+            Some(SessionAction::ScreenOff)
+        );
+    }
+
+    #[test]
+    fn default_profile_edit_reflects_in_its_own_rows() {
+        // The GUI-restart bug sequence: hydration caches the default's
+        // body (Added), the user edits it, and the Changed handler
+        // refreshes only the `default_body` slot. The default's own
+        // editor rows must resolve to the edited value — a `bodies`
+        // entry for the reserved UUID would shadow the slot with the
+        // hydration-time body forever.
+        let mut layers = ProfileLayers {
+            baseline: baseline_system(),
+            ..Default::default()
+        };
+        layers.cache_body(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileBody {
+                name: "default".into(),
+                on_sleep: Some(SessionAction::PowerOff),
+                ..Default::default()
+            },
+        );
+        layers.default_body = SystemProfileBody {
+            name: "default".into(),
+            on_sleep: Some(SessionAction::ScreenOff),
+            ..Default::default()
+        };
+
+        let field = SYSTEM_FIELDS.iter().find(|f| f.wire == "on_sleep").unwrap();
+        let resolved = resolve_system_field(&layers, DEFAULT_SYSTEM_PROFILE_UUID, field);
+        assert!(resolved.is_locally_set());
+        assert_eq!(
+            resolved.current(),
+            session_action_token(SessionAction::ScreenOff)
+        );
     }
 
     // -----------------------------------------------------------------
