@@ -1,0 +1,23 @@
+[package]
+name = "tvnext-daemon"
+description = "zenoh-ecs spike daemon: ECS world + zenoh wire host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tvnext-wire = { workspace = true }
+zenoh = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

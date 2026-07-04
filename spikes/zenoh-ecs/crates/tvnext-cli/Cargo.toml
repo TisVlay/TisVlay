@@ -1,0 +1,18 @@
+[package]
+name = "tvnext-cli"
+description = "zenoh-ecs spike CLI: zenoh client for the spike daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tvnext-wire = { workspace = true }
+zenoh = { workspace = true }
+
+[lints]
+workspace = true

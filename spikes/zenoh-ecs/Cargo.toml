@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/tvnext-wire",
+    "crates/tvnext-daemon",
+    "crates/tvnext-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter"] }
+zenoh = "1.9"
+
+tvnext-wire = { path = "crates/tvnext-wire" }
+tvnext-daemon = { path = "crates/tvnext-daemon" }
+
+[workspace.lints.rust]
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.dev]
+split-debuginfo = "unpacked"
+
+[profile.test]
+split-debuginfo = "unpacked"
+debug = "line-tables-only"

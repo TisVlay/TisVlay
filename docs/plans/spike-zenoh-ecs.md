@@ -141,7 +141,7 @@ Cross-host operation (the `<site>` chunk is the only concession), session-servic
 
 ## Milestones
 
-- [ ] **M0 — scaffold**: spike workspace, deps pinned (zenoh 1.9.x, latest bevy_ecs), path-deps building with core's D-Bus features off, daemon opens a zenoh peer session on a UDS endpoint with scouting disabled, liveliness token visible from `z sub`.
+- [x] **M0 — scaffold**: spike workspace, deps pinned (zenoh 1.9.x, latest bevy_ecs), path-deps building with core's D-Bus features off, daemon opens a zenoh peer session on a UDS endpoint with scouting disabled, liveliness token visible from `z sub`.
 - [ ] **M1 — world core (no wire)**: TV entities from config, mock-backend connect/reconnect/pairing as systems + tasks through the reactor, WoL-retry and profile-dispatch systems, headless world tests (feed `InEvent`s, run schedule, assert components + Outbox). Exit: the remove-during-in-flight scenario is a boring test, not an invariant essay.
 - [ ] **M2 — wire**: state keys with AdvancedPublisher caches, rpc queryables with typed errors, PUT/DELETE lifecycle, pairing progress + liveliness, late-joiner hydration demo (`z get 'tisvlay/**'`, `z sub` with history), discovery both ways (session pubs vs streamed-reply get) with a decision recorded.
 - [ ] **M3 — hardware in the loop**: LG backend via path-dep, pair the C3, power/volume/input round-trip, WoL retry against the real quirks, DPMS watcher feeding the world; CEC at least via `FakeCecLink`.
