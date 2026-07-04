@@ -87,6 +87,7 @@ pub(crate) async fn run(
         next_reply: 1,
         pairing_tokens: HashMap::new(),
         discovery_sessions: HashMap::new(),
+        vendors_by_tv: HashMap::new(),
     };
 
     loop {
@@ -122,6 +123,10 @@ struct Bridge {
     next_reply: ReplyTo,
     pairing_tokens: HashMap<String, LivelinessToken>,
     discovery_sessions: HashMap<Uuid, tokio::task::JoinHandle<()>>,
+    /// TV → vendor, learned from the identity payloads this bridge
+    /// publishes. Lets `update-config` validate vendor fields against
+    /// the right schema without a world round-trip.
+    vendors_by_tv: HashMap<Uuid, String>,
 }
 
 impl Bridge {
@@ -129,22 +134,32 @@ impl Bridge {
         match effect {
             WireEffect::Publish { key, payload } => {
                 self.update_pairing_liveliness(&key, &payload).await;
+                if let Some((tv, "meta/identity")) = keys::parse_tv_path(&self.site, &key)
+                    && let Some(vendor) = payload["vendor"].as_str()
+                {
+                    self.vendors_by_tv.insert(tv, vendor.to_string());
+                }
                 self.publish(&key, &payload).await;
             }
-            WireEffect::Delete { key } => match self.publishers.remove(&key) {
-                // Delete through the owning publisher so its cache records
-                // the tombstone, then drop it — late joiners see nothing.
-                Some(publisher) => {
-                    if let Err(e) = publisher.delete().await {
-                        warn!(%key, %e, "delete failed");
+            WireEffect::Delete { key } => {
+                if let Some((tv, "meta/identity")) = keys::parse_tv_path(&self.site, &key) {
+                    self.vendors_by_tv.remove(&tv);
+                }
+                match self.publishers.remove(&key) {
+                    // Delete through the owning publisher so its cache records
+                    // the tombstone, then drop it — late joiners see nothing.
+                    Some(publisher) => {
+                        if let Err(e) = publisher.delete().await {
+                            warn!(%key, %e, "delete failed");
+                        }
+                    }
+                    None => {
+                        if let Err(e) = self.session.delete(key.as_str()).await {
+                            warn!(%key, %e, "session delete failed");
+                        }
                     }
                 }
-                None => {
-                    if let Err(e) = self.session.delete(key.as_str()).await {
-                        warn!(%key, %e, "session delete failed");
-                    }
-                }
-            },
+            }
             WireEffect::Reply { to, result } => {
                 let Some(pending) = self.pending.remove(&to) else {
                     warn!(to, "reply for unknown query dropped");
@@ -494,6 +509,45 @@ impl Bridge {
         });
     }
 
+    /// Validate a vendor-config object against the vendor's `UserInput`
+    /// schema (the same projection the wizard and edit pane render).
+    /// Full-config mode (`partial = false`, add-tv/pair) requires every
+    /// required field present and non-blank; patch mode (`partial =
+    /// true`, update-config) only judges keys the patch touches — a
+    /// required field set to blank or `null` (the unset request) is
+    /// rejected. Type parsing stays vendor-side; this catches the
+    /// field-shaped mistakes a client can route back to a form row.
+    /// Unknown vendors skip validation — the world reports those.
+    fn validate_vendor_fields(
+        &self,
+        vendor: &str,
+        config: &Value,
+        partial: bool,
+    ) -> Result<(), WireError> {
+        let Some(meta) = self.catalog.iter().find(|m| m.id == vendor) else {
+            return Ok(());
+        };
+        let Some(object) = config.as_object() else {
+            return Ok(());
+        };
+        for field in meta.connector.pairing_schema() {
+            if !field.required {
+                continue;
+            }
+            let value = object.get(&field.name);
+            let blank = match value {
+                Some(Value::String(s)) => s.trim().is_empty(),
+                Some(Value::Null) => true,
+                Some(_) => false,
+                None => !partial,
+            };
+            if blank {
+                return Err(WireError::invalid_field(&field.name, "required"));
+            }
+        }
+        Ok(())
+    }
+
     /// Map an RPC key + JSON body onto a world command. The reply
     /// correlation id is threaded through so the world's reply comes back
     /// to this query.
@@ -509,6 +563,7 @@ impl Bridge {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
                     let config = enrich_config_mac(req.config);
+                    self.validate_vendor_fields(&req.vendor, &config, false)?;
                     Ok((
                         Command::AddTv {
                             record: Box::new(tisvlay_world::TvRecord {
@@ -530,6 +585,7 @@ impl Bridge {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
                     let config = enrich_config_mac(req.config);
+                    self.validate_vendor_fields(&req.vendor, &config, false)?;
                     Ok((
                         Command::Pair {
                             id,
@@ -711,6 +767,9 @@ impl Bridge {
                 "update-config" => {
                     if !body.is_object() {
                         return Err(bad_request("config patch must be a JSON object".into()));
+                    }
+                    if let Some(vendor) = self.vendors_by_tv.get(&id) {
+                        self.validate_vendor_fields(&vendor.clone(), body, true)?;
                     }
                     Command::UpdateConfig {
                         id,

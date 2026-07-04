@@ -587,6 +587,17 @@ pub mod error {
             }
         }
 
+        /// A specific vendor-config field failed validation. The
+        /// message's `"<field>: <reason>"` shape is load-bearing:
+        /// clients route the reason back to the originating form row
+        /// by splitting on the first `": "`.
+        pub fn invalid_field(field: &str, reason: impl std::fmt::Display) -> Self {
+            Self {
+                code: "invalid-field".into(),
+                message: format!("{field}: {reason}"),
+            }
+        }
+
         /// The reserved default profile cannot be deleted.
         pub fn profile_reserved(id: Uuid) -> Self {
             Self {

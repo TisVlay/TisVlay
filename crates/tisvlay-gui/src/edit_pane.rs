@@ -1,22 +1,21 @@
-//! TVs-pane edit-mode helpers: edit-form validity, server-side
-//! per-field error routing, and the `org.tisvlay.Error.ConfigInvalid
-//! VendorConfig` parser.
+//! TVs-pane edit-mode helpers: edit-form validity and server-side
+//! per-field error routing over the wire's typed rpc errors.
 //!
-//! `parse_invalid_vendor_config` + `extract_invalid_vendor_config`
-//! are shared with the pairing wizard's `mark_field_invalid` flow —
-//! both surfaces consume the same daemon-side validation error so
-//! per-field reasons round-trip back to the originating widget.
+//! `extract_invalid_vendor_config` is shared with the pairing
+//! wizard's `mark_field_invalid` flow — both surfaces consume the
+//! same daemon-side validation error so per-field reasons round-trip
+//! back to the originating widget.
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
+use crate::compat::RpcError;
 use crate::schema_form::compute_schema_valid;
 use crate::{AppWindow, EditPane, PairingFieldRow, on_ui};
 
-/// Parse a `ConfigInvalidVendorConfig` error message into
-/// `(field_name, reason)`. The daemon emits the message as
-/// `"<field>: <reason>"`; split on the first `": "` so reasons
-/// carrying further colons (e.g. IPv6 addresses) stay intact in the
-/// reason half.
+/// Parse an `invalid-field` error message into `(field_name,
+/// reason)`. The daemon emits the message as `"<field>: <reason>"`;
+/// split on the first `": "` so reasons carrying further colons
+/// (e.g. IPv6 addresses) stay intact in the reason half.
 fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
     let (field, reason) = msg.split_once(": ")?;
     if field.is_empty() {
@@ -25,43 +24,33 @@ fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
     Some((field.to_string(), reason.to_string()))
 }
 
-/// Walk an `anyhow::Error` chain looking for a `zbus::MethodError`
-/// whose D-Bus error name matches `target_name`. Returns the detail
-/// string (or empty) on match, `None` otherwise. Underpins the typed
-/// per-error helpers below — clients route on the stable D-Bus error
-/// name rather than the localized message body.
-fn find_dbus_method_error(err: &anyhow::Error, target_name: &str) -> Option<String> {
-    let mut cur: &dyn std::error::Error = err.as_ref();
-    loop {
-        if let Some(zbus::Error::MethodError(name, detail, _)) = cur.downcast_ref::<zbus::Error>()
-            && name.as_str() == target_name
-        {
-            return Some(detail.clone().unwrap_or_default());
-        }
-        match cur.source() {
-            Some(s) => cur = s,
-            None => return None,
-        }
-    }
+/// Walk an `anyhow::Error` chain looking for a typed [`RpcError`]
+/// with the given wire code. Returns its message on match. Underpins
+/// the per-error helpers below — clients route on the stable code
+/// rather than the display string.
+fn find_rpc_error(err: &anyhow::Error, code: &str) -> Option<String> {
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<RpcError>())
+        .find(|rpc| rpc.code == code)
+        .map(|rpc| rpc.message.clone())
 }
 
-/// Inspect an `anyhow::Error` chain for the daemon's typed
-/// `org.tisvlay.Error.ConfigInvalidVendorConfig` D-Bus error and,
-/// if found, extract the `(field, reason)` pair. Returns `None`
-/// for any other error (network, pairing-rejected, etc.) so callers
-/// can fall back to surface the message in the wizard's generic
-/// pair-failed slot.
+/// Inspect an `anyhow::Error` chain for the daemon's `invalid-field`
+/// rpc error and, if found, extract the `(field, reason)` pair.
+/// Returns `None` for any other error (network, pairing-rejected,
+/// etc.) so callers can fall back to surface the message in the
+/// wizard's generic pair-failed slot.
 pub(crate) fn extract_invalid_vendor_config(err: &anyhow::Error) -> Option<(String, String)> {
-    let detail = find_dbus_method_error(err, "org.tisvlay.Error.ConfigInvalidVendorConfig")?;
+    let detail = find_rpc_error(err, "invalid-field")?;
     parse_invalid_vendor_config(&detail)
 }
 
-/// True when the error chain contains the daemon's typed
-/// `org.tisvlay.Error.NotPairing` D-Bus error — i.e., a Cancel call
-/// raced normal completion. Callers downgrade the log level instead
-/// of treating it as a real failure.
+/// True when the error chain carries the daemon's `pairing-not-found`
+/// rpc error — i.e., a cancel-pair call raced normal completion.
+/// Callers downgrade the log level instead of treating it as a real
+/// failure.
 pub(crate) fn is_not_pairing(err: &anyhow::Error) -> bool {
-    find_dbus_method_error(err, "org.tisvlay.Error.NotPairing").is_some()
+    find_rpc_error(err, "pairing-not-found").is_some()
 }
 
 /// Edit-form gate. Mirrors the wizard's [`compute_schema_valid`]
@@ -115,4 +104,61 @@ pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: Str
         edit_pane.set_error(SharedString::from(message));
         edit_pane.set_saving(false);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rpc_err(code: &str, message: &str) -> anyhow::Error {
+        anyhow::Error::new(RpcError {
+            code: code.into(),
+            message: message.into(),
+        })
+    }
+
+    #[test]
+    fn extract_invalid_vendor_config_routes_field_and_reason() {
+        let err = rpc_err("invalid-field", "ip: required");
+        assert_eq!(
+            extract_invalid_vendor_config(&err),
+            Some(("ip".into(), "required".into()))
+        );
+    }
+
+    #[test]
+    fn extract_invalid_vendor_config_survives_context_wrapping() {
+        // Callers add context above the SDK error; the chain walk must
+        // still find the typed cause underneath.
+        let err = rpc_err("invalid-field", "mac: not a MAC address").context("saving TV config");
+        assert_eq!(
+            extract_invalid_vendor_config(&err),
+            Some(("mac".into(), "not a MAC address".into()))
+        );
+    }
+
+    #[test]
+    fn extract_invalid_vendor_config_ignores_other_codes() {
+        let err = rpc_err("bad-request", "vendor config: expected a table");
+        assert_eq!(extract_invalid_vendor_config(&err), None);
+        assert_eq!(
+            extract_invalid_vendor_config(&anyhow::anyhow!("plain")),
+            None
+        );
+    }
+
+    #[test]
+    fn is_not_pairing_matches_the_cancel_race_code() {
+        assert!(is_not_pairing(&rpc_err("pairing-not-found", "no session")));
+        assert!(!is_not_pairing(&rpc_err("bad-request", "nope")));
+    }
+
+    #[test]
+    fn reason_halves_keep_their_colons() {
+        let err = rpc_err("invalid-field", "ip: not an IP address: ::1::bad");
+        assert_eq!(
+            extract_invalid_vendor_config(&err),
+            Some(("ip".into(), "not an IP address: ::1::bad".into()))
+        );
+    }
 }

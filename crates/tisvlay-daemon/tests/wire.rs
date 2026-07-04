@@ -797,3 +797,64 @@ async fn pairing_progress_liveliness_and_cancel_over_wire() {
         "pairing liveliness token must drop on terminal phase"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vendor_field_validation_rejects_blank_required_fields() {
+    let w = wire().await;
+
+    // add-tv with the mock's required `address` field absent: rejected
+    // before the world sees it, with the field routed in the message.
+    let err = call(
+        &w.client,
+        &keys::manager_rpc(&w.site, "add-tv"),
+        serde_json::to_value(rpc::AddTv {
+            id: None,
+            name: "Blank".into(),
+            vendor: "mock".into(),
+            managed: true,
+            config: json!({}),
+        })
+        .unwrap(),
+    )
+    .await
+    .expect_err("missing required vendor field must be rejected");
+    assert_eq!(err["code"], "invalid-field");
+    assert_eq!(err["message"], "address: required");
+
+    // A valid TV, then a patch blanking the required field. The bridge
+    // learns the TV's vendor from the identity publish, so wait for it
+    // before patching.
+    let ok = call(
+        &w.client,
+        &keys::manager_rpc(&w.site, "add-tv"),
+        add_body("Valid", "mock://valid"),
+    )
+    .await
+    .expect("add-tv ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "meta/identity")
+    })
+    .await;
+
+    let err = call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "update-config"),
+        json!({ "address": "  " }),
+    )
+    .await
+    .expect_err("blanking a required vendor field must be rejected");
+    assert_eq!(err["code"], "invalid-field");
+    assert_eq!(err["message"], "address: required");
+
+    // Untouched required fields don't block partial patches.
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "update-config"),
+        json!({ "name": "Still Valid" }),
+    )
+    .await
+    .expect("partial patch without the required field is fine");
+}

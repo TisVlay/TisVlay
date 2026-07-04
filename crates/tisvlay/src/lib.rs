@@ -1283,6 +1283,26 @@ fn flatten_config(config: &Value) -> Vec<(String, String)> {
     rows
 }
 
+/// A typed rpc failure decoded from the wire's error payload. Carried
+/// as the source of the `anyhow::Error` every client call returns, so
+/// consumers can route on `code` (`err.chain()` + `downcast_ref`)
+/// instead of parsing the display string. Displays as
+/// `"{message} ({code})"` — the same string the error formatted as
+/// before it was typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcError {
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.message, self.code)
+    }
+}
+
+impl std::error::Error for RpcError {}
+
 async fn call_rpc(session: &Session, key: &str, body: Value) -> Result<Value> {
     let replies = session
         .get(key.to_string())
@@ -1307,7 +1327,10 @@ async fn call_rpc(session: &Session, key: &str, body: Value) -> Result<Value> {
                         message: "undecodable error payload".into(),
                     }
                 });
-            bail!("{} ({})", error.message, error.code)
+            Err(anyhow::Error::new(RpcError {
+                code: error.code,
+                message: error.message,
+            }))
         }
     }
 }
