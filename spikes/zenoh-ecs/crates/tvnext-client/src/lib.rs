@@ -1028,47 +1028,126 @@ impl SessionClient {
     }
 }
 
-/// The spike tray publishes no settings service — every method reports
-/// unavailability so the settings pane renders its degraded state.
-#[derive(Debug, Clone, Default)]
-pub struct TrayClient;
+/// Client for the tray's per-user settings service (user socket):
+/// availability from its liveliness token, settings from the cached
+/// `user/tray/settings` pub, writes via `user/tray/rpc/*`.
+#[derive(Debug, Clone)]
+pub struct TrayClient {
+    session: Session,
+    site: String,
+    alive: Arc<Mutex<bool>>,
+    events: broadcast::Sender<StateEvent>,
+}
 
 impl TrayClient {
-    /// Root-signature shim; there is no tray settings service to dial.
-    pub async fn new() -> Result<Self> {
-        Ok(Self)
+    pub async fn connect(socket: &Path, site: &str) -> Result<Self> {
+        let session = zenoh::open(bootstrap::client_config_resilient(socket)?)
+            .await
+            .map_err(|e| anyhow!("connect to tray socket {}: {e}", socket.display()))?;
+        let alive = Arc::new(Mutex::new(false));
+        let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let liveliness = session
+            .liveliness()
+            .declare_subscriber(keys::user_alive_tray(site))
+            .history(true)
+            .await
+            .map_err(|e| anyhow!("subscribe tray liveliness: {e}"))?;
+        {
+            let alive = Arc::clone(&alive);
+            let events = events.clone();
+            tokio::spawn(async move {
+                while let Ok(sample) = liveliness.recv_async().await {
+                    let up = sample.kind() == SampleKind::Put;
+                    *alive.lock().expect("tray alive lock") = up;
+                    let _ = events.send(if up {
+                        StateEvent::TrayAppeared
+                    } else {
+                        StateEvent::TrayDisappeared
+                    });
+                }
+            });
+        }
+        let settings_sub = session
+            .declare_subscriber(keys::user_tray_settings(site))
+            .history(HistoryConfig::default().detect_late_publishers())
+            .await
+            .map_err(|e| anyhow!("subscribe tray settings: {e}"))?;
+        {
+            let events = events.clone();
+            tokio::spawn(async move {
+                while settings_sub.recv_async().await.is_ok() {
+                    let _ = events.send(StateEvent::TrayNotificationSettingsChanged);
+                }
+            });
+        }
+        Ok(Self {
+            session,
+            site: site.to_string(),
+            alive,
+            events,
+        })
     }
 
     pub async fn is_available(&self) -> bool {
-        false
+        *self.alive.lock().expect("tray alive lock")
     }
 
     pub async fn version(&self) -> Result<String> {
-        bail!("tray settings service not available in the zenoh spike")
+        let info = self.call("info", Value::Null).await?;
+        Ok(info["version"].as_str().unwrap_or_default().to_string())
     }
 
     pub async fn config_path(&self) -> Result<String> {
-        bail!("tray settings service not available in the zenoh spike")
+        let info = self.call("info", Value::Null).await?;
+        Ok(info["state_path"].as_str().unwrap_or_default().to_string())
     }
 
     pub async fn reload_config(&self) -> Result<()> {
-        bail!("tray settings service not available in the zenoh spike")
+        Ok(())
     }
 
     pub async fn notification_settings(&self) -> Result<NotificationSettingsBody> {
-        bail!("tray settings service not available in the zenoh spike")
+        let settings = self.call("get", Value::Null).await?;
+        Ok(NotificationSettingsBody {
+            tv_connection: settings["tv_connection"].as_bool(),
+            tv_pairing: settings["tv_pairing"].as_bool(),
+            tv_wake: settings["tv_wake"].as_bool(),
+            daemon_offline: settings["daemon_offline"].as_bool(),
+        })
     }
 
-    pub async fn update_notification_settings(
-        &self,
-        _body: NotificationSettingsBody,
-    ) -> Result<()> {
-        bail!("tray settings service not available in the zenoh spike")
+    pub async fn update_notification_settings(&self, body: NotificationSettingsBody) -> Result<()> {
+        self.call("update", json!(body_map(&body)))
+            .await
+            .map(|_| ())
     }
 
     pub async fn send_test_notification(&self) -> Result<()> {
-        bail!("tray settings service not available in the zenoh spike")
+        self.call("test", Value::Null).await.map(|_| ())
     }
+
+    fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
+        self.events.subscribe()
+    }
+
+    async fn call(&self, verb: &str, body: Value) -> Result<Value> {
+        call_rpc(&self.session, &keys::user_tray_rpc(&self.site, verb), body).await
+    }
+}
+
+/// Partial update map: only the `Some` switches ride the patch.
+fn body_map(body: &NotificationSettingsBody) -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::new();
+    let mut put = |key: &str, value: Option<bool>| {
+        if let Some(value) = value {
+            map.insert(key.into(), Value::Bool(value));
+        }
+    };
+    put("tv_connection", body.tv_connection);
+    put("tv_pairing", body.tv_pairing);
+    put("tv_wake", body.tv_wake);
+    put("daemon_offline", body.daemon_offline);
+    map
 }
 
 /// Root-compatible watcher config; the zenoh watcher forwards mirror
@@ -1099,12 +1178,16 @@ impl StateWatcher {
     pub fn new(
         daemon: &DaemonClient,
         session: Option<&SessionClient>,
+        tray: Option<&TrayClient>,
         config: StateWatcherConfig,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         forward(daemon.subscribe_events(), tx.clone());
         if let Some(session) = session {
             forward(session.subscribe_events(), tx.clone());
+        }
+        if let Some(tray) = tray {
+            forward(tray.subscribe_events(), tx.clone());
         }
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(config.fallback_poll_interval);

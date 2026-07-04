@@ -568,11 +568,11 @@ pub fn run() -> Result<()> {
                 .ok(),
         ));
 
-        let tray: Arc<RwLock<Option<TrayClient>>> =
-            Arc::new(RwLock::new(match TrayClient::new().await {
-                Ok(client) if client.is_available().await => Some(client),
-                _ => None,
-            }));
+        let tray: Arc<RwLock<Option<TrayClient>>> = Arc::new(RwLock::new(
+            TrayClient::connect(&endpoints.user_socket, &endpoints.site)
+                .await
+                .ok(),
+        ));
 
         anyhow::Ok((daemon, session, tray))
     })?;

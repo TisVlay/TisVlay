@@ -273,6 +273,31 @@ pub mod keys {
         format!("tisvlay/{site}/user/alive/session")
     }
 
+    /// The tray's notification settings (user socket, cached pub).
+    pub fn user_tray_settings(site: &str) -> String {
+        format!("tisvlay/{site}/user/tray/settings")
+    }
+
+    /// Tray settings rpcs + the wildcard their queryable declares.
+    pub fn user_tray_rpc(site: &str, verb: &str) -> String {
+        format!("tisvlay/{site}/user/tray/rpc/{verb}")
+    }
+
+    pub fn user_tray_rpc_wild(site: &str) -> String {
+        format!("tisvlay/{site}/user/tray/rpc/*")
+    }
+
+    pub fn parse_user_tray_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/user/tray/rpc/")
+    }
+
+    /// Liveliness token for a running tray settings service.
+    pub fn user_alive_tray(site: &str) -> String {
+        format!("tisvlay/{site}/user/alive/tray")
+    }
+
     /// Everything under the user subtree — must never be visible through
     /// the system socket (gateway isolation invariant).
     pub fn user_all(site: &str) -> String {
@@ -793,6 +818,19 @@ pub mod bootstrap {
     pub fn peer_config(socket: &Path) -> Result<Config> {
         let mut config = base_config()?;
         insert(&mut config, "mode", "\"peer\"")?;
+        insert(&mut config, "listen/endpoints", &endpoint_list(&[socket])?)?;
+        insert(&mut config, "timestamping/enabled", "true")?;
+        Ok(config)
+    }
+
+    /// Router-mode hub listening on `socket` — the session service's
+    /// user-socket side. A hub *peer* routes for client links but not
+    /// between peer links, and the resilient consumers are connect-only
+    /// peers — so a subtree where leaves must reach each other (the
+    /// GUI querying the tray's settings service) needs a router hub.
+    pub fn router_config(socket: &Path) -> Result<Config> {
+        let mut config = base_config()?;
+        insert(&mut config, "mode", "\"router\"")?;
         insert(&mut config, "listen/endpoints", &endpoint_list(&[socket])?)?;
         insert(&mut config, "timestamping/enabled", "true")?;
         Ok(config)

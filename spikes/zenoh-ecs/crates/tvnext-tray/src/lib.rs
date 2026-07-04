@@ -2,6 +2,7 @@
 //! from a live mirror of the daemon's cached keys (plus the session
 //! service's user keys when its socket exists); every click is an rpc.
 
+pub mod notify;
 pub mod state;
 pub mod tray;
 
@@ -56,6 +57,8 @@ pub struct TrayOptions {
     /// profiles in the menu this run.
     pub user_socket: PathBuf,
     pub site: String,
+    /// Notification-settings file (tray.toml).
+    pub tray_config: PathBuf,
 }
 
 /// Wire the tray: zenoh sessions, ksni item, mirror pumps, command
@@ -93,9 +96,59 @@ pub async fn run(options: TrayOptions) -> Result<()> {
         .await
         .context("register StatusNotifierItem")?;
 
+    // Notifications: category-gated toasts behind one emit worker; the
+    // switches persist to tray.toml and are served on the user socket.
+    let notifier =
+        notify::Notifier::new(notify::load_settings(&options.tray_config).unwrap_or_default());
+    // The settings service SERVES (queryable + token + cached pub), and
+    // leaf peers are consume-only in this topology — so it runs on a
+    // supervised client-mode link to the user hub: fail-fast opens in a
+    // retry loop, re-serving after every hub restart.
+    tokio::spawn({
+        let user_socket = options.user_socket.clone();
+        let site = options.site.clone();
+        let config = options.tray_config.clone();
+        let notifier = notifier.clone();
+        async move {
+            loop {
+                match bootstrap::client_config(&user_socket) {
+                    Ok(link_config) => match zenoh::open(link_config).await {
+                        Ok(link) => {
+                            if let Err(e) = notify::serve_settings(
+                                link,
+                                site.clone(),
+                                config.clone(),
+                                notifier.clone(),
+                            )
+                            .await
+                            {
+                                warn!(%e, "tray settings service exited");
+                            }
+                        }
+                        Err(e) => debug!(%e, "user hub not up yet; settings service waiting"),
+                    },
+                    Err(e) => {
+                        warn!(%e, "user socket config failed; settings service disabled");
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+    });
+    spawn_pairing_toasts(&system, &options.site, handle.clone(), notifier.clone()).await?;
+    spawn_power_cycle_toasts(&system, &options.site, handle.clone(), notifier.clone()).await?;
+
     let reconcilers = Reconcilers::new();
-    spawn_system_pump(&system, &options.site, handle.clone(), reconcilers.clone()).await?;
-    spawn_liveliness_pump(&system, &options.site, handle.clone()).await?;
+    spawn_system_pump(
+        &system,
+        &options.site,
+        handle.clone(),
+        reconcilers.clone(),
+        notifier.clone(),
+    )
+    .await?;
+    spawn_liveliness_pump(&system, &options.site, handle.clone(), notifier.clone()).await?;
     if let Some(user_session) = &user {
         spawn_user_pump(user_session, &options.site, handle.clone()).await?;
     }
@@ -137,6 +190,7 @@ async fn spawn_system_pump(
     site: &str,
     handle: ksni::Handle<TvTray>,
     reconcilers: Reconcilers,
+    notifier: notify::Notifier,
 ) -> Result<()> {
     for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
         let sub = system
@@ -147,6 +201,7 @@ async fn spawn_system_pump(
         let handle = handle.clone();
         let site = site.to_string();
         let reconcilers = reconcilers.clone();
+        let notifier = notifier.clone();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
                 // Echoed levels release the scroll-intent gates.
@@ -167,9 +222,31 @@ async fn spawn_system_pump(
                         let _ = reconcilers.backlight.observe(&tv, backlight.level);
                     }
                 }
-                handle
-                    .update(|tray| tray.mirror.apply_system_sample(&site, &sample))
-                    .await;
+                // The closure reports connection transitions so toasts
+                // ride the same sample that changed the mirror.
+                let transition = handle
+                    .update(|tray| {
+                        let before = keys::parse_tv_path(&site, sample.key_expr().as_str())
+                            .filter(|(_, path)| *path == payload::Link::PATH)
+                            .and_then(|(tv, _)| {
+                                tray.mirror.tvs.get(&tv).map(|view| (tv, view.connected))
+                            });
+                        tray.mirror.apply_system_sample(&site, &sample);
+                        before.and_then(|(tv, was)| {
+                            let view = tray.mirror.tvs.get(&tv)?;
+                            (view.connected != was).then(|| (view.name.clone(), view.connected))
+                        })
+                    })
+                    .await
+                    .flatten();
+                if let Some((name, connected)) = transition {
+                    let (summary, icon) = if connected {
+                        (format!("{name} connected"), "video-display")
+                    } else {
+                        (format!("{name} disconnected"), "video-display-symbolic")
+                    };
+                    notifier.notify(notify::Category::TvConnection, &summary, "", icon);
+                }
             }
         });
     }
@@ -199,6 +276,7 @@ async fn spawn_liveliness_pump(
     system: &Session,
     site: &str,
     handle: ksni::Handle<TvTray>,
+    notifier: notify::Notifier,
 ) -> Result<()> {
     let sub = system
         .liveliness()
@@ -207,11 +285,25 @@ async fn spawn_liveliness_pump(
         .await
         .map_err(|e| anyhow!("subscribe daemon liveliness: {e}"))?;
     tokio::spawn(async move {
+        let mut last: Option<bool> = None;
         while let Ok(sample) = sub.recv_async().await {
             let alive = sample.kind() == SampleKind::Put;
             handle
                 .update(move |tray| tray.mirror.daemon_alive = alive)
                 .await;
+            // Toast transitions only; the initial hydrated state is not
+            // news (and an offline toast at every tray start would be).
+            if let Some(was) = last
+                && was != alive
+            {
+                let (summary, icon) = if alive {
+                    ("TisVlay daemon is back online", "video-display")
+                } else {
+                    ("TisVlay daemon went offline", "dialog-warning")
+                };
+                notifier.notify(notify::Category::DaemonOffline, summary, "", icon);
+            }
+            last = Some(alive);
         }
     });
     Ok(())
@@ -423,4 +515,103 @@ pub fn default_user_socket() -> PathBuf {
 /// Re-exported for the wire test's mirror driver.
 pub fn client_config(socket: &Path) -> Result<zenoh::Config> {
     bootstrap::client_config(socket)
+}
+
+/// Terminal pairing phases become toasts — non-terminal progress is the
+/// wizard's job to surface, not the tray's (root stance).
+async fn spawn_pairing_toasts(
+    system: &Session,
+    site: &str,
+    handle: ksni::Handle<TvTray>,
+    notifier: notify::Notifier,
+) -> Result<()> {
+    // Plain subscriber: the deep pairing cache would replay finished
+    // sessions as fresh toasts on every tray start.
+    let sub = system
+        .declare_subscriber(format!("tisvlay/{site}/pairing/*/progress"))
+        .await
+        .map_err(|e| anyhow!("subscribe pairing progress: {e}"))?;
+    let site = site.to_string();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str()) else {
+                continue;
+            };
+            let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes()) else {
+                continue;
+            };
+            let name = handle
+                .update(|tray| tray.mirror.tvs.get(&tv).map(|view| view.name.clone()))
+                .await
+                .flatten()
+                .unwrap_or_else(|| "TV".into());
+            match progress["phase"].as_str() {
+                Some("complete") => notifier.notify(
+                    notify::Category::TvPairing,
+                    &format!("{name} paired"),
+                    progress["message"].as_str().unwrap_or_default(),
+                    "security-high",
+                ),
+                Some("failed") => notifier.notify(
+                    notify::Category::TvPairing,
+                    &format!("Pairing {name} failed"),
+                    progress["message"].as_str().unwrap_or_default(),
+                    "dialog-error",
+                ),
+                _ => {}
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Wake feedback: `wol_sent` → waking toast, then connected/failed.
+async fn spawn_power_cycle_toasts(
+    system: &Session,
+    site: &str,
+    handle: ksni::Handle<TvTray>,
+    notifier: notify::Notifier,
+) -> Result<()> {
+    let sub = system
+        .declare_subscriber(format!("tisvlay/{site}/tv/*/progress/power"))
+        .await
+        .map_err(|e| anyhow!("subscribe power progress: {e}"))?;
+    let site = site.to_string();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let Some((tv, _)) = keys::parse_tv_path(&site, sample.key_expr().as_str()) else {
+                continue;
+            };
+            let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes()) else {
+                continue;
+            };
+            let name = handle
+                .update(|tray| tray.mirror.tvs.get(&tv).map(|view| view.name.clone()))
+                .await
+                .flatten()
+                .unwrap_or_else(|| "TV".into());
+            match progress["phase"].as_str() {
+                Some("wol_sent") => notifier.notify(
+                    notify::Category::TvWake,
+                    &format!("Waking {name}…"),
+                    "",
+                    "system-run",
+                ),
+                Some("connected") => notifier.notify(
+                    notify::Category::TvWake,
+                    &format!("{name} is awake"),
+                    "",
+                    "video-display",
+                ),
+                Some("failed") => notifier.notify(
+                    notify::Category::TvWake,
+                    &format!("Waking {name} failed"),
+                    "",
+                    "dialog-error",
+                ),
+                _ => {}
+            }
+        }
+    });
+    Ok(())
 }

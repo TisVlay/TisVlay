@@ -28,6 +28,7 @@ directories = "6"
 edidkit = "0.1"
 futures-util = "0.3"
 ksni = "0.3"
+notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
 netlink-packet-core = "0.8"
 netlink-packet-route = "0.30"
 rtnetlink = "0.21"

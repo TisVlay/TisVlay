@@ -38,7 +38,8 @@ async fn sdk_mirrors_rpcs_and_watches() {
 
     let daemon = DaemonClient::connect(&system_socket, "t").await.unwrap();
     let session = SessionClient::connect(&user_socket, "t").await.unwrap();
-    let mut watcher = StateWatcher::new(&daemon, Some(&session), StateWatcherConfig::default());
+    let mut watcher =
+        StateWatcher::new(&daemon, Some(&session), None, StateWatcherConfig::default());
 
     // The resilient link dials in the background; wait for liveliness
     // before the first rpc (real clients ride availability the same way).

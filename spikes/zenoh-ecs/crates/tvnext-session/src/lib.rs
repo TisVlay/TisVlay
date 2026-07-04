@@ -113,7 +113,8 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             .with_context(|| format!("create user socket dir {}", parent.display()))?;
     }
     let user = zenoh::open(
-        tvnext_wire::bootstrap::peer_config(&options.user_socket).context("user session config")?,
+        tvnext_wire::bootstrap::router_config(&options.user_socket)
+            .context("user session config")?,
     )
     .await
     .map_err(|e| {

@@ -39,7 +39,10 @@ pub(crate) async fn initial_fetch_and_watch(
         Some(client) => client.is_available().await,
         None => false,
     };
-    let initial_tray_available = tray.read().await.is_some();
+    let initial_tray_available = match tray.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
     let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
         Ok(mut s) => {
             reconcilers.reconcile(&mut s);
@@ -220,7 +223,12 @@ async fn watch_state(
     // Session events ride the SessionClient built at startup; one that
     // appears later is picked up by the reconnect arm below, with the
     // fallback poll covering its catalog until then.
-    let mut watcher = StateWatcher::new(&daemon, session.read().await.as_ref(), watcher_config);
+    let mut watcher = StateWatcher::new(
+        &daemon,
+        session.read().await.as_ref(),
+        tray.read().await.as_ref(),
+        watcher_config,
+    );
 
     // `watcher.next() → refresh.await` inline halts signal_stream
     // draining and wedges the connection under flood. See
@@ -342,10 +350,8 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
-                if let Ok(client) = TrayClient::new().await
-                    && client.is_available().await
+                // The client exists from startup (background-retry link).
                 {
-                    *tray.write().await = Some(client);
                     on_ui(&app_weak, move |app| {
                         app.set_tray_available(true);
                         app.global::<Tray>().set_available(true);

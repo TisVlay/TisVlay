@@ -57,17 +57,20 @@ async fn cec_power_cycle_keeps_the_link_up() {
         .unwrap();
 
     // The enrollment dial legitimately publishes link{connected:false}
-    // before the first connect — drop-tracking starts once we're up.
-    let _ = wait_power(&sub, id, "active").await;
-    let mut link_dropped = false;
+    // before the first connect, and per-key publishers give no cross-key
+    // ordering — that sample can even land after the first power
+    // reading. `wait_power` tracks the link state across the whole
+    // drain: a drop only counts once link{true} has been seen.
+    let mut link_was_up = false;
+    let _ = wait_power(&sub, id, "active", &mut link_was_up).await;
 
     // Power off: the CEC bus stays reachable in standby.
     call_ok(&client, &keys::tv_rpc("t", &id, "power-off"), Value::Null).await;
-    link_dropped |= wait_power(&sub, id, "standby").await;
+    let mut link_dropped = wait_power(&sub, id, "standby", &mut link_was_up).await;
 
     // Power on: wake happens in place on the live handle.
     call_ok(&client, &keys::tv_rpc("t", &id, "power-on"), Value::Null).await;
-    link_dropped |= wait_power(&sub, id, "active").await;
+    link_dropped |= wait_power(&sub, id, "active", &mut link_was_up).await;
 
     assert!(
         !link_dropped,
@@ -89,8 +92,8 @@ async fn call_ok(client: &Session, key: &str, body: Value) -> Value {
 }
 
 /// Wait for the TV's power state, returning whether the link dropped
-/// while waiting.
-async fn wait_power(sub: &Sub, id: Uuid, want: &str) -> bool {
+/// (a `connected:false` after a seen `connected:true`) while waiting.
+async fn wait_power(sub: &Sub, id: Uuid, want: &str, link_was_up: &mut bool) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut dropped = false;
     loop {
@@ -106,8 +109,12 @@ async fn wait_power(sub: &Sub, id: Uuid, want: &str) -> bool {
         }
         let value: Value =
             serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-        if path == "state/link" && value["connected"] == false {
-            dropped = true;
+        if path == "state/link" {
+            if value["connected"] == true {
+                *link_was_up = true;
+            } else if *link_was_up {
+                dropped = true;
+            }
         }
         if path == "state/power" && value["state"] == want {
             return dropped;

@@ -13,7 +13,10 @@ clap = { workspace = true }
 ksni = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+directories = { workspace = true }
+notify-rust = { workspace = true }
 tisvlay-core = { workspace = true, features = ["logging"] }
+toml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tvnext-wire = { workspace = true }
@@ -26,6 +29,7 @@ serde = { workspace = true }
 tempfile = { workspace = true }
 tisvlay-mock = { workspace = true }
 tvnext-daemon = { workspace = true }
+tvnext-client = { workspace = true }
 tvnext-session = { workspace = true }
 
 [lints]
