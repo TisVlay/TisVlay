@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-(none)
+- [`gui-state-consistency.md`](gui-state-consistency.md) — closing the class of contradictory GUI daemon-state displays: retry the zenoh no-reply law once at the SDK seam, single-source availability on liveliness, fetch discipline at the watcher.
 
 ## Completed plans (kept as history)
 
