@@ -771,6 +771,19 @@ pub mod rpc {
     #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
     pub struct SetScreen {
         pub on: bool,
+        /// Resolved profile intent: land the TV on its `primary_input`
+        /// once the action completes. Manual clients leave it false.
+        #[serde(default)]
+        pub restore_input: bool,
+    }
+
+    /// Body for `tv/<id>/rpc/power-on` — optional; an absent or null
+    /// body is a plain manual power-on.
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+    pub struct PowerOn {
+        /// See [`SetScreen::restore_input`].
+        #[serde(default)]
+        pub restore_input: bool,
     }
 
     /// Body for `profile/rpc/create` (and boot replay): omitted `id`

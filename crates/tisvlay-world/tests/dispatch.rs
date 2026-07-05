@@ -42,6 +42,7 @@ async fn screen_on_noop_retries_then_escalates_to_wake() {
     client.command(Command::SetScreen {
         id,
         on: true,
+        restore_input: false,
         reply: Some(30),
     });
     collect_until(&mut effects, |e| reply_to(e, 30)).await;
@@ -87,6 +88,7 @@ async fn screen_off_noop_gives_up_with_event() {
     client.command(Command::SetScreen {
         id,
         on: false,
+        restore_input: false,
         reply: Some(31),
     });
     collect_until(&mut effects, |e| reply_to(e, 31)).await;
@@ -131,6 +133,7 @@ async fn emulated_screen_keeps_standby_link_up() {
     client.command(Command::SetScreen {
         id,
         on: false,
+        restore_input: false,
         reply: Some(32),
     });
     collect_until(&mut effects, |e| {
@@ -141,6 +144,7 @@ async fn emulated_screen_keeps_standby_link_up() {
     client.command(Command::SetScreen {
         id,
         on: true,
+        restore_input: false,
         reply: Some(33),
     });
     collect_until(&mut effects, |e| {
@@ -246,6 +250,7 @@ async fn disconnected_screen_on_elevates_to_wake() {
     client.command(Command::SetScreen {
         id,
         on: true,
+        restore_input: false,
         reply: Some(40),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 40)).await;
@@ -276,6 +281,7 @@ async fn disconnected_screen_off_is_a_satisfied_noop() {
     client.command(Command::SetScreen {
         id,
         on: false,
+        restore_input: false,
         reply: Some(41),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 41)).await;
@@ -309,6 +315,7 @@ async fn wake_needy_screen_on_preflights_to_the_wake_dial() {
     client.command(Command::SetScreen {
         id,
         on: true,
+        restore_input: false,
         reply: Some(42),
     });
     collect_until(&mut effects, |e| link_connected(e, false)).await;
@@ -351,6 +358,7 @@ async fn wake_needy_screen_on_wakes_in_place_when_standby_reachable() {
     client.command(Command::SetScreen {
         id,
         on: true,
+        restore_input: false,
         reply: Some(44),
     });
     collect_until(&mut effects, |e| {
@@ -388,6 +396,7 @@ async fn screen_off_during_pending_dial_lands_after_connect() {
     client.command(Command::SetScreen {
         id,
         on: false,
+        restore_input: false,
         reply: Some(45),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 45)).await;
@@ -431,6 +440,7 @@ async fn escalation_reasserts_on_reconnect_then_gives_up() {
     client.command(Command::SetScreen {
         id,
         on: true,
+        restore_input: false,
         reply: Some(43),
     });
     collect_until(&mut effects, |e| reply_to(e, 43)).await;
@@ -463,4 +473,57 @@ async fn escalation_reasserts_on_reconnect_then_gives_up() {
         4,
         "send + retry on each side of the reconnect"
     );
+}
+
+/// Primary-input restore: a restore-flagged automation wake lands the
+/// TV on its configured primary input once live (the TV "comes up on
+/// the wrong input" via static seeding — `initial_input` ≠
+/// `primary_input`), and a manual power-on stays input-neutral.
+#[tokio::test]
+async fn automation_wake_restores_the_primary_input() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = uuid::Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert("address".into(), toml::Value::String("mock://inp".into()));
+    table.insert("initial_input".into(), toml::Value::String("HDMI_2".into()));
+    let mut record = tv_record(id, "Inp", toml::Value::Table(table));
+    record.primary_input = Some("HDMI_1".into());
+    client.command(Command::AddTv {
+        record: Box::new(record),
+        reply: Some(1),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+
+    // Stock on_startup = power_on with restore: the drain compares the
+    // mirrored input and switches to primary.
+    client.send(InEvent::System {
+        event: SystemEvent::Startup,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_1")
+    })
+    .await;
+
+    // Manual actions stay input-neutral: switch away, then a plain
+    // power-on must not drag the input back to primary.
+    client.command(Command::SwitchInput {
+        id,
+        input: "HDMI_2".into(),
+        reply: Some(50),
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_2")
+    })
+    .await;
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(51),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 51)).await;
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_1")
+    })
+    .await;
 }

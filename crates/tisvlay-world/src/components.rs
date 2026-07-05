@@ -142,6 +142,19 @@ pub(crate) struct PairingEnroll {
 #[derive(Resource, Debug, Default)]
 pub(crate) struct PairingIndex(pub HashMap<Uuid, Entity>);
 
+/// The input this TV should land on once a connection is live —
+/// recorded at dispatch time by restore-flagged on-ish actions,
+/// drained by `reconcile_input` with a bounded verify-retry, cleared
+/// on first compliance or a spent budget. A later manual input change
+/// is authoritative: nothing re-arms this without a new dispatch, and
+/// a manual `switch-input` rpc removes it outright.
+#[derive(Component, Debug)]
+pub(crate) struct DesiredInput {
+    pub input: String,
+    pub attempts: u8,
+    pub next_at: Instant,
+}
+
 /// What a system event does to a TV — the action vocabulary profiles map
 /// events onto. The stock profile constructs only a subset; the rest are
 /// selected through profile configuration.
@@ -153,28 +166,30 @@ pub(crate) enum ProfileAction {
     PowerOn,
 }
 
-/// Event → action mapping applied when a TV has no assigned profile or
-/// its profile leaves the event's field unset — the inheritance base the
-/// `profile/rpc/defaults` projection serves.
+/// Event → `(action, restore_input)` mapping applied when a TV has no
+/// assigned profile or its profile leaves the event's field unset —
+/// the inheritance base the `profile/rpc/defaults` projection serves.
 #[derive(Resource, Debug)]
-pub(crate) struct SystemProfile(pub HashMap<SystemEvent, ProfileAction>);
+pub(crate) struct SystemProfile(pub HashMap<SystemEvent, (ProfileAction, bool)>);
 
 impl SystemProfile {
     /// Stock mapping — parity with the root stack's hard-coded resolved
     /// defaults: full power-off on sleep/shutdown, wake-on-LAN on resume,
     /// screen-blank mirroring for DPMS and the login greeter's idle timer.
+    /// The session-start wakes restore the primary input (mirrors
+    /// `ResolvedSystemProfile::default`).
     pub(crate) fn stock() -> Self {
         Self(HashMap::from([
             // WoL at boot; a reboot deliberately has no stock action
             // (the TV stays on across a quick restart).
-            (SystemEvent::Startup, ProfileAction::PowerOn),
-            (SystemEvent::Sleep, ProfileAction::PowerOff),
-            (SystemEvent::Resume, ProfileAction::PowerOn),
-            (SystemEvent::Shutdown, ProfileAction::PowerOff),
-            (SystemEvent::DpmsOff, ProfileAction::ScreenOff),
-            (SystemEvent::DpmsOn, ProfileAction::ScreenOn),
-            (SystemEvent::GreeterIdle, ProfileAction::ScreenOff),
-            (SystemEvent::GreeterResume, ProfileAction::ScreenOn),
+            (SystemEvent::Startup, (ProfileAction::PowerOn, true)),
+            (SystemEvent::Sleep, (ProfileAction::PowerOff, false)),
+            (SystemEvent::Resume, (ProfileAction::PowerOn, true)),
+            (SystemEvent::Shutdown, (ProfileAction::PowerOff, false)),
+            (SystemEvent::DpmsOff, (ProfileAction::ScreenOff, false)),
+            (SystemEvent::DpmsOn, (ProfileAction::ScreenOn, false)),
+            (SystemEvent::GreeterIdle, (ProfileAction::ScreenOff, false)),
+            (SystemEvent::GreeterResume, (ProfileAction::ScreenOn, false)),
         ]))
     }
 }

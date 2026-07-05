@@ -14,11 +14,11 @@ use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    CarrierParked, Clock, ConnectionHandle, DirtyStore, DispatchRetry, DispatchVerify, Effect,
-    KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
-    PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction, ProfileBody, ProfileId,
-    ProfileIndex, Reconnecting, RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex,
-    VendorRef,
+    CarrierParked, Clock, ConnectionHandle, DesiredInput, DirtyStore, DispatchRetry,
+    DispatchVerify, Effect, KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox,
+    PairVerifying, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
+    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt, Site, SystemProfile,
+    TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
     BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
@@ -48,6 +48,7 @@ pub(crate) fn build_schedule() -> Schedule {
             apply_route_resolutions,
             handle_carrier_events,
             verify_dispatch,
+            reconcile_input,
             dispatch_system_events,
             reconcile_connections,
         )
@@ -189,6 +190,7 @@ type TvQuery<'a> = (
     Has<PendingConnect>,
     Option<&'a payload::Link>,
     Option<&'a VendorRef>,
+    Option<&'a payload::Meta>,
 );
 
 /// The settings handler's slice of `TvQuery` — it must not read
@@ -203,20 +205,40 @@ type LinkQuery<'a> = (
     Option<&'a payload::Power>,
 );
 
+/// Record the input to land on once live — restore-flagged dispatches
+/// with a configured primary input; `reconcile_input` drains it.
+fn arm_desired_input(
+    commands: &mut Commands,
+    entity: Entity,
+    clock: &Clock,
+    input: Option<String>,
+) {
+    if let Some(input) = input {
+        commands.entity(entity).insert(DesiredInput {
+            input,
+            attempts: 0,
+            next_at: clock.0,
+        });
+    }
+}
+
 /// Route a power-on request: in-band on a live handle, otherwise the wake
 /// dial for wake-capable transports.
 #[allow(clippy::too_many_arguments)]
 fn power_on_tv(
     commands: &mut Commands,
     outbox: &mut Outbox,
+    clock: &Clock,
     entity: Entity,
     id: Uuid,
     handle: Option<&ConnectionHandle>,
     link: Option<&payload::Link>,
+    restore_to: Option<String>,
     reply: Option<ReplyTo>,
 ) {
     match handle {
         Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOn).is_ok() => {
+            arm_desired_input(commands, entity, clock, restore_to);
             reply_ok(outbox, reply);
         }
         Some(_) => reply_err(outbox, reply, WireError::not_connected(id)),
@@ -228,6 +250,7 @@ fn power_on_tv(
             let mut e = commands.entity(entity);
             redial(&mut e, true);
             e.remove::<RetryAt>();
+            arm_desired_input(commands, entity, clock, restore_to);
             reply_ok(outbox, reply);
         }
         None => reply_err(outbox, reply, WireError::wake_not_supported(id)),
@@ -281,12 +304,15 @@ fn dispatch_screen(
     id: Uuid,
     on: bool,
     row: ScreenRow,
+    restore_to: Option<String>,
     reply: Option<ReplyTo>,
 ) {
     let (handle, pending, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
-            power_on_tv(commands, outbox, entity, id, handle, link, reply);
+            power_on_tv(
+                commands, outbox, clock, entity, id, handle, link, restore_to, reply,
+            );
         } else if let Some(handle) = handle {
             let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
             reply_ok(outbox, reply);
@@ -314,7 +340,17 @@ fn dispatch_screen(
     match handle {
         Some(handle) if wake_needy && traits.is_some_and(|t| t.0.reachable_in_standby) => {
             // Wake in place on the live standby connection.
-            power_on_tv(commands, outbox, entity, id, Some(handle), link, reply);
+            power_on_tv(
+                commands,
+                outbox,
+                clock,
+                entity,
+                id,
+                Some(handle),
+                link,
+                restore_to,
+                reply,
+            );
             arm_screen_verify(commands, entity, clock, retry, on, false);
         }
         Some(_) if wake_needy => {
@@ -326,6 +362,7 @@ fn dispatch_screen(
             redial(&mut e, true);
             reply_ok(outbox, reply);
             arm_screen_verify(commands, entity, clock, retry, on, true);
+            arm_desired_input(commands, entity, clock, restore_to);
         }
         Some(handle)
             if handle
@@ -338,6 +375,7 @@ fn dispatch_screen(
                 .is_ok() =>
         {
             arm_screen_verify(commands, entity, clock, retry, on, false);
+            arm_desired_input(commands, entity, clock, restore_to);
             reply_ok(outbox, reply);
         }
         None if on && link.is_some_and(|l| l.supports_wake) => {
@@ -345,7 +383,9 @@ fn dispatch_screen(
             // instead of erroring (the rpc acks when the dial is armed,
             // same as `power-on`); the verify survives the dial, spends
             // the dispatch's one wake, and re-asserts on reconnect.
-            power_on_tv(commands, outbox, entity, id, None, link, reply);
+            power_on_tv(
+                commands, outbox, clock, entity, id, None, link, restore_to, reply,
+            );
             arm_screen_verify(commands, entity, clock, retry, true, true);
         }
         None if !on && pending => {
@@ -373,6 +413,7 @@ fn handle_lifecycle_commands(
     mut dirty: ResMut<DirtyStore>,
     site: Res<Site>,
     vendors: Res<KnownVendors>,
+    clock: Res<Clock>,
     mut pairing: PairingParams,
     q: Query<TvQuery>,
 ) {
@@ -428,7 +469,7 @@ fn handle_lifecycle_commands(
                     reply_err(&mut outbox, *reply, WireError::pairing_exists(*id));
                     continue;
                 }
-                let Some(vendor_ref) = q.get(entity).ok().and_then(|(_, _, _, v)| v) else {
+                let Some(vendor_ref) = q.get(entity).ok().and_then(|(_, _, _, v, _)| v) else {
                     reply_err(&mut outbox, *reply, WireError::tv_not_found(*id));
                     continue;
                 };
@@ -499,8 +540,8 @@ fn handle_lifecycle_commands(
             },
             Command::Reconnect { id, reply } => match index.0.get(id) {
                 Some(&entity) => {
-                    let (handle, pending, _, _) =
-                        q.get(entity).unwrap_or((None, false, None, None));
+                    let (handle, pending, _, _, _) =
+                        q.get(entity).unwrap_or((None, false, None, None, None));
                     if handle.is_none() && !pending {
                         let mut e = commands.entity(entity);
                         redial(&mut e, false);
@@ -510,19 +551,31 @@ fn handle_lifecycle_commands(
                 }
                 None => reply_err(&mut outbox, *reply, WireError::tv_not_found(*id)),
             },
-            Command::PowerOn { id, reply } => {
+            Command::PowerOn {
+                id,
+                restore_input,
+                reply,
+            } => {
                 let Some(&entity) = index.0.get(id) else {
                     reply_err(&mut outbox, *reply, WireError::tv_not_found(*id));
                     continue;
                 };
-                let (handle, _, link, _) = q.get(entity).unwrap_or((None, false, None, None));
+                let (handle, _, link, _, meta) =
+                    q.get(entity).unwrap_or((None, false, None, None, None));
+                let restore_to = if *restore_input {
+                    meta.and_then(|m| m.primary_input.clone())
+                } else {
+                    None
+                };
                 power_on_tv(
                     &mut commands,
                     &mut outbox,
+                    &clock,
                     entity,
                     *id,
                     handle,
                     link,
+                    restore_to,
                     *reply,
                 );
             }
@@ -646,6 +699,9 @@ fn handle_tv_commands(
                 );
             }
             Command::SwitchInput { input, .. } => {
+                // A manual switch is authoritative — it cancels any
+                // pending restore intent instead of fighting it.
+                commands.entity(entity).remove::<DesiredInput>();
                 send_backend(
                     &q,
                     &mut outbox,
@@ -665,10 +721,21 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::SetScreen { on, .. } => {
+            Command::SetScreen {
+                on, restore_input, ..
+            } => {
                 let row = q
                     .get(entity)
                     .unwrap_or((None, false, None, None, None, None));
+                let restore_to = if *restore_input && *on {
+                    writes
+                        .meta
+                        .get(entity)
+                        .ok()
+                        .and_then(|m| m.primary_input.clone())
+                } else {
+                    None
+                };
                 dispatch_screen(
                     &mut commands,
                     &mut outbox,
@@ -677,6 +744,7 @@ fn handle_tv_commands(
                     id,
                     *on,
                     row,
+                    restore_to,
                     reply,
                 );
             }
@@ -1003,6 +1071,77 @@ fn verify_dispatch(
         }
         commands.entity(entity).remove::<DispatchVerify>();
         publish_dispatch_failed(&mut outbox, &site, &id.0, verify.target_on);
+    }
+}
+
+/// Land TVs on their desired input once a connection is live: compare
+/// against the mirrored input state, re-send within the backend's
+/// verify budget, clear on first compliance, fail observably. A TV
+/// with no link waits through its dial; one with no dial left sheds
+/// the intent (the wake it rode already reported its own failure).
+#[allow(clippy::type_complexity)]
+fn reconcile_input(
+    mut commands: Commands,
+    clock: Res<Clock>,
+    site: Res<Site>,
+    mut outbox: ResMut<Outbox>,
+    mut q: Query<(
+        Entity,
+        &TvId,
+        &mut DesiredInput,
+        Option<&ConnectionHandle>,
+        Has<PendingConnect>,
+        Option<&payload::Input>,
+        Option<&payload::Identity>,
+        Option<&DispatchRetry>,
+    )>,
+) {
+    for (entity, id, mut desired, handle, pending, input, identity, retry) in &mut q {
+        let Some(handle) = handle else {
+            if !pending {
+                commands.entity(entity).remove::<DesiredInput>();
+            }
+            continue;
+        };
+        if desired.next_at > clock.0 {
+            continue;
+        }
+        // Capabilities are enriched by the time a handle exists; a
+        // backend that can't switch inputs (CEC keeps INPUT
+        // unadvertised) sheds the intent structurally.
+        if !identity.is_some_and(|i| i.capabilities.iter().any(|c| c == "input")) {
+            tracing::debug!(tv = %id.0, "input restore dropped: no input capability");
+            commands.entity(entity).remove::<DesiredInput>();
+            continue;
+        }
+        // Input state not mirrored yet — check again next tick.
+        let Some(current) = input.map(|i| i.current.as_deref()) else {
+            continue;
+        };
+        if current == Some(desired.input.as_str()) {
+            tracing::debug!(tv = %id.0, input = %desired.input, "input restore verified");
+            commands.entity(entity).remove::<DesiredInput>();
+            continue;
+        }
+        let config = retry.map(|r| r.0).unwrap_or_default();
+        if (desired.attempts as usize) >= config.effective_max_attempts() {
+            tracing::debug!(tv = %id.0, input = %desired.input, "input restore budget spent");
+            commands.entity(entity).remove::<DesiredInput>();
+            outbox.0.push(Effect::Wire(WireEffect::Publish {
+                key: keys::event(&site.0, "dispatch-failed"),
+                payload: json!({
+                    "tv": id.0,
+                    "action": "switch-input",
+                    "input": desired.input,
+                }),
+            }));
+            continue;
+        }
+        let _ = handle
+            .cmd_tx
+            .send(BackendCmd::SwitchInput(desired.input.clone(), None));
+        desired.attempts += 1;
+        desired.next_at = clock.0 + config.verify_delay;
     }
 }
 
@@ -1820,13 +1959,18 @@ fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
-            let Some(action) = resolve_action(event, meta, &profile_index, &bodies, &profile)
+            let Some((action, restore)) =
+                resolve_action(event, meta, &profile_index, &bodies, &profile)
             else {
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
             };
-            let action = &action;
-            tracing::debug!(tv = %id.0, ?event, ?action, "profile action dispatched");
+            tracing::debug!(tv = %id.0, ?event, ?action, restore, "profile action dispatched");
+            let restore_to = if restore {
+                meta.and_then(|m| m.primary_input.clone())
+            } else {
+                None
+            };
             match action {
                 ProfileAction::ScreenOff => dispatch_screen(
                     &mut commands,
@@ -1837,6 +1981,7 @@ fn dispatch_system_events(
                     false,
                     (handle, pending, traits, link, retry, power),
                     None,
+                    None,
                 ),
                 ProfileAction::ScreenOn => dispatch_screen(
                     &mut commands,
@@ -1846,6 +1991,7 @@ fn dispatch_system_events(
                     id.0,
                     true,
                     (handle, pending, traits, link, retry, power),
+                    restore_to,
                     None,
                 ),
                 ProfileAction::PowerOff => {
@@ -1853,9 +1999,17 @@ fn dispatch_system_events(
                         let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
                     }
                 }
-                ProfileAction::PowerOn => {
-                    power_on_tv(&mut commands, &mut outbox, entity, id.0, handle, link, None)
-                }
+                ProfileAction::PowerOn => power_on_tv(
+                    &mut commands,
+                    &mut outbox,
+                    &clock,
+                    entity,
+                    id.0,
+                    handle,
+                    link,
+                    restore_to,
+                    None,
+                ),
             }
         }
     }
@@ -1937,7 +2091,7 @@ fn resolve_action(
     profile_index: &ProfileIndex,
     bodies: &Query<&ProfileBody>,
     stock: &SystemProfile,
-) -> Option<ProfileAction> {
+) -> Option<(ProfileAction, bool)> {
     // Per-TV profile field wins outright (explicit `none` suppresses).
     if let Some(profile_id) = meta.and_then(|m| m.system_profile)
         && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
@@ -1975,7 +2129,7 @@ fn profile_body<'a>(
 fn profile_event_action(
     body: &tisvlay_core::SystemProfileConfig,
     event: &SystemEvent,
-) -> Option<tisvlay_core::SessionAction> {
+) -> Option<tisvlay_core::EventAction> {
     match event {
         SystemEvent::Startup => body.on_startup,
         SystemEvent::Sleep => body.on_sleep,
@@ -1989,15 +2143,16 @@ fn profile_event_action(
     }
 }
 
-fn session_action(action: tisvlay_core::SessionAction) -> Option<ProfileAction> {
+fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, bool)> {
     use tisvlay_core::SessionAction as S;
-    match action {
-        S::ScreenOff => Some(ProfileAction::ScreenOff),
-        S::ScreenOn => Some(ProfileAction::ScreenOn),
-        S::PowerOff => Some(ProfileAction::PowerOff),
-        S::PowerOn => Some(ProfileAction::PowerOn),
-        _ => None,
-    }
+    let action = match spec.action() {
+        S::ScreenOff => ProfileAction::ScreenOff,
+        S::ScreenOn => ProfileAction::ScreenOn,
+        S::PowerOff => ProfileAction::PowerOff,
+        S::PowerOn => ProfileAction::PowerOn,
+        _ => return None,
+    };
+    Some((action, spec.restore_input()))
 }
 
 /// Dial TVs with an outstanding connect request, respecting backoff.

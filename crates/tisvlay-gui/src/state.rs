@@ -1067,7 +1067,7 @@ mod tests {
         // the snapshot's row builder.
         let _b = SystemProfileBody {
             name: "guest".into(),
-            on_startup: Some(SessionAction::PowerOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
         let _u = UserProfileBody {

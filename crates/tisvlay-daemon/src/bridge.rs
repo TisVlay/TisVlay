@@ -757,6 +757,7 @@ impl Bridge {
                     Command::SetScreen {
                         id,
                         on: req.on,
+                        restore_input: req.restore_input,
                         reply: Some(reply),
                     }
                 }
@@ -781,10 +782,20 @@ impl Bridge {
                     id,
                     reply: Some(reply),
                 },
-                "power-on" => Command::PowerOn {
-                    id,
-                    reply: Some(reply),
-                },
+                "power-on" => {
+                    // An empty body is a plain manual power-on (the CLI
+                    // and SDK send none).
+                    let req: rpc::PowerOn = if body.is_null() {
+                        rpc::PowerOn::default()
+                    } else {
+                        parse(body)?
+                    };
+                    Command::PowerOn {
+                        id,
+                        restore_input: req.restore_input,
+                        reply: Some(reply),
+                    }
+                }
                 "power-off" => Command::PowerOff {
                     id,
                     reply: Some(reply),

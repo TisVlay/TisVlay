@@ -258,6 +258,7 @@ async fn power_on_wakes_disconnected_tv() {
 
     client.command(Command::PowerOn {
         id,
+        restore_input: false,
         reply: Some(20),
     });
     let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;

@@ -435,15 +435,19 @@ pub(crate) fn resolve_user_field(
 /// to the body shape co-locate with the table.
 fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
     match wire {
-        "on_startup" => body.on_startup.map(session_action_token),
-        "on_shutdown" => body.on_shutdown.map(session_action_token),
-        "on_reboot" => body.on_reboot.map(session_action_token),
-        "on_sleep" => body.on_sleep.map(session_action_token),
-        "on_wake" => body.on_wake.map(session_action_token),
-        "on_dpms_off" => body.on_dpms_off.map(session_action_token),
-        "on_dpms_on" => body.on_dpms_on.map(session_action_token),
-        "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
-        "on_idle_resume" => body.on_idle_resume.map(session_action_token),
+        "on_startup" => body.on_startup.map(|a| session_action_token(a.action())),
+        "on_shutdown" => body.on_shutdown.map(|a| session_action_token(a.action())),
+        "on_reboot" => body.on_reboot.map(|a| session_action_token(a.action())),
+        "on_sleep" => body.on_sleep.map(|a| session_action_token(a.action())),
+        "on_wake" => body.on_wake.map(|a| session_action_token(a.action())),
+        "on_dpms_off" => body.on_dpms_off.map(|a| session_action_token(a.action())),
+        "on_dpms_on" => body.on_dpms_on.map(|a| session_action_token(a.action())),
+        "on_idle_timeout" => body
+            .on_idle_timeout
+            .map(|a| session_action_token(a.action())),
+        "on_idle_resume" => body
+            .on_idle_resume
+            .map(|a| session_action_token(a.action())),
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
         "automate_when" => body.automate_when.map(automate_when_token),
         _ => None,
@@ -453,11 +457,19 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
 /// User-side mirror of [`read_system_field`].
 fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
     match wire {
-        "on_session_lock" => body.on_session_lock.map(session_action_token),
-        "on_session_unlock" => body.on_session_unlock.map(session_action_token),
-        "on_lock_wake" => body.on_lock_wake.map(session_action_token),
-        "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
-        "on_idle_resume" => body.on_idle_resume.map(session_action_token),
+        "on_session_lock" => body
+            .on_session_lock
+            .map(|a| session_action_token(a.action())),
+        "on_session_unlock" => body
+            .on_session_unlock
+            .map(|a| session_action_token(a.action())),
+        "on_lock_wake" => body.on_lock_wake.map(|a| session_action_token(a.action())),
+        "on_idle_timeout" => body
+            .on_idle_timeout
+            .map(|a| session_action_token(a.action())),
+        "on_idle_resume" => body
+            .on_idle_resume
+            .map(|a| session_action_token(a.action())),
         "locked_idle_timeout_seconds" => body.locked_idle_timeout_seconds.map(|v| v.to_string()),
         "unlocked_idle_timeout_seconds" => {
             body.unlocked_idle_timeout_seconds.map(|v| v.to_string())
@@ -1212,15 +1224,49 @@ fn set_system_field(
     // collapses the four possible `BodyPatch` shapes into the one
     // the field accepts.
     match wire {
-        "on_startup" => body.on_startup = session_action_patch(patch, "on_startup")?,
-        "on_shutdown" => body.on_shutdown = session_action_patch(patch, "on_shutdown")?,
-        "on_reboot" => body.on_reboot = session_action_patch(patch, "on_reboot")?,
-        "on_sleep" => body.on_sleep = session_action_patch(patch, "on_sleep")?,
-        "on_wake" => body.on_wake = session_action_patch(patch, "on_wake")?,
-        "on_dpms_off" => body.on_dpms_off = session_action_patch(patch, "on_dpms_off")?,
-        "on_dpms_on" => body.on_dpms_on = session_action_patch(patch, "on_dpms_on")?,
-        "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
-        "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
+        "on_startup" => {
+            body.on_startup =
+                merge_action_patch(body.on_startup, session_action_patch(patch, "on_startup")?)
+        }
+        "on_shutdown" => {
+            body.on_shutdown = merge_action_patch(
+                body.on_shutdown,
+                session_action_patch(patch, "on_shutdown")?,
+            )
+        }
+        "on_reboot" => {
+            body.on_reboot =
+                merge_action_patch(body.on_reboot, session_action_patch(patch, "on_reboot")?)
+        }
+        "on_sleep" => {
+            body.on_sleep =
+                merge_action_patch(body.on_sleep, session_action_patch(patch, "on_sleep")?)
+        }
+        "on_wake" => {
+            body.on_wake = merge_action_patch(body.on_wake, session_action_patch(patch, "on_wake")?)
+        }
+        "on_dpms_off" => {
+            body.on_dpms_off = merge_action_patch(
+                body.on_dpms_off,
+                session_action_patch(patch, "on_dpms_off")?,
+            )
+        }
+        "on_dpms_on" => {
+            body.on_dpms_on =
+                merge_action_patch(body.on_dpms_on, session_action_patch(patch, "on_dpms_on")?)
+        }
+        "on_idle_timeout" => {
+            body.on_idle_timeout = merge_action_patch(
+                body.on_idle_timeout,
+                session_action_patch(patch, "on_idle_timeout")?,
+            )
+        }
+        "on_idle_resume" => {
+            body.on_idle_resume = merge_action_patch(
+                body.on_idle_resume,
+                session_action_patch(patch, "on_idle_resume")?,
+            )
+        }
         "idle_timeout_seconds" => {
             body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
         }
@@ -1233,13 +1279,36 @@ fn set_system_field(
 /// User-side mirror of [`set_system_field`].
 fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> anyhow::Result<()> {
     match wire {
-        "on_session_lock" => body.on_session_lock = session_action_patch(patch, "on_session_lock")?,
-        "on_session_unlock" => {
-            body.on_session_unlock = session_action_patch(patch, "on_session_unlock")?
+        "on_session_lock" => {
+            body.on_session_lock = merge_action_patch(
+                body.on_session_lock,
+                session_action_patch(patch, "on_session_lock")?,
+            )
         }
-        "on_lock_wake" => body.on_lock_wake = session_action_patch(patch, "on_lock_wake")?,
-        "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
-        "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
+        "on_session_unlock" => {
+            body.on_session_unlock = merge_action_patch(
+                body.on_session_unlock,
+                session_action_patch(patch, "on_session_unlock")?,
+            )
+        }
+        "on_lock_wake" => {
+            body.on_lock_wake = merge_action_patch(
+                body.on_lock_wake,
+                session_action_patch(patch, "on_lock_wake")?,
+            )
+        }
+        "on_idle_timeout" => {
+            body.on_idle_timeout = merge_action_patch(
+                body.on_idle_timeout,
+                session_action_patch(patch, "on_idle_timeout")?,
+            )
+        }
+        "on_idle_resume" => {
+            body.on_idle_resume = merge_action_patch(
+                body.on_idle_resume,
+                session_action_patch(patch, "on_idle_resume")?,
+            )
+        }
         "locked_idle_timeout_seconds" => {
             body.locked_idle_timeout_seconds = number_patch(patch, "locked_idle_timeout_seconds")?
         }
@@ -1250,6 +1319,24 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
     Ok(())
+}
+
+/// Apply an action edit while preserving the field's modifier form:
+/// changing the verb through the ComboBox must not silently drop a
+/// `restore_input` flag the mapping already carries.
+fn merge_action_patch(
+    current: Option<tisvlay_core::EventAction>,
+    patch: Option<SessionAction>,
+) -> Option<tisvlay_core::EventAction> {
+    patch.map(|action| match current {
+        Some(tisvlay_core::EventAction::With { restore_input, .. }) => {
+            tisvlay_core::EventAction::With {
+                action,
+                restore_input,
+            }
+        }
+        _ => tisvlay_core::EventAction::Plain(action),
+    })
 }
 
 /// Convert a [`BodyPatch`] targeting a `SessionAction` field into
@@ -1617,16 +1704,16 @@ mod tests {
         // something to land on.
         SystemProfileBody {
             name: "baseline".to_string(),
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: Some(SessionAction::PowerOff),
-            on_reboot: Some(SessionAction::None),
-            on_sleep: Some(SessionAction::PowerOff),
-            on_wake: Some(SessionAction::PowerOn),
-            on_dpms_off: Some(SessionAction::ScreenOff),
-            on_dpms_on: Some(SessionAction::ScreenOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
+            on_reboot: Some(SessionAction::None.into()),
+            on_sleep: Some(SessionAction::PowerOff.into()),
+            on_wake: Some(SessionAction::PowerOn.into()),
+            on_dpms_off: Some(SessionAction::ScreenOff.into()),
+            on_dpms_on: Some(SessionAction::ScreenOn.into()),
             idle_timeout_seconds: Some(0),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
+            on_idle_timeout: Some(SessionAction::ScreenOff.into()),
+            on_idle_resume: Some(SessionAction::ScreenOn.into()),
             automate_when: Some(AutomateWhen::Always),
         }
     }
@@ -1634,11 +1721,11 @@ mod tests {
     fn baseline_user() -> UserProfileBody {
         UserProfileBody {
             name: "baseline".to_string(),
-            on_session_lock: Some(SessionAction::ScreenOff),
-            on_session_unlock: Some(SessionAction::ScreenOn),
-            on_lock_wake: Some(SessionAction::ScreenOn),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            on_session_unlock: Some(SessionAction::ScreenOn.into()),
+            on_lock_wake: Some(SessionAction::ScreenOn.into()),
+            on_idle_timeout: Some(SessionAction::ScreenOff.into()),
+            on_idle_resume: Some(SessionAction::ScreenOn.into()),
             locked_idle_timeout_seconds: Some(0),
             unlocked_idle_timeout_seconds: Some(0),
         }
@@ -1666,7 +1753,7 @@ mod tests {
             uuid,
             SystemProfileBody {
                 name: "evening".into(),
-                on_startup: Some(SessionAction::ScreenOn),
+                on_startup: Some(SessionAction::ScreenOn.into()),
                 ..Default::default()
             },
         );
@@ -1700,7 +1787,7 @@ mod tests {
         // default beats baseline.
         let default_body = SystemProfileBody {
             name: "default".into(),
-            on_startup: Some(SessionAction::ScreenOff),
+            on_startup: Some(SessionAction::ScreenOff.into()),
             ..Default::default()
         };
         let layers = ProfileLayers {
@@ -1738,7 +1825,7 @@ mod tests {
             baseline: baseline_system(),
             default_body: SystemProfileBody {
                 name: "default".into(),
-                on_startup: Some(SessionAction::PowerOn),
+                on_startup: Some(SessionAction::PowerOn.into()),
                 ..Default::default()
             },
             bodies: HashMap::new(),
@@ -1905,7 +1992,7 @@ mod tests {
             uuid,
             SystemProfileBody {
                 name: "evening".into(),
-                on_sleep: Some(SessionAction::PowerOff),
+                on_sleep: Some(SessionAction::PowerOff.into()),
                 ..Default::default()
             },
         );
@@ -1950,7 +2037,7 @@ mod tests {
             DEFAULT_SYSTEM_PROFILE_UUID,
             SystemProfileBody {
                 name: "default".into(),
-                on_startup: Some(SessionAction::PowerOn),
+                on_startup: Some(SessionAction::PowerOn.into()),
                 ..Default::default()
             },
         );
@@ -1958,21 +2045,24 @@ mod tests {
             layers.bodies.is_empty(),
             "reserved default must not shadow the slot from the bodies map"
         );
-        assert_eq!(layers.default_body.on_startup, Some(SessionAction::PowerOn));
+        assert_eq!(
+            layers.default_body.on_startup,
+            Some(SessionAction::PowerOn.into())
+        );
 
         let mut user = UserProfileLayers::default();
         user.cache_body(
             DEFAULT_USER_PROFILE_UUID,
             UserProfileBody {
                 name: "default".into(),
-                on_session_lock: Some(SessionAction::ScreenOff),
+                on_session_lock: Some(SessionAction::ScreenOff.into()),
                 ..Default::default()
             },
         );
         assert!(user.bodies.is_empty());
         assert_eq!(
             user.default_body.on_session_lock,
-            Some(SessionAction::ScreenOff)
+            Some(SessionAction::ScreenOff.into())
         );
     }
 
@@ -1992,13 +2082,13 @@ mod tests {
             DEFAULT_SYSTEM_PROFILE_UUID,
             SystemProfileBody {
                 name: "default".into(),
-                on_sleep: Some(SessionAction::PowerOff),
+                on_sleep: Some(SessionAction::PowerOff.into()),
                 ..Default::default()
             },
         );
         layers.default_body = SystemProfileBody {
             name: "default".into(),
-            on_sleep: Some(SessionAction::ScreenOff),
+            on_sleep: Some(SessionAction::ScreenOff.into()),
             ..Default::default()
         };
 
@@ -2039,15 +2129,15 @@ mod tests {
             )
             .expect("known wire");
         }
-        assert_eq!(body.on_startup, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_shutdown, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_reboot, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_sleep, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_wake, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_dpms_off, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_dpms_on, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_idle_timeout, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_idle_resume, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_startup, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_shutdown, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_reboot, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_sleep, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_wake, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_dpms_off, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_dpms_on, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_idle_timeout, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_idle_resume, Some(SessionAction::PowerOn.into()));
     }
 
     #[test]
@@ -2074,7 +2164,7 @@ mod tests {
     fn set_system_field_clear_sets_none() {
         let mut body = SystemProfileBody {
             name: "n".into(),
-            on_startup: Some(SessionAction::PowerOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
         set_system_field(&mut body, "on_startup", BodyPatch::Clear).expect("known wire");
@@ -2135,11 +2225,14 @@ mod tests {
             )
             .expect("known wire");
         }
-        assert_eq!(body.on_session_lock, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_session_unlock, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_lock_wake, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_idle_timeout, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_idle_resume, Some(SessionAction::ScreenOff));
+        assert_eq!(body.on_session_lock, Some(SessionAction::ScreenOff.into()));
+        assert_eq!(
+            body.on_session_unlock,
+            Some(SessionAction::ScreenOff.into())
+        );
+        assert_eq!(body.on_lock_wake, Some(SessionAction::ScreenOff.into()));
+        assert_eq!(body.on_idle_timeout, Some(SessionAction::ScreenOff.into()));
+        assert_eq!(body.on_idle_resume, Some(SessionAction::ScreenOff.into()));
     }
 
     #[test]
@@ -2259,8 +2352,8 @@ mod tests {
         // Mirrors `dispatch_reset_all`'s inner construction step.
         let snapshot = SystemProfileBody {
             name: "evening".into(),
-            on_startup: Some(SessionAction::ScreenOn),
-            on_shutdown: Some(SessionAction::PowerOff),
+            on_startup: Some(SessionAction::ScreenOn.into()),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
             automate_when: Some(AutomateWhen::OnPrimary),
             ..Default::default()
         };
@@ -2283,7 +2376,7 @@ mod tests {
     fn reset_all_body_preserves_name_and_clears_all_fields_user() {
         let snapshot = UserProfileBody {
             name: "movies".into(),
-            on_session_lock: Some(SessionAction::ScreenOff),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
             unlocked_idle_timeout_seconds: Some(600),
             ..Default::default()
         };
@@ -2309,12 +2402,12 @@ mod tests {
         let mut state = ProfileEditorState::default();
         state.system.default_body = SystemProfileBody {
             name: "default".into(),
-            on_startup: Some(SessionAction::PowerOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
         let snap = snapshot_system_body(&state, DEFAULT_SYSTEM_PROFILE_UUID);
         assert_eq!(snap.name, "default");
-        assert_eq!(snap.on_startup, Some(SessionAction::PowerOn));
+        assert_eq!(snap.on_startup, Some(SessionAction::PowerOn.into()));
     }
 
     #[test]
@@ -2325,13 +2418,13 @@ mod tests {
             uuid,
             SystemProfileBody {
                 name: "evening".into(),
-                on_startup: Some(SessionAction::ScreenOff),
+                on_startup: Some(SessionAction::ScreenOff.into()),
                 ..Default::default()
             },
         );
         let snap = snapshot_system_body(&state, uuid);
         assert_eq!(snap.name, "evening");
-        assert_eq!(snap.on_startup, Some(SessionAction::ScreenOff));
+        assert_eq!(snap.on_startup, Some(SessionAction::ScreenOff.into()));
     }
 
     #[test]

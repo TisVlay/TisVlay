@@ -186,10 +186,16 @@ pub enum Command {
     SetScreen {
         id: Uuid,
         on: bool,
+        /// Resolved intent from a profile dispatch: land the TV on its
+        /// `primary_input` once the action completes. Manual clients
+        /// never set it.
+        restore_input: bool,
         reply: Option<ReplyTo>,
     },
     PowerOn {
         id: Uuid,
+        /// Resolved intent from a profile dispatch, as on `SetScreen`.
+        restore_input: bool,
         reply: Option<ReplyTo>,
     },
     PowerOff {

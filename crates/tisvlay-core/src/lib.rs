@@ -76,10 +76,10 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 // Configuration
 pub use config::{
     AutomateWhen, DEFAULT_BIND_PORT, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID,
-    DEFAULT_USER_PROFILE_UUID, DiscoveryConfig, ResolvedSystemProfile, ResolvedUserProfile,
-    SYSTEM_PROFILE_FIELDS, SessionAction, SystemConfig, SystemProfileConfig, SystemSection,
-    TvConfig, TvProfileAssignment, USER_PROFILE_FIELDS, UserConfig, UserProfileConfig, UserSection,
-    UserTvConfig, UserTvProfileAssignment, absolutize,
+    DEFAULT_USER_PROFILE_UUID, DiscoveryConfig, EventAction, ResolvedSystemProfile,
+    ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction, SystemConfig, SystemProfileConfig,
+    SystemSection, TvConfig, TvProfileAssignment, USER_PROFILE_FIELDS, UserConfig,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
 };
 
 // Profile-reference computation (used by daemon + clients)

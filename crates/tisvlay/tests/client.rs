@@ -130,7 +130,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
     let defaults = daemon.get_resolved_system_profile_defaults().await.unwrap();
     assert_eq!(
         defaults.on_dpms_off,
-        Some(tisvlay_core::SessionAction::ScreenOff)
+        Some(tisvlay_core::SessionAction::ScreenOff.into())
     );
 
     assert!(session.is_available().await);
@@ -222,7 +222,7 @@ async fn client_before_daemon_connects_when_it_appears() {
             assert_eq!(body.name, "default");
             assert_eq!(
                 body.on_dpms_off,
-                Some(tisvlay_core::SessionAction::ScreenOff)
+                Some(tisvlay_core::SessionAction::ScreenOff.into())
             );
             break;
         }

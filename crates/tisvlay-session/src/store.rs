@@ -103,7 +103,7 @@ mod tests {
                 id: profile,
                 body: UserProfileConfig {
                     name: "Late night".into(),
-                    on_session_lock: Some(tisvlay_core::SessionAction::None),
+                    on_session_lock: Some(tisvlay_core::SessionAction::None.into()),
                     ..Default::default()
                 },
             }],

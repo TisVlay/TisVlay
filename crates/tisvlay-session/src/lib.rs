@@ -378,7 +378,7 @@ impl Core {
         }
         let resolved = self.resolve_for(&tv);
         if !matches!(
-            resolved.on_idle_timeout,
+            resolved.on_idle_timeout.action(),
             SessionAction::ScreenOff | SessionAction::PowerOff
         ) {
             return;
@@ -462,7 +462,7 @@ impl Core {
 
     /// Root chain per field: assignment → profile → editable default
     /// profile → hard-coded floor.
-    fn action_for(&self, tv: &Uuid, event: SessionEvent) -> SessionAction {
+    fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
         let resolved = self.resolve_for(tv);
         match event {
             SessionEvent::Lock => resolved.on_session_lock,
@@ -763,12 +763,19 @@ async fn drift_deadline(at: Option<tokio::time::Instant>) {
     }
 }
 
-fn call_tv(system: &Session, site: &str, tv: Uuid, action: SessionAction) {
-    let (verb, body) = match action {
+fn call_tv(system: &Session, site: &str, tv: Uuid, spec: tisvlay_core::EventAction) {
+    // The resolved restore flag rides the rpc as resolved intent: the
+    // world honors it without knowing the session's event vocabulary,
+    // and manual clients (which never set it) stay input-neutral.
+    let restore = spec.restore_input();
+    let (verb, body) = match spec.action() {
         SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
-        SessionAction::ScreenOn => ("set-screen", json!({ "on": true })),
+        SessionAction::ScreenOn => (
+            "set-screen",
+            json!({ "on": true, "restore_input": restore }),
+        ),
         SessionAction::PowerOff => ("power-off", Value::Null),
-        SessionAction::PowerOn => ("power-on", Value::Null),
+        SessionAction::PowerOn => ("power-on", json!({ "restore_input": restore })),
         SessionAction::None => return,
     };
     let session = system.clone();
@@ -801,9 +808,10 @@ fn call_tv(system: &Session, site: &str, tv: Uuid, action: SessionAction) {
 }
 
 /// The wire projection of a resolved user profile — same field names as
-/// the config, every value concrete.
+/// the config, every value concrete. Actions render in their serde
+/// shape (string, or table when they carry modifiers).
 fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
-    let action = |a: SessionAction| serde_json::to_value(a).unwrap_or_default();
+    let action = |a: tisvlay_core::EventAction| serde_json::to_value(a).unwrap_or_default();
     json!({
         "on_session_lock": action(resolved.on_session_lock),
         "on_session_unlock": action(resolved.on_session_unlock),

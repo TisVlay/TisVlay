@@ -311,11 +311,11 @@ async fn defaults_and_effective_expose_field_resolution() {
     // profile is seeded from this at first boot.
     let stock_map = json!({
         "name": "default",
-        "on_startup": "power_on",
+        "on_startup": { "action": "power_on", "restore_input": true },
         "on_shutdown": "power_off",
         "on_reboot": "none",
         "on_sleep": "power_off",
-        "on_wake": "power_on",
+        "on_wake": { "action": "power_on", "restore_input": true },
         "on_dpms_off": "screen_off",
         "on_dpms_on": "screen_on",
         "on_idle_timeout": "screen_off",
@@ -376,11 +376,11 @@ async fn defaults_and_effective_expose_field_resolution() {
         effective,
         json!({
             "name": "Quiet",
-            "on_startup": "power_on",
+            "on_startup": { "action": "power_on", "restore_input": true },
             "on_shutdown": "power_off",
             "on_reboot": "none",
             "on_sleep": "screen_off",
-            "on_wake": "power_on",
+            "on_wake": { "action": "power_on", "restore_input": true },
             "on_dpms_off": "none",
             "on_dpms_on": "screen_on",
             "on_idle_timeout": "screen_off",

@@ -366,7 +366,7 @@ async fn user_profile_overrides_and_guards() {
         json!({
             "name": "default",
             "on_session_lock": "screen_off",
-            "on_session_unlock": "screen_on",
+            "on_session_unlock": { "action": "screen_on", "restore_input": true },
             "on_lock_wake": "screen_on",
             "locked_idle_timeout_seconds": 0,
             "unlocked_idle_timeout_seconds": 0,
@@ -406,7 +406,10 @@ async fn user_profile_overrides_and_guards() {
     .await
     .expect("effective ok");
     assert_eq!(effective["on_session_lock"], "none");
-    assert_eq!(effective["on_session_unlock"], "screen_on");
+    assert_eq!(
+        effective["on_session_unlock"],
+        json!({ "action": "screen_on", "restore_input": true })
+    );
 
     drive_until(&rig, &sub, SessionEvent::Lock, stock, "screenoff").await;
     assert_no_sample(&sub, Duration::from_millis(400), |s| {
