@@ -7272,7 +7272,9 @@ dependencies = [
  "bevy_ecs",
  "serde",
  "serde_json",
+ "tempfile",
  "tisvlay-core",
+ "tokio",
  "uuid",
  "zenoh",
 ]
