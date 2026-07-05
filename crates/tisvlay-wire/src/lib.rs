@@ -1130,18 +1130,26 @@ pub mod bootstrap {
     pub const SYSTEM_SOCKET_PATH: &str = "/run/tisvlay/zenoh.sock";
 
     /// Default daemon socket for the *connect* side. Prefers the
-    /// per-user dev socket when it exists, then the packaged system
-    /// daemon's socket, then falls back to the dev path (a resilient
-    /// link dials it until a dev daemon appears). Listeners must use
-    /// [`default_socket_path`] — an existence probe on the connect
-    /// side is harmless, but a listener falling back to the system
-    /// path would try to take over the packaged daemon's socket.
+    /// per-user dev socket when it is **connectable**, then the
+    /// packaged system daemon's socket, then falls back to the dev
+    /// path (a resilient link dials it until a dev daemon appears).
+    /// Connectable, not merely present: a dev stack that died
+    /// uncleanly leaves its socket file behind, and zenoh's `.lock`
+    /// takeover only rescues listeners — a client aimed at the
+    /// corpse would dial it forever while the packaged daemon sits
+    /// live next door. Listeners must use [`default_socket_path`] —
+    /// a listener falling back to the system path would try to take
+    /// over the packaged daemon's socket.
     pub fn default_connect_socket_path() -> PathBuf {
-        let dev = default_socket_path();
-        if !dev.exists() && Path::new(SYSTEM_SOCKET_PATH).exists() {
-            return PathBuf::from(SYSTEM_SOCKET_PATH);
+        resolve_connect_socket(&default_socket_path(), Path::new(SYSTEM_SOCKET_PATH))
+    }
+
+    fn resolve_connect_socket(dev: &Path, packaged: &Path) -> PathBuf {
+        let dev_alive = std::os::unix::net::UnixStream::connect(dev).is_ok();
+        if !dev_alive && packaged.exists() {
+            return packaged.to_path_buf();
         }
-        dev
+        dev.to_path_buf()
     }
 
     /// Default session-service user socket: `$XDG_RUNTIME_DIR/tisvlay/
@@ -1259,6 +1267,36 @@ pub mod bootstrap {
                 list,
                 r#"["unixsock-stream//run/user/1000/tisvlay/zenoh.sock"]"#
             );
+        }
+
+        /// Connect-side default resolution: a live dev listener wins; a
+        /// stale dev socket file (dead listener) must fall through to
+        /// the packaged path instead of aiming clients at a corpse; a
+        /// missing packaged path leaves the dev default in place.
+        #[test]
+        fn stale_dev_socket_falls_through_to_the_packaged_path() {
+            let dir = tempfile::tempdir().unwrap();
+            let dev = dir.path().join("zenoh.sock");
+            let packaged = dir.path().join("packaged.sock");
+
+            // Neither exists: dev default (resilient links dial it).
+            assert_eq!(resolve_connect_socket(&dev, &packaged), dev);
+
+            // Stale dev file, no packaged: still dev.
+            let dead = std::os::unix::net::UnixListener::bind(&dev).unwrap();
+            drop(dead);
+            assert!(dev.exists());
+            assert_eq!(resolve_connect_socket(&dev, &packaged), dev);
+
+            // Stale dev file + packaged present: packaged wins.
+            std::fs::File::create(&packaged).unwrap();
+            assert_eq!(resolve_connect_socket(&dev, &packaged), packaged);
+
+            // Live dev listener: dev wins again.
+            let _live = std::os::unix::net::UnixListener::bind(dir.path().join("live.sock"));
+            std::fs::remove_file(&dev).unwrap();
+            let _dev_listener = std::os::unix::net::UnixListener::bind(&dev).unwrap();
+            assert_eq!(resolve_connect_socket(&dev, &packaged), dev);
         }
 
         #[test]
