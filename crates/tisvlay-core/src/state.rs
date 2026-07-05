@@ -184,6 +184,22 @@ impl PowerState {
                 | Self::WarmingUp
         )
     }
+
+    /// Whether a `screen_on` must ride the power path first: in every
+    /// state outside this whitelist, screen commands stall or
+    /// false-ACK (`ActiveStandby` acknowledges without ever lighting
+    /// the panel), so the reliable-dispatch tier wakes the TV instead
+    /// of retrying a command it cannot win.
+    ///
+    /// `ScreenOff` is deliberately *not* wake-needy — a lock-screen
+    /// blank leaves the cache there, and a plain `screen_on` suffices;
+    /// waking would be pure added latency. The whitelist form keeps
+    /// `Unknown` and future `#[non_exhaustive]` variants on the safe
+    /// fall-through the enum docs prescribe: treat as wake-preflight
+    /// needed.
+    pub fn needs_wake_preflight(self) -> bool {
+        !matches!(self, Self::Active | Self::ScreenSaver | Self::ScreenOff)
+    }
 }
 
 /// Shared client-side interpretation of a TV's power-state wire
@@ -334,6 +350,33 @@ mod tests {
              or the daemon's cached PowerState property would report 'active' \
              and defeat the reliable tier's verify check",
         );
+    }
+
+    /// Pin the wake-preflight set variant by variant: only the states
+    /// where a screen command can actually land (`Active`,
+    /// `ScreenSaver`, `ScreenOff`) skip the power path. `Unknown`
+    /// pins the `#[non_exhaustive]` fall-through — a state the daemon
+    /// can't vouch for must wake rather than retry into a void — and
+    /// `ScreenOff` pins the lock-screen case that must *not* wake.
+    #[test]
+    fn wake_preflight_set_is_pinned() {
+        for (state, needs_wake) in [
+            (PowerState::Active, false),
+            (PowerState::ScreenSaver, false),
+            (PowerState::ScreenOff, false),
+            (PowerState::ActiveStandby, true),
+            (PowerState::Standby, true),
+            (PowerState::Suspend, true),
+            (PowerState::WarmingUp, true),
+            (PowerState::CoolingDown, true),
+            (PowerState::Unknown, true),
+        ] {
+            assert_eq!(
+                state.needs_wake_preflight(),
+                needs_wake,
+                "needs_wake_preflight mismatch for {state:?}",
+            );
+        }
     }
 
     /// Companion to [`active_standby_marks_screen_off`]: spell out the

@@ -200,6 +200,7 @@ type LinkQuery<'a> = (
     Option<&'a TransportTraits>,
     Option<&'a payload::Link>,
     Option<&'a DispatchRetry>,
+    Option<&'a payload::Power>,
 );
 
 /// Route a power-on request: in-band on a live handle, otherwise the wake
@@ -233,9 +234,42 @@ fn power_on_tv(
     }
 }
 
+/// Arm the screen verify: the action was sent (or routed onto the wake
+/// path) and the cached power state must agree once the backend's
+/// verify delay has elapsed.
+fn arm_screen_verify(
+    commands: &mut Commands,
+    entity: Entity,
+    clock: &Clock,
+    retry: Option<&DispatchRetry>,
+    target_on: bool,
+) {
+    let delay = retry
+        .map(|r| r.0.verify_delay)
+        .unwrap_or_else(|| tisvlay_core::RetryConfig::default().verify_delay);
+    commands.entity(entity).insert(DispatchVerify {
+        target_on,
+        attempts: 1,
+        verify_at: clock.0 + delay,
+        escalated: false,
+    });
+}
+
+/// A borrowed `LinkQuery` row — what `dispatch_screen` needs to route.
+type ScreenRow<'a> = (
+    Option<&'a ConnectionHandle>,
+    bool,
+    Option<&'a TransportTraits>,
+    Option<&'a payload::Link>,
+    Option<&'a DispatchRetry>,
+    Option<&'a payload::Power>,
+);
+
 /// Screen dispatch, reliable tier: send, then verify against the cached
 /// power state after the backend's verify delay (see `verify_dispatch`).
 /// Backends that emulate screen via power route straight to power actions.
+/// A wake-needy or disconnected `screen_on` rides the power path instead
+/// of erroring; a disconnected `screen_off` is a satisfied no-op.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_screen(
     commands: &mut Commands,
@@ -244,16 +278,10 @@ fn dispatch_screen(
     entity: Entity,
     id: Uuid,
     on: bool,
-    row: (
-        Option<&ConnectionHandle>,
-        bool,
-        Option<&TransportTraits>,
-        Option<&payload::Link>,
-        Option<&DispatchRetry>,
-    ),
+    row: ScreenRow,
     reply: Option<ReplyTo>,
 ) {
-    let (handle, _pending, traits, link, retry) = row;
+    let (handle, _pending, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
             power_on_tv(commands, outbox, entity, id, handle, link, reply);
@@ -261,11 +289,31 @@ fn dispatch_screen(
             let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
             reply_ok(outbox, reply);
         } else {
-            reply_err(outbox, reply, WireError::not_connected(id));
+            // Satisfied no-op: a dark, unreachable TV already is
+            // screen-off. Standby-reachable backends keep their handle
+            // in standby, so this arm is the truly-unplugged case.
+            reply_ok(outbox, reply);
         }
         return;
     }
+    // Pre-flight wake: `screen_on` against a half-asleep TV no-ops or
+    // false-ACKs (LG's ActiveStandby), so a wake-needy cached power
+    // state routes straight to the power path and the verify below
+    // re-asserts the panel. `Unknown` counts as wake-needy only for
+    // network transports: a standby-reachable TV reads `Unknown` while
+    // genuinely on (power queries are best-effort on the bus), and a
+    // wake there grabs the active source away from whatever is showing.
+    let wake_needy = on
+        && power.is_some_and(|p| {
+            p.state.needs_wake_preflight()
+                && !(p.state == tisvlay_core::PowerState::Unknown
+                    && traits.is_some_and(|t| t.0.reachable_in_standby))
+        });
     match handle {
+        Some(handle) if wake_needy => {
+            power_on_tv(commands, outbox, entity, id, Some(handle), link, reply);
+            arm_screen_verify(commands, entity, clock, retry, on);
+        }
         Some(handle)
             if handle
                 .cmd_tx
@@ -276,14 +324,20 @@ fn dispatch_screen(
                 })
                 .is_ok() =>
         {
-            let delay = retry
-                .map(|r| r.0.verify_delay)
-                .unwrap_or_else(|| tisvlay_core::RetryConfig::default().verify_delay);
-            commands.entity(entity).insert(DispatchVerify {
-                target_on: on,
-                attempts: 1,
-                verify_at: clock.0 + delay,
-            });
+            arm_screen_verify(commands, entity, clock, retry, on);
+            reply_ok(outbox, reply);
+        }
+        None if on && link.is_some_and(|l| l.supports_wake) => {
+            // Elevation: a disconnected `screen_on` rides the wake path
+            // instead of erroring (the rpc acks when the dial is armed,
+            // same as `power-on`); the verify survives the dial and
+            // re-asserts the panel on reconnect.
+            power_on_tv(commands, outbox, entity, id, None, link, reply);
+            arm_screen_verify(commands, entity, clock, retry, true);
+        }
+        None if !on => {
+            // Satisfied no-op: a dark, disconnected TV already is
+            // screen-off.
             reply_ok(outbox, reply);
         }
         _ => reply_err(outbox, reply, WireError::not_connected(id)),
@@ -512,8 +566,9 @@ fn handle_tv_commands(
                 }
             }
             Command::SetManaged { managed, .. } => {
-                let (handle, pending, ..) =
-                    q.get(entity).unwrap_or((None, false, None, None, None));
+                let (handle, pending, ..) = q
+                    .get(entity)
+                    .unwrap_or((None, false, None, None, None, None));
                 apply_managed(&mut commands, entity, *managed, handle.is_some(), pending);
                 if let Ok(mut meta) = writes.meta.get_mut(entity)
                     && meta.managed != *managed
@@ -591,7 +646,9 @@ fn handle_tv_commands(
                 );
             }
             Command::SetScreen { on, .. } => {
-                let row = q.get(entity).unwrap_or((None, false, None, None, None));
+                let row = q
+                    .get(entity)
+                    .unwrap_or((None, false, None, None, None, None));
                 dispatch_screen(
                     &mut commands,
                     &mut outbox,
@@ -763,8 +820,9 @@ fn apply_config_patch(
             }
             "managed" => {
                 let managed = value.as_bool().unwrap_or(true);
-                let (handle, pending, ..) =
-                    q.get(entity).unwrap_or((None, false, None, None, None));
+                let (handle, pending, ..) = q
+                    .get(entity)
+                    .unwrap_or((None, false, None, None, None, None));
                 apply_managed(commands, entity, managed, handle.is_some(), pending);
                 if let Ok(mut meta) = writes.meta.get_mut(entity) {
                     meta.managed = managed;
@@ -813,7 +871,9 @@ fn apply_config_patch(
         }
         // Transport parameters may have changed — reconnect with the new
         // config if this TV is being driven at all.
-        let (handle, pending, ..) = q.get(entity).unwrap_or((None, false, None, None, None));
+        let (handle, pending, ..) = q
+            .get(entity)
+            .unwrap_or((None, false, None, None, None, None));
         if handle.is_some() || pending {
             let mut e = commands.entity(entity);
             e.remove::<(ConnectionHandle, RetryAt)>();
@@ -865,6 +925,11 @@ fn verify_dispatch(
     )>,
 ) {
     for (entity, id, mut verify, handle, pending, power, link, traits, retry) in &mut q {
+        if pending {
+            // A dial is in flight (elevation or wake escalation): defer —
+            // the Connected arm re-asserts and restarts the verify clock.
+            continue;
+        }
         if verify.verify_at > clock.0 {
             continue;
         }
@@ -873,10 +938,16 @@ fn verify_dispatch(
             commands.entity(entity).remove::<DispatchVerify>();
             continue;
         }
+        let Some(handle) = handle else {
+            // No link and no dial left: the wake this verify rode is
+            // gone for good — the intent dies observably instead of
+            // re-escalating forever.
+            commands.entity(entity).remove::<DispatchVerify>();
+            publish_dispatch_failed(&mut outbox, &site, &id.0, verify.target_on);
+            continue;
+        };
         let config = retry.map(|r| r.0).unwrap_or_default();
-        if (verify.attempts as usize) < config.effective_max_attempts()
-            && let Some(handle) = handle
-        {
+        if (verify.attempts as usize) < config.effective_max_attempts() {
             let cmd = if verify.target_on {
                 BackendCmd::ScreenOn
             } else {
@@ -889,35 +960,40 @@ fn verify_dispatch(
             continue;
         }
         tracing::debug!(tv = %id.0, target_on = verify.target_on, "screen dispatch budget spent");
-        commands.entity(entity).remove::<DispatchVerify>();
         if verify.target_on {
-            if traits.is_some_and(|t| t.0.reachable_in_standby)
-                && let Some(handle) = handle
-            {
+            if traits.is_some_and(|t| t.0.reachable_in_standby) {
                 // Wake in place on the live standby connection (CEC).
                 let _ = handle.cmd_tx.send(BackendCmd::PowerOn);
+                commands.entity(entity).remove::<DispatchVerify>();
                 continue;
             }
-            if link.is_some_and(|l| l.supports_wake) {
+            if link.is_some_and(|l| l.supports_wake) && !verify.escalated {
+                // The verify survives the teardown: the reconnect
+                // re-asserts the panel, and `escalated` caps this at
+                // one wake dial per dispatch.
+                verify.escalated = true;
                 let mut e = commands.entity(entity);
                 e.remove::<(ConnectionHandle, RetryAt)>();
-                if !pending {
-                    e.insert(PendingConnect {
-                        attempts: 0,
-                        wake: true,
-                    });
-                }
+                e.insert(PendingConnect {
+                    attempts: 0,
+                    wake: true,
+                });
                 continue;
             }
         }
-        outbox.0.push(Effect::Wire(WireEffect::Publish {
-            key: keys::event(&site.0, "dispatch-failed"),
-            payload: json!({
-                "tv": id.0,
-                "action": if verify.target_on { "screen_on" } else { "screen_off" },
-            }),
-        }));
+        commands.entity(entity).remove::<DispatchVerify>();
+        publish_dispatch_failed(&mut outbox, &site, &id.0, verify.target_on);
     }
+}
+
+fn publish_dispatch_failed(outbox: &mut Outbox, site: &Site, tv: &Uuid, target_on: bool) {
+    outbox.0.push(Effect::Wire(WireEffect::Publish {
+        key: keys::event(&site.0, "dispatch-failed"),
+        payload: json!({
+            "tv": tv,
+            "action": if target_on { "screen_on" } else { "screen_off" },
+        }),
+    }));
 }
 
 fn publish_profile(
@@ -1113,6 +1189,7 @@ struct StateWrites<'w, 's> {
     backlight: Query<'w, 's, &'static mut payload::Backlight>,
     identity: Query<'w, 's, &'static mut payload::Identity>,
     pending: Query<'w, 's, &'static PendingConnect>,
+    verify: Query<'w, 's, &'static mut DispatchVerify>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1156,7 +1233,7 @@ fn apply_backend_events(
                         },
                         DispatchRetry(*retry),
                     ))
-                    .remove::<(Reconnecting, PendingConnect, RetryAt, DispatchVerify)>();
+                    .remove::<(Reconnecting, PendingConnect, RetryAt)>();
                 apply_state(&mut commands, entity, state, &mut writes);
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     let mut enriched = identity.clone();
@@ -1201,12 +1278,36 @@ fn apply_backend_events(
                 if wake_dial {
                     publish_power_phase(&mut outbox, &site, tv, "connected");
                 }
+                // A screen intent that survived the dial (elevation or
+                // wake escalation) re-asserts over the fresh link:
+                // satisfied by the connect snapshot → done; otherwise
+                // re-send and restart the verify clock. `escalated`
+                // carries over, so a TV that keeps ACKing dark gets
+                // exactly one wake escalation per dispatch.
+                if let Ok(mut verify) = writes.verify.get_mut(entity) {
+                    if state.is_screen_on == verify.target_on {
+                        commands.entity(entity).remove::<DispatchVerify>();
+                    } else {
+                        let _ = cmd_tx.send(if verify.target_on {
+                            BackendCmd::ScreenOn
+                        } else {
+                            BackendCmd::ScreenOff
+                        });
+                        verify.attempts = 1;
+                        verify.verify_at = clock.0 + retry.verify_delay;
+                    }
+                }
             }
             BackendEvent::State(state) => apply_state(&mut commands, entity, state, &mut writes),
             BackendEvent::Disconnected => {
-                commands
-                    .entity(entity)
-                    .remove::<(ConnectionHandle, DispatchVerify)>();
+                let mut e = commands.entity(entity);
+                e.remove::<ConnectionHandle>();
+                // The wake escalation tears the handle down itself; the
+                // task's parting Disconnected must not kill the intent
+                // riding the pending dial.
+                if writes.pending.get(entity).is_err() {
+                    e.remove::<DispatchVerify>();
+                }
             }
             BackendEvent::ConnectFailed { reason } => {
                 // A freshly paired TV fails its pairing on the first
@@ -1675,6 +1776,7 @@ fn dispatch_system_events(
             Option<&TransportTraits>,
             Option<&payload::Link>,
             Option<&DispatchRetry>,
+            Option<&payload::Power>,
             Option<&MirrorsConnector>,
             Option<&payload::Meta>,
             Option<&payload::Input>,
@@ -1688,7 +1790,7 @@ fn dispatch_system_events(
         let InEvent::System { event, connector } = msg else {
             continue;
         };
-        for (entity, id, handle, pending, traits, link, retry, mirrors, meta, input) in &q {
+        for (entity, id, handle, pending, traits, link, retry, power, mirrors, meta, input) in &q {
             if let Some(scope) = connector
                 && mirrors.is_none_or(|MirrorsConnector(mapped)| mapped != scope)
             {
@@ -1713,7 +1815,7 @@ fn dispatch_system_events(
                     entity,
                     id.0,
                     false,
-                    (handle, pending, traits, link, retry),
+                    (handle, pending, traits, link, retry, power),
                     None,
                 ),
                 ProfileAction::ScreenOn => dispatch_screen(
@@ -1723,7 +1825,7 @@ fn dispatch_system_events(
                     entity,
                     id.0,
                     true,
-                    (handle, pending, traits, link, retry),
+                    (handle, pending, traits, link, retry, power),
                     None,
                 ),
                 ProfileAction::PowerOff => {

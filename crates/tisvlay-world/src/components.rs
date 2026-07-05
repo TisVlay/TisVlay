@@ -98,12 +98,19 @@ pub(crate) struct DispatchRetry(pub tisvlay_core::RetryConfig);
 /// A screen action awaiting verification: after `verify_at`, the cached
 /// power state must agree or the action retries — and `screen_on`
 /// escalates to the wake path once attempts are spent (the panel saying
-/// "ok" while staying dark is real LG firmware behavior).
+/// "ok" while staying dark is real LG firmware behavior). This is the
+/// one screen-intent latch: it survives a wake-driven teardown (the
+/// dial defers verification; the reconnect re-asserts and restarts the
+/// clock) so elevation and escalation never need a second carrier.
 #[derive(Component, Debug)]
 pub(crate) struct DispatchVerify {
     pub target_on: bool,
     pub attempts: u8,
     pub verify_at: Instant,
+    /// The wake escalation already fired for this dispatch. Carried
+    /// across the reconnect so a TV that keeps ACKing dark gets exactly
+    /// one wake dial per dispatch instead of ping-ponging forever.
+    pub escalated: bool,
 }
 
 /// A running pairing session, keyed by the TV's uuid. For a fresh pairing
