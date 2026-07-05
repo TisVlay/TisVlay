@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use futures_util::StreamExt;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{SessionClient, SessionEvent};
 
@@ -21,6 +21,9 @@ trait ScreenSaver {
     /// `active = true` means locked, `false` means unlocked.
     #[zbus(signal)]
     fn active_changed(&self, active: bool) -> zbus::Result<()>;
+
+    /// Current lock state — seeds `is_locked` at startup.
+    fn get_active(&self) -> zbus::Result<bool>;
 }
 
 /// Forward lock/unlock transitions until the bus or the core loop drops.
@@ -33,6 +36,14 @@ pub async fn watch_screensaver(
 ) -> Result<()> {
     let proxy = ScreenSaverProxy::new(&connection).await?;
     let mut stream = proxy.receive_active_changed().await?;
+    // Seed: the lock can predate the subscription (KDE's auto-login
+    // lock activates before this service starts), and the locked-idle
+    // timer gates on this flag. State only — no synthesized event, so
+    // profile lock actions still fire on edges alone.
+    match proxy.get_active().await {
+        Ok(active) => is_locked.store(active, Ordering::SeqCst),
+        Err(e) => debug!(%e, "ScreenSaver GetActive unavailable; assuming unlocked"),
+    }
     info!("screensaver watcher running");
     while let Some(signal) = stream.next().await {
         let active = signal.args()?.active;

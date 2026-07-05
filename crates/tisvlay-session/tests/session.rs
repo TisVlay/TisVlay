@@ -482,6 +482,39 @@ async fn screensaver_adapter_drives_lock_unlock() {
     .await;
 }
 
+/// A lock that predates the watcher (KDE's auto-login lock activates
+/// before the session service starts) is seeded from `GetActive` —
+/// without the seed the locked-idle timer stays gated off and never
+/// blanks the TV.
+#[tokio::test(flavor = "multi_thread")]
+async fn screensaver_seed_reads_a_preexisting_lock() {
+    let bus = tisvlay_test::PrivateBus::shared();
+    let service_conn = bus.connect().await.expect("private bus service conn");
+    let fake = tisvlay_test::fake_screensaver::FakeScreenSaver::register(&service_conn)
+        .await
+        .expect("fake screensaver");
+    // The lock lands before anyone subscribes — an edge with no witness.
+    fake.emit_active_changed(true).await.unwrap();
+
+    let rig = rig().await;
+    let watcher_conn = bus.connect().await.expect("watcher conn");
+    let client = rig.stack.client.clone();
+    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let locked = is_locked.clone();
+    tokio::spawn(async move {
+        let _ = tisvlay_session::watch_screensaver(watcher_conn, client, locked).await;
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !is_locked.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "GetActive seed never landed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Profiles and assignments survive a session-service restart, and the
 /// idle-timeout watch tracks the resolved minimum.
 #[tokio::test(flavor = "multi_thread")]

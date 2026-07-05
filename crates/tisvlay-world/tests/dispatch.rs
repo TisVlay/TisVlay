@@ -290,12 +290,13 @@ async fn disconnected_screen_off_is_a_satisfied_noop() {
     );
 }
 
-/// The pre-flight wake: `screen_on` against a connected TV whose cached
-/// power is wake-needy (LG's ActiveStandby ACKs screen commands without
-/// ever lighting the panel) skips the verify-retry loop and rides the
-/// power path in-band — no screen command, no teardown.
+/// The pre-flight wake, network shape: `screen_on` against a connected
+/// TV whose cached power is wake-needy (LG's ActiveStandby ACKs screen
+/// commands without ever lighting the panel) skips the verify-retry
+/// loop and spends the dispatch's wake dial immediately — LG has no
+/// in-band power_on, so the power path IS the teardown + WoL redial.
 #[tokio::test]
-async fn wake_needy_screen_on_preflights_to_the_power_path() {
+async fn wake_needy_screen_on_preflights_to_the_wake_dial() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://pre").await;
 
@@ -310,20 +311,99 @@ async fn wake_needy_screen_on_preflights_to_the_power_path() {
         on: true,
         reply: Some(42),
     });
-    collect_until(&mut effects, |e| {
-        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
-    })
-    .await;
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+    let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
+    assert!(
+        seen.iter()
+            .any(|e| is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")),
+        "the wake reconnect must report the panel active: {seen:#?}"
+    );
     assert_eq!(
         handle.screen_on_call_count("mock://pre"),
         0,
         "pre-flight must ride the power path, not the screen command"
     );
+    assert_eq!(handle.connect_call_count("mock://pre"), 2);
+}
+
+/// The pre-flight wake, standby-reachable shape (a future CEC-like
+/// backend without screen emulation): the bus stays live in standby, so
+/// the pre-flight wakes in place — in-band power_on, no teardown.
+#[tokio::test]
+async fn wake_needy_screen_on_wakes_in_place_when_standby_reachable() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = uuid::Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert("address".into(), toml::Value::String("mock://sr".into()));
+    table.insert("reachable_in_standby".into(), toml::Value::Boolean(true));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Sr", toml::Value::Table(table))),
+        reply: Some(1),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+
+    handle.inject_power_state("mock://sr", PowerState::ActiveStandby);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "activestandby")
+    })
+    .await;
+
+    client.command(Command::SetScreen {
+        id,
+        on: true,
+        reply: Some(44),
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
     assert_eq!(
-        handle.connect_call_count("mock://pre"),
-        1,
-        "in-band wake needs no teardown"
+        handle.screen_on_call_count("mock://sr"),
+        0,
+        "pre-flight must ride the power path, not the screen command"
     );
+    assert_eq!(
+        handle.connect_call_count("mock://sr"),
+        1,
+        "in-place wake needs no teardown"
+    );
+}
+
+/// A `screen_off` arriving while a dial is in flight latches instead of
+/// no-opping: the reconnect re-asserts it over the fresh link — the
+/// locked-idle timer racing a boot wake must land, not be swallowed.
+#[tokio::test]
+async fn screen_off_during_pending_dial_lands_after_connect() {
+    let (mut effects, client, handle) = spawn_reactor();
+    handle.set_connect_delay(Duration::from_millis(400));
+    let id = uuid::Uuid::new_v4();
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Race", mock_config("mock://race"))),
+        reply: Some(1),
+    });
+    // The AddTv reply proves the spawn (and its PendingConnect) flushed;
+    // the dial itself is still sleeping in the connect delay.
+    collect_until(&mut effects, |e| reply_to(e, 1)).await;
+
+    client.command(Command::SetScreen {
+        id,
+        on: false,
+        reply: Some(45),
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 45)).await;
+    assert!(
+        seen.iter().all(|e| reply_err_code(e, 45).is_none()),
+        "latched screen_off must ack: {seen:#?}"
+    );
+
+    // Connect lands (panel up) → the latch re-asserts screen_off.
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+    assert_eq!(handle.screen_off_call_count("mock://race"), 1);
+    assert_eq!(handle.connect_call_count("mock://race"), 1);
 }
 
 /// The one-latch invariant across a wake teardown: an escalated

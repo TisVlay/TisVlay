@@ -236,13 +236,15 @@ fn power_on_tv(
 
 /// Arm the screen verify: the action was sent (or routed onto the wake
 /// path) and the cached power state must agree once the backend's
-/// verify delay has elapsed.
+/// verify delay has elapsed. `escalated` marks a dispatch whose one
+/// wake dial is already spent (pre-flight, elevation).
 fn arm_screen_verify(
     commands: &mut Commands,
     entity: Entity,
     clock: &Clock,
     retry: Option<&DispatchRetry>,
     target_on: bool,
+    escalated: bool,
 ) {
     let delay = retry
         .map(|r| r.0.verify_delay)
@@ -251,7 +253,7 @@ fn arm_screen_verify(
         target_on,
         attempts: 1,
         verify_at: clock.0 + delay,
-        escalated: false,
+        escalated,
     });
 }
 
@@ -281,7 +283,7 @@ fn dispatch_screen(
     row: ScreenRow,
     reply: Option<ReplyTo>,
 ) {
-    let (handle, _pending, traits, link, retry, power) = row;
+    let (handle, pending, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
             power_on_tv(commands, outbox, entity, id, handle, link, reply);
@@ -310,9 +312,20 @@ fn dispatch_screen(
                     && traits.is_some_and(|t| t.0.reachable_in_standby))
         });
     match handle {
-        Some(handle) if wake_needy => {
+        Some(handle) if wake_needy && traits.is_some_and(|t| t.0.reachable_in_standby) => {
+            // Wake in place on the live standby connection.
             power_on_tv(commands, outbox, entity, id, Some(handle), link, reply);
-            arm_screen_verify(commands, entity, clock, retry, on);
+            arm_screen_verify(commands, entity, clock, retry, on, false);
+        }
+        Some(_) if wake_needy => {
+            // Network transports have no in-band power_on (LG wakes via
+            // WoL only) — spend the dispatch's one wake dial now instead
+            // of detouring through the verify budget.
+            let mut e = commands.entity(entity);
+            e.remove::<(ConnectionHandle, RetryAt)>();
+            redial(&mut e, true);
+            reply_ok(outbox, reply);
+            arm_screen_verify(commands, entity, clock, retry, on, true);
         }
         Some(handle)
             if handle
@@ -324,16 +337,23 @@ fn dispatch_screen(
                 })
                 .is_ok() =>
         {
-            arm_screen_verify(commands, entity, clock, retry, on);
+            arm_screen_verify(commands, entity, clock, retry, on, false);
             reply_ok(outbox, reply);
         }
         None if on && link.is_some_and(|l| l.supports_wake) => {
             // Elevation: a disconnected `screen_on` rides the wake path
             // instead of erroring (the rpc acks when the dial is armed,
-            // same as `power-on`); the verify survives the dial and
-            // re-asserts the panel on reconnect.
+            // same as `power-on`); the verify survives the dial, spends
+            // the dispatch's one wake, and re-asserts on reconnect.
             power_on_tv(commands, outbox, entity, id, None, link, reply);
-            arm_screen_verify(commands, entity, clock, retry, true);
+            arm_screen_verify(commands, entity, clock, retry, true, true);
+        }
+        None if !on && pending => {
+            // A dial is in flight: latch the intent so the reconnect
+            // re-asserts `screen_off` over the fresh link — the locked-
+            // idle timer racing a boot wake must not be swallowed.
+            arm_screen_verify(commands, entity, clock, retry, false, false);
+            reply_ok(outbox, reply);
         }
         None if !on => {
             // Satisfied no-op: a dark, disconnected TV already is
