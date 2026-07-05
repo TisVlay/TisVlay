@@ -1,16 +1,16 @@
 # Wake, screen, and the primary input: reliable actions that land on the right port
 
-Status: **draft — under discussion**.
+Status: **draft — review round folded** (design / correctness / maintainability, 2026-07-05). Two open questions below need user decisions before implementation.
 
 ## Problem
 
 Three behaviors that looked separate turn out to be one interconnected design, and the current stack has parity gaps in all three:
 
-1. **Screen elevation regression** (QA, 2026-07-05): `on_session_unlock = screen_on` did nothing for a powered-off LG TV. Root's reliable `screen_on` had a pre-flight wake — an off-ish/disconnected TV went straight to the power path (WoL + reconnect) instead of erroring `not-connected` — plus a desired-screen latch re-applied by reconcile after the wake. The port kept the CEC screen-via-power *emulation* and the connected-but-noop verify-escalate tier, but dropped the disconnected *elevation* entry point and the latch.
-2. **Wake paths land on different inputs.** Empirically verified: **CEC power-on both wakes the panel and switches the TV to the HDMI port that sent the request** (Image View On is "show *me*"). Presumed (needs field verification on the C3): **WoL wakes the TV to whatever input it was last on** — which, for a TV shared between the PC and a Chromecast on different ports, may not be the PC.
+1. **Screen elevation regression** (QA, 2026-07-05): `on_session_unlock = screen_on` did nothing for a powered-off LG TV. Root's reliable `screen_on` had a pre-flight wake — a wake-needy or disconnected TV went straight to the power path (WoL + reconnect) instead of erroring `not-connected` — plus a desired-screen latch re-applied after the wake. The port kept the CEC screen-via-power *emulation* and the connected-but-noop verify-escalate tier (`DispatchVerify`), but dropped the disconnected *elevation* entry point and the across-teardown intent carry.
+2. **Wake paths land on different inputs.** Empirically verified: **CEC power-on both wakes the panel and switches the TV to the HDMI port that sent the request** (Image View On + Active Source is "show *me*"). Presumed (needs field verification on the C3): **WoL wakes the TV to whatever input it was last on** — which, for a TV shared between the PC and a Chromecast on different ports, may not be the PC.
 3. **`primary_input` is only a gate today.** The per-TV `primary_input` exists in config and drives `automate_when` (on_primary/off_primary) — but nothing ever *switches to it*. The concept is exactly "the port TisVlay considers the PC"; automation that wakes the TV for a desktop session should be able to land it there.
 
-The unifying observation: post-wake input restoration is the same mechanism as root's desired-screen latch — **desired state recorded at dispatch time, applied by reconcile once the connection is live**. What was tier-C deferred work in the screen discussion becomes the natural carrier for input handling.
+The unifying observation: post-wake input restoration is the same shape as root's desired-screen latch — **intent recorded at dispatch time, applied once the connection is live**. The design below deliberately does *not* add a parallel intent mechanism for the screen half: `DispatchVerify` already is the screen-intent latch, and the review round's central finding is that it must remain the only one.
 
 ## Design
 
@@ -18,46 +18,68 @@ The unifying observation: post-wake input restoration is the same mechanism as r
 
 In `dispatch_screen`, non-emulating backend with no `ConnectionHandle`:
 
-- `screen_on` + `link.supports_wake` → route to `power_on_tv` (the wake path; since de969ac it also upgrades an in-flight plain retry). For LG, the wake itself lights the panel.
-- `screen_off` → reply ok as a satisfied no-op — a dark, disconnected TV already *is* screen-off; erroring makes profile dispatch noisy at shutdown-ish moments. *(Open question: latch the intent instead, root-style? Proposed: no-op — the latch buys nothing until a backend exists where "connected but screen state unknown at reconnect" matters.)*
+- `screen_on` + `link.supports_wake` → route to `power_on_tv` (the wake path, which upgrades an in-flight plain retry to a wake dial). For LG, the wake itself lights the panel. **Ack semantics**: `power_on_tv` replies ok when it arms the wake dial, not when the panel lights — an elevated `screen_on` rpc gets the same early ack as `power-on` does today, with progress observable on the power phase keys. The plan does not pretend this path delivers a screen-verified ack; the automation callers pass no reply anyway.
+- `screen_off` → reply ok as a satisfied no-op — a dark, disconnected TV already *is* screen-off. Scope note: for `reachable_in_standby` backends (CEC) a standby TV is *connected*, so `screen_off` there routes through the emulating power path and never reaches this arm — the no-op resolution only ever applies to network transports and a truly-unreachable CEC device. *(Resolved in review: no latch — it buys nothing until a backend exists where a disconnected screen-off intent must survive to reconnect.)*
 
 ### 2. Pre-flight wake (root parity — latency + the ActiveStandby quirk)
 
-*Connected* TV whose cached `Power` is off-ish (`Standby` / `Suspend` / `ActiveStandby` / `Unknown`) + `screen_on` → skip the verify-retry loop, go straight to the power path. Root's rationale holds verbatim: `screen_on` over the existing socket no-ops or stalls against a half-asleep TV, and LG's `ActiveStandby` ACKs commands without ever transitioning. Needs a `needs_wake_preflight` predicate on `PowerState` in core (root had it daemon-side; it retired with the old stack).
+*Connected* TV whose cached `Power` is wake-needy + `screen_on` → skip the verify-retry loop, go straight to the power path. Root's rationale holds: `screen_on` over the existing socket no-ops or stalls against a half-asleep TV, and LG's `ActiveStandby` ACKs commands without ever transitioning.
 
-### 3. Desired-state latch + post-connect reconcile (the carrier)
+- **The predicate is root's, exactly**: `needs_wake_preflight()` on core's `PowerState` = `!matches!(Active | ScreenSaver | ScreenOff)`. `ScreenOff` is deliberately **not** wake-needy — the lock-screen wake path leaves the cache at `ScreenOff` and must stay on the cheap verify path (root optimized this case explicitly). `Unknown` (and any future variant, per the `#[non_exhaustive]` fall-through core's `PowerState` docs already prescribe) maps to wake-needy. Core is the right home: `PowerState`'s doc comments already name the wake-preflight set as the classification vendor authors must slot new sub-states into — the method completes a concept core documents but doesn't yet expose, alongside `is_on`/`is_screen_on`.
+- **Transport guard at the call site**: for a `reachable_in_standby` backend (CEC), `Unknown` does *not* trigger pre-flight. A CEC TV that ignores power-status queries reads `Unknown` while genuinely on — pre-flight would fire Image View On and its Active Source grab, yanking a TV that was watching the Chromecast over to the PC's port. `Unknown`-means-wake is a network-transport assumption (a network TV that's on has a live socket and a real cached state); the call site combines `power.needs_wake_preflight()` with `TransportTraits`, which is already in `dispatch_screen`'s row.
+- **Query widening**: cached power lives in the `payload::Power` component, currently read only by `verify_dispatch` — `dispatch_screen`'s `LinkQuery` row (and the system-event dispatch query) must gain `Option<&payload::Power>`. This is the substantive world-side change, not the predicate.
 
-A `DesiredState` component recorded at automation-dispatch time and drained by a reconcile step when `BackendEvent::Connected` lands (and on state pushes for the connected case):
+### 3. One verify mechanism, one new marker
 
-- `screen: Option<bool>` — root's `desired_screen`, re-asserting the panel intent after a wake-driven reconnect.
-- `input: Option<String>` — new: the input to land on once live.
+**Division of labor (the invariant):** `DispatchVerify` is intent over a live connection — verify, retry, escalate. `DesiredInput` is the one genuinely new fact — the input to land on once live — and it is the *only* new component (a single-field marker, `DesiredInput(String)`, in the house one-concept-per-component style). There is no `DesiredState { screen, input }` struct: a second screen latch alongside `DispatchVerify` would mean two components that can disagree about `target_on` and double-apply across a wake reconnect.
 
-Reconcile applies whatever is recorded, through the existing verify tier where the action supports it, then clears. This also gives the defer-while-reconnecting behavior for free: a screen action arriving mid-wake updates the latch instead of racing the dial.
+**Screen intent across a wake teardown**: when a `screen_on` escalates (or pre-flights) to the wake path, the post-connect reconcile re-issues the screen action *through `dispatch_screen`*, re-creating `DispatchVerify` — one verify path, re-armed, never duplicated. (For LG the wake lights the panel and the re-issued verify confirms cheaply; for a backend where it doesn't, the normal verify-retry does its job.)
 
-### 4. Primary input on automation wakes
+**Drain semantics**: the reconcile runs in the `BackendEvent::Connected` arm of `apply_backend_events` (or a system ordered directly after it), **once, then clears** — never on subsequent state pushes. The initial `Connected` snapshot already carries `current_input` + the input list for both mock and LG (seeded from the initial subscription responses), so the "switch only if not already there" comparison reads the just-applied `payload::Input.current`. Draining on state pushes is explicitly rejected: a user who switches to the Chromecast right after an automation wake has issued an authoritative override, and a persistent latch would yank the input back on every push. The latch's job ends at the first post-wake apply.
 
-When an **automation event** (profile-dispatched: startup, resume, unlock, lock-wake, dpms-on — not manual GUI/CLI/tray actions) resolves to `power_on` or `screen_on` for a TV with `primary_input` set, the dispatch also records `DesiredState.input = primary_input`. Post-connect reconcile switches input if the TV didn't come up there.
+**Order of operations post-Connected**: power verify → screen re-assert (via `dispatch_screen` → `DispatchVerify`) → input switch. The input switch reuses the same bounded verify-retry discipline as screen (re-send until `current == desired` or the `DispatchRetry` budget is spent — the 1–5 s WoL-settle window means a switch fired at `Connected` can be silently dropped exactly like an early `screen_on`). On budget exhaustion: emit the existing `dispatch-failed` observability tap with `action: "switch-input"` and clear the marker — bounded, observable, never silent or unbounded.
 
-- **Manual actions stay input-neutral**: a user clicking power-on in the tray may want the Chromecast; only automation implies "desktop session incoming".
-- **CEC**: input capability is deliberately not advertised (docs/cec/protocol.md), and CEC wake already selects the requesting port — if the CEC adapter rides the PC's video path, the behavior is inherently correct; if `primary_input` names a *different* port, CEC cannot honor it (document, don't warn-spam).
-- **LG**: switch via the normal `switch-input` backend command after `Connected` + power verify; the input list is live by then.
-- *(Open question: opt-out knob? Proposal: none initially — setting `primary_input` is itself the opt-in; clearing it opts out. A later `automate_when`-style policy field can grow if the field demands it.)*
+### 4. Primary input on qualifying wakes
 
-## Empirical checklist (before/while implementing)
+When a **qualifying automation event** resolves to `power_on` or `screen_on` for a TV with `primary_input` set *and* a backend advertising the `INPUT` capability, the dispatch also inserts `DesiredInput(primary_input)`; the post-connect reconcile lands the switch.
+
+**The seam problem (review blocker):** session events (unlock, lock-wake) never enter the daemon world as `SystemEvent`s — the session service resolves the profile action itself and fires plain `set-screen`/`power-on` rpcs on the system socket, byte-identical to a manual tray click. The automation/manual boundary therefore needs two pieces:
+
+- **World-originated events** (`dispatch_system_events`): the `SystemEvent` variant is in scope at the dispatch — a match filter selects the qualifying set.
+- **Session-originated events**: the `SetScreen`/`PowerOn` wire payloads gain an origin field (serde-defaulted so manual senders never think about it) that the session's profile dispatch sets and manual clients (GUI/CLI/tray) never do. All peers ship together — no compat shim. World-side, the origin arrives as an explicit parameter into `power_on_tv`/`dispatch_screen` from both call sites; it is **never** inferred from `reply.is_none()` (a wire-plumbing detail that would silently misclassify any future fire-and-forget manual path).
+
+**Qualifying events — session-start only**: `Startup`, `Resume`, `on_session_unlock`. Explicitly *not* `DpmsOn`, `GreeterResume`, or `on_lock_wake` — those fire on a mouse wiggle or a glance at the lock screen, where "desktop session incoming" is not implied; a user checking the time while watching the Chromecast must not get yanked to the PC's port.
+
+- **Manual actions stay input-neutral**: a user clicking power-on in the tray may want the Chromecast.
+- **CEC never arms**: `DesiredInput` requires the `INPUT` capability, which CEC deliberately doesn't advertise — the "CEC can't honor a different primary port" case is structurally absent, not documented around. CEC wake already selects the requesting port; if the adapter rides the PC's video path the behavior is inherently right.
+- **`automate_when` composition**: the `should_automate` gate runs *before* the dispatch that would arm `DesiredInput`, so input restoration inherits its semantics. With `Always` (the default) it composes cleanly. With `OnPrimary`, a wake-from-off passes (unknown current input gets the benefit of the doubt) and lands on primary — but an *awake* TV sitting on the Chromecast is gated off entirely, so input restore will not drag it back. That is `OnPrimary`'s meaning ("only automate while on the PC's port") and is intended; the natural config for "wake for a desktop session and land on primary" is `Always` + `primary_input`.
+
+## Open questions (user decisions)
+
+1. **Opt-in shape.** `primary_input` already has a gating meaning (`automate_when: on_primary/off_primary`); overloading it with switch-on-wake means a user who set it purely for gating silently gains input-yanking, and clearing it to opt out also breaks their gating. Options: (a) arm on `primary_input` alone (simplest; the field's name says what it does, and today `primary_input` + `automate_when: always` is inert anyway); (b) a distinct per-TV bool (e.g. `restore_input`) so the two meanings stay orthogonal. Leaning (a) with release-notes callout, but this changes behavior for any existing `on_primary` user — your call.
+2. **Qualifying-event set.** Is `Startup` + `Resume` + `on_session_unlock` the right "desktop session incoming" set, or should any of the excluded events (DpmsOn / GreeterResume / lock-wake) qualify after all?
+
+## Sequencing
+
+§1–§3's screen work (elevation, pre-flight, re-arm-through-dispatch) rests on verified facts and fixes a live QA regression — it lands and ships independently. §4 (`DesiredInput` arming + the wire origin field) rests on the unverified WoL-last-input premise and the open questions above — it is a separately mergeable follow-up gated on the C3 field check, in its own commit(s), so the regression fix is never blocked on hardware QA.
+
+## Empirical checklist (before/while implementing §4)
 
 - [ ] Verify on the C3: WoL wake restores the previous input (the premise for needing the switch at all).
-- [ ] Verify on the C3: post-WoL `switch-input` timing — how soon after `Connected` does SSAP accept an input switch (interacts with the 1–5 s WoL settle quirk)?
+- [ ] Verify on the C3: post-WoL `switch-input` timing — how soon after `Connected` does SSAP accept an input switch (bounds the verify-retry budget, not the design).
 - [ ] Verify CEC-on-G4 (field batch): Image View On input-selection behavior matches the C3 observation.
 
 ## Implementation sketch
 
-1. Core: `PowerState::needs_wake_preflight()` (+ unit tests pinning the set).
-2. World: `DesiredState` component; `dispatch_screen` elevation arms (§1) and pre-flight (§2); automation dispatch records `input` from `Meta.primary_input` (§4); reconcile drains the latch on `Connected` / relevant state pushes.
-3. Tests (mock has inputs + switch machinery): elevation — unlock-shaped `screen_on` on an off TV yields a wake dial and, post-connect, a `switch-input` to primary; pre-flight — connected TV with cached `ActiveStandby` + `screen_on` goes straight to the wake path with no verify retries; manual `power-on` rpc does *not* record an input intent.
-4. Docs: architecture.md dispatch section gains the latch/reconcile sentence; docs/cec/protocol.md notes the input-selection side effect as load-bearing for primary-input semantics.
+1. Core: `PowerState::needs_wake_preflight()` = `!(Active | ScreenSaver | ScreenOff)`, spec'd against the wake-preflight prose already in `PowerState`'s docs; unit tests pin the set including the non-exhaustive fall-through (`Unknown` ⇒ true) and `ScreenOff` ⇒ false.
+2. World, screen half (§1–§3): elevation arms in `dispatch_screen`; pre-flight via the widened `LinkQuery` (+ system-event query) reading `payload::Power`, with the `reachable_in_standby`-`Unknown` guard; post-`Connected` reconcile re-issues the pending screen action through `dispatch_screen`.
+3. World + wire, input half (§4, after field check + open questions): `DesiredInput(String)` component; origin field on `SetScreen`/`PowerOn` payloads (serde default), set by the session's profile dispatch; explicit origin parameter into `power_on_tv`/`dispatch_screen`; `Connected`-arm drain comparing `payload::Input.current`, bounded verify-retry, `dispatch-failed` tap on exhaustion.
+4. Tests (in `tests/dispatch.rs`'s existing fixtures — no new scaffolding): elevation — unlock-shaped `screen_on` on an off TV yields a wake dial; pre-flight — connected TV with cached `ActiveStandby` + `screen_on` goes straight to the wake path with no verify retries, while cached `ScreenOff` stays on the verify path; the cross-teardown case — a `screen_on` that escalates to wake re-arms `DispatchVerify` after reconnect (the one-latch invariant); input — mock seeded with `initial_input` ≠ `primary_input` (the "wrong input after wake" scenario is static seeding — the mock has no wake-changes-input knob, and doesn't need one) asserts a `switch-input` to primary lands after `Connected` (ordering, not exact tick — publish order across keys is not guaranteed); manual `power-on`/`set-screen` rpcs never insert `DesiredInput`.
+5. Docs: architecture.md's world-marker enumeration gains **both** `DispatchVerify` (currently undocumented there) and `DesiredInput`, with the division-of-labor invariant, written as present-tense doc vocabulary (no commit hashes, no tier shorthand from the design discussion); docs/cec/protocol.md notes the Image View On input-selection side effect as load-bearing for primary-input semantics.
 
 ## Non-goals
 
-- No input restoration for manual actions (see §4).
-- No CEC input switching (capability stays unadvertised).
+- No input restoration for manual actions, nor for DpmsOn / GreeterResume / lock-wake automation (see §4).
+- No CEC input switching (capability stays unadvertised; `DesiredInput` never arms for CEC).
+- No persistent input enforcement — the latch drains once at `Connected`; a user's post-wake input change is authoritative.
 - No projector warm-up port (`WarmingUp` handling) — LG never reports it; revisit with the first projector-class backend.
