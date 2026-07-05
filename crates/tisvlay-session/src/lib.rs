@@ -98,6 +98,10 @@ pub struct SessionStack {
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
     pub idle_timeouts: watch::Receiver<(u64, u64)>,
+    /// Shared lock state: the screensaver watcher writes it (seed +
+    /// edges), the idle adapter's lock-wake policy and the core's
+    /// drift re-assert read it.
+    pub is_locked: Arc<AtomicBool>,
 }
 
 /// Boot the session service: open both sessions, replay the store, and
@@ -186,8 +190,17 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("subscribe tv meta: {e}"))?;
 
+    // Screen mirror: per-TV power state, for the idle drift re-assert
+    // (a panel lit by a stray remote press while the idle action holds).
+    let power_sub = system
+        .declare_subscriber(keys::tv_power_wild(&options.site))
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+        .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
+
     let (event_tx, events) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
+    let is_locked = Arc::new(AtomicBool::new(false));
 
     let mut core = Core {
         system,
@@ -212,16 +225,21 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
         idle_tx,
+        is_locked: is_locked.clone(),
+        idle_fired: false,
+        screen_on: HashMap::new(),
+        drift_at: HashMap::new(),
         _alive: alive,
     };
     tokio::spawn(async move {
-        core.run(events, queries, meta_sub).await;
+        core.run(events, queries, meta_sub, power_sub).await;
         drop(queryable);
     });
 
     Ok(SessionStack {
         client: SessionClient { tx: event_tx },
         idle_timeouts: idle_rx,
+        is_locked,
     })
 }
 
@@ -237,6 +255,18 @@ struct Core {
     /// For the `info` rpc (About pane row).
     state_path: String,
     idle_tx: watch::Sender<(u64, u64)>,
+    /// Shared with the adapters; the drift re-assert reads it to pick
+    /// the locked vs unlocked grace (a core-local flag would miss the
+    /// GetActive-seeded auto-login lock, which arrives with no edge).
+    is_locked: Arc<AtomicBool>,
+    /// An idle action fired and no activity has resumed since — the
+    /// window in which a self-lighting panel counts as drift.
+    idle_fired: bool,
+    /// Mirrored `state/power` screen bit per TV.
+    screen_on: HashMap<Uuid, bool>,
+    /// Armed drift re-asserts: TV → deadline (one idle-timeout of grace
+    /// from the drift; a deliberate remote press gets its window).
+    drift_at: HashMap<Uuid, tokio::time::Instant>,
     _alive: zenoh::liveliness::LivelinessToken,
 }
 
@@ -246,6 +276,9 @@ impl Core {
         mut events: mpsc::UnboundedReceiver<SessionEvent>,
         mut queries: mpsc::UnboundedReceiver<Query>,
         meta_sub: zenoh_ext::AdvancedSubscriber<
+            zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
+        >,
+        power_sub: zenoh_ext::AdvancedSubscriber<
             zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
         >,
     ) {
@@ -259,6 +292,7 @@ impl Core {
         self.recompute_idle();
         info!(site = %self.site, "session core running");
         loop {
+            let next_drift = self.drift_at.values().min().copied();
             tokio::select! {
                 event = events.recv() => match event {
                     None => return,
@@ -272,6 +306,11 @@ impl Core {
                     Err(_) => return,
                     Ok(sample) => self.apply_meta(&sample),
                 },
+                sample = power_sub.recv_async() => match sample {
+                    Err(_) => return,
+                    Ok(sample) => self.apply_power(&sample),
+                },
+                _ = drift_deadline(next_drift) => self.reassert_due(),
             }
         }
     }
@@ -297,10 +336,107 @@ impl Core {
         self.recompute_idle();
     }
 
+    fn apply_power(&mut self, sample: &zenoh::sample::Sample) {
+        let Some((tv, "state/power")) = keys::parse_tv_path(&self.site, sample.key_expr().as_str())
+        else {
+            return;
+        };
+        match sample.kind() {
+            SampleKind::Put => {
+                match serde_json::from_slice::<payload::Power>(&sample.payload().to_bytes()) {
+                    Ok(power) => {
+                        let was = self.screen_on.insert(tv, power.is_screen_on);
+                        if power.is_screen_on && was != Some(true) {
+                            self.arm_drift(tv);
+                        } else if !power.is_screen_on {
+                            // Back in compliance — cancel any pending
+                            // re-assert.
+                            self.drift_at.remove(&tv);
+                        }
+                    }
+                    Err(e) => warn!(%tv, %e, "undecodable tv power"),
+                }
+            }
+            SampleKind::Delete => {
+                self.screen_on.remove(&tv);
+                self.drift_at.remove(&tv);
+            }
+        }
+    }
+
+    /// A panel lit itself while an idle action holds (a stray remote
+    /// press at the lock screen): give it one idle-timeout of grace,
+    /// then re-assert the idle action. Gated exactly like the original
+    /// dispatch — `automated` carries the automate_when/primary-input
+    /// policy — and only dark intents re-assert.
+    fn arm_drift(&mut self, tv: Uuid) {
+        if !self.idle_fired {
+            return;
+        }
+        if !self.tvs.get(&tv).is_some_and(|m| m.automated) {
+            return;
+        }
+        let resolved = self.resolve_for(&tv);
+        if !matches!(
+            resolved.on_idle_timeout,
+            SessionAction::ScreenOff | SessionAction::PowerOff
+        ) {
+            return;
+        }
+        let grace = if self.is_locked.load(Ordering::SeqCst) {
+            resolved.locked_idle_timeout_seconds
+        } else {
+            resolved.unlocked_idle_timeout_seconds
+        };
+        if grace == 0 {
+            return;
+        }
+        debug!(%tv, grace, "screen drift while idle; re-assert armed");
+        self.drift_at
+            .insert(tv, tokio::time::Instant::now() + Duration::from_secs(grace));
+    }
+
+    /// Fire due drift re-asserts: still idle, still lit, still automated
+    /// → re-dispatch the idle action through the normal rpc rail.
+    fn reassert_due(&mut self) {
+        let now = tokio::time::Instant::now();
+        let due: Vec<Uuid> = self
+            .drift_at
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(tv, _)| *tv)
+            .collect();
+        for tv in due {
+            self.drift_at.remove(&tv);
+            if !self.idle_fired
+                || self.screen_on.get(&tv) != Some(&true)
+                || !self.tvs.get(&tv).is_some_and(|m| m.automated)
+            {
+                continue;
+            }
+            let action = self.resolve_for(&tv).on_idle_timeout;
+            debug!(%tv, ?action, "re-asserting idle action after screen drift");
+            call_tv(&self.system, &self.site, tv, action);
+        }
+    }
+
     /// Session event → per-TV user-profile action, called through the
     /// system daemon's rpcs. The tap publish comes first so observers see
     /// the cause before the effects.
     async fn dispatch(&mut self, event: SessionEvent) {
+        // Idle-drift bookkeeping: an idle action opens the drift window,
+        // any activity or lock transition closes it (a fresh idle cycle
+        // will re-open it through its own timer).
+        match event {
+            SessionEvent::IdleTimeout => self.idle_fired = true,
+            SessionEvent::Lock
+            | SessionEvent::Unlock
+            | SessionEvent::LockWake
+            | SessionEvent::IdleResume => {
+                self.idle_fired = false;
+                self.drift_at.clear();
+            }
+        }
         let tap = keys::session_event(&self.site, event.tap_name());
         if let Err(e) = self
             .system
@@ -618,6 +754,15 @@ impl Core {
 
 /// Fire a TV rpc on the system socket; failures are logged, not fatal —
 /// the daemon's own retry tier owns delivery.
+/// Pend forever with no drift armed, so the core select stays
+/// event-driven between deadlines.
+async fn drift_deadline(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
 fn call_tv(system: &Session, site: &str, tv: Uuid, action: SessionAction) {
     let (verb, body) = match action {
         SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),

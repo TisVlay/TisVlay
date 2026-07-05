@@ -319,6 +319,12 @@ pub mod keys {
         format!("tisvlay/{site}/tv/*/meta/config")
     }
 
+    /// Every TV's `state/power` key — the session service's screen
+    /// mirror (idle drift re-assert).
+    pub fn tv_power_wild(site: &str) -> String {
+        format!("tisvlay/{site}/tv/*/state/power")
+    }
+
     /// All system-profile bodies.
     pub fn profile_system_wild(site: &str) -> String {
         format!("tisvlay/{site}/profile/system/*")

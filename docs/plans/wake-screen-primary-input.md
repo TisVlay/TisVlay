@@ -1,6 +1,6 @@
 # Wake, screen, and the primary input: reliable actions that land on the right port
 
-Status: **approved** — review round + policy decisions folded (2026-07-05). §1–§3 ready to implement; §4 implementation waits on the C3 WoL field check.
+Status: **approved, screen half landed** — review round + policy decisions folded (2026-07-05); §1–§3 and §5 shipped (with the same-day QA fix round); §4 implementation waits on the remaining C3 field check (post-connect switch timing).
 
 ## Problem
 
@@ -70,13 +70,17 @@ on_dpms_on = { action = "screen_on", restore_input = true }
 - **CEC never arms**: `DesiredInput` requires the `INPUT` capability, which CEC deliberately doesn't advertise — the "CEC can't honor a different primary port" case is structurally absent, not documented around. CEC wake already selects the requesting port; if the adapter rides the PC's video path the behavior is inherently right.
 - **`automate_when` composition**: the `should_automate` gate runs *before* the dispatch that would arm `DesiredInput`, so input restoration inherits its semantics (see the matrix discussion above). With `OnPrimary`, a wake-from-off passes (unknown current input gets the benefit of the doubt) and lands on primary; an awake TV on another port is gated off entirely and never dragged back — that is `OnPrimary`'s meaning, and it is intended.
 
-### 5. Config schema version tag
+### 5. Idle drift re-assert (field-found 2026-07-05, landed with the screen half)
+
+A remote press at the lock screen relit the panel and nothing reacted: desktop idle timers are edge-triggered — they fired once at the Idled edge and can't see TV-side drift. The session (which owns lock/idle context) now mirrors per-TV `state/power`; a panel that lights itself while an idle action holds gets one idle-timeout of grace, then the idle action re-dispatches. Gated on `automated` (the existing `automate_when`/primary-input policy — an `on_primary` user watching the Chromecast is never fought), dark intents (`screen_off`/`power_off`) only, cancelled by any activity or lock transition or the panel going dark on its own. Default-on, no knob: an idle timeout expresses a state, not an edge; the string-or-table action form gives edge-only semantics a home later if the field ever asks. The world stays intent-free — persistent enforcement lives with the policy state that scopes it.
+
+### 6. Config schema version tag
 
 While the profile schema is open anyway, every persisted config surface (daemon store, system/seed config, user-profile store, notification settings) gains `version = 1`. **Absence is defined as version 1** — the pre-tag baseline — which is a schema definition, not a compat shim; existing stores load unchanged and are stamped on next write. No migration machinery lands now: compatibility logic waits until a v2 exists, closer to production. The rule stays: exactly one current schema at any time.
 
 ## Sequencing
 
-§1–§3's screen work (elevation, pre-flight, re-arm-through-dispatch) rests on verified facts and fixes a live QA regression — it lands and ships independently. §4 (`DesiredInput` arming + the profile flag + the wire `restore_input` field) rests on the unverified WoL-last-input premise — it is a separately mergeable follow-up gated on the C3 field check, in its own commit(s), so the regression fix is never blocked on hardware QA. §5 rides whichever commit first touches the config surfaces.
+§1–§3's screen work (elevation, pre-flight, re-arm-through-dispatch) rests on verified facts and fixes a live QA regression — it landed and shipped independently, with §5 following from the same QA week. §4 (`DesiredInput` arming + the profile flag + the wire `restore_input` field) is a separately mergeable follow-up — its WoL-last-input premise is now field-confirmed, leaving the post-connect switch timing to measure during implementation. §6 rides whichever commit first touches the config surfaces.
 
 ## Empirical checklist (before/while implementing §4)
 
@@ -89,7 +93,7 @@ While the profile schema is open anyway, every persisted config surface (daemon 
 1. Core: `PowerState::needs_wake_preflight()` = `!(Active | ScreenSaver | ScreenOff)`, spec'd against the wake-preflight prose already in `PowerState`'s docs; unit tests pin the set including the non-exhaustive fall-through (`Unknown` ⇒ true) and `ScreenOff` ⇒ false.
 2. World, screen half (§1–§3): elevation arms in `dispatch_screen`; pre-flight via the widened `LinkQuery` (+ system-event query) reading `payload::Power`, with the `reachable_in_standby`-`Unknown` guard; post-`Connected` reconcile re-issues the pending screen action through `dispatch_screen`.
 3. Core + world + wire, input half (§4, after the field check): profile action type grows the string-or-table form (untagged serde enum) with `restore_input: bool`, threaded through `SystemProfileConfig`, the user profile config, and the resolved-profile types, with stock defaults per §4; `restore_input: bool` (serde default false) on the `SetScreen`/`PowerOn` payloads, set by the session's profile dispatch and `dispatch_system_events`, never by manual clients; explicit parameter into `power_on_tv`/`dispatch_screen`; `DesiredInput(String)` component; `Connected`-arm drain comparing `payload::Input.current`, bounded verify-retry, `dispatch-failed` tap on exhaustion; GUI profile editor gains a restore checkbox beside the action dropdown for `screen_on`/`power_on` actions.
-4. Config version tag (§5): `version = 1` field on the persisted store/profile/settings schemas, absence defined as 1, stamped on write; no load-path branching.
+4. Config version tag (§6): `version = 1` field on the persisted store/profile/settings schemas, absence defined as 1, stamped on write; no load-path branching.
 5. Tests (in `tests/dispatch.rs`'s existing fixtures — no new scaffolding): elevation — unlock-shaped `screen_on` on an off TV yields a wake dial; pre-flight — connected TV with cached `ActiveStandby` + `screen_on` goes straight to the wake path with no verify retries, while cached `ScreenOff` stays on the verify path; the cross-teardown case — a `screen_on` that escalates to wake re-arms `DispatchVerify` after reconnect (the one-latch invariant); input — mock seeded with `initial_input` ≠ `primary_input` (the "wrong input after wake" scenario is static seeding — the mock has no wake-changes-input knob, and doesn't need one) asserts a `switch-input` to primary lands after `Connected` (ordering, not exact tick — publish order across keys is not guaranteed); manual `power-on`/`set-screen` rpcs never insert `DesiredInput`; the string and table config forms round-trip through the profile store and resolve to the same action.
 6. Docs: architecture.md's world-marker enumeration gains **both** `DispatchVerify` (currently undocumented there) and `DesiredInput`, with the division-of-labor invariant, written as present-tense doc vocabulary (no commit hashes, no tier shorthand from the design discussion); docs/cec/protocol.md notes the Image View On input-selection side effect as load-bearing for primary-input semantics.
 

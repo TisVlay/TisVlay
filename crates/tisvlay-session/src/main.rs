@@ -58,9 +58,10 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
 
-    // Lock state shared between the two adapters: the screensaver
-    // watcher writes it, the idle adapter's lock-wake policy reads it.
-    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Lock state minted by the stack and shared three ways: the
+    // screensaver watcher writes it (GetActive seed + edges), the idle
+    // adapter's lock-wake policy and the core's drift re-assert read it.
+    let is_locked = stack.is_locked.clone();
     // Lock/unlock via the session bus; absent bus = adapter disabled.
     match zbus::Connection::session().await {
         Ok(connection) => {

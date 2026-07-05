@@ -32,6 +32,7 @@ struct Rig {
     /// Client on the user socket — user profiles and assignments.
     user: Session,
     site: String,
+    mock: tisvlay_mock::MockHandle,
 }
 
 async fn rig() -> Rig {
@@ -42,7 +43,7 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
-    let (connector, discovery, _handle) = new_test_parts();
+    let (connector, discovery, handle) = new_test_parts();
     let _daemon = tisvlay_daemon::serve(
         &system_socket,
         "t",
@@ -75,6 +76,7 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
         client,
         user,
         site: "t".into(),
+        mock: handle,
     }
 }
 
@@ -478,6 +480,62 @@ async fn screensaver_adapter_drives_lock_unlock() {
     fake.emit_active_changed(false).await.unwrap();
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "active"
+    })
+    .await;
+}
+
+/// The idle drift re-assert: a panel that lights itself while the
+/// locked-idle action holds (a stray remote press at the lock screen)
+/// gets one idle-timeout of grace, then the idle action re-dispatches.
+#[tokio::test(flavor = "multi_thread")]
+async fn screen_drift_while_idle_reasserts_after_grace() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://drift").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // A short locked-idle timeout keeps the drift grace test-sized.
+    let ok = call(
+        &rig.user,
+        &keys::user_profile_rpc(&rig.site, "create"),
+        json!({ "body": {
+            "name": "Drift",
+            "locked_idle_timeout_seconds": 1,
+        } }),
+    )
+    .await
+    .expect("create ok");
+    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    call(
+        &rig.user,
+        &keys::user_profile_rpc(&rig.site, "assign"),
+        json!({ "tv": tv, "profile": profile }),
+    )
+    .await
+    .expect("assign ok");
+
+    // Locked (as the GetActive seed or a Lock edge leaves it), idle
+    // action fired: the TV blanks.
+    rig.stack
+        .is_locked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;
+
+    // The couch press: the panel lights itself, no desktop activity.
+    rig.mock
+        .inject_power_state("mock://drift", tisvlay_core::PowerState::Active);
+    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
+        v["state"] == "active"
+    })
+    .await;
+
+    // One grace period later the idle action re-asserts and the panel
+    // goes dark again — with no further session event.
+    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
+        v["state"] == "screenoff"
     })
     .await;
 }
