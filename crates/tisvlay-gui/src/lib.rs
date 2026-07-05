@@ -1047,6 +1047,34 @@ fn register_callbacks(
         let s = session.clone();
         let ed = editor.clone();
         let app_weak = app.as_weak();
+        profiles_global.on_restore_edited(move |field, checked| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let field = field.to_string();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    profiles::dispatch_restore_edit(&ed, &d, &s, editor_kind, uuid, &field, checked)
+                        .await
+                {
+                    warn!(field = %field, checked, error = %e, "restore_edited failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
         profiles_global.on_value_edited_number(move |field, value| {
             let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
                 return;

@@ -908,12 +908,21 @@ impl DiscoveryConfig {
     }
 }
 
+fn config_schema_v1() -> u32 {
+    1
+}
+
 /// System-level configuration (daemon-owned).
 ///
 /// Contains TV definitions, vendor credentials, system profiles for daemon
 /// lifecycle events, and user profile defaults inherited by users.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemConfig {
+    /// Schema version - absence *defines* version 1 (the pre-tag
+    /// baseline); migration logic waits until a v2 exists.
+    #[serde(default = "config_schema_v1")]
+    pub version: u32,
+
     /// System-level settings (daemon lifecycle profiles).
     #[serde(default)]
     pub system: SystemSection,

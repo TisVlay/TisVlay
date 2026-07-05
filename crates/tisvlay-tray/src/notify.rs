@@ -46,6 +46,21 @@ impl Default for NotificationSettings {
     }
 }
 
+/// On-disk wrapper for the settings file: the schema version tag rides
+/// the persisted form only, never the wire body. Absence *defines*
+/// version 1; migration logic waits until a v2 exists.
+#[derive(Serialize, Deserialize)]
+struct PersistedSettings {
+    #[serde(default = "schema_v1")]
+    version: u32,
+    #[serde(flatten)]
+    settings: NotificationSettings,
+}
+
+fn schema_v1() -> u32 {
+    1
+}
+
 /// Categories as bit positions in the notifier's atomic gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -157,14 +172,20 @@ pub fn default_config_path() -> PathBuf {
 
 pub fn load_settings(path: &Path) -> Result<NotificationSettings> {
     match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str(&text).with_context(|| format!("parse {}", path.display())),
+        Ok(text) => toml::from_str::<PersistedSettings>(&text)
+            .map(|p| p.settings)
+            .with_context(|| format!("parse {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NotificationSettings::default()),
         Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
     }
 }
 
 fn save_settings(path: &Path, settings: &NotificationSettings) {
-    let Ok(text) = toml::to_string_pretty(settings) else {
+    let persisted = PersistedSettings {
+        version: schema_v1(),
+        settings: *settings,
+    };
+    let Ok(text) = toml::to_string_pretty(&persisted) else {
         return;
     };
     if let Some(parent) = path.parent()

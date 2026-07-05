@@ -1,6 +1,6 @@
 # Wake, screen, and the primary input: reliable actions that land on the right port
 
-Status: **approved, screen half landed** — review round + policy decisions folded (2026-07-05); §1–§3 and §5 shipped (with the same-day QA fix round); §4 implementation waits on the remaining C3 field check (post-connect switch timing).
+Status: **implemented** — all sections landed (§1–§3 + §5 screen half with the QA fix rounds; §4 primary-input restore + §6 version tags on 2026-07-05). Kept active until the PR #106 soak confirms it in the field; the one open measurement is the post-WoL switch-input timing, observable from the shipped verify-retry.
 
 ## Problem
 

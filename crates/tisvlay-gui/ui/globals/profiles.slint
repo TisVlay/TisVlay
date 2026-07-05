@@ -73,6 +73,10 @@ export struct ProfileFieldEntry {
     unit: string,
     /// Drives the 2 px left gutter accent + reset-glyph visibility.
     is-locally-set: bool,
+    /// Show the restore-input checkbox (on-ish action rows only).
+    has-restore: bool,
+    /// The mapping's resolved `restore_input` modifier.
+    restore-value: bool,
 }
 
 /// One profile entry in either section. Read-only from Slint;
@@ -167,6 +171,9 @@ export global Profiles {
     /// patch through `UpdateSystemProfile` / `UpdateUserProfile`.
     /// Reverting to inheriting goes through `reset-field`, not here.
     callback value-edited(string, string);
+    /// The restore-input checkbox on an on-ish action row toggled.
+    /// Args: field name, new checked state.
+    callback restore-edited(string, bool);
     /// Numeric counterpart to `value-edited`. Arg 2 is the picked
     /// integer; Rust clamps to the field's `[min, max]` and casts to
     /// `u32` before dispatching the field patch.
