@@ -144,7 +144,7 @@ just cli <verb…>         # any CLI verb against the dev sockets, e.g. `just cl
 tisvlay status                       # daemon liveliness probe
 tisvlay vendors                      # vendor catalog
 tisvlay discover                     # SSDP + mock + cec scan
-tisvlay pair "Living Room" --vendor lg --json '{"ip":"192.168.1.50"}'
+tisvlay pair "Living Room" --vendor lg --params '{"ip":"192.168.1.50"}'
 tisvlay list                         # hydrate from publisher caches
 tisvlay watch                        # stream every data key: history, then live
 tisvlay set-volume <uuid> 40

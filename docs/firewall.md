@@ -178,7 +178,7 @@ A planned follow-up adds a passive `NOTIFY` listener so the daemon notices TV po
 
 ## Alternative: Skip Discovery
 
-If you can't modify firewall rules, you can skip discovery and pair by IP address directly: `tisvlay pair "My TV" --vendor lg --json '{"ip":"192.168.1.100"}'` (or the wizard's manual-entry path).
+If you can't modify firewall rules, you can skip discovery and pair by IP address directly: `tisvlay pair "My TV" --vendor lg --params '{"ip":"192.168.1.100"}'` (or the wizard's manual-entry path).
 
 ## Future Alternative: mDNS/DNS-SD Discovery
 

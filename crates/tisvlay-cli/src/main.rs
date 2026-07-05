@@ -13,7 +13,8 @@ use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
 
 #[derive(Parser, Debug)]
-#[command(name = "tisvlay", about = "TisVlay TV control")]
+#[command(name = "tisvlay", author, version, about = "TisVlay TV control")]
+#[command(propagate_version = true)]
 struct Cli {
     /// Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
     #[arg(long)]
@@ -27,6 +28,10 @@ struct Cli {
     /// Site chunk used in all key expressions.
     #[arg(long, default_value = "main")]
     site: String,
+
+    /// Machine-readable JSON output on read verbs.
+    #[arg(long, global = true)]
+    json: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -52,10 +57,10 @@ enum Command {
         name: String,
         #[arg(long, default_value = "lg")]
         vendor: String,
-        /// Vendor config as JSON, e.g. '{"ip":"192.168.1.50"}'.
+        /// Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'.
         #[arg(long)]
-        json: Option<String>,
-        /// Mock shorthand for --json '{"address":"mock://…"}'.
+        params: Option<String>,
+        /// Mock shorthand for --params '{"address":"mock://…"}'.
         #[arg(long)]
         address: Option<String>,
     },
@@ -139,16 +144,16 @@ enum Command {
 enum ProfileCmd {
     /// List profile bodies from the catalog caches.
     List,
-    /// Create a profile: `--json` is a SystemProfileConfig body.
+    /// Create a profile: `--body` is a SystemProfileConfig body.
     Create {
         name: String,
         #[arg(long)]
-        json: Option<String>,
+        body: Option<String>,
     },
-    /// Replace a profile's body (`--json` full body; name required inside).
+    /// Replace a profile's body (full JSON body; name required inside).
     Update {
         id: Uuid,
-        json: String,
+        body: String,
     },
     /// Copy a profile under a new name.
     Duplicate {
@@ -169,15 +174,15 @@ enum ProfileCmd {
 #[derive(Subcommand, Debug)]
 enum UserProfileCmd {
     List,
-    /// Create a profile: `--json` is a UserProfileConfig body.
+    /// Create a profile: `--body` is a UserProfileConfig body.
     Create {
         name: String,
         #[arg(long)]
-        json: Option<String>,
+        body: Option<String>,
     },
     Update {
         id: Uuid,
-        json: String,
+        body: String,
     },
     Duplicate {
         id: Uuid,
@@ -205,23 +210,24 @@ async fn main() -> Result<()> {
         .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path);
     let session = open_client(&socket).await?;
     let site = &cli.site;
+    let json_out = cli.json;
     match cli.command {
-        Command::Status => status(&session, site, &socket).await,
-        Command::List => list(&session, site).await,
+        Command::Status => status(&session, site, &socket, json_out).await,
+        Command::List => list(&session, site, json_out).await,
         Command::Watch => watch(&session, site).await,
         Command::Discover { vendor, timeout_ms } => {
-            discover(&session, site, vendor, timeout_ms).await
+            discover(&session, site, vendor, timeout_ms, json_out).await
         }
         Command::Pair {
             name,
             vendor,
-            json,
+            params,
             address,
         } => {
-            let config = match (json, address) {
-                (Some(json), _) => serde_json::from_str(&json)?,
+            let config = match (params, address) {
+                (Some(params), _) => serde_json::from_str(&params)?,
                 (None, Some(address)) => json!({ "address": address }),
-                (None, None) => bail!("provide --json or --address"),
+                (None, None) => bail!("provide --params or --address"),
             };
             pair(&session, site, name, vendor, config).await
         }
@@ -309,7 +315,11 @@ async fn main() -> Result<()> {
                 Value::Null,
             )
             .await?;
-            println!("{}", serde_json::to_string_pretty(&config)?);
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&config)?);
+            } else {
+                print_fields(&config);
+            }
             Ok(())
         }
         Command::ConfigSet { id, json } => {
@@ -385,6 +395,10 @@ async fn main() -> Result<()> {
         }
         Command::Vendors => {
             let vendors = call(&session, &keys::vendors(site), Value::Null).await?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&vendors)?);
+                return Ok(());
+            }
             for vendor in vendors.as_array().into_iter().flatten() {
                 let caps: Vec<&str> = vendor["capabilities"]
                     .as_array()
@@ -403,6 +417,10 @@ async fn main() -> Result<()> {
         }
         Command::Schema { vendor } => {
             let schema = call(&session, &keys::vendor_schema(site, &vendor), Value::Null).await?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&schema)?);
+                return Ok(());
+            }
             for field in schema.as_array().into_iter().flatten() {
                 let required = if field["required"].as_bool().unwrap_or(false) {
                     " (required)"
@@ -418,9 +436,14 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::DiscoverSession { vendor } => discover_session(&session, site, vendor).await,
+        Command::DiscoverSession { vendor } => {
+            discover_session(&session, site, vendor, json_out).await
+        }
         Command::Profile(cmd) => {
-            profile_cmd(&session, site, cmd, |verb| keys::profile_rpc(site, verb)).await
+            profile_cmd(&session, site, cmd, json_out, |verb| {
+                keys::profile_rpc(site, verb)
+            })
+            .await
         }
         Command::UserProfile(cmd) => {
             let user_socket = cli
@@ -434,9 +457,36 @@ async fn main() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            user_profile_cmd(&user, site, cmd).await
+            user_profile_cmd(&user, site, cmd, json_out).await
         }
     }
+}
+
+/// Render a flat JSON object as `key = value` lines (nested objects
+/// indent), sorted by key — the human view of config and resolved
+/// profile bodies.
+fn print_fields(value: &Value) {
+    fn walk(value: &Value, indent: usize) {
+        let Some(object) = value.as_object() else {
+            println!("{}", value);
+            return;
+        };
+        let mut entries: Vec<(&String, &Value)> = object.iter().collect();
+        entries.sort_by_key(|(key, _)| key.as_str());
+        for (key, val) in entries {
+            let pad = " ".repeat(indent);
+            match val {
+                Value::Object(_) => {
+                    println!("{pad}{key}:");
+                    walk(val, indent + 2);
+                }
+                Value::Null => println!("{pad}{key} ="),
+                Value::String(s) => println!("{pad}{key} = {s}"),
+                other => println!("{pad}{key} = {other}"),
+            }
+        }
+    }
+    walk(value, 0);
 }
 
 /// Print one profile catalog row.
@@ -459,7 +509,7 @@ fn print_profile(id: &str, body: &Value) {
 
 /// Hydrate a cached catalog wildcard and print each body once the
 /// stream goes quiet.
-async fn list_catalog(session: &Session, keyexpr: String) -> Result<()> {
+async fn list_catalog(session: &Session, keyexpr: String, json_out: bool) -> Result<()> {
     let sub = session
         .declare_subscriber(keyexpr)
         .history(HistoryConfig::default().detect_late_publishers())
@@ -483,6 +533,11 @@ async fn list_catalog(session: &Session, keyexpr: String) -> Result<()> {
             serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
         rows.insert(id, body);
     }
+    if json_out {
+        let out: serde_json::Map<String, Value> = rows.into_iter().collect();
+        println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
+        return Ok(());
+    }
     if rows.is_empty() {
         println!("no profiles");
     }
@@ -492,10 +547,10 @@ async fn list_catalog(session: &Session, keyexpr: String) -> Result<()> {
     Ok(())
 }
 
-/// Build a profile body: `--json` merged over the positional name.
-fn profile_body(name: String, json: Option<String>) -> Result<Value> {
-    let mut body = match json {
-        Some(json) => serde_json::from_str(&json)?,
+/// Build a profile body: `--body` merged over the positional name.
+fn profile_body(name: String, body: Option<String>) -> Result<Value> {
+    let mut body = match body {
+        Some(body) => serde_json::from_str(&body)?,
         None => json!({}),
     };
     if body["name"].is_null() {
@@ -508,22 +563,30 @@ async fn profile_cmd(
     session: &Session,
     site: &str,
     cmd: ProfileCmd,
+    json_out: bool,
     key: impl Fn(&str) -> String,
 ) -> Result<()> {
     match cmd {
-        ProfileCmd::List => list_catalog(session, format!("tisvlay/{site}/profile/system/*")).await,
-        ProfileCmd::Create { name, json } => {
+        ProfileCmd::List => {
+            list_catalog(
+                session,
+                format!("tisvlay/{site}/profile/system/*"),
+                json_out,
+            )
+            .await
+        }
+        ProfileCmd::Create { name, body } => {
             let reply = call(
                 session,
                 &key("create"),
-                json!({ "body": profile_body(name, json)? }),
+                json!({ "body": profile_body(name, body)? }),
             )
             .await?;
             println!("created: {}", reply["id"].as_str().unwrap_or("?"));
             Ok(())
         }
-        ProfileCmd::Update { id, json } => {
-            let body: Value = serde_json::from_str(&json)?;
+        ProfileCmd::Update { id, body } => {
+            let body: Value = serde_json::from_str(&body)?;
             call(session, &key("update"), json!({ "id": id, "body": body })).await?;
             println!("ok");
             Ok(())
@@ -545,33 +608,48 @@ async fn profile_cmd(
         }
         ProfileCmd::Defaults => {
             let defaults = call(session, &key("defaults"), Value::Null).await?;
-            println!("{}", serde_json::to_string_pretty(&defaults)?);
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&defaults)?);
+            } else {
+                print_fields(&defaults);
+            }
             Ok(())
         }
         ProfileCmd::Effective { tv } => {
             let effective = call(session, &key("effective"), json!({ "id": tv })).await?;
-            println!("{}", serde_json::to_string_pretty(&effective)?);
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&effective)?);
+            } else {
+                print_fields(&effective);
+            }
             Ok(())
         }
     }
 }
 
-async fn user_profile_cmd(user: &Session, site: &str, cmd: UserProfileCmd) -> Result<()> {
+async fn user_profile_cmd(
+    user: &Session,
+    site: &str,
+    cmd: UserProfileCmd,
+    json_out: bool,
+) -> Result<()> {
     let key = |verb: &str| keys::user_profile_rpc(site, verb);
     match cmd {
-        UserProfileCmd::List => list_catalog(user, format!("tisvlay/{site}/user/profile/*")).await,
-        UserProfileCmd::Create { name, json } => {
+        UserProfileCmd::List => {
+            list_catalog(user, format!("tisvlay/{site}/user/profile/*"), json_out).await
+        }
+        UserProfileCmd::Create { name, body } => {
             let reply = call(
                 user,
                 &key("create"),
-                json!({ "body": profile_body(name, json)? }),
+                json!({ "body": profile_body(name, body)? }),
             )
             .await?;
             println!("created: {}", reply["id"].as_str().unwrap_or("?"));
             Ok(())
         }
-        UserProfileCmd::Update { id, json } => {
-            let body: Value = serde_json::from_str(&json)?;
+        UserProfileCmd::Update { id, body } => {
+            let body: Value = serde_json::from_str(&body)?;
             call(user, &key("update"), json!({ "id": id, "body": body })).await?;
             println!("ok");
             Ok(())
@@ -588,12 +666,20 @@ async fn user_profile_cmd(user: &Session, site: &str, cmd: UserProfileCmd) -> Re
         }
         UserProfileCmd::Defaults => {
             let defaults = call(user, &key("defaults"), Value::Null).await?;
-            println!("{}", serde_json::to_string_pretty(&defaults)?);
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&defaults)?);
+            } else {
+                print_fields(&defaults);
+            }
             Ok(())
         }
         UserProfileCmd::Effective { tv } => {
             let effective = call(user, &key("effective"), json!({ "id": tv })).await?;
-            println!("{}", serde_json::to_string_pretty(&effective)?);
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&effective)?);
+            } else {
+                print_fields(&effective);
+            }
             Ok(())
         }
         UserProfileCmd::Assign { tv, profile } => {
@@ -610,8 +696,13 @@ async fn user_profile_cmd(user: &Session, site: &str, cmd: UserProfileCmd) -> Re
 }
 
 /// Start an open-ended discovery session, stream findings, stop on
-/// ctrl-c.
-async fn discover_session(session: &Session, site: &str, vendor: Option<String>) -> Result<()> {
+/// ctrl-c. `--json` emits one JSON object per finding (JSONL).
+async fn discover_session(
+    session: &Session,
+    site: &str,
+    vendor: Option<String>,
+    json_out: bool,
+) -> Result<()> {
     let reply = call(
         session,
         &keys::manager_rpc(site, "discover-start"),
@@ -622,7 +713,9 @@ async fn discover_session(session: &Session, site: &str, vendor: Option<String>)
         .as_str()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow!("discover-start reply carries the session id"))?;
-    println!("discovery session {id} — ctrl-c stops");
+    if !json_out {
+        println!("discovery session {id} — ctrl-c stops");
+    }
     let sub = session
         .declare_subscriber(format!("tisvlay/{site}/discovery/{id}/found/*"))
         .await
@@ -636,6 +729,10 @@ async fn discover_session(session: &Session, site: &str, vendor: Option<String>)
                     .unwrap_or(Value::Null);
                 let finding = tv["id"].as_str().unwrap_or_default().to_string();
                 if seen.insert(finding, ()).is_none() {
+                    if json_out {
+                        println!("{tv}");
+                        continue;
+                    }
                     let mac = tv["vendor_data"]["mac"]
                         .as_str()
                         .map(|mac| format!("  mac={mac}"))
@@ -659,7 +756,9 @@ async fn discover_session(session: &Session, site: &str, vendor: Option<String>)
         json!({ "session": id }),
     )
     .await?;
-    println!("stopped");
+    if !json_out {
+        println!("stopped");
+    }
     Ok(())
 }
 
@@ -739,6 +838,7 @@ async fn discover(
     site: &str,
     vendor: Option<String>,
     timeout_ms: u64,
+    json_out: bool,
 ) -> Result<()> {
     let body = serde_json::to_value(rpc::Discover {
         vendor,
@@ -751,6 +851,10 @@ async fn discover(
         Duration::from_millis(timeout_ms + 4000),
     )
     .await?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&found)?);
+        return Ok(());
+    }
     if found.is_empty() {
         println!("nothing found");
         return Ok(());
@@ -829,7 +933,7 @@ async fn watch_pairing(session: &Session, site: &str, id: Uuid) -> Result<()> {
     }
 }
 
-async fn status(session: &Session, site: &str, socket: &Path) -> Result<()> {
+async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) -> Result<()> {
     let replies = session
         .liveliness()
         .get(keys::daemon_alive(site).as_str())
@@ -837,9 +941,19 @@ async fn status(session: &Session, site: &str, socket: &Path) -> Result<()> {
         .await
         .map_err(|e| anyhow!("liveliness get: {e}"))?;
     let alive = matches!(replies.recv_async().await, Ok(reply) if reply.result().is_ok());
+    if json_out {
+        println!(
+            "{}",
+            json!({ "alive": alive, "site": site, "socket": socket })
+        );
+    }
     if alive {
-        println!("daemon alive: site '{site}' at {}", socket.display());
+        if !json_out {
+            println!("daemon alive: site '{site}' at {}", socket.display());
+        }
         Ok(())
+    } else if json_out {
+        std::process::exit(1);
     } else {
         bail!(
             "no daemon liveliness token for site '{site}' at {}",
@@ -851,7 +965,7 @@ async fn status(session: &Session, site: &str, socket: &Path) -> Result<()> {
 /// Hydrate from the publisher caches (AdvancedSubscriber history — the
 /// cache's queryable lives under the verbatim `@adv` suffix, so plain
 /// wildcard gets can't reach it) and render one line per TV.
-async fn list(session: &Session, site: &str) -> Result<()> {
+async fn list(session: &Session, site: &str, json_out: bool) -> Result<()> {
     let subscriber = session
         .declare_subscriber(keys::tv_all(site))
         .history(HistoryConfig::default().detect_late_publishers())
@@ -870,30 +984,73 @@ async fn list(session: &Session, site: &str) -> Result<()> {
             tvs.entry(id).or_default().insert(path.to_string(), value);
         }
     }
-    if tvs.is_empty() {
-        println!("no TVs");
+    if json_out {
+        let out: serde_json::Map<String, Value> = tvs
+            .into_iter()
+            .map(|(id, fields)| (id.to_string(), Value::Object(fields.into_iter().collect())))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
         return Ok(());
     }
+    if tvs.is_empty() {
+        println!("No TVs configured. Use 'tisvlay pair' to add one.");
+        return Ok(());
+    }
+    println!("Configured TVs:");
+    let mut descriptor_fields: BTreeMap<String, Option<String>> = BTreeMap::new();
     for (id, fields) in &tvs {
-        let name = fields
-            .get("meta/identity")
-            .and_then(|v| v["name"].as_str())
-            .unwrap_or("?");
-        let connected = fields
+        let identity = fields.get("meta/identity").cloned().unwrap_or(Value::Null);
+        let name = identity["name"].as_str().unwrap_or("?");
+        let vendor = identity["vendor"].as_str().unwrap_or("?");
+        let status = if fields
             .get("state/link")
-            .is_some_and(|v| v["connected"] == true);
-        let power = fields
-            .get("state/power")
-            .and_then(|v| v["state"].as_str())
-            .unwrap_or("unknown");
-        let volume = fields
-            .get("state/volume")
-            .and_then(|v| v["level"].as_u64())
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| "-".into());
-        println!("{id}  {name}  connected={connected} power={power} volume={volume}");
+            .is_some_and(|v| v["connected"] == true)
+        {
+            "connected"
+        } else {
+            "disconnected"
+        };
+        let managed = if fields
+            .get("meta/config")
+            .is_none_or(|v| v["managed"] != false)
+        {
+            ""
+        } else {
+            " [unmanaged]"
+        };
+        // Backend's primary descriptor (LG: IP): the vendor schema's
+        // first field names it, the redacted config carries the value.
+        let descriptor =
+            match descriptor_field(session, site, vendor, &mut descriptor_fields).await {
+                Some(field) => call(session, &keys::tv_rpc(site, id, "get-config"), Value::Null)
+                    .await
+                    .ok()
+                    .and_then(|reply| reply["config"][&field].as_str().map(str::to_string)),
+                None => None,
+            }
+            .unwrap_or_else(|| "?".into());
+        println!("  {id} - {name} ({descriptor}) [{status}] <{vendor}>{managed}");
     }
     Ok(())
+}
+
+/// The vendor schema's first field name — the backend's primary
+/// descriptor, per the schema-ordering convention. Cached per vendor.
+async fn descriptor_field(
+    session: &Session,
+    site: &str,
+    vendor: &str,
+    cache: &mut BTreeMap<String, Option<String>>,
+) -> Option<String> {
+    if let Some(field) = cache.get(vendor) {
+        return field.clone();
+    }
+    let field = call(session, &keys::vendor_schema(site, vendor), Value::Null)
+        .await
+        .ok()
+        .and_then(|schema| schema[0]["name"].as_str().map(str::to_string));
+    cache.insert(vendor.to_string(), field.clone());
+    field
 }
 
 async fn watch(session: &Session, site: &str) -> Result<()> {
