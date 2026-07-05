@@ -18,6 +18,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
 - [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
+- [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
 
 ## Operational
 
