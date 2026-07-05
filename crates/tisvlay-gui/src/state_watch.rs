@@ -71,7 +71,11 @@ pub(crate) async fn initial_fetch_and_watch(
     // once the daemon comes up.
     fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
 
-    let initial_daemon_available = initial_snapshot.is_some();
+    // Liveliness, not fetch success: mirror-backed reads (list_tvs)
+    // return Ok(empty) with no link at all, so a fetch "succeeding"
+    // proves nothing — an unreachable daemon must not render online
+    // with an empty fleet. Same source as the session/tray flags.
+    let initial_daemon_available = daemon.is_available().await;
     // Seed `Tray.notifications` with documented defaults from core
     // before any successful fetch. Gives the settings pane sensible
     // switch positions even if the GUI starts while the tray is
