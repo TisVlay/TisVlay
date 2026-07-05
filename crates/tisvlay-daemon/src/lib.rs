@@ -112,6 +112,9 @@ pub async fn open(socket: &Path, site: &str) -> Result<Daemon> {
 pub struct Stack {
     pub daemon: Daemon,
     pub world: WorldClient,
+    /// Route-monitor requests from the reactor, awaiting the netlink
+    /// watcher (`run` hands them to `spawn_link_monitor`).
+    routes: mpsc::UnboundedReceiver<tisvlay_world::RouteRequest>,
 }
 
 /// One vendor backend's registration: identity + capabilities for the
@@ -178,6 +181,8 @@ pub async fn serve(
         reactor.set_persist(tx);
         tokio::spawn(store::store_task(path.to_path_buf(), rx));
     }
+    let (routes_tx, routes_rx) = mpsc::unbounded_channel();
+    reactor.set_route_monitor(routes_tx);
     tokio::spawn(reactor.run());
     // Seed the editable default profile (root ensure_default parity).
     // AddTv-style replay from the store lands later and upserts over
@@ -284,7 +289,11 @@ pub async fn serve(
     let alive = declare_alive(&session, site).await?;
     info!(site, socket = %socket.display(), "bridge serving, liveliness declared");
     let daemon = Daemon { session, alive };
-    Ok(Stack { daemon, world })
+    Ok(Stack {
+        daemon,
+        world,
+        routes: routes_rx,
+    })
 }
 
 /// DPMS sysfs poll period in production (`watch_dpms` takes it as a
@@ -364,7 +373,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             stack.world.clone(),
         ));
     }
-    netlink::spawn_link_monitor(stack.world.clone());
+    netlink::spawn_link_monitor(stack.world.clone(), stack.routes);
     tokio::spawn(probe::probe_task(
         stack.daemon.session().clone(),
         options.site.clone(),

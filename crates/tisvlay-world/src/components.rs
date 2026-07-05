@@ -46,9 +46,19 @@ pub(crate) struct PendingConnect {
 #[derive(Component, Debug)]
 pub(crate) struct RetryAt(pub Instant);
 
-/// Connection parked by a carrier-down event; the next carrier-up redials.
+/// Connection parked by a carrier-down or route-lost event; the next
+/// carrier-up or route-restored on the monitored interface redials.
 #[derive(Component, Debug)]
 pub(crate) struct CarrierParked;
+
+/// The NIC carrying traffic to this TV, resolved from the kernel routing
+/// table by the daemon's netlink monitor (`ip route get <address>`).
+/// `None` = no usable route right now. Present only once a resolution
+/// has arrived, so it exists solely on network-dependent TVs with an
+/// IP-parseable address — carrier events match against it, and TVs
+/// without it ignore them.
+#[derive(Component, Debug, PartialEq, Eq)]
+pub(crate) struct MonitoredInterface(pub Option<String>);
 
 /// The DRM connector this TV mirrors (desktop-probe match) — scopes DPMS
 /// events to the right TV.

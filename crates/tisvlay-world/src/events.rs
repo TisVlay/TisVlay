@@ -29,9 +29,14 @@ pub enum InEvent {
         event: SystemEvent,
         connector: Option<String>,
     },
-    /// NIC carrier transition — parks/unparks network-dependent
-    /// connections.
-    Carrier { up: bool },
+    /// NIC carrier transition — parks/unparks connections whose
+    /// monitored interface (route-resolved NIC) matches `interface`.
+    Carrier { interface: String, up: bool },
+    /// Route resolution outcome for a TV: the NIC carrying traffic to
+    /// its address (`ip route get`), or `None` when no usable route
+    /// exists. Sent by the daemon's netlink monitor at monitor-request
+    /// time and whenever the kernel routing table changes.
+    RouteResolved { tv: Uuid, interface: Option<String> },
     /// The desktop probe matched a TV's hardware identity to a DRM
     /// connector.
     ConnectorMatched { tv: Uuid, connector: String },
@@ -46,6 +51,17 @@ pub enum InEvent {
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.
     Tick { now: Instant },
+}
+
+/// Requests from the reactor to the daemon's netlink monitor: which TV
+/// addresses to route-resolve and watch. The reactor emits `Monitor` for
+/// every network-dependent TV at enrollment and on each dial spawn, and
+/// `Forget` on removal; the monitor answers (and keeps answering, on
+/// routing-table changes) with [`InEvent::RouteResolved`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteRequest {
+    Monitor { tv: Uuid, host: String },
+    Forget { tv: Uuid },
 }
 
 /// Desktop/power events the profile dispatcher maps to TV actions.

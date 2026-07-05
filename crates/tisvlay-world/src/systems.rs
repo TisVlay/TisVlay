@@ -6,6 +6,7 @@ use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 use tisvlay_core::{PairingCommand, PairingState, TvState};
 use tisvlay_wire::{keys, payload};
@@ -13,9 +14,10 @@ use uuid::Uuid;
 
 use crate::components::{
     CarrierParked, Clock, ConnectionHandle, DirtyStore, DispatchRetry, DispatchVerify, Effect,
-    KnownVendors, Managed, MirrorsConnector, Outbox, PairVerifying, PairingEnroll, PairingIndex,
-    PairingRef, PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
-    RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
+    KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
+    PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction, ProfileBody, ProfileId,
+    ProfileIndex, Reconnecting, RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex,
+    VendorRef,
 };
 use crate::events::{
     BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
@@ -42,6 +44,7 @@ pub(crate) fn build_schedule() -> Schedule {
             apply_connector_matches,
             apply_transport_facts,
             apply_pairing_updates,
+            apply_route_resolutions,
             handle_carrier_events,
             verify_dispatch,
             dispatch_system_events,
@@ -1456,7 +1459,9 @@ fn apply_pairing_updates(
 /// Park/unpark network-dependent connections on NIC carrier transitions —
 /// the same guarantee the old daemon's reconnecting-flag dance provided,
 /// expressed as components (no racing WoL loops: `PendingConnect` is the
-/// single dial gate).
+/// single dial gate). Events are scoped: only TVs whose route-resolved
+/// `MonitoredInterface` matches the transitioning NIC react — a wifi
+/// drop must not park a TV riding ethernet.
 #[allow(clippy::type_complexity)]
 fn handle_carrier_events(
     mut reader: MessageReader<InEvent>,
@@ -1465,19 +1470,23 @@ fn handle_carrier_events(
         Entity,
         &TvId,
         Option<&TransportTraits>,
+        Option<&MonitoredInterface>,
         Option<&ConnectionHandle>,
         Has<CarrierParked>,
         Has<PendingConnect>,
     )>,
 ) {
     for msg in reader.read() {
-        let InEvent::Carrier { up } = msg else {
+        let InEvent::Carrier { interface, up } = msg else {
             continue;
         };
-        for (entity, id, traits, handle, parked, pending) in &q {
+        for (entity, id, traits, monitored, handle, parked, pending) in &q {
+            if monitored.is_none_or(|m| m.0.as_deref() != Some(interface.as_str())) {
+                continue;
+            }
             if *up {
                 if parked {
-                    tracing::info!(tv = %id.0, "carrier restored, redialing");
+                    tracing::info!(tv = %id.0, interface, "carrier restored, redialing");
                     let mut e = commands.entity(entity);
                     e.remove::<CarrierParked>();
                     if !pending {
@@ -1488,12 +1497,87 @@ fn handle_carrier_events(
                     }
                 }
             } else if handle.is_some() && traits.is_some_and(|t| t.0.network_dependent) {
-                tracing::info!(tv = %id.0, "carrier lost, parking connection");
+                tracing::info!(tv = %id.0, interface, "carrier lost, parking connection");
                 commands
                     .entity(entity)
                     .remove::<(ConnectionHandle, DispatchVerify)>()
                     .insert(CarrierParked);
             }
+        }
+    }
+}
+
+/// Apply route resolutions from the daemon's netlink monitor: record the
+/// NIC that routes to each TV and act on transitions. Route gone → the
+/// TV is unreachable, park the live connection (an NM software
+/// disconnect never drops carrier, so the vanishing route is the only
+/// signal for it). Route back → unpark and redial. Route shifted to a
+/// different NIC → redial unless the protocol survives a source-IP
+/// change (WebSocket over TCP doesn't).
+#[allow(clippy::type_complexity)]
+fn apply_route_resolutions(
+    mut reader: MessageReader<InEvent>,
+    mut commands: Commands,
+    index: Res<TvIndex>,
+    q: Query<(
+        &TvId,
+        Option<&TransportTraits>,
+        Option<&MonitoredInterface>,
+        Has<ConnectionHandle>,
+        Has<CarrierParked>,
+        Has<PendingConnect>,
+    )>,
+) {
+    // Later resolutions in the same batch supersede earlier ones — the
+    // monitor's latest word per TV is the truth, and one entity must not
+    // be transitioned twice against the same pre-flush component state.
+    let mut latest: HashMap<Uuid, &Option<String>> = HashMap::new();
+    for msg in reader.read() {
+        if let InEvent::RouteResolved { tv, interface } = msg {
+            latest.insert(*tv, interface);
+        }
+    }
+    for (tv, interface) in latest {
+        let Some(&entity) = index.0.get(&tv) else {
+            continue;
+        };
+        let Ok((id, traits, monitored, connected, parked, pending)) = q.get(entity) else {
+            continue;
+        };
+        if monitored.is_some_and(|m| m.0 == *interface) {
+            continue;
+        }
+        let previous = monitored.and_then(|m| m.0.clone());
+        tracing::info!(tv = %id.0, from = ?previous, to = ?interface, "monitored interface changed");
+        let mut e = commands.entity(entity);
+        e.insert(MonitoredInterface(interface.clone()));
+        match (previous, interface) {
+            (Some(_), None) if connected => {
+                tracing::info!(tv = %id.0, "route lost, parking connection");
+                e.remove::<(ConnectionHandle, DispatchVerify)>()
+                    .insert(CarrierParked);
+            }
+            (Some(_), Some(_)) if connected && !traits.is_some_and(|t| t.0.survives_ip_change) => {
+                tracing::info!(tv = %id.0, "route moved to a different interface, redialing");
+                e.remove::<(ConnectionHandle, DispatchVerify)>();
+                if !pending {
+                    e.insert(PendingConnect {
+                        attempts: 0,
+                        wake: false,
+                    });
+                }
+            }
+            (_, Some(_)) if parked => {
+                tracing::info!(tv = %id.0, "route restored, redialing");
+                e.remove::<CarrierParked>();
+                if !pending {
+                    e.insert(PendingConnect {
+                        attempts: 0,
+                        wake: false,
+                    });
+                }
+            }
+            _ => {}
         }
     }
 }

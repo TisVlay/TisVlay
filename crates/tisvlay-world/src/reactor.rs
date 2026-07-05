@@ -16,7 +16,8 @@ use crate::components::{
     SystemProfile, TvIndex,
 };
 use crate::events::{
-    BackendEvent, Command, InEvent, PairingUpdate, StoreSnapshot, TvRecord, WireEffect,
+    BackendEvent, Command, InEvent, PairingUpdate, RouteRequest, StoreSnapshot, TvRecord,
+    WireEffect,
 };
 use crate::systems::build_schedule;
 
@@ -28,6 +29,7 @@ pub struct Reactor {
     connectors: HashMap<String, Arc<dyn TvConnector>>,
     effects_tx: mpsc::UnboundedSender<WireEffect>,
     persist_tx: Option<mpsc::UnboundedSender<StoreSnapshot>>,
+    routes_tx: Option<mpsc::UnboundedSender<RouteRequest>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
@@ -102,6 +104,7 @@ impl Reactor {
                 connectors,
                 effects_tx,
                 persist_tx: None,
+                routes_tx: None,
                 vendor_retry: HashMap::new(),
             },
             effects_rx,
@@ -114,6 +117,14 @@ impl Reactor {
     /// ephemeral worlds like tests.
     pub fn set_persist(&mut self, tx: mpsc::UnboundedSender<StoreSnapshot>) {
         self.persist_tx = Some(tx);
+    }
+
+    /// Attach the route-monitor outlet: `Monitor`/`Forget` requests for
+    /// network-dependent TVs flow to the daemon's netlink watcher, which
+    /// answers with [`InEvent::RouteResolved`]. Without one, no route
+    /// monitoring — fine for worlds with no real network (tests).
+    pub fn set_route_monitor(&mut self, tx: mpsc::UnboundedSender<RouteRequest>) {
+        self.routes_tx = Some(tx);
     }
 
     /// Per-vendor verify-retry tuning (from each backend's
@@ -150,9 +161,17 @@ impl Reactor {
                     // Enrollment carries a vendor config — evaluate the
                     // connector statics so the facts land right behind
                     // the spawn (next batch: the entity is flushed by
-                    // then). Covers unmanaged TVs, which never dial.
-                    if let InEvent::Command(Command::AddTv { record, .. }) = &other {
-                        self.send_transport_facts(record.id, &record.vendor, &record.config);
+                    // then), and start route-monitoring the address.
+                    match &other {
+                        InEvent::Command(Command::AddTv { record, .. }) => {
+                            self.send_transport_facts(record.id, &record.vendor, &record.config);
+                        }
+                        InEvent::Command(Command::RemoveTv { id, .. }) => {
+                            if let Some(tx) = &self.routes_tx {
+                                let _ = tx.send(RouteRequest::Forget { tv: *id });
+                            }
+                        }
+                        _ => {}
                     }
                     self.world.write_message(other);
                 }
@@ -183,6 +202,7 @@ impl Reactor {
                             supports_wake: connector.supports_wake(&config),
                             traits,
                         });
+                        self.request_route_monitor(tv, connector.as_ref(), &config);
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
                         tokio::spawn(backend::connect_flow(
                             tv,
@@ -283,6 +303,26 @@ impl Reactor {
                 supports_wake: connector.supports_wake(config),
                 traits: transport_facts(connector.as_ref(), config),
             });
+            self.request_route_monitor(tv, connector.as_ref(), config);
+        }
+    }
+
+    /// Ask the netlink monitor to route-resolve and watch this TV's
+    /// address. Only network-dependent transports with a primary
+    /// descriptor participate; the monitor itself skips descriptors
+    /// that don't parse as IPs (mock addresses).
+    fn request_route_monitor(
+        &self,
+        tv: uuid::Uuid,
+        connector: &dyn TvConnector,
+        config: &toml::Value,
+    ) {
+        let Some(tx) = &self.routes_tx else { return };
+        if !connector.transport().is_network_dependent() {
+            return;
+        }
+        if let Some(host) = connector.primary_descriptor(config) {
+            let _ = tx.send(RouteRequest::Monitor { tv, host });
         }
     }
 }

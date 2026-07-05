@@ -9,14 +9,33 @@ use tisvlay_world::{Command, InEvent, SystemEvent};
 use uuid::Uuid;
 
 /// Carrier down parks network-dependent connections; carrier up redials.
-/// No auto-redial in between — parked is parked.
+/// No auto-redial in between — parked is parked. Both directions scope
+/// to the TV's monitored (route-resolved) interface: transitions on
+/// other NICs pass it by.
 #[tokio::test]
-async fn carrier_transitions_park_and_redial() {
+async fn carrier_transitions_park_and_redial_on_the_monitored_interface() {
     let (mut effects, client, handle) = spawn_reactor();
-    let _id = add_connected_tv(&mut effects, &client, "mock://carrier").await;
+    let id = add_connected_tv(&mut effects, &client, "mock://carrier").await;
     assert_eq!(handle.connect_call_count("mock://carrier"), 1);
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
 
-    client.send(InEvent::Carrier { up: false });
+    // A drop on an unrelated NIC must not park a TV riding eth0.
+    client.send(InEvent::Carrier {
+        interface: "wlan0".into(),
+        up: false,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, false)
+    })
+    .await;
+
+    client.send(InEvent::Carrier {
+        interface: "eth0".into(),
+        up: false,
+    });
     collect_until(&mut effects, |e| link_connected(e, false)).await;
     assert_quiet(&mut effects, Duration::from_millis(300), |e| {
         link_connected(e, true)
@@ -24,9 +43,85 @@ async fn carrier_transitions_park_and_redial() {
     .await;
     assert_eq!(handle.connect_call_count("mock://carrier"), 1);
 
-    client.send(InEvent::Carrier { up: true });
+    // Carrier back on the wrong NIC leaves it parked; the right NIC redials.
+    client.send(InEvent::Carrier {
+        interface: "wlan0".into(),
+        up: true,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, true)
+    })
+    .await;
+    client.send(InEvent::Carrier {
+        interface: "eth0".into(),
+        up: true,
+    });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
     assert_eq!(handle.connect_call_count("mock://carrier"), 2);
+}
+
+/// A lost route parks the connection (the only signal for an NM software
+/// disconnect — carrier never drops); a restored route redials. A route
+/// that moves to a different NIC redials in place, since the mock (like
+/// any TCP-based protocol) doesn't survive a source-IP change.
+#[tokio::test]
+async fn route_transitions_park_redial_and_follow_nic_moves() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://route").await;
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    // Barrier: the initial resolution must flush before the next one
+    // lands, or same-batch collapse keeps only the later word.
+    assert_quiet(&mut effects, Duration::from_millis(150), |e| {
+        link_connected(e, false)
+    })
+    .await;
+
+    // Route vanishes (addresses withdrawn, carrier still up) → park.
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, true)
+    })
+    .await;
+    assert_eq!(handle.connect_call_count("mock://route"), 1);
+
+    // Route returns → redial.
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    assert_eq!(handle.connect_call_count("mock://route"), 2);
+
+    // Route shifts to another NIC while connected → drop and redial.
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("wlan0".into()),
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    assert_eq!(handle.connect_call_count("mock://route"), 3);
+
+    // Carrier events now scope to the new NIC.
+    client.send(InEvent::Carrier {
+        interface: "eth0".into(),
+        up: false,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, false)
+    })
+    .await;
+    client.send(InEvent::Carrier {
+        interface: "wlan0".into(),
+        up: false,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
 }
 
 /// A connector-scoped DPMS event reaches only the TV mapped to exactly
