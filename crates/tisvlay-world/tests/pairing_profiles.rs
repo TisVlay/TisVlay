@@ -311,3 +311,48 @@ async fn system_events_dispatch_profile_actions() {
     })
     .await;
 }
+
+/// A vendor-config patch refreshes transport facts even when no dial
+/// follows: adding wake capability to a TV whose retry budget is spent
+/// (off and unreachable — exactly the state you add a MAC in) must
+/// light `supports_wake` up immediately, not at the next successful
+/// dial.
+#[tokio::test]
+async fn config_patch_refreshes_wake_support_without_a_dial() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let base = std::time::Instant::now();
+    let id = Uuid::new_v4();
+    let mut config = pairing_config("mock://wakeless", "manual");
+    let table = config.as_table_mut().unwrap();
+    table.insert("refuse_connect".into(), toml::Value::Boolean(true));
+    table.insert("wake".into(), toml::Value::Boolean(false));
+    client.command(Command::AddTv {
+        record: Box::new(support::tv_record(id, "Wakeless", config)),
+        reply: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/link")
+            .is_some_and(|p| p["supports_wake"] == false && p["connected"] == false)
+    })
+    .await;
+
+    // Exhaust the dial budget so the TV sits disconnected with no
+    // pending dial — the state where the old facts path never fired.
+    for attempt in 1..=u64::from(tisvlay_world::CONNECT_MAX_ATTEMPTS) {
+        client.tick(base + tisvlay_world::CONNECT_BACKOFF * u32::try_from(attempt).unwrap() * 2);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let dials_before = handle.connect_call_count("mock://wakeless");
+
+    client.command(Command::UpdateConfig {
+        id,
+        patch: serde_json::json!({ "wake": true }),
+        reply: Some(31),
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/link").is_some_and(|p| p["supports_wake"] == true)
+    })
+    .await;
+    // The facts came from the patch, not from a fresh dial.
+    assert_eq!(handle.connect_call_count("mock://wakeless"), dials_before);
+}

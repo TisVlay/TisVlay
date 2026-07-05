@@ -98,7 +98,7 @@ enum Command {
     /// Read a TV's config (vendor secrets redacted).
     Config { id: Uuid },
     /// Patch a TV's config with a JSON object (null unsets a vendor key).
-    ConfigSet { id: Uuid, json: String },
+    ConfigSet { id: Uuid, patch: String },
     /// Re-run the pairing handshake for an existing TV.
     Repair { id: Uuid },
     /// Power a TV on or off.
@@ -307,8 +307,8 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::ConfigSet { id, json } => {
-            let patch: Value = serde_json::from_str(&json)?;
+        Command::ConfigSet { id, patch } => {
+            let patch: Value = serde_json::from_str(&patch)?;
             ack(&caller, &keys::tv_rpc(site, &id, "update-config"), patch).await
         }
         Command::Repair { id } => {
@@ -1025,5 +1025,17 @@ async fn watch(session: &Session, site: &str) -> Result<()> {
             },
             _ = tokio::signal::ctrl_c() => return Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// clap's self-check: catches conflicting arg ids (a global flag
+    /// shadowing a subcommand field of the same name panics at access
+    /// time in release, but here at test time).
+    #[test]
+    fn clap_definition_is_consistent() {
+        use clap::CommandFactory;
+        super::Cli::command().debug_assert();
     }
 }

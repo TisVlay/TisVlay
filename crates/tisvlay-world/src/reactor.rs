@@ -269,6 +269,16 @@ impl Reactor {
                         .inbox_tx
                         .send(InEvent::PairingUpdate { id: tv, update });
                 }
+                Effect::Facts { tv, vendor, config } => {
+                    if let Some(connector) = self.connectors.get(&vendor) {
+                        let _ = self.inbox_tx.send(InEvent::TransportFacts {
+                            tv,
+                            supports_wake: connector.supports_wake(&config),
+                            traits: transport_facts(connector.as_ref(), &config),
+                        });
+                        self.request_route_monitor(tv, connector.as_ref(), &config);
+                    }
+                }
                 Effect::Persist(snapshot) => match &self.persist_tx {
                     Some(tx) => {
                         let _ = tx.send(*snapshot);

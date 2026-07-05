@@ -232,6 +232,16 @@ pub(crate) enum Effect {
         params: toml::Value,
         credentials: Box<tisvlay_core::Credentials>,
     },
+    /// Re-evaluate a TV's config-derived transport facts (the reactor
+    /// owns the connectors). Emitted on vendor-config merges so
+    /// `supports_wake`/traits refresh even when no dial follows — a
+    /// MAC added while the TV is off must light the wake path up
+    /// immediately.
+    Facts {
+        tv: Uuid,
+        vendor: String,
+        config: toml::Value,
+    },
     /// Persist the full state snapshot (reactor debounces and writes
     /// atomically).
     Persist(Box<StoreSnapshot>),

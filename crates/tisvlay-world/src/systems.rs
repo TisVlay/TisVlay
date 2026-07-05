@@ -620,7 +620,15 @@ fn handle_tv_commands(
                 }
             }
             Command::UpdateConfig { patch, .. } => {
-                match apply_config_patch(&mut commands, entity, &q, &mut writes, patch) {
+                match apply_config_patch(
+                    &mut commands,
+                    entity,
+                    id,
+                    &q,
+                    &mut writes,
+                    &mut outbox,
+                    patch,
+                ) {
                     Ok(()) => {
                         dirty.0 = true;
                         reply_ok(&mut outbox, reply);
@@ -692,11 +700,14 @@ fn build_record(entity: Entity, id: Uuid, writes: &SettingsWrites) -> Option<TvR
 /// Two-pass config patch: validate every key, then apply. Top-level keys
 /// map onto settings; everything else merges into the vendor table (a JSON
 /// `null` unsets the key), which forces a reconnect.
+#[allow(clippy::too_many_arguments)]
 fn apply_config_patch(
     commands: &mut Commands,
     entity: Entity,
+    id: Uuid,
     q: &Query<LinkQuery>,
     writes: &mut SettingsWrites,
+    outbox: &mut Outbox,
     patch: &serde_json::Value,
 ) -> Result<(), WireError> {
     let Some(object) = patch.as_object() else {
@@ -789,6 +800,17 @@ fn apply_config_patch(
         }
     }
     if vendor_changed {
+        // Config-derived facts must refresh even when no dial follows:
+        // adding a MAC while the TV is off is exactly the wake case,
+        // and waiting for the next successful dial would leave
+        // `supports_wake` stale until then.
+        if let Ok(vendor) = writes.vendor.get(entity) {
+            outbox.0.push(Effect::Facts {
+                tv: id,
+                vendor: vendor.vendor.clone(),
+                config: vendor.config.clone(),
+            });
+        }
         // Transport parameters may have changed — reconnect with the new
         // config if this TV is being driven at all.
         let (handle, pending, ..) = q.get(entity).unwrap_or((None, false, None, None, None));
