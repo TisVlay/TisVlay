@@ -125,6 +125,21 @@ impl AutomateWhen {
     }
 }
 
+impl std::str::FromStr for AutomateWhen {
+    type Err = String;
+
+    /// Inverse of [`Display`](Self#impl-Display-for-AutomateWhen); the
+    /// round-trip test below pins both against the serde shape.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "always" => Ok(Self::Always),
+            "on_primary" => Ok(Self::OnPrimary),
+            "off_primary" => Ok(Self::OffPrimary),
+            other => Err(format!("unknown automate_when: {other}")),
+        }
+    }
+}
+
 impl std::fmt::Display for AutomateWhen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1190,6 +1205,23 @@ pub fn absolutize(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automate_when_display_fromstr_and_serde_agree() {
+        for when in [
+            AutomateWhen::Always,
+            AutomateWhen::OnPrimary,
+            AutomateWhen::OffPrimary,
+        ] {
+            let shown = when.to_string();
+            assert_eq!(shown.parse::<AutomateWhen>(), Ok(when));
+            assert_eq!(
+                serde_json::to_value(when).unwrap(),
+                serde_json::Value::String(shown)
+            );
+        }
+        assert!("bogus".parse::<AutomateWhen>().is_err());
+    }
 
     /// Test struct for LG vendor config (simulates what tisvlay-lg would define).
     /// Includes connection parameters (ip/mac) since they're vendor-specific.

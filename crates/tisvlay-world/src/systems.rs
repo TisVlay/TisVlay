@@ -2,9 +2,10 @@
 //! system events; reconcile pending connects; derive link state; publish
 //! changes; snapshot the store.
 
+use bevy_ecs::component::Mutable;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::*;
-use bevy_ecs::system::SystemParam;
+use bevy_ecs::system::{EntityCommands, SystemParam};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -94,6 +95,54 @@ fn reply_err(outbox: &mut Outbox, reply: Option<ReplyTo>, error: WireError) {
     }
 }
 
+/// Queue a dial with a fresh attempt budget. `PendingConnect` is the
+/// single dial gate — every recovery path (enrollment, reconnect,
+/// wake, carrier/route restore, config change) funnels through here.
+fn redial(e: &mut EntityCommands, wake: bool) {
+    e.insert(PendingConnect { attempts: 0, wake });
+}
+
+/// Write a payload component through change detection, inserting on
+/// first sight — `set_if_neq` gates the publish either way.
+fn upsert_payload<T: Component<Mutability = Mutable> + PartialEq>(
+    commands: &mut Commands,
+    query: &mut Query<&mut T>,
+    entity: Entity,
+    value: T,
+) {
+    match query.get_mut(entity) {
+        Ok(mut current) => {
+            current.set_if_neq(value);
+        }
+        Err(_) => {
+            commands.entity(entity).insert(value);
+        }
+    }
+}
+
+/// Remove a TV from the world and the wire: despawn, drop the index
+/// entry, delete every published key. Shared by lifecycle removal and
+/// the fresh-pairing rollback.
+fn despawn_tv(
+    commands: &mut Commands,
+    index: &mut TvIndex,
+    outbox: &mut Outbox,
+    site: &Site,
+    id: &Uuid,
+    entity: Entity,
+) {
+    commands.entity(entity).despawn();
+    index.0.remove(id);
+    for path in payload::TV_PATHS
+        .iter()
+        .chain(payload::TV_EXTRA_PATHS.iter())
+    {
+        outbox.0.push(Effect::Wire(WireEffect::Delete {
+            key: keys::tv_path(&site.0, id, path),
+        }));
+    }
+}
+
 /// Spawn a TV entity from its store row. Every TV dials — managed
 /// gates automation (profile actions), not connectivity, so state
 /// stays live and manual control keeps working on unmanaged TVs.
@@ -121,10 +170,7 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
             supports_wake: false,
         },
     ));
-    entity.insert(PendingConnect {
-        attempts: 0,
-        wake: false,
-    });
+    redial(&mut entity, false);
     if record.managed {
         entity.insert(Managed);
     }
@@ -176,13 +222,9 @@ fn power_on_tv(
         Some(_) => reply_err(outbox, reply, WireError::not_connected(id)),
         None if link.is_some_and(|l| l.supports_wake) => {
             if !pending {
-                commands
-                    .entity(entity)
-                    .insert(PendingConnect {
-                        attempts: 0,
-                        wake: true,
-                    })
-                    .remove::<RetryAt>();
+                let mut e = commands.entity(entity);
+                redial(&mut e, true);
+                e.remove::<RetryAt>();
             }
             reply_ok(outbox, reply);
         }
@@ -361,9 +403,9 @@ fn handle_lifecycle_commands(
                 dirty.0 = true;
                 reply_ok(&mut outbox, *reply);
             }
-            Command::RemoveTv { id, reply } => match index.0.remove(id) {
+            Command::RemoveTv { id, reply } => match index.0.get(id).copied() {
                 Some(entity) => {
-                    commands.entity(entity).despawn();
+                    despawn_tv(&mut commands, &mut index, &mut outbox, &site, id, entity);
                     // A pairing session for the same uuid (re-pair in
                     // flight) dies with the TV.
                     if let Some(session) = pairing.index.0.remove(id) {
@@ -375,14 +417,6 @@ fn handle_lifecycle_commands(
                         }
                         commands.entity(session).despawn();
                     }
-                    for path in payload::TV_PATHS
-                        .iter()
-                        .chain(payload::TV_EXTRA_PATHS.iter())
-                    {
-                        outbox.0.push(Effect::Wire(WireEffect::Delete {
-                            key: keys::tv_path(&site.0, id, path),
-                        }));
-                    }
                     dirty.0 = true;
                     reply_ok(&mut outbox, *reply);
                 }
@@ -393,13 +427,9 @@ fn handle_lifecycle_commands(
                     let (handle, pending, _, _) =
                         q.get(entity).unwrap_or((None, false, None, None));
                     if handle.is_none() && !pending {
-                        commands
-                            .entity(entity)
-                            .insert(PendingConnect {
-                                attempts: 0,
-                                wake: false,
-                            })
-                            .remove::<RetryAt>();
+                        let mut e = commands.entity(entity);
+                        redial(&mut e, false);
+                        e.remove::<RetryAt>();
                     }
                     reply_ok(&mut outbox, *reply);
                 }
@@ -633,10 +663,7 @@ fn apply_managed(
         let mut e = commands.entity(entity);
         e.insert(Managed);
         if !has_handle && !pending {
-            e.insert(PendingConnect {
-                attempts: 0,
-                wake: false,
-            });
+            redial(&mut e, false);
         }
     } else {
         // Managed gates automation, not connectivity (root parity):
@@ -766,13 +793,9 @@ fn apply_config_patch(
         // config if this TV is being driven at all.
         let (handle, pending, ..) = q.get(entity).unwrap_or((None, false, None, None, None));
         if handle.is_some() || pending {
-            commands
-                .entity(entity)
-                .remove::<(ConnectionHandle, RetryAt)>()
-                .insert(PendingConnect {
-                    attempts: 0,
-                    wake: false,
-                });
+            let mut e = commands.entity(entity);
+            e.remove::<(ConnectionHandle, RetryAt)>();
+            redial(&mut e, false);
         }
     }
     Ok(())
@@ -1023,20 +1046,18 @@ fn handle_profile_commands(
                 Some(&entity) => {
                     // Root chain: per-TV profile -> default profile ->
                     // hard-coded floor, merged per field.
+                    let readonly = bodies.as_readonly();
                     let assigned = metas
                         .get(entity)
                         .ok()
                         .and_then(|m| m.system_profile)
-                        .and_then(|profile| index.0.get(&profile))
-                        .and_then(|&e| bodies.get(e).ok())
-                        .map(|b| b.0.clone())
+                        .and_then(|profile| profile_body(profile, &index, &readonly))
+                        .cloned()
                         .unwrap_or_default();
-                    let default_body = index
-                        .0
-                        .get(&tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
-                        .and_then(|&e| bodies.get(e).ok())
-                        .map(|b| b.0.clone())
-                        .unwrap_or_default();
+                    let default_body =
+                        profile_body(tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID, &index, &readonly)
+                            .cloned()
+                            .unwrap_or_default();
                     let floor = tisvlay_core::SystemProfileConfig::full_default();
                     let mut merged = assigned
                         .merge_with_base(&default_body)
@@ -1189,16 +1210,7 @@ fn apply_backend_events(
                         },
                     );
                     if pair.rollback {
-                        commands.entity(entity).despawn();
-                        index.0.remove(tv);
-                        for path in payload::TV_PATHS
-                            .iter()
-                            .chain(payload::TV_EXTRA_PATHS.iter())
-                        {
-                            outbox.0.push(Effect::Wire(WireEffect::Delete {
-                                key: keys::tv_path(&site.0, tv, path),
-                            }));
-                        }
+                        despawn_tv(&mut commands, &mut index, &mut outbox, &site, tv, entity);
                         continue;
                     }
                     commands.entity(entity).remove::<PairVerifying>();
@@ -1252,28 +1264,18 @@ fn publish_power_phase(outbox: &mut Outbox, site: &Site, tv: &Uuid, phase: &str)
 }
 
 fn apply_state(commands: &mut Commands, entity: Entity, state: &TvState, writes: &mut StateWrites) {
-    let power = payload::Power::from(state);
-    match writes.power.get_mut(entity) {
-        Ok(mut current) => {
-            current.set_if_neq(power);
-        }
-        Err(_) => {
-            commands.entity(entity).insert(power);
-        }
-    }
+    upsert_payload(
+        commands,
+        &mut writes.power,
+        entity,
+        payload::Power::from(state),
+    );
     if let Some(level) = state.volume {
         let volume = payload::Volume {
             level,
             muted: state.muted.unwrap_or(false),
         };
-        match writes.volume.get_mut(entity) {
-            Ok(mut current) => {
-                current.set_if_neq(volume);
-            }
-            Err(_) => {
-                commands.entity(entity).insert(volume);
-            }
-        }
+        upsert_payload(commands, &mut writes.volume, entity, volume);
     }
     if state.current_input.is_some() || !state.inputs.is_empty() {
         let input = payload::Input {
@@ -1288,25 +1290,15 @@ fn apply_state(commands: &mut Commands, entity: Entity, state: &TvState, writes:
                 })
                 .collect(),
         };
-        match writes.input.get_mut(entity) {
-            Ok(mut current) => {
-                current.set_if_neq(input);
-            }
-            Err(_) => {
-                commands.entity(entity).insert(input);
-            }
-        }
+        upsert_payload(commands, &mut writes.input, entity, input);
     }
     if let Some(level) = state.backlight {
-        let backlight = payload::Backlight { level };
-        match writes.backlight.get_mut(entity) {
-            Ok(mut current) => {
-                current.set_if_neq(backlight);
-            }
-            Err(_) => {
-                commands.entity(entity).insert(backlight);
-            }
-        }
+        upsert_payload(
+            commands,
+            &mut writes.backlight,
+            entity,
+            payload::Backlight { level },
+        );
     }
 }
 
@@ -1476,24 +1468,28 @@ fn handle_carrier_events(
         Has<PendingConnect>,
     )>,
 ) {
+    // A NIC can flap within one batch (down + up); only the latest
+    // transition per interface may act — Commands are deferred, so a
+    // second event for the same NIC would read pre-park component
+    // state and miss the unpark.
+    let mut latest: HashMap<&str, bool> = HashMap::new();
     for msg in reader.read() {
-        let InEvent::Carrier { interface, up } = msg else {
-            continue;
-        };
+        if let InEvent::Carrier { interface, up } = msg {
+            latest.insert(interface.as_str(), *up);
+        }
+    }
+    for (interface, up) in latest {
         for (entity, id, traits, monitored, handle, parked, pending) in &q {
-            if monitored.is_none_or(|m| m.0.as_deref() != Some(interface.as_str())) {
+            if monitored.is_none_or(|m| m.0.as_deref() != Some(interface)) {
                 continue;
             }
-            if *up {
+            if up {
                 if parked {
                     tracing::info!(tv = %id.0, interface, "carrier restored, redialing");
                     let mut e = commands.entity(entity);
                     e.remove::<CarrierParked>();
                     if !pending {
-                        e.insert(PendingConnect {
-                            attempts: 0,
-                            wake: false,
-                        });
+                        redial(&mut e, false);
                     }
                 }
             } else if handle.is_some() && traits.is_some_and(|t| t.0.network_dependent) {
@@ -1561,20 +1557,14 @@ fn apply_route_resolutions(
                 tracing::info!(tv = %id.0, "route moved to a different interface, redialing");
                 e.remove::<(ConnectionHandle, DispatchVerify)>();
                 if !pending {
-                    e.insert(PendingConnect {
-                        attempts: 0,
-                        wake: false,
-                    });
+                    redial(&mut e, false);
                 }
             }
             (_, Some(_)) if parked => {
                 tracing::info!(tv = %id.0, "route restored, redialing");
                 e.remove::<CarrierParked>();
                 if !pending {
-                    e.insert(PendingConnect {
-                        attempts: 0,
-                        wake: false,
-                    });
+                    redial(&mut e, false);
                 }
             }
             _ => {}
@@ -1741,9 +1731,10 @@ fn is_automated(meta: &payload::Meta, input: Option<&payload::Input>) -> bool {
     if !meta.managed {
         return false;
     }
-    let when: tisvlay_core::AutomateWhen =
-        serde_json::from_value(serde_json::Value::String(meta.automate_when.clone()))
-            .unwrap_or_default();
+    let when = meta
+        .automate_when
+        .parse::<tisvlay_core::AutomateWhen>()
+        .unwrap_or_default();
     when.should_automate(
         meta.primary_input.as_deref(),
         input.and_then(|i| i.current.as_deref()),
@@ -1779,14 +1770,14 @@ fn publish_greeter_timeout(
         }
         let assigned = meta
             .system_profile
-            .and_then(|id| profile_index.0.get(&id))
-            .and_then(|&entity| bodies.get(entity).ok())
-            .and_then(|body| body.0.idle_timeout_seconds);
-        let inherited = profile_index
-            .0
-            .get(&tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
-            .and_then(|&entity| bodies.get(entity).ok())
-            .and_then(|body| body.0.idle_timeout_seconds);
+            .and_then(|id| profile_body(id, &profile_index, &bodies))
+            .and_then(|body| body.idle_timeout_seconds);
+        let inherited = profile_body(
+            tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+            &profile_index,
+            &bodies,
+        )
+        .and_then(|body| body.idle_timeout_seconds);
         let seconds = assigned.or(inherited).unwrap_or(0);
         if seconds > 0 && (timeout == 0 || seconds < timeout) {
             timeout = seconds;
@@ -1813,23 +1804,35 @@ fn resolve_action(
     // Per-TV profile field wins outright (explicit `none` suppresses).
     if let Some(profile_id) = meta.and_then(|m| m.system_profile)
         && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
-        && let Some(&entity) = profile_index.0.get(&profile_id)
-        && let Ok(body) = bodies.get(entity)
-        && let Some(action) = profile_event_action(&body.0, event)
+        && let Some(body) = profile_body(profile_id, profile_index, bodies)
+        && let Some(action) = profile_event_action(body, event)
     {
         return session_action(action);
     }
     // Unset fields inherit the *editable* default profile…
-    if let Some(&entity) = profile_index
-        .0
-        .get(&tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
-        && let Ok(body) = bodies.get(entity)
-        && let Some(action) = profile_event_action(&body.0, event)
+    if let Some(body) = profile_body(
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+        profile_index,
+        bodies,
+    ) && let Some(action) = profile_event_action(body, event)
     {
         return session_action(action);
     }
     // …and only then the hard-coded stock floor.
     stock.0.get(event).copied()
+}
+
+/// Look up a system-profile body by uuid through the profile index.
+fn profile_body<'a>(
+    id: Uuid,
+    index: &ProfileIndex,
+    bodies: &'a Query<&ProfileBody>,
+) -> Option<&'a tisvlay_core::SystemProfileConfig> {
+    index
+        .0
+        .get(&id)
+        .and_then(|&entity| bodies.get(entity).ok())
+        .map(|body| &body.0)
 }
 
 fn profile_event_action(

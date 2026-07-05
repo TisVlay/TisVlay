@@ -158,20 +158,14 @@ impl Reactor {
                     clock.0 = clock.0.max(now);
                 }
                 other => {
-                    // Enrollment carries a vendor config — evaluate the
-                    // connector statics so the facts land right behind
-                    // the spawn (next batch: the entity is flushed by
-                    // then), and start route-monitoring the address.
-                    match &other {
-                        InEvent::Command(Command::AddTv { record, .. }) => {
-                            self.send_transport_facts(record.id, &record.vendor, &record.config);
-                        }
-                        InEvent::Command(Command::RemoveTv { id, .. }) => {
-                            if let Some(tx) = &self.routes_tx {
-                                let _ = tx.send(RouteRequest::Forget { tv: *id });
-                            }
-                        }
-                        _ => {}
+                    // Removal also ends route monitoring for the TV's
+                    // address. (Transport facts need no enrollment
+                    // intercept: every TV dials, and the SpawnConnect
+                    // arm sends them ahead of each dial outcome.)
+                    if let InEvent::Command(Command::RemoveTv { id, .. }) = &other
+                        && let Some(tx) = &self.routes_tx
+                    {
+                        let _ = tx.send(RouteRequest::Forget { tv: *id });
                     }
                     self.world.write_message(other);
                 }
@@ -289,21 +283,6 @@ impl Reactor {
                     });
                 }
             }
-        }
-    }
-
-    /// Evaluate a TV's connector statics and queue them behind the
-    /// current batch (the spawn is flushed by the time they apply).
-    /// Unknown vendors are quietly skipped — command validation
-    /// already rejects them.
-    fn send_transport_facts(&self, tv: uuid::Uuid, vendor: &str, config: &toml::Value) {
-        if let Some(connector) = self.connectors.get(vendor) {
-            let _ = self.inbox_tx.send(InEvent::TransportFacts {
-                tv,
-                supports_wake: connector.supports_wake(config),
-                traits: transport_facts(connector.as_ref(), config),
-            });
-            self.request_route_monitor(tv, connector.as_ref(), config);
         }
     }
 

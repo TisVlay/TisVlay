@@ -139,7 +139,6 @@ pub(crate) struct PairingIndex(pub HashMap<Uuid, Entity>);
 /// events onto. The stock profile constructs only a subset; the rest are
 /// selected through profile configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ProfileAction {
     ScreenOff,
     ScreenOn,
