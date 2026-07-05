@@ -15,10 +15,10 @@ serde_json = { workspace = true }
 tisvlay-core = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
 
 [lints]
 workspace = true

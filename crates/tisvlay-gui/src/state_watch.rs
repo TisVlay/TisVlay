@@ -36,10 +36,6 @@ pub(crate) async fn initial_fetch_and_watch(
 ) {
     // The client always exists (background-retry link); availability is
     // the liveliness state, not the client's existence.
-    let initial_session_available = match session.read().await.as_ref() {
-        Some(client) => client.is_available().await,
-        None => false,
-    };
     let initial_tray_available = match tray.read().await.as_ref() {
         Some(client) => client.is_available().await,
         None => false,
@@ -72,11 +68,6 @@ pub(crate) async fn initial_fetch_and_watch(
     // once the daemon comes up.
     fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
 
-    // Liveliness, not fetch success: mirror-backed reads (list_tvs)
-    // return Ok(empty) with no link at all, so a fetch "succeeding"
-    // proves nothing — an unreachable daemon must not render online
-    // with an empty fleet. Same source as the session/tray flags.
-    let initial_daemon_available = daemon.is_available().await;
     // Seed `Tray.notifications` with documented defaults from core
     // before any successful fetch. Gives the settings pane sensible
     // switch positions even if the GUI starts while the tray is
@@ -87,25 +78,11 @@ pub(crate) async fn initial_fetch_and_watch(
         if let Some(snapshot) = initial_snapshot {
             push_snapshot(&app, snapshot);
         }
-        app.set_daemon_available(initial_daemon_available);
-        app.set_session_available(initial_session_available);
-        app.set_tray_available(initial_tray_available);
-        let tray_global = app.global::<Tray>();
-        tray_global.set_notifications(initial_tray_notifications);
-        // Settings pane binds switch `enabled` + the offline banner
-        // to `Tray.available`, which is a global property distinct
-        // from `AppWindow.tray-available` (used by the About-pane
-        // footer). Mirror writes to both so the settings pane
-        // re-enables when the tray comes online — same pattern as
-        // `Profiles.session-available` below.
-        tray_global.set_available(initial_tray_available);
-        // Profiles-pane User section needs its own copy of the
-        // session-bus availability flag so the "Session service
-        // unavailable" hint and the disabled "+" button can bind
-        // against the Profiles global directly.
-        app.global::<Profiles>()
-            .set_session_available(initial_session_available);
+        app.global::<Tray>()
+            .set_notifications(initial_tray_notifications);
     });
+    // Every availability copy goes through the single writer.
+    publish_availability(&daemon, &session, &tray, &app_weak).await;
 
     if initial_tray_available {
         refresh_tray_notifications(&tray, &app_weak).await;
@@ -324,6 +301,7 @@ async fn watch_state(
                 // defaults on disk, in which case the inherit walk
                 // would otherwise resolve against a stale ancestor.
                 profiles::prime_system_layers(&daemon, &editor).await;
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
@@ -379,10 +357,10 @@ async fn watch_state(
             }
             StateEvent::DaemonDisappeared => {
                 on_ui(&app_weak, move |app| {
-                    app.set_daemon_available(false);
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                     app.set_tvs_connected_count(0);
                 });
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
@@ -391,39 +369,27 @@ async fn watch_state(
                 if let Some(client) = session.read().await.as_ref() {
                     profiles::prime_user_layers(client, &editor).await;
                 }
-                on_ui(&app_weak, move |app| {
-                    app.set_session_available(true);
-                    app.global::<Profiles>().set_session_available(true);
-                });
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
                 // The client stays — its resilient link redials and its
                 // liveliness subscriber delivers the next Appeared.
                 // Only the availability flags flip.
-                on_ui(&app_weak, move |app| {
-                    app.set_session_available(false);
-                    app.global::<Profiles>().set_session_available(false);
-                });
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
                 // The client exists from startup (background-retry link).
                 {
-                    on_ui(&app_weak, move |app| {
-                        app.set_tray_available(true);
-                        app.global::<Tray>().set_available(true);
-                    });
+                    publish_availability(&daemon, &session, &tray, &app_weak).await;
                     refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
                 }
             }
             StateEvent::TrayDisappeared => {
                 // Client stays, same as the session arm above.
-                on_ui(&app_weak, move |app| {
-                    app.set_tray_available(false);
-                    app.global::<Tray>().set_available(false);
-                });
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayNotificationSettingsChanged => {
@@ -496,17 +462,14 @@ async fn refresh(
             reconcilers.reconcile(&mut snapshot);
             on_ui(app_weak, move |app| {
                 push_snapshot(&app, snapshot);
-                app.set_daemon_available(true);
             });
         }
-        Err(e) => {
-            debug!(error = %e, "State refresh failed");
-            on_ui(app_weak, move |app| {
-                app.set_daemon_available(false);
-            });
-        }
+        // Content-only failure: availability is liveliness's job
+        // (publish_availability), never a fetch outcome's.
+        Err(e) => debug!(error = %e, "State refresh failed"),
     }
     drop(session_ref);
+    publish_availability(daemon, session, tray, app_weak).await;
     refresh_about_components(daemon, session, tray, app_weak).await;
 }
 
@@ -532,25 +495,63 @@ async fn refresh_about_components(
         })
     }
 
+    // Availability is liveliness; the probes fill content only. A
+    // failed probe on a live peer renders an online row with "—".
+    let daemon_up = daemon.is_available().await;
     let daemon_info = probe(daemon.version(), daemon.config_path()).await;
-    let session_info = match session.read().await.as_ref() {
-        Some(s) => probe(s.version(), s.config_path()).await,
-        None => None,
+    let (session_up, session_info) = match session.read().await.as_ref() {
+        Some(s) => (
+            s.is_available().await,
+            probe(s.version(), s.config_path()).await,
+        ),
+        None => (false, None),
     };
-    let tray_info = match tray.read().await.as_ref() {
-        Some(t) => probe(t.version(), t.config_path()).await,
-        None => None,
+    let (tray_up, tray_info) = match tray.read().await.as_ref() {
+        Some(t) => (
+            t.is_available().await,
+            probe(t.version(), t.config_path()).await,
+        ),
+        None => (false, None),
     };
     let cli_version = probe_cli_version().await;
     let rows = make_about_components(
         &crate::endpoints().site,
-        daemon_info.as_ref(),
-        session_info.as_ref(),
-        tray_info.as_ref(),
+        (daemon_up, daemon_info.as_ref()),
+        (session_up, session_info.as_ref()),
+        (tray_up, tray_info.as_ref()),
         cli_version.as_deref(),
     );
     on_ui(app_weak, move |app| {
         app.set_about_components(ModelRc::new(VecModel::from(rows)));
+    });
+}
+
+/// The single writer for every Slint availability property — presence
+/// is liveliness, only; rpc outcomes are content, never online/offline.
+/// Writing all copies (window props + the Tray/Profiles globals) in
+/// one place is what keeps the footer, settings pane, profiles pane,
+/// and About rows from ever disagreeing.
+async fn publish_availability(
+    daemon: &DaemonClient,
+    session: &RwLock<Option<SessionClient>>,
+    tray: &RwLock<Option<TrayClient>>,
+    app_weak: &slint::Weak<AppWindow>,
+) {
+    let daemon_up = daemon.is_available().await;
+    let session_up = match session.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
+    let tray_up = match tray.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
+    on_ui(app_weak, move |app| {
+        app.set_daemon_available(daemon_up);
+        app.set_session_available(session_up);
+        app.set_tray_available(tray_up);
+        app.global::<Tray>().set_available(tray_up);
+        app.global::<Profiles>().set_session_available(session_up);
     });
 }
 

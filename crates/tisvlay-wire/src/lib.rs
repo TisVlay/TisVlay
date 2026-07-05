@@ -841,6 +841,270 @@ pub mod rpc {
     }
 }
 
+pub mod caller {
+    //! Matching-gated rpc calls — the client half of the querier-matching
+    //! law (pinned in `tests/querier_matching.rs`). A [`Caller`] holds one
+    //! declared querier per exact rpc key; every call awaits the querier's
+    //! matching status before firing, so the zero-matching-queryables
+    //! instant-no-reply race cannot happen: matching ⇒ routable. A
+    //! service absent past the deadline fails fast as `rpc.unavailable`,
+    //! and the liveliness token stays a *presence display* signal only —
+    //! rpc readiness is the querier's job.
+
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use serde_json::Value;
+    use zenoh::Session;
+    use zenoh::bytes::Encoding;
+    use zenoh::query::{ConsolidationMode, Querier};
+
+    use crate::error::WireError;
+
+    /// Per-call timeout once a matched queryable holds the query.
+    pub const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// How long a call waits for a matching queryable to become routable
+    /// before failing `rpc.unavailable`. Route propagation on a fresh
+    /// link completes in tens of milliseconds; the margin covers a
+    /// service that is mid-start.
+    pub const MATCHING_DEADLINE: Duration = Duration::from_secs(2);
+
+    /// Typed rpc failure: the service's [`WireError`] code + message, or
+    /// one of the caller's own codes (`rpc.unavailable`, `rpc.timeout`,
+    /// `rpc.no-reply`). Callers route on `code` instead of parsing the
+    /// display string; displays as `"{message} ({code})"`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RpcError {
+        pub code: String,
+        pub message: String,
+    }
+
+    impl std::fmt::Display for RpcError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} ({})", self.message, self.code)
+        }
+    }
+
+    impl std::error::Error for RpcError {}
+
+    impl RpcError {
+        fn caller(code: &str, message: impl Into<String>) -> Self {
+            Self {
+                code: code.into(),
+                message: message.into(),
+            }
+        }
+    }
+
+    /// Matching-gated rpc caller over one zenoh session. Queriers are
+    /// cached per key, so repeat calls skip declaration and their
+    /// matching status is already resolved.
+    #[derive(Debug)]
+    pub struct Caller {
+        session: Session,
+        queriers: Mutex<HashMap<String, Arc<Querier<'static>>>>,
+    }
+
+    impl Caller {
+        pub fn new(session: Session) -> Self {
+            Self {
+                session,
+                queriers: Mutex::new(HashMap::new()),
+            }
+        }
+
+        /// Single-shot rpc: matching-gated, never re-issued. The shape
+        /// for writes — the daemon mints state (uuids, discovery
+        /// sessions) before its deferred ack, so a reply lost mid-flight
+        /// must surface as an error rather than a duplicate-minting
+        /// re-issue.
+        pub async fn call(&self, key: &str, body: Value) -> Result<Value, RpcError> {
+            let querier = self.querier(key).await?;
+            self.await_matching(&querier).await?;
+            issue(&querier, &body).await
+        }
+
+        /// Idempotent read: like [`call`](Self::call), plus one re-issue
+        /// when the reply channel closes empty after matching confirmed
+        /// (queryable dropped mid-call, reply lost mid-flight — safe to
+        /// re-ask for a read).
+        pub async fn fetch(&self, key: &str, body: Value) -> Result<Value, RpcError> {
+            let querier = self.querier(key).await?;
+            self.await_matching(&querier).await?;
+            match issue(&querier, &body).await {
+                Err(error) if error.code == "rpc.no-reply" => {
+                    self.await_matching(&querier).await?;
+                    issue(&querier, &body).await
+                }
+                outcome => outcome,
+            }
+        }
+
+        /// Multi-reply rpc (streaming discovery): consolidation off so
+        /// same-key replies survive; zero replies is a legitimate empty
+        /// result, never re-issued. `window` bounds the collection (scan
+        /// windows legitimately exceed [`RPC_TIMEOUT`]); the querier is
+        /// declared per call since timeout is declaration-time state and
+        /// multi-reply verbs are one-shot human actions.
+        pub async fn call_many(
+            &self,
+            key: &str,
+            body: Value,
+            window: Duration,
+        ) -> Result<Vec<Value>, RpcError> {
+            let querier = self
+                .session
+                .declare_querier(key.to_string())
+                .timeout(window)
+                .consolidation(ConsolidationMode::None)
+                .await
+                .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+            self.await_matching(&querier).await?;
+            let replies = querier
+                .get()
+                .payload(encode(&body)?)
+                .encoding(Encoding::APPLICATION_JSON)
+                .await
+                .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+            let mut out = Vec::new();
+            while let Ok(reply) = replies.recv_async().await {
+                out.push(decode_reply(key, reply)?);
+            }
+            Ok(out)
+        }
+
+        /// The cached single-reply querier for `key`.
+        async fn querier(&self, key: &str) -> Result<Arc<Querier<'static>>, RpcError> {
+            if let Some(querier) = self.queriers.lock().expect("querier cache lock").get(key) {
+                return Ok(Arc::clone(querier));
+            }
+            let declared = Arc::new(
+                self.session
+                    .declare_querier(key.to_string())
+                    .timeout(RPC_TIMEOUT)
+                    .await
+                    .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?,
+            );
+            // A concurrent first call may have raced us; keep whichever
+            // landed first so the loser's querier undeclares on drop.
+            Ok(Arc::clone(
+                self.queriers
+                    .lock()
+                    .expect("querier cache lock")
+                    .entry(key.to_string())
+                    .or_insert(declared),
+            ))
+        }
+
+        /// Wait (bounded) until the querier has a matching routable
+        /// queryable — the fact liveliness tokens cannot provide, since
+        /// token arrival races queryable-route propagation.
+        async fn await_matching(&self, querier: &Querier<'static>) -> Result<(), RpcError> {
+            if status(querier).await?.matching() {
+                return Ok(());
+            }
+            let listener = querier.matching_listener().await.map_err(transport)?;
+            // Re-check after subscribing: the flip may have landed
+            // between the status read and the listener declaration.
+            if status(querier).await?.matching() {
+                return Ok(());
+            }
+            tokio::time::timeout(MATCHING_DEADLINE, async {
+                while let Ok(status) = listener.recv_async().await {
+                    if status.matching() {
+                        return Ok(());
+                    }
+                }
+                Err(RpcError::caller(
+                    "rpc.transport",
+                    "matching listener closed",
+                ))
+            })
+            .await
+            .map_err(|_| {
+                RpcError::caller(
+                    "rpc.unavailable",
+                    format!(
+                        "no rpc service for {} within {MATCHING_DEADLINE:?}",
+                        querier.key_expr()
+                    ),
+                )
+            })?
+        }
+    }
+
+    async fn status(
+        querier: &Querier<'static>,
+    ) -> Result<zenoh::matching::MatchingStatus, RpcError> {
+        querier.matching_status().await.map_err(transport)
+    }
+
+    async fn issue(querier: &Querier<'static>, body: &Value) -> Result<Value, RpcError> {
+        let key = querier.key_expr().as_str().to_string();
+        let replies = querier
+            .get()
+            .payload(encode(body)?)
+            .encoding(Encoding::APPLICATION_JSON)
+            .await
+            .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+        match replies.recv_async().await {
+            Ok(reply) => decode_reply(&key, reply),
+            // Empty channel close: the query finalized with zero replies.
+            // With matching confirmed this is the rare dropped-mid-call
+            // case, not the routing race.
+            Err(_) => Err(RpcError::caller(
+                "rpc.no-reply",
+                format!("rpc {key}: no reply"),
+            )),
+        }
+    }
+
+    fn transport(e: impl std::fmt::Display) -> RpcError {
+        RpcError::caller("rpc.transport", e.to_string())
+    }
+
+    fn encode(body: &Value) -> Result<Vec<u8>, RpcError> {
+        serde_json::to_vec(body).map_err(|e| RpcError::caller("rpc.encode", e.to_string()))
+    }
+
+    fn decode_reply(key: &str, reply: zenoh::query::Reply) -> Result<Value, RpcError> {
+        match reply.result() {
+            Ok(sample) => {
+                Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
+            }
+            Err(err) => {
+                let bytes = err.payload().to_bytes();
+                match serde_json::from_slice::<WireError>(&bytes) {
+                    Ok(error) => Err(RpcError {
+                        code: error.code,
+                        message: error.message,
+                    }),
+                    // Zenoh's query timeout arrives as a synthetic
+                    // ReplyError("Timeout"), not a WireError — surface
+                    // it under its own code so "service slow" stays
+                    // distinguishable from a genuine service error.
+                    Err(_) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        if text.contains("Timeout") {
+                            Err(RpcError::caller(
+                                "rpc.timeout",
+                                format!("rpc {key}: timed out"),
+                            ))
+                        } else {
+                            Err(RpcError::caller(
+                                "unknown",
+                                format!("rpc {key}: undecodable error payload"),
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub mod bootstrap {
     //! Session configuration for daemon (peer + UDS listener) and clients
     //! (connect-only). Multicast and gossip scouting are pinned off in both:

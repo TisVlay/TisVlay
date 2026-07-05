@@ -21,12 +21,14 @@ use tisvlay_core::{
     Capabilities, DesktopMapping, DiscoveredTv, HardwareId, PairingField, SystemProfileConfig,
     UserProfileConfig,
 };
+use tisvlay_wire::caller::Caller;
 use tisvlay_wire::{bootstrap, keys, rpc};
+
+pub use tisvlay_wire::caller::RpcError;
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 use uuid::Uuid;
 use zenoh::Session;
-use zenoh::bytes::Encoding;
 use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
@@ -201,12 +203,12 @@ pub struct TvInfo {
 }
 
 const EVENT_CAPACITY: usize = 256;
-const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Client for the system daemon: mirror reads, rpc writes.
 #[derive(Debug, Clone)]
 pub struct DaemonClient {
     session: Session,
+    caller: Arc<Caller>,
     site: String,
     mirror: Arc<Mutex<SystemMirror>>,
     events: broadcast::Sender<StateEvent>,
@@ -261,6 +263,7 @@ impl DaemonClient {
             });
         }
         Ok(Self {
+            caller: Arc::new(Caller::new(session.clone())),
             session,
             site: site.to_string(),
             mirror,
@@ -296,7 +299,7 @@ impl DaemonClient {
 
     pub async fn version(&self) -> Result<String> {
         let info = self
-            .call(&keys::manager_rpc(&self.site, "info"), Value::Null)
+            .fetch(&keys::manager_rpc(&self.site, "info"), Value::Null)
             .await?;
         Ok(info["version"].as_str().unwrap_or_default().to_string())
     }
@@ -305,7 +308,7 @@ impl DaemonClient {
     /// file; the store is what an admin would inspect).
     pub async fn config_path(&self) -> Result<String> {
         let info = self
-            .call(&keys::manager_rpc(&self.site, "info"), Value::Null)
+            .fetch(&keys::manager_rpc(&self.site, "info"), Value::Null)
             .await?;
         Ok(info["state_path"].as_str().unwrap_or_default().to_string())
     }
@@ -317,7 +320,7 @@ impl DaemonClient {
     }
 
     pub async fn get_supported_vendors(&self) -> Result<Vec<(String, String)>> {
-        let list = self.call(&keys::vendors(&self.site), Value::Null).await?;
+        let list = self.fetch(&keys::vendors(&self.site), Value::Null).await?;
         Ok(list
             .as_array()
             .map(|vendors| {
@@ -336,7 +339,7 @@ impl DaemonClient {
 
     pub async fn get_pairing_schema(&self, vendor: &str) -> Result<Vec<PairingField>> {
         let schema = self
-            .call(&keys::vendor_schema(&self.site, vendor), Value::Null)
+            .fetch(&keys::vendor_schema(&self.site, vendor), Value::Null)
             .await?;
         serde_json::from_value(schema).context("decode pairing schema")
     }
@@ -589,7 +592,7 @@ impl DaemonClient {
         address: &str,
     ) -> Result<HashMap<String, String>> {
         let map = self
-            .call(
+            .fetch(
                 &keys::manager_rpc(&self.site, "enrich"),
                 json!({ "vendor": vendor, "ip": address }),
             )
@@ -606,7 +609,7 @@ impl DaemonClient {
     }
 
     pub async fn get_vendor_capabilities(&self, vendor: &str) -> Result<Capabilities> {
-        let list = self.call(&keys::vendors(&self.site), Value::Null).await?;
+        let list = self.fetch(&keys::vendors(&self.site), Value::Null).await?;
         let names: Vec<String> = list
             .as_array()
             .into_iter()
@@ -706,7 +709,7 @@ impl DaemonClient {
 
     async fn get_tv_config_value(&self, tv: &str) -> Result<Value> {
         let id = parse_tv(tv)?;
-        self.call(&keys::tv_rpc(&self.site, &id, "get-config"), Value::Null)
+        self.fetch(&keys::tv_rpc(&self.site, &id, "get-config"), Value::Null)
             .await
     }
 
@@ -795,7 +798,7 @@ impl DaemonClient {
     /// The stock mapping as system-profile field values (JSON map).
     pub async fn get_resolved_system_profile_defaults(&self) -> Result<SystemProfileBody> {
         let mut defaults = self
-            .call(&keys::profile_rpc(&self.site, "defaults"), Value::Null)
+            .fetch(&keys::profile_rpc(&self.site, "defaults"), Value::Null)
             .await?;
         defaults["name"] = Value::String("default".into());
         serde_json::from_value(defaults).context("decode resolved system defaults")
@@ -804,7 +807,7 @@ impl DaemonClient {
     /// One TV's resolved mapping (assigned profile over stock).
     pub async fn get_effective_system_profile(&self, tv: &str) -> Result<Value> {
         let id = parse_tv(tv)?;
-        self.call(
+        self.fetch(
             &keys::profile_rpc(&self.site, "effective"),
             json!({ "id": id }),
         )
@@ -823,14 +826,25 @@ impl DaemonClient {
     }
 
     async fn call(&self, key: &str, body: Value) -> Result<Value> {
-        call_rpc(&self.session, key, body).await
+        self.caller
+            .call(key, body)
+            .await
+            .map_err(anyhow::Error::new)
+    }
+
+    /// Idempotent read: rides the caller's re-issue-once path.
+    async fn fetch(&self, key: &str, body: Value) -> Result<Value> {
+        self.caller
+            .fetch(key, body)
+            .await
+            .map_err(anyhow::Error::new)
     }
 }
 
 /// Client for the per-user session service (user profiles).
 #[derive(Debug, Clone)]
 pub struct SessionClient {
-    session: Session,
+    caller: Arc<Caller>,
     site: String,
     mirror: Arc<Mutex<UserMirror>>,
     events: broadcast::Sender<StateEvent>,
@@ -883,7 +897,7 @@ impl SessionClient {
             });
         }
         Ok(Self {
-            session,
+            caller: Arc::new(Caller::new(session)),
             site: site.to_string(),
             mirror,
             events,
@@ -896,14 +910,14 @@ impl SessionClient {
 
     pub async fn version(&self) -> Result<String> {
         let info = self
-            .call(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
+            .fetch(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
             .await?;
         Ok(info["version"].as_str().unwrap_or_default().to_string())
     }
 
     pub async fn config_path(&self) -> Result<String> {
         let info = self
-            .call(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
+            .fetch(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
             .await?;
         Ok(info["state_path"].as_str().unwrap_or_default().to_string())
     }
@@ -1014,7 +1028,7 @@ impl SessionClient {
 
     pub async fn get_resolved_user_profile_defaults(&self) -> Result<UserProfileBody> {
         let mut defaults = self
-            .call(&keys::user_profile_rpc(&self.site, "defaults"), Value::Null)
+            .fetch(&keys::user_profile_rpc(&self.site, "defaults"), Value::Null)
             .await?;
         defaults["name"] = Value::String("default".into());
         serde_json::from_value(defaults).context("decode resolved user defaults")
@@ -1025,7 +1039,18 @@ impl SessionClient {
     }
 
     async fn call(&self, key: &str, body: Value) -> Result<Value> {
-        call_rpc(&self.session, key, body).await
+        self.caller
+            .call(key, body)
+            .await
+            .map_err(anyhow::Error::new)
+    }
+
+    /// Idempotent read: rides the caller's re-issue-once path.
+    async fn fetch(&self, key: &str, body: Value) -> Result<Value> {
+        self.caller
+            .fetch(key, body)
+            .await
+            .map_err(anyhow::Error::new)
     }
 }
 
@@ -1034,7 +1059,7 @@ impl SessionClient {
 /// `user/tray/settings` pub, writes via `user/tray/rpc/*`.
 #[derive(Debug, Clone)]
 pub struct TrayClient {
-    session: Session,
+    caller: Arc<Caller>,
     site: String,
     alive: Arc<Mutex<bool>>,
     events: broadcast::Sender<StateEvent>,
@@ -1082,7 +1107,7 @@ impl TrayClient {
             });
         }
         Ok(Self {
-            session,
+            caller: Arc::new(Caller::new(session)),
             site: site.to_string(),
             alive,
             events,
@@ -1094,12 +1119,12 @@ impl TrayClient {
     }
 
     pub async fn version(&self) -> Result<String> {
-        let info = self.call("info", Value::Null).await?;
+        let info = self.fetch("info", Value::Null).await?;
         Ok(info["version"].as_str().unwrap_or_default().to_string())
     }
 
     pub async fn config_path(&self) -> Result<String> {
-        let info = self.call("info", Value::Null).await?;
+        let info = self.fetch("info", Value::Null).await?;
         Ok(info["state_path"].as_str().unwrap_or_default().to_string())
     }
 
@@ -1108,7 +1133,7 @@ impl TrayClient {
     }
 
     pub async fn notification_settings(&self) -> Result<NotificationSettingsBody> {
-        let settings = self.call("get", Value::Null).await?;
+        let settings = self.fetch("get", Value::Null).await?;
         Ok(NotificationSettingsBody {
             tv_connection: settings["tv_connection"].as_bool(),
             tv_pairing: settings["tv_pairing"].as_bool(),
@@ -1132,7 +1157,18 @@ impl TrayClient {
     }
 
     async fn call(&self, verb: &str, body: Value) -> Result<Value> {
-        call_rpc(&self.session, &keys::user_tray_rpc(&self.site, verb), body).await
+        self.caller
+            .call(&keys::user_tray_rpc(&self.site, verb), body)
+            .await
+            .map_err(anyhow::Error::new)
+    }
+
+    /// Idempotent read: rides the caller's re-issue-once path.
+    async fn fetch(&self, verb: &str, body: Value) -> Result<Value> {
+        self.caller
+            .fetch(&keys::user_tray_rpc(&self.site, verb), body)
+            .await
+            .map_err(anyhow::Error::new)
     }
 }
 
@@ -1281,58 +1317,6 @@ fn flatten_config(config: &Value) -> Vec<(String, String)> {
         .collect();
     rows.sort();
     rows
-}
-
-/// A typed rpc failure decoded from the wire's error payload. Carried
-/// as the source of the `anyhow::Error` every client call returns, so
-/// consumers can route on `code` (`err.chain()` + `downcast_ref`)
-/// instead of parsing the display string. Displays as
-/// `"{message} ({code})"` — the same string the error formatted as
-/// before it was typed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RpcError {
-    pub code: String,
-    pub message: String,
-}
-
-impl std::fmt::Display for RpcError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({})", self.message, self.code)
-    }
-}
-
-impl std::error::Error for RpcError {}
-
-async fn call_rpc(session: &Session, key: &str, body: Value) -> Result<Value> {
-    let replies = session
-        .get(key.to_string())
-        .payload(serde_json::to_vec(&body)?)
-        .encoding(Encoding::APPLICATION_JSON)
-        .timeout(RPC_TIMEOUT)
-        .await
-        .map_err(|e| anyhow!("rpc {key}: {e}"))?;
-    let reply = replies
-        .recv_async()
-        .await
-        .map_err(|_| anyhow!("rpc {key}: no reply (daemon down?)"))?;
-    match reply.result() {
-        Ok(sample) => {
-            Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
-        }
-        Err(err) => {
-            let error: tisvlay_wire::error::WireError =
-                serde_json::from_slice(&err.payload().to_bytes()).unwrap_or_else(|_| {
-                    tisvlay_wire::error::WireError {
-                        code: "unknown".into(),
-                        message: "undecodable error payload".into(),
-                    }
-                });
-            Err(anyhow::Error::new(RpcError {
-                code: error.code,
-                message: error.message,
-            }))
-        }
-    }
 }
 
 mod mirror_row {

@@ -97,8 +97,9 @@ Learned the hard way; violating any of these produces silent wrong behavior, not
 - Multi-reply queries (discovery streaming) need `ConsolidationMode::None` querier-side, or consolidation eats same-key replies.
 - `timestamping/enabled` must be on daemon-side for cache ordering.
 - Publishers guarantee no cross-key sample ordering — tests wait on combined predicates in one drain, never two sequential waits on one subscriber.
-- A `get` matching zero queryables completes instantly with no reply — first-rpc-after-serve paths retry the no-reply case.
-- Declare liveliness **after** rpc queryables: a client that observes a service alive must find its rpc surface already declared.
+- A `get` matching zero queryables completes instantly with no reply — and token arrival races queryable-route propagation, so liveliness cannot gate rpcs. Clients therefore gate every rpc on **querier matching status** (`tisvlay-wire`'s `caller::Caller`: matching ⇒ routable, absent-past-deadline ⇒ `rpc.unavailable`) — the pin is `crates/tisvlay-wire/tests/querier_matching.rs`, and every client (SDK, CLI, tray) rides the shared module.
+- **Availability is liveliness, only; rpc outcomes are content.** Presence displays key on liveliness flags (the GUI writes every Slint copy through one `publish_availability` function); a failed or slow rpc renders as missing content, never as offline.
+- Declare liveliness **after** rpc queryables: serve-side hygiene so a token never precedes the surface at the origin. (Client-side, the matching gate above covers the propagation window this ordering cannot.)
 - Zenoh rejects tokio's current-thread scheduler — zenoh-touching tests need `#[tokio::test(flavor = "multi_thread")]`.
 - Stale Unix socket files are fine: zenoh's `.lock` protocol takes over an unclean listener path on the next bind.
 

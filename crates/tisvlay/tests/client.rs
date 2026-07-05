@@ -233,3 +233,41 @@ async fn client_before_daemon_connects_when_it_appears() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// The startup-race regression the querier-matching rework closes: an
+/// rpc fired immediately after `connect` — before any liveliness wait,
+/// while queryable routes may still be propagating to the fresh peer —
+/// succeeds within the matching deadline instead of failing with an
+/// instant no-reply. (Asserting eventual success only: routes may also
+/// legitimately land before the first attempt.)
+#[tokio::test(flavor = "multi_thread")]
+async fn first_rpc_races_route_propagation_and_still_lands() {
+    let dir = tempfile::tempdir().unwrap();
+    let system_socket = dir.path().join("sys.sock");
+    let (connector, discovery, _handle) = new_test_parts();
+    let _daemon = tisvlay_daemon::serve(
+        &system_socket,
+        "t",
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_capabilities(vec!["power".into()])
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+
+    let daemon = DaemonClient::connect(&system_socket, "t").await.unwrap();
+    // No liveliness wait — this is the whole point.
+    let vendors = daemon.get_supported_vendors().await.unwrap();
+    assert_eq!(vendors, vec![("mock".to_string(), "Mock".to_string())]);
+
+    // Typed service errors stay terminal and fast — the matching gate
+    // must not swallow them into retries.
+    let error = daemon.get_pairing_schema("nope").await.unwrap_err();
+    let rpc = error
+        .downcast_ref::<tisvlay::RpcError>()
+        .expect("typed rpc error");
+    assert_eq!(rpc.code, "unknown-vendor");
+}

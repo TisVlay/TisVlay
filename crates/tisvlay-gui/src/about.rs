@@ -123,10 +123,9 @@ const COMPONENT_CATALOGUE: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Probed runtime metadata for a single peer process: its `Version`
-/// and `ConfigPath` D-Bus properties. Always probed together because
-/// they live on the same interface. `config_path` is empty when the
-/// peer has no config file yet (e.g., tray pre-phase-2, GUI).
+/// Probed runtime metadata for a single peer process, from its `info`
+/// rpc. Always probed together because they ride one reply.
+/// `config_path` is empty when the peer has no config file (GUI).
 #[derive(Clone, Default, Debug)]
 pub struct PeerInfo {
     pub version: String,
@@ -170,19 +169,38 @@ pub(crate) async fn probe_cli_version() -> Option<String> {
 
 /// Build the COMPONENTS-table model for the About pane. Each row
 /// gets a status circle on the left and stacked presence + version
-/// pills on the right under one uniform vocabulary: `online` means
-/// "the surface answered" — D-Bus reachable for peers, `--version`
-/// parsed cleanly for the CLI. Daemon / Session / Tray fold their
-/// probed `PeerInfo` into the row; GUI is hardcoded online and ships
-/// its compile-time `CARGO_PKG_VERSION`; CLI's row reflects the
-/// shell-out result.
+/// pills on the right. Availability is liveliness, only: each peer's
+/// `online` comes from its liveliness flag — the same source as the
+/// sidebar footer, so the two can never disagree — while the probed
+/// `PeerInfo` fills version/config *content* ("—" until a probe
+/// lands; a failed probe never renders offline). GUI is hardcoded
+/// online with its compile-time `CARGO_PKG_VERSION`; the CLI row
+/// reflects the `--version` shell-out.
 pub(crate) fn make_about_components(
     site: &str,
-    daemon: Option<&PeerInfo>,
-    session: Option<&PeerInfo>,
-    tray: Option<&PeerInfo>,
+    daemon: (bool, Option<&PeerInfo>),
+    session: (bool, Option<&PeerInfo>),
+    tray: (bool, Option<&PeerInfo>),
     cli_version: Option<&str>,
 ) -> Vec<AboutComponentRow> {
+    let peer_row = |(online, info): (bool, Option<&PeerInfo>)| match info {
+        Some(info) => (
+            info.version.clone(),
+            drift_tone(GUI_VERSION, &info.version).to_string(),
+            online,
+            info.config_path.clone(),
+        ),
+        None => (
+            if online {
+                "—".to_string()
+            } else {
+                String::new()
+            },
+            String::new(),
+            online,
+            String::new(),
+        ),
+    };
     let parens = |identity: String| {
         if identity.is_empty() {
             String::new()
@@ -205,33 +223,9 @@ pub(crate) fn make_about_components(
                 _ => String::new(),
             };
             let (version, tone, online, config_path) = match *name {
-                "tisvlay-daemon" => match daemon {
-                    Some(info) => (
-                        info.version.clone(),
-                        drift_tone(GUI_VERSION, &info.version).to_string(),
-                        true,
-                        info.config_path.clone(),
-                    ),
-                    None => (String::new(), String::new(), false, String::new()),
-                },
-                "tisvlay-session" => match session {
-                    Some(info) => (
-                        info.version.clone(),
-                        drift_tone(GUI_VERSION, &info.version).to_string(),
-                        true,
-                        info.config_path.clone(),
-                    ),
-                    None => (String::new(), String::new(), false, String::new()),
-                },
-                "tisvlay-tray" => match tray {
-                    Some(info) => (
-                        info.version.clone(),
-                        drift_tone(GUI_VERSION, &info.version).to_string(),
-                        true,
-                        info.config_path.clone(),
-                    ),
-                    None => (String::new(), String::new(), false, String::new()),
-                },
+                "tisvlay-daemon" => peer_row(daemon),
+                "tisvlay-session" => peer_row(session),
+                "tisvlay-tray" => peer_row(tray),
                 // GUI has no config file yet (passes `None` to dbus::register).
                 "tisvlay-gui" => (
                     GUI_VERSION.to_string(),
@@ -316,4 +310,50 @@ pub(crate) fn build_diagnostic_blob(
         user_bus,
         supported_vendors: &supported_vendors,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Availability is liveliness, only: a live peer whose info probe
+    /// failed renders an online row with placeholder content — a failed
+    /// rpc must never read as offline.
+    #[test]
+    fn live_peer_with_failed_probe_renders_online_with_placeholder() {
+        let rows = make_about_components("t", (true, None), (false, None), (true, None), None);
+        let row = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .expect("row present")
+                .clone()
+        };
+        let daemon = row("tisvlay-daemon");
+        assert!(daemon.online);
+        assert_eq!(daemon.version, "—");
+        let session = row("tisvlay-session");
+        assert!(!session.online);
+        assert_eq!(session.version, "");
+        let tray = row("tisvlay-tray");
+        assert!(tray.online);
+        assert_eq!(tray.version, "—");
+    }
+
+    /// A probe that lands fills content and keeps the liveliness flag.
+    #[test]
+    fn probe_content_fills_without_touching_presence() {
+        let info = PeerInfo {
+            version: "9.9.9".into(),
+            config_path: "/tmp/x.toml".into(),
+        };
+        let rows =
+            make_about_components("t", (true, Some(&info)), (false, None), (false, None), None);
+        let daemon = rows
+            .iter()
+            .find(|row| row.name == "tisvlay-daemon")
+            .expect("row present");
+        assert!(daemon.online);
+        assert_eq!(daemon.version, "9.9.9");
+        assert_eq!(daemon.config_path, "/tmp/x.toml");
+    }
 }
