@@ -312,7 +312,7 @@ impl Bridge {
         }
         let reply_id = self.next_reply;
         self.next_reply += 1;
-        match self.route(&key, &body, reply_id) {
+        match self.route(&key, &body, reply_id).await {
             Ok((command, ok_payload)) => {
                 debug!(%key, reply_id, "rpc routed");
                 self.pending
@@ -372,7 +372,7 @@ impl Bridge {
                         Ok(found) => {
                             for mut tv in found {
                                 if !tv.vendor_data.contains_key("mac")
-                                    && let Some(mac) = crate::arp::lookup_mac(&tv.address)
+                                    && let Some(mac) = crate::arp::lookup_mac(&tv.address).await
                                 {
                                     tv.vendor_data.insert("mac".into(), mac);
                                 }
@@ -446,7 +446,7 @@ impl Bridge {
                 let _ = connector.probe_arp_cache(addr).await;
             }
             let mut map = serde_json::Map::new();
-            if let Some(mac) = crate::arp::lookup_mac(&ip) {
+            if let Some(mac) = crate::arp::lookup_mac(&ip).await {
                 map.insert("mac".into(), Value::String(mac));
             }
             reply_json(&query, &Value::Object(map)).await;
@@ -486,7 +486,7 @@ impl Bridge {
                             // the MAC so pairing configs built from this
                             // finding are WoL-capable.
                             if !tv.vendor_data.contains_key("mac")
-                                && let Some(mac) = crate::arp::lookup_mac(&tv.address)
+                                && let Some(mac) = crate::arp::lookup_mac(&tv.address).await
                             {
                                 tv.vendor_data.insert("mac".into(), mac);
                             }
@@ -551,7 +551,7 @@ impl Bridge {
     /// Map an RPC key + JSON body onto a world command. The reply
     /// correlation id is threaded through so the world's reply comes back
     /// to this query.
-    fn route(
+    async fn route(
         &self,
         key: &str,
         body: &Value,
@@ -562,7 +562,7 @@ impl Bridge {
                 "add-tv" => {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
-                    let config = enrich_config_mac(req.config);
+                    let config = enrich_config_mac(req.config).await;
                     self.validate_vendor_fields(&req.vendor, &config, false)?;
                     Ok((
                         Command::AddTv {
@@ -584,7 +584,7 @@ impl Bridge {
                 "pair" => {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
-                    let config = enrich_config_mac(req.config);
+                    let config = enrich_config_mac(req.config).await;
                     self.validate_vendor_fields(&req.vendor, &config, false)?;
                     Ok((
                         Command::Pair {
@@ -855,11 +855,11 @@ fn json_to_toml(value: &Value) -> Result<toml::Value, WireError> {
 /// An IP-addressed vendor config without a `mac` can't Wake-on-LAN. The
 /// pairing/connect traffic primes the ARP cache, so fill it in here — an
 /// explicit `mac` from the caller always wins.
-fn enrich_config_mac(mut config: Value) -> Value {
+async fn enrich_config_mac(mut config: Value) -> Value {
     if let Some(object) = config.as_object_mut()
         && !object.contains_key("mac")
         && let Some(ip) = object.get("ip").and_then(Value::as_str)
-        && let Some(mac) = crate::arp::lookup_mac(ip)
+        && let Some(mac) = crate::arp::lookup_mac(ip).await
     {
         object.insert("mac".into(), Value::String(mac));
     }

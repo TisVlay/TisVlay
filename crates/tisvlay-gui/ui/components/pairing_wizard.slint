@@ -17,7 +17,7 @@ import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
-import { HelpTrigger } from "../globals/help.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
@@ -1022,7 +1022,7 @@ export component PairingWizardPane inherits Rectangle {
         }
 
         // Body
-        ScrollView {
+        HelpScrollView {
             VerticalLayout {
                 width: 100%;
                 padding: 20px;

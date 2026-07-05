@@ -1,31 +1,82 @@
-//! Minimal ARP-cache lookup for MAC enrichment: SSDP replies and pairing
-//! traffic have just primed the kernel's neighbor table, so a discovered
-//! TV's MAC — the Wake-on-LAN prerequisite in the LG vendor config — is
-//! one `/proc/net/arp` read away.
+//! Neighbour-table MAC lookup for discovery enrichment (ported from the
+//! root daemon's netlink helper): SSDP replies and pairing traffic have
+//! just primed the kernel's neighbour table, so a discovered TV's MAC —
+//! the Wake-on-LAN prerequisite in the LG vendor config — is one
+//! `RTM_GETNEIGH` dump away. Netlink rather than `/proc/net/arp`: the
+//! packaged unit runs `ProcSubset=pid`, which mounts a `/proc` without
+//! `/proc/net`, while `AF_NETLINK` is already open for the carrier
+//! monitor.
 
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 
-pub(crate) fn lookup_mac(ip: &str) -> Option<String> {
-    if ip.parse::<Ipv4Addr>().is_err() {
-        return None;
-    }
-    let table = std::fs::read_to_string("/proc/net/arp").ok()?;
-    parse_mac(&table, ip)
+use futures_util::TryStreamExt;
+use netlink_packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourState};
+use rtnetlink::{IpVersion, new_connection};
+use tracing::warn;
+
+/// Look up the MAC address for `ip` from the kernel neighbour table
+/// (equivalent to `ip neighbour show`). `None` when the address doesn't
+/// parse as an IP, isn't in the table (cross-VLAN, wrong subnet), or the
+/// entry has no resolved link-layer address yet — callers treat that as
+/// "ask the user for a MAC", not a hard failure.
+pub(crate) async fn lookup_mac(ip: &str) -> Option<String> {
+    let ip: IpAddr = ip.parse().ok()?;
+    let (connection, handle, _) = match new_connection() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "failed to create netlink connection for neighbour lookup");
+            return None;
+        }
+    };
+    let conn_task = tokio::spawn(connection);
+    let result = neighbour_lookup(&handle, ip).await;
+    conn_task.abort();
+    result
 }
 
-/// Columns: IP address, HW type, Flags, HW address, Mask, Device.
-/// Flags `0x2` marks a complete entry; incomplete rows carry a zero MAC.
-fn parse_mac(table: &str, ip: &str) -> Option<String> {
-    for line in table.lines().skip(1) {
-        let mut fields = line.split_whitespace();
-        let (Some(entry_ip), Some(_hw_type), Some(flags), Some(mac)) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if entry_ip == ip && flags != "0x0" && mac != "00:00:00:00:00:00" {
-            return Some(mac.to_uppercase());
+async fn neighbour_lookup(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String> {
+    let ip_version = match ip {
+        IpAddr::V4(_) => IpVersion::V4,
+        IpAddr::V6(_) => IpVersion::V6,
+    };
+    let mut neighbours = handle.neighbours().get().set_family(ip_version).execute();
+    while let Ok(Some(msg)) = neighbours.try_next().await {
+        // Skip entries with no resolved link-layer address.
+        match msg.header.state {
+            NeighbourState::Reachable
+            | NeighbourState::Stale
+            | NeighbourState::Permanent
+            | NeighbourState::Probe
+            | NeighbourState::Delay
+            | NeighbourState::Noarp => {}
+            _ => continue,
         }
+        let mut dest: Option<IpAddr> = None;
+        let mut lladdr: Option<[u8; 6]> = None;
+        for attr in &msg.attributes {
+            match attr {
+                NeighbourAttribute::Destination(NeighbourAddress::Inet(v4)) => {
+                    dest = Some(IpAddr::V4(*v4));
+                }
+                NeighbourAttribute::Destination(NeighbourAddress::Inet6(v6)) => {
+                    dest = Some(IpAddr::V6(*v6));
+                }
+                NeighbourAttribute::LinkLayerAddress(bytes) if bytes.len() == 6 => {
+                    let mut mac = [0u8; 6];
+                    mac.copy_from_slice(bytes);
+                    lladdr = Some(mac);
+                }
+                _ => {}
+            }
+        }
+        if dest != Some(ip) {
+            continue;
+        }
+        let mac = lladdr?;
+        return Some(format!(
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        ));
     }
     None
 }
@@ -34,29 +85,14 @@ fn parse_mac(table: &str, ip: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const TABLE: &str = "\
-IP address       HW type     Flags       HW address            Mask     Device
-192.168.1.170    0x1         0x2         84:90:0a:63:a9:94     *        eno2
-192.168.1.74     0x1         0x0         00:00:00:00:00:00     *        eno2
-192.168.1.239    0x1         0x2         56:cf:bb:83:4b:4e     *        eno2
-";
-
-    #[test]
-    fn finds_complete_entries_uppercased() {
-        assert_eq!(
-            parse_mac(TABLE, "192.168.1.170").as_deref(),
-            Some("84:90:0A:63:A9:94")
-        );
+    #[tokio::test]
+    async fn non_ip_addresses_short_circuit() {
+        assert_eq!(lookup_mac("mock://den").await, None);
     }
 
-    #[test]
-    fn skips_incomplete_and_missing_entries() {
-        assert_eq!(parse_mac(TABLE, "192.168.1.74"), None, "flags 0x0");
-        assert_eq!(parse_mac(TABLE, "192.168.1.99"), None, "absent");
-    }
-
-    #[test]
-    fn non_ipv4_addresses_short_circuit() {
-        assert_eq!(lookup_mac("mock://den"), None);
+    #[tokio::test]
+    async fn absent_entries_resolve_to_none() {
+        // TEST-NET-3 (RFC 5737) is never in a real neighbour table.
+        assert_eq!(lookup_mac("203.0.113.254").await, None);
     }
 }
