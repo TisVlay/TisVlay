@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-03 20:42-0500\n"
+"POT-Creation-Date: 2026-07-04 22:26-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -44,195 +44,205 @@ msgstr ""
 msgid "Paired successfully."
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:248
+#: crates/tisvlay-gui/src/profiles.rs:257
 msgctxt "profile field"
 msgid "On startup"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:249
+#: crates/tisvlay-gui/src/profiles.rs:258
 msgctxt "profile field"
 msgid "On shutdown"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:250
+#: crates/tisvlay-gui/src/profiles.rs:259
 msgctxt "profile field"
 msgid "On reboot"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:251
+#: crates/tisvlay-gui/src/profiles.rs:260
 msgctxt "profile field"
 msgid "On sleep"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:252
+#: crates/tisvlay-gui/src/profiles.rs:261
 msgctxt "profile field"
 msgid "On wake"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:253
+#: crates/tisvlay-gui/src/profiles.rs:262
 msgctxt "profile field"
 msgid "On DPMS off"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:254
+#: crates/tisvlay-gui/src/profiles.rs:263
 msgctxt "profile field"
 msgid "On DPMS on"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:255
+#: crates/tisvlay-gui/src/profiles.rs:264
 msgctxt "profile field"
 msgid "Automate when"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:256
+#: crates/tisvlay-gui/src/profiles.rs:265
 msgctxt "profile field"
 msgid "On session lock"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:257
+#: crates/tisvlay-gui/src/profiles.rs:266
 msgctxt "profile field"
 msgid "On session unlock"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:258
+#: crates/tisvlay-gui/src/profiles.rs:267
 msgctxt "profile field"
 msgid "On lock wake"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:259
+#: crates/tisvlay-gui/src/profiles.rs:268
 msgctxt "profile field"
 msgid "On idle timeout"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:260
+#: crates/tisvlay-gui/src/profiles.rs:269
 msgctxt "profile field"
 msgid "On idle resume"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:261
+#: crates/tisvlay-gui/src/profiles.rs:270
 msgctxt "profile field"
 msgid "Idle timeout"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:439
+#: crates/tisvlay-gui/src/profiles.rs:271
+msgctxt "profile field"
+msgid "Idle timeout (locked)"
+msgstr ""
+
+#: crates/tisvlay-gui/src/profiles.rs:272
+msgctxt "profile field"
+msgid "Idle timeout (unlocked)"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:462
 msgid "Copied to clipboard."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:441
+#: crates/tisvlay-gui/src/lib.rs:464
 #, rust-format
 msgid "Copied {0}."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:505
+#: crates/tisvlay-gui/src/lib.rs:534
 msgid "diagnostic info"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:787
+#: crates/tisvlay-gui/src/lib.rs:816
 #, rust-format
 msgid "Create profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:842
+#: crates/tisvlay-gui/src/lib.rs:871
 #, rust-format
 msgid "Duplicate profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:901
+#: crates/tisvlay-gui/src/lib.rs:930
 #, rust-format
 msgid "Delete profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:983 crates/tisvlay-gui/src/lib.rs:1010
+#: crates/tisvlay-gui/src/lib.rs:1012 crates/tisvlay-gui/src/lib.rs:1039
 #, rust-format
 msgid "Save change failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1035
+#: crates/tisvlay-gui/src/lib.rs:1064
 #, rust-format
 msgid "Reset field failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1059
+#: crates/tisvlay-gui/src/lib.rs:1088
 #, rust-format
 msgid "Reset all failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1084
+#: crates/tisvlay-gui/src/lib.rs:1113
 #, rust-format
 msgid "Rename failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1111
+#: crates/tisvlay-gui/src/lib.rs:1140
 msgid "Couldn't change volume"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1129
+#: crates/tisvlay-gui/src/lib.rs:1158
 msgid "Couldn't change backlight"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1150
+#: crates/tisvlay-gui/src/lib.rs:1179
 msgid "Couldn't change mute"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1178
+#: crates/tisvlay-gui/src/lib.rs:1207
 msgid "Couldn't turn screen on"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1180
+#: crates/tisvlay-gui/src/lib.rs:1209
 msgid "Couldn't turn screen off"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1199
+#: crates/tisvlay-gui/src/lib.rs:1228
 msgid "Couldn't switch input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1218
+#: crates/tisvlay-gui/src/lib.rs:1247
 msgid "Power on failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1233
+#: crates/tisvlay-gui/src/lib.rs:1262
 msgid "Power off failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1248
+#: crates/tisvlay-gui/src/lib.rs:1277
 msgid "Couldn't update managed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1275 crates/tisvlay-gui/src/lib.rs:1290
-#: crates/tisvlay-gui/src/lib.rs:1275 crates/tisvlay-gui/src/lib.rs:1290
+#: crates/tisvlay-gui/src/lib.rs:1304 crates/tisvlay-gui/src/lib.rs:1319
+#: crates/tisvlay-gui/src/lib.rs:1304 crates/tisvlay-gui/src/lib.rs:1319
 msgid "Couldn't change system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1291 crates/tisvlay-gui/src/lib.rs:1349
+#: crates/tisvlay-gui/src/lib.rs:1320 crates/tisvlay-gui/src/lib.rs:1378
 msgid "Selected profile is no longer in the catalog."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1320
+#: crates/tisvlay-gui/src/lib.rs:1349
 msgid "Session service unavailable"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1322
+#: crates/tisvlay-gui/src/lib.rs:1351
 msgid "User-profile assignments require the per-user tisvlay-session service."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1333 crates/tisvlay-gui/src/lib.rs:1348
-#: crates/tisvlay-gui/src/lib.rs:1333 crates/tisvlay-gui/src/lib.rs:1348
+#: crates/tisvlay-gui/src/lib.rs:1362 crates/tisvlay-gui/src/lib.rs:1377
+#: crates/tisvlay-gui/src/lib.rs:1362 crates/tisvlay-gui/src/lib.rs:1377
 msgid "Couldn't change user profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1372
+#: crates/tisvlay-gui/src/lib.rs:1401
 msgid "Couldn't change primary input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1387
+#: crates/tisvlay-gui/src/lib.rs:1416
 msgid "Couldn't remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1415
+#: crates/tisvlay-gui/src/lib.rs:1444
 msgid "Reload config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1425
+#: crates/tisvlay-gui/src/lib.rs:1454
 msgid "Reload session config failed"
 msgstr ""
 
@@ -1055,72 +1065,72 @@ msgctxt "PairingWizardPane"
 msgid "Back"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:153
+#: crates/tisvlay-gui/ui/components/about_pane.slint:154
 msgctxt "ComponentRow"
 msgid "Config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:154
+#: crates/tisvlay-gui/ui/components/about_pane.slint:155
 msgctxt "ComponentRow"
 msgid "Open component config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:185
+#: crates/tisvlay-gui/ui/components/about_pane.slint:186
 msgctxt "ComponentRow"
 msgid "offline"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:295
+#: crates/tisvlay-gui/ui/components/about_pane.slint:296
 msgctxt "AboutPane"
 msgid "TV Display control for Linux."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:305
+#: crates/tisvlay-gui/ui/components/about_pane.slint:306
 msgctxt "AboutPane"
 msgid "Open TisVlay website"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:329
+#: crates/tisvlay-gui/ui/components/about_pane.slint:330
 msgctxt "AboutPane"
 msgid "Open release notes"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:339
+#: crates/tisvlay-gui/ui/components/about_pane.slint:340
 msgctxt "AboutPane"
 msgid "Diagnostics"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:340
+#: crates/tisvlay-gui/ui/components/about_pane.slint:341
 msgctxt "AboutPane"
 msgid "Copy diagnostics to clipboard"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:350
+#: crates/tisvlay-gui/ui/components/about_pane.slint:351
 msgctxt "AboutPane"
 msgid "Report issue"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:351
+#: crates/tisvlay-gui/ui/components/about_pane.slint:352
 msgctxt "AboutPane"
 msgid "Open issue tracker"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:362
+#: crates/tisvlay-gui/ui/components/about_pane.slint:363
 msgctxt "AboutPane"
 msgid "COMPONENTS"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:374
+#: crates/tisvlay-gui/ui/components/about_pane.slint:375
 msgctxt "AboutPane"
 msgid "LICENSE"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:395
+#: crates/tisvlay-gui/ui/components/about_pane.slint:396
 msgctxt "AboutPane"
 msgid "View third-party notices"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:396
+#: crates/tisvlay-gui/ui/components/about_pane.slint:397
 msgctxt "AboutPane"
 msgid "Open third-party notices"
 msgstr ""

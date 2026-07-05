@@ -45,12 +45,12 @@
 //! ```toml
 //! [user.profiles."00000000-0000-0000-0000-00000000515a"]
 //! name = "default"
-//! idle_timeout_seconds = 600
+//! unlocked_idle_timeout_seconds = 600
 //!
 //! [user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
 //! name = "gaming"
 //! on_session_lock = "none"
-//! idle_timeout_seconds = 0
+//! unlocked_idle_timeout_seconds = 0
 //!
 //! [[tv]]
 //! uuid = "11111111-1111-1111-1111-111111111111"
@@ -366,15 +366,24 @@ pub struct UserProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_lock_wake: Option<SessionAction>,
 
-    /// Idle timeout in seconds (0 to disable).
+    /// Idle timeout in seconds while the screen is locked (0 to
+    /// disable) — how long a bumped-but-not-unlocked lock screen stays
+    /// awake before `on_idle_timeout` re-blanks it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_timeout_seconds: Option<u64>,
+    pub locked_idle_timeout_seconds: Option<u64>,
 
-    /// Action on idle timeout.
+    /// Idle timeout in seconds while unlocked (0 to disable) — the
+    /// in-session idle threshold for `on_idle_timeout`/`on_idle_resume`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlocked_idle_timeout_seconds: Option<u64>,
+
+    /// Action on idle timeout (either state's timer; each timer only
+    /// fires in its own lock state).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_timeout: Option<SessionAction>,
 
-    /// Action when activity resumes after idle timeout.
+    /// Action when activity resumes after an unlocked idle timeout.
+    /// Activity while locked dispatches `on_lock_wake` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_resume: Option<SessionAction>,
 }
@@ -387,7 +396,8 @@ profile_plumbing! {
         on_session_lock,
         on_session_unlock,
         on_lock_wake,
-        idle_timeout_seconds,
+        locked_idle_timeout_seconds,
+        unlocked_idle_timeout_seconds,
         on_idle_timeout,
         on_idle_resume,
     ],
@@ -410,11 +420,13 @@ pub struct ResolvedUserProfile {
     pub on_session_unlock: SessionAction,
     /// Action when user interacts with the lock screen greeter.
     pub on_lock_wake: SessionAction,
-    /// Idle timeout in seconds (0 to disable).
-    pub idle_timeout_seconds: u64,
+    /// Idle timeout in seconds while locked (0 to disable).
+    pub locked_idle_timeout_seconds: u64,
+    /// Idle timeout in seconds while unlocked (0 to disable).
+    pub unlocked_idle_timeout_seconds: u64,
     /// Action on idle timeout.
     pub on_idle_timeout: SessionAction,
-    /// Action when activity resumes after idle timeout.
+    /// Action when activity resumes after an unlocked idle timeout.
     pub on_idle_resume: SessionAction,
 }
 
@@ -424,7 +436,8 @@ impl Default for ResolvedUserProfile {
             on_session_lock: SessionAction::ScreenOff,
             on_session_unlock: SessionAction::ScreenOn,
             on_lock_wake: SessionAction::ScreenOn,
-            idle_timeout_seconds: 0,
+            locked_idle_timeout_seconds: 0,
+            unlocked_idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff,
             on_idle_resume: SessionAction::ScreenOn,
         }
@@ -1239,7 +1252,7 @@ on_session_unlock = "screen_on"
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1276,7 +1289,7 @@ default_input = "HDMI_1"
             .map(|(_, body)| body)
             .unwrap();
         assert_eq!(gaming.on_session_lock, Some(SessionAction::None));
-        assert_eq!(gaming.idle_timeout_seconds, Some(0));
+        assert_eq!(gaming.unlocked_idle_timeout_seconds, Some(0));
     }
 
     #[test]
@@ -1292,7 +1305,7 @@ on_reboot = "none"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
 on_session_lock = "screen_off"
-idle_timeout_seconds = 300
+unlocked_idle_timeout_seconds = 300
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1325,7 +1338,7 @@ mac = "AA:BB:CC:DD:EE:FF"
             .get(&DEFAULT_USER_PROFILE_UUID)
             .unwrap();
         assert_eq!(user_default.on_session_lock, Some(SessionAction::ScreenOff));
-        assert_eq!(user_default.idle_timeout_seconds, Some(300));
+        assert_eq!(user_default.unlocked_idle_timeout_seconds, Some(300));
         // Unspecified field
         assert_eq!(user_default.on_lock_wake, None);
     }
@@ -1358,7 +1371,7 @@ on_session_lock = "screen_off"
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1724,7 +1737,7 @@ ip = "192.168.1.1"
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff);
         assert_eq!(resolved.on_session_unlock, SessionAction::ScreenOn);
         assert_eq!(resolved.on_lock_wake, SessionAction::ScreenOn);
-        assert_eq!(resolved.idle_timeout_seconds, 0);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 0);
         assert_eq!(resolved.on_idle_timeout, SessionAction::ScreenOff);
     }
 
@@ -1743,19 +1756,19 @@ ip = "192.168.1.1"
     fn test_merge_with_base_partial_override() {
         let base = UserProfileConfig {
             on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
         let override_profile = UserProfileConfig {
             on_session_lock: Some(SessionAction::None),
-            // idle_timeout_seconds not specified — should inherit from base
+            // unlocked_idle_timeout_seconds not specified — should inherit from base
             ..UserProfileConfig::default()
         };
 
         let merged = override_profile.merge_with_base(&base);
         assert_eq!(merged.on_session_lock, Some(SessionAction::None));
-        assert_eq!(merged.idle_timeout_seconds, Some(300)); // inherited
+        assert_eq!(merged.unlocked_idle_timeout_seconds, Some(300)); // inherited
     }
 
     #[test]
@@ -1766,7 +1779,10 @@ ip = "192.168.1.1"
         let merged = empty.merge_with_base(&base);
         // All fields should come from base
         assert_eq!(merged.on_session_lock, base.on_session_lock);
-        assert_eq!(merged.idle_timeout_seconds, base.idle_timeout_seconds);
+        assert_eq!(
+            merged.unlocked_idle_timeout_seconds,
+            base.unlocked_idle_timeout_seconds
+        );
     }
 
     #[test]
@@ -1777,14 +1793,16 @@ ip = "192.168.1.1"
             on_session_lock: Some(SessionAction::None),
             on_session_unlock: Some(SessionAction::None),
             on_lock_wake: Some(SessionAction::None),
-            idle_timeout_seconds: Some(999),
+            locked_idle_timeout_seconds: Some(30),
+            unlocked_idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff),
             on_idle_resume: Some(SessionAction::None),
         };
 
         let merged = full_override.merge_with_base(&base);
         assert_eq!(merged.on_session_lock, Some(SessionAction::None));
-        assert_eq!(merged.idle_timeout_seconds, Some(999));
+        assert_eq!(merged.locked_idle_timeout_seconds, Some(30));
+        assert_eq!(merged.unlocked_idle_timeout_seconds, Some(999));
         assert_eq!(merged.on_idle_timeout, Some(SessionAction::PowerOff));
     }
 
@@ -1799,7 +1817,7 @@ ip = "192.168.1.1"
         let resolved = partial.resolve();
         assert_eq!(resolved.on_session_lock, SessionAction::None); // from partial
         assert_eq!(resolved.on_session_unlock, SessionAction::ScreenOn); // hard-coded default
-        assert_eq!(resolved.idle_timeout_seconds, 0); // hard-coded default
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 0); // hard-coded default
     }
 
     // =========================================================================
@@ -1813,12 +1831,12 @@ ip = "192.168.1.1"
             r#"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
-idle_timeout_seconds = 600
+unlocked_idle_timeout_seconds = 600
 
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1840,7 +1858,7 @@ profile.user = "{gaming_uuid}"
     fn test_user_config_resolve_user_profile_with_assignment() {
         let system_default = UserProfileConfig {
             on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -1851,7 +1869,7 @@ profile.user = "{gaming_uuid}"
             UserProfileConfig {
                 name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
-                // idle_timeout_seconds not specified — should inherit from system
+                // unlocked_idle_timeout_seconds not specified — should inherit from system
                 ..UserProfileConfig::default()
             },
         );
@@ -1859,14 +1877,14 @@ profile.user = "{gaming_uuid}"
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // user gaming
-        assert_eq!(resolved.idle_timeout_seconds, 300); // inherited from system
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300); // inherited from system
     }
 
     #[test]
     fn test_user_config_resolve_user_profile_no_assignment() {
         let system_default = UserProfileConfig {
             on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -1875,14 +1893,14 @@ profile.user = "{gaming_uuid}"
         // TV without assignment uses system default
         let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff);
-        assert_eq!(resolved.idle_timeout_seconds, 300);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300);
     }
 
     #[test]
     fn test_user_config_resolve_user_profile_user_default_overrides_system() {
         let system_default = UserProfileConfig {
             on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -1891,7 +1909,7 @@ profile.user = "{gaming_uuid}"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600), // user overrides system
+                unlocked_idle_timeout_seconds: Some(600), // user overrides system
                 ..UserProfileConfig::default()
             },
         );
@@ -1899,14 +1917,14 @@ profile.user = "{gaming_uuid}"
         // TV without explicit assignment uses user's default profile
         let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff); // from system
-        assert_eq!(resolved.idle_timeout_seconds, 600); // user override
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 600); // user override
     }
 
     #[test]
     fn test_user_config_resolve_user_profile_named_inherits_user_default() {
         let system_default = UserProfileConfig {
             on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(100),
+            unlocked_idle_timeout_seconds: Some(100),
             ..UserProfileConfig::default()
         };
 
@@ -1917,7 +1935,7 @@ profile.user = "{gaming_uuid}"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600),
+                unlocked_idle_timeout_seconds: Some(600),
                 ..UserProfileConfig::default()
             },
         );
@@ -1934,7 +1952,7 @@ profile.user = "{gaming_uuid}"
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // gaming
-        assert_eq!(resolved.idle_timeout_seconds, 600); // user default (not system 100)
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 600); // user default (not system 100)
     }
 
     #[test]
@@ -1960,7 +1978,7 @@ profile.user = "{gaming_uuid}"
             UserProfileConfig {
                 name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
-                idle_timeout_seconds: Some(0),
+                unlocked_idle_timeout_seconds: Some(0),
                 ..UserProfileConfig::default()
             },
         );
@@ -1972,7 +1990,7 @@ profile.user = "{gaming_uuid}"
         assert_eq!(deserialized.user.profiles.len(), 1);
         let gaming = deserialized.user.profiles.get(&gaming_uuid).unwrap();
         assert_eq!(gaming.on_session_lock, Some(SessionAction::None));
-        assert_eq!(gaming.idle_timeout_seconds, Some(0));
+        assert_eq!(gaming.unlocked_idle_timeout_seconds, Some(0));
         // None fields should not be serialized
         let living = deserialized
             .tv
@@ -2000,7 +2018,7 @@ name = "custom"
 on_session_lock = "power_off"
 on_session_unlock = "power_on"
 on_lock_wake = "none"
-idle_timeout_seconds = 300
+unlocked_idle_timeout_seconds = 300
 on_idle_timeout = "screen_off"
 
 [[tv]]
@@ -2037,13 +2055,13 @@ mac = "AA:BB:CC:DD:EE:FF"
         assert_eq!(profile.on_session_lock, Some(SessionAction::PowerOff));
         assert_eq!(profile.on_session_unlock, Some(SessionAction::PowerOn));
         assert_eq!(profile.on_lock_wake, Some(SessionAction::None));
-        assert_eq!(profile.idle_timeout_seconds, Some(300));
+        assert_eq!(profile.unlocked_idle_timeout_seconds, Some(300));
         assert_eq!(profile.on_idle_timeout, Some(SessionAction::ScreenOff));
 
         // Resolve to concrete values
         let resolved = profile.resolve();
         assert_eq!(resolved.on_session_lock, SessionAction::PowerOff);
-        assert_eq!(resolved.idle_timeout_seconds, 300);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300);
     }
 
     // =========================================================================
@@ -2063,12 +2081,12 @@ on_startup = "power_on"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
 on_session_lock = "screen_off"
-idle_timeout_seconds = 300
+unlocked_idle_timeout_seconds = 300
 
 [user.profiles."{foo_uuid}"]
 name = "foo"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "22222222-2222-2222-2222-222222222222"
@@ -2097,7 +2115,7 @@ ip = "192.168.1.1"
             .map(|(_, body)| body)
             .unwrap();
         assert_eq!(foo.on_session_lock, Some(SessionAction::None));
-        assert_eq!(foo.idle_timeout_seconds, Some(0));
+        assert_eq!(foo.unlocked_idle_timeout_seconds, Some(0));
     }
 
     #[test]
@@ -2148,7 +2166,7 @@ ip = "192.168.1.1"
                 UserProfileConfig {
                     name: "default".to_string(),
                     on_session_lock: Some(SessionAction::ScreenOff),
-                    idle_timeout_seconds: Some(300),
+                    unlocked_idle_timeout_seconds: Some(300),
                     ..UserProfileConfig::default()
                 },
             ),
@@ -2170,7 +2188,7 @@ ip = "192.168.1.1"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600), // user overrides
+                unlocked_idle_timeout_seconds: Some(600), // user overrides
                 ..UserProfileConfig::default()
             },
         );
@@ -2199,9 +2217,9 @@ ip = "192.168.1.1"
         assert!(merged.contains_key("foo"));
         assert!(merged.contains_key("gaming"));
 
-        // "default" should be the user's version (idle_timeout_seconds = 600)
+        // "default" should be the user's version (unlocked_idle_timeout_seconds = 600)
         let default = merged.get("default").unwrap();
-        assert_eq!(default.idle_timeout_seconds, Some(600));
+        assert_eq!(default.unlocked_idle_timeout_seconds, Some(600));
 
         // "foo" comes from system
         let foo = merged.get("foo").unwrap();
@@ -2216,7 +2234,7 @@ ip = "192.168.1.1"
             r#"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
-idle_timeout_seconds = 600
+unlocked_idle_timeout_seconds = 600
 
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
@@ -2310,7 +2328,7 @@ ip = "192.168.1.1"
     fn test_user_config_resolve_user_profile_missing_profile_falls_through_user_default() {
         let system_default = UserProfileConfig {
             on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -2319,7 +2337,7 @@ ip = "192.168.1.1"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600),
+                unlocked_idle_timeout_seconds: Some(600),
                 ..UserProfileConfig::default()
             },
         );
@@ -2327,7 +2345,7 @@ ip = "192.168.1.1"
         user.set_tv_user_profile("living_room", Uuid::new_v4());
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
-        assert_eq!(resolved.idle_timeout_seconds, 600);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 600);
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff);
     }
 
@@ -2336,7 +2354,7 @@ ip = "192.168.1.1"
         let system_default = UserProfileConfig {
             on_session_lock: Some(SessionAction::ScreenOff),
             on_session_unlock: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -2354,12 +2372,12 @@ ip = "192.168.1.1"
 
         let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None);
-        assert_eq!(resolved.idle_timeout_seconds, 300);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300);
         assert_eq!(resolved.on_session_unlock, SessionAction::ScreenOn);
 
         let resolved_unknown = user.resolve_user_profile("other_tv", &system_default);
         assert_eq!(resolved_unknown.on_session_lock, SessionAction::ScreenOff);
-        assert_eq!(resolved_unknown.idle_timeout_seconds, 300);
+        assert_eq!(resolved_unknown.unlocked_idle_timeout_seconds, 300);
     }
 
     // =========================================================================

@@ -186,10 +186,10 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-/// User-profile field table. `idle_timeout_seconds` is the lone
-/// numeric field; the rest are `SessionAction` enums. Bounds chosen
-/// for a full 24-hour range with a one-minute step so the spinner
-/// stays usable for both "5 minute" and "12 hour" idle policies.
+/// User-profile field table. The two idle timeouts are the numeric
+/// fields; the rest are `SessionAction` enums. Bounds chosen for a
+/// full 24-hour range with a 15-second step so the spinner stays
+/// usable for both "5 minute" and "12 hour" idle policies.
 pub(crate) const USER_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "on_session_lock",
@@ -220,7 +220,16 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "idle_timeout_seconds",
+        wire: "locked_idle_timeout_seconds",
+        kind: FieldKind::Number {
+            min: 0,
+            max: 86_400,
+            step: 15,
+            unit: "seconds",
+        },
+    },
+    FieldSpec {
+        wire: "unlocked_idle_timeout_seconds",
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
@@ -259,6 +268,8 @@ fn field_label(wire: &str) -> String {
         "on_idle_timeout" => pgettext("profile field", "On idle timeout"),
         "on_idle_resume" => pgettext("profile field", "On idle resume"),
         "idle_timeout_seconds" => pgettext("profile field", "Idle timeout"),
+        "locked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (locked)"),
+        "unlocked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (unlocked)"),
         // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -447,7 +458,10 @@ fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
         "on_lock_wake" => body.on_lock_wake.map(session_action_token),
         "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
         "on_idle_resume" => body.on_idle_resume.map(session_action_token),
-        "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
+        "locked_idle_timeout_seconds" => body.locked_idle_timeout_seconds.map(|v| v.to_string()),
+        "unlocked_idle_timeout_seconds" => {
+            body.unlocked_idle_timeout_seconds.map(|v| v.to_string())
+        }
         _ => None,
     }
 }
@@ -1226,8 +1240,12 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
         "on_lock_wake" => body.on_lock_wake = session_action_patch(patch, "on_lock_wake")?,
         "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
         "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
-        "idle_timeout_seconds" => {
-            body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
+        "locked_idle_timeout_seconds" => {
+            body.locked_idle_timeout_seconds = number_patch(patch, "locked_idle_timeout_seconds")?
+        }
+        "unlocked_idle_timeout_seconds" => {
+            body.unlocked_idle_timeout_seconds =
+                number_patch(patch, "unlocked_idle_timeout_seconds")?
         }
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
@@ -1621,7 +1639,8 @@ mod tests {
             on_lock_wake: Some(SessionAction::ScreenOn),
             on_idle_timeout: Some(SessionAction::ScreenOff),
             on_idle_resume: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(0),
+            locked_idle_timeout_seconds: Some(0),
+            unlocked_idle_timeout_seconds: Some(0),
         }
     }
 
@@ -1745,7 +1764,7 @@ mod tests {
             uuid,
             UserProfileBody {
                 name: "movies".into(),
-                idle_timeout_seconds: Some(600),
+                unlocked_idle_timeout_seconds: Some(600),
                 ..Default::default()
             },
         );
@@ -1755,7 +1774,8 @@ mod tests {
             bodies,
         };
 
-        let resolved = resolve_user_field(&layers, uuid, find_user("idle_timeout_seconds"));
+        let resolved =
+            resolve_user_field(&layers, uuid, find_user("unlocked_idle_timeout_seconds"));
         assert_eq!(
             resolved,
             ResolvedValue::LocallySet {
@@ -1781,12 +1801,13 @@ mod tests {
             baseline: baseline_user(),
             default_body: UserProfileBody {
                 name: "default".into(),
-                idle_timeout_seconds: Some(300),
+                unlocked_idle_timeout_seconds: Some(300),
                 ..Default::default()
             },
             bodies,
         };
-        let resolved = resolve_user_field(&layers, uuid, find_user("idle_timeout_seconds"));
+        let resolved =
+            resolve_user_field(&layers, uuid, find_user("unlocked_idle_timeout_seconds"));
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
@@ -1826,7 +1847,7 @@ mod tests {
 
     #[test]
     fn idle_timeout_bounds_cover_full_day() {
-        let spec = find_user("idle_timeout_seconds");
+        let spec = find_user("unlocked_idle_timeout_seconds");
         let FieldKind::Number {
             min,
             max,
@@ -1834,7 +1855,7 @@ mod tests {
             unit,
         } = spec.kind
         else {
-            panic!("idle_timeout_seconds must be Number");
+            panic!("unlocked_idle_timeout_seconds must be Number");
         };
         assert_eq!(min, 0);
         assert_eq!(max, 86_400, "idle timeout should cover 24h");
@@ -1845,12 +1866,12 @@ mod tests {
     #[test]
     fn build_field_raw_clamps_number_into_range() {
         // An out-of-range default-body value (e.g. a hand-edited
-        // config with idle_timeout_seconds = 999999) must clamp to
+        // config with unlocked_idle_timeout_seconds = 999999) must clamp to
         // [min, max] before rendering or the SpinBox will assert.
         let resolved = ResolvedValue::LocallySet {
             current: "999999".to_string(),
         };
-        let spec = find_user("idle_timeout_seconds");
+        let spec = find_user("unlocked_idle_timeout_seconds");
         let raw = build_field_raw(spec, &resolved);
         assert_eq!(raw.kind, "number");
         assert_eq!(raw.number_value, 86_400);
@@ -2124,19 +2145,24 @@ mod tests {
     #[test]
     fn set_user_field_writes_idle_timeout_number() {
         let mut body = UserProfileBody::default();
-        set_user_field(&mut body, "idle_timeout_seconds", BodyPatch::Number(900))
-            .expect("known wire");
-        assert_eq!(body.idle_timeout_seconds, Some(900));
+        set_user_field(
+            &mut body,
+            "unlocked_idle_timeout_seconds",
+            BodyPatch::Number(900),
+        )
+        .expect("known wire");
+        assert_eq!(body.unlocked_idle_timeout_seconds, Some(900));
     }
 
     #[test]
     fn set_user_field_idle_timeout_clear_sets_none() {
         let mut body = UserProfileBody {
-            idle_timeout_seconds: Some(900),
+            unlocked_idle_timeout_seconds: Some(900),
             ..Default::default()
         };
-        set_user_field(&mut body, "idle_timeout_seconds", BodyPatch::Clear).expect("known wire");
-        assert_eq!(body.idle_timeout_seconds, None);
+        set_user_field(&mut body, "unlocked_idle_timeout_seconds", BodyPatch::Clear)
+            .expect("known wire");
+        assert_eq!(body.unlocked_idle_timeout_seconds, None);
     }
 
     #[test]
@@ -2156,11 +2182,11 @@ mod tests {
         // SessionAction patch on the numeric wire.
         let err = set_user_field(
             &mut body,
-            "idle_timeout_seconds",
+            "unlocked_idle_timeout_seconds",
             BodyPatch::SessionAction(SessionAction::None),
         )
         .expect_err("should reject");
-        assert!(err.to_string().contains("idle_timeout_seconds"));
+        assert!(err.to_string().contains("unlocked_idle_timeout_seconds"));
     }
 
     // -----------------------------------------------------------------
@@ -2258,7 +2284,7 @@ mod tests {
         let snapshot = UserProfileBody {
             name: "movies".into(),
             on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(600),
+            unlocked_idle_timeout_seconds: Some(600),
             ..Default::default()
         };
         let body = UserProfileBody {
@@ -2271,7 +2297,7 @@ mod tests {
         assert_eq!(body.on_lock_wake, None);
         assert_eq!(body.on_idle_timeout, None);
         assert_eq!(body.on_idle_resume, None);
-        assert_eq!(body.idle_timeout_seconds, None);
+        assert_eq!(body.unlocked_idle_timeout_seconds, None);
     }
 
     // -----------------------------------------------------------------
@@ -2321,11 +2347,11 @@ mod tests {
         let mut state = ProfileEditorState::default();
         state.user.default_body = UserProfileBody {
             name: "default".into(),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..Default::default()
         };
         let snap = snapshot_user_body(&state, DEFAULT_USER_PROFILE_UUID);
         assert_eq!(snap.name, "default");
-        assert_eq!(snap.idle_timeout_seconds, Some(300));
+        assert_eq!(snap.unlocked_idle_timeout_seconds, Some(300));
     }
 }

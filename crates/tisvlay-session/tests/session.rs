@@ -366,7 +366,8 @@ async fn user_profile_overrides_and_guards() {
             "on_session_lock": "screen_off",
             "on_session_unlock": "screen_on",
             "on_lock_wake": "screen_on",
-            "idle_timeout_seconds": 0,
+            "locked_idle_timeout_seconds": 0,
+            "unlocked_idle_timeout_seconds": 0,
             "on_idle_timeout": "screen_off",
             "on_idle_resume": "screen_on",
         })
@@ -495,11 +496,15 @@ async fn user_store_and_idle_watch_round_trip() {
     })
     .await;
 
-    assert_eq!(*rig.stack.idle_timeout.borrow(), 0);
+    assert_eq!(*rig.stack.idle_timeouts.borrow(), (0, 0));
     let ok = call(
         &rig.user,
         &keys::user_profile_rpc(&rig.site, "create"),
-        json!({ "body": { "name": "Idle", "idle_timeout_seconds": 120 } }),
+        json!({ "body": {
+            "name": "Idle",
+            "locked_idle_timeout_seconds": 45,
+            "unlocked_idle_timeout_seconds": 120,
+        } }),
     )
     .await
     .expect("create ok");
@@ -512,16 +517,16 @@ async fn user_store_and_idle_watch_round_trip() {
     .await
     .expect("assign ok");
 
-    // The watch resolves to the enabled minimum once the fleet mirror
+    // The watch resolves to the enabled minimums once the fleet mirror
     // knows the TV.
-    let mut watch = rig.stack.idle_timeout.clone();
+    let mut watch = rig.stack.idle_timeouts.clone();
     tokio::time::timeout(Duration::from_secs(5), async {
-        while *watch.borrow_and_update() != 120 {
+        while *watch.borrow_and_update() != (45, 120) {
             watch.changed().await.expect("watch closed");
         }
     })
     .await
-    .expect("idle timeout never resolved to 120");
+    .expect("idle timeouts never resolved to (45, 120)");
 
     // Idle timeout blanks through the same dispatch rails.
     drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;

@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     }
     // User idle via wayland; unavailable compositors are handled inside.
     tokio::spawn(tisvlay_session::idle_adapter(
-        stack.idle_timeout.clone(),
+        stack.idle_timeouts.clone(),
         stack.client.clone(),
         is_locked,
     ));

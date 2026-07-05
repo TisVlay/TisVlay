@@ -1066,7 +1066,7 @@ mod tests {
         };
         let _u = UserProfileBody {
             name: "movies".into(),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..Default::default()
         };
     }
