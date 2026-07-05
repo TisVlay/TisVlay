@@ -15,7 +15,8 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`gui-state-consistency.md`](gui-state-consistency.md) — closing the class of contradictory GUI daemon-state displays: retry the zenoh no-reply law once at the SDK seam, single-source availability on liveliness, fetch discipline at the watcher.
+- [`wake-screen-primary-input.md`](wake-screen-primary-input.md) — reliable screen elevation (pre-flight wake, root parity), the desired-state latch, and primary-input restoration on automation wakes (CEC selects the requesting port; WoL resumes the last input).
+- [`gui-state-consistency.md`](gui-state-consistency.md) — **implemented** (matching-gated `caller::Caller`, availability single-sourcing); listed until the PR #106 soak confirms it in the field.
 
 ## Completed plans (kept as history)
 

@@ -1,6 +1,6 @@
 # GUI state consistency: retry the no-reply law once, single-source availability
 
-Status: **reviewed + probe-validated — ready to implement** (baseline 86dbc2d; amended per the design / correctness / maintainability review round, then re-based on the querier-matching primitive after an empirical probe).
+Status: **implemented** (17c8c6d wire-v2 caller + availability single-sourcing; baseline 86dbc2d, reviewed and probe-validated along the way). Kept active until the PR #106 duty-week soak confirms it in the field.
 
 ## Problem
 
