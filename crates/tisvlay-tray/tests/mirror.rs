@@ -219,7 +219,7 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
 }
 
 /// Capability flags derive from the identity payload's list, which only
-/// fills at connect — an unmanaged (never-connected) TV shows no
+/// fills at connect — a TV whose dial fails (never connected) shows no
 /// capability sections and no automation, exactly like a stripped-down
 /// CEC backend would post-connect.
 #[tokio::test(flavor = "multi_thread")]
@@ -249,7 +249,7 @@ async fn capability_flags_gate_menu_sections() {
             name: "Caps".into(),
             vendor: "mock".into(),
             managed: false,
-            config: json!({ "address": "mock://caps" }),
+            config: json!({ "address": "mock://caps", "refuse_connect": true }),
         })
         .unwrap(),
     )

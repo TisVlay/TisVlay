@@ -133,15 +133,21 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
     );
 }
 
-/// Config-derived wake support reaches the wire at enrollment — no dial
-/// required. An unmanaged TV never dials, yet its link must still say
-/// it can be woken (the mock always can), so clients don't misreport
-/// "no wake path" for TVs that simply haven't connected.
+/// Config-derived wake support reaches the wire at enrollment — no
+/// successful dial required. This TV's dial always fails, yet its
+/// link must still say it can be woken (the mock always can), so
+/// clients don't misreport "no wake path" for TVs that never
+/// connected.
 #[tokio::test]
 async fn transport_facts_reach_the_link_without_a_dial() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = Uuid::new_v4();
-    let mut record = support::tv_record(id, "Idle", pairing_config("mock://idle", "manual"));
+    let mut config = pairing_config("mock://idle", "manual");
+    config
+        .as_table_mut()
+        .unwrap()
+        .insert("refuse_connect".into(), toml::Value::Boolean(true));
+    let mut record = support::tv_record(id, "Idle", config);
     record.managed = false;
 
     client.command(Command::AddTv {

@@ -91,8 +91,9 @@ fn reply_err(outbox: &mut Outbox, reply: Option<ReplyTo>, error: WireError) {
     }
 }
 
-/// Spawn a TV entity from its store row. Managed TVs get an immediate
-/// connect request.
+/// Spawn a TV entity from its store row. Every TV dials — managed
+/// gates automation (profile actions), not connectivity, so state
+/// stays live and manual control keeps working on unmanaged TVs.
 fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
     let mut identity = payload::Identity::new(record.name.clone(), record.vendor.clone());
     identity.connector = None;
@@ -117,14 +118,12 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
             supports_wake: false,
         },
     ));
+    entity.insert(PendingConnect {
+        attempts: 0,
+        wake: false,
+    });
     if record.managed {
-        entity.insert((
-            Managed,
-            PendingConnect {
-                attempts: 0,
-                wake: false,
-            },
-        ));
+        entity.insert(Managed);
     }
     index.0.insert(record.id, entity.id());
 }
@@ -637,11 +636,10 @@ fn apply_managed(
             });
         }
     } else {
-        // Unmanaging drops the connection: the handle's removal closes the
-        // command channel and the task shuts the connection down.
-        commands
-            .entity(entity)
-            .remove::<(Managed, PendingConnect, RetryAt, ConnectionHandle)>();
+        // Managed gates automation, not connectivity (root parity):
+        // the connection stays up so state remains live and manual
+        // control keeps working; only profile-driven actions stop.
+        commands.entity(entity).remove::<Managed>();
     }
 }
 
@@ -1463,17 +1461,14 @@ fn apply_pairing_updates(
 fn handle_carrier_events(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
-    q: Query<
-        (
-            Entity,
-            &TvId,
-            Option<&TransportTraits>,
-            Option<&ConnectionHandle>,
-            Has<CarrierParked>,
-            Has<PendingConnect>,
-        ),
-        With<Managed>,
-    >,
+    q: Query<(
+        Entity,
+        &TvId,
+        Option<&TransportTraits>,
+        Option<&ConnectionHandle>,
+        Has<CarrierParked>,
+        Has<PendingConnect>,
+    )>,
 ) {
     for msg in reader.read() {
         let InEvent::Carrier { up } = msg else {
@@ -1793,11 +1788,7 @@ fn reconcile_connections(
             &mut PendingConnect,
             Option<&RetryAt>,
         ),
-        (
-            With<Managed>,
-            Without<ConnectionHandle>,
-            Without<Reconnecting>,
-        ),
+        (Without<ConnectionHandle>, Without<Reconnecting>),
     >,
 ) {
     for (entity, id, vendor, mut pending, retry) in &mut q {

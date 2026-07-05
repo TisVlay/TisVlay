@@ -349,7 +349,7 @@ async fn restart_preserves_tvs_via_store() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settings_rpcs_publish_and_unmanage_disconnects() {
+async fn settings_rpcs_publish_and_unmanage_keeps_the_link() {
     let w = wire().await;
     let ok = call(
         &w.client,
@@ -381,7 +381,11 @@ async fn settings_rpcs_publish_and_unmanage_disconnects() {
     })
     .await;
 
-    // Unmanaging drops the connection.
+    // Managed gates automation, not connectivity: unmanaging turns
+    // the automation flag off while the link stays up (state remains
+    // live and manual control still works). If unmanage dropped the
+    // link, a link{connected:false} would precede the meta publish —
+    // track that in the same drain.
     call(
         &w.client,
         &keys::tv_rpc(&w.site, &id, "set-managed"),
@@ -389,14 +393,42 @@ async fn settings_rpcs_publish_and_unmanage_disconnects() {
     )
     .await
     .expect("set-managed ok");
+    let mut link_dropped = false;
+    recv_until(&sub, |s| {
+        let Some((tv, path)) = keys::parse_tv_path(&w.site, s.key_expr().as_str()) else {
+            return false;
+        };
+        if tv != id {
+            return false;
+        }
+        let value = payload_json(s);
+        if path == "state/link" && value["connected"] == false {
+            link_dropped = true;
+        }
+        path == "meta/config" && value["managed"] == false && value["automated"] == false
+    })
+    .await;
+    assert!(
+        !link_dropped,
+        "unmanaging must not disconnect the TV (managed gates automation only)"
+    );
+
+    // Manual control still works while unmanaged.
+    call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "set-volume"),
+        json!({ "level": 33 }),
+    )
+    .await
+    .expect("set-volume ok on an unmanaged TV");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
-            .is_some_and(|(tv, path)| tv == id && path == "state/link")
-            && payload_json(s)["connected"] == false
+            .is_some_and(|(tv, path)| tv == id && path == "state/volume")
+            && payload_json(s)["level"] == 33
     })
     .await;
 
-    // Managing again reconnects.
+    // Managing again just flips automation back on.
     call(
         &w.client,
         &keys::tv_rpc(&w.site, &id, "set-managed"),
@@ -406,8 +438,8 @@ async fn settings_rpcs_publish_and_unmanage_disconnects() {
     .expect("set-managed ok");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
-            .is_some_and(|(tv, path)| tv == id && path == "state/link")
-            && payload_json(s)["connected"] == true
+            .is_some_and(|(tv, path)| tv == id && path == "meta/config")
+            && payload_json(s)["managed"] == true
     })
     .await;
 }
