@@ -10,12 +10,30 @@ use tokio::sync::mpsc;
 use tracing::{debug, error};
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct UserStoreSnapshot {
+    /// Schema version — absence *defines* version 1 (the pre-tag
+    /// baseline); migration logic waits until a v2 exists.
+    #[serde(default = "schema_v1")]
+    pub version: u32,
     #[serde(default)]
     pub profile: Vec<UserProfileRecord>,
     #[serde(default)]
     pub assignment: Vec<Assignment>,
+}
+
+fn schema_v1() -> u32 {
+    1
+}
+
+impl Default for UserStoreSnapshot {
+    fn default() -> Self {
+        Self {
+            version: schema_v1(),
+            profile: Vec::new(),
+            assignment: Vec::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -99,6 +117,7 @@ mod tests {
         let path = dir.path().join("session.toml");
         let profile = Uuid::new_v4();
         let snapshot = UserStoreSnapshot {
+            version: 1,
             profile: vec![UserProfileRecord {
                 id: profile,
                 body: UserProfileConfig {

@@ -2263,6 +2263,7 @@ fn snapshot_store(
         .collect();
     system_profile.sort_by_key(|r| r.id);
     outbox.0.push(Effect::Persist(Box::new(StoreSnapshot {
+        version: crate::events::schema_v1(),
         tv,
         system_profile,
     })));

@@ -78,6 +78,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("daemon.toml");
         let snapshot = StoreSnapshot {
+            version: 1,
             tv: vec![TvRecord {
                 id: Uuid::new_v4(),
                 name: "Den".into(),

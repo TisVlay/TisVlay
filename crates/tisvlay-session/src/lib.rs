@@ -518,6 +518,7 @@ impl Core {
 
     fn snapshot(&self) -> UserStoreSnapshot {
         UserStoreSnapshot {
+            version: UserStoreSnapshot::default().version,
             profile: self
                 .profiles
                 .iter()

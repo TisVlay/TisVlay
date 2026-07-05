@@ -399,12 +399,33 @@ pub struct ProfileRecord {
 }
 
 /// The full persisted state: everything the store file holds.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct StoreSnapshot {
+    /// Schema version. Absence *defines* version 1 (the pre-tag
+    /// baseline) — a definition, not a compat shim; migration logic
+    /// waits until a v2 exists. Exactly one current schema at a time.
+    #[serde(default = "schema_v1")]
+    pub version: u32,
     #[serde(default)]
     pub tv: Vec<TvRecord>,
     #[serde(default)]
     pub system_profile: Vec<ProfileRecord>,
+}
+
+impl Default for StoreSnapshot {
+    fn default() -> Self {
+        Self {
+            version: schema_v1(),
+            tv: Vec::new(),
+            system_profile: Vec::new(),
+        }
+    }
+}
+
+/// The current persisted-schema version, and the serde default that
+/// defines an untagged file as v1.
+pub(crate) fn schema_v1() -> u32 {
+    1
 }
 
 /// Outbound wire-facing effects. The bridge maps these 1:1 onto zenoh
