@@ -18,6 +18,7 @@ notify-rust = { workspace = true }
 tisvlay-core = { workspace = true, features = ["logging"] }
 toml = { workspace = true }
 tokio = { workspace = true }
+zbus = { workspace = true }
 tracing = { workspace = true }
 tisvlay-wire = { workspace = true }
 uuid = { workspace = true }

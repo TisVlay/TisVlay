@@ -92,7 +92,8 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     };
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let handle = ksni::TrayMethods::spawn(TvTray::new(cmd_tx))
+    let open_gui_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handle = ksni::TrayMethods::spawn(TvTray::new(cmd_tx, Arc::clone(&open_gui_pending)))
         .await
         .context("register StatusNotifierItem")?;
 
@@ -176,6 +177,7 @@ pub async fn run(options: TrayOptions) -> Result<()> {
         handle.clone(),
         volume_scroll,
         backlight_scroll,
+        open_gui_pending,
     ));
 
     tokio::signal::ctrl_c().await.context("wait for shutdown")?;
@@ -312,6 +314,7 @@ async fn spawn_liveliness_pump(
 /// Execute menu commands as rpcs. Scroll bursts hand off to the
 /// per-target coalescers without awaiting, so a slow set-volume can't
 /// block other commands behind it.
+#[allow(clippy::too_many_arguments)]
 async fn process_commands(
     system: Session,
     user: Option<Session>,
@@ -320,8 +323,19 @@ async fn process_commands(
     handle: ksni::Handle<TvTray>,
     volume_scroll: Coalescer<Uuid, i32>,
     backlight_scroll: Coalescer<Uuid, i32>,
+    open_gui_pending: Arc<std::sync::atomic::AtomicBool>,
 ) {
     while let Some(command) = rx.recv().await {
+        if matches!(command, TrayCommand::OpenGui) {
+            // The menu callback check-and-set the pending flag before
+            // sending; clear it once the Activate returns so the next
+            // click can enqueue again.
+            if let Err(e) = activate_gui().await {
+                warn!(error = %e, "open GUI failed");
+            }
+            open_gui_pending.store(false, std::sync::atomic::Ordering::Relaxed);
+            continue;
+        }
         if let TrayCommand::ScrollBy(id, target, steps) = command {
             if steps != 0 {
                 match target {
@@ -474,9 +488,39 @@ async fn execute(
         }
         // Handled by the coalescers in process_commands.
         TrayCommand::ScrollBy(..) => {}
+        // Handled in process_commands (needs the pending flag).
+        TrayCommand::OpenGui => {}
         #[cfg(debug_assertions)]
         TrayCommand::Quit => std::process::exit(0),
     }
+}
+
+/// Invoke `org.freedesktop.Application.Activate` on the running GUI
+/// (or auto-spawn one via D-Bus session activation when the `.service`
+/// file is installed). `platform_data` stays empty — the tray is
+/// surfaceless, so it has no useful `xdg-activation-v1` token to pass;
+/// the GUI handles the raise/attention UX itself.
+async fn activate_gui() -> Result<()> {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value as ZValue;
+
+    let conn = zbus::Connection::session()
+        .await
+        .context("connect to session bus")?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "org.tisvlay.Gui",
+        "/org/tisvlay/Gui",
+        "org.freedesktop.Application",
+    )
+    .await
+    .context("build org.freedesktop.Application proxy")?;
+    let platform_data: HashMap<String, ZValue<'_>> = HashMap::new();
+    let _: () = proxy
+        .call("Activate", &(platform_data,))
+        .await
+        .context("call org.freedesktop.Application.Activate")?;
+    Ok(())
 }
 
 /// One rpc round-trip; failures land in the log, not the UI — the mirror

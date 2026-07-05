@@ -3,6 +3,9 @@
 //! rpcs. Structure ports the root `tisvlay-tray` menu; strings stay
 //! English literals until the workspace grows its i18n pass at promotion.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
 use tokio::sync::mpsc;
@@ -33,6 +36,11 @@ pub enum TrayCommand {
     ScrollBy(Uuid, ScrollTarget, i32),
     ToggleMute(Uuid),
     SetManaged(Uuid, bool),
+    /// Activate the GUI: spawn a new window if none, raise the
+    /// existing one otherwise. Routes through the GUI's
+    /// `org.freedesktop.Application` interface so the same path
+    /// serves launcher entries (KRunner, app menu) and the tray.
+    OpenGui,
     #[cfg(debug_assertions)]
     Quit,
 }
@@ -47,15 +55,25 @@ pub struct TvTray {
     pub scroll_target: ScrollTarget,
     /// TV the wheel adjusts; middle-click cycles it.
     pub scroll_tv: Option<Uuid>,
+    /// Coalescer for the Settings menu item — set when an `OpenGui`
+    /// is enqueued, cleared by the processor once the Activate call
+    /// returns. Drops further clicks while one is in flight so a
+    /// click burst can't queue multiple Activates that each respawn
+    /// a fresh GUI via D-Bus session auto-activation.
+    pub open_gui_pending: Arc<AtomicBool>,
 }
 
 impl TvTray {
-    pub fn new(cmd_tx: mpsc::UnboundedSender<TrayCommand>) -> Self {
+    pub fn new(
+        cmd_tx: mpsc::UnboundedSender<TrayCommand>,
+        open_gui_pending: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             mirror: Mirror::default(),
             cmd_tx,
             scroll_target: ScrollTarget::Volume,
             scroll_tv: None,
+            open_gui_pending,
         }
     }
 
@@ -211,6 +229,36 @@ impl Tray for TvTray {
                 items.push(self.tv_submenu(*id, tv));
             }
         }
+        items.push(MenuItem::Separator);
+        items.push({
+            // Settings coalesces instead of using the plain command
+            // helper: rapid clicks while an OpenGui is in flight are
+            // dropped at the source, so the mpsc never holds more
+            // than one pending Activate (a burst landing while the
+            // GUI is closing would otherwise respawn a window per
+            // click). See `open_gui_pending`.
+            let tx = self.cmd_tx.clone();
+            let pending = Arc::clone(&self.open_gui_pending);
+            StandardItem {
+                label: "Settings".into(),
+                icon_name: "settings-configure".into(),
+                activate: Box::new(move |_tray: &mut Self| {
+                    if pending.swap(true, Ordering::Relaxed) {
+                        debug!("Settings click dropped — previous OpenGui still in flight");
+                        return;
+                    }
+                    if tx.send(TrayCommand::OpenGui).is_err() {
+                        // Channel closed (tray shutting down); clear so
+                        // the locked state can't leak.
+                        pending.store(false, Ordering::Relaxed);
+                    }
+                }),
+                ..Default::default()
+            }
+            .into()
+        });
+        // Quit is dev-only: in production the tray is a systemd user
+        // service, stopped via `systemctl --user`, not from the menu.
         #[cfg(debug_assertions)]
         {
             items.push(MenuItem::Separator);
