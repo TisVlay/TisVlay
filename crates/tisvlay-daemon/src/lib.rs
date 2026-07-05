@@ -125,6 +125,9 @@ pub struct VendorReg {
     pub capabilities: Vec<String>,
     pub connector: Arc<dyn TvConnector>,
     pub discovery: Option<Arc<dyn DynDiscovery>>,
+    /// Verify-retry tuning from the backend's `verify_retry_config()`;
+    /// `None` = the stock default.
+    pub retry: Option<tisvlay_core::RetryConfig>,
 }
 
 impl std::fmt::Debug for VendorReg {
@@ -148,11 +151,17 @@ impl VendorReg {
             capabilities: Vec::new(),
             connector,
             discovery: None,
+            retry: None,
         }
     }
 
     pub fn with_discovery(mut self, discovery: Arc<dyn DynDiscovery>) -> Self {
         self.discovery = Some(discovery);
+        self
+    }
+
+    pub fn with_retry(mut self, retry: tisvlay_core::RetryConfig) -> Self {
+        self.retry = Some(retry);
         self
     }
 
@@ -176,6 +185,12 @@ pub async fn serve(
         .map(|v| (v.id.as_str(), Arc::clone(&v.connector)))
         .collect();
     let (mut reactor, effects, world) = Reactor::new(site, connectors);
+    reactor.set_vendor_retry(
+        vendors
+            .iter()
+            .filter_map(|v| v.retry.map(|retry| (v.id.clone(), retry)))
+            .collect(),
+    );
     if let Some(path) = store_path {
         let (tx, rx) = mpsc::unbounded_channel();
         reactor.set_persist(tx);
@@ -334,6 +349,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
     let vendors = vec![
         VendorReg::new("mock", tisvlay_mock::VENDOR_NAME, Arc::new(mock_connector))
             .with_capabilities(caps(&tisvlay_mock::MockBackend))
+            .with_retry(tisvlay_mock::MockBackend.verify_retry_config())
             .with_discovery(Arc::new(mock_discovery)),
         VendorReg::new(
             "lg",
@@ -341,6 +357,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             Arc::new(tisvlay_lg::LgConnector::new()),
         )
         .with_capabilities(caps(&tisvlay_lg::LgBackend))
+        .with_retry(tisvlay_lg::LgBackend.verify_retry_config())
         // Pinned SSDP source port: LG TVs reply unicast from ephemeral
         // ports TO this port, so it must match the firewall's allowed UDP
         // port — see docs/firewall.md at the repo root.
@@ -351,6 +368,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             Arc::new(tisvlay_cec::CecConnector::new()),
         )
         .with_capabilities(caps(&tisvlay_cec::CecBackend))
+        .with_retry(tisvlay_cec::CecBackend.verify_retry_config())
         .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
     let stack = serve(

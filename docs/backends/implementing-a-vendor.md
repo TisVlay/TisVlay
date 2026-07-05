@@ -1,6 +1,6 @@
 # Implementing a vendor backend
 
-A *vendor backend* teaches `tisvlay` how to control one family of devices (LG WebOS TVs, Epson projectors, …). It is one crate that implements four traits from `tisvlay-core` plus a single registration line — no daemon, CLI, GUI, or session changes. This guide is the *how-to*; [docs/design.md](../design.md) § Core Traits is the authoritative *contract* (trait signatures, the D-Bus surface, the config schema). It teaches by pointing at the two living reference backends rather than pasting code that would drift: [`tisvlay-mock`](../../crates/tisvlay-mock) is the minimal template you copy from, and [`tisvlay-lg`](../../crates/tisvlay-lg) is the real-world, network-protocol example. Read the trait definitions in [`crates/tisvlay-core/src/traits.rs`](../../crates/tisvlay-core/src/traits.rs) alongside this guide — that file is the source of truth for every signature named below.
+A *vendor backend* teaches `tisvlay` how to control one family of devices (LG WebOS TVs, Epson projectors, …). It is one crate that implements four traits from `tisvlay-core` plus one registration entry in the daemon — no CLI, GUI, session, or tray changes. This guide is the *how-to*; the authoritative *contract* is [`crates/tisvlay-core/src/traits.rs`](../../crates/tisvlay-core/src/traits.rs) itself — read the trait definitions alongside this guide, that file is the source of truth for every signature named below. It teaches by pointing at the living reference backends rather than pasting code that would drift: [`tisvlay-mock`](../../crates/tisvlay-mock) is the minimal template you copy from, [`tisvlay-lg`](../../crates/tisvlay-lg) is the real-world network-protocol example, and [`tisvlay-cec`](../../crates/tisvlay-cec) is the non-network, reachable-in-standby example.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ The core is vendor- and transport-agnostic. It knows four traits and nothing abo
 - **`TvConnection`** — a live, per-device control handle: power, screen, volume, mute, input, backlight, and an optional `subscribe_state()` push channel. **Every feature method defaults to `Err(NotSupported)`** — a backend overrides only what its hardware does.
 - **`TvDiscovery`** — an optional, bounded `discover(timeout) -> Vec<DiscoveredTv>` scan. Backends with no discovery protocol simply don't implement it (and omit `Capabilities::DISCOVERY`).
 
-The single composition point is [`tisvlay-backends`](../../crates/tisvlay-backends) — the *only* crate that imports vendor crates. Everything downstream (`tisvlayd`, CLI, GUI, session, tray) depends on `tisvlay-backends` and stays vendor-blind. The whole vendor config travels as an opaque `toml::Value`; only your crate ever deserializes it.
+The single composition point is the daemon: [`tisvlay-daemon`](../../crates/tisvlay-daemon) is the *only* crate that imports vendor crates (one `VendorReg` entry per vendor in its `run()`). Everything else (CLI, GUI, session, tray) stays vendor-blind — clients learn the vendor catalog and each vendor's pairing schema from the daemon's `manager/vendors` queryables over zenoh. The whole vendor config travels as an opaque `toml::Value`; only your crate ever deserializes it.
 
 ## Crate structure
 
@@ -49,7 +49,7 @@ Work in this order; lean on the mock as a skeleton and the LG impl when you need
    - `start_pairing()` / `build_config_from_pairing()` drive the pairing state machine (see § Pairing and authentication).
    - `config_schema()` declares every vendor-config field once; the framework projects it into the pairing wizard, the INFO pane, and config display (see § Capabilities, config schema, and field visibility).
 
-3. **`TvConnection`** — override the feature methods your device supports (`power_off`, `get_power_state`, `screen_on` / `screen_off` / `is_screen_on`, `set_volume` / `set_mute`, `switch_input` / `list_inputs`, `set_backlight`, …). Leave the rest at their `NotSupported` defaults. `get_state()` returns a full [`TvState`](../../crates/tisvlay-core/src/state.rs) snapshot. If your protocol pushes asynchronous updates, implement `subscribe_state()` to return an `mpsc` receiver of cumulative `TvState` snapshots (LG does); if it is poll-only, leave it unimplemented and the daemon falls back to periodic polling. Map your device's raw power substates onto the `PowerState` enum — including the transient `WarmingUp` / `CoolingDown` for warmup/cooldown-gated devices (see [docs/design.md](../design.md) § Power & Screen State Machine). **`power_on` (wake-in-place)** defaults to `NotSupported` and matters only for a `reachable_in_standby` backend: implement it to wake the device on *this* live connection (CEC sends `Image View On`), so the daemon can wake a standby-but-connected device without tearing the connection down and flapping `Connected`. A backend whose connection dies in standby never reaches this — the daemon wakes it via the connector's `wake_and_connect()` instead.
+3. **`TvConnection`** — override the feature methods your device supports (`power_off`, `get_power_state`, `screen_on` / `screen_off` / `is_screen_on`, `set_volume` / `set_mute`, `switch_input` / `list_inputs`, `set_backlight`, …). Leave the rest at their `NotSupported` defaults. `get_state()` returns a full [`TvState`](../../crates/tisvlay-core/src/state.rs) snapshot. If your protocol pushes asynchronous updates, implement `subscribe_state()` to return an `mpsc` receiver of cumulative `TvState` snapshots (LG does); if it is poll-only, leave it unimplemented and the daemon falls back to periodic polling. Map your device's raw power substates onto the `PowerState` enum ([`crates/tisvlay-core/src/state.rs`](../../crates/tisvlay-core/src/state.rs)) — including the transient `WarmingUp` / `CoolingDown` for warmup/cooldown-gated devices. **`power_on` (wake-in-place)** defaults to `NotSupported` and matters only for a `reachable_in_standby` backend: implement it to wake the device on *this* live connection (CEC sends `Image View On`), so the daemon can wake a standby-but-connected device without tearing the connection down and flapping `Connected`. A backend whose connection dies in standby never reaches this — the daemon wakes it via the connector's `wake_and_connect()` instead.
 
 4. **`TvDiscovery`** (optional) — implement `discover(timeout) -> Vec<DiscoveredTv>` only if you have a discovery protocol, and feature-gate it (LG gates SSDP behind a `discovery` feature). Return SSDP-shaped `DiscoveredTv` entries so the daemon's post-discovery MAC enrichment and `autofill: "discovery.<key>"` wizard pre-fill apply. See [docs/discovery.md](../discovery.md) § Trait boundary for why this is a bounded `Vec`, not a stream.
 
@@ -63,7 +63,7 @@ Your vendor config is a serde struct (your `config.rs`) deserialized from the op
 - **`Diagnostic`** — backend-discovered or read-only; shown in the INFO pane only.
 - **`Secret`** — credentials; filtered from every display and never sent to the GUI.
 
-Declare the schema once and the framework projects it everywhere — adding an editable field is one schema row, with no D-Bus, CLI, or GUI rendering changes. Order the schema so the most informative `UserInput` field comes first; it becomes the backend's "primary descriptor" (`backends/lib.rs` `primary_descriptor`). See [docs/design.md](../design.md) § Schema-driven vendor config for the full model.
+Declare the schema once and the framework projects it everywhere — adding an editable field is one schema row, with no daemon rpc, CLI, or GUI rendering changes. Order the schema so the most informative `UserInput` field comes first; it becomes the backend's "primary descriptor" (`TvConnector::primary_descriptor`, a schema-driven default) — used in log lines, and, when it parses as an IP, as the address the daemon route-monitors for carrier/route scoping ([docs/watchers/network.md](../watchers/network.md)).
 
 ## Pairing and authentication
 
@@ -82,17 +82,24 @@ A backend is fully testable with no hardware. The pattern is a **fake wire serve
 - LG's [`test_server.rs`](../../crates/tisvlay-lg/src) `FakeSsapServer` (`#[cfg(test)] pub(crate)`) speaks the real protocol against `127.0.0.1:0`, with hooks to script registration outcomes, push subscription updates, send raw frames, and drop the connection for fault injection. Mirror this shape for your transport. See [docs/lg/testing.md](../lg/testing.md).
 - Layer the tests: pure protocol-codec tests (table-driven encode/decode) → config-parse tests → client integration against the fake server → backend-trait tests → fault injection (auth failure, timeout, mid-transition busy, connection drop).
 
-The workspace test crates compose underneath ([docs/testing.md](../testing.md)): `tisvlay-test` (OS-environment fakes — private D-Bus, fake logind), `tisvlay-mock` (the in-memory backend, for daemon tests), and `tisvlay-harness` (`TestDaemon` / `TestSession` binary-lifecycle fixtures). Your vendor crate owns its own fake server and protocol tests; the daemon-level integration tests use the mock, not your real backend.
+The workspace test layers compose underneath ([docs/testing.md](../testing.md)): `tisvlay-test` (OS-environment fakes — private D-Bus, fake logind/ScreenSaver), `tisvlay-mock` (the in-memory backend, always registered in the daemon), and wire-level integration tests in each binary crate's `tests/` that boot real daemon/session stacks on temp sockets. Your vendor crate owns its own fake server and protocol tests; the daemon-level integration tests use the mock, not your real backend.
 
 ## Registering the backend
 
-Three steps, all in `tisvlay-backends`:
+Two steps, both in `tisvlay-daemon`:
 
-1. Add your crate as a dependency in [`crates/tisvlay-backends/Cargo.toml`](../../crates/tisvlay-backends/Cargo.toml).
-2. Add a `register_<vendor>()` function in [`crates/tisvlay-backends/src/lib.rs`](../../crates/tisvlay-backends/src/lib.rs) — clone `register_lg`. If your discovery is feature-gated, carry the same `#[cfg_attr(not(feature = "discovery"), expect(unused_variables, …))]` attribute so clippy stays clean when the feature is off; if you have no discovery, pass `discover_fn = None`.
-3. Call it from `create_registry()` (and `create_test_registry()` if multi-vendor lookup tests need it).
+1. Add your crate as a dependency in [`crates/tisvlay-daemon/Cargo.toml`](../../crates/tisvlay-daemon/Cargo.toml).
+2. Add a `VendorReg` entry to the `vendors` list in `run()` ([`crates/tisvlay-daemon/src/lib.rs`](../../crates/tisvlay-daemon/src/lib.rs)) — clone the LG entry:
 
-No other crate changes. See [docs/design.md](../design.md) § Dependency Graph for why this is the only touch-point.
+   ```rust
+   VendorReg::new("acme", tisvlay_acme::VENDOR_NAME, Arc::new(AcmeConnector::new()))
+       .with_capabilities(caps(&tisvlay_acme::AcmeBackend))
+       .with_discovery(Arc::new(AcmeDiscovery::new()))
+   ```
+
+   `with_discovery` takes any `TvDiscovery` implementor (a blanket impl adapts it); skip the call if you have no discovery.
+
+No other crate changes — clients pick up the new vendor from the daemon's catalog queryables at runtime.
 
 ## Vendor-specific docs
 
@@ -100,13 +107,13 @@ Create a `docs/<vendor>/` directory mirroring [docs/lg/](../lg): a `protocol.md`
 
 ## Decision rationale
 
-Why the abstraction is shaped this way — the reasoning [docs/design.md](../design.md) states as fact:
+Why the abstraction is shaped this way:
 
 ### Why vendor config is an opaque `toml::Value`, not a core-known enum
 The core has zero vendor knowledge by construction: only your crate can deserialize `[tv.<vendor>]`. A core-side config enum would re-couple every vendor to the core and force a core change per vendor. The cost — a runtime deserialize instead of a compile-time type — buys the "no daemon/CLI/GUI change to add a vendor" property.
 
-### Why schema-driven field visibility, not per-field D-Bus methods
-One `config_schema()` row projects to the wizard, INFO pane, and config display automatically. The alternative — a D-Bus method, dispatch arm, and GUI widget per field — is N edits across the stack for what should be one declaration.
+### Why schema-driven field visibility, not per-field rpc plumbing
+One `config_schema()` row projects to the wizard, INFO pane, and config display automatically. The alternative — an rpc verb, dispatch arm, and GUI widget per field — is N edits across the stack for what should be one declaration.
 
 ### Why `discover()` returns `Vec`, not `Stream`
 The vendor trait stays a simple bounded scan; the streaming-discovery machinery (incremental wizard results) lives one layer up in the daemon, so a vendor whose discovery is a single cloud call or broadcast doesn't carry streaming complexity. See [docs/discovery.md](../discovery.md).
@@ -130,9 +137,9 @@ A second worked example — **CEC's screen-via-power** — emulates `SCREEN` wit
 
 ## Related docs
 
-- [docs/design.md](../design.md) — the trait/contract/D-Bus/config reference, and the power & screen state machine.
+- [docs/plans/parity-zenoh-ecs.md](../plans/parity-zenoh-ecs.md) — the current architecture reference (zenoh key space, world/reactor model, topology).
 - [docs/discovery.md](../discovery.md) — the discovery trait boundary and transport-family bits.
-- [docs/testing.md](../testing.md) — the workspace testing framework and harness layers.
+- [docs/testing.md](../testing.md) — the workspace testing framework and layers.
 - [docs/lg/](../lg) — the worked real-world vendor: `webos.md` (protocol), `firmware-quirks.md` (bug inventory), `testing.md` (`FakeSsapServer`).
-- [docs/epson/](../epson) — the second worked vendor: a poll-only, ESC/VP21-over-TCP projector backend.
 - [docs/cec/](../cec) — the non-network worked vendor: HDMI-CEC over the Linux CEC subsystem, and the canonical `reachable_in_standby` (Connected ≠ power) model.
+- [docs/design.md](../design.md) — the retired served-D-Bus architecture (≤ v0.2.0); historical background for the trait rationale.
