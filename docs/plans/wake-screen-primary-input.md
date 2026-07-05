@@ -1,6 +1,6 @@
 # Wake, screen, and the primary input: reliable actions that land on the right port
 
-Status: **draft — review round folded** (design / correctness / maintainability, 2026-07-05). Two open questions below need user decisions before implementation.
+Status: **approved** — review round + policy decisions folded (2026-07-05). §1–§3 ready to implement; §4 implementation waits on the C3 WoL field check.
 
 ## Problem
 
@@ -39,29 +39,43 @@ In `dispatch_screen`, non-emulating backend with no `ConnectionHandle`:
 
 **Order of operations post-Connected**: power verify → screen re-assert (via `dispatch_screen` → `DispatchVerify`) → input switch. The input switch reuses the same bounded verify-retry discipline as screen (re-send until `current == desired` or the `DispatchRetry` budget is spent — the 1–5 s WoL-settle window means a switch fired at `Connected` can be silently dropped exactly like an early `screen_on`). On budget exhaustion: emit the existing `dispatch-failed` observability tap with `action: "switch-input"` and clear the marker — bounded, observable, never silent or unbounded.
 
-### 4. Primary input on qualifying wakes
+### 4. Primary input restore — a per-event profile policy
 
-When a **qualifying automation event** resolves to `power_on` or `screen_on` for a TV with `primary_input` set *and* a backend advertising the `INPUT` capability, the dispatch also inserts `DesiredInput(primary_input)`; the post-connect reconcile lands the switch.
+**Fact/policy split (the settled shape):** the *fact* — which port is the PC — stays where it is, `primary_input` in the device config, with no new device fields and no overloaded meaning. The *policy* — which events land the TV on that port — is a behavior preference, so it lives in profiles, per event. Restore fires when a profile-dispatched `power_on`/`screen_on` whose mapping sets the restore flag targets a TV with `primary_input` set and a backend advertising the `INPUT` capability; the dispatch inserts `DesiredInput(primary_input)` and the post-connect reconcile lands the switch.
 
-**The seam problem (review blocker):** session events (unlock, lock-wake) never enter the daemon world as `SystemEvent`s — the session service resolves the profile action itself and fires plain `set-screen`/`power-on` rpcs on the system socket, byte-identical to a manual tray click. The automation/manual boundary therefore needs two pieces:
+**Why per-event (the scenario matrix):** no fixed qualifying-event set survives contact with the personas. Restore = "switch to `primary_input` after the action lands"; P1 = dedicated monitor, P2 = PC-first with Chromecast evenings, P3 = jiggle-to-return (a mouse wiggle *is* the "give me my PC back" gesture), P4 = power-management-only.
 
-- **World-originated events** (`dispatch_system_events`): the `SystemEvent` variant is in scope at the dispatch — a match filter selects the qualifying set.
-- **Session-originated events**: the `SetScreen`/`PowerOn` wire payloads gain an origin field (serde-defaulted so manual senders never think about it) that the session's profile dispatch sets and manual clients (GUI/CLI/tray) never do. All peers ship together — no compat shim. World-side, the origin arrives as an explicit parameter into `power_on_tv`/`dispatch_screen` from both call sites; it is **never** inferred from `reply.is_none()` (a wire-plumbing detail that would silently misclassify any future fire-and-forget manual path).
+| Event | P1 monitor | P2 PC-first | P3 jiggle-return | P4 power-only |
+|---|---|---|---|---|
+| Startup / Resume | don't care | restore | restore | no |
+| Session unlock | don't care | restore | restore | no |
+| DPMS-on (mouse wiggle) | don't care | no — family watching | **yes** — the whole point | no |
+| Idle-resume (activity) | don't care | no | yes | no |
+| Lock-wake / greeter-resume | don't care | no | probably yes | no |
 
-**Qualifying events — session-start only**: `Startup`, `Resume`, `on_session_unlock`. Explicitly *not* `DpmsOn`, `GreeterResume`, or `on_lock_wake` — those fire on a mouse wiggle or a glance at the lock screen, where "desktop session incoming" is not implied; a user checking the time while watching the Chromecast must not get yanked to the PC's port.
+P2 and P3 disagree on exactly the wiggle rows, so the set is configuration, not a constant. Two compositions fall out: P2's real protection while the family watches is `automate_when = on_primary`, which gates the *whole* dispatch off when the TV is awake on another port (including the idle `screen_off` that would blank their movie) — only wake-from-off events pass, and those restoring to primary is what P2 wants anyway. P3 is explicitly `always` + restore on the wiggle events. The gate and the flag compose instead of overlapping.
 
-- **Manual actions stay input-neutral**: a user clicking power-on in the tray may want the Chromecast.
+**Config form — one schema, two shapes of one grammar:** an event mapping is a string, or a table when it carries modifiers. Not a compat layer — both shapes are the single current schema, and the store round-trips whichever the user wrote:
+
+```toml
+on_session_unlock = "screen_on"
+on_dpms_on = { action = "screen_on", restore_input = true }
+```
+
+**The seam (resolved intent, not provenance):** session events (unlock, lock-wake, idle) never enter the daemon world as `SystemEvent`s — the session service resolves the profile action itself and fires plain `set-screen`/`power-on` rpcs, byte-identical to a manual tray click. Per-event policy dissolves the review round's origin-flag design: whoever resolves the profile resolves the flag too, and the `SetScreen`/`PowerOn` payloads carry the **resolved intent** — `restore_input: bool`, serde-defaulted false. The session sets it from its profile; the world's `dispatch_system_events` sets it from the system profile; manual clients (GUI/CLI/tray) never set it, so manual stays input-neutral by construction. World-side it arrives as an explicit parameter into `power_on_tv`/`dispatch_screen` — never inferred from `reply.is_none()` — and the world needs no event vocabulary for it: future events need zero world changes.
+
+**Stock defaults — the matrix's consensus rows**: restore on for `Startup` / `Resume` / `on_session_unlock`, off for DPMS-on / lock-wake / greeter / idle-resume. P1 never notices, P2 gets it free, P3 flips the wiggle checkboxes, P4 doesn't set `primary_input`. Accepted consequence (no-backwards-compat): a user who set `primary_input` purely for `on_primary` gating gains restore-on-unlock at upgrade — release-note it, no kill-switch.
+
 - **CEC never arms**: `DesiredInput` requires the `INPUT` capability, which CEC deliberately doesn't advertise — the "CEC can't honor a different primary port" case is structurally absent, not documented around. CEC wake already selects the requesting port; if the adapter rides the PC's video path the behavior is inherently right.
-- **`automate_when` composition**: the `should_automate` gate runs *before* the dispatch that would arm `DesiredInput`, so input restoration inherits its semantics. With `Always` (the default) it composes cleanly. With `OnPrimary`, a wake-from-off passes (unknown current input gets the benefit of the doubt) and lands on primary — but an *awake* TV sitting on the Chromecast is gated off entirely, so input restore will not drag it back. That is `OnPrimary`'s meaning ("only automate while on the PC's port") and is intended; the natural config for "wake for a desktop session and land on primary" is `Always` + `primary_input`.
+- **`automate_when` composition**: the `should_automate` gate runs *before* the dispatch that would arm `DesiredInput`, so input restoration inherits its semantics (see the matrix discussion above). With `OnPrimary`, a wake-from-off passes (unknown current input gets the benefit of the doubt) and lands on primary; an awake TV on another port is gated off entirely and never dragged back — that is `OnPrimary`'s meaning, and it is intended.
 
-## Open questions (user decisions)
+### 5. Config schema version tag
 
-1. **Opt-in shape.** `primary_input` already has a gating meaning (`automate_when: on_primary/off_primary`); overloading it with switch-on-wake means a user who set it purely for gating silently gains input-yanking, and clearing it to opt out also breaks their gating. Options: (a) arm on `primary_input` alone (simplest; the field's name says what it does, and today `primary_input` + `automate_when: always` is inert anyway); (b) a distinct per-TV bool (e.g. `restore_input`) so the two meanings stay orthogonal. Leaning (a) with release-notes callout, but this changes behavior for any existing `on_primary` user — your call.
-2. **Qualifying-event set.** Is `Startup` + `Resume` + `on_session_unlock` the right "desktop session incoming" set, or should any of the excluded events (DpmsOn / GreeterResume / lock-wake) qualify after all?
+While the profile schema is open anyway, every persisted config surface (daemon store, system/seed config, user-profile store, notification settings) gains `version = 1`. **Absence is defined as version 1** — the pre-tag baseline — which is a schema definition, not a compat shim; existing stores load unchanged and are stamped on next write. No migration machinery lands now: compatibility logic waits until a v2 exists, closer to production. The rule stays: exactly one current schema at any time.
 
 ## Sequencing
 
-§1–§3's screen work (elevation, pre-flight, re-arm-through-dispatch) rests on verified facts and fixes a live QA regression — it lands and ships independently. §4 (`DesiredInput` arming + the wire origin field) rests on the unverified WoL-last-input premise and the open questions above — it is a separately mergeable follow-up gated on the C3 field check, in its own commit(s), so the regression fix is never blocked on hardware QA.
+§1–§3's screen work (elevation, pre-flight, re-arm-through-dispatch) rests on verified facts and fixes a live QA regression — it lands and ships independently. §4 (`DesiredInput` arming + the profile flag + the wire `restore_input` field) rests on the unverified WoL-last-input premise — it is a separately mergeable follow-up gated on the C3 field check, in its own commit(s), so the regression fix is never blocked on hardware QA. §5 rides whichever commit first touches the config surfaces.
 
 ## Empirical checklist (before/while implementing §4)
 
@@ -73,13 +87,14 @@ When a **qualifying automation event** resolves to `power_on` or `screen_on` for
 
 1. Core: `PowerState::needs_wake_preflight()` = `!(Active | ScreenSaver | ScreenOff)`, spec'd against the wake-preflight prose already in `PowerState`'s docs; unit tests pin the set including the non-exhaustive fall-through (`Unknown` ⇒ true) and `ScreenOff` ⇒ false.
 2. World, screen half (§1–§3): elevation arms in `dispatch_screen`; pre-flight via the widened `LinkQuery` (+ system-event query) reading `payload::Power`, with the `reachable_in_standby`-`Unknown` guard; post-`Connected` reconcile re-issues the pending screen action through `dispatch_screen`.
-3. World + wire, input half (§4, after field check + open questions): `DesiredInput(String)` component; origin field on `SetScreen`/`PowerOn` payloads (serde default), set by the session's profile dispatch; explicit origin parameter into `power_on_tv`/`dispatch_screen`; `Connected`-arm drain comparing `payload::Input.current`, bounded verify-retry, `dispatch-failed` tap on exhaustion.
-4. Tests (in `tests/dispatch.rs`'s existing fixtures — no new scaffolding): elevation — unlock-shaped `screen_on` on an off TV yields a wake dial; pre-flight — connected TV with cached `ActiveStandby` + `screen_on` goes straight to the wake path with no verify retries, while cached `ScreenOff` stays on the verify path; the cross-teardown case — a `screen_on` that escalates to wake re-arms `DispatchVerify` after reconnect (the one-latch invariant); input — mock seeded with `initial_input` ≠ `primary_input` (the "wrong input after wake" scenario is static seeding — the mock has no wake-changes-input knob, and doesn't need one) asserts a `switch-input` to primary lands after `Connected` (ordering, not exact tick — publish order across keys is not guaranteed); manual `power-on`/`set-screen` rpcs never insert `DesiredInput`.
-5. Docs: architecture.md's world-marker enumeration gains **both** `DispatchVerify` (currently undocumented there) and `DesiredInput`, with the division-of-labor invariant, written as present-tense doc vocabulary (no commit hashes, no tier shorthand from the design discussion); docs/cec/protocol.md notes the Image View On input-selection side effect as load-bearing for primary-input semantics.
+3. Core + world + wire, input half (§4, after the field check): profile action type grows the string-or-table form (untagged serde enum) with `restore_input: bool`, threaded through `SystemProfileConfig`, the user profile config, and the resolved-profile types, with stock defaults per §4; `restore_input: bool` (serde default false) on the `SetScreen`/`PowerOn` payloads, set by the session's profile dispatch and `dispatch_system_events`, never by manual clients; explicit parameter into `power_on_tv`/`dispatch_screen`; `DesiredInput(String)` component; `Connected`-arm drain comparing `payload::Input.current`, bounded verify-retry, `dispatch-failed` tap on exhaustion; GUI profile editor gains a restore checkbox beside the action dropdown for `screen_on`/`power_on` actions.
+4. Config version tag (§5): `version = 1` field on the persisted store/profile/settings schemas, absence defined as 1, stamped on write; no load-path branching.
+5. Tests (in `tests/dispatch.rs`'s existing fixtures — no new scaffolding): elevation — unlock-shaped `screen_on` on an off TV yields a wake dial; pre-flight — connected TV with cached `ActiveStandby` + `screen_on` goes straight to the wake path with no verify retries, while cached `ScreenOff` stays on the verify path; the cross-teardown case — a `screen_on` that escalates to wake re-arms `DispatchVerify` after reconnect (the one-latch invariant); input — mock seeded with `initial_input` ≠ `primary_input` (the "wrong input after wake" scenario is static seeding — the mock has no wake-changes-input knob, and doesn't need one) asserts a `switch-input` to primary lands after `Connected` (ordering, not exact tick — publish order across keys is not guaranteed); manual `power-on`/`set-screen` rpcs never insert `DesiredInput`; the string and table config forms round-trip through the profile store and resolve to the same action.
+6. Docs: architecture.md's world-marker enumeration gains **both** `DispatchVerify` (currently undocumented there) and `DesiredInput`, with the division-of-labor invariant, written as present-tense doc vocabulary (no commit hashes, no tier shorthand from the design discussion); docs/cec/protocol.md notes the Image View On input-selection side effect as load-bearing for primary-input semantics.
 
 ## Non-goals
 
-- No input restoration for manual actions, nor for DpmsOn / GreeterResume / lock-wake automation (see §4).
+- No input restoration for manual actions — structural, not configurable (see §4). Automation events are all configurable per profile; none are hardcoded in or out.
 - No CEC input switching (capability stays unadvertised; `DesiredInput` never arms for CEC).
 - No persistent input enforcement — the latch drains once at `Connected`; a user's post-wake input change is authoritative.
 - No projector warm-up port (`WarmingUp` handling) — LG never reports it; revisit with the first projector-class backend.
