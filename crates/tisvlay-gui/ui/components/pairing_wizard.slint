@@ -291,19 +291,36 @@ component StepDiscover {
     VerticalLayout {
         spacing: Design.gap-block;
 
-        // Section heading
-        VerticalLayout {
-            spacing: Design.gap-form;
+        // Title row: the liveness dot + dynamic discovery status IS the
+        // step heading — the stepper above already names the step, so a
+        // static title plus separate status line would say the same
+        // thing twice. Radar PulseDot while scanning, still dot at rest
+        // (`tv-pulse` keyframe — `.claude/ui/pairing-wizard-motion.md` § 1).
+        HorizontalLayout {
+            spacing: Design.gap-stack;
+            alignment: start;
+            VerticalLayout {
+                alignment: center;
+                if root.streaming: PulseDot {}
+                if !root.streaming: Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.text-faint;
+                }
+            }
             Text {
-                text: @tr("Find your TV");
+                text: root.streaming
+                    ? (root.discovered.length == 0
+                        ? @tr("Scanning for TVs…")
+                        : @tr("Scanning — found {}, listening for more…", root.discovered.length))
+                    : (root.discovered.length == 0
+                        ? @tr("No TVs found")
+                        : @tr("Found {} TV" | "Found {} TVs" % root.discovered.length, root.discovered.length));
                 color: Theme.text;
                 font-size: 16px;
                 font-weight: 600;
-            }
-            Text {
-                text: @tr("Searching the local network for compatible TVs.");
-                color: Theme.text-dim;
-                font-size: Design.font-meta;
+                vertical-alignment: center;
             }
         }
 
@@ -333,34 +350,6 @@ component StepDiscover {
                 }
             }
         }
-        if root.error-message == "": HorizontalLayout {
-            spacing: Design.gap-stack;
-            alignment: start;
-            // Radar PulseDot while scanning, plain still dot otherwise.
-            // The `tv-pulse` keyframe is the design's blessed liveness
-            // signal — see `.claude/ui/pairing-wizard-motion.md` § 1.
-            VerticalLayout {
-                alignment: center;
-                if root.streaming: PulseDot {}
-                if !root.streaming: Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: Theme.text-faint;
-                }
-            }
-            Text {
-                text: root.streaming
-                    ? @tr("Scanning via SSDP — found {}, listening for more…", root.discovered.length)
-                    : (root.discovered.length == 0
-                        ? @tr("No TVs found. Make sure your TV is on the same network.")
-                        : @tr("Found {} TV" | "Found {} TVs" % root.discovered.length, root.discovered.length));
-                color: Theme.text-dim;
-                font-size: Design.font-helper;
-                vertical-alignment: center;
-            }
-        }
-
         // Discovered list / empty-state. A single region with a stable
         // `min-height` so the layout doesn't shift the moment the first
         // TV arrives — that shift previously pushed the manual-entry
@@ -414,20 +403,10 @@ component StepDiscover {
                     vertical-stretch: 1;
                     width: 100%;
                     alignment: center;
-                    spacing: Design.gap-tight;
                     HorizontalLayout {
                         alignment: center;
                         Text {
-                            text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
-                            color: Theme.text;
-                            font-size: 14px;
-                            font-weight: 600;
-                        }
-                    }
-                    HorizontalLayout {
-                        alignment: center;
-                        Text {
-                            text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
+                            text: @tr("Network TVs may only answer while awake — make sure the TV is on, or add it manually below.");
                             color: Theme.text-dim;
                             font-size: Design.font-helper;
                             horizontal-alignment: center;
@@ -528,29 +507,23 @@ component StepDiscover {
                         horizontal-stretch: 2;
                         spacing: Design.gap-form;
                         Text {
-                            text: @tr("IP");
+                            // The selected vendor's primary descriptor —
+                            // its schema's first field (LG: IP, CEC:
+                            // device path). The bounds check covers the
+                            // zero-registered-vendor edge so we never
+                            // index an empty model.
+                            text: root.supported-vendors.length > root.manual-vendor-index
+                                ? root.supported-vendors[root.manual-vendor-index].primary-label
+                                : @tr("Address");
                             color: Theme.text;
                             font-size: Design.font-helper;
                             font-weight: 500;
                         }
                         LineEditField {
-                            // Vendor-aware placeholder. The selected
-                            // vendor's `supports-ipv4` / `supports-ipv6`
-                            // flags come from
-                            // `Manager1.GetVendorCapabilities` —
-                            // v6-only vendors get the RFC 3849
-                            // documentation prefix; everything else
-                            // (v4-only and v4+v6) keeps the familiar
-                            // v4 example. The bounds check (`length
-                            // > index`) covers the
-                            // zero-registered-vendor edge so we never
-                            // index an empty model.
                             placeholder-text:
                                 root.supported-vendors.length > root.manual-vendor-index
-                                && root.supported-vendors[root.manual-vendor-index].supports-ipv6
-                                && !root.supported-vendors[root.manual-vendor-index].supports-ipv4
-                                    ? "2001:db8::1"
-                                    : "192.168.1.100";
+                                    ? root.supported-vendors[root.manual-vendor-index].primary-placeholder
+                                    : "";
                             font-family: "ui-monospace, monospace";
                             text <=> root.manual-ip;
                             edited(v) => { root.manual-ip-edited(v); }
@@ -569,11 +542,11 @@ component StepDiscover {
                     }
                 }
                 Text {
-                    // Vendor-specific extras (MAC for Wake-on-LAN, API
+                    // Vendor-specific extras (Wake-on-LAN MAC, API
                     // keys, ports, etc.) are filled in the next step
                     // from the vendor's pairing schema; we just need
                     // enough here to identify the TV.
-                    text: @tr("You'll fill the rest (MAC, etc.) in the next step.");
+                    text: @tr("Any remaining details are filled in on the next step.");
                     color: Theme.text-faint;
                     font-size: Design.font-mini;
                     wrap: word-wrap;

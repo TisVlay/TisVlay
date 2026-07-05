@@ -176,7 +176,8 @@ pub(crate) fn autofill_schema(
 ) -> Vec<AutofilledRow> {
     schema
         .iter()
-        .map(|f| {
+        .enumerate()
+        .map(|(index, f)| {
             let mut value = f.default.clone();
             // Track whether the value came from a real autofill
             // source (not the schema's static default). The trust
@@ -192,14 +193,17 @@ pub(crate) fn autofill_schema(
                     autofilled = true;
                 }
             }
-            // Conventional fallback: a field literally named "ip" /
-            // "address" gets the supplied address even without an
-            // explicit `autofill` directive — IP-addressed backends
-            // discovered via SSDP should never make the user retype
-            // what we just received from the device.
-            if value.is_empty() && (f.name == "ip" || f.name == "address") {
+            // Conventional fallback: the schema's FIRST field is the
+            // vendor's primary descriptor and `address` is the value
+            // the user just picked or typed for exactly that field —
+            // never make them retype it. Fields literally named
+            // "ip" / "address" keep the same treatment at any position.
+            if value.is_empty()
+                && (index == 0 || f.name == "ip" || f.name == "address")
+                && !address.is_empty()
+            {
                 value = address.to_string();
-                autofilled = !value.is_empty();
+                autofilled = true;
             }
             AutofilledRow {
                 name: f.name.clone(),
@@ -464,9 +468,15 @@ mod tests {
 
     #[test]
     fn autofill_schema_leaves_value_empty_when_no_source_matches() {
+        // The first field is the vendor's primary descriptor and
+        // always receives the supplied address; a later field with no
+        // autofill source stays empty.
+        let first = field("device", PairingFieldType::Path, true);
         let f = field("port", PairingFieldType::Port, false);
-        let rows = autofill_schema(&[f], &HashMap::new(), "192.168.1.10");
-        assert_eq!(rows[0].value, "");
+        let rows = autofill_schema(&[first, f], &HashMap::new(), "/dev/cec0");
+        assert_eq!(rows[0].value, "/dev/cec0");
+        assert!(rows[0].autofilled);
+        assert_eq!(rows[1].value, "");
     }
 
     // ---------- prefill_schema_from_config ----------

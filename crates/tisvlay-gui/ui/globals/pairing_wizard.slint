@@ -42,6 +42,15 @@ export struct VendorOption {
     name: string,
     supports-ipv4: bool,
     supports-ipv6: bool,
+    // The vendor's primary descriptor — its pairing schema's first
+    // field (LG: IP, CEC: device path, mock: address). Drives the
+    // manual-entry panel's label/placeholder so onboarding isn't
+    // hardcoded to IP-addressed vendors; `primary-is-ip` gates the
+    // manual-entry MAC enrichment (an ARP lookup only makes sense
+    // for an IP).
+    primary-label: string,
+    primary-placeholder: string,
+    primary-is-ip: bool,
 }
 
 // One row in the dynamic pairing-form schema. Mirrors

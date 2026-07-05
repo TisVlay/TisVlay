@@ -8,6 +8,7 @@ use crate::compat::{
     DaemonClient, NotificationSettingsBody, RefreshTrigger, SessionClient, StateEvent,
     StateWatcher, TrayClient,
 };
+use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -161,7 +162,7 @@ async fn fetch_and_publish_vendors(
     // conservative — placeholder reverts to v4-only — rather than
     // silently asserting transport support the daemon didn't
     // actually confirm.
-    let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities)> =
+    let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities, PrimaryField)> =
         Vec::with_capacity(vendor_pairs.len());
     for (id, name) in vendor_pairs {
         let caps = daemon
@@ -171,27 +172,75 @@ async fn fetch_and_publish_vendors(
                 debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
                 tisvlay_core::Capabilities::empty()
             });
-        vendors_with_caps.push((id, name, caps));
+        // The schema's first field is the vendor's primary descriptor
+        // (schema-ordering convention) — it becomes the manual-entry
+        // panel's identity input. Fetch failure falls back to a
+        // generic "Address" so manual entry stays usable.
+        let primary = daemon
+            .get_pairing_schema(&id)
+            .await
+            .ok()
+            .and_then(|schema| schema.into_iter().next())
+            .map(|field| {
+                let is_ip = field.field_type == tisvlay_core::PairingFieldType::Ip;
+                let placeholder = if !field.placeholder.is_empty() {
+                    field.placeholder
+                } else if is_ip
+                    && caps.contains(tisvlay_core::Capabilities::IPV6)
+                    && !caps.contains(tisvlay_core::Capabilities::IPV4)
+                {
+                    // v6-only vendors get the RFC 3849 documentation
+                    // prefix; everything else keeps the familiar v4.
+                    "2001:db8::1".into()
+                } else if is_ip {
+                    "192.168.1.100".into()
+                } else {
+                    String::new()
+                };
+                PrimaryField {
+                    label: field.label,
+                    placeholder,
+                    is_ip,
+                }
+            })
+            .unwrap_or_default();
+        vendors_with_caps.push((id, name, caps, primary));
     }
 
     on_ui(app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();
         let names: Vec<SharedString> = vendors_with_caps
             .iter()
-            .map(|(_, name, _)| SharedString::from(name.as_str()))
+            .map(|(_, name, _, _)| SharedString::from(name.as_str()))
             .collect();
         let vendors: Vec<VendorOption> = vendors_with_caps
             .into_iter()
-            .map(|(id, name, caps)| VendorOption {
+            .map(|(id, name, caps, primary)| VendorOption {
                 id: SharedString::from(id),
                 name: SharedString::from(name),
                 supports_ipv4: caps.contains(tisvlay_core::Capabilities::IPV4),
                 supports_ipv6: caps.contains(tisvlay_core::Capabilities::IPV6),
+                primary_label: SharedString::from(if primary.label.is_empty() {
+                    gettext("Address")
+                } else {
+                    primary.label
+                }),
+                primary_placeholder: SharedString::from(primary.placeholder),
+                primary_is_ip: primary.is_ip,
             })
             .collect();
         wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
     });
+}
+
+/// Manual-entry identity-input shape derived from a vendor schema's
+/// first field.
+#[derive(Default)]
+struct PrimaryField {
+    label: String,
+    placeholder: String,
+    is_ip: bool,
 }
 
 async fn watch_state(

@@ -2138,18 +2138,27 @@ fn register_callbacks(
         let d = d.clone();
         let we = we.clone();
         let app_weak_task = app.as_weak();
+        // MAC enrichment is an ARP lookup on the entered address — only
+        // meaningful when the vendor's primary descriptor is an IP.
+        // Non-network vendors (CEC device paths) skip straight to the
+        // schema step.
+        let primary_is_ip = option.primary_is_ip;
         tokio::spawn(async move {
             // Daemon-side cap is 600 ms; wizard cap of 1 s is the
             // safety net for a hung RPC. Either firing produces an
             // empty vendor_data — same outcome as a clean miss, the
             // user just sees the field blank with the "MAC not
             // detected" helper.
-            let vendor_data = tokio::select! {
-                _ = cancel_rx => HashMap::new(),
-                res = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    d.enrich_manual_entry(&vendor, &ip),
-                ) => res.ok().and_then(|r| r.ok()).unwrap_or_default(),
+            let vendor_data = if !primary_is_ip {
+                HashMap::new()
+            } else {
+                tokio::select! {
+                    _ = cancel_rx => HashMap::new(),
+                    res = tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        d.enrich_manual_entry(&vendor, &ip),
+                    ) => res.ok().and_then(|r| r.ok()).unwrap_or_default(),
+                }
             };
 
             let entry = WizardEntry {
