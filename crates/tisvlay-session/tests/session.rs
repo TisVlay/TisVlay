@@ -310,6 +310,10 @@ async fn lock_and_unlock_dispatch_default_actions() {
         .unwrap();
 
     drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    // Activity on the lock screen: the hard-default on_lock_wake is
+    // screen_on, so the panel comes back before any unlock.
+    drive_until(&rig, &sub, SessionEvent::LockWake, tv, "active").await;
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
     drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
 
     // The tap is a plain put racing the subscriber's interest
@@ -453,8 +457,10 @@ async fn screensaver_adapter_drives_lock_unlock() {
 
     let watcher_conn = bus.connect().await.expect("watcher conn");
     let client = rig.stack.client.clone();
+    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let locked = is_locked.clone();
     tokio::spawn(async move {
-        let _ = tisvlay_session::watch_screensaver(watcher_conn, client).await;
+        let _ = tisvlay_session::watch_screensaver(watcher_conn, client, locked).await;
     });
     // Watcher subscription + session fleet mirror settle.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -464,6 +470,10 @@ async fn screensaver_adapter_drives_lock_unlock() {
         v["state"] == "screenoff"
     })
     .await;
+    assert!(
+        is_locked.load(std::sync::atomic::Ordering::SeqCst),
+        "lock flag mirrors ActiveChanged(true) for the lock-wake policy"
+    );
     fake.emit_active_changed(false).await.unwrap();
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "active"

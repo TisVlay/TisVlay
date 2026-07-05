@@ -3,6 +3,9 @@
 //! the same one `tisvlay-test`'s `FakeScreenSaver` stubs, so the adapter
 //! is testable on a private bus.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::Result;
 use futures_util::StreamExt;
 use tracing::info;
@@ -21,12 +24,19 @@ trait ScreenSaver {
 }
 
 /// Forward lock/unlock transitions until the bus or the core loop drops.
-pub async fn watch_screensaver(connection: zbus::Connection, client: SessionClient) -> Result<()> {
+/// `is_locked` mirrors the lock state for the wayland idle adapter's
+/// lock-wake policy.
+pub async fn watch_screensaver(
+    connection: zbus::Connection,
+    client: SessionClient,
+    is_locked: Arc<AtomicBool>,
+) -> Result<()> {
     let proxy = ScreenSaverProxy::new(&connection).await?;
     let mut stream = proxy.receive_active_changed().await?;
     info!("screensaver watcher running");
     while let Some(signal) = stream.next().await {
         let active = signal.args()?.active;
+        is_locked.store(active, Ordering::SeqCst);
         let event = if active {
             SessionEvent::Lock
         } else {

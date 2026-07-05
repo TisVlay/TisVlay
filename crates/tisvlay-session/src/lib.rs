@@ -14,6 +14,8 @@ mod store;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -46,6 +48,9 @@ const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
 pub enum SessionEvent {
     Lock,
     Unlock,
+    /// First user activity of an idle cycle while the screen is locked —
+    /// the panel comes back to show the password prompt.
+    LockWake,
     IdleTimeout,
     IdleResume,
 }
@@ -56,6 +61,7 @@ impl SessionEvent {
         match self {
             Self::Lock => "lock",
             Self::Unlock => "unlock",
+            Self::LockWake => "lock_wake",
             Self::IdleTimeout => "idle",
             Self::IdleResume => "resume",
         }
@@ -325,6 +331,7 @@ impl Core {
         match event {
             SessionEvent::Lock => resolved.on_session_lock,
             SessionEvent::Unlock => resolved.on_session_unlock,
+            SessionEvent::LockWake => resolved.on_lock_wake,
             SessionEvent::IdleTimeout => resolved.on_idle_timeout,
             SessionEvent::IdleResume => resolved.on_idle_resume,
         }
@@ -684,26 +691,47 @@ async fn reply_err(query: &Query, error: &WireError) {
     }
 }
 
-/// Wayland idle adapter: register an `ext-idle-notify` notification at
-/// the resolved timeout, re-registering whenever it changes; forward
-/// transitions as session events. Runs until the client or watch closes.
-pub async fn idle_adapter(mut timeout: watch::Receiver<u64>, client: SessionClient) {
+/// Idle timeout for lock-wake detection, in milliseconds.
+///
+/// Must be short enough that the user goes "idle" in the brief pause
+/// between locking the screen (e.g. Super+L) and moving the mouse to wake
+/// the panel: `ext-idle-notify-v1` only emits a `Resumed` after an
+/// `Idled`, so at 200 ms even a rapid lock-then-move clears the threshold.
+const LOCK_WAKE_TIMEOUT_MS: u32 = 200;
+
+/// Notification tag for the always-on lock-wake watch.
+const LOCK_WAKE_TAG: u32 = 0;
+
+/// Notification tag for the in-session idle watch (registered only when
+/// the resolved idle timeout is non-zero).
+const IDLE_TAG: u32 = 1;
+
+/// Wayland idle adapter: two presence rules on one `ext-idle-notify`
+/// connection, routed by tag. The lock-wake notification (always
+/// registered, 200 ms) fires `LockWake` on the first activity of an idle
+/// cycle while the screen is locked — the lock-screen panel comes back to
+/// show the password prompt. The in-session notification (the resolved
+/// idle timeout, re-registering whenever it changes) forwards
+/// `IdleTimeout`/`IdleResume` edges. Runs until the client or watch closes.
+pub async fn idle_adapter(
+    mut timeout: watch::Receiver<u64>,
+    client: SessionClient,
+    is_locked: Arc<AtomicBool>,
+) {
     loop {
         let seconds = *timeout.borrow_and_update();
-        if seconds == 0 {
-            if timeout.changed().await.is_err() {
-                return;
-            }
-            continue;
+        let mut notifications = vec![tisvlay_core::wayland::IdleNotification {
+            tag: LOCK_WAKE_TAG,
+            timeout_ms: LOCK_WAKE_TIMEOUT_MS,
+        }];
+        if seconds > 0 {
+            notifications.push(tisvlay_core::wayland::IdleNotification {
+                tag: IDLE_TAG,
+                timeout_ms: u32::try_from(seconds.saturating_mul(1000)).unwrap_or(u32::MAX),
+            });
         }
         let (wl_tx, mut transitions) = mpsc::unbounded_channel();
-        let handle = tisvlay_core::wayland::start_idle_watch(
-            vec![tisvlay_core::wayland::IdleNotification {
-                tag: 1,
-                timeout_ms: u32::try_from(seconds.saturating_mul(1000)).unwrap_or(u32::MAX),
-            }],
-            wl_tx,
-        );
+        let handle = tisvlay_core::wayland::start_idle_watch(notifications, wl_tx);
         let _guard = match handle {
             Ok(guard) => guard,
             Err(e) => {
@@ -714,16 +742,30 @@ pub async fn idle_adapter(mut timeout: watch::Receiver<u64>, client: SessionClie
                 continue;
             }
         };
+        let mut lock_wake_sent = false;
         loop {
             tokio::select! {
                 transition = transitions.recv() => match transition {
                     None => break,
-                    Some((_tag, tisvlay_core::wayland::IdleTransition::Idled)) => {
+                    Some((LOCK_WAKE_TAG, transition)) => {
+                        let (next_sent, fire) = lock_wake_policy(
+                            transition,
+                            is_locked.load(Ordering::SeqCst),
+                            lock_wake_sent,
+                        );
+                        lock_wake_sent = next_sent;
+                        if fire {
+                            debug!("user activity while locked, sending lock wake");
+                            client.send(SessionEvent::LockWake);
+                        }
+                    }
+                    Some((IDLE_TAG, tisvlay_core::wayland::IdleTransition::Idled)) => {
                         client.send(SessionEvent::IdleTimeout);
                     }
-                    Some((_tag, tisvlay_core::wayland::IdleTransition::Resumed)) => {
+                    Some((IDLE_TAG, tisvlay_core::wayland::IdleTransition::Resumed)) => {
                         client.send(SessionEvent::IdleResume);
                     }
+                    Some(_) => {}
                 },
                 changed = timeout.changed() => {
                     if changed.is_err() {
@@ -733,5 +775,93 @@ pub async fn idle_adapter(mut timeout: watch::Receiver<u64>, client: SessionClie
                 }
             }
         }
+    }
+}
+
+/// Lock-screen wake decision for one idle transition.
+///
+/// Returns `(next_lock_wake_sent, fire)`. Fires `LockWake` on the first
+/// `Resumed` (user activity) of each idle cycle while the screen is
+/// locked, at most once per cycle. The next `Idled` clears the latch (a
+/// fresh idle cycle begins), so a panel that re-blanks within one lock
+/// session wakes again, and a rapid unlock→relock that produced no
+/// "unlocked" edge still wakes on the next idle cycle. While unlocked the
+/// latch is never set, so no wake fires. Because the latch is per idle
+/// cycle (not per lock session), a watch re-registration mid-session
+/// can't strand or duplicate a wake.
+fn lock_wake_policy(
+    transition: tisvlay_core::wayland::IdleTransition,
+    is_locked: bool,
+    lock_wake_sent: bool,
+) -> (bool, bool) {
+    match transition {
+        // A fresh idle cycle clears the latch so the next resume can
+        // wake, independent of any "unlocked" edge. Idle itself never
+        // fires a wake.
+        tisvlay_core::wayland::IdleTransition::Idled => (false, false),
+        tisvlay_core::wayland::IdleTransition::Resumed => {
+            let fire = is_locked && !lock_wake_sent;
+            // Stay latched (meaningful only while locked) until the next
+            // Idled, so a burst of resume events doesn't spam LockWake.
+            let next_sent = is_locked && (lock_wake_sent || fire);
+            (next_sent, fire)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lock_wake_policy;
+    use tisvlay_core::wayland::IdleTransition;
+
+    #[test]
+    fn fires_once_per_idle_cycle_on_resume() {
+        // Idled while locked: no fire, latch cleared (new idle cycle).
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Idled, true, false),
+            (false, false)
+        );
+        // First Resumed while locked: fire and latch.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+        // Second Resumed while still locked (already latched): no fire.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, true),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn idled_clears_latch_so_each_idle_cycle_can_wake() {
+        // First resume of a locked idle cycle fires and latches.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+        // A fresh Idled while still locked clears the latch — even across
+        // a rapid unlock/relock that produced no "unlocked" edge.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Idled, true, true),
+            (false, false)
+        );
+        // So the next resume fires again.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn resets_when_unlocked_and_never_fires() {
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, false, true),
+            (false, false)
+        );
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Idled, false, true),
+            (false, false)
+        );
     }
 }

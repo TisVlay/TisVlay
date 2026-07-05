@@ -58,12 +58,17 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
 
+    // Lock state shared between the two adapters: the screensaver
+    // watcher writes it, the idle adapter's lock-wake policy reads it.
+    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Lock/unlock via the session bus; absent bus = adapter disabled.
     match zbus::Connection::session().await {
         Ok(connection) => {
             let client = stack.client.clone();
+            let locked = is_locked.clone();
             tokio::spawn(async move {
-                if let Err(e) = tisvlay_session::watch_screensaver(connection, client).await {
+                if let Err(e) = tisvlay_session::watch_screensaver(connection, client, locked).await
+                {
                     tracing::warn!(%e, "screensaver watcher exited");
                 }
             });
@@ -74,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(tisvlay_session::idle_adapter(
         stack.idle_timeout.clone(),
         stack.client.clone(),
+        is_locked,
     ));
 
     tokio::signal::ctrl_c().await?;
