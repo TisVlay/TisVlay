@@ -17,16 +17,10 @@ pub(crate) async fn connect_flow(
     config: toml::Value,
     wake: bool,
     retry: tisvlay_core::RetryConfig,
+    traits: crate::events::TransportInfo,
     inbox: mpsc::UnboundedSender<InEvent>,
 ) {
     debug!(%tv, wake, "connect_flow started");
-    let supports_wake = connector.supports_wake(&config);
-    let traits = crate::events::TransportInfo {
-        reachable_in_standby: connector.reachable_in_standby(&config),
-        network_dependent: connector.transport().is_network_dependent(),
-        survives_ip_change: connector.survives_source_ip_change(),
-        emulate_screen_via_power: connector.emulate_screen_via_power(&config),
-    };
     let dial = if wake {
         let _ = inbox.send(InEvent::Backend {
             tv,
@@ -47,7 +41,7 @@ pub(crate) async fn connect_flow(
             let _ = inbox.send(InEvent::Backend {
                 tv,
                 event: BackendEvent::ConnectFailed {
-                    error: error.to_string(),
+                    reason: crate::events::DialFailure::from_error(&error),
                 },
             });
             return;
@@ -56,11 +50,11 @@ pub(crate) async fn connect_flow(
     let state = match connection.get_state().await {
         Ok(state) => state,
         Err(error) => {
+            let mut reason = crate::events::DialFailure::from_error(&error);
+            reason.message = format!("initial state read failed: {}", reason.message);
             let _ = inbox.send(InEvent::Backend {
                 tv,
-                event: BackendEvent::ConnectFailed {
-                    error: format!("initial state read failed: {error}"),
-                },
+                event: BackendEvent::ConnectFailed { reason },
             });
             return;
         }
@@ -82,11 +76,9 @@ pub(crate) async fn connect_flow(
         event: BackendEvent::Connected {
             cmd_tx,
             state: Box::new(state),
-            supports_wake,
             brand,
             hardware,
             capabilities,
-            traits,
             retry,
         },
     });

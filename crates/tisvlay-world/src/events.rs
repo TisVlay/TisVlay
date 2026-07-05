@@ -35,6 +35,14 @@ pub enum InEvent {
     /// The desktop probe matched a TV's hardware identity to a DRM
     /// connector.
     ConnectorMatched { tv: Uuid, connector: String },
+    /// Config-derived connector statics for a TV, evaluated by the
+    /// reactor (which owns the connectors) at enrollment and on every
+    /// dial spawn — present before any dial outcome exists.
+    TransportFacts {
+        tv: Uuid,
+        supports_wake: bool,
+        traits: TransportInfo,
+    },
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.
     Tick { now: Instant },
@@ -215,9 +223,58 @@ pub enum Command {
     },
 }
 
-/// Transport characteristics resolved at dial time — the connector knows,
-/// the world reacts (CEC standby model, screen-via-power emulation,
-/// carrier-event scoping).
+/// A dial failure with its typed reason preserved across the task
+/// boundary. Root parity: `failure_reason` composed the pairing
+/// `failed` phase from the connect error's typed variant; carrying
+/// only a display string here is what lost `PermissionDenied { path }`
+/// on the way to clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialFailure {
+    /// Namespaced reason code when the error has one — today
+    /// `device.permission-denied`; `None` = generic connect failure.
+    pub code: Option<String>,
+    /// Reason-specific parameter — the device-node path for the
+    /// permission case.
+    pub path: Option<String>,
+    /// Human-readable English message (the log/fallback text).
+    pub message: String,
+}
+
+impl DialFailure {
+    /// Project a core error, preserving the actionable typed cases.
+    pub fn from_error(error: &tisvlay_core::Error) -> Self {
+        match error {
+            tisvlay_core::Error::PermissionDenied { path } => Self {
+                code: Some(
+                    tisvlay_core::errors::DeviceErrorCode::PermissionDenied
+                        .as_str()
+                        .into(),
+                ),
+                path: Some(path.clone()),
+                message: error.to_string(),
+            },
+            _ => Self {
+                code: None,
+                path: None,
+                message: error.to_string(),
+            },
+        }
+    }
+
+    /// An untyped failure (infrastructure errors with no core variant).
+    pub fn message(message: impl Into<String>) -> Self {
+        Self {
+            code: None,
+            path: None,
+            message: message.into(),
+        }
+    }
+}
+
+/// Transport characteristics derived from the vendor config — the
+/// connector knows, the world reacts (CEC standby model, screen-via-power
+/// emulation, carrier-event scoping). Evaluated by the reactor at
+/// enrollment and on every dial spawn, never by a dial's outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportInfo {
     /// Connection survives standby (CEC): Connected ≠ power, wake happens
@@ -236,19 +293,19 @@ pub struct TransportInfo {
 pub enum BackendEvent {
     /// Dial succeeded: the connection task is live and commands can be sent
     /// through `cmd_tx`. Carries the initial state snapshot and the
-    /// connection-derived identity.
+    /// connection-derived identity. Config-derived statics (wake support,
+    /// transport traits) do NOT ride here — the reactor delivers those via
+    /// [`InEvent::TransportFacts`] before any dial outcome exists.
     Connected {
         cmd_tx: mpsc::UnboundedSender<BackendCmd>,
         state: Box<TvState>,
-        supports_wake: bool,
         brand: Option<String>,
         hardware: Option<tisvlay_core::HardwareId>,
         capabilities: Vec<String>,
-        traits: TransportInfo,
         retry: tisvlay_core::RetryConfig,
     },
     /// Dial failed before a connection existed.
-    ConnectFailed { error: String },
+    ConnectFailed { reason: DialFailure },
     /// A state snapshot pushed by the device (subscription update).
     State(Box<TvState>),
     /// The connection ended (device closed it, or `power_off` on a

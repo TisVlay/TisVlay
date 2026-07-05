@@ -36,6 +36,12 @@ pub struct MockVendorConfig {
     #[serde(default = "default_inputs")]
     pub inputs: Vec<(String, String)>,
 
+    /// Test knob: every `connect` fails with a backend error.
+    /// Exercises dial-failure paths (pairing rollback, retry/backoff)
+    /// without a real unreachable device.
+    #[serde(default)]
+    pub refuse_connect: bool,
+
     /// Pairing behavior shorthand.
     ///
     /// - `"manual"` (default): pairing waits for an explicit
@@ -134,6 +140,7 @@ impl Default for MockVendorConfig {
             initial_input: default_input(),
             initial_backlight: default_backlight(),
             inputs: default_inputs(),
+            refuse_connect: false,
             pairing: PairingShorthand::default(),
             backlight_ramp_intermediates: Vec::new(),
             backlight_ramp_step_delay_ms: 0,

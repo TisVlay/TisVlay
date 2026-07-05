@@ -121,6 +121,12 @@ impl TvConnector for MockConnector {
             tokio::time::sleep(delay).await;
         }
 
+        if config.refuse_connect {
+            return Err(tisvlay_core::Error::backend(
+                crate::VENDOR_ID,
+                "connect refused by test config",
+            ));
+        }
         tracing::debug!(address = %config.address, "connecting to mock TV");
         Ok(Box::new(MockConnection::new(
             &config,

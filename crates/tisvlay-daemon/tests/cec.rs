@@ -134,3 +134,95 @@ async fn wait_power(sub: &Sub, id: Uuid, want: &str, link_was_up: &mut bool) -> 
         }
     }
 }
+
+/// End to end over the wire: pairing a CEC device the daemon can't
+/// open fails with the device reason code and the node path, and the
+/// TV rolls back — the wizard shows the group/udev fix instead of a
+/// paired-but-dead row.
+#[tokio::test(flavor = "multi_thread")]
+async fn cec_pair_fails_typed_when_device_is_inaccessible() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("p.sock");
+    let connector = CecConnector::with_fake_opener(FakeCecLinkOpener::permission_denied());
+    let _stack = tisvlay_daemon::serve(
+        &socket,
+        "t",
+        vec![tisvlay_daemon::VendorReg::new(
+            "cec",
+            "HDMI CEC",
+            Arc::new(connector),
+        )],
+        None,
+    )
+    .await
+    .unwrap();
+    let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .unwrap();
+
+    // Progress subscription first (history) so no phase is missed.
+    let progress_sub = client
+        .declare_subscriber("tisvlay/t/pairing/*/progress")
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+        .unwrap();
+
+    let body = serde_json::to_value(rpc::AddTv {
+        id: None,
+        name: "CecDenied".into(),
+        vendor: "cec".into(),
+        managed: true,
+        config: json!({ "device": "/dev/cec-denied" }),
+    })
+    .unwrap();
+    let ok = call_ok(&client, &keys::manager_rpc("t", "pair"), body).await;
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let failed = loop {
+        let sample = tokio::time::timeout_at(deadline, progress_sub.recv_async())
+            .await
+            .expect("timed out waiting for pairing terminal")
+            .expect("subscriber closed");
+        let value: Value =
+            serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+        assert_ne!(
+            value["phase"], "complete",
+            "an unopenable device must not pair"
+        );
+        if value["phase"] == "failed" {
+            break value;
+        }
+    };
+    assert_eq!(failed["code"], "device.permission-denied");
+    assert_eq!(failed["path"], "/dev/cec-denied");
+
+    // Rollback: the TV is gone from the catalog.
+    let err = call_err(&client, &keys::tv_rpc("t", &id, "get-config"), Value::Null).await;
+    assert_eq!(err["code"], "tv-not-found");
+}
+
+/// Like `call_ok`, but the rpc must fail — returns the typed error
+/// payload. Retries the no-reply case (queryable declaration race).
+async fn call_err(client: &Session, key: &str, body: Value) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let replies = client
+            .get(key.to_string())
+            .payload(serde_json::to_vec(&body).unwrap())
+            .encoding(Encoding::APPLICATION_JSON)
+            .timeout(Duration::from_secs(5))
+            .await
+            .unwrap();
+        let reply = match replies.recv_async().await {
+            Ok(reply) => reply,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+            Err(e) => panic!("rpc got no reply: {e}"),
+        };
+        let err = reply.result().expect_err("rpc must fail");
+        return serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null);
+    }
+}

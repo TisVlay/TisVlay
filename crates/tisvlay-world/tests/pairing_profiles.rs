@@ -73,6 +73,88 @@ async fn pair_accept_creates_tv_with_redacted_progress() {
     );
 }
 
+/// The pairing terminal is gated on the first dial: a handshake that
+/// succeeds against a TV the daemon can't actually connect to must
+/// fail the pairing with the dial's reason and roll the TV back —
+/// nothing left on the wire, nothing in the catalog.
+#[tokio::test]
+async fn pair_fails_and_rolls_back_when_first_dial_fails() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+
+    let mut config = pairing_config("mock://pair-dead", "accept");
+    config
+        .as_table_mut()
+        .unwrap()
+        .insert("refuse_connect".into(), toml::Value::Boolean(true));
+    client.command(Command::Pair {
+        id,
+        name: "Dead".into(),
+        vendor: "mock".into(),
+        config,
+        managed: true,
+        reply: Some(20),
+    });
+
+    let seen = collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "failed").is_some()
+    })
+    .await;
+    let failed = seen
+        .iter()
+        .find_map(|e| progress_on(e, &progress_key, "failed"))
+        .unwrap();
+    assert_eq!(failed["code"], "pairing.connection-failed");
+    assert!(
+        !seen
+            .iter()
+            .any(|e| progress_on(e, &progress_key, "complete").is_some()),
+        "no complete may precede the dial outcome"
+    );
+
+    // Rollback: the TV's published keys are swept…
+    let link_key = format!("tisvlay/test/tv/{id}/state/link");
+    collect_until(
+        &mut effects,
+        |e| matches!(e, WireEffect::Delete { key } if *key == link_key),
+    )
+    .await;
+    // …and the entity is gone from the catalog.
+    client.command(Command::SetVolume {
+        id,
+        level: 1,
+        reply: Some(21),
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 21)).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 21)),
+        Some("tv-not-found")
+    );
+}
+
+/// Config-derived wake support reaches the wire at enrollment — no dial
+/// required. An unmanaged TV never dials, yet its link must still say
+/// it can be woken (the mock always can), so clients don't misreport
+/// "no wake path" for TVs that simply haven't connected.
+#[tokio::test]
+async fn transport_facts_reach_the_link_without_a_dial() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let mut record = support::tv_record(id, "Idle", pairing_config("mock://idle", "manual"));
+    record.managed = false;
+
+    client.command(Command::AddTv {
+        record: Box::new(record),
+        reply: Some(30),
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/link")
+            .is_some_and(|p| p["supports_wake"] == true && p["connected"] == false)
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn pair_reject_publishes_typed_failure_and_no_tv() {
     let (mut effects, client, _handle) = spawn_reactor();

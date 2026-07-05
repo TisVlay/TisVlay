@@ -185,9 +185,15 @@ pub mod payload {
         /// `awaiting_tv` | `awaiting_input` | `complete` | `failed`.
         pub phase: String,
         pub message: String,
-        /// Namespaced failure reason (e.g. `pairing.rejected`), `failed` only.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Namespaced failure reason (e.g. `pairing.rejected`,
+        /// `device.permission-denied`), `failed` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub code: Option<String>,
+        /// Reason-specific parameter — the device-node path on a
+        /// permission-denied failure, so clients can name the node in
+        /// the fix hint. Absent for reasons that carry none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub path: Option<String>,
     }
 
     impl From<&tisvlay_core::PairingState> for PairingProgress {
@@ -196,6 +202,10 @@ pub mod payload {
                 phase: state.to_dbus_state().into(),
                 message: state.message().into(),
                 code: state.error().map(|e| e.code.as_str().into()),
+                // Handshake errors carry no device parameter; dial
+                // failures (which do) are composed by the world from
+                // the typed dial reason, not through this projection.
+                path: None,
             }
         }
     }

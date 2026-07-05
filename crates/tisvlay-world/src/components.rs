@@ -63,9 +63,23 @@ pub(crate) struct ConnectionHandle {
     pub cmd_tx: mpsc::UnboundedSender<BackendCmd>,
 }
 
-/// Transport characteristics of this TV's backend, resolved at dial time.
+/// Transport characteristics of this TV's backend. Config-derived
+/// statics, evaluated by the reactor at enrollment and on every dial
+/// spawn — present before any connection exists, so dispatch decisions
+/// (wake path, screen emulation, standby reachability) don't depend on
+/// a dial having succeeded.
 #[derive(Component, Debug)]
 pub(crate) struct TransportTraits(pub TransportInfo);
+
+/// A freshly paired TV whose pairing terminal is gated on its first
+/// dial outcome: `complete` publishes only once the TV actually
+/// connects, and a failed first dial fails the pairing. `rollback`
+/// distinguishes fresh enrollment (failure removes the TV — nothing
+/// persists) from re-pairing (failure keeps the existing TV).
+#[derive(Component, Debug)]
+pub(crate) struct PairVerifying {
+    pub rollback: bool,
+}
 
 /// Per-backend verify-retry tuning, delivered with the connection.
 #[derive(Component, Debug)]

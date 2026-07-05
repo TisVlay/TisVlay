@@ -13,9 +13,9 @@ use uuid::Uuid;
 
 use crate::components::{
     CarrierParked, Clock, ConnectionHandle, DirtyStore, DispatchRetry, DispatchVerify, Effect,
-    KnownVendors, Managed, MirrorsConnector, Outbox, PairingEnroll, PairingIndex, PairingRef,
-    PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt,
-    Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
+    KnownVendors, Managed, MirrorsConnector, Outbox, PairVerifying, PairingEnroll, PairingIndex,
+    PairingRef, PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
+    RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
     BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
@@ -40,6 +40,7 @@ pub(crate) fn build_schedule() -> Schedule {
             handle_profile_commands,
             apply_backend_events,
             apply_connector_matches,
+            apply_transport_facts,
             apply_pairing_updates,
             handle_carrier_events,
             verify_dispatch,
@@ -1064,20 +1065,22 @@ fn handle_profile_commands(
 struct StateWrites<'w, 's> {
     power: Query<'w, 's, &'static mut payload::Power>,
     volume: Query<'w, 's, &'static mut payload::Volume>,
-    link: Query<'w, 's, &'static mut payload::Link>,
     input: Query<'w, 's, &'static mut payload::Input>,
     backlight: Query<'w, 's, &'static mut payload::Backlight>,
     identity: Query<'w, 's, &'static mut payload::Identity>,
     pending: Query<'w, 's, &'static PendingConnect>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_backend_events(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
-    index: Res<TvIndex>,
+    mut index: ResMut<TvIndex>,
     clock: Res<Clock>,
     site: Res<Site>,
     mut outbox: ResMut<Outbox>,
+    mut dirty: ResMut<DirtyStore>,
+    verifying: Query<&PairVerifying>,
     mut writes: StateWrites,
 ) {
     for msg in reader.read() {
@@ -1094,11 +1097,9 @@ fn apply_backend_events(
             BackendEvent::Connected {
                 cmd_tx,
                 state,
-                supports_wake,
                 brand,
                 hardware,
                 capabilities,
-                traits,
                 retry,
             } => {
                 tracing::debug!(%tv, "connected event applying");
@@ -1109,16 +1110,10 @@ fn apply_backend_events(
                         ConnectionHandle {
                             cmd_tx: cmd_tx.clone(),
                         },
-                        TransportTraits(*traits),
                         DispatchRetry(*retry),
                     ))
                     .remove::<(Reconnecting, PendingConnect, RetryAt, DispatchVerify)>();
                 apply_state(&mut commands, entity, state, &mut writes);
-                if let Ok(mut link) = writes.link.get_mut(entity)
-                    && link.supports_wake != *supports_wake
-                {
-                    link.supports_wake = *supports_wake;
-                }
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     let mut enriched = identity.clone();
                     enriched.brand = brand.clone().or(enriched.brand);
@@ -1130,7 +1125,34 @@ fn apply_backend_events(
                     if !capabilities.is_empty() {
                         enriched.capabilities = capabilities.clone();
                     }
+                    // Root parity: a blank friendly name defaults from
+                    // the device's own model (CEC reads it as the TV's
+                    // OSD name) — the manual-entry path's fallback.
+                    if enriched.name.is_empty()
+                        && let Some(model) = &enriched.model
+                    {
+                        enriched.name = model.clone();
+                    }
                     identity.set_if_neq(enriched);
+                }
+                // A freshly paired TV completes its pairing here — the
+                // terminal is gated on the first real connection, so
+                // `complete` never precedes a usable TV, and only a
+                // verified TV reaches the store.
+                if verifying.get(entity).is_ok() {
+                    commands.entity(entity).remove::<PairVerifying>();
+                    publish_pairing_progress(
+                        &mut outbox,
+                        &site,
+                        tv,
+                        &payload::PairingProgress {
+                            phase: "complete".into(),
+                            message: "Paired and connected".into(),
+                            code: None,
+                            path: None,
+                        },
+                    );
+                    dirty.0 = true;
                 }
                 if wake_dial {
                     publish_power_phase(&mut outbox, &site, tv, "connected");
@@ -1142,7 +1164,44 @@ fn apply_backend_events(
                     .entity(entity)
                     .remove::<(ConnectionHandle, DispatchVerify)>();
             }
-            BackendEvent::ConnectFailed { error } => {
+            BackendEvent::ConnectFailed { reason } => {
+                // A freshly paired TV fails its pairing on the first
+                // dial failure — no retries, root parity: the terminal
+                // carries the typed dial reason (permission code +
+                // node path), and a fresh enrollment rolls back so
+                // nothing unusable persists. Re-pairs keep the TV.
+                if let Ok(pair) = verifying.get(entity) {
+                    publish_pairing_progress(
+                        &mut outbox,
+                        &site,
+                        tv,
+                        &payload::PairingProgress {
+                            phase: "failed".into(),
+                            message: reason.message.clone(),
+                            code: Some(
+                                reason
+                                    .code
+                                    .clone()
+                                    .unwrap_or_else(|| "pairing.connection-failed".into()),
+                            ),
+                            path: reason.path.clone(),
+                        },
+                    );
+                    if pair.rollback {
+                        commands.entity(entity).despawn();
+                        index.0.remove(tv);
+                        for path in payload::TV_PATHS
+                            .iter()
+                            .chain(payload::TV_EXTRA_PATHS.iter())
+                        {
+                            outbox.0.push(Effect::Wire(WireEffect::Delete {
+                                key: keys::tv_path(&site.0, tv, path),
+                            }));
+                        }
+                        continue;
+                    }
+                    commands.entity(entity).remove::<PairVerifying>();
+                }
                 let (attempts, wake_dial) = writes
                     .pending
                     .get(entity)
@@ -1160,7 +1219,13 @@ fn apply_backend_events(
                 }
                 outbox.0.push(Effect::Wire(WireEffect::Publish {
                     key: keys::event(&site.0, "connect-failed"),
-                    payload: json!({ "tv": tv, "attempt": attempts, "error": error }),
+                    payload: json!({
+                        "tv": tv,
+                        "attempt": attempts,
+                        "error": reason.message,
+                        "code": reason.code,
+                        "path": reason.path,
+                    }),
                 }));
             }
             BackendEvent::PowerPhase(phase) => {
@@ -1290,12 +1355,19 @@ fn apply_pairing_updates(
                 }
             }
             PairingUpdate::State(state) => {
-                publish_pairing_progress(
-                    &mut outbox,
-                    &site,
-                    id,
-                    &payload::PairingProgress::from(&**state),
-                );
+                // The handshake's `complete` is NOT the pairing
+                // terminal: `complete` publishes only once the TV's
+                // first dial succeeds (root parity — the terminal
+                // never precedes a usable TV). Intermediate phases and
+                // handshake failures publish as they happen.
+                if !matches!(&**state, PairingState::Complete { .. }) {
+                    publish_pairing_progress(
+                        &mut outbox,
+                        &site,
+                        id,
+                        &payload::PairingProgress::from(&**state),
+                    );
+                }
                 match &**state {
                     PairingState::Complete { credentials } => {
                         if let Ok(session) = pairing.refs.get(entity) {
@@ -1317,7 +1389,10 @@ fn apply_pairing_updates(
             PairingUpdate::ConfigReady(config) => {
                 if let Ok(session) = pairing.refs.get(entity) {
                     match (&session.enroll, tv_index.0.get(id).copied()) {
-                        // Fresh pairing: spawn the TV.
+                        // Fresh pairing: spawn the TV, terminal gated on
+                        // its first dial. Not persisted (and no store
+                        // write) until that dial verifies — a rollback
+                        // must leave no trace.
                         (Some(enroll), None) => {
                             let record = TvRecord {
                                 id: *id,
@@ -1330,9 +1405,15 @@ fn apply_pairing_updates(
                                 config: config.clone(),
                             };
                             spawn_tv(&mut commands, &mut tv_index, &record);
-                            dirty.0 = true;
+                            if let Some(&tv_entity) = tv_index.0.get(id) {
+                                commands
+                                    .entity(tv_entity)
+                                    .insert(PairVerifying { rollback: true });
+                            }
                         }
-                        // Re-pair: refresh credentials and reconnect.
+                        // Re-pair: refresh credentials and reconnect. The
+                        // terminal is likewise gated on the reconnect, but
+                        // a failure keeps the (pre-existing) TV.
                         (None, Some(tv_entity)) => {
                             if let Ok(mut vendor) = writes.vendor.get_mut(tv_entity) {
                                 vendor.config = config.clone();
@@ -1340,10 +1421,13 @@ fn apply_pairing_updates(
                             commands
                                 .entity(tv_entity)
                                 .remove::<(ConnectionHandle, RetryAt)>()
-                                .insert(PendingConnect {
-                                    attempts: 0,
-                                    wake: false,
-                                });
+                                .insert((
+                                    PendingConnect {
+                                        attempts: 0,
+                                        wake: false,
+                                    },
+                                    PairVerifying { rollback: false },
+                                ));
                             dirty.0 = true;
                         }
                         _ => tracing::warn!(%id, "pairing outcome had no home, dropped"),
@@ -1361,6 +1445,7 @@ fn apply_pairing_updates(
                         phase: "failed".into(),
                         message: error.clone(),
                         code: Some("pairing.unknown".into()),
+                        path: None,
                     },
                 );
                 commands.entity(entity).despawn();
@@ -1442,6 +1527,37 @@ fn apply_connector_matches(
         commands
             .entity(entity)
             .insert(MirrorsConnector(connector.clone()));
+    }
+}
+
+/// Apply the reactor's config-derived connector statics: wake support
+/// onto the link (it reaches the wire) and the transport traits
+/// component (dispatch decisions). Present before any dial outcome, so
+/// a never-connected TV still knows whether it can be woken.
+fn apply_transport_facts(
+    mut reader: MessageReader<InEvent>,
+    mut commands: Commands,
+    index: Res<TvIndex>,
+    mut links: Query<&mut payload::Link>,
+) {
+    for msg in reader.read() {
+        let InEvent::TransportFacts {
+            tv,
+            supports_wake,
+            traits,
+        } = msg
+        else {
+            continue;
+        };
+        let Some(&entity) = index.0.get(tv) else {
+            continue;
+        };
+        if let Ok(mut link) = links.get_mut(entity)
+            && link.supports_wake != *supports_wake
+        {
+            link.supports_wake = *supports_wake;
+        }
+        commands.entity(entity).insert(TransportTraits(*traits));
     }
 }
 
@@ -1739,10 +1855,12 @@ fn publish_changed<T: payload::StatePayload>(
 }
 
 /// Snapshot the whole TV table into a persist effect when anything
-/// config-shaped changed this frame.
+/// config-shaped changed this frame. TVs still verifying their pairing
+/// are excluded — they only reach the store once their first dial
+/// succeeds, so a rolled-back enrollment leaves no trace.
 fn snapshot_store(
     mut dirty: ResMut<DirtyStore>,
-    q: Query<(&TvId, &VendorRef, &payload::Identity, &payload::Meta)>,
+    q: Query<(&TvId, &VendorRef, &payload::Identity, &payload::Meta), Without<PairVerifying>>,
     profiles: Query<(&ProfileId, &ProfileBody)>,
     mut outbox: ResMut<Outbox>,
 ) {

@@ -147,6 +147,13 @@ impl Reactor {
                     clock.0 = clock.0.max(now);
                 }
                 other => {
+                    // Enrollment carries a vendor config — evaluate the
+                    // connector statics so the facts land right behind
+                    // the spawn (next batch: the entity is flushed by
+                    // then). Covers unmanaged TVs, which never dial.
+                    if let InEvent::Command(Command::AddTv { record, .. }) = &other {
+                        self.send_transport_facts(record.id, &record.vendor, &record.config);
+                    }
                     self.world.write_message(other);
                 }
             }
@@ -167,6 +174,15 @@ impl Reactor {
                     wake,
                 } => match self.connectors.get(&vendor) {
                     Some(connector) => {
+                        // Re-evaluate the statics on every dial: this is
+                        // where a merged config (update-config, re-pair)
+                        // first reaches the reactor.
+                        let traits = transport_facts(connector.as_ref(), &config);
+                        let _ = self.inbox_tx.send(InEvent::TransportFacts {
+                            tv,
+                            supports_wake: connector.supports_wake(&config),
+                            traits,
+                        });
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
                         tokio::spawn(backend::connect_flow(
                             tv,
@@ -174,6 +190,7 @@ impl Reactor {
                             config,
                             wake,
                             retry,
+                            traits,
                             self.inbox_tx.clone(),
                         ));
                     }
@@ -183,7 +200,9 @@ impl Reactor {
                         let _ = self.inbox_tx.send(InEvent::Backend {
                             tv,
                             event: BackendEvent::ConnectFailed {
-                                error: format!("no connector for vendor '{vendor}'"),
+                                reason: crate::events::DialFailure::message(format!(
+                                    "no connector for vendor '{vendor}'"
+                                )),
                             },
                         });
                     }
@@ -251,6 +270,33 @@ impl Reactor {
                 }
             }
         }
+    }
+
+    /// Evaluate a TV's connector statics and queue them behind the
+    /// current batch (the spawn is flushed by the time they apply).
+    /// Unknown vendors are quietly skipped — command validation
+    /// already rejects them.
+    fn send_transport_facts(&self, tv: uuid::Uuid, vendor: &str, config: &toml::Value) {
+        if let Some(connector) = self.connectors.get(vendor) {
+            let _ = self.inbox_tx.send(InEvent::TransportFacts {
+                tv,
+                supports_wake: connector.supports_wake(config),
+                traits: transport_facts(connector.as_ref(), config),
+            });
+        }
+    }
+}
+
+/// The connector's config-derived transport characteristics.
+fn transport_facts(
+    connector: &dyn TvConnector,
+    config: &toml::Value,
+) -> crate::events::TransportInfo {
+    crate::events::TransportInfo {
+        reachable_in_standby: connector.reachable_in_standby(config),
+        network_dependent: connector.transport().is_network_dependent(),
+        survives_ip_change: connector.survives_source_ip_change(),
+        emulate_screen_via_power: connector.emulate_screen_via_power(config),
     }
 }
 
