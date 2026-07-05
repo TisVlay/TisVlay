@@ -1,6 +1,6 @@
 # Parity: driving the zenoh+ECS stack to full TisVlay parity
 
-Status: **decisions resolved (2026-07-04) — P1 ready to start** (see Resolved decisions).
+> **Historical** — parity was reached and the stack shipped as v0.3.0 (switchover 2026-07-04). The durable architecture reference is now [docs/architecture.md](../architecture.md); this plan remains as the phase log and war-story record, alongside [spike-zenoh-ecs.md](spike-zenoh-ecs.md).
 
 ## Goal
 

@@ -4,7 +4,7 @@
 
 A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Supports LG WebOS TVs (network, SSAP) and HDMI-CEC (the Linux CEC subsystem, via `linux-cec`), with a vendor- and transport-agnostic architecture designed for adding Samsung, Sony, and other backends. The user's Nvidia GPU can't tunnel HDMI-CEC, so the CEC path needs a CEC adapter (USB, or a DP→HDMI adapter on an amdgpu/i915 output) — the network path (LG WebOS SSAP) needs none.
 
-Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machines, and **zenoh over Unix sockets** is the IPC surface — cached publishers for state, queryables for rpcs, liveliness tokens for presence. The served-D-Bus stack shipped through v0.2.0 and was then removed; consumed desktop D-Bus (logind, ScreenSaver, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus. The authoritative architecture reference (key space, payload structs, topology, phase history) is [docs/plans/parity-zenoh-ecs.md](../docs/plans/parity-zenoh-ecs.md).
+Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machines, and **zenoh over Unix sockets** is the IPC surface — cached publishers for state, queryables for rpcs, liveliness tokens for presence. The served-D-Bus stack shipped through v0.2.0 and was then removed; consumed desktop D-Bus (logind, ScreenSaver, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus. The authoritative architecture reference (topology, key space, world/reactor model, empirical zenoh laws) is [docs/architecture.md](../docs/architecture.md); the plan documents under docs/plans/ are the historical phase logs.
 
 ## Target Hardware
 
@@ -15,7 +15,7 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 
 ## What's Next
 
-P7 remainder (user-assisted): a week of full-stack systemd duty on the real hardware, the G4/suspend/WoL field batch, the v0.2.0 release PR into main, and the old-stack docs refresh (docs/design.md still describes the retired D-Bus architecture). Follow-ups filed in the plan: IPC performance harness (zenoh vs D-Bus numbers), tray gettext re-wiring, coverage baseline re-measurement.
+P7 remainder (user-assisted): a week of full-stack systemd duty on the real hardware (soaking PR #106 with the post-parity cleanup pass), the G4/suspend/WoL field batch, and the v0.2.0 release PR into main. Follow-ups filed in docs/ideas/: IPC performance harness (zenoh vs D-Bus numbers), tray gettext re-wiring, coverage baseline re-measurement.
 
 ## Current Project Structure
 
@@ -63,7 +63,8 @@ tisvlay/
 │   └── scripts/                  # nfpm postinstall/preremove
 │
 ├── docs/                         # design.md (RETIRED D-Bus stack, ≤ v0.2.0),
-│   ├── plans/parity-zenoh-ecs.md # ← current architecture reference
+│   ├── architecture.md           # ← current architecture reference
+│   ├── plans/                    # historical phase logs (spike, parity)
 │   ├── lg/, cec/, watchers/      # vendor + subsystem notes (transport-independent)
 │   └── firewall.md, testing.md, ideas.md, bugs.md
 └── .claude/CLAUDE.md             # This file
@@ -226,7 +227,8 @@ just test-snapshot-review   # insta
 
 ## Reference Documentation
 
-- [docs/plans/parity-zenoh-ecs.md](../docs/plans/parity-zenoh-ecs.md) - **Current architecture**: topology, key space, persistence, phase history, watch items
+- [docs/architecture.md](../docs/architecture.md) - **Current architecture**: topology, key space, world/reactor model, deployment, empirical zenoh laws
+- [docs/plans/parity-zenoh-ecs.md](../docs/plans/parity-zenoh-ecs.md) - The rewrite's phase log and war stories (historical)
 - [docs/design.md](../docs/design.md) - The retired served-D-Bus architecture (≤ v0.2.0); kept for history
 - [docs/discovery.md](../docs/discovery.md) - SSDP transport, streaming discovery, manual-entry MAC enrichment
 - [docs/i18n.md](../docs/i18n.md) - Translation architecture and workflow
