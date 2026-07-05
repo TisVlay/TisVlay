@@ -189,8 +189,14 @@ pub async fn fetch_state(
 
     let mut user_profile_by_uuid = HashMap::new();
     if let Some(s) = session {
-        for tv in &tvs {
-            if let Ok(profile) = s.get_tv_user_profile(&tv.uuid).await {
+        // Per-TV assignment lookups are independent — issue them
+        // concurrently so the refresh pass isn't serialized on
+        // round-trips.
+        let profiles =
+            futures_util::future::join_all(tvs.iter().map(|tv| s.get_tv_user_profile(&tv.uuid)))
+                .await;
+        for (tv, profile) in tvs.iter().zip(profiles) {
+            if let Ok(profile) = profile {
                 user_profile_by_uuid.insert(tv.uuid.clone(), profile);
             }
         }

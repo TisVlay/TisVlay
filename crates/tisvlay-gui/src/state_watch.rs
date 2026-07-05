@@ -165,20 +165,21 @@ async fn fetch_and_publish_vendors(
     let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities, PrimaryField)> =
         Vec::with_capacity(vendor_pairs.len());
     for (id, name) in vendor_pairs {
-        let caps = daemon
-            .get_vendor_capabilities(&id)
-            .await
-            .unwrap_or_else(|e| {
-                debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
-                tisvlay_core::Capabilities::empty()
-            });
+        // Capabilities and pairing schema are independent rpcs —
+        // fetch them concurrently.
+        let (caps, schema) = tokio::join!(
+            daemon.get_vendor_capabilities(&id),
+            daemon.get_pairing_schema(&id),
+        );
+        let caps = caps.unwrap_or_else(|e| {
+            debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
+            tisvlay_core::Capabilities::empty()
+        });
         // The schema's first field is the vendor's primary descriptor
         // (schema-ordering convention) — it becomes the manual-entry
         // panel's identity input. Fetch failure falls back to a
         // generic "Address" so manual entry stays usable.
-        let primary = daemon
-            .get_pairing_schema(&id)
-            .await
+        let primary = schema
             .ok()
             .and_then(|schema| schema.into_iter().next())
             .map(|field| {

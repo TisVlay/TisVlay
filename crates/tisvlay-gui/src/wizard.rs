@@ -113,6 +113,17 @@ pub(crate) type WizardDiscoveryCancel = Arc<Mutex<Option<tokio::sync::oneshot::S
 /// one-shot manual-entry probe have different lifecycles.
 pub(crate) type WizardManualLookupCancel = Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
 
+/// Bundles the wizard callback family's shared handles so each
+/// callback clones once instead of cloning each handle individually.
+#[derive(Clone)]
+pub(crate) struct WizardCtx {
+    pub daemon: Arc<DaemonClient>,
+    pub entries: WizardEntries,
+    pub generation: WizardGen,
+    pub discovery_cancel: WizardDiscoveryCancel,
+    pub manual_cancel: WizardManualLookupCancel,
+}
+
 /// Cancel any in-flight wizard discovery session.
 ///
 /// Takes the cancel sender out of the sidecar (so subsequent calls
