@@ -249,64 +249,52 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::SetVolume { id, level } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-volume"),
                 json!({ "level": level }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Input { id, input } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "switch-input"),
                 json!({ "input": input }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Backlight { id, level } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-backlight"),
                 json!({ "level": level }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Screen { id, state } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-screen"),
                 json!({ "on": state == "on" }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Rename { id, name } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-name"),
                 json!({ "name": name }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Managed { id, managed } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-managed"),
                 json!({ "managed": managed }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Config { id } => {
             let config = call(
@@ -324,9 +312,7 @@ async fn main() -> Result<()> {
         }
         Command::ConfigSet { id, json } => {
             let patch: Value = serde_json::from_str(&json)?;
-            call(&session, &keys::tv_rpc(site, &id, "update-config"), patch).await?;
-            println!("ok");
-            Ok(())
+            ack(&session, &keys::tv_rpc(site, &id, "update-config"), patch).await
         }
         Command::Repair { id } => {
             call(&session, &keys::tv_rpc(site, &id, "re-pair"), Value::Null).await?;
@@ -339,14 +325,10 @@ async fn main() -> Result<()> {
             } else {
                 "power-off"
             };
-            call(&session, &keys::tv_rpc(site, &id, verb), Value::Null).await?;
-            println!("ok");
-            Ok(())
+            ack(&session, &keys::tv_rpc(site, &id, verb), Value::Null).await
         }
         Command::Reconnect { id } => {
-            call(&session, &keys::tv_rpc(site, &id, "reconnect"), Value::Null).await?;
-            println!("ok");
-            Ok(())
+            ack(&session, &keys::tv_rpc(site, &id, "reconnect"), Value::Null).await
         }
         Command::Remove { id } => {
             call(&session, &keys::tv_rpc(site, &id, "remove"), Value::Null).await?;
@@ -354,44 +336,36 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Mute { id, muted } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-muted"),
                 json!({ "muted": muted }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::PrimaryInput { id, input } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-primary-input"),
                 json!({ "input": input }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::AutomateWhen { id, when } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-automate-when"),
                 json!({ "when": when }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Assign { id, profile } => {
-            call(
+            ack(
                 &session,
                 &keys::tv_rpc(site, &id, "set-system-profile"),
                 json!({ "profile": profile }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
         Command::Vendors => {
             let vendors = call(&session, &keys::vendors(site), Value::Null).await?;
@@ -587,9 +561,7 @@ async fn profile_cmd(
         }
         ProfileCmd::Update { id, body } => {
             let body: Value = serde_json::from_str(&body)?;
-            call(session, &key("update"), json!({ "id": id, "body": body })).await?;
-            println!("ok");
-            Ok(())
+            ack(session, &key("update"), json!({ "id": id, "body": body })).await
         }
         ProfileCmd::Duplicate { id, name } => {
             let reply = call(
@@ -650,9 +622,7 @@ async fn user_profile_cmd(
         }
         UserProfileCmd::Update { id, body } => {
             let body: Value = serde_json::from_str(&body)?;
-            call(user, &key("update"), json!({ "id": id, "body": body })).await?;
-            println!("ok");
-            Ok(())
+            ack(user, &key("update"), json!({ "id": id, "body": body })).await
         }
         UserProfileCmd::Duplicate { id, name } => {
             let reply = call(user, &key("duplicate"), json!({ "id": id, "name": name })).await?;
@@ -683,14 +653,12 @@ async fn user_profile_cmd(
             Ok(())
         }
         UserProfileCmd::Assign { tv, profile } => {
-            call(
+            ack(
                 user,
                 &key("assign"),
                 json!({ "tv": tv, "profile": profile }),
             )
-            .await?;
-            println!("ok");
-            Ok(())
+            .await
         }
     }
 }
@@ -795,6 +763,13 @@ async fn call(session: &Session, key: &str, body: Value) -> Result<Value> {
         },
         Err(_) => bail!("no reply for rpc {key} (daemon down?)"),
     }
+}
+
+/// One acknowledged rpc: call, print the human ack.
+async fn ack(session: &Session, key: &str, body: Value) -> Result<()> {
+    call(session, key, body).await?;
+    println!("ok");
+    Ok(())
 }
 
 /// Multi-reply RPC: collect every reply until the query finalizes.
