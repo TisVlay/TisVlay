@@ -79,7 +79,7 @@ While the profile schema is open anyway, every persisted config surface (daemon 
 
 ## Empirical checklist (before/while implementing §4)
 
-- [ ] Verify on the C3: WoL wake restores the previous input (the premise for needing the switch at all).
+- [x] Verify on the C3: WoL wake restores the previous input (the premise for needing the switch at all). *Confirmed in field QA 2026-07-05: the LG TV recalls its last input when powered on via WoL — and via the manual remote too, so the premise covers both wake paths.*
 - [ ] Verify on the C3: post-WoL `switch-input` timing — how soon after `Connected` does SSAP accept an input switch (bounds the verify-retry budget, not the design).
 - [ ] Verify CEC-on-G4 (field batch): Image View On input-selection behavior matches the C3 observation.
 
