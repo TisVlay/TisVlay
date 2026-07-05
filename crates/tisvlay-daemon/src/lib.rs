@@ -453,6 +453,21 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             });
         }
     }
+    // WoL at boot: dispatch `Startup` through the system profiles once
+    // the replayed fleet has its transport facts (facts ride one batch
+    // behind each dial spawn, so a short grace comfortably covers the
+    // replay burst — the profile's stock `on_startup: power_on` then
+    // upgrades the plain boot dial to a wake for every automated TV).
+    {
+        let world = stack.world.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            world.send(tisvlay_world::InEvent::System {
+                event: SystemEvent::Startup,
+                connector: None,
+            });
+        });
+    }
     tokio::signal::ctrl_c()
         .await
         .context("wait for shutdown signal")?;

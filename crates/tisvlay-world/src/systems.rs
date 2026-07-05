@@ -211,7 +211,6 @@ fn power_on_tv(
     entity: Entity,
     id: Uuid,
     handle: Option<&ConnectionHandle>,
-    pending: bool,
     link: Option<&payload::Link>,
     reply: Option<ReplyTo>,
 ) {
@@ -221,11 +220,13 @@ fn power_on_tv(
         }
         Some(_) => reply_err(outbox, reply, WireError::not_connected(id)),
         None if link.is_some_and(|l| l.supports_wake) => {
-            if !pending {
-                let mut e = commands.entity(entity);
-                redial(&mut e, true);
-                e.remove::<RetryAt>();
-            }
+            // Reinsert even when a dial is already pending: an explicit
+            // power-on upgrades an in-flight plain retry (which cannot
+            // reach an off TV) to a fresh wake dial — the boot Startup
+            // dispatch lands exactly while the replay dial backs off.
+            let mut e = commands.entity(entity);
+            redial(&mut e, true);
+            e.remove::<RetryAt>();
             reply_ok(outbox, reply);
         }
         None => reply_err(outbox, reply, WireError::wake_not_supported(id)),
@@ -252,10 +253,10 @@ fn dispatch_screen(
     ),
     reply: Option<ReplyTo>,
 ) {
-    let (handle, pending, traits, link, retry) = row;
+    let (handle, _pending, traits, link, retry) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
-            power_on_tv(commands, outbox, entity, id, handle, pending, link, reply);
+            power_on_tv(commands, outbox, entity, id, handle, link, reply);
         } else if let Some(handle) = handle {
             let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
             reply_ok(outbox, reply);
@@ -440,14 +441,13 @@ fn handle_lifecycle_commands(
                     reply_err(&mut outbox, *reply, WireError::tv_not_found(*id));
                     continue;
                 };
-                let (handle, pending, link, _) = q.get(entity).unwrap_or((None, false, None, None));
+                let (handle, _, link, _) = q.get(entity).unwrap_or((None, false, None, None));
                 power_on_tv(
                     &mut commands,
                     &mut outbox,
                     entity,
                     *id,
                     handle,
-                    pending,
                     link,
                     *reply,
                 );
@@ -1731,16 +1731,9 @@ fn dispatch_system_events(
                         let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
                     }
                 }
-                ProfileAction::PowerOn => power_on_tv(
-                    &mut commands,
-                    &mut outbox,
-                    entity,
-                    id.0,
-                    handle,
-                    pending,
-                    link,
-                    None,
-                ),
+                ProfileAction::PowerOn => {
+                    power_on_tv(&mut commands, &mut outbox, entity, id.0, handle, link, None)
+                }
             }
         }
     }
@@ -1862,9 +1855,11 @@ fn profile_event_action(
     event: &SystemEvent,
 ) -> Option<tisvlay_core::SessionAction> {
     match event {
+        SystemEvent::Startup => body.on_startup,
         SystemEvent::Sleep => body.on_sleep,
         SystemEvent::Resume => body.on_wake,
         SystemEvent::Shutdown => body.on_shutdown,
+        SystemEvent::Reboot => body.on_reboot,
         SystemEvent::DpmsOff => body.on_dpms_off,
         SystemEvent::DpmsOn => body.on_dpms_on,
         SystemEvent::GreeterIdle => body.on_idle_timeout,

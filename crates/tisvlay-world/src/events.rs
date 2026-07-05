@@ -67,9 +67,15 @@ pub enum RouteRequest {
 /// Desktop/power events the profile dispatcher maps to TV actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SystemEvent {
+    /// Daemon boot — the WoL-at-boot event (`on_startup`, stock
+    /// `power_on`). Dispatched once by the daemon after store replay.
+    Startup,
     Sleep,
     Resume,
     Shutdown,
+    /// Shutdown that logind reports as a reboot/kexec — `on_reboot`
+    /// (stock `none`: the TV stays on across a quick reboot).
+    Reboot,
     DpmsOff,
     DpmsOn,
     /// Login greeter went idle (published by `tisvlay-greeter`).

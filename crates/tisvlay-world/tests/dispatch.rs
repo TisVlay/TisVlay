@@ -189,3 +189,35 @@ async fn profile_screen_actions_respect_emulation() {
     .await;
     assert_eq!(handle.connect_call_count("mock://cecprof"), 1);
 }
+
+/// The WoL-at-boot regression: a managed TV that is off at daemon start
+/// (its plain replay dial fails and backs off) must still get woken by
+/// the `Startup` dispatch — the stock `on_startup: power_on` upgrades
+/// the pending plain retry to a fresh wake dial instead of waiting out
+/// the backoff it can never win.
+#[tokio::test]
+async fn startup_event_upgrades_the_boot_dial_to_a_wake() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = uuid::Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert("address".into(), toml::Value::String("mock://boot".into()));
+    table.insert("refuse_connect".into(), toml::Value::Boolean(true));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Boot", toml::Value::Table(table))),
+        reply: None,
+    });
+
+    // The replay-shaped plain dial fails once and enters backoff.
+    let failed = |e: &tisvlay_world::WireEffect| is_publish_on(e, "event/connect-failed").is_some();
+    collect_until(&mut effects, failed).await;
+    assert_eq!(handle.connect_call_count("mock://boot"), 1);
+
+    // Startup dispatch: with no clock advance the backoff would hold,
+    // so a second dial can only come from the wake upgrade.
+    client.send(InEvent::System {
+        event: SystemEvent::Startup,
+        connector: None,
+    });
+    collect_until(&mut effects, failed).await;
+    assert!(handle.connect_call_count("mock://boot") >= 2);
+}

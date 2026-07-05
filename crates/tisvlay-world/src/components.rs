@@ -158,6 +158,9 @@ impl SystemProfile {
     /// screen-blank mirroring for DPMS and the login greeter's idle timer.
     pub(crate) fn stock() -> Self {
         Self(HashMap::from([
+            // WoL at boot; a reboot deliberately has no stock action
+            // (the TV stays on across a quick restart).
+            (SystemEvent::Startup, ProfileAction::PowerOn),
             (SystemEvent::Sleep, ProfileAction::PowerOff),
             (SystemEvent::Resume, ProfileAction::PowerOn),
             (SystemEvent::Shutdown, ProfileAction::PowerOff),

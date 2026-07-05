@@ -13,6 +13,12 @@ use zbus::proxy;
     default_path = "/org/freedesktop/login1"
 )]
 trait Login1Manager {
+    /// `(type, usec)` of the scheduled shutdown — `reboot` / `kexec` /
+    /// `poweroff`. Read when PrepareForShutdown fires to pick the
+    /// profile event.
+    #[zbus(property)]
+    fn scheduled_shutdown(&self) -> zbus::Result<(String, u64)>;
+
     fn inhibit(
         &self,
         what: &str,
@@ -58,8 +64,19 @@ pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> a
                 let Some(signal) = signal else { return Ok(()) };
                 let Ok(args) = signal.args() else { continue };
                 if args.start {
-                    info!("system shutting down");
-                    world.send(InEvent::System { event: SystemEvent::Shutdown, connector: None });
+                    // Reboot vs poweroff decides the profile event: the
+                    // stock mapping keeps the TV on across a quick
+                    // reboot (on_reboot: none) but powers it off for a
+                    // real shutdown. Property read failure assumes
+                    // poweroff, the conservative action.
+                    let event = match manager.scheduled_shutdown().await {
+                        Ok((kind, _)) if kind == "reboot" || kind == "kexec" => {
+                            SystemEvent::Reboot
+                        }
+                        _ => SystemEvent::Shutdown,
+                    };
+                    info!(?event, "system shutting down");
+                    world.send(InEvent::System { event, connector: None });
                     inhibitor.take();
                 }
             }
