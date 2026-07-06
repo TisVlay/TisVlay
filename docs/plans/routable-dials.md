@@ -1,6 +1,6 @@
 # Routable dials: the connect budget only spends against a network that exists
 
-Status: **implemented** (3685e01; baseline d4bf1f1, review round ed07bee). Kept active until the PR #106 soak confirms it in the field — the field check is a resume with a slow-returning NIC showing `awaiting_network` then a clean wake.
+Status: **implemented and field-verified** (3685e01; baseline d4bf1f1, review round ed07bee, field check 2026-07-06). Kept active only until the PR #106 soak retires it.
 
 ## Problem
 
@@ -30,6 +30,10 @@ Steps 1 and 2 are one atomic change — the reconcile guard is what makes the no
 4. Tests, in `tests/carrier.rs` (the route-lifecycle home; `RouteResolved` injection is already its fixture idiom): (a) raw `AddTv` + `RouteResolved(None)` + a Resume-shaped wake → zero dials and one `awaiting_network` phase (`add_connected_tv` can't be reused — it blocks on connect); (b) `RouteResolved(Some)` then fires the wake with a full budget (connect count 0 → 1); (c) mid-dial route loss doesn't consume an attempt but does back off; (d) the existing route-present budget contract — extend an existing budget-exhaustion pin with a route-present precondition rather than duplicating it if one covers it.
 5. Docs: extend architecture.md's connection-lifecycle sentence in place (the "single dial gate" wording is exactly what the route gate refines; `AwaitingRoute` joins the marker enumeration); docs/watchers/network.md notes route resolution now gates dial spawning in addition to parking.
 
+## Field verification (2026-07-06)
+
+The adversarial variant of the motivating race, on the packaged stack: desktop to sleep, ethernet cable pulled, resume, cable back roughly a minute later. Observed in the journal: the route retraction landed ~110 ms *after* the Resume dispatch, so one wake dial spawned against the stale pre-sleep route (the documented boundary — the gate governs when dials spawn, not what's already in flight), ran its in-dial WoL loop against the dead NIC, and failed routeless; the attempt was returned and reconcile deferred with **zero dials for the ~35 s the cable stayed out** — the window where the old behavior had already spent the budget and gone quiet forever. Cable back → route restored → `LG TV online after wake` four seconds later. One wart fixed in the same round: the in-flight dial's best-effort WoL resend logged per-iteration at warn (62 lines in 30 s); demoted to debug (the resend is best-effort by contract and the dial's real outcome surfaces through `ConnectFailed`), while the bounded `wake_with_retry` attempts keep their warn as the useful diagnostic.
+
 ## Non-goals
 
 - No budget inflation or backoff tuning — the race is removed, not slowed.
@@ -37,3 +41,4 @@ Steps 1 and 2 are one atomic change — the reconcile guard is what makes the no
 - No change to `CarrierParked` semantics or to CEC dial behavior.
 - No gating on route *quality* — a present-but-non-carrying route burns budget and fails loudly, as today.
 - No re-arm-on-carrier-up compensation path — deferral makes it unnecessary.
+- No cancellation of an in-flight dial on mid-flight route loss — it fails on its own schedule, its attempt is returned, and deferral owns everything after.
