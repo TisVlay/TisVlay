@@ -46,6 +46,15 @@ pub(crate) struct PendingConnect {
 #[derive(Component, Debug)]
 pub(crate) struct RetryAt(pub Instant);
 
+/// A dial request deferred on a known absence of a usable route —
+/// `reconcile_connections` skips the entity until the netlink monitor
+/// delivers one. Publish gate only: its insertion edge emits the wake
+/// path's `awaiting_network` phase once per deferral episode; the dial
+/// gate itself is the `MonitoredInterface` check, so the two facts
+/// cannot drift.
+#[derive(Component, Debug)]
+pub(crate) struct AwaitingRoute;
+
 /// Connection parked by a carrier-down or route-lost event; the next
 /// carrier-up or route-restored on the monitored interface redials.
 #[derive(Component, Debug)]

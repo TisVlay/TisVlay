@@ -14,7 +14,7 @@ use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    CarrierParked, Clock, ConnectionHandle, DesiredInput, DirtyStore, DispatchRetry,
+    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DirtyStore, DispatchRetry,
     DispatchVerify, Effect, KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox,
     PairVerifying, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
     ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt, Site, SystemProfile,
@@ -1052,10 +1052,7 @@ fn verify_dispatch(
                 verify.escalated = true;
                 let mut e = commands.entity(entity);
                 e.remove::<(ConnectionHandle, RetryAt)>();
-                e.insert(PendingConnect {
-                    attempts: 0,
-                    wake: true,
-                });
+                redial(&mut e, true);
                 continue;
             }
         }
@@ -1339,6 +1336,7 @@ struct StateWrites<'w, 's> {
     identity: Query<'w, 's, &'static mut payload::Identity>,
     pending: Query<'w, 's, &'static PendingConnect>,
     verify: Query<'w, 's, &'static mut DispatchVerify>,
+    monitored: Query<'w, 's, &'static MonitoredInterface>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1487,6 +1485,26 @@ fn apply_backend_events(
                     }
                     commands.entity(entity).remove::<PairVerifying>();
                 }
+                // Attempts count only route-carried dials: a failure
+                // whose route is gone was never an attempt — return it
+                // (the deferral in reconcile resets the budget), but
+                // keep the backoff so a flapping route settles to one
+                // dial per period instead of a spawn loop. No
+                // connect-failed event either: the network, not the
+                // TV, refused this one.
+                if writes.pending.get(entity).is_ok()
+                    && matches!(
+                        writes.monitored.get(entity).ok(),
+                        Some(MonitoredInterface(None))
+                    )
+                {
+                    tracing::debug!(%tv, "dial failed routeless; attempt returned");
+                    commands
+                        .entity(entity)
+                        .remove::<Reconnecting>()
+                        .insert(RetryAt(clock.0 + CONNECT_BACKOFF));
+                    continue;
+                }
                 let (attempts, wake_dial) = writes
                     .pending
                     .get(entity)
@@ -1495,7 +1513,7 @@ fn apply_backend_events(
                 let mut e = commands.entity(entity);
                 e.remove::<Reconnecting>();
                 if attempts >= CONNECT_MAX_ATTEMPTS {
-                    e.remove::<PendingConnect>();
+                    e.remove::<(PendingConnect, AwaitingRoute)>();
                     if wake_dial {
                         publish_power_phase(&mut outbox, &site, tv, "failed");
                     }
@@ -1682,16 +1700,10 @@ fn apply_pairing_updates(
                             if let Ok(mut vendor) = writes.vendor.get_mut(tv_entity) {
                                 vendor.config = config.clone();
                             }
-                            commands
-                                .entity(tv_entity)
-                                .remove::<(ConnectionHandle, RetryAt)>()
-                                .insert((
-                                    PendingConnect {
-                                        attempts: 0,
-                                        wake: false,
-                                    },
-                                    PairVerifying { rollback: false },
-                                ));
+                            let mut e = commands.entity(tv_entity);
+                            e.remove::<(ConnectionHandle, RetryAt)>()
+                                .insert(PairVerifying { rollback: false });
+                            redial(&mut e, false);
                             dirty.0 = true;
                         }
                         _ => tracing::warn!(%id, "pairing outcome had no home, dropped"),
@@ -2189,6 +2201,7 @@ fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, boo
 fn reconcile_connections(
     mut commands: Commands,
     clock: Res<Clock>,
+    site: Res<Site>,
     mut outbox: ResMut<Outbox>,
     mut q: Query<
         (
@@ -2197,14 +2210,36 @@ fn reconcile_connections(
             &VendorRef,
             &mut PendingConnect,
             Option<&RetryAt>,
+            Option<&MonitoredInterface>,
+            Has<AwaitingRoute>,
         ),
         (Without<ConnectionHandle>, Without<Reconnecting>),
     >,
 ) {
-    for (entity, id, vendor, mut pending, retry) in &mut q {
+    for (entity, id, vendor, mut pending, retry, monitored, awaiting) in &mut q {
+        // The dial gate, in one place: no live handle, no in-flight
+        // dial (the query filters), backoff elapsed, and a route
+        // present — or route monitoring absent entirely (CEC, and any
+        // first dial: monitoring is requested by the dial spawn itself,
+        // so no resolution can precede it). A known route absence —
+        // `Some(None)` exactly, never component absence — defers the
+        // dial with the budget reset: attempts count only route-carried
+        // dials, and the route's return re-runs this system in the same
+        // batch that delivers it.
         if let Some(RetryAt(at)) = retry
             && *at > clock.0
         {
+            continue;
+        }
+        if matches!(monitored, Some(MonitoredInterface(None))) {
+            pending.attempts = 0;
+            if !awaiting {
+                tracing::debug!(tv = %id.0, wake = pending.wake, "dial deferred: no route");
+                commands.entity(entity).insert(AwaitingRoute);
+                if pending.wake {
+                    publish_power_phase(&mut outbox, &site, &id.0, "awaiting_network");
+                }
+            }
             continue;
         }
         pending.attempts += 1;
@@ -2212,7 +2247,7 @@ fn reconcile_connections(
         commands
             .entity(entity)
             .insert(Reconnecting)
-            .remove::<RetryAt>();
+            .remove::<(RetryAt, AwaitingRoute)>();
         outbox.0.push(Effect::SpawnConnect {
             tv: id.0,
             vendor: vendor.vendor.clone(),

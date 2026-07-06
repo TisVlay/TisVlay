@@ -211,3 +211,113 @@ async fn connector_scoping_targets_the_mapped_tv() {
     })
     .await;
 }
+
+/// Routable dials, the full arc: a wake dial defers on a known route
+/// absence (budget unspent, one `awaiting_network` phase), the route's
+/// return resumes it with a fresh budget, and a TV that then refuses
+/// while the network is fine spends that budget and fails loudly.
+#[tokio::test]
+async fn wake_dial_defers_while_routeless_and_resumes_with_a_full_budget() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert("address".into(), toml::Value::String("mock://route".into()));
+    table.insert("refuse_connect".into(), toml::Value::Boolean(true));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Route", toml::Value::Table(table))),
+        reply: None,
+    });
+    // The first dial precedes any route resolution (monitoring is
+    // requested by the dial spawn itself) and fails normally.
+    let failed = |e: &tisvlay_world::WireEffect| is_publish_on(e, "event/connect-failed").is_some();
+    collect_until(&mut effects, failed).await;
+    assert_eq!(handle.connect_call_count("mock://route"), 1);
+
+    // A known route absence lands; the Startup wake upgrade would
+    // normally dial straight through the backoff — instead it defers.
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: None,
+    });
+    client.send(InEvent::System {
+        event: SystemEvent::Startup,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "progress/power").is_some_and(|p| p["phase"] == "awaiting_network")
+    })
+    .await;
+    assert_quiet(&mut effects, Duration::from_millis(300), failed).await;
+    assert_eq!(
+        handle.connect_call_count("mock://route"),
+        1,
+        "a routeless wake must not dial"
+    );
+
+    // The route returns: the wake resumes with a full budget and, with
+    // the TV refusing on a fine network, spends it into a loud failure.
+    let t0 = std::time::Instant::now();
+    client.tick(t0);
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    collect_until(&mut effects, failed).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.tick(t0 + Duration::from_secs(4));
+    collect_until(&mut effects, failed).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.tick(t0 + Duration::from_secs(8));
+    // The two collects above already saw route-carried connect-failed
+    // events; the budget-spent terminal is the wake's "failed" phase.
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "progress/power").is_some_and(|p| p["phase"] == "failed")
+    })
+    .await;
+    assert_eq!(
+        handle.connect_call_count("mock://route"),
+        4,
+        "deferral resumes with a full budget (1 boot + 3 route-carried)"
+    );
+}
+
+/// A dial that fails after its route vanished mid-flight was never an
+/// attempt: no connect-failed event, no budget spent — but the backoff
+/// still applies, so a flapping route can't spawn-loop.
+#[tokio::test]
+async fn routeless_failure_returns_the_attempt_but_keeps_the_backoff() {
+    let (mut effects, client, handle) = spawn_reactor();
+    handle.set_connect_delay(Duration::from_millis(300));
+    let id = Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert("address".into(), toml::Value::String("mock://flap".into()));
+    table.insert("refuse_connect".into(), toml::Value::Boolean(true));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Flap", toml::Value::Table(table))),
+        reply: Some(1),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 1)).await;
+
+    // The route vanishes while the delayed dial is still in flight; the
+    // refusal that follows is the network's fault, not the TV's.
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: None,
+    });
+    let failed = |e: &tisvlay_world::WireEffect| is_publish_on(e, "event/connect-failed").is_some();
+    assert_quiet(&mut effects, Duration::from_millis(600), failed).await;
+    assert_eq!(handle.connect_call_count("mock://flap"), 1);
+
+    // Route back + backoff elapsed → the dial retries, and now that the
+    // network carried it, the failure counts and publishes.
+    let t0 = std::time::Instant::now();
+    client.tick(t0);
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.tick(t0 + Duration::from_secs(4));
+    collect_until(&mut effects, failed).await;
+    assert!(handle.connect_call_count("mock://flap") >= 2);
+}
