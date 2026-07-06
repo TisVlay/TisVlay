@@ -463,6 +463,14 @@ pub fn run() -> Result<()> {
         "internet-web-browser",
         "applications-internet",
     ]));
+    // TV-remote glyph for the profile editor's restore-input toggle.
+    // `input-tvremote-symbolic` is the Breeze name; the plain and
+    // video-television names cover Adwaita / hicolor.
+    icons.set_restore_input(load_themed_icon(&[
+        "input-tvremote-symbolic",
+        "input-tvremote",
+        "video-television",
+    ]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing

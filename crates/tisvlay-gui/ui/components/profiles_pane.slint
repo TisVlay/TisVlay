@@ -18,7 +18,7 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { CheckBox, ScrollView, SpinBox } from "std-widgets.slint";
+import { ScrollView, SpinBox } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
@@ -416,13 +416,17 @@ component ProfileFieldRowEnum inherits Rectangle {
             // Restore-input modifier - only for on-ish action rows on
             // a mapping that can carry it. Inert for backends without
             // the INPUT capability (the daemon sheds the intent).
+            // Deliberately stateless: the accent state renders purely
+            // from the model, so a field reset repaints immediately.
             if root.entry.has-restore: VerticalLayout {
                 alignment: center;
-                CheckBox {
-                    text: @tr("Land on primary input");
-                    checked: root.entry.restore-value;
-                    toggled => {
-                        Profiles.restore-edited(root.entry.field-name, self.checked);
+                IconBtn {
+                    source: Icons.restore-input;
+                    active: root.entry.restore-value;
+                    accessible-label: @tr("Land on primary input");
+                    tip: @tr("Land on primary input");
+                    clicked => {
+                        Profiles.restore-edited(root.entry.field-name, !root.entry.restore-value);
                     }
                 }
             }
