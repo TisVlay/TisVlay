@@ -161,7 +161,9 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
             managed: record.managed,
             system_profile: record.system_profile,
             primary_input: record.primary_input.clone(),
-            automate_when: record.automate_when.clone(),
+            // Read-only projection of the resolved profile policy;
+            // derive_automated overwrites it every frame.
+            automate_when: "always".into(),
             // derive_automated refines this once input state exists.
             automated: record.managed,
         },
@@ -612,7 +614,6 @@ fn handle_tv_commands(
             | Command::SetManaged { id, .. }
             | Command::SetSystemProfile { id, .. }
             | Command::SetPrimaryInput { id, .. }
-            | Command::SetAutomateWhen { id, .. }
             | Command::SetVolume { id, .. }
             | Command::SetMuted { id, .. }
             | Command::SwitchInput { id, .. }
@@ -665,15 +666,6 @@ fn handle_tv_commands(
                     && meta.primary_input != *input
                 {
                     meta.primary_input = input.clone();
-                    dirty.0 = true;
-                }
-                reply_ok(&mut outbox, reply);
-            }
-            Command::SetAutomateWhen { when, .. } => {
-                if let Ok(mut meta) = writes.meta.get_mut(entity)
-                    && meta.automate_when != *when
-                {
-                    meta.automate_when = when.clone();
                     dirty.0 = true;
                 }
                 reply_ok(&mut outbox, reply);
@@ -792,7 +784,6 @@ fn command_reply(cmd: &Command) -> Option<ReplyTo> {
         | Command::SetManaged { reply, .. }
         | Command::SetSystemProfile { reply, .. }
         | Command::SetPrimaryInput { reply, .. }
-        | Command::SetAutomateWhen { reply, .. }
         | Command::SetVolume { reply, .. }
         | Command::SetMuted { reply, .. }
         | Command::SwitchInput { reply, .. }
@@ -837,7 +828,6 @@ fn build_record(entity: Entity, id: Uuid, writes: &SettingsWrites) -> Option<TvR
         managed: meta.managed,
         system_profile: meta.system_profile,
         primary_input: meta.primary_input.clone(),
-        automate_when: meta.automate_when.clone(),
         config: vendor.config.clone(),
     })
 }
@@ -861,10 +851,15 @@ fn apply_config_patch(
     // Validate.
     for (key, value) in object {
         match key.as_str() {
-            "name" | "automate_when" => {
+            "name" => {
                 if !value.is_string() {
                     return Err(WireError::bad_request(format!("{key} must be a string")));
                 }
+            }
+            "automate_when" => {
+                return Err(WireError::bad_request(
+                    "automate_when is profile policy — set it on the system profile",
+                ));
             }
             "managed" => {
                 if !value.is_boolean() {
@@ -924,11 +919,6 @@ fn apply_config_patch(
             "primary_input" => {
                 if let Ok(mut meta) = writes.meta.get_mut(entity) {
                     meta.primary_input = value.as_str().map(str::to_string);
-                }
-            }
-            "automate_when" => {
-                if let Ok(mut meta) = writes.meta.get_mut(entity) {
-                    meta.automate_when = value.as_str().unwrap_or("always").to_string();
                 }
             }
             _ => {
@@ -1676,7 +1666,6 @@ fn apply_pairing_updates(
                                 managed: enroll.managed,
                                 system_profile: None,
                                 primary_input: None,
-                                automate_when: "always".into(),
                                 config: config.clone(),
                             };
                             spawn_tv(&mut commands, &mut tv_index, &record);
@@ -1955,7 +1944,9 @@ fn dispatch_system_events(
             {
                 continue;
             }
-            if !meta.is_none_or(|m| is_automated(m, input)) {
+            if !meta.is_none_or(|m| {
+                is_automated(m, input, resolve_automate_when(m, &profile_index, &bodies))
+            }) {
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
@@ -2015,28 +2006,62 @@ fn dispatch_system_events(
     }
 }
 
-/// The root stack's `Automated` gate: managed AND `automate_when` holds
-/// against the current input (unknowns get the benefit of the doubt —
-/// input can't be checked in standby).
-fn is_automated(meta: &payload::Meta, input: Option<&payload::Input>) -> bool {
-    if !meta.managed {
-        return false;
+/// Resolve the effective `automate_when` through the profile chain —
+/// the TV's assigned profile, then the editable default, then the
+/// `Always` floor. The gate is profile policy (root parity); there is
+/// no per-TV storage, and `meta.automate_when` is a read-only
+/// projection of this resolution.
+fn resolve_automate_when(
+    meta: &payload::Meta,
+    profile_index: &ProfileIndex,
+    bodies: &Query<&ProfileBody>,
+) -> tisvlay_core::AutomateWhen {
+    if let Some(profile_id) = meta.system_profile
+        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+        && let Some(when) =
+            profile_body(profile_id, profile_index, bodies).and_then(|body| body.automate_when)
+    {
+        return when;
     }
-    let when = meta
-        .automate_when
-        .parse::<tisvlay_core::AutomateWhen>()
-        .unwrap_or_default();
-    when.should_automate(
-        meta.primary_input.as_deref(),
-        input.and_then(|i| i.current.as_deref()),
+    profile_body(
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+        profile_index,
+        bodies,
     )
+    .and_then(|body| body.automate_when)
+    .unwrap_or_default()
 }
 
-/// Keep the published `automated` flag in step with config edits and
-/// input changes.
-fn derive_automated(mut q: Query<(&mut payload::Meta, Option<&payload::Input>)>) {
+/// The root stack's `Automated` gate: managed AND the resolved
+/// `automate_when` holds against the current input (unknowns get the
+/// benefit of the doubt — input can't be checked in standby).
+fn is_automated(
+    meta: &payload::Meta,
+    input: Option<&payload::Input>,
+    when: tisvlay_core::AutomateWhen,
+) -> bool {
+    meta.managed
+        && when.should_automate(
+            meta.primary_input.as_deref(),
+            input.and_then(|i| i.current.as_deref()),
+        )
+}
+
+/// Keep the published `automated` flag — and the `automate_when`
+/// projection clients read — in step with profile edits and input
+/// changes.
+fn derive_automated(
+    mut q: Query<(&mut payload::Meta, Option<&payload::Input>)>,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+) {
     for (mut meta, input) in &mut q {
-        let automated = is_automated(&meta, input);
+        let when = resolve_automate_when(&meta, &profile_index, &bodies);
+        let automated = is_automated(&meta, input, when);
+        let token = when.to_string();
+        if meta.automate_when != token {
+            meta.automate_when = token;
+        }
         if meta.automated != automated {
             meta.automated = automated;
         }
@@ -2056,7 +2081,11 @@ fn publish_greeter_timeout(
 ) {
     let mut timeout = 0u64;
     for (meta, input) in &q {
-        if !is_automated(meta, input) {
+        if !is_automated(
+            meta,
+            input,
+            resolve_automate_when(meta, &profile_index, &bodies),
+        ) {
             continue;
         }
         let assigned = meta
@@ -2249,7 +2278,6 @@ fn snapshot_store(
             managed: meta.managed,
             system_profile: meta.system_profile,
             primary_input: meta.primary_input.clone(),
-            automate_when: meta.automate_when.clone(),
             config: vendor.config.clone(),
         })
         .collect();

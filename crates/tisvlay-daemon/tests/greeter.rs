@@ -235,16 +235,22 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
     })
     .await;
 
+    // The gate is profile policy: an invalid value is rejected by the
+    // profile body's typed parse.
     let err = call(
         &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-automate-when"),
-        json!({ "when": "sometimes" }),
+        &keys::profile_rpc(&w.site, "update"),
+        json!({
+            "id": tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+            "body": { "name": "default", "automate_when": "sometimes" },
+        }),
     )
     .await
     .expect_err("invalid gate value must fail");
     assert_eq!(err["code"], "bad-request");
 
-    // Mock sits on HDMI_1; require the primary input HDMI_2 → gated off.
+    // Mock sits on HDMI_1; require the primary input HDMI_2 and gate
+    // the default profile on it → gated off.
     call(
         &w.client,
         &keys::tv_rpc(&w.site, &tv, "set-primary-input"),
@@ -254,13 +260,16 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
     .expect("set primary ok");
     call(
         &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-automate-when"),
-        json!({ "when": "on_primary" }),
+        &keys::profile_rpc(&w.site, "update"),
+        json!({
+            "id": tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+            "body": { "name": "default", "automate_when": "on_primary" },
+        }),
     )
     .await
     .expect("set gate ok");
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
-        v["automated"] == false
+        v["automated"] == false && v["automate_when"] == "on_primary"
     })
     .await;
 

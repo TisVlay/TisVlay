@@ -24,7 +24,6 @@ pub(crate) fn tv_record(id: Uuid, name: &str, config: toml::Value) -> TvRecord {
         managed: true,
         system_profile: None,
         primary_input: None,
-        automate_when: "always".into(),
         config,
     }
 }

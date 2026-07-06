@@ -138,10 +138,13 @@ pub mod payload {
         pub system_profile: Option<uuid::Uuid>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub primary_input: Option<String>,
+        /// Read-only projection of the resolved profile-chain
+        /// `automate_when` policy (assigned profile - default profile -
+        /// always); the world's derive pass is the only writer.
         pub automate_when: String,
-        /// The evaluated automation gate: `managed` AND `automate_when`
-        /// holds against the current input. Consumers (session service,
-        /// tray) act only on automated TVs.
+        /// The evaluated automation gate: `managed` AND the resolved
+        /// `automate_when` holds against the current input. Consumers
+        /// (session service, tray) act only on automated TVs.
         pub automated: bool,
     }
 
@@ -751,11 +754,6 @@ pub mod rpc {
     pub struct SetPrimaryInput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub input: Option<String>,
-    }
-
-    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-    pub struct SetAutomateWhen {
-        pub when: String,
     }
 
     #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

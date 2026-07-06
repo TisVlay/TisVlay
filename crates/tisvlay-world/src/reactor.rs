@@ -362,7 +362,6 @@ fn redacted_config(
         "managed": record.managed,
         "system_profile": record.system_profile,
         "primary_input": record.primary_input,
-        "automate_when": record.automate_when,
         "config": config,
     })
 }
@@ -440,7 +439,6 @@ mod tests {
             managed: true,
             system_profile: None,
             primary_input: None,
-            automate_when: "always".into(),
             config: toml::Value::Table(table),
         };
         let json = redacted_config(&connectors, record);

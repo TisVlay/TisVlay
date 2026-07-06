@@ -158,11 +158,6 @@ pub enum Command {
         input: Option<String>,
         reply: Option<ReplyTo>,
     },
-    SetAutomateWhen {
-        id: Uuid,
-        when: String,
-        reply: Option<ReplyTo>,
-    },
     SetVolume {
         id: Uuid,
         level: u8,
@@ -380,15 +375,9 @@ pub struct TvRecord {
     pub system_profile: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_input: Option<String>,
-    #[serde(default = "default_automate_when")]
-    pub automate_when: String,
     /// Vendor config verbatim, credentials included — disk only, never
     /// the wire.
     pub config: toml::Value,
-}
-
-fn default_automate_when() -> String {
-    "always".into()
 }
 
 /// One system profile's persistable row.

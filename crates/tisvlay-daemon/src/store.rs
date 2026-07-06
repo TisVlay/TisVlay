@@ -86,7 +86,6 @@ mod tests {
                 managed: true,
                 system_profile: Some(Uuid::new_v4()),
                 primary_input: Some("HDMI_1".into()),
-                automate_when: "always".into(),
                 config: toml::Value::Table(toml::value::Table::from_iter([(
                     "address".to_string(),
                     toml::Value::String("mock://den".into()),

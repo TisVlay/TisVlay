@@ -119,8 +119,6 @@ enum Command {
     },
     /// Set (or with no value clear) the TV's primary input.
     PrimaryInput { id: Uuid, input: Option<String> },
-    /// Gate automation on the current input: always | on_primary | off_primary.
-    AutomateWhen { id: Uuid, when: String },
     /// Assign (or with no value clear) the TV's system profile.
     Assign { id: Uuid, profile: Option<Uuid> },
     /// List registered vendor backends with their capabilities.
@@ -345,14 +343,6 @@ async fn main() -> Result<()> {
                 &caller,
                 &keys::tv_rpc(site, &id, "set-primary-input"),
                 json!({ "input": input }),
-            )
-            .await
-        }
-        Command::AutomateWhen { id, when } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-automate-when"),
-                json!({ "when": when }),
             )
             .await
         }

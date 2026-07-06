@@ -679,11 +679,6 @@ impl DaemonClient {
             .await
     }
 
-    pub async fn set_automate_when(&self, tv: &str, when: &str) -> Result<()> {
-        self.tv_call(tv, "set-automate-when", json!({ "when": when }))
-            .await
-    }
-
     pub async fn set_tv_system_profile(&self, tv: &str, profile_uuid: &str) -> Result<()> {
         let profile: Option<Uuid> = if profile_uuid.is_empty() {
             None

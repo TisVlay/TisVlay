@@ -446,7 +446,6 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
                     managed: tv.managed,
                     system_profile: None,
                     primary_input: None,
-                    automate_when: "always".into(),
                     config: tv.config,
                 }),
                 reply: None,
