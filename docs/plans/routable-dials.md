@@ -1,6 +1,6 @@
 # Routable dials: the connect budget only spends against a network that exists
 
-Status: **reviewed — ready to implement** (baseline d4bf1f1; design/correctness/maintainability round folded 2026-07-06).
+Status: **implemented** (3685e01; baseline d4bf1f1, review round ed07bee). Kept active until the PR #106 soak confirms it in the field — the field check is a resume with a slow-returning NIC showing `awaiting_network` then a clean wake.
 
 ## Problem
 
