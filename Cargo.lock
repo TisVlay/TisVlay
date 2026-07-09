@@ -5575,14 +5575,14 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tisvlay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tisvlay-core",
 ]
 
 [[package]]
 name = "tisvlay-backends"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tisvlay-cec",
  "tisvlay-core",
@@ -5595,7 +5595,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-cec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -5611,7 +5611,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5629,7 +5629,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5660,7 +5660,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-greeter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5671,7 +5671,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -5699,7 +5699,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -5721,7 +5721,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-lg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -5743,7 +5743,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-mock"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -5756,7 +5756,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5775,7 +5775,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-ssdp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-stream",
  "futures-core",
@@ -5787,7 +5787,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "libc",
@@ -5804,7 +5804,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-tray"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5824,7 +5824,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlayd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
