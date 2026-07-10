@@ -117,6 +117,18 @@ licenses-html:
         packaging/licensing/about.html.hbs \
         -o packaging/licensing/THIRD-PARTY-LICENSES.html
 
+# Whole-workspace SBOM (SPDX 2.3) from the committed Cargo.lock, written under
+# target/sbom/ (gitignored). A supply-chain artifact, not a gate — the CI job
+# uploads it and it is available on demand. cargo-sbom emits one document to
+# stdout, so a single redirect is the whole recipe.
+sbom_dir := "target/sbom"
+
+[group('check')]
+sbom:
+    mkdir -p {{ sbom_dir }}
+    cargo sbom --output-format spdx_json_2_3 > {{ sbom_dir }}/tisvlay.spdx.json
+    @echo "wrote {{ sbom_dir }}/tisvlay.spdx.json"
+
 # --- i18n / translation catalogs ---------------------------------------
 #
 # One translatable crate today: `tisvlay-gui` (Slint UI + Rust). It owns

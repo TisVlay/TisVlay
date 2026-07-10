@@ -41,6 +41,7 @@ jobs:
             cargo-deny
             cargo-llvm-cov
             cargo-nextest
+            cargo-sbom@0.10.0
             just
 
       - name: Cache
@@ -83,6 +84,21 @@ jobs:
         with:
           name: coverage-lcov
           path: lcov.info
+          retention-days: 14
+
+      # Whole-workspace SBOM (SPDX) as a build artifact. Generated from
+      # Cargo.lock (no build needed); `!cancelled()` mirrors the coverage
+      # upload so it is captured even when a later step fails.
+      - name: SBOM
+        if: ${{ !cancelled() }}
+        run: just sbom
+
+      - name: Upload SBOM
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-spdx
+          path: target/sbom/
           retention-days: 14
 
       # NOTE: When this repo becomes public, fork PRs cannot create check

@@ -108,6 +108,8 @@
                 cargo-insta
                 cargo-llvm-cov
                 cargo-nextest
+                # cargo-sbom emits a whole-workspace SBOM (SPDX) for `just sbom`.
+                cargo-sbom
                 # cargo-zigbuild + zig drive the release build: zig serves
                 # as the linker so the resulting glibc-dynamic binary
                 # carries an explicit min-glibc baseline (see justfile's
