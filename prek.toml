@@ -1,3 +1,7 @@
+# `prek install` wires both the pre-commit and commit-msg git hooks; the
+# commit-msg stage runs the Conventional Commits check (last repo below).
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
 [[repos]]
 repo = "builtin"
 hooks = [
@@ -18,4 +22,15 @@ hooks = [
   { id = "build", name = "build", language = "system", entry = "just build", always_run = true, pass_filenames = false, priority = 2 },
   { id = "clippy", name = "clippy", language = "system", entry = "just clippy", always_run = true, pass_filenames = false, priority = 3 },
   { id = "test", name = "test", language = "system", entry = "just test", always_run = true, pass_filenames = false, priority = 4 },
+]
+
+# Conventional Commits subject check (commit-msg stage). Advisory locally —
+# the authoritative gate is the PR-title workflow (the repo squash-merges) —
+# but it catches malformed subjects at commit time. release-plz parses subjects
+# for version bumps + CHANGELOGs, so the format is load-bearing, not cosmetic.
+[[repos]]
+repo = "https://github.com/compilerla/conventional-pre-commit"
+rev = "v4.4.0"
+hooks = [
+  { id = "conventional-pre-commit", stages = ["commit-msg"] },
 ]
