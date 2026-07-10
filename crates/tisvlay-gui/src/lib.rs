@@ -1,11 +1,11 @@
 //! tisvlay-gui — Slint-based settings + management window.
 //!
-//! Reads state from `tisvlayd` over the system bus (or session bus
-//! with `--user`) and from `tisvlay-session` over the user bus. M2
+//! Reads state from the daemon over the system zenoh socket and from
+//! `tisvlay-session` over the user socket. M2
 //! adds writeable controls (volume, backlight, mute, screen toggle,
 //! input switcher, profile dropdowns, managed checkbox, remove,
-//! reload-config) plus staged power-on feedback via the
-//! `Tv1.Power.PowerCycleProgress` signal.
+//! reload-config) plus staged power-on feedback via the per-TV
+//! `progress/power` key.
 
 // Slint's `include_modules!()` expands a large block of generated code
 // (`InnerAppWindow`, repeater types, etc.) that we don't get to
@@ -15,6 +15,7 @@
 
 mod about;
 mod accent;
+mod compat;
 mod dbus;
 mod diagnostic;
 mod edit_pane;
@@ -28,18 +29,6 @@ mod state;
 mod state_watch;
 mod toast;
 mod wizard;
-
-/// Test-only re-exports for `tisvlay-harness::TestGui` consumers.
-/// Mirrors the `__internals` pattern used by `tisvlayd` and
-/// `tisvlay-session` — these surfaces are not part of the GUI's
-/// public API and may change without notice.
-#[doc(hidden)]
-pub mod __internals {
-    pub use crate::state::{
-        ProfileRowRaw, ProfileTvRefRaw, SnapshotInputs, StateSnapshot, TvViewRaw, convert_snapshot,
-        fetch_system_profile_body, fetch_user_profile_body,
-    };
-}
 
 use about::{
     GUI_VERSION, REPO_URL, SupportedVendorsCache, build_diagnostic_blob, make_about_components,
@@ -59,10 +48,10 @@ use profiles::{
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
-    WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen, WizardManualLookupCancel,
-    cancel_wizard_discovery, cancel_wizard_manual_lookup, fetch_and_publish_schema,
-    publish_wizard_entries, reset_wizard, run_wizard_discovery, run_wizard_pair,
-    run_wizard_re_pair,
+    WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
+    WizardManualLookupCancel, cancel_wizard_discovery, cancel_wizard_manual_lookup,
+    fetch_and_publish_schema, publish_wizard_entries, reset_wizard, run_wizard_discovery,
+    run_wizard_pair, run_wizard_re_pair,
 };
 
 use schema_form::{
@@ -81,12 +70,12 @@ use clap::Parser;
 // Slint properties (e.g. wizard pair-flow messages) wrap their
 // literals with `gettext("…")` so the slint-tr-extractor and
 // xgettext both find the same source-of-truth in the .pot file.
-use gettextrs::gettext;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{
+use crate::compat::{
     Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     NotificationCategory, NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
 };
+use gettextrs::gettext;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -112,7 +101,7 @@ where
 }
 
 /// Look up a vendor's display name in the `supported-vendors` model
-/// shipped from the daemon's `Manager1.GetSupportedVendors`. Falls
+/// shipped from the daemon's `manager/vendors` catalog. Falls
 /// back to `id` if no row matches — keeps the GUI rendering through a
 /// transient empty model on startup.
 pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> SharedString {
@@ -146,6 +135,33 @@ fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: Str
             action_label: SharedString::default(),
         });
     });
+}
+
+/// Spawn a fire-and-forget per-TV rpc. On failure, warn-log the
+/// TV id + error under `log_label` and surface the error in the
+/// TVs pane's inline-error slot under `title`. Only for callbacks
+/// with exactly this error-report shape — sites that log extra
+/// context (input id, toggle state) keep their own spawn.
+fn spawn_tv_rpc(
+    app_weak: &slint::Weak<AppWindow>,
+    tv_id: String,
+    log_label: &'static str,
+    title: String,
+    fut: impl std::future::Future<Output = Result<()>> + Send + 'static,
+) {
+    let app_weak = app_weak.clone();
+    tokio::spawn(async move {
+        if let Err(e) = fut.await {
+            let msg = format!("{e}");
+            warn!(tv_id = %tv_id, error = %msg, "{log_label}");
+            push_tvs_error(&app_weak, title, msg);
+        }
+    });
+}
+
+/// Scan the TVs model for the row with the given UUID.
+fn find_tv_by_uuid(tvs: &ModelRc<TvViewModel>, uuid: &str) -> Option<TvViewModel> {
+    (0..tvs.row_count()).find_map(|i| tvs.row_data(i).filter(|row| row.uuid.as_str() == uuid))
 }
 
 /// Read the currently-selected `(EditorKind, uuid)` from the Slint
@@ -214,15 +230,38 @@ impl Reconcilers {
 #[derive(Parser, Debug)]
 #[command(name = "tisvlay-gui", version, about)]
 struct Args {
-    /// Use the session bus instead of the system bus (for development
-    /// against `tisvlayd --session`).
+    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
     #[arg(long)]
-    user: bool,
+    socket: Option<std::path::PathBuf>,
+
+    /// Session-service user socket (default: $XDG_RUNTIME_DIR/tisvlay/
+    /// session.sock). Missing socket hides user profiles.
+    #[arg(long)]
+    user_socket: Option<std::path::PathBuf>,
+
+    /// Site chunk used in all key expressions.
+    #[arg(long, default_value = "main")]
+    site: String,
+}
+
+/// Sockets + site resolved from the CLI args once at startup — the
+/// reconnect paths (state_watch) re-dial with the same endpoints.
+#[derive(Debug)]
+pub(crate) struct Endpoints {
+    pub(crate) system_socket: std::path::PathBuf,
+    pub(crate) user_socket: std::path::PathBuf,
+    pub(crate) site: String,
+}
+
+pub(crate) static ENDPOINTS: std::sync::OnceLock<Endpoints> = std::sync::OnceLock::new();
+
+pub(crate) fn endpoints() -> &'static Endpoints {
+    ENDPOINTS.get().expect("endpoints set in run()")
 }
 
 /// Process entry point. The `tisvlay-gui` binary's `main()` is a
-/// thin shim that calls this; integration tests in `tisvlay-harness`
-/// reach the types and submodules behind this library crate directly.
+/// thin shim that calls this; the GUI's own integration tests reach
+/// the types and submodules behind this library crate directly.
 pub fn run() -> Result<()> {
     tisvlay_core::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"], &[])?;
 
@@ -238,6 +277,17 @@ pub fn run() -> Result<()> {
     slint::init_translations!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang"));
 
     let args = Args::parse();
+    let _ = ENDPOINTS.set(Endpoints {
+        system_socket: args
+            .socket
+            .clone()
+            .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path),
+        user_socket: args
+            .user_socket
+            .clone()
+            .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path),
+        site: args.site.clone(),
+    });
     info!("tisvlay-gui starting");
 
     // Slint's event loop owns the main thread once `run()` is called.
@@ -379,7 +429,7 @@ pub fn run() -> Result<()> {
     // Reload glyph for the sidebar's "Reload daemon config" button.
     // `view-refresh` is the canonical freedesktop name (per the icon
     // naming spec) and is present in every shipped theme. Same icon
-    // the Tray uses for its `Manager1.ReloadConfig` affordance.
+    // the Tray uses for its reload-config affordance.
     icons.set_reload(load_themed_icon(&["view-refresh"]));
     // `edit-copy` is the canonical freedesktop name for the
     // duplicate / copy glyph; `Clipboard.copy-icon` carries the
@@ -412,6 +462,14 @@ pub fn run() -> Result<()> {
         "emblem-symbolic-link",
         "internet-web-browser",
         "applications-internet",
+    ]));
+    // TV-remote glyph for the profile editor's restore-input toggle.
+    // `input-tvremote-symbolic` is the Breeze name; the plain and
+    // video-television names cover Adwaita / hicolor.
+    icons.set_restore_input(load_themed_icon(&[
+        "input-tvremote-symbolic",
+        "input-tvremote",
+        "video-television",
     ]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
@@ -462,7 +520,11 @@ pub fn run() -> Result<()> {
     // versions are known — see `push_about_components` below.
     app.set_gui_version(GUI_VERSION.into());
     app.set_about_components(ModelRc::new(VecModel::from(make_about_components(
-        None, None, None, None,
+        &endpoints().site,
+        (false, None),
+        (false, None),
+        (false, None),
+        None,
     ))));
     app.on_view_notices_clicked(|| {
         if let Err(e) = open_notices_html() {
@@ -490,7 +552,9 @@ pub fn run() -> Result<()> {
         Arc::new(std::sync::RwLock::new(Vec::new()));
     {
         let app_weak = app.as_weak();
-        let user_bus = args.user;
+        // The zenoh stack has sockets, not buses; the diagnostic blob's
+        // runtime.bus field reads "user" for the per-user dev socket.
+        let user_bus = true;
         let vendors = supported_vendors_cache.clone();
         app.on_copy_diagnostic_clicked(move || {
             let Some(app) = app_weak.upgrade() else {
@@ -515,27 +579,27 @@ pub fn run() -> Result<()> {
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
     let (daemon, session, tray) = rt.block_on(async move {
-        let daemon = if args.user {
-            info!("Connecting to daemon on session bus (development mode)");
-            DaemonClient::new_session().await
-        } else {
-            info!("Connecting to daemon on system bus");
-            DaemonClient::new_system().await
-        }
-        .context("Failed to create daemon client")?;
+        let endpoints = endpoints();
+        info!(socket = %endpoints.system_socket.display(), site = %endpoints.site, "Connecting to daemon");
+        let daemon = DaemonClient::connect(&endpoints.system_socket, &endpoints.site)
+            .await
+            .context("Failed to create daemon client")?;
         let daemon = Arc::new(daemon);
 
-        let session: Arc<RwLock<Option<SessionClient>>> =
-            Arc::new(RwLock::new(match SessionClient::new().await {
-                Ok(client) if client.is_available().await => Some(client),
-                _ => None,
-            }));
+        // Built unconditionally: the link dials in the background and
+        // liveliness events drive availability, so no start order is
+        // assumed (root parity via NameOwnerChanged-equivalent).
+        let session: Arc<RwLock<Option<SessionClient>>> = Arc::new(RwLock::new(
+            SessionClient::connect(&endpoints.user_socket, &endpoints.site)
+                .await
+                .ok(),
+        ));
 
-        let tray: Arc<RwLock<Option<TrayClient>>> =
-            Arc::new(RwLock::new(match TrayClient::new().await {
-                Ok(client) if client.is_available().await => Some(client),
-                _ => None,
-            }));
+        let tray: Arc<RwLock<Option<TrayClient>>> = Arc::new(RwLock::new(
+            TrayClient::connect(&endpoints.user_socket, &endpoints.site)
+                .await
+                .ok(),
+        ));
 
         anyhow::Ok((daemon, session, tray))
     })?;
@@ -991,6 +1055,34 @@ fn register_callbacks(
         let s = session.clone();
         let ed = editor.clone();
         let app_weak = app.as_weak();
+        profiles_global.on_restore_edited(move |field, checked| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let field = field.to_string();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    profiles::dispatch_restore_edit(&ed, &d, &s, editor_kind, uuid, &field, checked)
+                        .await
+                {
+                    warn!(field = %field, checked, error = %e, "restore_edited failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
         profiles_global.on_value_edited_number(move |field, value| {
             let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
                 return;
@@ -1141,15 +1233,14 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_set_mute(move |tv_id, muted| {
         let d = d.clone();
-        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = d.set_mute(&tv_id, muted).await {
-                let msg = format!("{e}");
-                warn!(tv_id = %tv_id, error = %msg, "set_mute failed");
-                push_tvs_error(&app_weak, gettext("Couldn't change mute"), msg);
-            }
-        });
+        spawn_tv_rpc(
+            &app_weak,
+            tv_id.clone(),
+            "set_mute failed",
+            gettext("Couldn't change mute"),
+            async move { d.set_mute(&tv_id, muted).await },
+        );
     });
 
     let coalescer = backlight_coalescer.clone();
@@ -1201,10 +1292,10 @@ fn register_callbacks(
         });
     });
 
-    // Power-on subscribes to PowerCycleProgress for the duration of
+    // Power-on subscribes to `progress/power` for the duration of
     // the call so the GUI can show staged feedback. External wakes
     // (CLI, tray, other GUI) don't surface their progress here —
-    // they'll reflect via the regular Connected state refresh.
+    // they'll reflect via the regular link-state refresh.
     let d = daemon.clone();
     let app_weak = app.as_weak();
     daemon_global.on_power_on(move |tv_id| {
@@ -1224,15 +1315,14 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_power_off(move |tv_id| {
         let d = d.clone();
-        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = d.power_off(&tv_id).await {
-                let msg = format!("{e}");
-                warn!(tv_id = %tv_id, error = %msg, "power_off failed");
-                push_tvs_error(&app_weak, gettext("Power off failed"), msg);
-            }
-        });
+        spawn_tv_rpc(
+            &app_weak,
+            tv_id.clone(),
+            "power_off failed",
+            gettext("Power off failed"),
+            async move { d.power_off(&tv_id).await },
+        );
     });
 
     let d = daemon.clone();
@@ -1254,7 +1344,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_set_system_profile(move |tv_id, profile| {
         // The ComboBox emits the display name; the daemon's
-        // `Tv1.SystemProfile` setter wants a UUID. Translate via a
+        // `set-system-profile` rpc wants a UUID. Translate via a
         // fresh catalog fetch (profile catalogs are small; an on-click
         // round-trip is cheaper than threading a shared name->UUID
         // cache through every callback). The match predicate goes
@@ -1304,7 +1394,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_set_user_profile(move |tv_id, profile| {
         // Same translation as `on_set_system_profile`, but the
-        // user-profile catalog lives on the session bus.
+        // user-profile catalog lives with the session service.
         let s = s.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
@@ -1378,15 +1468,14 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_remove_tv(move |tv_id| {
         let d = d.clone();
-        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = d.remove_tv(&tv_id).await {
-                let msg = format!("{e}");
-                warn!(tv_id = %tv_id, error = %msg, "remove_tv failed");
-                push_tvs_error(&app_weak, gettext("Couldn't remove TV"), msg);
-            }
-        });
+        spawn_tv_rpc(
+            &app_weak,
+            tv_id.clone(),
+            "remove_tv failed",
+            gettext("Couldn't remove TV"),
+            async move { d.remove_tv(&tv_id).await },
+        );
     });
 
     let d = daemon.clone();
@@ -1429,7 +1518,7 @@ fn register_callbacks(
             drop(session_ref);
             // Tell the tray to re-read `tray.toml` too, then pull the
             // body immediately rather than waiting only on the tray's
-            // `PropertiesChanged` echo — keeps the settings pane in sync
+            // settings-key echo — keeps the settings pane in sync
             // with a hand-edited config on the same click.
             let tray_ref = tr.read().await;
             if let Some(client) = tray_ref.as_ref()
@@ -1446,26 +1535,34 @@ fn register_callbacks(
     // Pairing wizard
     // -------------------------------------------------------------------------
 
+    // Shared-handle bundle for the wizard callback family — each
+    // callback clones this once instead of its individual handles.
+    let wizard_ctx = WizardCtx {
+        daemon: daemon.clone(),
+        entries: wizard_entries.clone(),
+        generation: wizard_gen.clone(),
+        discovery_cancel: wizard_cancel.clone(),
+        manual_cancel: wizard_manual_lookup_cancel.clone(),
+    };
+
     // Open wizard + start discovery.
-    let d = daemon.clone();
+    let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
-    let we = wizard_entries.clone();
-    let wg = wizard_gen.clone();
-    let wc = wizard_cancel.clone();
-    let wml = wizard_manual_lookup_cancel.clone();
     daemon_global.on_request_pair(move || {
-        let d = d.clone();
-        let we = we.clone();
-        let wg = wg.clone();
-        let wc = wc.clone();
+        let ctx = ctx.clone();
         let app_weak = app_weak.clone();
         // Reset wizard state on the Slint side first so the user sees
         // the wizard immediately, then kick off discovery. `reset_wizard`
         // also cancels any in-flight discovery task from a prior
-        // session via the wizard_cancel sidecar.
+        // session via the discovery-cancel sidecar.
         if let Some(app) = app_weak.upgrade() {
             let wizard = app.global::<PairingWizard>();
-            reset_wizard(&app, &wg, &wc, &wml);
+            reset_wizard(
+                &app,
+                &ctx.generation,
+                &ctx.discovery_cancel,
+                &ctx.manual_cancel,
+            );
             wizard.set_active(true);
             wizard.set_step(1);
             wizard.set_discovery_streaming(true);
@@ -1473,30 +1570,26 @@ fn register_callbacks(
         // Clear the Rust-owned source-of-truth too — the Slint model
         // gets cleared by `reset_wizard`, but the sidecar lives
         // outside Slint and must be reset in lockstep.
-        we.lock().clear();
+        ctx.entries.lock().clear();
         // Install a fresh cancel handle before spawning so the cancel
         // path (or the next request_pair) can stop us.
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-        *wc.lock() = Some(cancel_tx);
-        let wg_task = wg.clone();
+        *ctx.discovery_cancel.lock() = Some(cancel_tx);
         tokio::spawn(async move {
-            run_wizard_discovery(d, we, wg_task, cancel_rx, app_weak).await;
+            run_wizard_discovery(ctx.daemon, ctx.entries, ctx.generation, cancel_rx, app_weak)
+                .await;
         });
     });
 
     // Re-pair an existing TV: open the wizard directly at StepPair
     // with vendor / address / name prefilled from the existing TV's
-    // state, then kick off `Tv1.RePair(tv_id)`. Mirrors the post-
+    // state, then kick off the `re-pair` rpc. Mirrors the post-
     // StepConfigure entry into the pair flow that `on_step_next`
-    // step-2 → step-3 transition uses for AddTv.
-    let d = daemon.clone();
+    // step-2 → step-3 transition uses for a fresh pair.
+    let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
-    let wg = wizard_gen.clone();
-    let wc = wizard_cancel.clone();
-    let wml = wizard_manual_lookup_cancel.clone();
     daemon_global.on_request_re_pair(move |tv_id| {
-        let d = d.clone();
-        let wg = wg.clone();
+        let ctx = ctx.clone();
         let app_weak = app_weak.clone();
         let tv_id_str = tv_id.to_string();
         let Some(app) = app_weak.upgrade() else {
@@ -1506,20 +1599,10 @@ fn register_callbacks(
         // Look up the existing TV's metadata so the wizard's
         // StepPair UI renders with familiar vendor / address /
         // name labels. The GUI's `tvs` model is the authoritative
-        // source — it was populated from the daemon's
-        // `ObjectManager.GetManagedObjects` at startup and stays
-        // in sync via signals.
-        let tvs = app.get_tvs();
-        let mut tv_row: Option<TvViewModel> = None;
-        for i in 0..tvs.row_count() {
-            if let Some(row) = tvs.row_data(i)
-                && row.uuid.as_str() == tv_id_str
-            {
-                tv_row = Some(row);
-                break;
-            }
-        }
-        let Some(tv) = tv_row else {
+        // source — it was populated from the daemon's cached per-TV
+        // keys at startup and stays
+        // in sync via the state watcher.
+        let Some(tv) = find_tv_by_uuid(&app.get_tvs(), &tv_id_str) else {
             warn!(tv_id = %tv_id_str, "wizard: request_re_pair for unknown TV id, ignoring");
             return;
         };
@@ -1530,7 +1613,12 @@ fn register_callbacks(
         // properties so the live pair UI shows the right labels.
         // The gen bump also invalidates any in-flight pair task
         // from a prior session.
-        reset_wizard(&app, &wg, &wc, &wml);
+        reset_wizard(
+            &app,
+            &ctx.generation,
+            &ctx.discovery_cancel,
+            &ctx.manual_cancel,
+        );
         let wizard = app.global::<PairingWizard>();
         let vendor_id = tv.vendor.clone();
         let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
@@ -1546,23 +1634,20 @@ fn register_callbacks(
         wizard.set_active(true);
 
         tokio::spawn(async move {
-            run_wizard_re_pair(d, app_weak, wg, tv_id_str).await;
+            run_wizard_re_pair(ctx.daemon, app_weak, ctx.generation, tv_id_str).await;
         });
     });
 
     // Wizard cancel: route the in-flight pair's tv_id (if any) to
-    // `Manager1.CancelPair` so the daemon-side handshake actually
+    // the `cancel-pair` rpc so the daemon-side handshake actually
     // aborts rather than continuing until natural completion/
     // timeout. Then reset the wizard's UI state. Works for both
-    // re-pair (tv_id is set at invoke time) and AddTv (tv_id is
-    // set by `run_wizard_pair` from the pair_tv RPC return).
+    // re-pair (tv_id is set at invoke time) and fresh pair (tv_id
+    // is set by `run_wizard_pair` from the pair_tv RPC return).
     // Empty `pair-tv-id` means no in-flight pair to cancel —
     // common when cancelling from steps 1 or 2 of the wizard.
-    let d = daemon.clone();
+    let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
-    let wg = wizard_gen.clone();
-    let wc = wizard_cancel.clone();
-    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_cancel(move || {
         info!("wizard: cancel fired");
         let Some(app) = app_weak.upgrade() else {
@@ -1574,11 +1659,16 @@ fn register_callbacks(
         // close without waiting on the daemon round-trip. The gen
         // bump inside `reset_wizard` makes any in-flight pair
         // task's late callbacks no-op.
-        reset_wizard(&app, &wg, &wc, &wml);
+        reset_wizard(
+            &app,
+            &ctx.generation,
+            &ctx.discovery_cancel,
+            &ctx.manual_cancel,
+        );
         if tv_id.is_empty() {
             return;
         }
-        let d = d.clone();
+        let d = ctx.daemon.clone();
         tokio::spawn(async move {
             if let Err(e) = d.cancel_pair(&tv_id).await {
                 // NotPairing is the expected error if the pair
@@ -1598,12 +1688,8 @@ fn register_callbacks(
     });
 
     // Step transitions. Driven entirely from Slint property reads.
-    let d = daemon.clone();
+    let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
-    let we = wizard_entries.clone();
-    let wg = wizard_gen.clone();
-    let wc = wizard_cancel.clone();
-    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_step_next(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -1622,7 +1708,7 @@ fn register_callbacks(
                 if i < 0 {
                     return;
                 }
-                let entry = we.lock().get(i as usize).cloned();
+                let entry = ctx.entries.lock().get(i as usize).cloned();
                 let Some(entry) = entry else {
                     return;
                 };
@@ -1662,8 +1748,8 @@ fn register_callbacks(
                 // stale manual-lookup result landing in step 2).
                 // The wizard stays open (no reset_wizard); we only
                 // cancel the two in-flight tasks.
-                cancel_wizard_discovery(&wc);
-                cancel_wizard_manual_lookup(&wml);
+                cancel_wizard_discovery(&ctx.discovery_cancel);
+                cancel_wizard_manual_lookup(&ctx.manual_cancel);
 
                 // Clear stale schema rows from a prior session so the
                 // form starts blank if the fetch is slow.
@@ -1671,7 +1757,7 @@ fn register_callbacks(
                 wizard.set_schema_valid(false);
                 wizard.set_step(2);
 
-                let d = d.clone();
+                let d = ctx.daemon.clone();
                 let app_weak = app.as_weak();
                 let vendor = entry.vendor.clone();
                 tokio::spawn(async move {
@@ -1685,7 +1771,7 @@ fn register_callbacks(
                 // Configure → Pair: kick off pair_tv. Collected
                 // pairing-form values come from the dynamic
                 // `schema-fields` model; the daemon validates each
-                // field server-side in `Manager1.AddTv`.
+                // field server-side in the `pair` rpc handler.
                 let name = wizard.get_tv_name().to_string();
                 if name.is_empty() {
                     return;
@@ -1698,8 +1784,8 @@ fn register_callbacks(
                 wizard.set_pair_phase(SharedString::default());
                 wizard.set_pair_message(SharedString::default());
 
-                let d = d.clone();
-                let wg = wg.clone();
+                let d = ctx.daemon.clone();
+                let wg = ctx.generation.clone();
                 let app_weak = app.as_weak();
                 tokio::spawn(async move {
                     run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
@@ -1736,9 +1822,8 @@ fn register_callbacks(
     });
 
     // Pair-failed → retry: restart pair_tv with the same parameters.
-    let d = daemon.clone();
+    let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
-    let wg = wizard_gen.clone();
     wizard.on_retry_pair(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -1755,21 +1840,24 @@ fn register_callbacks(
         wizard.set_pair_phase(SharedString::default());
         wizard.set_pair_message(SharedString::default());
 
-        let d = d.clone();
-        let wg = wg.clone();
+        let d = ctx.daemon.clone();
+        let wg = ctx.generation.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
             run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
         });
     });
 
+    let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
-    let wg = wizard_gen.clone();
-    let wc = wizard_cancel.clone();
-    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_finish(move || {
         if let Some(app) = app_weak.upgrade() {
-            reset_wizard(&app, &wg, &wc, &wml);
+            reset_wizard(
+                &app,
+                &ctx.generation,
+                &ctx.discovery_cancel,
+                &ctx.manual_cancel,
+            );
         }
     });
 
@@ -1865,7 +1953,8 @@ fn register_callbacks(
     // parallel, builds an [`AutofilledRow`] list with the existing
     // values prefilled, and pushes the result onto the global so the
     // matching `TvDetail` flips into edit mode. `save()` collects the
-    // draft into a JSON patch and routes through `Tv1.UpdateConfig`;
+    // draft into a JSON patch and routes through the `update-config`
+    // rpc;
     // server-side per-field validation errors are routed back to the
     // originating row so the user sees them inline. `cancel()` discards
     // the draft.
@@ -2025,8 +2114,8 @@ fn register_callbacks(
                 match result {
                     Ok(()) => {
                         // Success: clear edit state so the view flips
-                        // back to read-only. The TV's PropertiesChanged
-                        // signals will push the new values into the
+                        // back to read-only. The TV's republished
+                        // state keys will push the new values into the
                         // visible labels.
                         edit_pane.set_tv_uuid(SharedString::default());
                         edit_pane.set_name(SharedString::default());
@@ -2051,19 +2140,16 @@ fn register_callbacks(
     });
 
     // Manual-add: synthesize an entry from the user's typed vendor +
-    // IP, optionally enrich it with the daemon's `EnrichManualEntry`
-    // RPC (auto-detects the MAC via kernel ARP cache + active probe),
+    // IP, optionally enrich it with the daemon's `enrich`
+    // rpc (auto-detects the MAC via kernel ARP cache + active probe),
     // append it to the Rust source-of-truth + Slint model, select it,
     // and advance to Configure where the schema-driven form takes
     // over. From step 2 on the flow is identical to the SSDP path —
     // except the schema fetch is told `manual_entry: true` so the
     // helper-override logic can substitute the MAC field's helper
     // text when enrichment came up empty.
+    let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
-    let we = wizard_entries.clone();
-    let d = daemon.clone();
-    let wc = wizard_cancel.clone();
-    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_manual_add(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -2097,29 +2183,38 @@ fn register_callbacks(
         wizard.set_manual_lookup_streaming(true);
         // Leaving step 1 — stop the streaming discovery session so
         // the daemon stops scanning while the user configures.
-        cancel_wizard_discovery(&wc);
+        cancel_wizard_discovery(&ctx.discovery_cancel);
         // Install a fresh cancel handle so reset_wizard can drop the
         // enrichment task if the user cancels mid-lookup. Replaces
         // any prior sender, which drops it and cancels the prior
         // task (same pattern as run_wizard_discovery).
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-        *wml.lock() = Some(cancel_tx);
+        *ctx.manual_cancel.lock() = Some(cancel_tx);
 
-        let d = d.clone();
-        let we = we.clone();
+        let d = ctx.daemon.clone();
+        let we = ctx.entries.clone();
         let app_weak_task = app.as_weak();
+        // MAC enrichment is an ARP lookup on the entered address — only
+        // meaningful when the vendor's primary descriptor is an IP.
+        // Non-network vendors (CEC device paths) skip straight to the
+        // schema step.
+        let primary_is_ip = option.primary_is_ip;
         tokio::spawn(async move {
             // Daemon-side cap is 600 ms; wizard cap of 1 s is the
             // safety net for a hung RPC. Either firing produces an
             // empty vendor_data — same outcome as a clean miss, the
             // user just sees the field blank with the "MAC not
             // detected" helper.
-            let vendor_data = tokio::select! {
-                _ = cancel_rx => HashMap::new(),
-                res = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    d.enrich_manual_entry(&vendor, &ip),
-                ) => res.ok().and_then(|r| r.ok()).unwrap_or_default(),
+            let vendor_data = if !primary_is_ip {
+                HashMap::new()
+            } else {
+                tokio::select! {
+                    _ = cancel_rx => HashMap::new(),
+                    res = tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        d.enrich_manual_entry(&vendor, &ip),
+                    ) => res.ok().and_then(|r| r.ok()).unwrap_or_default(),
+                }
             };
 
             let entry = WizardEntry {
@@ -2190,14 +2285,13 @@ fn register_callbacks(
     let tray_global = app.global::<Tray>();
     let t = tray.clone();
     tray_global.on_set_notification(move |category, enabled| {
-        // Fire-and-forget the D-Bus write. The tray emits
-        // `PropertiesChanged`, which `StateWatcher` turns into a
+        // Fire-and-forget the rpc write. The tray republishes its
+        // settings key, which `StateWatcher` turns into a
         // `TrayNotificationSettingsChanged` refresh that pushes the
         // canonical body back into `Tray.notifications`. That refresh
-        // reads the tray's live value (the proxy is built
-        // `CacheProperties::No`), so the settings pane reflects the new
-        // state even after a pane rebuild — no optimistic local write
-        // needed.
+        // reads the tray's live value, so the settings pane reflects
+        // the new state even after a pane rebuild — no optimistic
+        // local write needed.
         let t = t.clone();
         let category = category.to_string();
         tokio::spawn(async move {

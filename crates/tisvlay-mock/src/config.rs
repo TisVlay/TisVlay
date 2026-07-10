@@ -36,6 +36,17 @@ pub struct MockVendorConfig {
     #[serde(default = "default_inputs")]
     pub inputs: Vec<(String, String)>,
 
+    /// Test knob: every `connect` fails with a backend error.
+    /// Exercises dial-failure paths (pairing rollback, retry/backoff)
+    /// without a real unreachable device.
+    #[serde(default)]
+    pub refuse_connect: bool,
+
+    /// Whether this mock claims wake support. Defaults on; tests flip
+    /// it through update-config to exercise transport-fact refreshes.
+    #[serde(default = "default_wake")]
+    pub wake: bool,
+
     /// Pairing behavior shorthand.
     ///
     /// - `"manual"` (default): pairing waits for an explicit
@@ -97,6 +108,10 @@ pub struct MockVendorConfig {
     pub emulate_screen_via_power: bool,
 }
 
+fn default_wake() -> bool {
+    true
+}
+
 fn default_address() -> String {
     "mock://tv".to_string()
 }
@@ -134,6 +149,8 @@ impl Default for MockVendorConfig {
             initial_input: default_input(),
             initial_backlight: default_backlight(),
             inputs: default_inputs(),
+            refuse_connect: false,
+            wake: true,
             pairing: PairingShorthand::default(),
             backlight_ramp_intermediates: Vec::new(),
             backlight_ramp_step_delay_ms: 0,

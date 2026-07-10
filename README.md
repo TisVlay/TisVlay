@@ -10,15 +10,20 @@ TV Display control for Linux
 - **Volume Control**: Adjust volume, mute/unmute
 - **Desktop Integration**: Automatic screen control on lock/unlock, suspend/resume
 - **Wayland Support**: Detects lock screen interaction to unblank TV before password entry
-- **Mock Backend**: a built-in "Mock (testing)" vendor ships in the packages for field debugging — add a mock TV to verify the daemon / D-Bus / desktop stack without real hardware
+- **Mock Backend**: a built-in "Mock (testing)" vendor — add a mock TV to verify the daemon / desktop stack without real hardware
 
 ## Components
 
 | Component | Description |
 |-----------|-------------|
 | `tisvlay` | CLI tool for direct TV control |
-| `tisvlayd` | System daemon with D-Bus interface |
-| `tisvlay-session` | User service for desktop event integration |
+| `tisvlay-daemon` | System daemon: bevy_ecs world + zenoh wire host |
+| `tisvlay-session` | User service for desktop event integration and user profiles |
+| `tisvlay-tray` | System tray with live TV controls and desktop notifications |
+| `tisvlay-gui` | Settings and management window (Slint) |
+| `tisvlay-greeter` | Login-greeter idle client (OLED protection at the login screen) |
+
+The processes talk over [zenoh](https://zenoh.io/) on Unix sockets: the daemon owns the system socket (`/run/tisvlay/zenoh.sock` packaged, `$XDG_RUNTIME_DIR/tisvlay/zenoh.sock` in dev), and the session service owns a per-user socket for user profiles. Socket permission is the access model — accounts in the `tisvlay` group can control the daemon.
 
 ## Quick Start
 
@@ -28,40 +33,30 @@ TV Display control for Linux
 cargo build --release
 
 # Pair with your TV (shows prompt on TV screen)
-tisvlay pair 192.168.1.100 --name "Living Room" --mac AA:BB:CC:DD:EE:FF
+tisvlay pair "Living Room" --vendor lg --json '{"ip":"192.168.1.100"}'
 
-# Control the TV
-tisvlay power on
-tisvlay screen off
-tisvlay input HDMI_1
-tisvlay volume 25
+# Control the TV (UUIDs from `tisvlay list`)
+tisvlay list
+tisvlay power-on <uuid>
+tisvlay set-screen <uuid> false
+tisvlay switch-input <uuid> HDMI_1
+tisvlay set-volume <uuid> 25
 ```
 
-## Session Service
+## Profiles
 
-The session service automatically controls your TV based on desktop events:
-
-```toml
-# ~/.config/tisvlay/session.toml
-[session]
-on_session_lock = "screen_off"
-on_session_unlock = "screen_on"
-on_lock_wake = "screen_on"  # Unblank when interacting with lock screen (Wayland only)
-on_sleep = "power_off"
-on_wake = "power_on"
-```
+Desktop events (lock/unlock, sleep/wake, idle, DPMS) map to configurable per-TV actions through system and user profiles. Both have an editable `default` profile that TVs inherit from; manage them with `tisvlay profile …` / `tisvlay user-profile …`, the tray's Profiles submenu, or the GUI's Profiles pane.
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) - Detailed architecture and implementation notes
-- [docs/design.md](docs/design.md) - Full system design
+- [.claude/CLAUDE.md](.claude/CLAUDE.md) - Detailed architecture and implementation notes
+- [docs/plans/parity-zenoh-ecs.md](docs/plans/parity-zenoh-ecs.md) - Current architecture: key space, topology, phase history
 - [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
 
 ## Requirements
 
-- LG WebOS TV (tested with C3, G4 models)
-- "TV On via Wi-Fi" enabled in TV settings
-- Linux with D-Bus (for daemon/session service)
+- LG WebOS TV (tested with C3, G4 models) or an HDMI-CEC adapter exposing `/dev/cecN`
+- "TV On via Wi-Fi" enabled in TV settings (LG network control)
 - Wayland compositor with `ext-idle-notify-v1` support (for lock wake detection)
 
 ## License

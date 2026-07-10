@@ -1,12 +1,15 @@
 #!/bin/sh
 # Post-installation script for tisvlay.
-# Creates system user, reloads systemd and D-Bus.
+# Creates system user and reloads systemd.
 
 set -e
 
 # Create dedicated system user and group (if they don't exist).
-# The daemon runs as this user; config in /var/lib/tisvlay/ is
-# owned by this user via systemd StateDirectory.
+# The daemon runs as this user; state in /var/lib/tisvlay/ is owned
+# by it via systemd StateDirectory. The group doubles as the access
+# gate: the daemon's zenoh socket in /run/tisvlay/ is 0660
+# tisvlay:tisvlay, so every account that should control TVs (desktop
+# users, the greeter user) needs tisvlay group membership.
 if ! getent group tisvlay >/dev/null 2>&1; then
     groupadd --system tisvlay
 fi
@@ -15,17 +18,12 @@ if ! getent passwd tisvlay >/dev/null 2>&1; then
         --gid tisvlay --comment "tisvlay daemon" tisvlay
 fi
 
-# Create state directory (systemd's StateDirectory= creates it on service
-# start, but D-Bus activation may run the daemon before that).
+# Create state directory (systemd's StateDirectory= creates it on
+# service start; pre-creating keeps first-boot ordering forgiving).
 install -d -m 0750 -o tisvlay -g tisvlay /var/lib/tisvlay 2>/dev/null || true
 
 # Reload systemd to pick up new service files
 systemctl daemon-reload || true
-
-# Reload D-Bus to pick up the new policy
-systemctl reload dbus 2>/dev/null || dbus-send --system --type=method_call \
-    --dest=org.freedesktop.DBus /org/freedesktop/DBus \
-    org.freedesktop.DBus.ReloadConfig 2>/dev/null || true
 
 # Refresh the application database so the GUI's new .desktop
 # entry shows up in launchers. Redundant on dpkg/rpm (their
@@ -34,12 +32,11 @@ systemctl reload dbus 2>/dev/null || dbus-send --system --type=method_call \
 update-desktop-database /usr/share/applications 2>/dev/null || true
 
 # Enable (but don't start) the system daemon.
-# The user should pair a TV before starting:
-#   sudo systemctl start tisvlayd
-#   tisvlay pair <address> --vendor lg --name "My TV" -w <mac>
-systemctl enable tisvlayd.service 2>/dev/null || true
+systemctl enable tisvlay-daemon.service 2>/dev/null || true
 
-echo "tisvlay installed. Pair a TV then start the daemon:"
-echo "  sudo systemctl start tisvlayd"
-echo "  tisvlay pair <address> --vendor lg --name \"My TV\" -w <mac>"
+echo "tisvlay installed. Grant yourself socket access, start the daemon,"
+echo "then pair a TV:"
+echo "  sudo usermod -aG tisvlay \$USER   # re-login to take effect"
+echo "  sudo systemctl start tisvlay-daemon"
+echo "  tisvlay pair \"My TV\" --vendor lg --json '{\"ip\":\"<address>\"}'"
 echo "  systemctl --user enable --now tisvlay-session tisvlay-tray"

@@ -32,12 +32,8 @@ uuid = { workspace = true }
 # Sync mutex without poisoning (Reconciler, ReconcilerMap, Coalescer).
 parking_lot = { workspace = true }
 
-# Optional: D-Bus client for tisvlayd
-zbus = { workspace = true, optional = true }
-anyhow = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
-
 # Optional: logging init for binaries
+anyhow = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tracing-journald = { workspace = true, optional = true }
 tracing-log = { workspace = true, optional = true }
@@ -52,15 +48,12 @@ rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-zbus = { workspace = true }
 insta = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
-tisvlay-test = { workspace = true }
 
 [features]
 default = []
-dbus = ["dep:zbus", "dep:anyhow", "dep:futures-util"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
 wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]
 

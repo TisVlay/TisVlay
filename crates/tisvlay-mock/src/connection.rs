@@ -138,10 +138,10 @@ impl Drop for MockConnection {
     /// Without this, the cloned sender registered in
     /// `shared.subscription_txs` during `subscribe_state` would
     /// outlive the connection and keep the channel alive forever —
-    /// the subscription task's `state_rx.recv()` would never return
-    /// `None`, so the `ConnectionChanged(false)` end-of-stream gate in
-    /// `tv_manager::run_subscription_task` would never fire. Tests
-    /// that assert `Tv1.Connected == false` after `power_off` would
+    /// the subscription receiver would never return `None`, so the
+    /// daemon's connection task would never emit its end-of-stream
+    /// `Disconnected` event. Tests that assert the `state/link`
+    /// payload reads `connected == false` after `power_off` would
     /// hang or see the wrong value.
     fn drop(&mut self) {
         let mut shared = self.shared.lock();
@@ -355,7 +355,7 @@ impl TvConnection for MockConnection {
         if delay.is_zero() {
             // Synchronous ramp: push all values inline before
             // returning. Used by emit-ordering tests where the goal
-            // is to exercise the daemon's `PropertiesChanged`
+            // is to exercise the daemon's state-key publish
             // sequencing under back-to-back pushes; timing doesn't
             // matter, just order.
             for v in intermediates {

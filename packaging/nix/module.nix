@@ -12,25 +12,11 @@ let
   configFile =
     if cfg.settings == null then null else tomlFormat.generate "tisvlay-config.toml" cfg.settings;
 
-  dbusPolicy = ''
-    <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
-     "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-    <busconfig>
-      <!-- Allow the configured tisvlay user (or root) to own the service -->
-      <policy user="${cfg.user}">
-        <allow own="org.tisvlay.Daemon"/>
-      </policy>
-      <policy user="root">
-        <allow own="org.tisvlay.Daemon"/>
-      </policy>
-
-      <!-- Allow any user to call methods and receive signals -->
-      <policy context="default">
-        <allow send_destination="org.tisvlay.Daemon"/>
-        <allow receive_sender="org.tisvlay.Daemon"/>
-      </policy>
-    </busconfig>
-  '';
+  # The system daemon's zenoh listener. RuntimeDirectory=tisvlay pins
+  # the directory; the daemon chmods the socket 0660 after bind, so
+  # tisvlay group membership is the client access gate (see the
+  # `users` option).
+  systemSocket = "/run/tisvlay/zenoh.sock";
 in
 {
   options.services.tisvlay = {
@@ -50,13 +36,28 @@ in
     user = lib.mkOption {
       type = lib.types.str;
       default = "tisvlay";
-      description = "User account under which tisvlayd runs.";
+      description = "User account under which tisvlay-daemon runs.";
     };
 
     group = lib.mkOption {
       type = lib.types.str;
       default = "tisvlay";
-      description = "Group under which tisvlayd runs.";
+      description = "Group under which tisvlay-daemon runs.";
+    };
+
+    users = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "alice" ];
+      description = ''
+        User accounts granted control of the daemon. The zenoh socket
+        in /run/tisvlay/ is mode 0660 owned by `user`:`group`, so
+        socket permission IS the authorization model (replacing the
+        old D-Bus policy that let any local user call the daemon).
+        Every listed account is added to the daemon group. Desktop
+        users running tisvlay-session / tisvlay-tray / the GUI need
+        to be listed here.
+      '';
     };
 
     uid = lib.mkOption {
@@ -95,10 +96,10 @@ in
       ];
       default = "info";
       description = ''
-        Log level for tisvlayd (and its user services), applied via the
-        `RUST_LOG` environment variable. Use per-module overrides (e.g.
-        `"debug,zbus=warn"`) through `extraArgs` or by setting
-        `RUST_LOG` in a drop-in if you need finer control.
+        Log level for tisvlay-daemon (and its user services), applied
+        via the `RUST_LOG` environment variable. Use per-module
+        overrides (e.g. `"debug,zenoh=warn"`) by setting `RUST_LOG`
+        in a drop-in if you need finer control.
       '';
     };
 
@@ -106,11 +107,11 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       example = [
-        "--config"
-        "/etc/tisvlay/custom.toml"
+        "--seed"
+        "/etc/tisvlay/seed.toml"
       ];
       description = ''
-        Extra command-line arguments appended to `tisvlayd`'s
+        Extra command-line arguments appended to `tisvlay-daemon`'s
         `ExecStart`. Use for one-off overrides the module does not
         expose directly.
       '';
@@ -126,22 +127,18 @@ in
         broad `allow-any-UDP-from-subnet` fallback most distros
         otherwise need.
 
-        Defaults to 1901, matching tisvlayd's own built-in default, so
-        discovery is firewall-targetable out of the box and a user who
-        wants the port opened need only set `openFirewall = true` — no
-        need to also name the port.
+        Defaults to 1901, matching the daemon's own built-in default,
+        so discovery is firewall-targetable out of the box and a user
+        who wants the port opened need only set `openFirewall = true`
+        — no need to also name the port.
 
-        Plumbed via tisvlayd's `--bind-port` CLI flag, which overrides
-        the `[discovery].bind_port` setting in the daemon's writable
-        config file. Using the CLI flag (rather than baking the value
-        into `settings`) keeps the config file writable so the pairing
-        wizard can still persist credentials.
+        Plumbed via tisvlay-daemon's `--ssdp-port` CLI flag.
 
         Set to `0` for an OS-chosen ephemeral port — a firewall rule
         then can't target a single port. Set to `null` to omit the flag
-        entirely and defer to the daemon's config/built-in default;
-        that is incompatible with `openFirewall`, since the port isn't
-        known at evaluation time.
+        entirely and defer to the daemon's built-in default; that is
+        incompatible with `openFirewall`, since the port isn't known
+        at evaluation time.
 
         See `docs/firewall.md` for the network-level rationale.
       '';
@@ -153,7 +150,7 @@ in
       description = ''
         When `true`, add `bindPort` to
         `networking.firewall.allowedUDPPorts` so the kernel accepts
-        the SSDP responses tisvlayd's scans elicit. Requires
+        the SSDP responses the daemon's scans elicit. Requires
         `bindPort` to be set — opening a known port is the whole
         point.
 
@@ -168,35 +165,30 @@ in
       default = null;
       example = lib.literalExpression ''
         {
-          profile.system = {
-            shutdown = "power_off";
-            sleep = "screen_off";
-          };
           tv = [
             {
-              id = "living_room";
               name = "Living Room";
               vendor = "lg";
-              managed = true;
+              config = {
+                ip = "192.168.1.50";
+              };
             }
           ];
         }
       '';
       description = ''
-        Declarative system configuration for tisvlayd, rendered to a
-        TOML file in the Nix store and passed via `--config`.
+        Declarative seed config for tisvlay-daemon, rendered to a
+        TOML file in the Nix store and passed via `--seed`.
+        Provisioning semantics: re-applied every start; entries whose
+        id already exists in the daemon-owned
+        `/var/lib/tisvlay/daemon.toml` are skipped, so runtime edits
+        stick and pairing still persists there. A still-declared TV
+        removed at runtime returns on the next start — drop the
+        entry to drop the TV.
 
-        When set (non-null), the config file is read-only (Nix store
-        path). This means:
-
-        - Pairing TVs via `tisvlay pair` or the D-Bus `AddTv` method
-          will fail to persist (the daemon cannot write to the file).
-        - Changes only take effect after `nixos-rebuild switch`.
-
-        Leave unset (`null`, the default) to preserve the normal
-        behavior: tisvlayd reads and writes
-        `/var/lib/tisvlay/config.toml` (via `StateDirectory`), which
-        the pairing wizard can modify.
+        Changes to it only take effect after `nixos-rebuild switch`.
+        Leave unset (`null`, the default) to manage TVs entirely at
+        runtime via pairing.
       '';
     };
 
@@ -222,6 +214,16 @@ in
         system profile — set it in the GUI Profiles pane or declaratively;
         it defaults to 0 (off), so enabling this option alone installs the
         client but does not yet blank anything.
+      '';
+    };
+
+    greeter.user = lib.mkOption {
+      type = lib.types.str;
+      default = "plasmalogin";
+      description = ''
+        Account the display manager runs its greeter session as. Added
+        to the daemon group when `greeter.enable` is set, so the idle
+        client can reach the zenoh socket.
       '';
     };
 
@@ -295,27 +297,32 @@ in
           plasma-login-manager today, so tisvlay-greeter.service will not start.
         '';
 
-    # Dedicated system user and group for tisvlayd. uid/gid stay
+    # Dedicated system user and group for tisvlay-daemon. uid/gid stay
     # unset by default — NixOS allocates from the system range and
     # pins the assignment via /var/lib/nixos/uid-map.
     users.groups.${cfg.group} = lib.optionalAttrs (cfg.gid != null) {
       gid = cfg.gid;
     };
-    users.users.${cfg.user} = {
-      description = "tisvlay daemon user";
-      group = cfg.group;
-      isSystemUser = true;
-    }
-    // lib.optionalAttrs (cfg.uid != null) {
-      uid = cfg.uid;
-    };
-
-    # D-Bus policy: allow the tisvlay user to own the service name.
-    # Uses services.dbus.packages (the idiomatic NixOS approach) rather than
-    # environment.etc, since NixOS manages /etc/dbus-1/system.d/ via the dbus module.
-    services.dbus.packages = [
-      (pkgs.writeTextDir "share/dbus-1/system.d/org.tisvlay.Daemon.conf" dbusPolicy)
-    ];
+    users.users = lib.mkMerge (
+      [
+        {
+          ${cfg.user} = {
+            description = "tisvlay daemon user";
+            group = cfg.group;
+            isSystemUser = true;
+          }
+          // lib.optionalAttrs (cfg.uid != null) {
+            uid = cfg.uid;
+          };
+        }
+      ]
+      # Socket-permission grants: listed accounts join the daemon
+      # group so they can connect to the 0660 zenoh socket. The
+      # greeter user gets the same grant when its client is enabled.
+      ++ map (name: {
+        ${name}.extraGroups = [ cfg.group ];
+      }) (cfg.users ++ lib.optional cfg.greeter.enable cfg.greeter.user)
+    );
 
     # CEC device access + optional Pulse-Eight adapter bring-up.
     #
@@ -362,19 +369,20 @@ in
 
     # Firewall: gated by both openFirewall (opt-in) and bindPort
     # being set (assertion above already enforces this combination).
-    # Opens just the one UDP port tisvlayd is configured to bind —
+    # Opens just the one UDP port the daemon is configured to bind —
     # narrower than the per-subnet UDP allow-list distros otherwise
     # need for SSDP responses. See docs/firewall.md.
     networking.firewall.allowedUDPPorts = lib.optionals (cfg.openFirewall && cfg.bindPort != null) [
       cfg.bindPort
     ];
 
-    # System daemon: manages TV connections, exposes D-Bus API.
-    # Config lives in /var/lib/tisvlay/config.toml (StateDirectory), writable
-    # by the daemon so the pairing wizard can persist credentials.
-    # Mode 0750 — only tisvlay user/group can read (contains TV credentials).
-    # Session services query the daemon via D-Bus instead of reading the file.
-    systemd.services.tisvlayd = {
+    # System daemon: owns the TV fleet and the zenoh socket clients
+    # connect to. State lives in /var/lib/tisvlay/daemon.toml
+    # (StateDirectory), writable by the daemon so pairing can persist
+    # credentials. Mode 0750 — only tisvlay user/group can read.
+    # Clients talk to the daemon over the socket instead of reading
+    # the file.
+    systemd.services.tisvlay-daemon = {
       description = "tisvlay TV control daemon";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
@@ -385,23 +393,32 @@ in
       };
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
-          [ (lib.getExe' cfg.package "tisvlayd") ]
-          ++ lib.optionals (configFile != null) [
+          [
+            (lib.getExe' cfg.package "tisvlay-daemon")
+            "--socket"
+            systemSocket
             "--config"
+            "/var/lib/tisvlay/daemon.toml"
+          ]
+          ++ lib.optionals (configFile != null) [
+            "--seed"
             "${configFile}"
           ]
           ++ lib.optionals (cfg.bindPort != null) [
-            "--bind-port"
+            "--ssdp-port"
             (toString cfg.bindPort)
           ]
           ++ cfg.extraArgs
         );
-        ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
         User = cfg.user;
         Group = cfg.group;
         StateDirectory = "tisvlay";
         StateDirectoryMode = "0750";
+        # Socket dir: group-traversable for tisvlay-group clients,
+        # preserved across restarts so connect-only clients redial
+        # the same path.
         RuntimeDirectory = "tisvlay";
+        RuntimeDirectoryMode = "0750";
         RuntimeDirectoryPreserve = "restart";
         Restart = "on-failure";
         RestartSec = 5;
@@ -418,8 +435,9 @@ in
         PrivateDevices = !(cfg.cec.enable || cfg.cec.pulse8.enable);
         NoNewPrivileges = true;
 
-        # Network: UNIX (D-Bus), INET{4,6} (WebSocket to TVs, WoL), NETLINK
-        # (carrier / route monitoring for NIC failover). No PACKET/BLUETOOTH.
+        # Network: UNIX (zenoh socket), INET{4,6} (WebSocket to TVs, WoL,
+        # SSDP), NETLINK (carrier / route monitoring for NIC failover).
+        # No PACKET/BLUETOOTH.
         RestrictAddressFamilies = [
           "AF_UNIX"
           "AF_INET"
@@ -458,10 +476,11 @@ in
           "~@resources"
         ];
 
-        # Files created by the daemon (pairing credentials, config
+        # Files created by the daemon (pairing credentials, state
         # rewrites) should not be world-readable. `StateDirectoryMode`
         # already enforces 0750 on the directory; UMask takes care of
-        # the files within.
+        # the files within. The zenoh socket is the one exception —
+        # the daemon chmods it 0660 after bind.
         UMask = "0077";
 
         # Clean up any SysV IPC the daemon (or its future children)
@@ -477,9 +496,11 @@ in
       };
     };
 
-    # User session monitor: reacts to session lock/unlock and idle events.
-    # Loads user config from ~/.config/tisvlay/session.toml (optional).
-    # Queries the daemon via D-Bus for TV list and system default profile.
+    # User session monitor: reacts to session lock/unlock and idle
+    # events, and serves user profiles on the per-user socket in
+    # $XDG_RUNTIME_DIR. The system socket is passed explicitly — the
+    # packaged daemon listens in /run/tisvlay, not the per-user
+    # runtime dir the dev default points at.
     systemd.user.services.tisvlay-session = {
       description = "tisvlay session event monitor";
       wantedBy = [ "graphical-session.target" ];
@@ -490,15 +511,18 @@ in
         RUST_LOG = cfg.logLevel;
       };
       serviceConfig = {
-        ExecStart = lib.getExe' cfg.package "tisvlay-session";
-        ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
+        ExecStart = lib.escapeShellArgs [
+          (lib.getExe' cfg.package "tisvlay-session")
+          "--system-socket"
+          systemSocket
+        ];
         Restart = "on-failure";
         RestartSec = 5;
       };
     };
 
-    # System tray icon: per-user TV control menu via D-Bus.
-    # Communicates with daemon for TV control and session service for profiles.
+    # System tray icon: per-user TV control menu over a live state
+    # mirror; user profiles appear via the session service's socket.
     systemd.user.services.tisvlay-tray = {
       description = "tisvlay system tray";
       wantedBy = [ "graphical-session.target" ];
@@ -512,7 +536,11 @@ in
         RUST_LOG = cfg.logLevel;
       };
       serviceConfig = {
-        ExecStart = lib.getExe' cfg.package "tisvlay-tray";
+        ExecStart = lib.escapeShellArgs [
+          (lib.getExe' cfg.package "tisvlay-tray")
+          "--socket"
+          systemSocket
+        ];
         Restart = "on-failure";
         RestartSec = 5;
       };
@@ -523,8 +551,7 @@ in
     # plasma-login on the session bus — so it MUST be a systemd.user unit: a
     # system service can't be WantedBy= the user-scoped greeter target and
     # wouldn't inherit the compositor's XDG_RUNTIME_DIR/WAYLAND_DISPLAY. The
-    # daemon's existing context="default" D-Bus policy already lets the greeter
-    # user call org.tisvlay.Daemon, so no extra policy is needed.
+    # greeter user joins the daemon group below so it can reach the socket.
     systemd.user.services.tisvlay-greeter = lib.mkIf cfg.greeter.enable {
       description = "tisvlay greeter idle client (plasma-login-manager)";
       documentation = [ "https://github.com/ruffsl/tisvlay" ];
@@ -539,7 +566,11 @@ in
         RUST_LOG = cfg.logLevel;
       };
       serviceConfig = {
-        ExecStart = lib.getExe' cfg.package "tisvlay-greeter";
+        ExecStart = lib.escapeShellArgs [
+          (lib.getExe' cfg.package "tisvlay-greeter")
+          "--socket"
+          systemSocket
+        ];
         Restart = "on-failure";
         RestartSec = 5;
       };

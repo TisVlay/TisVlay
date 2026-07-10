@@ -184,7 +184,8 @@ impl std::error::Error for PairingError {}
 /// Error codes for pairing failures.
 ///
 /// The wire/routing form is [`Self::as_str`] (namespaced `pairing.<kebab>`),
-/// used by `tv_manager::failure_reason` and matched by clients. The derived
+/// carried as the pairing-progress payload's `code` field and matched
+/// by clients. The derived
 /// serde impl exists only because the in-process [`PairingError`] /
 /// [`PairingState`] derive it — those are never serialized across a
 /// boundary, so its (snake_case) form is not a wire contract.
@@ -225,53 +226,6 @@ impl PairingErrorCode {
 impl fmt::Display for PairingErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-/// Structured detail for a `PairingProgress` update.
-///
-/// The transport-agnostic value that carries a progress update's data:
-/// projected onto the D-Bus `a{sv}` dict at the boundary today (and
-/// serde-serializable for any other transport). `code` / `path` are set
-/// only on the terminal `failed` phase; absent `Option` fields are
-/// omitted from the dict, so non-failure updates carry just `message`.
-/// No `deny_unknown_fields`, so an older client tolerates keys a newer
-/// daemon may add.
-#[cfg(feature = "dbus")]
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    zbus::zvariant::Type,
-    zbus::zvariant::SerializeDict,
-    zbus::zvariant::DeserializeDict,
-)]
-#[zvariant(signature = "a{sv}")]
-pub struct PairingProgressDetail {
-    /// Human-readable English detail — the log line and the client's
-    /// fallback display text when it has no localized string for `code`.
-    pub message: String,
-    /// Namespaced reason code for the `failed` phase (e.g.
-    /// `device.permission-denied`, `pairing.rejected`); clients localize
-    /// by it. See [`PairingErrorCode::as_str`] and
-    /// [`crate::errors::DeviceErrorCode`].
-    pub code: Option<String>,
-    /// Reason-specific parameter — the device-node path for
-    /// `device.permission-denied`. Absent for reasons that carry none.
-    pub path: Option<String>,
-}
-
-#[cfg(feature = "dbus")]
-impl PairingProgressDetail {
-    /// A non-failure update carrying just a human message — no reason
-    /// code or parameter (the common case for progress and success).
-    pub fn message(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            code: None,
-            path: None,
-        }
     }
 }
 
@@ -505,10 +459,9 @@ impl PairingSession {
     ///
     /// Allows callers outside the session's owning scope to send
     /// `PairingCommand::Cancel` (and future commands) without holding
-    /// the session itself. Used by `tisvlayd::tv_manager`'s
-    /// `pairing_sessions` map so `Manager1.CancelPair(tv_id)` can
-    /// reach in-flight pair handshakes owned by `pair_tv` /
-    /// `re_pair_tv`.
+    /// the session itself. The daemon's world keeps this sender on
+    /// the pairing entity so the `cancel-pair` rpc can reach
+    /// in-flight pair and re-pair handshakes.
     pub fn command_sender(&self) -> mpsc::Sender<PairingCommand> {
         self.command_tx.clone()
     }
@@ -584,36 +537,6 @@ mod tests {
             PairingErrorCode::Timeout.to_string(),
             PairingErrorCode::Timeout.as_str(),
         );
-    }
-
-    #[cfg(feature = "dbus")]
-    #[test]
-    fn pairing_progress_detail_round_trips_dbus_and_json() {
-        use zbus::zvariant::{LE, serialized::Context, to_bytes};
-
-        let detail = PairingProgressDetail {
-            message: "Permission denied accessing /dev/cec0".into(),
-            code: Some("device.permission-denied".into()),
-            path: Some("/dev/cec0".into()),
-        };
-
-        // D-Bus a{sv} projection.
-        let ctx = Context::new_dbus(LE, 0);
-        let encoded = to_bytes(ctx, &detail).expect("encode a{sv}");
-        let (decoded, _): (PairingProgressDetail, usize) =
-            encoded.deserialize().expect("decode a{sv}");
-        assert_eq!(decoded, detail);
-
-        // serde JSON projection (the transport-agnostic contract); absent
-        // Option fields are omitted from the dict.
-        let bare = PairingProgressDetail {
-            message: "Accept on TV".into(),
-            code: None,
-            path: None,
-        };
-        let json = serde_json::to_string(&bare).unwrap();
-        assert!(!json.contains("code"), "None fields omitted: {json}");
-        assert!(!json.contains("path"), "None fields omitted: {json}");
     }
 
     #[test]

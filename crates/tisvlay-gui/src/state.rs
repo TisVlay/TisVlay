@@ -6,21 +6,21 @@
 //! `Send`. The Slint event-loop closure then wraps the inner per-row
 //! lists into `ModelRc` (which holds `Rc`, `!Send`).
 //!
-//! [`fetch_state`] does the IO (daemon + session bus calls) and hands
-//! a [`SnapshotInputs`] off to the pure [`convert_snapshot`] function.
-//! Tests construct `SnapshotInputs` directly and assert on the
-//! resulting `StateSnapshot` without touching D-Bus.
+//! [`fetch_state`] does the IO (daemon + session-service calls) and
+//! hands a [`SnapshotInputs`] off to the pure [`convert_snapshot`]
+//! function. Tests construct `SnapshotInputs` directly and assert on
+//! the resulting `StateSnapshot` without touching the wire.
 
 use std::collections::HashMap;
 
-use anyhow::Result;
-use gettextrs::gettext;
-use slint::SharedString;
-use tisvlay_core::{
+use crate::compat::{
     Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, power_state_str_is_on,
     references_of, user_references_of,
 };
+use anyhow::Result;
+use gettextrs::gettext;
+use slint::SharedString;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -33,8 +33,9 @@ pub struct TvViewRaw {
     pub vendor: SharedString,
     /// Canonical vendor for branding the tile — mirrors `TvInfo::brand`.
     pub brand: SharedString,
-    /// Backend's primary diagnostic descriptor — first non-Secret entry
-    /// of `Tv1.VendorInfo`. LG: IP address. Future Bluetooth: MAC.
+    /// Backend's primary diagnostic descriptor — first vendor-config
+    /// row (`get-config` rpc), falling back to the read-only
+    /// diagnostic list. LG: IP address. Future Bluetooth: MAC.
     /// Future USB-CEC: serial-port path. Rendered as the small
     /// monospace hint beside the TV name in the master list.
     pub primary_descriptor: SharedString,
@@ -45,8 +46,9 @@ pub struct TvViewRaw {
     /// CEC TV still offers "Power on".
     pub is_on: bool,
     pub supports_wake: bool,
-    /// Per-capability flags from `Tv1.Capabilities` (mirrors
-    /// [`TvInfo::capabilities`]), used to hide controls a backend can't
+    /// Per-capability flags from the identity payload's capability
+    /// list (mirrors [`TvInfo::capabilities`]), used to hide
+    /// controls a backend can't
     /// drive — a CEC TV has no volume, mute, backlight, or screen-blank.
     /// Static per vendor, so controls don't flicker as the TV's
     /// connection cycles.
@@ -78,8 +80,8 @@ pub struct TvViewRaw {
     pub hw_model: SharedString,
     pub hw_serial: SharedString,
     pub desktop_connector: SharedString,
-    /// User-editable vendor-config rows from `Tv1.VendorConfig`
-    /// (LG: IP, MAC). Rendered in the CONFIG group's view-mode
+    /// User-editable vendor-config rows from the `get-config` rpc
+    /// payload (LG: IP, MAC). Rendered in the CONFIG group's view-mode
     /// list; the edit form replaces this with `EditPane.fields`
     /// when the user clicks the pencil. Plain
     /// `Vec<(String, String)>` here so the snapshot crosses the
@@ -87,8 +89,8 @@ pub struct TvViewRaw {
     /// `[VendorInfoRow]` (a `ModelRc`-backed list) happens inside
     /// the event-loop closure in `main.rs`.
     pub vendor_config: Vec<(String, String)>,
-    /// Backend-discovered diagnostic rows from `Tv1.VendorInfo`
-    /// (LG: WebSocket scheme). Read-only; rendered in the INFO
+    /// Backend-discovered diagnostic rows (`TvInfo::vendor_info`;
+    /// LG: WebSocket scheme). Read-only; rendered in the INFO
     /// group alongside hardware identity.
     pub vendor_info: Vec<(String, String)>,
 }
@@ -146,12 +148,12 @@ pub struct StateSnapshot {
 /// from D-Bus so [`convert_snapshot`] can be exercised by unit tests.
 pub struct SnapshotInputs {
     pub tvs: Vec<TvInfo>,
-    /// System-profile catalog, keyed by parsed UUID. From
-    /// `Manager1.ListSystemProfiles` (property-bag wire).
+    /// System-profile catalog, keyed by parsed UUID. From the
+    /// daemon's `profile/system/<uuid>` keys.
     pub system_profile_bodies: HashMap<Uuid, SystemProfileBody>,
-    /// User-profile catalog, keyed by parsed UUID. From
-    /// `Session1.ListUserProfiles` (property-bag wire). Empty when
-    /// the session bus isn't available.
+    /// User-profile catalog, keyed by parsed UUID. From the session
+    /// service's `user/profile/<uuid>` keys. Empty when
+    /// the user socket isn't available.
     pub user_profile_bodies: HashMap<Uuid, UserProfileBody>,
     /// Per-TV user-profile assignment, keyed by TV UUID. Missing
     /// entries (no session, fetch failed, or no assignment) surface
@@ -162,11 +164,12 @@ pub struct SnapshotInputs {
 /// Fetch every configured TV's state plus session-side user-profile
 /// assignment + global profile catalogs.
 ///
-/// Single round-trip on the system bus (`GetManagedObjects` via
-/// `DaemonClient::list_tvs`), one daemon call for the system-profile
-/// body catalog, one optional session-bus call for the user-profile
-/// body catalog, and one optional session-bus call per TV for the
-/// user-profile assignment.
+/// One mirror snapshot (`DaemonClient::list_tvs`, hydrated from the
+/// per-TV cached keys) plus a `get-config` query per TV, one daemon
+/// call for the system-profile
+/// body catalog, one optional session-service call for the
+/// user-profile body catalog, and one optional session-service call
+/// per TV for the user-profile assignment.
 pub async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
@@ -186,8 +189,14 @@ pub async fn fetch_state(
 
     let mut user_profile_by_uuid = HashMap::new();
     if let Some(s) = session {
-        for tv in &tvs {
-            if let Ok(profile) = s.get_tv_user_profile(&tv.uuid).await {
+        // Per-TV assignment lookups are independent — issue them
+        // concurrently so the refresh pass isn't serialized on
+        // round-trips.
+        let profiles =
+            futures_util::future::join_all(tvs.iter().map(|tv| s.get_tv_user_profile(&tv.uuid)))
+                .await;
+        for (tv, profile) in tvs.iter().zip(profiles) {
+            if let Ok(profile) = profile {
                 user_profile_by_uuid.insert(tv.uuid.clone(), profile);
             }
         }
@@ -202,7 +211,7 @@ pub async fn fetch_state(
 }
 
 /// Fetch a single system-profile body. Wraps the typed CRUD wrapper
-/// so callers can refresh one row on a `SystemProfileChanged` signal
+/// so callers can refresh one row on a `SystemProfileChanged` event
 /// without going through a full catalog list. Errors propagate so the
 /// caller can decide whether to retry or drop the cached row.
 pub async fn fetch_system_profile_body(
@@ -260,7 +269,7 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
 
         // Spatial hint shown alongside the name — backend's primary
         // editable descriptor (LG: IP; future Bluetooth: MAC; etc.).
-        // First entry of `Tv1.VendorConfig` by convention. Falls
+        // First vendor-config row by convention. Falls
         // back to the read-only diagnostic list if a backend has no
         // `UserInput` schema fields.
         let primary_descriptor = tv
@@ -565,7 +574,7 @@ impl HasName for UserProfileBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay_core::{DesktopMapping, HardwareId, SessionAction};
+    use crate::compat::{DesktopMapping, HardwareId, SessionAction};
 
     /// Build a `TvInfo` with sensible defaults so each test only
     /// names the fields it cares about. `TvInfo` doesn't derive
@@ -825,7 +834,7 @@ mod tests {
 
     #[test]
     fn tv_system_profile_field_resolves_uuid_to_name() {
-        // `Tv1.SystemProfile` carries the UUID; the TVs-pane combobox
+        // `TvInfo::system_profile` carries the UUID; the TVs-pane combobox
         // renders `current-value` verbatim against the names model, so
         // `convert_snapshot` must do the UUID -> name translation.
         // The mirror `system_profile_uuid` field carries the immutable
@@ -882,8 +891,8 @@ mod tests {
 
     #[test]
     fn tv_with_empty_profile_assignment_collapses_to_default_uuid() {
-        // A TV with no `Tv1.SystemProfile` set surfaces an empty
-        // string on the wire. The navigation pencil needs a real UUID
+        // A TV with no system profile assigned surfaces an empty
+        // `TvInfo::system_profile`. The navigation pencil needs a real UUID
         // to route on, so `system_profile_uuid` collapses to the
         // reserved-default UUID rather than `""`.
         let tv = sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A");
@@ -927,7 +936,7 @@ mod tests {
     fn tv_user_profile_field_resolves_uuid_to_name() {
         // Same shape as the system test, but the user side feeds
         // `convert_snapshot` via `user_profile_by_uuid` (the wire
-        // assignment from `Session1.GetTvUserProfile`).
+        // assignment from `SessionClient::get_tv_user_profile`).
         let movies_uuid = Uuid::new_v4();
         let inputs = SnapshotInputs {
             tvs: vec![sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A")],
@@ -1058,12 +1067,12 @@ mod tests {
         // the snapshot's row builder.
         let _b = SystemProfileBody {
             name: "guest".into(),
-            on_startup: Some(SessionAction::PowerOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
         let _u = UserProfileBody {
             name: "movies".into(),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..Default::default()
         };
     }

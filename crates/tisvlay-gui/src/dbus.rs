@@ -4,8 +4,9 @@
 //! under the well-known name `org.tisvlay.Gui`:
 //!
 //! - `org.tisvlay.Gui1` — version + config_path introspection.
-//!   Mirrors `org.tisvlay.Daemon1` / `org.tisvlay.Session1` so
-//!   external tooling can probe peers uniformly.
+//!   Mirrors the version/path fields of the daemon's and session
+//!   service's `info` rpcs so external tooling can probe peers
+//!   uniformly.
 //! - `org.freedesktop.Application` — single-instance activation per
 //!   the freedesktop Desktop Entry D-Bus spec. Launchers (KRunner,
 //!   the Plasma app menu, GNOME Shell, the tray's "Settings"
@@ -162,9 +163,9 @@ async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
 }
 
 // ----------------------------------------------------------------
-// org.tisvlay.Gui1 — peer introspection. Mirrors the daemon's
-// and session's `*1` interfaces; external tooling probes them
-// uniformly across all four peers (daemon, session, tray, GUI).
+// org.tisvlay.Gui1 — peer introspection. Mirrors the version/path
+// fields of the other peers' `info` rpcs; external tooling probes
+// them uniformly across all four peers (daemon, session, tray, GUI).
 // ----------------------------------------------------------------
 
 pub(crate) struct GuiService {

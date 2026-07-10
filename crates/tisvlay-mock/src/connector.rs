@@ -121,6 +121,12 @@ impl TvConnector for MockConnector {
             tokio::time::sleep(delay).await;
         }
 
+        if config.refuse_connect {
+            return Err(tisvlay_core::Error::backend(
+                crate::VENDOR_ID,
+                "connect refused by test config",
+            ));
+        }
         tracing::debug!(address = %config.address, "connecting to mock TV");
         Ok(Box::new(MockConnection::new(
             &config,
@@ -129,10 +135,10 @@ impl TvConnector for MockConnector {
         )))
     }
 
-    fn supports_wake(&self, _vendor_config: &toml::Value) -> bool {
-        // Mock TVs are always reachable — "wake" is a no-op that returns
-        // immediately, so we claim wake support.
-        true
+    fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
+        // Config-driven so tests can flip it via update-config; wake
+        // itself stays a no-op either way.
+        parse_config(vendor_config).map(|c| c.wake).unwrap_or(true)
     }
 
     #[instrument(skip(self, vendor_config))]

@@ -90,46 +90,42 @@ pub(crate) fn open_notices_html() -> anyhow::Result<()> {
 /// Static catalogue of every binary that ships in the package.
 /// `name` is the binary identifier (kept for diagnostic-blob lookup);
 /// `friendly` is the human-readable label shown as the row title;
-/// `bus` is the D-Bus well-known name shown in monospace parens
-/// (empty for the CLI row); `description` is the rich one-line
-/// sentence describing what the component does.
-const COMPONENT_CATALOGUE: &[(&str, &str, &str, &str)] = &[
+/// `description` is the rich one-line sentence describing what the
+/// component does. The monospace parens text (each peer's wire
+/// identity: its liveliness key, or the GUI's real D-Bus activation
+/// name) is computed per row in [`make_about_components`] — it
+/// carries the runtime site, so it can't live in this const.
+const COMPONENT_CATALOGUE: &[(&str, &str, &str)] = &[
     (
-        "tisvlayd",
+        "tisvlay-daemon",
         "Daemon",
-        "org.tisvlay.Daemon",
         "Device management, WoL at boot, system profiles.",
     ),
     (
         "tisvlay-session",
         "Session",
-        "org.tisvlay.Session",
         "User-profile assignments and session-event dispatch.",
     ),
     (
         "tisvlay-tray",
         "Tray",
-        "org.tisvlay.Tray",
         "Tray icon, menu actions, real-time TV state.",
     ),
     (
         "tisvlay-gui",
         "GUI",
-        "org.tisvlay.Gui",
         "Graphical interface for TisVlay management.",
     ),
     (
         "tisvlay",
         "CLI",
-        "",
         "Command-line interface for TisVlay management.",
     ),
 ];
 
-/// Probed runtime metadata for a single peer process: its `Version`
-/// and `ConfigPath` D-Bus properties. Always probed together because
-/// they live on the same interface. `config_path` is empty when the
-/// peer has no config file yet (e.g., tray pre-phase-2, GUI).
+/// Probed runtime metadata for a single peer process, from its `info`
+/// rpc. Always probed together because they ride one reply.
+/// `config_path` is empty when the peer has no config file (GUI).
 #[derive(Clone, Default, Debug)]
 pub struct PeerInfo {
     pub version: String,
@@ -173,57 +169,63 @@ pub(crate) async fn probe_cli_version() -> Option<String> {
 
 /// Build the COMPONENTS-table model for the About pane. Each row
 /// gets a status circle on the left and stacked presence + version
-/// pills on the right under one uniform vocabulary: `online` means
-/// "the surface answered" — D-Bus reachable for peers, `--version`
-/// parsed cleanly for the CLI. Daemon / Session / Tray fold their
-/// probed `PeerInfo` into the row; GUI is hardcoded online and ships
-/// its compile-time `CARGO_PKG_VERSION`; CLI's row reflects the
-/// shell-out result.
+/// pills on the right. Availability is liveliness, only: each peer's
+/// `online` comes from its liveliness flag — the same source as the
+/// sidebar footer, so the two can never disagree — while the probed
+/// `PeerInfo` fills version/config *content* ("—" until a probe
+/// lands; a failed probe never renders offline). GUI is hardcoded
+/// online with its compile-time `CARGO_PKG_VERSION`; the CLI row
+/// reflects the `--version` shell-out.
 pub(crate) fn make_about_components(
-    daemon: Option<&PeerInfo>,
-    session: Option<&PeerInfo>,
-    tray: Option<&PeerInfo>,
+    site: &str,
+    daemon: (bool, Option<&PeerInfo>),
+    session: (bool, Option<&PeerInfo>),
+    tray: (bool, Option<&PeerInfo>),
     cli_version: Option<&str>,
 ) -> Vec<AboutComponentRow> {
-    let bus_parens = |bus: &str| {
-        if bus.is_empty() {
+    let peer_row = |(online, info): (bool, Option<&PeerInfo>)| match info {
+        Some(info) => (
+            info.version.clone(),
+            drift_tone(GUI_VERSION, &info.version).to_string(),
+            online,
+            info.config_path.clone(),
+        ),
+        None => (
+            if online {
+                "—".to_string()
+            } else {
+                String::new()
+            },
+            String::new(),
+            online,
+            String::new(),
+        ),
+    };
+    let parens = |identity: String| {
+        if identity.is_empty() {
             String::new()
         } else {
-            format!("({bus})")
+            format!("({identity})")
         }
     };
 
     COMPONENT_CATALOGUE
         .iter()
-        .map(|(name, friendly, bus, description)| {
+        .map(|(name, friendly, description)| {
+            // The wire identity shown in monospace parens: the peer's
+            // liveliness key (presence on the zenoh bus), except the
+            // GUI, whose identity is its real D-Bus activation name.
+            let identity = match *name {
+                "tisvlay-daemon" => tisvlay_wire::keys::daemon_alive(site),
+                "tisvlay-session" => tisvlay_wire::keys::user_alive_session(site),
+                "tisvlay-tray" => tisvlay_wire::keys::user_alive_tray(site),
+                "tisvlay-gui" => "org.tisvlay.Gui".to_string(),
+                _ => String::new(),
+            };
             let (version, tone, online, config_path) = match *name {
-                "tisvlayd" => match daemon {
-                    Some(info) => (
-                        info.version.clone(),
-                        drift_tone(GUI_VERSION, &info.version).to_string(),
-                        true,
-                        info.config_path.clone(),
-                    ),
-                    None => (String::new(), String::new(), false, String::new()),
-                },
-                "tisvlay-session" => match session {
-                    Some(info) => (
-                        info.version.clone(),
-                        drift_tone(GUI_VERSION, &info.version).to_string(),
-                        true,
-                        info.config_path.clone(),
-                    ),
-                    None => (String::new(), String::new(), false, String::new()),
-                },
-                "tisvlay-tray" => match tray {
-                    Some(info) => (
-                        info.version.clone(),
-                        drift_tone(GUI_VERSION, &info.version).to_string(),
-                        true,
-                        info.config_path.clone(),
-                    ),
-                    None => (String::new(), String::new(), false, String::new()),
-                },
+                "tisvlay-daemon" => peer_row(daemon),
+                "tisvlay-session" => peer_row(session),
+                "tisvlay-tray" => peer_row(tray),
                 // GUI has no config file yet (passes `None` to dbus::register).
                 "tisvlay-gui" => (
                     GUI_VERSION.to_string(),
@@ -247,7 +249,7 @@ pub(crate) fn make_about_components(
             AboutComponentRow {
                 name: SharedString::from(*name),
                 friendly_name: SharedString::from(*friendly),
-                bus_address: SharedString::from(bus_parens(bus)),
+                bus_address: SharedString::from(parens(identity)),
                 description: SharedString::from(*description),
                 version: SharedString::from(version),
                 tone: SharedString::from(tone),
@@ -258,8 +260,9 @@ pub(crate) fn make_about_components(
         .collect()
 }
 
-/// Cached `Manager1.GetSupportedVendors` IDs, populated once at
-/// startup and read by the diagnostic-blob builder. `RwLock` rather
+/// Cached supported-vendor IDs (the daemon's `manager/vendors`
+/// catalog), populated once at startup and read by the
+/// diagnostic-blob builder. `RwLock` rather
 /// than `OnceCell` because the value is written from the async
 /// startup path while the Slint callback reads from the main thread;
 /// `std::sync::RwLock` avoids dragging tokio's flavor across the
@@ -307,4 +310,50 @@ pub(crate) fn build_diagnostic_blob(
         user_bus,
         supported_vendors: &supported_vendors,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Availability is liveliness, only: a live peer whose info probe
+    /// failed renders an online row with placeholder content — a failed
+    /// rpc must never read as offline.
+    #[test]
+    fn live_peer_with_failed_probe_renders_online_with_placeholder() {
+        let rows = make_about_components("t", (true, None), (false, None), (true, None), None);
+        let row = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .expect("row present")
+                .clone()
+        };
+        let daemon = row("tisvlay-daemon");
+        assert!(daemon.online);
+        assert_eq!(daemon.version, "—");
+        let session = row("tisvlay-session");
+        assert!(!session.online);
+        assert_eq!(session.version, "");
+        let tray = row("tisvlay-tray");
+        assert!(tray.online);
+        assert_eq!(tray.version, "—");
+    }
+
+    /// A probe that lands fills content and keeps the liveliness flag.
+    #[test]
+    fn probe_content_fills_without_touching_presence() {
+        let info = PeerInfo {
+            version: "9.9.9".into(),
+            config_path: "/tmp/x.toml".into(),
+        };
+        let rows =
+            make_about_components("t", (true, Some(&info)), (false, None), (false, None), None);
+        let daemon = rows
+            .iter()
+            .find(|row| row.name == "tisvlay-daemon")
+            .expect("row present");
+        assert!(daemon.online);
+        assert_eq!(daemon.version, "9.9.9");
+        assert_eq!(daemon.config_path, "/tmp/x.toml");
+    }
 }

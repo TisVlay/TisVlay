@@ -113,7 +113,7 @@ pub(crate) struct MockState {
     /// firmware reports a wake-preflight substate that never
     /// transitions to `Active`. Needed to cover the
     /// `screen_off`-post-wake-settle graceful-fallback branch in
-    /// `tv_manager`.
+    /// the daemon's reliable screen-dispatch tier.
     pub(crate) initial_power_state_overrides: HashMap<String, PowerState>,
 
     /// Per-address call counter for `MockConnection::screen_on`

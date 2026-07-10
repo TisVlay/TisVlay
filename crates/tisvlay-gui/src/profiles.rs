@@ -5,7 +5,7 @@
 //! editor, and the dispatch helpers that walk an `(uuid, field)` pair
 //! through the inherit chain.
 //!
-//! Field metadata lives here, **not** in `tisvlay-core` — the daemon
+//! Field metadata lives here, **not** in `tisvlay-core` â the daemon
 //! is purely a property-bag carrier, and tying GUI knowledge to the
 //! wire surface would force a daemon update to introduce a new field
 //! kind. The price is that adding a profile field requires touching
@@ -13,7 +13,7 @@
 //! tables in this module; the upside is that the daemon stays unaware
 //! of widget choices.
 //!
-//! The selection's editor model is rebuilt on every refresh — a select
+//! The selection's editor model is rebuilt on every refresh â a select
 //! call, a `*ProfileChanged` signal whose UUID matches the current
 //! selection, or a fresh default-body fetch. Stale-callback protection
 //! lives on the [`ProfileEditorState::system_gen`] / `user_gen`
@@ -34,13 +34,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gettextrs::pgettext;
-use parking_lot::Mutex;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{
+use crate::compat::{
     AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
     SessionAction, SessionClient, SystemProfileBody, UserProfileBody,
 };
+use gettextrs::pgettext;
+use parking_lot::Mutex;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -54,7 +54,7 @@ use crate::{AppWindow, ProfileFieldEntry, ProfileKind, Profiles, on_ui};
 
 /// Which enum class an `Enum`-kind field carries. Drives the
 /// dispatch fork in [`parse_enum_token`] without a pointer-equality
-/// comparison on the option slice — Rust `const` items inline at
+/// comparison on the option slice â Rust `const` items inline at
 /// each use site and produce per-site anonymous statics, so
 /// `std::ptr::eq` on the slice is unreliable across invocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub(crate) enum EnumClass {
 /// model. The Slint side reads `kind` (as a string) to pick a
 /// `ProfileFieldRowEnum` vs `ProfileFieldRowNumber`; the matching
 /// branch fields below seed the widget. `Bool` and `Text` are reserved
-/// for future shapes — adding one requires extending
+/// for future shapes â adding one requires extending
 /// [`build_field_raw`] and the matching Slint branch.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FieldKind {
@@ -89,7 +89,7 @@ pub(crate) enum FieldKind {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FieldSpec {
     /// Snake-case key on the body dict + the value Slint emits in
-    /// `Profiles.value-edited(field_name, …)` / `reset-field(field_name)`.
+    /// `Profiles.value-edited(field_name, â¦)` / `reset-field(field_name)`.
     pub wire: &'static str,
     pub kind: FieldKind,
 }
@@ -103,7 +103,7 @@ const SESSION_ACTION_OPTIONS: &[&str] =
 const AUTOMATE_WHEN_OPTIONS: &[&str] = &["always", "on_primary", "off_primary"];
 
 /// System-profile field table. Order is the rendering order in the
-/// editor — `on_startup` first, automation gate last.
+/// editor â `on_startup` first, automation gate last.
 pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "on_startup",
@@ -186,10 +186,10 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-/// User-profile field table. `idle_timeout_seconds` is the lone
-/// numeric field; the rest are `SessionAction` enums. Bounds chosen
-/// for a full 24-hour range with a one-minute step so the spinner
-/// stays usable for both "5 minute" and "12 hour" idle policies.
+/// User-profile field table. The two idle timeouts are the numeric
+/// fields; the rest are `SessionAction` enums. Bounds chosen for a
+/// full 24-hour range with a 15-second step so the spinner stays
+/// usable for both "5 minute" and "12 hour" idle policies.
 pub(crate) const USER_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "on_session_lock",
@@ -220,7 +220,16 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "idle_timeout_seconds",
+        wire: "locked_idle_timeout_seconds",
+        kind: FieldKind::Number {
+            min: 0,
+            max: 86_400,
+            step: 15,
+            unit: "seconds",
+        },
+    },
+    FieldSpec {
+        wire: "unlocked_idle_timeout_seconds",
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
@@ -259,7 +268,9 @@ fn field_label(wire: &str) -> String {
         "on_idle_timeout" => pgettext("profile field", "On idle timeout"),
         "on_idle_resume" => pgettext("profile field", "On idle resume"),
         "idle_timeout_seconds" => pgettext("profile field", "Idle timeout"),
-        // Unknown wire keys flow through verbatim — should never
+        "locked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (locked)"),
+        "unlocked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (unlocked)"),
+        // Unknown wire keys flow through verbatim â should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
         other => other.to_string(),
@@ -272,21 +283,37 @@ fn field_label(wire: &str) -> String {
 
 /// Three-layer body cache for system profiles.
 ///
-/// - `baseline` — the hard-coded body the daemon exposes via
+/// - `baseline` â the hard-coded body the daemon exposes via
 ///   `GetResolvedSystemProfileDefaults`. Fetched once at GUI start
 ///   (and on `DaemonAppeared`); never invalidated mid-session.
-/// - `default_body` — the reserved-default profile's body
+/// - `default_body` â the reserved-default profile's body
 ///   (`DEFAULT_SYSTEM_PROFILE_UUID`). Refreshed when its
 ///   `SystemProfileChanged` signal arrives.
-/// - `bodies` — the per-profile catalog keyed by UUID. Each entry
+/// - `bodies` â the per-profile catalog keyed by UUID. Each entry
 ///   refreshes when its own `Changed` signal arrives. Filled lazily
 ///   on selection so a session with hundreds of profiles doesn't
-///   pay a fan-out fetch up front.
+///   pay a fan-out fetch up front. The reserved-default UUID never
+///   lives here â [`ProfileLayers::cache_body`] routes it to the
+///   `default_body` slot, keeping exactly one copy. A map entry for
+///   it would shadow the slot in the resolve walk and go stale the
+///   next time only the slot refreshes.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ProfileLayers {
     pub baseline: SystemProfileBody,
     pub default_body: SystemProfileBody,
     pub bodies: HashMap<Uuid, SystemProfileBody>,
+}
+
+impl ProfileLayers {
+    /// Cache a fetched body under its UUID, routing the reserved
+    /// default to its dedicated slot.
+    pub(crate) fn cache_body(&mut self, uuid: Uuid, body: SystemProfileBody) {
+        if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
+            self.default_body = body;
+        } else {
+            self.bodies.insert(uuid, body);
+        }
+    }
 }
 
 /// User-side mirror of [`ProfileLayers`].
@@ -295,6 +322,17 @@ pub(crate) struct UserProfileLayers {
     pub baseline: UserProfileBody,
     pub default_body: UserProfileBody,
     pub bodies: HashMap<Uuid, UserProfileBody>,
+}
+
+impl UserProfileLayers {
+    /// User-side mirror of [`ProfileLayers::cache_body`].
+    pub(crate) fn cache_body(&mut self, uuid: Uuid, body: UserProfileBody) {
+        if uuid == DEFAULT_USER_PROFILE_UUID {
+            self.default_body = body;
+        } else {
+            self.bodies.insert(uuid, body);
+        }
+    }
 }
 
 // =============================================================================
@@ -310,7 +348,7 @@ pub(crate) struct UserProfileLayers {
 pub(crate) enum ResolvedValue {
     /// Field is set on the profile's own body.
     LocallySet { current: String },
-    /// Field is `None` on its body — value walked from the default
+    /// Field is `None` on its body â value walked from the default
     /// body, then the baseline.
     Inheriting { current: String },
 }
@@ -391,21 +429,83 @@ pub(crate) fn resolve_user_field(
     ResolvedValue::Inheriting { current: resolved }
 }
 
+/// Read one action field off a `SystemProfileBody` as its full spec
+/// (action + modifiers); `None` for absent fields and non-action wires.
+fn read_system_action(body: &SystemProfileBody, wire: &str) -> Option<tisvlay_core::EventAction> {
+    match wire {
+        "on_startup" => body.on_startup,
+        "on_shutdown" => body.on_shutdown,
+        "on_reboot" => body.on_reboot,
+        "on_sleep" => body.on_sleep,
+        "on_wake" => body.on_wake,
+        "on_dpms_off" => body.on_dpms_off,
+        "on_dpms_on" => body.on_dpms_on,
+        "on_idle_timeout" => body.on_idle_timeout,
+        "on_idle_resume" => body.on_idle_resume,
+        _ => None,
+    }
+}
+
+/// User-side mirror of [`read_system_action`].
+fn read_user_action(body: &UserProfileBody, wire: &str) -> Option<tisvlay_core::EventAction> {
+    match wire {
+        "on_session_lock" => body.on_session_lock,
+        "on_session_unlock" => body.on_session_unlock,
+        "on_lock_wake" => body.on_lock_wake,
+        "on_idle_timeout" => body.on_idle_timeout,
+        "on_idle_resume" => body.on_idle_resume,
+        _ => None,
+    }
+}
+
+/// Resolve an action field's `restore_input` modifier through the same
+/// own → default → baseline chain as [`resolve_system_field`].
+pub(crate) fn resolve_system_restore(layers: &ProfileLayers, uuid: Uuid, wire: &str) -> bool {
+    let own_body = layers
+        .bodies
+        .get(&uuid)
+        .or_else(|| (uuid == DEFAULT_SYSTEM_PROFILE_UUID).then_some(&layers.default_body));
+    own_body
+        .and_then(|body| read_system_action(body, wire))
+        .or_else(|| read_system_action(&layers.default_body, wire))
+        .or_else(|| read_system_action(&layers.baseline, wire))
+        .map(|a| a.restore_input())
+        .unwrap_or(false)
+}
+
+/// User-side mirror of [`resolve_system_restore`].
+pub(crate) fn resolve_user_restore(layers: &UserProfileLayers, uuid: Uuid, wire: &str) -> bool {
+    let own_body = layers
+        .bodies
+        .get(&uuid)
+        .or_else(|| (uuid == DEFAULT_USER_PROFILE_UUID).then_some(&layers.default_body));
+    own_body
+        .and_then(|body| read_user_action(body, wire))
+        .or_else(|| read_user_action(&layers.default_body, wire))
+        .or_else(|| read_user_action(&layers.baseline, wire))
+        .map(|a| a.restore_input())
+        .unwrap_or(false)
+}
+
 /// Read one field off a `SystemProfileBody`. Returns `None` when the
 /// dict-derive `Option<T>` is absent (the inherit signal); returns
 /// `Some("wire_token")` otherwise. Stays in this module so changes
 /// to the body shape co-locate with the table.
 fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
     match wire {
-        "on_startup" => body.on_startup.map(session_action_token),
-        "on_shutdown" => body.on_shutdown.map(session_action_token),
-        "on_reboot" => body.on_reboot.map(session_action_token),
-        "on_sleep" => body.on_sleep.map(session_action_token),
-        "on_wake" => body.on_wake.map(session_action_token),
-        "on_dpms_off" => body.on_dpms_off.map(session_action_token),
-        "on_dpms_on" => body.on_dpms_on.map(session_action_token),
-        "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
-        "on_idle_resume" => body.on_idle_resume.map(session_action_token),
+        "on_startup" => body.on_startup.map(|a| session_action_token(a.action())),
+        "on_shutdown" => body.on_shutdown.map(|a| session_action_token(a.action())),
+        "on_reboot" => body.on_reboot.map(|a| session_action_token(a.action())),
+        "on_sleep" => body.on_sleep.map(|a| session_action_token(a.action())),
+        "on_wake" => body.on_wake.map(|a| session_action_token(a.action())),
+        "on_dpms_off" => body.on_dpms_off.map(|a| session_action_token(a.action())),
+        "on_dpms_on" => body.on_dpms_on.map(|a| session_action_token(a.action())),
+        "on_idle_timeout" => body
+            .on_idle_timeout
+            .map(|a| session_action_token(a.action())),
+        "on_idle_resume" => body
+            .on_idle_resume
+            .map(|a| session_action_token(a.action())),
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
         "automate_when" => body.automate_when.map(automate_when_token),
         _ => None,
@@ -415,12 +515,23 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
 /// User-side mirror of [`read_system_field`].
 fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
     match wire {
-        "on_session_lock" => body.on_session_lock.map(session_action_token),
-        "on_session_unlock" => body.on_session_unlock.map(session_action_token),
-        "on_lock_wake" => body.on_lock_wake.map(session_action_token),
-        "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
-        "on_idle_resume" => body.on_idle_resume.map(session_action_token),
-        "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
+        "on_session_lock" => body
+            .on_session_lock
+            .map(|a| session_action_token(a.action())),
+        "on_session_unlock" => body
+            .on_session_unlock
+            .map(|a| session_action_token(a.action())),
+        "on_lock_wake" => body.on_lock_wake.map(|a| session_action_token(a.action())),
+        "on_idle_timeout" => body
+            .on_idle_timeout
+            .map(|a| session_action_token(a.action())),
+        "on_idle_resume" => body
+            .on_idle_resume
+            .map(|a| session_action_token(a.action())),
+        "locked_idle_timeout_seconds" => body.locked_idle_timeout_seconds.map(|v| v.to_string()),
+        "unlocked_idle_timeout_seconds" => {
+            body.unlocked_idle_timeout_seconds.map(|v| v.to_string())
+        }
         _ => None,
     }
 }
@@ -483,7 +594,7 @@ pub(crate) struct Selection {
     pub uuid: Option<Uuid>,
 }
 
-/// Editor state held in an `Arc<Mutex<…>>` so the StateWatcher's
+/// Editor state held in an `Arc<Mutex<â¦>>` so the StateWatcher's
 /// signal-dispatch task and the per-callback async tasks can both
 /// mutate it under the same lock.
 ///
@@ -537,24 +648,29 @@ pub(crate) fn new_editor() -> ProfileEditor {
 // =============================================================================
 
 /// Prime the baseline + default body for the system layers. Called at
-/// startup and on `DaemonAppeared`. Errors are logged but non-fatal —
+/// startup and on `DaemonAppeared`. Errors are logged but non-fatal â
 /// a stale baseline / default just means the inherit walk falls back
 /// to `SystemProfileBody::default()` (all-`None`), which the daemon
 /// rejects on dispatch with a `None` action (the same outcome a body
 /// with no fields produces today).
 pub(crate) async fn prime_system_layers(daemon: &DaemonClient, editor: &ProfileEditor) {
+    // Fallbacks are the hard-coded floor, never an empty body: a prime
+    // that races the background-dialing link (or a mirror that has not
+    // hydrated the default profile yet) must not leave inheriting rows
+    // rendering blank until the next re-prime.
+    let floor = || SystemProfileBody::full_default();
     let baseline = match daemon.get_resolved_system_profile_defaults().await {
         Ok(b) => b,
         Err(e) => {
-            warn!(error = %e, "Priming system baseline failed; falling back to empty");
-            SystemProfileBody::default()
+            warn!(error = %e, "Priming system baseline failed; falling back to the floor");
+            floor()
         }
     };
     let default_body = match daemon.get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID).await {
         Ok(b) => b,
         Err(e) => {
-            debug!(error = %e, "Default system profile body fetch failed; using empty");
-            SystemProfileBody::default()
+            debug!(error = %e, "Default system profile body fetch failed; using the floor");
+            floor()
         }
     };
     let mut state = editor.lock();
@@ -564,18 +680,19 @@ pub(crate) async fn prime_system_layers(daemon: &DaemonClient, editor: &ProfileE
 
 /// User-side mirror of [`prime_system_layers`].
 pub(crate) async fn prime_user_layers(session: &SessionClient, editor: &ProfileEditor) {
+    let floor = || UserProfileBody::full_default();
     let baseline = match session.get_resolved_user_profile_defaults().await {
         Ok(b) => b,
         Err(e) => {
-            warn!(error = %e, "Priming user baseline failed; falling back to empty");
-            UserProfileBody::default()
+            warn!(error = %e, "Priming user baseline failed; falling back to the floor");
+            floor()
         }
     };
     let default_body = match session.get_user_profile(DEFAULT_USER_PROFILE_UUID).await {
         Ok(b) => b,
         Err(e) => {
-            debug!(error = %e, "Default user profile body fetch failed; using empty");
-            UserProfileBody::default()
+            debug!(error = %e, "Default user profile body fetch failed; using the floor");
+            floor()
         }
     };
     let mut state = editor.lock();
@@ -595,7 +712,7 @@ pub(crate) async fn prime_user_layers(session: &SessionClient, editor: &ProfileE
 /// `system_gen` / `user_gen` is bumped at task start. If the user
 /// re-selects mid-flight (clicking another row), the captured value
 /// no longer matches the live counter and the post-fetch model push
-/// is a no-op — the new selection's task carries the fresh model.
+/// is a no-op â the new selection's task carries the fresh model.
 pub(crate) async fn select(
     editor: ProfileEditor,
     daemon: Arc<DaemonClient>,
@@ -626,7 +743,7 @@ pub(crate) async fn select(
     }
 
     // Lazy prime: only fetch the body if not already cached (or if
-    // it's the reserved default — that body lives on the dedicated
+    // it's the reserved default â that body lives on the dedicated
     // `default_body` slot, refreshed by the signal handler).
     let need_fetch = {
         let state = editor.lock();
@@ -660,10 +777,10 @@ pub(crate) async fn select(
 
         match fetch_result {
             Ok(SystemOrUser::System(body)) => {
-                editor.lock().system.bodies.insert(uuid, body);
+                editor.lock().system.cache_body(uuid, body);
             }
             Ok(SystemOrUser::User(body)) => {
-                editor.lock().user.bodies.insert(uuid, body);
+                editor.lock().user.cache_body(uuid, body);
             }
             Err(e) => {
                 warn!(uuid = %uuid, ?kind, error = %e, "Profile body fetch failed");
@@ -671,7 +788,7 @@ pub(crate) async fn select(
         }
     }
 
-    // Stale-callback guard before publishing — if the user selected
+    // Stale-callback guard before publishing â if the user selected
     // again while we were fetching, the new task owns the push.
     let still_current = {
         let state = editor.lock();
@@ -703,12 +820,12 @@ enum SystemOrUser {
 
 /// Build the `[ProfileFieldEntry]` model + the `can-reset-all` flag
 /// from the current layer state and push them into the Slint global.
-/// Pure-data plus an `on_ui` hop — no IO.
+/// Pure-data plus an `on_ui` hop â no IO.
 ///
 /// The intermediate [`ProfileFieldRaw`] is `Send` (plain `Vec`s, no
 /// `ModelRc`); the `ModelRc::new` step happens inside the event-loop
 /// closure since `ModelRc` is `!Send`. Mirrors the
-/// `TvViewRaw → TvViewModel` pattern in `state.rs`.
+/// `TvViewRaw â TvViewModel` pattern in `state.rs`.
 fn push_editor_rows(
     editor: &ProfileEditor,
     app_weak: slint::Weak<AppWindow>,
@@ -736,7 +853,7 @@ fn push_editor_rows(
         // (a value edit / echo) and the field shape is unchanged, so Slint
         // reuses the existing row elements and keyboard focus survives.
         // A switch to a different profile replaces the model with fresh
-        // elements — reusing rows across a switch could let an in-flight
+        // elements â reusing rows across a switch could let an in-flight
         // edit in a focused row commit against the newly-selected profile.
         let existing = profiles.get_editor_fields();
         let same_shape = same_profile
@@ -748,7 +865,7 @@ fn push_editor_rows(
             });
         if same_shape {
             for (i, row) in rows.into_iter().enumerate() {
-                // Only write rows that actually changed — an unchanged
+                // Only write rows that actually changed â an unchanged
                 // set_row_data still fires a Slint row-changed notification
                 // and re-renders that row.
                 if existing.row_data(i).as_ref() != Some(&row) {
@@ -766,7 +883,7 @@ fn push_editor_rows(
 /// `(FieldSpec, ResolvedValue)` on a worker thread and converted to
 /// the Slint-generated `ProfileFieldEntry` (which carries a `ModelRc`,
 /// `!Send`) inside the event-loop closure. Field shapes mirror
-/// `ProfileFieldEntry` 1:1 so the conversion is straight wrapping —
+/// `ProfileFieldEntry` 1:1 so the conversion is straight wrapping â
 /// the `options` `Vec` becomes a `ModelRc`-backed list, everything
 /// else copies through.
 #[derive(Debug, Clone)]
@@ -782,6 +899,8 @@ pub(crate) struct ProfileFieldRaw {
     pub step: i32,
     pub unit: &'static str,
     pub is_locally_set: bool,
+    pub has_restore: bool,
+    pub restore_value: bool,
 }
 
 /// Wrap a raw row into the Slint `ProfileFieldEntry`. Must run on
@@ -800,6 +919,8 @@ fn into_slint_entry(raw: ProfileFieldRaw) -> ProfileFieldEntry {
         step: raw.step,
         unit: SharedString::from(raw.unit),
         is_locally_set: raw.is_locally_set,
+        has_restore: raw.has_restore,
+        restore_value: raw.restore_value,
     }
 }
 
@@ -813,7 +934,12 @@ fn build_system_rows(layers: &ProfileLayers, uuid: Uuid) -> (Vec<ProfileFieldRaw
         if resolved.is_locally_set() {
             can_reset = true;
         }
-        rows.push(build_field_raw(field, &resolved));
+        let mut raw = build_field_raw(field, &resolved);
+        if row_carries_restore(field, &resolved) {
+            raw.has_restore = true;
+            raw.restore_value = resolve_system_restore(layers, uuid, field.wire);
+        }
+        rows.push(raw);
     }
     (rows, can_reset)
 }
@@ -827,14 +953,31 @@ fn build_user_rows(layers: &UserProfileLayers, uuid: Uuid) -> (Vec<ProfileFieldR
         if resolved.is_locally_set() {
             can_reset = true;
         }
-        rows.push(build_field_raw(field, &resolved));
+        let mut raw = build_field_raw(field, &resolved);
+        if row_carries_restore(field, &resolved) {
+            raw.has_restore = true;
+            raw.restore_value = resolve_user_restore(layers, uuid, field.wire);
+        }
+        rows.push(raw);
     }
     (rows, can_reset)
 }
 
+/// The restore-input checkbox renders only on action rows whose
+/// resolved verb is on-ish — the modifier is meaningless elsewhere.
+fn row_carries_restore(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
+    matches!(
+        field.kind,
+        FieldKind::Enum {
+            class: EnumClass::SessionAction,
+            ..
+        }
+    ) && matches!(resolved.current(), "screen_on" | "power_on")
+}
+
 /// Convert a `(FieldSpec, ResolvedValue)` pair into a [`ProfileFieldRaw`].
 /// Variant-specific fields outside the matched kind stay at their
-/// zero values — same convention as `ProfileFieldEntry`'s doc
+/// zero values â same convention as `ProfileFieldEntry`'s doc
 /// comment in `profiles.slint`.
 fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldRaw {
     let mut raw = ProfileFieldRaw {
@@ -849,6 +992,8 @@ fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldR
         step: 0,
         unit: "",
         is_locally_set: resolved.is_locally_set(),
+        has_restore: false,
+        restore_value: false,
     };
 
     match field.kind {
@@ -885,7 +1030,7 @@ fn field_kind_tag(field: &FieldSpec) -> &'static str {
 
 /// Refresh the editor rows for the current selection without
 /// re-running the catalog-priming part of [`select`]. Used by the
-/// signal handler when a `*ProfileChanged` arrives — the cache has
+/// signal handler when a `*ProfileChanged` arrives â the cache has
 /// already been updated, we just need to rebuild the model.
 fn refresh_editor_if_selected(editor: &ProfileEditor, app_weak: slint::Weak<AppWindow>) {
     let (kind, uuid) = {
@@ -921,7 +1066,7 @@ pub(crate) async fn handle_system_changed(
         let mut state = editor.lock();
         if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
             state.system.default_body = new_body;
-            // Default shifted — every system selection's inherit
+            // Default shifted â every system selection's inherit
             // chain moved, so refresh whatever's currently selected
             // on the system side.
             (
@@ -931,7 +1076,7 @@ pub(crate) async fn handle_system_changed(
         } else {
             state.system.bodies.insert(uuid, new_body);
             // Only refresh if the changed profile is the current
-            // selection — other rows don't reference its body.
+            // selection â other rows don't reference its body.
             (
                 Some(EditorKind::System),
                 state.selection.kind == Some(EditorKind::System)
@@ -957,10 +1102,14 @@ pub(crate) async fn handle_system_added(
 ) {
     match fetch_system_profile_body(&daemon, uuid).await {
         Ok(body) => {
-            editor.lock().system.bodies.insert(uuid, body);
+            // In a fresh launch the default profile lands here (mirror
+            // hydration finishes after the startup prime); `cache_body`
+            // routes it to the inherit-chain slot so inheriting rows
+            // stop resolving against the stale prime fallback.
+            editor.lock().system.cache_body(uuid, body);
         }
         Err(e) => {
-            // Non-fatal — the next select on this UUID will re-fetch
+            // Non-fatal â the next select on this UUID will re-fetch
             // through the lazy-prime path.
             debug!(uuid = %uuid, error = %e, "Eager fetch after SystemProfileAdded failed");
         }
@@ -1047,7 +1196,7 @@ pub(crate) async fn handle_user_added(
     };
     match fetch_user_profile_body(client, uuid).await {
         Ok(body) => {
-            editor.lock().user.bodies.insert(uuid, body);
+            editor.lock().user.cache_body(uuid, body);
         }
         Err(e) => {
             debug!(uuid = %uuid, error = %e, "Eager fetch after UserProfileAdded failed");
@@ -1119,6 +1268,9 @@ fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BodyPatch {
     SessionAction(SessionAction),
+    /// A full action spec (verb + modifiers) - the restore-checkbox
+    /// path, which must set both halves atomically.
+    EventAction(tisvlay_core::EventAction),
     AutomateWhen(AutomateWhen),
     Number(u64),
     Clear,
@@ -1126,7 +1278,7 @@ pub(crate) enum BodyPatch {
 
 /// Parse a ComboBox-emitted token into the matching `SessionAction`
 /// variant. Tokens mirror the `#[serde(rename_all = "snake_case")]`
-/// emitted by [`session_action_token`] — if either diverges this
+/// emitted by [`session_action_token`] â if either diverges this
 /// match arm catches it.
 fn parse_session_action(token: &str) -> anyhow::Result<SessionAction> {
     match token {
@@ -1149,7 +1301,7 @@ fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
 }
 
 /// Mutate one field on a `SystemProfileBody`. The patch's variant
-/// must match the target's `FieldKind` — passing `BodyPatch::Number`
+/// must match the target's `FieldKind` â passing `BodyPatch::Number`
 /// to an enum field surfaces as an `anyhow::Error`.
 fn set_system_field(
     body: &mut SystemProfileBody,
@@ -1161,15 +1313,24 @@ fn set_system_field(
     // collapses the four possible `BodyPatch` shapes into the one
     // the field accepts.
     match wire {
-        "on_startup" => body.on_startup = session_action_patch(patch, "on_startup")?,
-        "on_shutdown" => body.on_shutdown = session_action_patch(patch, "on_shutdown")?,
-        "on_reboot" => body.on_reboot = session_action_patch(patch, "on_reboot")?,
-        "on_sleep" => body.on_sleep = session_action_patch(patch, "on_sleep")?,
-        "on_wake" => body.on_wake = session_action_patch(patch, "on_wake")?,
-        "on_dpms_off" => body.on_dpms_off = session_action_patch(patch, "on_dpms_off")?,
-        "on_dpms_on" => body.on_dpms_on = session_action_patch(patch, "on_dpms_on")?,
-        "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
-        "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
+        "on_startup" => body.on_startup = action_field_patch(body.on_startup, patch, "on_startup")?,
+        "on_shutdown" => {
+            body.on_shutdown = action_field_patch(body.on_shutdown, patch, "on_shutdown")?
+        }
+        "on_reboot" => body.on_reboot = action_field_patch(body.on_reboot, patch, "on_reboot")?,
+        "on_sleep" => body.on_sleep = action_field_patch(body.on_sleep, patch, "on_sleep")?,
+        "on_wake" => body.on_wake = action_field_patch(body.on_wake, patch, "on_wake")?,
+        "on_dpms_off" => {
+            body.on_dpms_off = action_field_patch(body.on_dpms_off, patch, "on_dpms_off")?
+        }
+        "on_dpms_on" => body.on_dpms_on = action_field_patch(body.on_dpms_on, patch, "on_dpms_on")?,
+        "on_idle_timeout" => {
+            body.on_idle_timeout =
+                action_field_patch(body.on_idle_timeout, patch, "on_idle_timeout")?
+        }
+        "on_idle_resume" => {
+            body.on_idle_resume = action_field_patch(body.on_idle_resume, patch, "on_idle_resume")?
+        }
         "idle_timeout_seconds" => {
             body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
         }
@@ -1182,35 +1343,57 @@ fn set_system_field(
 /// User-side mirror of [`set_system_field`].
 fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> anyhow::Result<()> {
     match wire {
-        "on_session_lock" => body.on_session_lock = session_action_patch(patch, "on_session_lock")?,
-        "on_session_unlock" => {
-            body.on_session_unlock = session_action_patch(patch, "on_session_unlock")?
+        "on_session_lock" => {
+            body.on_session_lock =
+                action_field_patch(body.on_session_lock, patch, "on_session_lock")?
         }
-        "on_lock_wake" => body.on_lock_wake = session_action_patch(patch, "on_lock_wake")?,
-        "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
-        "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
-        "idle_timeout_seconds" => {
-            body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
+        "on_session_unlock" => {
+            body.on_session_unlock =
+                action_field_patch(body.on_session_unlock, patch, "on_session_unlock")?
+        }
+        "on_lock_wake" => {
+            body.on_lock_wake = action_field_patch(body.on_lock_wake, patch, "on_lock_wake")?
+        }
+        "on_idle_timeout" => {
+            body.on_idle_timeout =
+                action_field_patch(body.on_idle_timeout, patch, "on_idle_timeout")?
+        }
+        "on_idle_resume" => {
+            body.on_idle_resume = action_field_patch(body.on_idle_resume, patch, "on_idle_resume")?
+        }
+        "locked_idle_timeout_seconds" => {
+            body.locked_idle_timeout_seconds = number_patch(patch, "locked_idle_timeout_seconds")?
+        }
+        "unlocked_idle_timeout_seconds" => {
+            body.unlocked_idle_timeout_seconds =
+                number_patch(patch, "unlocked_idle_timeout_seconds")?
         }
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
     Ok(())
 }
 
-/// Convert a [`BodyPatch`] targeting a `SessionAction` field into
-/// `Option<SessionAction>`. `Clear` returns `None`; the
-/// `SessionAction` variant returns `Some(action)`; anything else is
-/// a programmer error.
-fn session_action_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<SessionAction>> {
+/// Apply an action edit while preserving the field's modifier form:
+/// changing the verb through the ComboBox must not silently drop a
+/// `restore_input` flag the mapping already carries.
+fn action_field_patch(
+    current: Option<tisvlay_core::EventAction>,
+    patch: BodyPatch,
+    field: &str,
+) -> anyhow::Result<Option<tisvlay_core::EventAction>> {
     match patch {
-        BodyPatch::SessionAction(a) => Ok(Some(a)),
+        BodyPatch::SessionAction(action) => Ok(Some(match current {
+            Some(tisvlay_core::EventAction::With { restore_input, .. }) => {
+                tisvlay_core::EventAction::With {
+                    action,
+                    restore_input,
+                }
+            }
+            _ => tisvlay_core::EventAction::Plain(action),
+        })),
+        BodyPatch::EventAction(spec) => Ok(Some(spec)),
         BodyPatch::Clear => Ok(None),
-        BodyPatch::AutomateWhen(_) => {
-            anyhow::bail!("Field '{field}' expects SessionAction, got AutomateWhen")
-        }
-        BodyPatch::Number(_) => {
-            anyhow::bail!("Field '{field}' expects SessionAction, got Number")
-        }
+        other => anyhow::bail!("Field '{field}' expects an action, got {other:?}"),
     }
 }
 
@@ -1218,12 +1401,7 @@ fn automate_when_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<A
     match patch {
         BodyPatch::AutomateWhen(w) => Ok(Some(w)),
         BodyPatch::Clear => Ok(None),
-        BodyPatch::SessionAction(_) => {
-            anyhow::bail!("Field '{field}' expects AutomateWhen, got SessionAction")
-        }
-        BodyPatch::Number(_) => {
-            anyhow::bail!("Field '{field}' expects AutomateWhen, got Number")
-        }
+        other => anyhow::bail!("Field '{field}' expects AutomateWhen, got {other:?}"),
     }
 }
 
@@ -1231,12 +1409,7 @@ fn number_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<u64>> {
     match patch {
         BodyPatch::Number(n) => Ok(Some(n)),
         BodyPatch::Clear => Ok(None),
-        BodyPatch::SessionAction(_) => {
-            anyhow::bail!("Field '{field}' expects Number, got SessionAction")
-        }
-        BodyPatch::AutomateWhen(_) => {
-            anyhow::bail!("Field '{field}' expects Number, got AutomateWhen")
-        }
+        other => anyhow::bail!("Field '{field}' expects Number, got {other:?}"),
     }
 }
 
@@ -1398,6 +1571,48 @@ pub(crate) async fn dispatch_value_edit_number(
     }
 }
 
+/// Apply a restore-checkbox toggle: the mapping becomes the table form
+/// carrying the resolved verb plus the new modifier — an inheriting
+/// row materializes locally, same as a ComboBox edit would.
+pub(crate) async fn dispatch_restore_edit(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    kind: EditorKind,
+    uuid: Uuid,
+    field_wire: &str,
+    checked: bool,
+) -> anyhow::Result<()> {
+    let token = {
+        let state = editor.lock();
+        let table = match kind {
+            EditorKind::System => SYSTEM_FIELDS,
+            EditorKind::User => USER_FIELDS,
+        };
+        let field = table
+            .iter()
+            .find(|f| f.wire == field_wire)
+            .ok_or_else(|| anyhow::anyhow!("Unknown field '{field_wire}'"))?;
+        match kind {
+            EditorKind::System => resolve_system_field(&state.system, uuid, field)
+                .current()
+                .to_string(),
+            EditorKind::User => resolve_user_field(&state.user, uuid, field)
+                .current()
+                .to_string(),
+        }
+    };
+    let action = parse_session_action(&token)?;
+    let patch = BodyPatch::EventAction(tisvlay_core::EventAction::With {
+        action,
+        restore_input: checked,
+    });
+    match kind {
+        EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
+        EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
+    }
+}
+
 /// Reset one field to inherit-from-chain by setting its body slot to
 /// `None`.
 pub(crate) async fn dispatch_reset_field(
@@ -1458,7 +1673,7 @@ pub(crate) async fn dispatch_reset_all(
 }
 
 /// Rename the selected profile. Issues a body update that carries the
-/// new name + every other field from the current cached body — the
+/// new name + every other field from the current cached body â the
 /// daemon's atomic replace semantic means we have to round-trip the
 /// full body even for a name-only change.
 pub(crate) async fn dispatch_rename(
@@ -1516,7 +1731,7 @@ pub(crate) async fn dispatch_select_after_create(
     match kind {
         EditorKind::System => {
             if let Ok(body) = fetch_system_profile_body(&daemon, uuid).await {
-                editor.lock().system.bodies.insert(uuid, body);
+                editor.lock().system.cache_body(uuid, body);
             }
         }
         EditorKind::User => {
@@ -1524,7 +1739,7 @@ pub(crate) async fn dispatch_select_after_create(
             if let Some(client) = session_ref.as_ref()
                 && let Ok(body) = fetch_user_profile_body(client, uuid).await
             {
-                editor.lock().user.bodies.insert(uuid, body);
+                editor.lock().user.cache_body(uuid, body);
             }
         }
     }
@@ -1557,21 +1772,21 @@ mod tests {
     use super::*;
 
     fn baseline_system() -> SystemProfileBody {
-        // Resembles the daemon's hard-coded baseline — every field
+        // Resembles the daemon's hard-coded baseline â every field
         // resolved to a concrete value so the inherit walk has
         // something to land on.
         SystemProfileBody {
             name: "baseline".to_string(),
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: Some(SessionAction::PowerOff),
-            on_reboot: Some(SessionAction::None),
-            on_sleep: Some(SessionAction::PowerOff),
-            on_wake: Some(SessionAction::PowerOn),
-            on_dpms_off: Some(SessionAction::ScreenOff),
-            on_dpms_on: Some(SessionAction::ScreenOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
+            on_reboot: Some(SessionAction::None.into()),
+            on_sleep: Some(SessionAction::PowerOff.into()),
+            on_wake: Some(SessionAction::PowerOn.into()),
+            on_dpms_off: Some(SessionAction::ScreenOff.into()),
+            on_dpms_on: Some(SessionAction::ScreenOn.into()),
             idle_timeout_seconds: Some(0),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
+            on_idle_timeout: Some(SessionAction::ScreenOff.into()),
+            on_idle_resume: Some(SessionAction::ScreenOn.into()),
             automate_when: Some(AutomateWhen::Always),
         }
     }
@@ -1579,12 +1794,13 @@ mod tests {
     fn baseline_user() -> UserProfileBody {
         UserProfileBody {
             name: "baseline".to_string(),
-            on_session_lock: Some(SessionAction::ScreenOff),
-            on_session_unlock: Some(SessionAction::ScreenOn),
-            on_lock_wake: Some(SessionAction::ScreenOn),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(0),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            on_session_unlock: Some(SessionAction::ScreenOn.into()),
+            on_lock_wake: Some(SessionAction::ScreenOn.into()),
+            on_idle_timeout: Some(SessionAction::ScreenOff.into()),
+            on_idle_resume: Some(SessionAction::ScreenOn.into()),
+            locked_idle_timeout_seconds: Some(0),
+            unlocked_idle_timeout_seconds: Some(0),
         }
     }
 
@@ -1610,7 +1826,7 @@ mod tests {
             uuid,
             SystemProfileBody {
                 name: "evening".into(),
-                on_startup: Some(SessionAction::ScreenOn),
+                on_startup: Some(SessionAction::ScreenOn.into()),
                 ..Default::default()
             },
         );
@@ -1644,7 +1860,7 @@ mod tests {
         // default beats baseline.
         let default_body = SystemProfileBody {
             name: "default".into(),
-            on_startup: Some(SessionAction::ScreenOff),
+            on_startup: Some(SessionAction::ScreenOff.into()),
             ..Default::default()
         };
         let layers = ProfileLayers {
@@ -1653,7 +1869,7 @@ mod tests {
             bodies,
         };
 
-        // Default-set field — inheriting, value from the default body.
+        // Default-set field â inheriting, value from the default body.
         let on_startup = find_system("on_startup");
         let resolved = resolve_system_field(&layers, uuid, on_startup);
         assert_eq!(
@@ -1663,7 +1879,7 @@ mod tests {
             }
         );
 
-        // Default-absent field — falls through to baseline.
+        // Default-absent field â falls through to baseline.
         let on_shutdown = find_system("on_shutdown");
         let resolved = resolve_system_field(&layers, uuid, on_shutdown);
         assert_eq!(
@@ -1677,12 +1893,12 @@ mod tests {
     #[test]
     fn default_uuid_falls_back_to_default_body_slot() {
         // The reserved-default profile's body lives on `layers.default_body`,
-        // not in `layers.bodies` — make sure the walker consults it.
+        // not in `layers.bodies` â make sure the walker consults it.
         let layers = ProfileLayers {
             baseline: baseline_system(),
             default_body: SystemProfileBody {
                 name: "default".into(),
-                on_startup: Some(SessionAction::PowerOn),
+                on_startup: Some(SessionAction::PowerOn.into()),
                 ..Default::default()
             },
             bodies: HashMap::new(),
@@ -1708,7 +1924,7 @@ mod tests {
             uuid,
             UserProfileBody {
                 name: "movies".into(),
-                idle_timeout_seconds: Some(600),
+                unlocked_idle_timeout_seconds: Some(600),
                 ..Default::default()
             },
         );
@@ -1718,7 +1934,8 @@ mod tests {
             bodies,
         };
 
-        let resolved = resolve_user_field(&layers, uuid, find_user("idle_timeout_seconds"));
+        let resolved =
+            resolve_user_field(&layers, uuid, find_user("unlocked_idle_timeout_seconds"));
         assert_eq!(
             resolved,
             ResolvedValue::LocallySet {
@@ -1729,7 +1946,7 @@ mod tests {
 
     #[test]
     fn inheriting_user_number_field_carries_no_overlay() {
-        // Number fields don't get the inherit overlay — the gutter
+        // Number fields don't get the inherit overlay â the gutter
         // accent + reset glyph carry the inherit signal instead.
         let uuid = Uuid::new_v4();
         let mut bodies = HashMap::new();
@@ -1744,12 +1961,13 @@ mod tests {
             baseline: baseline_user(),
             default_body: UserProfileBody {
                 name: "default".into(),
-                idle_timeout_seconds: Some(300),
+                unlocked_idle_timeout_seconds: Some(300),
                 ..Default::default()
             },
             bodies,
         };
-        let resolved = resolve_user_field(&layers, uuid, find_user("idle_timeout_seconds"));
+        let resolved =
+            resolve_user_field(&layers, uuid, find_user("unlocked_idle_timeout_seconds"));
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
@@ -1789,7 +2007,7 @@ mod tests {
 
     #[test]
     fn idle_timeout_bounds_cover_full_day() {
-        let spec = find_user("idle_timeout_seconds");
+        let spec = find_user("unlocked_idle_timeout_seconds");
         let FieldKind::Number {
             min,
             max,
@@ -1797,7 +2015,7 @@ mod tests {
             unit,
         } = spec.kind
         else {
-            panic!("idle_timeout_seconds must be Number");
+            panic!("unlocked_idle_timeout_seconds must be Number");
         };
         assert_eq!(min, 0);
         assert_eq!(max, 86_400, "idle timeout should cover 24h");
@@ -1808,12 +2026,12 @@ mod tests {
     #[test]
     fn build_field_raw_clamps_number_into_range() {
         // An out-of-range default-body value (e.g. a hand-edited
-        // config with idle_timeout_seconds = 999999) must clamp to
+        // config with unlocked_idle_timeout_seconds = 999999) must clamp to
         // [min, max] before rendering or the SpinBox will assert.
         let resolved = ResolvedValue::LocallySet {
             current: "999999".to_string(),
         };
-        let spec = find_user("idle_timeout_seconds");
+        let spec = find_user("unlocked_idle_timeout_seconds");
         let raw = build_field_raw(spec, &resolved);
         assert_eq!(raw.kind, "number");
         assert_eq!(raw.number_value, 86_400);
@@ -1821,7 +2039,7 @@ mod tests {
 
     #[test]
     fn build_field_raw_enum_carries_options_and_current() {
-        // build_field_raw is glyph-agnostic — it should pass whatever
+        // build_field_raw is glyph-agnostic â it should pass whatever
         // `current` string the resolver produced through to
         // `current_value` verbatim. Using a sentinel proves that.
         let sentinel_current = "power_on<<sentinel>>";
@@ -1847,7 +2065,7 @@ mod tests {
             uuid,
             SystemProfileBody {
                 name: "evening".into(),
-                on_sleep: Some(SessionAction::PowerOff),
+                on_sleep: Some(SessionAction::PowerOff.into()),
                 ..Default::default()
             },
         );
@@ -1882,12 +2100,87 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Default-profile body caching
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn cache_body_routes_the_reserved_default_to_the_slot() {
+        let mut layers = ProfileLayers::default();
+        layers.cache_body(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileBody {
+                name: "default".into(),
+                on_startup: Some(SessionAction::PowerOn.into()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            layers.bodies.is_empty(),
+            "reserved default must not shadow the slot from the bodies map"
+        );
+        assert_eq!(
+            layers.default_body.on_startup,
+            Some(SessionAction::PowerOn.into())
+        );
+
+        let mut user = UserProfileLayers::default();
+        user.cache_body(
+            DEFAULT_USER_PROFILE_UUID,
+            UserProfileBody {
+                name: "default".into(),
+                on_session_lock: Some(SessionAction::ScreenOff.into()),
+                ..Default::default()
+            },
+        );
+        assert!(user.bodies.is_empty());
+        assert_eq!(
+            user.default_body.on_session_lock,
+            Some(SessionAction::ScreenOff.into())
+        );
+    }
+
+    #[test]
+    fn default_profile_edit_reflects_in_its_own_rows() {
+        // The GUI-restart bug sequence: hydration caches the default's
+        // body (Added), the user edits it, and the Changed handler
+        // refreshes only the `default_body` slot. The default's own
+        // editor rows must resolve to the edited value â a `bodies`
+        // entry for the reserved UUID would shadow the slot with the
+        // hydration-time body forever.
+        let mut layers = ProfileLayers {
+            baseline: baseline_system(),
+            ..Default::default()
+        };
+        layers.cache_body(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileBody {
+                name: "default".into(),
+                on_sleep: Some(SessionAction::PowerOff.into()),
+                ..Default::default()
+            },
+        );
+        layers.default_body = SystemProfileBody {
+            name: "default".into(),
+            on_sleep: Some(SessionAction::ScreenOff.into()),
+            ..Default::default()
+        };
+
+        let field = SYSTEM_FIELDS.iter().find(|f| f.wire == "on_sleep").unwrap();
+        let resolved = resolve_system_field(&layers, DEFAULT_SYSTEM_PROFILE_UUID, field);
+        assert!(resolved.is_locally_set());
+        assert_eq!(
+            resolved.current(),
+            session_action_token(SessionAction::ScreenOff)
+        );
+    }
+
+    // -----------------------------------------------------------------
     // Field-setter helpers
     // -----------------------------------------------------------------
 
     #[test]
     fn set_system_field_writes_every_session_action_wire() {
-        // One round-trip per `SessionAction`-typed wire — make sure
+        // One round-trip per `SessionAction`-typed wire â make sure
         // each lands on the right body slot. Catches regression of
         // the wire <-> field mapping.
         let mut body = SystemProfileBody::default();
@@ -1909,15 +2202,15 @@ mod tests {
             )
             .expect("known wire");
         }
-        assert_eq!(body.on_startup, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_shutdown, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_reboot, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_sleep, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_wake, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_dpms_off, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_dpms_on, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_idle_timeout, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_idle_resume, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_startup, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_shutdown, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_reboot, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_sleep, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_wake, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_dpms_off, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_dpms_on, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_idle_timeout, Some(SessionAction::PowerOn.into()));
+        assert_eq!(body.on_idle_resume, Some(SessionAction::PowerOn.into()));
     }
 
     #[test]
@@ -1944,7 +2237,7 @@ mod tests {
     fn set_system_field_clear_sets_none() {
         let mut body = SystemProfileBody {
             name: "n".into(),
-            on_startup: Some(SessionAction::PowerOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
         set_system_field(&mut body, "on_startup", BodyPatch::Clear).expect("known wire");
@@ -2005,29 +2298,37 @@ mod tests {
             )
             .expect("known wire");
         }
-        assert_eq!(body.on_session_lock, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_session_unlock, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_lock_wake, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_idle_timeout, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_idle_resume, Some(SessionAction::ScreenOff));
+        assert_eq!(body.on_session_lock, Some(SessionAction::ScreenOff.into()));
+        assert_eq!(
+            body.on_session_unlock,
+            Some(SessionAction::ScreenOff.into())
+        );
+        assert_eq!(body.on_lock_wake, Some(SessionAction::ScreenOff.into()));
+        assert_eq!(body.on_idle_timeout, Some(SessionAction::ScreenOff.into()));
+        assert_eq!(body.on_idle_resume, Some(SessionAction::ScreenOff.into()));
     }
 
     #[test]
     fn set_user_field_writes_idle_timeout_number() {
         let mut body = UserProfileBody::default();
-        set_user_field(&mut body, "idle_timeout_seconds", BodyPatch::Number(900))
-            .expect("known wire");
-        assert_eq!(body.idle_timeout_seconds, Some(900));
+        set_user_field(
+            &mut body,
+            "unlocked_idle_timeout_seconds",
+            BodyPatch::Number(900),
+        )
+        .expect("known wire");
+        assert_eq!(body.unlocked_idle_timeout_seconds, Some(900));
     }
 
     #[test]
     fn set_user_field_idle_timeout_clear_sets_none() {
         let mut body = UserProfileBody {
-            idle_timeout_seconds: Some(900),
+            unlocked_idle_timeout_seconds: Some(900),
             ..Default::default()
         };
-        set_user_field(&mut body, "idle_timeout_seconds", BodyPatch::Clear).expect("known wire");
-        assert_eq!(body.idle_timeout_seconds, None);
+        set_user_field(&mut body, "unlocked_idle_timeout_seconds", BodyPatch::Clear)
+            .expect("known wire");
+        assert_eq!(body.unlocked_idle_timeout_seconds, None);
     }
 
     #[test]
@@ -2047,11 +2348,11 @@ mod tests {
         // SessionAction patch on the numeric wire.
         let err = set_user_field(
             &mut body,
-            "idle_timeout_seconds",
+            "unlocked_idle_timeout_seconds",
             BodyPatch::SessionAction(SessionAction::None),
         )
         .expect_err("should reject");
-        assert!(err.to_string().contains("idle_timeout_seconds"));
+        assert!(err.to_string().contains("unlocked_idle_timeout_seconds"));
     }
 
     // -----------------------------------------------------------------
@@ -2115,7 +2416,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // dispatch_reset_all body shape (synchronous portion only — the
+    // dispatch_reset_all body shape (synchronous portion only â the
     // daemon round-trip isn't tested here)
     // -----------------------------------------------------------------
 
@@ -2124,8 +2425,8 @@ mod tests {
         // Mirrors `dispatch_reset_all`'s inner construction step.
         let snapshot = SystemProfileBody {
             name: "evening".into(),
-            on_startup: Some(SessionAction::ScreenOn),
-            on_shutdown: Some(SessionAction::PowerOff),
+            on_startup: Some(SessionAction::ScreenOn.into()),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
             automate_when: Some(AutomateWhen::OnPrimary),
             ..Default::default()
         };
@@ -2148,8 +2449,8 @@ mod tests {
     fn reset_all_body_preserves_name_and_clears_all_fields_user() {
         let snapshot = UserProfileBody {
             name: "movies".into(),
-            on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(600),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            unlocked_idle_timeout_seconds: Some(600),
             ..Default::default()
         };
         let body = UserProfileBody {
@@ -2162,7 +2463,7 @@ mod tests {
         assert_eq!(body.on_lock_wake, None);
         assert_eq!(body.on_idle_timeout, None);
         assert_eq!(body.on_idle_resume, None);
-        assert_eq!(body.idle_timeout_seconds, None);
+        assert_eq!(body.unlocked_idle_timeout_seconds, None);
     }
 
     // -----------------------------------------------------------------
@@ -2174,12 +2475,12 @@ mod tests {
         let mut state = ProfileEditorState::default();
         state.system.default_body = SystemProfileBody {
             name: "default".into(),
-            on_startup: Some(SessionAction::PowerOn),
+            on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
         let snap = snapshot_system_body(&state, DEFAULT_SYSTEM_PROFILE_UUID);
         assert_eq!(snap.name, "default");
-        assert_eq!(snap.on_startup, Some(SessionAction::PowerOn));
+        assert_eq!(snap.on_startup, Some(SessionAction::PowerOn.into()));
     }
 
     #[test]
@@ -2190,13 +2491,13 @@ mod tests {
             uuid,
             SystemProfileBody {
                 name: "evening".into(),
-                on_startup: Some(SessionAction::ScreenOff),
+                on_startup: Some(SessionAction::ScreenOff.into()),
                 ..Default::default()
             },
         );
         let snap = snapshot_system_body(&state, uuid);
         assert_eq!(snap.name, "evening");
-        assert_eq!(snap.on_startup, Some(SessionAction::ScreenOff));
+        assert_eq!(snap.on_startup, Some(SessionAction::ScreenOff.into()));
     }
 
     #[test]
@@ -2212,11 +2513,11 @@ mod tests {
         let mut state = ProfileEditorState::default();
         state.user.default_body = UserProfileBody {
             name: "default".into(),
-            idle_timeout_seconds: Some(300),
+            unlocked_idle_timeout_seconds: Some(300),
             ..Default::default()
         };
         let snap = snapshot_user_body(&state, DEFAULT_USER_PROFILE_UUID);
         assert_eq!(snap.name, "default");
-        assert_eq!(snap.idle_timeout_seconds, Some(300));
+        assert_eq!(snap.unlocked_idle_timeout_seconds, Some(300));
     }
 }

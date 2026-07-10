@@ -1,134 +1,52 @@
 [package]
 name = "tisvlay-gui"
-description = "Settings + management GUI for tisvlay"
+description = "TisVlay settings + management GUI (Slint)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-authors.workspace = true
 license.workspace = true
-publish = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "tisvlay-gui"
 path = "src/main.rs"
 
 [dependencies]
-tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
+# Transport-free core types (profiles, schema, capabilities, helpers);
+# the D-Bus client surface is replaced by tisvlay.
+tisvlay-core = { workspace = true, features = ["logging"] }
+tisvlay = { workspace = true }
+tisvlay-wire = { workspace = true }
 tokio = { workspace = true }
-# UUID parsing for client-side profile-references fan-out. The GUI
-# round-trips daemon-emitted hyphenated UUID strings through the typed
-# core helpers (`references_of`, `user_references_of`), so the dep is
-# exposed directly rather than re-exporting `Uuid` from tisvlay-core.
 uuid = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
-# `accessibility` is dropped from the default features. The local
-# blocker is a runtime conflict — `accesskit_unix` spawns a thread
-# that uses zbus, and zbus's tokio backend panics with "no reactor
-# running" because the spawned thread isn't part of our runtime — but
-# resolving that alone wouldn't be enough. Three independent upstream
-# blockers gate re-enable, tracked in `docs/ideas.md`'s "Re-enable
-# Slint `accessibility` feature" entry:
-#   - slint-ui/slint#11663 — winit 0.31 port has accesskit
-#     temporarily disabled awaiting upstream changes.
-#   - slint-ui/slint#10269 — `accesskit_consumer` panics when
-#     `LineEdit` / `Slider` is clicked after a state mutation driven
-#     by `upgrade_in_event_loop`. tisvlay-gui runs that pattern
-#     continuously, so we'd hit this independent of any local fix.
-#   - slint-ui/slint#3867 — perf cost on big `ListView`s remains
-#     flamegraph-dominant; the test infra (Slint's testing backend
-#     reads `accessible-*` properties via the internal element tree,
-#     not AT-SPI) doesn't depend on this feature being on.
-# Wayland-only winit backend. tisvlay-session's lock-wake support
-# is already Wayland-only (see `wayland_idle.rs`), so we lean into
-# Wayland-only for the GUI too — that lets us drop the X11 backend's
-# `x11rb-protocol` (10+ s on the cold-build critical path) and several
-# winit/glutin/copypasta X11 paths. X11 users still get the daemon,
-# CLI, and tray (ksni works on X11); only the settings window goes
-# away.
-# `unstable-winit-030` exposes the `slint::winit_030` re-exports
-# (winit types + `WinitWindowAccessor::with_winit_window`) and
-# `BackendSelector::with_winit_window_attributes_hook` — used in
-# src/dbus.rs to call `winit::Window::request_user_attention` on
-# tray re-activations (taskbar pulse / KWin demands_attention)
-# and in src/lib.rs to plumb the cold-spawn `activation-token`
-# through `WindowAttributesExtStartupNotify::with_activation_token`.
-# Slint marks the module unstable, so the version is **pinned
-# exactly** — minor-version bumps require re-auditing the
-# `winit_030` call sites. Pin rationale, audit checklist, and
-# upgrade triggers: docs/concerns/slint-unstable-winit-030.md.
+# Wayland-only winit backend, same rationale as the root GUI (the
+# session stack is Wayland-only; dropping the X11 backend keeps
+# x11rb off the cold-build path). `unstable-winit-030` is pinned
+# exactly with slint — see the root crate's comment block for the
+# audit checklist.
 slint = { version = "=1.17.0", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
-zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 clap = { workspace = true }
-# Sync mutex without poisoning for the wizard's discovery sidecar.
-parking_lot = { workspace = true }
-# Resolve sidebar icon names against the user's freedesktop icon
-# theme (Breeze on KDE Plasma, Adwaita on GNOME, hicolor as
-# fallback). Same pattern the tray already uses, just done in-
-# process here because Slint has no built-in icon-theme resolver.
+parking_lot = "0.12"
 freedesktop-icons = "0.4"
-# xdg-desktop-portal client. Only the `settings` portal is needed
-# (live `org.freedesktop.appearance.accent-color` for the user's
-# DE-chosen accent on KDE 6 / GNOME 46+ / Cosmic / Elementary).
-# Default features only pull in the tokio runtime selector — every
-# portal is opt-in, so this stays minimal.
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
-# Clipboard write for the "copy" button on identifier fields (TV ID,
-# serial, MAC, …). Slint exposes a `Platform::set_clipboard_text`
-# trait method but no public app-facing helper, so we go through
-# `wl-clipboard-rs`. Wayland-only by design — pairs with the
-# `backend-winit-wayland` Slint feature above to keep `x11rb` out
-# of the build entirely.
 wl-clipboard-rs = "0.9"
-# Localization for Rust-side dynamic strings (errors that surface
-# to the user, schema labels pushed from vendor backends, etc.).
-# Slint's `@tr()` macro covers literal strings inside `.slint`
-# files; everything else routes through gettext-rs's `tr!` to
-# share the same `.po`/`.mo` catalogs and slint's
-# `init_translations!` directory layout.
 gettext-rs = "0.7"
-# Cross-platform URL opener used by the About pane's "View source"
-# and "Report issue" buttons. Wraps xdg-open on Linux, with
-# fallbacks for other targets if we ever build for them.
 webbrowser = "1"
-# Securely-created temp file for the About pane's notices browser
-# handoff in source builds. See `src/main.rs::open_notices_html`.
-tempfile = "3"
-# OS identity (distro + version) for the diagnostic blob's
-# `runtime.os_id` / `runtime.os_version` fields. Used by `cargo`
-# itself, so adoption + maintenance bus-factor is well-covered;
-# `nix` and `log` are already transitive deps in our tree, so the
-# net dep cost is just `os_info` itself.
+tempfile = { workspace = true }
 os_info = { version = "3", default-features = false }
-# Kernel release string for the diagnostic blob's `runtime.kernel`
-# field. Already in the dep tree transitively (zbus → async-io);
-# pinning a direct dep here so the API surface is explicit.
 rustix = { version = "1", features = ["system"] }
-# Runtime glibc version for the diagnostic blob's `runtime.glibc`
-# field via `gnu_get_libc_version()` FFI; gated on
-# `cfg(target_env = "gnu")` at the call site.
 libc = "0.2"
-
-# The in-process Slint MCP server (AI-assisted UI inspection) is enabled
-# ad-hoc with `cargo run --features slint/mcp` — deliberately not declared
-# as a crate feature here. `slint/mcp` is a dependency feature (it pulls
-# the server via `i-slint-backend-selector/mcp` → `i-slint-backend-testing/mcp`),
-# so keeping it off our own feature list means normal `--all-features` builds
-# never drag in its prost/protox stack. The server auto-starts from
-# `BackendSelector::select()` when `SLINT_MCP_PORT` is set. See `.claude/slint.md`.
+zbus = { workspace = true }
+zenoh = { workspace = true }
 
 [dev-dependencies]
-# Headless Slint backend for `find_by_accessible_id` / `single_click`
-# / element-tree queries in tests. Pinned exactly because the crate's
-# README warns "preliminary API, no semver" — it moves test helpers
-# between modules across minors (e.g. slint-ui/slint#11516), so treat
-# upstream bumps as breaking and re-pin deliberately.
+# Headless Slint backend for element-tree tests; preliminary API, so
+# pinned exactly with slint.
 i-slint-backend-testing = "=1.17.0"
 
 [build-dependencies]

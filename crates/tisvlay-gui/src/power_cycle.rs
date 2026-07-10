@@ -1,18 +1,18 @@
 //! Per-TV power-on flow with staged-progress feedback. Subscribes
-//! to the daemon's `Tv1.Power.PowerCycleProgress` signal and pushes
+//! to the TV's `progress/power` key and pushes
 //! phase strings into the row's `power_cycle_phase` slot so the GUI
 //! can render the staged button label while WoL → reachable →
 //! ready unfolds.
 
 use std::sync::Arc;
 
+use crate::compat::{DaemonClient, PowerCyclePhase};
 use anyhow::Result;
 use slint::{Model, SharedString};
-use tisvlay_core::{DaemonClient, PowerCyclePhase};
 
 use crate::{AppWindow, on_ui};
 
-/// Subscribe to PowerCycleProgress for `tv_id`, fire `power_on`, and
+/// Subscribe to `progress/power` for `tv_id`, fire `power_on`, and
 /// stream phase strings into the matching row's `power_cycle_phase`
 /// field. Drains the subscription for the duration of the call.
 pub(crate) async fn run_power_on_with_progress(

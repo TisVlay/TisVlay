@@ -7,15 +7,15 @@ members = [
     "crates/tisvlay-mock",
     "crates/tisvlay-cec",
     "crates/tisvlay-test",
-    "crates/tisvlay-backends",
+    "crates/tisvlay-wire",
+    "crates/tisvlay-world",
     "crates/tisvlay",
     "crates/tisvlay-cli",
-    "crates/tisvlayd",
+    "crates/tisvlay-daemon",
     "crates/tisvlay-session",
     "crates/tisvlay-greeter",
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",
-    "crates/tisvlay-harness",
 ]
 
 # `default-members` = the shipping binary crates. Bare `cargo build` /
@@ -26,7 +26,7 @@ members = [
 # crates.io publish set is tracked per-crate via `publish = true` (the
 # workspace default below is `publish = false`).
 default-members = [
-    "crates/tisvlayd",
+    "crates/tisvlay-daemon",
     "crates/tisvlay-cli",
     "crates/tisvlay-session",
     "crates/tisvlay-greeter",
@@ -35,7 +35,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.92"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
@@ -145,26 +145,49 @@ linux-cec = { version = "0.2", default-features = false, features = [
 # selects.
 libc = { version = "0.2", default-features = false }
 
+# ECS world engine (the daemon's state machines)
+bevy_ecs = "0.19"
+
+# Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
+# API (caches, history, recovery) is behind `unstable` — an accepted
+# risk, tracked in the parity plan's watch items.
+zenoh = "1.9"
+zenoh-ext = { version = "1.9", features = ["unstable"] }
+
+# EDID parsing for the DRM connector ↔ TV matcher
+edidkit = "0.1"
+
+# System tray (StatusNotifierItem)
+ksni = "0.3"
+
+# Desktop notifications (z-with-tokio keeps zbus/tokio, drops the
+# default async-io stack)
+notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
+
+# Kernel netlink: route resolution + carrier/route monitoring
+netlink-packet-core = "0.8"
+netlink-packet-route = "0.30"
+rtnetlink = "0.21"
+
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
-# version is used once the path is stripped). The dev-only crates
-# (`tisvlay-test` / `tisvlay-harness`, `publish = false`) are path-ONLY:
-# a *versioned* dev-dependency on them is kept in the published manifest
-# and would demand an unpublished crate from crates.io, whereas a
-# path-only dev-dependency is dropped on publish.
-tisvlay-core = { path = "crates/tisvlay-core", version = "0.2.0" }
-tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.2.0" }
-tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.2.0" }
-tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.2.0" }
-tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.2.0" }
+# version is used once the path is stripped). The dev-only crate
+# (`tisvlay-test`, `publish = false`) is path-ONLY: a *versioned*
+# dev-dependency on it is kept in the published manifest and would
+# demand an unpublished crate from crates.io, whereas a path-only
+# dev-dependency is dropped on publish.
+tisvlay-core = { path = "crates/tisvlay-core", version = "0.3.0" }
+tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.3.0" }
+tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.3.0" }
+tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.3.0" }
+tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
-tisvlay-backends = { path = "crates/tisvlay-backends", version = "0.2.0" }
-tisvlay-harness = { path = "crates/tisvlay-harness" }
-# Binary crates exposed as libs for the harness. `tisvlay-tray` is
-# currently bin-only; add here when its lib surface is exposed.
-tisvlayd = { path = "crates/tisvlayd", version = "0.2.0" }
-tisvlay-session = { path = "crates/tisvlay-session", version = "0.2.0" }
-tisvlay-gui = { path = "crates/tisvlay-gui", version = "0.2.0" }
+tisvlay-wire = { path = "crates/tisvlay-wire" }
+tisvlay-world = { path = "crates/tisvlay-world" }
+tisvlay = { path = "crates/tisvlay" }
+# Binary crates exposed as libs for cross-crate integration tests.
+tisvlay-daemon = { path = "crates/tisvlay-daemon" }
+tisvlay-session = { path = "crates/tisvlay-session" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml", "filters"] }

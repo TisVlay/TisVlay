@@ -373,10 +373,10 @@ mod map_tests {
     }
 }
 
-#[cfg(test)]
-pub(crate) use fake::{FakeCecLink, FakeCecLinkOpener};
+#[cfg(any(test, feature = "test-link"))]
+pub use fake::{FakeCecLink, FakeCecLinkOpener};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-link"))]
 mod fake {
     use super::*;
     use parking_lot::Mutex;
@@ -388,7 +388,7 @@ mod fake {
     /// drops the first N `power_on` sends before reporting on, so tests
     /// can exercise the wake re-send loop.
     #[derive(Debug)]
-    pub(crate) struct FakeCecLink {
+    pub struct FakeCecLink {
         power: Mutex<PowerStatus>,
         ignore_wakes: Mutex<usize>,
         /// Scripted identity for `query_osd_name` / `query_vendor_id`.
@@ -399,7 +399,7 @@ mod fake {
     }
 
     impl FakeCecLink {
-        pub(crate) fn new(power: PowerStatus) -> Self {
+        pub fn new(power: PowerStatus) -> Self {
             Self {
                 power: Mutex::new(power),
                 ignore_wakes: Mutex::new(0),
@@ -409,7 +409,7 @@ mod fake {
         }
 
         /// Seed the scripted TV identity the connection/discovery queries.
-        pub(crate) fn with_identity(
+        pub fn with_identity(
             mut self,
             osd_name: &str,
             vendor_id: Option<linux_cec::VendorId>,
@@ -459,7 +459,7 @@ mod fake {
     /// Opener that yields a [`FakeCecLink`] seeded with a fixed initial
     /// power status, regardless of the requested device path.
     #[derive(Debug)]
-    pub(crate) struct FakeCecLinkOpener {
+    pub struct FakeCecLinkOpener {
         initial: PowerStatus,
         ignore_wakes: usize,
         /// Scripted inbound (initiator, message) pairs the first
@@ -479,7 +479,7 @@ mod fake {
     }
 
     impl FakeCecLinkOpener {
-        pub(crate) fn new(initial: PowerStatus) -> Self {
+        pub fn new(initial: PowerStatus) -> Self {
             Self {
                 initial,
                 ignore_wakes: 0,
@@ -492,7 +492,7 @@ mod fake {
 
         /// Opener yielding a standby TV that only wakes after `ignored`
         /// dropped `power_on` sends — exercises the wake re-send loop.
-        pub(crate) fn new_flaky_wake(ignored: usize) -> Self {
+        pub fn new_flaky_wake(ignored: usize) -> Self {
             Self {
                 initial: PowerStatus::Standby,
                 ignore_wakes: ignored,
@@ -506,7 +506,7 @@ mod fake {
         /// Opener whose monitor handle replays `script` (one message per
         /// `recv`) as if each came from the TV, then idles — drives
         /// `subscribe_state` tests.
-        pub(crate) fn with_monitor_script(script: Vec<Message>) -> Self {
+        pub fn with_monitor_script(script: Vec<Message>) -> Self {
             Self::with_monitor_script_from(
                 script
                     .into_iter()
@@ -517,7 +517,7 @@ mod fake {
 
         /// Like [`Self::with_monitor_script`] but with explicit initiators,
         /// so tests can exercise the monitor's initiator filter.
-        pub(crate) fn with_monitor_script_from(script: Vec<(LogicalAddress, Message)>) -> Self {
+        pub fn with_monitor_script_from(script: Vec<(LogicalAddress, Message)>) -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
@@ -530,10 +530,7 @@ mod fake {
 
         /// Opener whose opened links report the given TV identity — for the
         /// discovery-probe tests.
-        pub(crate) fn with_identity(
-            osd_name: &str,
-            vendor_id: Option<linux_cec::VendorId>,
-        ) -> Self {
+        pub fn with_identity(osd_name: &str, vendor_id: Option<linux_cec::VendorId>) -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
@@ -546,7 +543,7 @@ mod fake {
 
         /// Opener whose `open` fails with [`Error::PermissionDenied`],
         /// modeling a node the daemon's user can enumerate but not open.
-        pub(crate) fn permission_denied() -> Self {
+        pub fn permission_denied() -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
@@ -560,7 +557,7 @@ mod fake {
         /// Opener whose monitor `recv` returns `ConnectionClosed` — models a
         /// real adapter disconnect, so tests can assert the monitor flips
         /// `is_connected()`.
-        pub(crate) fn with_monitor_disconnect() -> Self {
+        pub fn with_monitor_disconnect() -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,

@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::compat::{DaemonClient, PairTerminal, PairingProgressDetail};
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::errors::DeviceErrorCode;
-use tisvlay_core::{DaemonClient, PairTerminal, PairingProgressDetail};
 use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;
@@ -107,11 +107,22 @@ pub(crate) type WizardGen = Arc<AtomicU64>;
 pub(crate) type WizardDiscoveryCancel = Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
 
 /// Cancel handle for the wizard's manual-entry MAC enrichment
-/// (`Manager1.EnrichManualEntry`) task. Same shape as
+/// (`enrich` rpc) task. Same shape as
 /// [`WizardDiscoveryCancel`] but a distinct type so callers can't
 /// accidentally swap them — the streaming discovery loop and the
 /// one-shot manual-entry probe have different lifecycles.
 pub(crate) type WizardManualLookupCancel = Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
+
+/// Bundles the wizard callback family's shared handles so each
+/// callback clones once instead of cloning each handle individually.
+#[derive(Clone)]
+pub(crate) struct WizardCtx {
+    pub daemon: Arc<DaemonClient>,
+    pub entries: WizardEntries,
+    pub generation: WizardGen,
+    pub discovery_cancel: WizardDiscoveryCancel,
+    pub manual_cancel: WizardManualLookupCancel,
+}
 
 /// Cancel any in-flight wizard discovery session.
 ///
@@ -189,8 +200,8 @@ pub(crate) fn reset_wizard(
 
 /// Run a streaming discovery session against the daemon.
 ///
-/// Subscribes to `Manager1.DiscoveryFound` first, then calls
-/// `Manager1.StartDiscovery(0)` so the daemon loops M-SEARCH bursts
+/// Subscribes to the `discovery/*/found/*` keys first, then calls
+/// the `discover-start` rpc so the daemon loops M-SEARCH bursts
 /// at its configured `poll_interval` (default 8 s) until we stop it.
 /// Each newly-seen TV is appended to `wizard_entries` and the Slint
 /// model is refreshed.
@@ -202,10 +213,10 @@ pub(crate) fn reset_wizard(
 /// - the `wizard_gen` counter drifting from the value captured at
 ///   start (defense in depth against late callbacks bleeding into a
 ///   reopened wizard)
-/// - the signal stream ending (daemon-side hard cap or daemon
+/// - the findings stream ending (daemon-side hard cap or daemon
 ///   shutdown)
 ///
-/// Always calls `Manager1.StopDiscovery` on exit, even if cancel
+/// Always calls the `discover-stop` rpc on exit, even if cancel
 /// happened mid-iteration, so the daemon promptly stops scanning.
 pub(crate) async fn run_wizard_discovery(
     daemon: Arc<DaemonClient>,
@@ -245,7 +256,7 @@ pub(crate) async fn run_wizard_discovery(
             _ = &mut cancel_rx => break,
             maybe_item = signal_stream.next() => {
                 let Some((id, name, address, hw_id, vendor, vendor_data)) = maybe_item else {
-                    // Stream ended — daemon shutdown or signal-router dropped.
+                    // Stream ended — daemon shutdown or subscriber dropped.
                     break;
                 };
                 if wizard_gen.load(Ordering::SeqCst) != gen_at_start {
@@ -375,15 +386,15 @@ fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
     }
 }
 
-/// Run a `Manager1.AddTv` flow against the daemon's async-spawn
+/// Run a `pair` rpc flow against the daemon's async-spawn
 /// contract:
 ///
 /// - `pair_tv` returns the reserved tv_id immediately (sync
 ///   validation only). Errors here route via the typed-error
 ///   field-mapper (`extract_invalid_vendor_config`) so per-field
 ///   issues bounce back to step 2.
-/// - The handshake outcome surfaces via `PairingProgress` signals.
-///   We drain the stream filtered on our tv_id to a terminal
+/// - The handshake outcome surfaces on the `pairing/<uuid>/progress`
+///   keys. We drain the stream filtered on our tv_id to a terminal
 ///   `complete`/`failed` via the shared
 ///   `DaemonClient::drain_pair_to_terminal` helper.
 /// - Every `on_ui` callback (intermediate phase updates and the
@@ -404,9 +415,9 @@ pub(crate) async fn run_wizard_pair(
     // re-reads the live gen and skips if it has drifted.
     let captured_gen = wizard_gen.load(Ordering::SeqCst);
 
-    // Subscribe BEFORE the AddTv call so we don't miss any phase
-    // events (the daemon may emit `awaiting_tv` within microseconds
-    // of `pair_tv` returning).
+    // Subscribe BEFORE the pair rpc so we don't miss any phase
+    // updates (the daemon may publish `awaiting_tv` within
+    // microseconds of `pair_tv` returning).
     let stream = match daemon.pairing_progress_stream().await {
         Ok(s) => s,
         Err(e) => {
@@ -444,8 +455,8 @@ pub(crate) async fn run_wizard_pair(
         }
     };
 
-    // Set tv_id on the wizard so the Cancel button can route
-    // `Manager1.CancelPair(tv_id)`. The same pair_tv_id is consumed
+    // Set tv_id on the wizard so the Cancel button can route the
+    // `cancel-pair` rpc. The same pair_tv_id is consumed
     // by the cancel handler in `lib.rs::on_cancel`.
     {
         let tv_id_for_ui = tv_id.clone();
@@ -502,7 +513,7 @@ async fn run_pair_no_progress(
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
 }
 
-/// Run a `Tv1.RePair(tv_id)` call with live progress updates streamed
+/// Run a `re-pair` rpc call with live progress updates streamed
 /// into the wizard's `pair_phase` / `pair_message` fields. Parallel
 /// to [`run_wizard_pair`] but for the re-pair flow:
 ///
@@ -514,7 +525,7 @@ async fn run_pair_no_progress(
 ///   so the drain filter is straightforward — no "first signal
 ///   wins" heuristic needed.
 /// - Errors route through the same `publish_pair_outcome` path,
-///   so re-pair surfaces failures with the same UI as AddTv.
+///   so re-pair surfaces failures with the same UI as the pair flow.
 pub(crate) async fn run_wizard_re_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
@@ -566,7 +577,7 @@ pub(crate) async fn run_wizard_re_pair(
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
 
-/// Build the `on_progress` callback shared by AddTv and RePair
+/// Build the `on_progress` callback shared by the pair and re-pair
 /// drain loops. Each non-terminal phase update routes into the
 /// wizard's phase/message Slint properties, gated by the generation
 /// counter so late updates from a cancelled-and-reopened wizard

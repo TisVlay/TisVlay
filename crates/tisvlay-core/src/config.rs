@@ -6,7 +6,7 @@
 //!
 //! ## System Config (`/var/lib/tisvlay/config.toml`)
 //!
-//! Owned by `tisvlayd`. Contains TV definitions, credentials, system profiles
+//! Owned by the daemon. Contains TV definitions, credentials, system profiles
 //! for daemon lifecycle events, and user profile defaults inherited by users.
 //!
 //! ```toml
@@ -45,12 +45,12 @@
 //! ```toml
 //! [user.profiles."00000000-0000-0000-0000-00000000515a"]
 //! name = "default"
-//! idle_timeout_seconds = 600
+//! unlocked_idle_timeout_seconds = 600
 //!
 //! [user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
 //! name = "gaming"
 //! on_session_lock = "none"
-//! idle_timeout_seconds = 0
+//! unlocked_idle_timeout_seconds = 0
 //!
 //! [[tv]]
 //! uuid = "11111111-1111-1111-1111-111111111111"
@@ -68,16 +68,7 @@ use uuid::Uuid;
 // =============================================================================
 
 /// Actions the session service or daemon can take in response to events.
-//
-// SAFETY: the `signature = "s"` attribute is a hand-declared wire-format
-// promise that this enum stays unit-variant-only. Adding a struct variant
-// would silently diverge the declared signature from what serde emits
-// (string per-variant via `rename_all = "snake_case"`), with no compile
-// error — so the type stays append-only-of-unit-variants. Same goes for
-// `AutomateWhen` below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
-#[cfg_attr(feature = "dbus", zvariant(signature = "s"))]
 #[serde(rename_all = "snake_case")]
 pub enum SessionAction {
     /// Do nothing.
@@ -93,6 +84,69 @@ pub enum SessionAction {
     PowerOn,
 }
 
+/// One event's mapping: an action, optionally carrying modifiers.
+/// Serializes as the bare action string (`"screen_on"`) or as a table
+/// (`{ action = "screen_on", restore_input = true }`) — two shapes of
+/// one grammar, round-tripped in whichever form was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EventAction {
+    /// Bare action, no modifiers.
+    Plain(SessionAction),
+    /// Action with modifiers.
+    With {
+        action: SessionAction,
+        /// Land the TV on its configured `primary_input` once the
+        /// action completes. Meaningful for the on-ish actions on a
+        /// backend advertising the INPUT capability; inert otherwise.
+        #[serde(default)]
+        restore_input: bool,
+    },
+}
+
+impl EventAction {
+    /// Table-form constructor for restore-on mappings (the stock
+    /// session-start defaults).
+    pub fn restoring(action: SessionAction) -> Self {
+        Self::With {
+            action,
+            restore_input: true,
+        }
+    }
+
+    pub fn action(self) -> SessionAction {
+        match self {
+            Self::Plain(action) | Self::With { action, .. } => action,
+        }
+    }
+
+    pub fn restore_input(self) -> bool {
+        match self {
+            Self::Plain(_) => false,
+            Self::With { restore_input, .. } => restore_input,
+        }
+    }
+}
+
+impl From<SessionAction> for EventAction {
+    fn from(action: SessionAction) -> Self {
+        Self::Plain(action)
+    }
+}
+
+/// Action-only comparison — the modifier is orthogonal to "which verb".
+impl PartialEq<SessionAction> for EventAction {
+    fn eq(&self, other: &SessionAction) -> bool {
+        self.action() == *other
+    }
+}
+
+impl Default for EventAction {
+    fn default() -> Self {
+        Self::Plain(SessionAction::None)
+    }
+}
+
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================
@@ -100,13 +154,8 @@ pub enum SessionAction {
 /// Controls when automation fires relative to the TV's current input.
 ///
 /// Combined with the per-TV `primary_input` and the global `managed` flag
-/// to produce the `Automated` D-Bus property.
-///
-/// See the SAFETY note on `SessionAction` — the `signature = "s"` attribute
-/// keeps this enum unit-variant-only as a wire-format invariant.
+/// to derive the TV's effective automated state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
-#[cfg_attr(feature = "dbus", zvariant(signature = "s"))]
 #[serde(rename_all = "snake_case")]
 pub enum AutomateWhen {
     /// Always apply automation regardless of current input.
@@ -139,6 +188,21 @@ impl AutomateWhen {
     }
 }
 
+impl std::str::FromStr for AutomateWhen {
+    type Err = String;
+
+    /// Inverse of [`Display`](Self#impl-Display-for-AutomateWhen); the
+    /// round-trip test below pins both against the serde shape.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "always" => Ok(Self::Always),
+            "on_primary" => Ok(Self::OnPrimary),
+            "off_primary" => Ok(Self::OffPrimary),
+            other => Err(format!("unknown automate_when: {other}")),
+        }
+    }
+}
+
 impl std::fmt::Display for AutomateWhen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -158,22 +222,19 @@ impl std::fmt::Display for AutomateWhen {
 ///
 /// - `$config::full_default()` / `merge_with_base()` / `resolve()` — the
 ///   `Option<T>` inheritance chain (`Some(default)` / `or` / `unwrap_or`).
-/// - `$body::from_config()` and `From<&$body> for $config` — the
-///   lossless wire round-trip (feature-gated, like the body type).
 /// - `pub const $fields: &[&str]` — the field names in declaration
 ///   order, the single source of truth the GUI field tables are
 ///   validated against (see `tisvlay-gui`'s `*_field_table_*` tests).
 ///
 /// `name` is handled explicitly (it's identity-adjacent metadata, not an
 /// inheritable field) so it never appears in the list. The `Resolved`
-/// and `Body` structs, and `Resolved`'s `Default`, stay hand-written —
-/// adding a field still requires touching those, so the field set can't
-/// silently diverge from the resolved defaults or the wire shape.
+/// struct, and its `Default`, stay hand-written — adding a field still
+/// requires touching those, so the field set can't silently diverge
+/// from the resolved defaults.
 macro_rules! profile_plumbing {
     (
         config: $config:ident,
         resolved: $resolved:ident,
-        body: $body:ident,
         fields_const: $fields:ident,
         fields: [$($field:ident),+ $(,)?],
     ) => {
@@ -209,28 +270,6 @@ macro_rules! profile_plumbing {
                 }
             }
         }
-
-        #[cfg(feature = "dbus")]
-        impl $body {
-            /// Construct a wire body from a config, cloning `name` across.
-            pub fn from_config(config: &$config) -> Self {
-                Self {
-                    name: config.name.clone(),
-                    $($field: config.$field,)+
-                }
-            }
-        }
-
-        #[cfg(feature = "dbus")]
-        impl From<&$body> for $config {
-            /// Round-trip: the body's `name` lands on the config's `name`.
-            fn from(body: &$body) -> Self {
-                $config {
-                    name: body.name.clone(),
-                    $($field: body.$field,)+
-                }
-            }
-        }
     };
 }
 
@@ -255,31 +294,31 @@ pub struct SystemProfileConfig {
 
     /// Action on system startup/boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_startup: Option<SessionAction>,
+    pub on_startup: Option<EventAction>,
 
     /// Action when the system powers off or halts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_shutdown: Option<SessionAction>,
+    pub on_shutdown: Option<EventAction>,
 
     /// Action when the system reboots (including kexec).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_reboot: Option<SessionAction>,
+    pub on_reboot: Option<EventAction>,
 
     /// Action on system sleep/suspend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_sleep: Option<SessionAction>,
+    pub on_sleep: Option<EventAction>,
 
     /// Action on system wake/resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_wake: Option<SessionAction>,
+    pub on_wake: Option<EventAction>,
 
     /// Action when the matched host display connector blanks (DPMS off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_dpms_off: Option<SessionAction>,
+    pub on_dpms_off: Option<EventAction>,
 
     /// Action when the matched host display connector wakes (DPMS on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_dpms_on: Option<SessionAction>,
+    pub on_dpms_on: Option<EventAction>,
 
     /// Greeter idle timeout in seconds (0 to disable). Drives the
     /// `tisvlay-greeter` idle client at the login screen.
@@ -288,11 +327,11 @@ pub struct SystemProfileConfig {
 
     /// Action when the greeter goes idle (after `idle_timeout_seconds`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_idle_timeout: Option<SessionAction>,
+    pub on_idle_timeout: Option<EventAction>,
 
     /// Action when greeter activity resumes after idle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_idle_resume: Option<SessionAction>,
+    pub on_idle_resume: Option<EventAction>,
 
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,7 +341,6 @@ pub struct SystemProfileConfig {
 profile_plumbing! {
     config: SystemProfileConfig,
     resolved: ResolvedSystemProfile,
-    body: SystemProfileBody,
     fields_const: SYSTEM_PROFILE_FIELDS,
     fields: [
         on_startup,
@@ -331,25 +369,25 @@ profile_plumbing! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSystemProfile {
     /// Action on system startup/boot.
-    pub on_startup: SessionAction,
+    pub on_startup: EventAction,
     /// Action when the system powers off or halts.
-    pub on_shutdown: SessionAction,
+    pub on_shutdown: EventAction,
     /// Action when the system reboots (including kexec).
-    pub on_reboot: SessionAction,
+    pub on_reboot: EventAction,
     /// Action on system sleep/suspend.
-    pub on_sleep: SessionAction,
+    pub on_sleep: EventAction,
     /// Action on system wake/resume.
-    pub on_wake: SessionAction,
+    pub on_wake: EventAction,
     /// Action when the matched host display connector blanks (DPMS off).
-    pub on_dpms_off: SessionAction,
+    pub on_dpms_off: EventAction,
     /// Action when the matched host display connector wakes (DPMS on).
-    pub on_dpms_on: SessionAction,
+    pub on_dpms_on: EventAction,
     /// Greeter idle timeout in seconds (0 to disable).
     pub idle_timeout_seconds: u64,
     /// Action when the greeter goes idle.
-    pub on_idle_timeout: SessionAction,
+    pub on_idle_timeout: EventAction,
     /// Action when greeter activity resumes after idle.
-    pub on_idle_resume: SessionAction,
+    pub on_idle_resume: EventAction,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
 }
@@ -357,19 +395,22 @@ pub struct ResolvedSystemProfile {
 impl Default for ResolvedSystemProfile {
     fn default() -> Self {
         Self {
-            on_startup: SessionAction::PowerOn,
-            on_shutdown: SessionAction::PowerOff,
-            on_reboot: SessionAction::None,
-            on_sleep: SessionAction::PowerOff,
-            on_wake: SessionAction::PowerOn,
-            on_dpms_off: SessionAction::ScreenOff,
-            on_dpms_on: SessionAction::ScreenOn,
+            // The session-start wakes restore the primary input by
+            // default (a CEC or WoL wake can land on another port);
+            // every other mapping stays input-neutral.
+            on_startup: EventAction::restoring(SessionAction::PowerOn),
+            on_shutdown: SessionAction::PowerOff.into(),
+            on_reboot: SessionAction::None.into(),
+            on_sleep: SessionAction::PowerOff.into(),
+            on_wake: EventAction::restoring(SessionAction::PowerOn),
+            on_dpms_off: SessionAction::ScreenOff.into(),
+            on_dpms_on: SessionAction::ScreenOn.into(),
             // Off by default: the greeter idle timer is opt-in (set a non-zero
             // timeout, e.g. via the NixOS `greeter.enable` option). The DPMS
             // mirror above is the only default-on screen automation.
             idle_timeout_seconds: 0,
-            on_idle_timeout: SessionAction::ScreenOff,
-            on_idle_resume: SessionAction::ScreenOn,
+            on_idle_timeout: SessionAction::ScreenOff.into(),
+            on_idle_resume: SessionAction::ScreenOn.into(),
             automate_when: AutomateWhen::Always,
         }
     }
@@ -396,39 +437,48 @@ pub struct UserProfileConfig {
 
     /// Action on session lock event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_session_lock: Option<SessionAction>,
+    pub on_session_lock: Option<EventAction>,
 
     /// Action on session unlock event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_session_unlock: Option<SessionAction>,
+    pub on_session_unlock: Option<EventAction>,
 
     /// Action when user interacts with the lock screen greeter (before unlocking).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_lock_wake: Option<SessionAction>,
+    pub on_lock_wake: Option<EventAction>,
 
-    /// Idle timeout in seconds (0 to disable).
+    /// Idle timeout in seconds while the screen is locked (0 to
+    /// disable) — how long a bumped-but-not-unlocked lock screen stays
+    /// awake before `on_idle_timeout` re-blanks it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_timeout_seconds: Option<u64>,
+    pub locked_idle_timeout_seconds: Option<u64>,
 
-    /// Action on idle timeout.
+    /// Idle timeout in seconds while unlocked (0 to disable) — the
+    /// in-session idle threshold for `on_idle_timeout`/`on_idle_resume`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_idle_timeout: Option<SessionAction>,
+    pub unlocked_idle_timeout_seconds: Option<u64>,
 
-    /// Action when activity resumes after idle timeout.
+    /// Action on idle timeout (either state's timer; each timer only
+    /// fires in its own lock state).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_idle_resume: Option<SessionAction>,
+    pub on_idle_timeout: Option<EventAction>,
+
+    /// Action when activity resumes after an unlocked idle timeout.
+    /// Activity while locked dispatches `on_lock_wake` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_idle_resume: Option<EventAction>,
 }
 
 profile_plumbing! {
     config: UserProfileConfig,
     resolved: ResolvedUserProfile,
-    body: UserProfileBody,
     fields_const: USER_PROFILE_FIELDS,
     fields: [
         on_session_lock,
         on_session_unlock,
         on_lock_wake,
-        idle_timeout_seconds,
+        locked_idle_timeout_seconds,
+        unlocked_idle_timeout_seconds,
         on_idle_timeout,
         on_idle_resume,
     ],
@@ -446,28 +496,33 @@ profile_plumbing! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedUserProfile {
     /// Action on session lock event.
-    pub on_session_lock: SessionAction,
+    pub on_session_lock: EventAction,
     /// Action on session unlock event.
-    pub on_session_unlock: SessionAction,
+    pub on_session_unlock: EventAction,
     /// Action when user interacts with the lock screen greeter.
-    pub on_lock_wake: SessionAction,
-    /// Idle timeout in seconds (0 to disable).
-    pub idle_timeout_seconds: u64,
+    pub on_lock_wake: EventAction,
+    /// Idle timeout in seconds while locked (0 to disable).
+    pub locked_idle_timeout_seconds: u64,
+    /// Idle timeout in seconds while unlocked (0 to disable).
+    pub unlocked_idle_timeout_seconds: u64,
     /// Action on idle timeout.
-    pub on_idle_timeout: SessionAction,
-    /// Action when activity resumes after idle timeout.
-    pub on_idle_resume: SessionAction,
+    pub on_idle_timeout: EventAction,
+    /// Action when activity resumes after an unlocked idle timeout.
+    pub on_idle_resume: EventAction,
 }
 
 impl Default for ResolvedUserProfile {
     fn default() -> Self {
         Self {
-            on_session_lock: SessionAction::ScreenOff,
-            on_session_unlock: SessionAction::ScreenOn,
-            on_lock_wake: SessionAction::ScreenOn,
-            idle_timeout_seconds: 0,
-            on_idle_timeout: SessionAction::ScreenOff,
-            on_idle_resume: SessionAction::ScreenOn,
+            on_session_lock: SessionAction::ScreenOff.into(),
+            // Unlock means a desktop session is incoming — restore the
+            // primary input by default; the other mappings stay neutral.
+            on_session_unlock: EventAction::restoring(SessionAction::ScreenOn),
+            on_lock_wake: SessionAction::ScreenOn.into(),
+            locked_idle_timeout_seconds: 0,
+            unlocked_idle_timeout_seconds: 0,
+            on_idle_timeout: SessionAction::ScreenOff.into(),
+            on_idle_resume: SessionAction::ScreenOn.into(),
         }
     }
 }
@@ -496,246 +551,6 @@ pub const DEFAULT_USER_PROFILE_UUID: Uuid = Uuid::from_u128(0x00000000_0000_0000
 /// free to render it through `gettext()` for localized display
 /// without the daemon ever seeing the localized string.
 pub const DEFAULT_PROFILE_NAME: &str = "default";
-
-// =============================================================================
-// SystemProfileBody — wire body for the D-Bus property-bag CRUD surface
-// =============================================================================
-
-/// Wire-format body for a system profile, exchanged across `Manager1`'s
-/// CRUD methods as an `a{sv}` dict.
-///
-/// `name` is the mutable display label (always present on the wire);
-/// every other field is `Option<T>` so an absent key signals
-/// "inherits from the chain below" — exactly the present-vs-absent
-/// semantic clients need without a separate `LocallySetFields`
-/// companion property. `deny_unknown_fields` rejects mis-spelled keys
-/// at the dict-derive boundary instead of silently absorbing them
-/// as `None`.
-///
-/// Lossless round-trip with [`SystemProfileConfig`] via the `From`
-/// impls below — the on-disk shape (TOML) keeps the same
-/// inheritable-`Option<T>` layout; only `name` lives here as a body
-/// field rather than the TOML section key.
-#[cfg(feature = "dbus")]
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    zbus::zvariant::Type,
-    zbus::zvariant::SerializeDict,
-    zbus::zvariant::DeserializeDict,
-)]
-#[zvariant(signature = "a{sv}", deny_unknown_fields)]
-pub struct SystemProfileBody {
-    /// Mutable display label. Always present on the wire (the dict-derive
-    /// emits it unconditionally). Renames are body updates with a new
-    /// `name`; UUID identity stays stable.
-    pub name: String,
-    pub on_startup: Option<SessionAction>,
-    pub on_shutdown: Option<SessionAction>,
-    pub on_reboot: Option<SessionAction>,
-    pub on_sleep: Option<SessionAction>,
-    pub on_wake: Option<SessionAction>,
-    pub on_dpms_off: Option<SessionAction>,
-    pub on_dpms_on: Option<SessionAction>,
-    pub idle_timeout_seconds: Option<u64>,
-    pub on_idle_timeout: Option<SessionAction>,
-    pub on_idle_resume: Option<SessionAction>,
-    pub automate_when: Option<AutomateWhen>,
-}
-
-// =============================================================================
-// UserProfileBody — mirror of SystemProfileBody on the session bus
-// =============================================================================
-
-/// Wire-format body for a user profile. Shape mirrors [`SystemProfileBody`]
-/// — `name` always present, every other field `Option<T>` for the
-/// inherit-from-chain semantic. `idle_timeout_seconds` is the only numeric
-/// field on either body; the rest are enum-typed `SessionAction`s.
-#[cfg(feature = "dbus")]
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    zbus::zvariant::Type,
-    zbus::zvariant::SerializeDict,
-    zbus::zvariant::DeserializeDict,
-)]
-#[zvariant(signature = "a{sv}", deny_unknown_fields)]
-pub struct UserProfileBody {
-    pub name: String,
-    pub on_session_lock: Option<SessionAction>,
-    pub on_session_unlock: Option<SessionAction>,
-    pub on_lock_wake: Option<SessionAction>,
-    pub on_idle_timeout: Option<SessionAction>,
-    pub on_idle_resume: Option<SessionAction>,
-    pub idle_timeout_seconds: Option<u64>,
-}
-
-// =============================================================================
-// NotificationSettingsBody — wire body for `Tray1.NotificationSettings`
-// =============================================================================
-
-/// Wire-format body for the tray's desktop-notification settings.
-///
-/// Each field is `Option<bool>` so that `Tray1.UpdateNotificationSettings`
-/// can be a partial update: only the keys the caller wants to change
-/// need to be set. The property getter (`Tray1.NotificationSettings`)
-/// returns every field as `Some` (an absent field on the read side
-/// would mean "this version of the tray doesn't know about this
-/// category" — forward-compat across version skew).
-///
-/// The on-disk twin (`tisvlay_tray::config::NotificationSettings`) lives
-/// in the tray crate; this body type is core's wire vocabulary so the
-/// GUI client and the tray server both speak it. Per the workspace
-/// convention in `docs/design.md`, wire bodies live in core; on-disk
-/// containers stay with their owner.
-#[cfg(feature = "dbus")]
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    PartialEq,
-    Eq,
-    zbus::zvariant::Type,
-    zbus::zvariant::SerializeDict,
-    zbus::zvariant::DeserializeDict,
-    zbus::zvariant::Value,
-    zbus::zvariant::OwnedValue,
-)]
-#[zvariant(signature = "a{sv}", deny_unknown_fields)]
-pub struct NotificationSettingsBody {
-    pub tv_connection: Option<bool>,
-    pub tv_pairing: Option<bool>,
-    pub tv_wake: Option<bool>,
-    pub daemon_offline: Option<bool>,
-}
-
-#[cfg(feature = "dbus")]
-impl NotificationSettingsBody {
-    /// Factory defaults — every category populated with its documented
-    /// default-on value. Single source of truth shared by:
-    /// - the tray, which uses this to seed a fresh `TrayConfig` when
-    ///   `tray.toml` doesn't exist yet;
-    /// - the GUI, which uses this to seed the Slint `Tray.notifications`
-    ///   global before any successful fetch lands (so a GUI launched
-    ///   while the tray is offline still shows sensible defaults).
-    ///
-    /// Distinct from the derived `Default` impl (all-`None`), which
-    /// represents the partial-update neutral for
-    /// `Tray1.UpdateNotificationSettings`.
-    pub fn defaults() -> Self {
-        let mut body = Self::default();
-        for cat in NotificationCategory::ALL {
-            cat.set(&mut body, cat.default_enabled());
-        }
-        body
-    }
-}
-
-/// The desktop-notification categories.
-///
-/// **Single source of truth** for the category vocabulary shared
-/// across three surfaces: the tray's emit gate + on-disk `TrayConfig`,
-/// the GUI's settings pane, and the `Tray1` D-Bus wire body. Lives in
-/// core (not the tray) because the GUI consumes it too and only core
-/// is on both their dependency paths — same rationale as
-/// [`NotificationSettingsBody`].
-///
-/// The `#[repr(u8)]` discriminant *is* the bit position in the
-/// runtime `u8` enable-bitset ([`bit`](Self::bit)); [`ALL`](Self::ALL)
-/// lists every variant in that order. The `key` /
-/// [`get`](Self::get) / [`set`](Self::set) accessors are exhaustive
-/// `match`es, so adding a variant without handling it everywhere is a
-/// compile error — there is no second hand-maintained bit-position
-/// table to drift against.
-#[cfg(feature = "dbus")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum NotificationCategory {
-    /// TV `connected` transitions true ↔ false.
-    TvConnection = 0,
-    /// Pairing terminal phase `complete` / `failed`.
-    TvPairing = 1,
-    /// `wol_sent` → `connected` / `failed` for a TV power cycle.
-    TvWake = 2,
-    /// Daemon disappeared from D-Bus.
-    DaemonOffline = 3,
-}
-
-#[cfg(feature = "dbus")]
-impl NotificationCategory {
-    /// Every category, in canonical (discriminant / bit-position)
-    /// order. Iterate this to walk all categories without open-coding
-    /// the field list at each call site.
-    pub const ALL: [Self; 4] = [
-        Self::TvConnection,
-        Self::TvPairing,
-        Self::TvWake,
-        Self::DaemonOffline,
-    ];
-
-    /// Bit position in the runtime `u8` enable-bitset, derived from the
-    /// `#[repr(u8)]` discriminant — the one and only bit-position
-    /// source.
-    pub const fn bit(self) -> u8 {
-        1u8 << (self as u8)
-    }
-
-    /// Stable snake_case wire identifier: the `Tray1` settings-pane
-    /// string key *and* the matching [`NotificationSettingsBody`]
-    /// field name. Internal — the canonical source for
-    /// [`from_key`](Self::from_key); external callers parse a key into a
-    /// category, never stringify one.
-    const fn key(self) -> &'static str {
-        match self {
-            Self::TvConnection => "tv_connection",
-            Self::TvPairing => "tv_pairing",
-            Self::TvWake => "tv_wake",
-            Self::DaemonOffline => "daemon_offline",
-        }
-    }
-
-    /// Parse a wire key back to a category. `None` for unrecognized
-    /// keys (version skew / typo) so callers can warn-and-ignore.
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.key() == key)
-    }
-
-    /// Read this category's value out of a wire body.
-    pub fn get(self, body: &NotificationSettingsBody) -> Option<bool> {
-        match self {
-            Self::TvConnection => body.tv_connection,
-            Self::TvPairing => body.tv_pairing,
-            Self::TvWake => body.tv_wake,
-            Self::DaemonOffline => body.daemon_offline,
-        }
-    }
-
-    /// Set this category's value in a wire body.
-    pub fn set(self, body: &mut NotificationSettingsBody, value: bool) {
-        match self {
-            Self::TvConnection => body.tv_connection = Some(value),
-            Self::TvPairing => body.tv_pairing = Some(value),
-            Self::TvWake => body.tv_wake = Some(value),
-            Self::DaemonOffline => body.daemon_offline = Some(value),
-        }
-    }
-
-    /// Whether this category defaults on in a fresh config. Drives
-    /// [`NotificationSettingsBody::defaults`]. One arm per variant so a
-    /// new category is a missing-arm compile error that forces a
-    /// deliberate on/off decision rather than inheriting a blanket
-    /// default.
-    pub const fn default_enabled(self) -> bool {
-        match self {
-            Self::TvConnection => true,
-            Self::TvPairing => true,
-            Self::TvWake => true,
-            Self::DaemonOffline => true,
-        }
-    }
-}
 
 // =============================================================================
 // Config sections
@@ -796,9 +611,9 @@ impl SystemSection {
     /// Materialize the reserved-default profile if missing, then force
     /// its `name` field to [`DEFAULT_PROFILE_NAME`]. Idempotent.
     ///
-    /// Called from `SystemConfig::load_from` (and the harness) so the
-    /// catalog always has the reserved-default profile available for
-    /// inheritance resolution and for `Tv1.SystemProfile` validation.
+    /// Called from `SystemConfig::load_from` so the catalog always has
+    /// the reserved-default profile available for inheritance
+    /// resolution and for system-profile assignment validation.
     pub fn ensure_default(&mut self) {
         self.profiles
             .entry(DEFAULT_SYSTEM_PROFILE_UUID)
@@ -921,14 +736,12 @@ fn default_user_profile_uuid() -> Uuid {
 pub struct TvConfig {
     /// Stable identifier for this TV — RFC 4122 UUID v4
     /// generated at pair time. Decoupled from `name` so renames
-    /// don't churn cross-references (profile assignments, D-Bus
-    /// paths, `primary_input` keying, etc.). Matches
-    /// NetworkManager's connection-uuid pattern.
+    /// don't churn cross-references (profile assignments,
+    /// `primary_input` keying, etc.). Matches NetworkManager's
+    /// connection-uuid pattern.
     ///
     /// Serialized as the canonical hyphenated form
-    /// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) in TOML; D-Bus
-    /// paths substitute hyphens with underscores via the existing
-    /// [`tv_path`](crate::dbus_paths::tv_path) helper. Tests
+    /// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) in TOML. Tests
     /// needing deterministic UUIDs use
     /// [`with_uuid`](Self::with_uuid).
     pub uuid: Uuid,
@@ -1071,7 +884,7 @@ pub struct DiscoveryConfig {
     pub bind_port: Option<u16>,
 
     /// Per-iteration timeout for the streaming discovery loop used by
-    /// `Manager1.StartDiscovery`. Each iteration sends one M-SEARCH
+    /// the `discover-start` rpc. Each iteration sends one M-SEARCH
     /// burst, waits for responses up to this duration, then starts the
     /// next iteration. Smaller values are more responsive to a TV
     /// being powered on mid-session; larger values reduce
@@ -1095,12 +908,21 @@ impl DiscoveryConfig {
     }
 }
 
+fn config_schema_v1() -> u32 {
+    1
+}
+
 /// System-level configuration (daemon-owned).
 ///
 /// Contains TV definitions, vendor credentials, system profiles for daemon
 /// lifecycle events, and user profile defaults inherited by users.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemConfig {
+    /// Schema version - absence *defines* version 1 (the pre-tag
+    /// baseline); migration logic waits until a v2 exists.
+    #[serde(default = "config_schema_v1")]
+    pub version: u32,
+
     /// System-level settings (daemon lifecycle profiles).
     #[serde(default)]
     pub system: SystemSection,
@@ -1173,10 +995,11 @@ impl SystemConfig {
         PathBuf::from("/var/lib/tisvlay/config.toml")
     }
 
-    /// Get the daemon's user-mode config file path (`tisvlayd --session`).
+    /// Get the daemon's user-mode config file path.
     ///
     /// Returns `~/.config/tisvlay/config.toml` via XDG. Used when the
-    /// daemon runs on the session bus for development without `--config`.
+    /// daemon runs on the user's runtime socket for development
+    /// without `--config`.
     /// Distinct from [`UserConfig::config_path`] (which resolves the
     /// *session service's* file) — daemon and session service own
     /// different files in the user domain.
@@ -1460,6 +1283,23 @@ pub fn absolutize(path: PathBuf) -> PathBuf {
 mod tests {
     use super::*;
 
+    #[test]
+    fn automate_when_display_fromstr_and_serde_agree() {
+        for when in [
+            AutomateWhen::Always,
+            AutomateWhen::OnPrimary,
+            AutomateWhen::OffPrimary,
+        ] {
+            let shown = when.to_string();
+            assert_eq!(shown.parse::<AutomateWhen>(), Ok(when));
+            assert_eq!(
+                serde_json::to_value(when).unwrap(),
+                serde_json::Value::String(shown)
+            );
+        }
+        assert!("bogus".parse::<AutomateWhen>().is_err());
+    }
+
     /// Test struct for LG vendor config (simulates what tisvlay-lg would define).
     /// Includes connection parameters (ip/mac) since they're vendor-specific.
     #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -1521,7 +1361,7 @@ on_session_unlock = "screen_on"
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1557,8 +1397,8 @@ default_input = "HDMI_1"
             .find_profile_by_name("gaming")
             .map(|(_, body)| body)
             .unwrap();
-        assert_eq!(gaming.on_session_lock, Some(SessionAction::None));
-        assert_eq!(gaming.idle_timeout_seconds, Some(0));
+        assert_eq!(gaming.on_session_lock, Some(SessionAction::None.into()));
+        assert_eq!(gaming.unlocked_idle_timeout_seconds, Some(0));
     }
 
     #[test]
@@ -1574,7 +1414,7 @@ on_reboot = "none"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
 on_session_lock = "screen_off"
-idle_timeout_seconds = 300
+unlocked_idle_timeout_seconds = 300
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1596,9 +1436,12 @@ mac = "AA:BB:CC:DD:EE:FF"
             .profiles
             .get(&DEFAULT_SYSTEM_PROFILE_UUID)
             .unwrap();
-        assert_eq!(sys_default.on_startup, Some(SessionAction::PowerOn));
-        assert_eq!(sys_default.on_shutdown, Some(SessionAction::PowerOff));
-        assert_eq!(sys_default.on_reboot, Some(SessionAction::None));
+        assert_eq!(sys_default.on_startup, Some(SessionAction::PowerOn.into()));
+        assert_eq!(
+            sys_default.on_shutdown,
+            Some(SessionAction::PowerOff.into())
+        );
+        assert_eq!(sys_default.on_reboot, Some(SessionAction::None.into()));
 
         // Check user profile
         let user_default = config
@@ -1606,8 +1449,11 @@ mac = "AA:BB:CC:DD:EE:FF"
             .profiles
             .get(&DEFAULT_USER_PROFILE_UUID)
             .unwrap();
-        assert_eq!(user_default.on_session_lock, Some(SessionAction::ScreenOff));
-        assert_eq!(user_default.idle_timeout_seconds, Some(300));
+        assert_eq!(
+            user_default.on_session_lock,
+            Some(SessionAction::ScreenOff.into())
+        );
+        assert_eq!(user_default.unlocked_idle_timeout_seconds, Some(300));
         // Unspecified field
         assert_eq!(user_default.on_lock_wake, None);
     }
@@ -1640,7 +1486,7 @@ on_session_lock = "screen_off"
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1811,7 +1657,7 @@ ip = "192.168.1.101"
             custom_uuid,
             UserProfileConfig {
                 name: "custom".to_string(),
-                on_session_lock: Some(SessionAction::PowerOff),
+                on_session_lock: Some(SessionAction::PowerOff.into()),
                 ..UserProfileConfig::default()
             },
         );
@@ -1819,7 +1665,7 @@ ip = "192.168.1.101"
             guest_uuid,
             SystemProfileConfig {
                 name: "guest".to_string(),
-                on_shutdown: Some(SessionAction::ScreenOff),
+                on_shutdown: Some(SessionAction::ScreenOff.into()),
                 ..SystemProfileConfig::default()
             },
         );
@@ -1873,23 +1719,23 @@ ip = "192.168.1.101"
     #[test]
     fn test_system_profile_merge() {
         let base = SystemProfileConfig {
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: Some(SessionAction::PowerOff),
-            on_dpms_off: Some(SessionAction::ScreenOff),
+            on_startup: Some(SessionAction::PowerOn.into()),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
+            on_dpms_off: Some(SessionAction::ScreenOff.into()),
             ..SystemProfileConfig::default()
         };
 
         let override_profile = SystemProfileConfig {
-            on_shutdown: Some(SessionAction::ScreenOff),
-            on_dpms_on: Some(SessionAction::ScreenOn),
+            on_shutdown: Some(SessionAction::ScreenOff.into()),
+            on_dpms_on: Some(SessionAction::ScreenOn.into()),
             ..SystemProfileConfig::default()
         };
 
         let merged = override_profile.merge_with_base(&base);
-        assert_eq!(merged.on_startup, Some(SessionAction::PowerOn)); // from base
-        assert_eq!(merged.on_shutdown, Some(SessionAction::ScreenOff)); // overridden
-        assert_eq!(merged.on_dpms_off, Some(SessionAction::ScreenOff)); // from base
-        assert_eq!(merged.on_dpms_on, Some(SessionAction::ScreenOn)); // overridden
+        assert_eq!(merged.on_startup, Some(SessionAction::PowerOn.into())); // from base
+        assert_eq!(merged.on_shutdown, Some(SessionAction::ScreenOff.into())); // overridden
+        assert_eq!(merged.on_dpms_off, Some(SessionAction::ScreenOff.into())); // from base
+        assert_eq!(merged.on_dpms_on, Some(SessionAction::ScreenOn.into())); // overridden
     }
 
     #[test]
@@ -1900,8 +1746,8 @@ ip = "192.168.1.101"
             DEFAULT_SYSTEM_PROFILE_UUID,
             SystemProfileConfig {
                 name: "default".to_string(),
-                on_startup: Some(SessionAction::PowerOn),
-                on_shutdown: Some(SessionAction::PowerOff),
+                on_startup: Some(SessionAction::PowerOn.into()),
+                on_shutdown: Some(SessionAction::PowerOff.into()),
                 ..SystemProfileConfig::default()
             },
         );
@@ -1909,8 +1755,8 @@ ip = "192.168.1.101"
             guest_uuid,
             SystemProfileConfig {
                 name: "guest".to_string(),
-                on_startup: Some(SessionAction::None),
-                on_shutdown: Some(SessionAction::ScreenOff),
+                on_startup: Some(SessionAction::None.into()),
+                on_shutdown: Some(SessionAction::ScreenOff.into()),
                 ..SystemProfileConfig::default()
             },
         );
@@ -1938,7 +1784,7 @@ ip = "192.168.1.101"
             DEFAULT_SYSTEM_PROFILE_UUID,
             SystemProfileConfig {
                 name: "default".to_string(),
-                on_startup: Some(SessionAction::PowerOn),
+                on_startup: Some(SessionAction::PowerOn.into()),
                 ..SystemProfileConfig::default()
             },
         );
@@ -2006,7 +1852,7 @@ ip = "192.168.1.1"
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff);
         assert_eq!(resolved.on_session_unlock, SessionAction::ScreenOn);
         assert_eq!(resolved.on_lock_wake, SessionAction::ScreenOn);
-        assert_eq!(resolved.idle_timeout_seconds, 0);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 0);
         assert_eq!(resolved.on_idle_timeout, SessionAction::ScreenOff);
     }
 
@@ -2024,20 +1870,20 @@ ip = "192.168.1.1"
     #[test]
     fn test_merge_with_base_partial_override() {
         let base = UserProfileConfig {
-            on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
         let override_profile = UserProfileConfig {
-            on_session_lock: Some(SessionAction::None),
-            // idle_timeout_seconds not specified — should inherit from base
+            on_session_lock: Some(SessionAction::None.into()),
+            // unlocked_idle_timeout_seconds not specified — should inherit from base
             ..UserProfileConfig::default()
         };
 
         let merged = override_profile.merge_with_base(&base);
-        assert_eq!(merged.on_session_lock, Some(SessionAction::None));
-        assert_eq!(merged.idle_timeout_seconds, Some(300)); // inherited
+        assert_eq!(merged.on_session_lock, Some(SessionAction::None.into()));
+        assert_eq!(merged.unlocked_idle_timeout_seconds, Some(300)); // inherited
     }
 
     #[test]
@@ -2048,7 +1894,10 @@ ip = "192.168.1.1"
         let merged = empty.merge_with_base(&base);
         // All fields should come from base
         assert_eq!(merged.on_session_lock, base.on_session_lock);
-        assert_eq!(merged.idle_timeout_seconds, base.idle_timeout_seconds);
+        assert_eq!(
+            merged.unlocked_idle_timeout_seconds,
+            base.unlocked_idle_timeout_seconds
+        );
     }
 
     #[test]
@@ -2056,24 +1905,26 @@ ip = "192.168.1.1"
         let base = UserProfileConfig::full_default();
         let full_override = UserProfileConfig {
             name: String::new(),
-            on_session_lock: Some(SessionAction::None),
-            on_session_unlock: Some(SessionAction::None),
-            on_lock_wake: Some(SessionAction::None),
-            idle_timeout_seconds: Some(999),
-            on_idle_timeout: Some(SessionAction::PowerOff),
-            on_idle_resume: Some(SessionAction::None),
+            on_session_lock: Some(SessionAction::None.into()),
+            on_session_unlock: Some(SessionAction::None.into()),
+            on_lock_wake: Some(SessionAction::None.into()),
+            locked_idle_timeout_seconds: Some(30),
+            unlocked_idle_timeout_seconds: Some(999),
+            on_idle_timeout: Some(SessionAction::PowerOff.into()),
+            on_idle_resume: Some(SessionAction::None.into()),
         };
 
         let merged = full_override.merge_with_base(&base);
-        assert_eq!(merged.on_session_lock, Some(SessionAction::None));
-        assert_eq!(merged.idle_timeout_seconds, Some(999));
-        assert_eq!(merged.on_idle_timeout, Some(SessionAction::PowerOff));
+        assert_eq!(merged.on_session_lock, Some(SessionAction::None.into()));
+        assert_eq!(merged.locked_idle_timeout_seconds, Some(30));
+        assert_eq!(merged.unlocked_idle_timeout_seconds, Some(999));
+        assert_eq!(merged.on_idle_timeout, Some(SessionAction::PowerOff.into()));
     }
 
     #[test]
     fn test_resolve_fills_nones() {
         let partial = UserProfileConfig {
-            on_session_lock: Some(SessionAction::None),
+            on_session_lock: Some(SessionAction::None.into()),
             // Everything else is None
             ..UserProfileConfig::default()
         };
@@ -2081,7 +1932,7 @@ ip = "192.168.1.1"
         let resolved = partial.resolve();
         assert_eq!(resolved.on_session_lock, SessionAction::None); // from partial
         assert_eq!(resolved.on_session_unlock, SessionAction::ScreenOn); // hard-coded default
-        assert_eq!(resolved.idle_timeout_seconds, 0); // hard-coded default
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 0); // hard-coded default
     }
 
     // =========================================================================
@@ -2095,12 +1946,12 @@ ip = "192.168.1.1"
             r#"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
-idle_timeout_seconds = 600
+unlocked_idle_timeout_seconds = 600
 
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -2121,8 +1972,8 @@ profile.user = "{gaming_uuid}"
     #[test]
     fn test_user_config_resolve_user_profile_with_assignment() {
         let system_default = UserProfileConfig {
-            on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -2132,8 +1983,8 @@ profile.user = "{gaming_uuid}"
             gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
-                on_session_lock: Some(SessionAction::None),
-                // idle_timeout_seconds not specified — should inherit from system
+                on_session_lock: Some(SessionAction::None.into()),
+                // unlocked_idle_timeout_seconds not specified — should inherit from system
                 ..UserProfileConfig::default()
             },
         );
@@ -2141,14 +1992,14 @@ profile.user = "{gaming_uuid}"
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // user gaming
-        assert_eq!(resolved.idle_timeout_seconds, 300); // inherited from system
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300); // inherited from system
     }
 
     #[test]
     fn test_user_config_resolve_user_profile_no_assignment() {
         let system_default = UserProfileConfig {
-            on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -2157,14 +2008,14 @@ profile.user = "{gaming_uuid}"
         // TV without assignment uses system default
         let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff);
-        assert_eq!(resolved.idle_timeout_seconds, 300);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300);
     }
 
     #[test]
     fn test_user_config_resolve_user_profile_user_default_overrides_system() {
         let system_default = UserProfileConfig {
-            on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -2173,7 +2024,7 @@ profile.user = "{gaming_uuid}"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600), // user overrides system
+                unlocked_idle_timeout_seconds: Some(600), // user overrides system
                 ..UserProfileConfig::default()
             },
         );
@@ -2181,14 +2032,14 @@ profile.user = "{gaming_uuid}"
         // TV without explicit assignment uses user's default profile
         let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff); // from system
-        assert_eq!(resolved.idle_timeout_seconds, 600); // user override
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 600); // user override
     }
 
     #[test]
     fn test_user_config_resolve_user_profile_named_inherits_user_default() {
         let system_default = UserProfileConfig {
-            on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(100),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            unlocked_idle_timeout_seconds: Some(100),
             ..UserProfileConfig::default()
         };
 
@@ -2199,7 +2050,7 @@ profile.user = "{gaming_uuid}"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600),
+                unlocked_idle_timeout_seconds: Some(600),
                 ..UserProfileConfig::default()
             },
         );
@@ -2208,7 +2059,7 @@ profile.user = "{gaming_uuid}"
             gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
-                on_session_lock: Some(SessionAction::None),
+                on_session_lock: Some(SessionAction::None.into()),
                 ..UserProfileConfig::default()
             },
         );
@@ -2216,7 +2067,7 @@ profile.user = "{gaming_uuid}"
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // gaming
-        assert_eq!(resolved.idle_timeout_seconds, 600); // user default (not system 100)
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 600); // user default (not system 100)
     }
 
     #[test]
@@ -2241,8 +2092,8 @@ profile.user = "{gaming_uuid}"
             gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
-                on_session_lock: Some(SessionAction::None),
-                idle_timeout_seconds: Some(0),
+                on_session_lock: Some(SessionAction::None.into()),
+                unlocked_idle_timeout_seconds: Some(0),
                 ..UserProfileConfig::default()
             },
         );
@@ -2253,8 +2104,8 @@ profile.user = "{gaming_uuid}"
 
         assert_eq!(deserialized.user.profiles.len(), 1);
         let gaming = deserialized.user.profiles.get(&gaming_uuid).unwrap();
-        assert_eq!(gaming.on_session_lock, Some(SessionAction::None));
-        assert_eq!(gaming.idle_timeout_seconds, Some(0));
+        assert_eq!(gaming.on_session_lock, Some(SessionAction::None.into()));
+        assert_eq!(gaming.unlocked_idle_timeout_seconds, Some(0));
         // None fields should not be serialized
         let living = deserialized
             .tv
@@ -2282,7 +2133,7 @@ name = "custom"
 on_session_lock = "power_off"
 on_session_unlock = "power_on"
 on_lock_wake = "none"
-idle_timeout_seconds = 300
+unlocked_idle_timeout_seconds = 300
 on_idle_timeout = "screen_off"
 
 [[tv]]
@@ -2305,10 +2156,13 @@ mac = "AA:BB:CC:DD:EE:FF"
             .find_profile_by_name("custom")
             .map(|(_, body)| body.clone())
             .unwrap_or_else(SystemProfileConfig::full_default);
-        assert_eq!(sys_profile.on_sleep, Some(SessionAction::None));
-        assert_eq!(sys_profile.on_wake, Some(SessionAction::ScreenOn));
-        assert_eq!(sys_profile.on_dpms_off, Some(SessionAction::ScreenOff));
-        assert_eq!(sys_profile.on_dpms_on, Some(SessionAction::ScreenOn));
+        assert_eq!(sys_profile.on_sleep, Some(SessionAction::None.into()));
+        assert_eq!(sys_profile.on_wake, Some(SessionAction::ScreenOn.into()));
+        assert_eq!(
+            sys_profile.on_dpms_off,
+            Some(SessionAction::ScreenOff.into())
+        );
+        assert_eq!(sys_profile.on_dpms_on, Some(SessionAction::ScreenOn.into()));
 
         // Check user profile fields
         let profile = config
@@ -2316,16 +2170,25 @@ mac = "AA:BB:CC:DD:EE:FF"
             .find_profile_by_name("custom")
             .map(|(_, body)| body.clone())
             .unwrap_or_else(UserProfileConfig::full_default);
-        assert_eq!(profile.on_session_lock, Some(SessionAction::PowerOff));
-        assert_eq!(profile.on_session_unlock, Some(SessionAction::PowerOn));
-        assert_eq!(profile.on_lock_wake, Some(SessionAction::None));
-        assert_eq!(profile.idle_timeout_seconds, Some(300));
-        assert_eq!(profile.on_idle_timeout, Some(SessionAction::ScreenOff));
+        assert_eq!(
+            profile.on_session_lock,
+            Some(SessionAction::PowerOff.into())
+        );
+        assert_eq!(
+            profile.on_session_unlock,
+            Some(SessionAction::PowerOn.into())
+        );
+        assert_eq!(profile.on_lock_wake, Some(SessionAction::None.into()));
+        assert_eq!(profile.unlocked_idle_timeout_seconds, Some(300));
+        assert_eq!(
+            profile.on_idle_timeout,
+            Some(SessionAction::ScreenOff.into())
+        );
 
         // Resolve to concrete values
         let resolved = profile.resolve();
         assert_eq!(resolved.on_session_lock, SessionAction::PowerOff);
-        assert_eq!(resolved.idle_timeout_seconds, 300);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300);
     }
 
     // =========================================================================
@@ -2345,12 +2208,12 @@ on_startup = "power_on"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
 on_session_lock = "screen_off"
-idle_timeout_seconds = 300
+unlocked_idle_timeout_seconds = 300
 
 [user.profiles."{foo_uuid}"]
 name = "foo"
 on_session_lock = "none"
-idle_timeout_seconds = 0
+unlocked_idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "22222222-2222-2222-2222-222222222222"
@@ -2378,8 +2241,8 @@ ip = "192.168.1.1"
             .find_profile_by_name("foo")
             .map(|(_, body)| body)
             .unwrap();
-        assert_eq!(foo.on_session_lock, Some(SessionAction::None));
-        assert_eq!(foo.idle_timeout_seconds, Some(0));
+        assert_eq!(foo.on_session_lock, Some(SessionAction::None.into()));
+        assert_eq!(foo.unlocked_idle_timeout_seconds, Some(0));
     }
 
     #[test]
@@ -2389,14 +2252,14 @@ ip = "192.168.1.1"
             (
                 "default".to_string(),
                 UserProfileConfig {
-                    on_session_lock: Some(SessionAction::ScreenOff),
+                    on_session_lock: Some(SessionAction::ScreenOff.into()),
                     ..UserProfileConfig::default()
                 },
             ),
             (
                 "foo".to_string(),
                 UserProfileConfig {
-                    on_session_lock: Some(SessionAction::None),
+                    on_session_lock: Some(SessionAction::None.into()),
                     ..UserProfileConfig::default()
                 },
             ),
@@ -2407,7 +2270,7 @@ ip = "192.168.1.1"
         let user_config = UserConfig::default(); // empty
 
         // Merge: system profiles as base, user profiles override.
-        // Keyed by body name — same shape the session_dbus list-merge uses.
+        // Keyed by profile name — same shape the session service's list-merge uses.
         let mut merged: HashMap<String, &UserProfileConfig> = HashMap::new();
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
@@ -2429,8 +2292,8 @@ ip = "192.168.1.1"
                 "default".to_string(),
                 UserProfileConfig {
                     name: "default".to_string(),
-                    on_session_lock: Some(SessionAction::ScreenOff),
-                    idle_timeout_seconds: Some(300),
+                    on_session_lock: Some(SessionAction::ScreenOff.into()),
+                    unlocked_idle_timeout_seconds: Some(300),
                     ..UserProfileConfig::default()
                 },
             ),
@@ -2438,7 +2301,7 @@ ip = "192.168.1.1"
                 "foo".to_string(),
                 UserProfileConfig {
                     name: "foo".to_string(),
-                    on_session_lock: Some(SessionAction::None),
+                    on_session_lock: Some(SessionAction::None.into()),
                     ..UserProfileConfig::default()
                 },
             ),
@@ -2452,7 +2315,7 @@ ip = "192.168.1.1"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600), // user overrides
+                unlocked_idle_timeout_seconds: Some(600), // user overrides
                 ..UserProfileConfig::default()
             },
         );
@@ -2460,13 +2323,13 @@ ip = "192.168.1.1"
             gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
-                on_session_lock: Some(SessionAction::None),
+                on_session_lock: Some(SessionAction::None.into()),
                 ..UserProfileConfig::default()
             },
         );
 
-        // Merge: system first, then user overrides. Body name is the
-        // wire-shape key (matches session_dbus's list_user_profiles merge).
+        // Merge: system first, then user overrides. Profile name is the
+        // key (matches the session service's user-profile list merge).
         let mut merged: HashMap<String, &UserProfileConfig> = HashMap::new();
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
@@ -2481,13 +2344,13 @@ ip = "192.168.1.1"
         assert!(merged.contains_key("foo"));
         assert!(merged.contains_key("gaming"));
 
-        // "default" should be the user's version (idle_timeout_seconds = 600)
+        // "default" should be the user's version (unlocked_idle_timeout_seconds = 600)
         let default = merged.get("default").unwrap();
-        assert_eq!(default.idle_timeout_seconds, Some(600));
+        assert_eq!(default.unlocked_idle_timeout_seconds, Some(600));
 
         // "foo" comes from system
         let foo = merged.get("foo").unwrap();
-        assert_eq!(foo.on_session_lock, Some(SessionAction::None));
+        assert_eq!(foo.on_session_lock, Some(SessionAction::None.into()));
     }
 
     #[test]
@@ -2498,7 +2361,7 @@ ip = "192.168.1.1"
             r#"
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
-idle_timeout_seconds = 600
+unlocked_idle_timeout_seconds = 600
 
 [user.profiles."{gaming_uuid}"]
 name = "gaming"
@@ -2569,7 +2432,7 @@ ip = "192.168.1.1"
 
         // Can be overridden to None
         let profile = UserProfileConfig {
-            on_idle_resume: Some(SessionAction::None),
+            on_idle_resume: Some(SessionAction::None.into()),
             ..UserProfileConfig::default()
         };
         let resolved = profile.resolve();
@@ -2577,7 +2440,7 @@ ip = "192.168.1.1"
 
         // Inherits from system default if not set in user profile
         let system = UserProfileConfig {
-            on_idle_resume: Some(SessionAction::PowerOn),
+            on_idle_resume: Some(SessionAction::PowerOn.into()),
             ..UserProfileConfig::default()
         };
         let user_profile = UserProfileConfig::default(); // on_idle_resume = None
@@ -2591,8 +2454,8 @@ ip = "192.168.1.1"
     #[test]
     fn test_user_config_resolve_user_profile_missing_profile_falls_through_user_default() {
         let system_default = UserProfileConfig {
-            on_session_lock: Some(SessionAction::ScreenOff),
-            idle_timeout_seconds: Some(300),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -2601,7 +2464,7 @@ ip = "192.168.1.1"
             DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
                 name: "default".to_string(),
-                idle_timeout_seconds: Some(600),
+                unlocked_idle_timeout_seconds: Some(600),
                 ..UserProfileConfig::default()
             },
         );
@@ -2609,16 +2472,16 @@ ip = "192.168.1.1"
         user.set_tv_user_profile("living_room", Uuid::new_v4());
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
-        assert_eq!(resolved.idle_timeout_seconds, 600);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 600);
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff);
     }
 
     #[test]
     fn test_resolve_user_profile_with_system_profiles_as_base() {
         let system_default = UserProfileConfig {
-            on_session_lock: Some(SessionAction::ScreenOff),
-            on_session_unlock: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(300),
+            on_session_lock: Some(SessionAction::ScreenOff.into()),
+            on_session_unlock: Some(SessionAction::ScreenOn.into()),
+            unlocked_idle_timeout_seconds: Some(300),
             ..UserProfileConfig::default()
         };
 
@@ -2628,7 +2491,7 @@ ip = "192.168.1.1"
             gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
-                on_session_lock: Some(SessionAction::None),
+                on_session_lock: Some(SessionAction::None.into()),
                 ..UserProfileConfig::default()
             },
         );
@@ -2636,12 +2499,12 @@ ip = "192.168.1.1"
 
         let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None);
-        assert_eq!(resolved.idle_timeout_seconds, 300);
+        assert_eq!(resolved.unlocked_idle_timeout_seconds, 300);
         assert_eq!(resolved.on_session_unlock, SessionAction::ScreenOn);
 
         let resolved_unknown = user.resolve_user_profile("other_tv", &system_default);
         assert_eq!(resolved_unknown.on_session_lock, SessionAction::ScreenOff);
-        assert_eq!(resolved_unknown.idle_timeout_seconds, 300);
+        assert_eq!(resolved_unknown.unlocked_idle_timeout_seconds, 300);
     }
 
     // =========================================================================
@@ -2672,145 +2535,5 @@ ip = "192.168.1.1"
         config.tv.push(TvConfig::new("Living Room", "lg", true));
         config.tv.push(TvConfig::new("Office", "lg", true));
         config.validate_tv_ids().unwrap();
-    }
-
-    // =========================================================================
-    // SystemProfileBody / UserProfileBody dict-derive round-trip
-    // =========================================================================
-    //
-    // The wire shape rides on `Option<T>::None` ⇔ absent-key + `name`
-    // always-present. These tests pin both halves so a future zvariant or
-    // zbus bump that changes the dict-derive's skip-if-None or
-    // mandatory-field semantics fails loudly here instead of silently
-    // breaking the inherit-vs-locally-set distinction the GUI relies on.
-
-    use zbus::zvariant::{self, LE, serialized::Context, to_bytes};
-
-    fn round_trip<T>(value: &T) -> T
-    where
-        T: zvariant::Type + serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
-    {
-        let ctx = Context::new_dbus(LE, 0);
-        let encoded = to_bytes(ctx, value).expect("encode");
-        let (decoded, _): (T, usize) = encoded.deserialize().expect("decode");
-        decoded
-    }
-
-    #[test]
-    fn system_profile_body_round_trip_full() {
-        let body = SystemProfileBody {
-            name: "office".into(),
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: Some(SessionAction::PowerOff),
-            on_reboot: Some(SessionAction::None),
-            on_sleep: Some(SessionAction::PowerOff),
-            on_wake: Some(SessionAction::PowerOn),
-            on_dpms_off: Some(SessionAction::ScreenOff),
-            on_dpms_on: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(600),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
-            automate_when: Some(AutomateWhen::Always),
-        };
-
-        let decoded = round_trip(&body);
-
-        assert_eq!(decoded.name, body.name);
-        assert_eq!(decoded.on_startup, body.on_startup);
-        assert_eq!(decoded.on_dpms_off, body.on_dpms_off);
-        assert_eq!(decoded.on_dpms_on, body.on_dpms_on);
-        assert_eq!(decoded.idle_timeout_seconds, Some(600));
-        assert_eq!(decoded.on_idle_timeout, body.on_idle_timeout);
-        assert_eq!(decoded.on_idle_resume, body.on_idle_resume);
-        assert_eq!(decoded.automate_when, body.automate_when);
-    }
-
-    #[test]
-    fn system_profile_body_round_trip_minimal_omits_none() {
-        // Body with only `name` set; every optional field is None.
-        // The dict-derive must serialize *only* the `name` key on the wire,
-        // and the round-trip must come back with the same None fields.
-        let body = SystemProfileBody {
-            name: "guest".into(),
-            ..Default::default()
-        };
-
-        let decoded = round_trip(&body);
-
-        assert_eq!(decoded.name, "guest");
-        assert!(decoded.on_startup.is_none());
-        assert!(decoded.on_shutdown.is_none());
-        assert!(decoded.automate_when.is_none());
-    }
-
-    #[test]
-    fn user_profile_body_round_trip_with_numeric() {
-        let body = UserProfileBody {
-            name: "default".into(),
-            on_session_lock: Some(SessionAction::ScreenOff),
-            on_session_unlock: Some(SessionAction::ScreenOn),
-            on_lock_wake: None,
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: Some(SessionAction::ScreenOn),
-            idle_timeout_seconds: Some(600),
-        };
-
-        let decoded = round_trip(&body);
-
-        assert_eq!(decoded.idle_timeout_seconds, Some(600));
-        assert!(decoded.on_lock_wake.is_none());
-        assert_eq!(decoded.on_idle_timeout, Some(SessionAction::ScreenOff));
-    }
-
-    #[test]
-    fn system_profile_body_from_config_preserves_options() {
-        let cfg = SystemProfileConfig {
-            name: "office".to_string(),
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: None,
-            on_reboot: Some(SessionAction::None),
-            on_sleep: Some(SessionAction::PowerOff),
-            on_wake: None,
-            on_dpms_off: Some(SessionAction::ScreenOff),
-            on_dpms_on: None,
-            idle_timeout_seconds: Some(900),
-            on_idle_timeout: Some(SessionAction::ScreenOff),
-            on_idle_resume: None,
-            automate_when: Some(AutomateWhen::OnPrimary),
-        };
-        let body = SystemProfileBody::from_config(&cfg);
-        assert_eq!(body.name, "office");
-        assert_eq!(body.on_startup, cfg.on_startup);
-        assert_eq!(body.on_shutdown, cfg.on_shutdown);
-        assert_eq!(body.on_dpms_off, cfg.on_dpms_off);
-        assert_eq!(body.on_dpms_on, cfg.on_dpms_on);
-        assert_eq!(body.idle_timeout_seconds, cfg.idle_timeout_seconds);
-        assert_eq!(body.on_idle_timeout, cfg.on_idle_timeout);
-        assert_eq!(body.on_idle_resume, cfg.on_idle_resume);
-        assert_eq!(body.automate_when, cfg.automate_when);
-
-        // Reverse: full round-trip including name.
-        let back: SystemProfileConfig = (&body).into();
-        assert_eq!(back.name, "office");
-        assert_eq!(back.on_startup, cfg.on_startup);
-        assert_eq!(back.on_shutdown, cfg.on_shutdown);
-        assert_eq!(back.on_dpms_off, cfg.on_dpms_off);
-        assert_eq!(back.on_dpms_on, cfg.on_dpms_on);
-        assert_eq!(back.automate_when, cfg.automate_when);
-    }
-
-    #[test]
-    fn system_profile_body_dict_signature_is_a_sv() {
-        // Pin the wire signature so a future struct-variant addition to
-        // `SessionAction` (which would silently change the variant signature
-        // from "s" to "us" or similar) is caught at test time.
-        assert_eq!(
-            <SystemProfileBody as zvariant::Type>::SIGNATURE.to_string(),
-            "a{sv}"
-        );
-        assert_eq!(
-            <UserProfileBody as zvariant::Type>::SIGNATURE.to_string(),
-            "a{sv}"
-        );
     }
 }

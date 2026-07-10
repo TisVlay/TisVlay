@@ -1,0 +1,8 @@
+# Sample tray notification settings (--config; default:
+# $XDG_CONFIG_HOME/tisvlay/tray.toml). Written back by the tray when
+# switches change via the GUI settings pane or the tray settings rpcs.
+
+tv_connection = true
+tv_pairing = true
+tv_wake = true
+daemon_offline = true

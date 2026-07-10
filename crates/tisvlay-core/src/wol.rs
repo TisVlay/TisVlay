@@ -174,7 +174,10 @@ pub async fn wake_with_retry(mac: &MacAddress, max_attempts: u32) -> Result<()> 
 /// shouldn't abort the loop.
 pub fn wake_best_effort(mac: &MacAddress) {
     if let Err(e) = wake(mac) {
-        tracing::warn!(mac = %mac, error = %e, "WoL resend failed");
+        // Debug, not warn: this fires every loop iteration against a
+        // dead NIC (a ~30 s wake dial is dozens of lines), and the
+        // dial's real outcome surfaces through ConnectFailed anyway.
+        tracing::debug!(mac = %mac, error = %e, "WoL resend failed");
     }
 }
 

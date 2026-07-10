@@ -7,18 +7,19 @@ import { Icons } from "../globals/icons.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
-// (friendly name + monospace bus address in parens) above a rich
+// (friendly name + monospace wire identity in parens) above a rich
 // description, with a single state-pill anchored at the top-right
 // (version when the peer is online, `offline` when it isn't).
 //
 // Field semantics:
-//   - `name`: binary name (`tisvlayd` etc.) — kept for the diagnostic
+//   - `name`: binary name (`tisvlay-daemon` etc.) — kept for the diagnostic
 //     blob lookup that pulls per-binary versions out of the live
 //     model. Not displayed.
 //   - `friendly_name`: human-readable label ("Daemon" / "Session" /
 //     "Tray" / "GUI" / "CLI") shown as the row title.
-//   - `bus_address`: D-Bus well-known name in monospace parens
-//     (`(org.tisvlay.Daemon)`). Empty for CLI (no D-Bus surface).
+//   - `bus_address`: the peer's wire identity in monospace parens —
+//     its liveliness key (`(tisvlay/<site>/alive/daemon)`), or the
+//     GUI's D-Bus activation name. Empty for CLI.
 //   - `description`: rich one-line sentence describing what this
 //     component does ("Device management, WoL at boot, …").
 //   - `version`: probed runtime version. Always populated when
@@ -123,14 +124,14 @@ component ComponentRow {
                 spacing: Design.gap-form;
                 horizontal-stretch: 1;
 
-                // Title row: friendly name + bus address + (for D-Bus
-                // peers) a folder-open IconBtn that reveals the peer's
-                // config file in the user's file manager. The button
-                // is rendered disabled (40% opacity, no click) for
-                // peers that don't have a config file on disk yet —
-                // GUI today, others if the daemon's `ConfigPath`
-                // property is empty. CLI rows skip the button entirely
-                // (no D-Bus surface, no per-binary config of its own).
+                // Title row: friendly name + wire identity + (for
+                // service peers) a folder-open IconBtn that reveals the
+                // peer's config file in the user's file manager. The
+                // button is rendered disabled (40% opacity, no click)
+                // for peers that don't have a config file on disk yet —
+                // GUI today, others if the peer's info rpc reports an
+                // empty path. CLI rows skip the button entirely (no
+                // served surface, no per-binary config of its own).
                 HorizontalLayout {
                     spacing: Design.gap-tight;
                     alignment: start;

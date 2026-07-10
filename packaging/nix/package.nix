@@ -11,7 +11,7 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tisvlay";
-  version = "0.2.0";
+  version = "0.3.0";
 
   src = lib.cleanSource ../../.;
 
@@ -136,12 +136,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # `cargo build` picks it up, so the crate list lives in one place
   # instead of being repeated here as `-p` flags. Without it the default
   # build would also compile the dev-only crates (tisvlay-mock /
-  # tisvlay-test / tisvlay-harness).
-
-  # Ship the daemon's "Mock (testing)" backend for field debugging, in
-  # step with the justfile's package-build. Scoped to tisvlayd — only the
-  # daemon builds the backend registry.
-  buildFeatures = [ "tisvlayd/mock" ];
+  # tisvlay-test).
 
   # No binary cache for this flake, so every consumer builds from source —
   # the checkPhase would re-run, from scratch, the same suite CI already

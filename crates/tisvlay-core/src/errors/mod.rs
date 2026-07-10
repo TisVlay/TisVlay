@@ -14,8 +14,6 @@
 //! - A stable machine-readable id (`PowerError::id()` returns
 //!   `"power.no-mac-configured"` etc.) for client-side routing.
 //! - A human-readable [`Display`] message via `thiserror`.
-//! - Mappings into the daemon's `DaemonError` D-Bus error type
-//!   wired up in `tisvlayd::dbus::mod`.
 //!
 //! Vendor crates (`tisvlay-lg`, future `tisvlay-samsung`) can layer
 //! their own backend-specific errors on top via the boxed `source`
