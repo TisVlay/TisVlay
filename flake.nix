@@ -74,6 +74,25 @@
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
             slintViewer = self.packages.${system}.slint-viewer;
+            # cargo-about pinned to the first release whose generator honors
+            # LicenseRef-* clarify files (0.9.1) — without it the vendored Slint
+            # crates' royalty-free license text is dropped from the generated
+            # bundle. nixpkgs still lags on 0.9.0; drop this override once it
+            # ships >= 0.9.1.
+            cargoAboutSrc = pkgs.fetchFromGitHub {
+              owner = "EmbarkStudios";
+              repo = "cargo-about";
+              tag = "0.9.1";
+              hash = "sha256-mZyfECnlpYom/XI445DOeUAthqK3HKC+QkkK+5gf0/E=";
+            };
+            cargoAbout = pkgs.cargo-about.overrideAttrs {
+              version = "0.9.1";
+              src = cargoAboutSrc;
+              cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                src = cargoAboutSrc;
+                hash = "sha256-//t3ASNljC4rosk5oOmcJy8PZKRYjlQ0euzzAmfiSPQ=";
+              };
+            };
           in
           pkgs.mkShell {
             packages =
@@ -83,8 +102,8 @@
                 # attribution; cargo-deny enforces the SPDX allow-list
                 # at PR time via prek so a future dep bump can't drag
                 # in a forbidden license. Maintenance reference:
-                # docs/licensing.md.
-                cargo-about
+                # docs/licensing.md. Pinned to 0.9.1 via cargoAbout (above).
+                cargoAbout
                 cargo-deny
                 cargo-insta
                 cargo-llvm-cov

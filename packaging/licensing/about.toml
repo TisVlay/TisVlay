@@ -50,13 +50,12 @@ ignore-dev-dependencies = true
 # option-ext + generational-arena + libfuzzer-sys), so this file
 # only spells out site-specific notes.
 #
-# The `[<crate>.clarify]` blocks for the Slint family below are
-# *parsed but not yet surfaced* in the rendered bundle —
-# EmbarkStudios/cargo-about#303 makes the `LicenseItem::Other`
-# arm in `generate.rs` honor `license_files`, which is what lets
-# our clarified-file text actually land in the output. The blocks
-# are kept as forward-compatible config that starts working once
-# that PR ships.
+# The `[<crate>.clarify]` blocks for the Slint family below feed each
+# vendored crate's `LICENSES/` text into the rendered bundle. This needs
+# cargo-about to honor `license_files` for `LicenseRef-*` licenses
+# (EmbarkStudios/cargo-about#303, first released in 0.9.1) — the flake pins
+# that version; an older cargo-about silently drops the text with a "no
+# license file" warning.
 #
 # `i-slint-backend-testing` has no clarify block: its published
 # tarball doesn't ship `LICENSES/` at all (slint-ui/slint#11631
