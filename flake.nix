@@ -32,6 +32,10 @@
         overlays = [ rust-overlay.overlays.default ];
         pkgs = import nixpkgs { inherit overlays system; };
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        # LLVM bintools for cargo-llvm-cov (llvm-cov / llvm-profdata), pinned
+        # once here to the major matching this toolchain's rustc; keep in step
+        # on a channel bump.
+        llvmPkgs = pkgs.llvmPackages_22;
       in
       {
         packages = {
@@ -98,7 +102,7 @@
                 just-lsp
                 linuxConsoleTools
                 lldb
-                llvmPackages_21.bintools-unwrapped
+                llvmPkgs.bintools-unwrapped
                 # nfpm (Go binary) is the packager that cargo-nfpm shells
                 # out to. cargo-nfpm itself is not in nixpkgs — install
                 # with `cargo install cargo-nfpm` to drive `just package-*`.
@@ -130,11 +134,11 @@
             # Tell rust-analyzer where to find std sources for go-to-definition.
             RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";
 
-            # Tell cargo-llvm-cov where to find LLVM tools matching rustc's LLVM 21.
-            # rustup's llvm-tools-preview is not available with the Nix-managed
-            # toolchain, so we point at nixpkgs' LLVM 21 bintools instead.
-            LLVM_COV = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-cov";
-            LLVM_PROFDATA = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-profdata";
+            # cargo-llvm-cov needs llvm-cov / llvm-profdata whose LLVM major
+            # matches rustc's (see llvmPkgs above); rustup's llvm-tools-preview
+            # isn't available under the Nix toolchain, so point at nixpkgs'.
+            LLVM_COV = "${llvmPkgs.bintools-unwrapped}/bin/llvm-cov";
+            LLVM_PROFDATA = "${llvmPkgs.bintools-unwrapped}/bin/llvm-profdata";
 
             # Slint's femtovg renderer dlopens libGL / wayland / xcb at runtime;
             # without LD_LIBRARY_PATH the GUI binary built in the dev shell

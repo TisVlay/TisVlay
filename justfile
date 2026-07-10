@@ -12,6 +12,10 @@ default:
 
 # --- Quality checks (prek hooks + CI) -----------------------------------
 
+# Shared build + clippy scope, kept in one place so the two recipes can't
+# drift: test profile, whole workspace, all targets + all features.
+check_flags := "--profile test --workspace --all-targets --all-features"
+
 # Format all Rust code
 [group('check')]
 fmt:
@@ -20,12 +24,12 @@ fmt:
 # Build the workspace (test profile, all targets, all features)
 [group('check')]
 build:
-    cargo build --profile test --workspace --all-targets --all-features
+    cargo build {{ check_flags }}
 
 # Run clippy with warnings denied
 [group('check')]
 clippy:
-    cargo clippy --profile test --workspace --all-targets --all-features -- -D warnings
+    cargo clippy {{ check_flags }} -- -D warnings
 
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]

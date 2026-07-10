@@ -102,9 +102,12 @@ jobs:
       # runs (read-only token). See the "Recommended setup for public
       # repositories" section of the dorny/test-reporter README — the
       # workflow_run pattern with two workflows is the workaround.
+      # hashFiles guard: if a step before nextest failed there is no JUnit
+      # file, and without it the reporter logs a confusing "no report files"
+      # line over the real failure (it is already fail-on-error: false).
       - name: Report
         uses: dorny/test-reporter@v3
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
         with:
           name: Tests
           path: target/nextest/ci/junit.xml
