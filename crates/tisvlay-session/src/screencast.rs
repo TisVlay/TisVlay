@@ -175,6 +175,7 @@ fn report(detail: String, active: bool) -> RemoteReport {
         kind: RemoteSourceKind::Screencast,
         detail,
         active,
+        provisional: false,
     }
 }
 

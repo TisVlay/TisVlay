@@ -9,6 +9,8 @@
 //! queryable, and the service's liveliness token. User-private keys
 //! physically never reach the system peer.
 
+mod logind;
+mod monitor;
 mod remote;
 mod screencast;
 mod screensaver;
@@ -38,6 +40,8 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
+pub use logind::spawn as spawn_logind_detector;
+pub use monitor::spawn as spawn_portal_monitor;
 pub use remote::RemoteReport;
 pub use screencast::spawn as spawn_screencast_detector;
 pub use screensaver::watch_screensaver;

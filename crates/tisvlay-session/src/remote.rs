@@ -1,17 +1,27 @@
 //! Remote-session awareness: the source aggregator and the arming
 //! computation.
 //!
-//! Detectors (only the manual-source verb rpc this wave) report over an
-//! mpsc; the session `Core` folds their reports into a live source set,
-//! recomputes the per-TV `armed` projection whenever the sources or the
-//! resolved profiles move, and publishes the fact two ways — a cached
-//! pub on the user socket (the session owns that router) and a plain-put
-//! mirror on the system socket (a connect-only peer link, so served
-//! entities would not propagate). While armed, `Core::action_for` gates
-//! its wake actions through the profile's while-remote overrides.
+//! Detectors report over an mpsc; the session `Core` folds their reports
+//! into a live source set, recomputes the per-TV `armed` projection
+//! whenever the sources or the resolved profiles move, and publishes the
+//! fact two ways — a cached pub on the user socket (the session owns that
+//! router) and a plain-put mirror on the system socket (a connect-only
+//! peer link, so served entities would not propagate). While armed,
+//! `Core::action_for` gates its wake actions through the profile's
+//! while-remote overrides.
 //!
 //! Arming and override composition are pure functions here so the policy
 //! is unit-tested without a live stack.
+//!
+//! Provisional sources: the portal monitor's bootstrap walk can only see
+//! *which* app owns a live portal session, not whether that session is a
+//! screen capture (session objects are interface-blind, and an
+//! InputCapture session — lan-mouse — looks identical). Such a
+//! bootstrapped source is reported *provisionally*; the aggregator admits
+//! it to the live set only while a `Screencast` source corroborates a
+//! real capture, and re-evaluates that join whenever the screencast comes
+//! or goes. A source seen opening directly on the wire is confirmed and
+//! never provisional.
 
 use std::collections::BTreeMap;
 
@@ -22,13 +32,17 @@ use uuid::Uuid;
 /// One detector report: a source identified by `(kind, detail)` toggling
 /// on or off. The manual verb rpc reports `Manual` sources keyed by the
 /// `--source NAME` (default `manual`), so several manual escape hatches
-/// coexist. Real detectors (later waves) report their own kinds through
-/// the same channel.
+/// coexist. Each detector reports its own kind through the same channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteReport {
     pub kind: RemoteSourceKind,
     pub detail: String,
     pub active: bool,
+    /// A bootstrapped attribution the aggregator admits only while a
+    /// `Screencast` source corroborates (the portal monitor's tree-walk
+    /// join). Confirmed reports — everything seen live on the wire — set
+    /// this false and arm unconditionally. Ignored when `active` is false.
+    pub provisional: bool,
 }
 
 impl RemoteReport {
@@ -39,6 +53,7 @@ impl RemoteReport {
             kind: RemoteSourceKind::Manual,
             detail: source.into(),
             active,
+            provisional: false,
         }
     }
 
@@ -51,35 +66,86 @@ impl RemoteReport {
 /// The live source set, keyed by `(kind, detail)` so a re-report of the
 /// same source is idempotent. Ordered so the published `sources` list is
 /// stable across recomputes.
+///
+/// Provisional sources sit in a separate pending set until a `Screencast`
+/// source corroborates them; they never appear in [`snapshot`] while
+/// pending, and are promoted (or evicted) on any change to the screencast
+/// signal.
 #[derive(Debug, Default)]
 pub(crate) struct RemoteSources {
     live: BTreeMap<(RemoteSourceKind, String), RemoteSource>,
+    /// Provisional attributions awaiting screencast corroboration.
+    pending: BTreeMap<(RemoteSourceKind, String), RemoteSource>,
 }
 
 impl RemoteSources {
-    /// Apply a report; returns true if the live set changed. A source is
-    /// keyed by `(kind, detail)`, so a re-report of a live source is a
-    /// no-op and clearing an absent one is a no-op.
+    /// Apply a report; returns true if the *live* set changed (a pending
+    /// provisional not yet corroborated is not a live change). Callers
+    /// republish on a live change. A source is keyed by `(kind, detail)`,
+    /// so a re-report of a live source is a no-op and clearing an absent
+    /// one is a no-op.
+    ///
+    /// A provisional active report is held pending (admitted to the live
+    /// set only while a screencast corroborates); a confirmed active
+    /// report for the same key promotes it out of pending. Clearing a
+    /// source clears it from both sets. Because admitting a screencast can
+    /// change which pending sources qualify, the join is re-evaluated on
+    /// every apply — so the live set is compared before and after rather
+    /// than tracked through each branch.
     pub(crate) fn apply(&mut self, report: &RemoteReport) -> bool {
+        // Membership before the apply — the return compares against it so
+        // every branch (direct, pending, join) reports a live change
+        // consistently without per-branch bookkeeping.
+        let before: Vec<_> = self.live.keys().cloned().collect();
         let key = report.key();
         if report.active {
-            if self.live.contains_key(&key) {
-                return false;
+            let source = RemoteSource {
+                kind: report.kind,
+                detail: report.detail.clone(),
+            };
+            if report.provisional {
+                // A confirmed source already covers this key — ignore the
+                // weaker provisional restatement; otherwise hold it
+                // pending for the screencast join.
+                if !self.live.contains_key(&key) {
+                    self.pending.insert(key, source);
+                }
+            } else {
+                // A confirmed source supersedes any pending guess.
+                self.pending.remove(&key);
+                self.live.insert(key, source);
             }
-            self.live.insert(
-                key,
-                RemoteSource {
-                    kind: report.kind,
-                    detail: report.detail.clone(),
-                },
-            );
-            true
         } else {
-            self.live.remove(&key).is_some()
+            self.live.remove(&key);
+            self.pending.remove(&key);
+        }
+        // Admitting/evicting a screencast can flip which pending sources
+        // qualify — reconcile after every apply so the join stays current.
+        self.reconcile_pending();
+        !self.live.keys().eq(before.iter())
+    }
+
+    /// Promote pending provisional sources into the live set while a
+    /// `Screencast` source corroborates, and demote them back when it is
+    /// gone.
+    fn reconcile_pending(&mut self) {
+        let corroborated = self
+            .live
+            .keys()
+            .any(|(kind, _)| *kind == RemoteSourceKind::Screencast);
+        for (key, source) in &self.pending {
+            if corroborated {
+                self.live
+                    .entry(key.clone())
+                    .or_insert_with(|| source.clone());
+            } else {
+                self.live.remove(key);
+            }
         }
     }
 
-    /// The current sources, in stable order.
+    /// The current live sources, in stable order (pending provisionals
+    /// excluded until corroborated).
     pub(crate) fn snapshot(&self) -> Vec<RemoteSource> {
         self.live.values().cloned().collect()
     }
@@ -228,6 +294,85 @@ mod tests {
         // Clearing an absent source is a no-op.
         assert!(!sources.apply(&RemoteReport::manual("manual", false)));
         assert!(sources.apply(&RemoteReport::manual("sunshine-hook", false)));
+        assert!(!sources.any());
+    }
+
+    /// A provisional Portal report (the monitor's bootstrap guess) stays
+    /// out of the live set until a screencast corroborates, and is
+    /// evicted again when the screencast goes — the tree-walk join.
+    #[test]
+    fn provisional_source_admitted_only_while_screencast_corroborates() {
+        let mut sources = RemoteSources::default();
+        let provisional = RemoteReport {
+            kind: RemoteSourceKind::Portal,
+            detail: "krdpserver".into(),
+            active: true,
+            provisional: true,
+        };
+        // Bootstrapped alone: held pending, not live.
+        assert!(!sources.apply(&provisional));
+        assert!(!sources.any(), "an uncorroborated guess never arms");
+        assert!(sources.snapshot().is_empty());
+
+        // A screencast arrives: it goes live AND promotes the pending
+        // Portal source (the join).
+        let screencast = RemoteReport {
+            kind: RemoteSourceKind::Screencast,
+            detail: "1 node (running)".into(),
+            active: true,
+            provisional: false,
+        };
+        assert!(sources.apply(&screencast));
+        let kinds: Vec<_> = sources.snapshot().into_iter().map(|s| s.kind).collect();
+        assert!(kinds.contains(&RemoteSourceKind::Portal));
+        assert!(kinds.contains(&RemoteSourceKind::Screencast));
+
+        // Screencast gone: the Portal source is demoted with it (the
+        // bootstrap guess had no independent confirmation).
+        assert!(sources.apply(&RemoteReport {
+            active: false,
+            ..screencast
+        }));
+        assert!(!sources.any(), "demoted with the screencast");
+    }
+
+    /// A confirmed Portal report (a live `CreateSession` on the wire)
+    /// supersedes the pending guess and arms unconditionally, with no
+    /// screencast needed.
+    #[test]
+    fn confirmed_report_promotes_and_supersedes_provisional() {
+        let mut sources = RemoteSources::default();
+        let key = ("krdpserver", RemoteSourceKind::Portal);
+        assert!(!sources.apply(&RemoteReport {
+            kind: key.1,
+            detail: key.0.into(),
+            active: true,
+            provisional: true,
+        }));
+        assert!(!sources.any());
+        // The confirmed restatement of the same key goes live directly.
+        assert!(sources.apply(&RemoteReport {
+            kind: key.1,
+            detail: key.0.into(),
+            active: true,
+            provisional: false,
+        }));
+        assert!(sources.any());
+        // A now-redundant provisional restatement is a no-op (the
+        // confirmed source already covers the key).
+        assert!(!sources.apply(&RemoteReport {
+            kind: key.1,
+            detail: key.0.into(),
+            active: true,
+            provisional: true,
+        }));
+        // Clearing the confirmed source disarms even without a screencast.
+        assert!(sources.apply(&RemoteReport {
+            kind: key.1,
+            detail: key.0.into(),
+            active: false,
+            provisional: false,
+        }));
         assert!(!sources.any());
     }
 

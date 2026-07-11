@@ -12,6 +12,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 directories = { workspace = true }
 futures-util = { workspace = true }
+libc = { workspace = true }
 pipewire-native = { workspace = true }
 pipewire-native-spa = { workspace = true }
 serde = { workspace = true }

@@ -947,6 +947,7 @@ async fn screencast_source_arms_only_under_capture_policy() {
         kind: RemoteSourceKind::Screencast,
         detail: "1 node (running)".into(),
         active,
+        provisional: false,
     };
 
     let rig = rig().await;
@@ -994,6 +995,117 @@ async fn screencast_source_arms_only_under_capture_policy() {
         s.kind() == zenoh::sample::SampleKind::Put && {
             let v = payload_json(s);
             v["sources"] == json!([]) && v["armed"] == json!([])
+        }
+    })
+    .await;
+}
+
+/// A `Portal`-kind report (the shape the portal monitor produces for an
+/// allow-listed remote app) is attributed, so it arms the TV with no
+/// `remote_screencast_arms` opt-in — unlike the unattributed screencast
+/// signal above. The exe rides in the source `detail`.
+#[tokio::test(flavor = "multi_thread")]
+async fn portal_source_arms_without_capture_policy() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let portal = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Portal,
+        detail: "krdpserver".into(),
+        active,
+        provisional: false,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://portal").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+
+    // A default profile (capture NOT opted in): the attributed portal
+    // source still arms the TV, and the exe is the source detail.
+    create_and_assign(&rig, tv, json!({ "name": "Default" })).await;
+    assert!(rig.stack.remote.report(portal(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"].as_array().is_some_and(|src| {
+                src.iter()
+                    .any(|s| s["kind"] == "portal" && s["detail"] == "krdpserver")
+            }) && v["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+        }
+    })
+    .await;
+
+    // Session closed: the source clears and the TV disarms.
+    assert!(rig.stack.remote.report(portal(false)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"] == json!([]) && v["armed"] == json!([])
+        }
+    })
+    .await;
+}
+
+/// A *provisional* `Portal` report (the monitor's bootstrap guess, owner
+/// resolved but the session type unconfirmed) is held out of the fact
+/// until a `Screencast` source corroborates a live capture — the
+/// tree-walk join, exercised through the running stack.
+#[tokio::test(flavor = "multi_thread")]
+async fn provisional_portal_joins_on_corroborating_screencast() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://join").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    create_and_assign(&rig, tv, json!({ "name": "Default" })).await;
+
+    // The bootstrap guess alone does not appear in the fact and does not
+    // arm — an uncorroborated owner might be holding only an InputCapture
+    // session (the lan-mouse false positive).
+    assert!(
+        rig.stack.remote.report(RemoteReport {
+            kind: RemoteSourceKind::Portal,
+            detail: "rustdesk".into(),
+            active: true,
+            provisional: true,
+        }),
+        "core gone"
+    );
+    // Drive a screencast source in; only then do BOTH the portal and the
+    // screencast appear, and the TV arms (via the now-corroborated,
+    // attributed portal source — capture policy is off).
+    assert!(
+        rig.stack.remote.report(RemoteReport {
+            kind: RemoteSourceKind::Screencast,
+            detail: "1 node (running)".into(),
+            active: true,
+            provisional: false,
+        }),
+        "core gone"
+    );
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            let kinds: Vec<&str> = v["sources"]
+                .as_array()
+                .map(|src| src.iter().filter_map(|s| s["kind"].as_str()).collect())
+                .unwrap_or_default();
+            kinds.contains(&"portal")
+                && kinds.contains(&"screencast")
+                && v["armed"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
         }
     })
     .await;
