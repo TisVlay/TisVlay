@@ -78,32 +78,73 @@ fn emit_build_env_vars() {
 /// the pipeline and `.claude/slint.md` "Slint text-rendering for
 /// large documents" for why we hand off rather than render in-app.
 ///
+/// The whole-workspace cargo-about walk is by far the slowest step in
+/// this build script, so it is gated on an input stamp. The bundle is
+/// fully determined by the dependency graph (`Cargo.lock`) plus the
+/// config and template, so when none of those changed since the last
+/// successful generate the existing bundle is reused verbatim. Editing
+/// a `.slint` re-triggers this script (slint-build tracks the UI files)
+/// but touches none of those inputs, so the GUI edit loop skips the walk.
+///
 /// On failure (most commonly: `cargo-about` not on `$PATH` in a
 /// clean dev env without the Nix shell) writes a stub blob with
 /// install instructions and emits a `cargo:warning=` rather than
-/// failing the build.
+/// failing the build. The stub path leaves no stamp, so the next
+/// build retries once the real generator is available.
 fn generate_third_party_licenses() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let workspace = workspace_root();
     let manifest = workspace.join("Cargo.toml");
+    let lockfile = workspace.join("Cargo.lock");
 
     let about_dir = workspace.join("packaging/licensing");
     let about_toml = about_dir.join("about.toml");
     let about_template = about_dir.join("about.html.hbs");
 
+    // Re-run this script when a license *input* changes. The lockfile is
+    // load-bearing: a dependency bump changes the attribution set without
+    // touching the config or template, and without watching it the embedded
+    // bundle would silently go stale until some other input happened to move.
     println!("cargo:rerun-if-changed={}", about_toml.display());
     println!("cargo:rerun-if-changed={}", about_template.display());
+    println!("cargo:rerun-if-changed={}", lockfile.display());
 
-    generate_one(
+    let out_path = Path::new(&out_dir).join("THIRD-PARTY-LICENSES.html");
+    let stamp_path = Path::new(&out_dir).join("THIRD-PARTY-LICENSES.stamp");
+
+    let inputs_hash = hash_inputs(&[&lockfile, &about_toml, &about_template]);
+    if let Some(hash) = inputs_hash
+        && out_path.exists()
+        && stamp_matches(&stamp_path, hash)
+    {
+        return;
+    }
+
+    let generated = generate_one(
         &manifest,
         &about_toml,
         &about_template,
-        &Path::new(&out_dir).join("THIRD-PARTY-LICENSES.html"),
+        &out_path,
         stub_notices_blob_html(),
     );
+
+    // Stamp only a real bundle. The stub path is intentionally left
+    // unstamped so a later build retries once cargo-about is on `$PATH`.
+    if generated && let Some(hash) = inputs_hash {
+        let _ = std::fs::write(&stamp_path, hash.to_string());
+    }
 }
 
-fn generate_one(manifest: &Path, config: &Path, template: &Path, out_path: &Path, stub: String) {
+/// Run cargo-about, streaming the bundle to `out_path`. Returns `true`
+/// when the real generator succeeded and `false` when the stub was
+/// written instead, so the caller knows not to stamp the inputs.
+fn generate_one(
+    manifest: &Path,
+    config: &Path,
+    template: &Path,
+    out_path: &Path,
+    stub: String,
+) -> bool {
     // `-o <path>` makes cargo-about stream the bundle directly to
     // the file rather than us buffering hundreds of KB through
     // `Command::output()`'s captured stdout. On the failure paths
@@ -126,7 +167,7 @@ fn generate_one(manifest: &Path, config: &Path, template: &Path, out_path: &Path
         .status();
 
     match status {
-        Ok(s) if s.success() => {}
+        Ok(s) if s.success() => true,
         Ok(s) => {
             // cargo-about will have already printed its diagnostic
             // to stderr; surface a single cargo:warning so the
@@ -137,6 +178,7 @@ fn generate_one(manifest: &Path, config: &Path, template: &Path, out_path: &Path
                 s
             );
             std::fs::write(out_path, stub.into_bytes()).expect("write THIRD-PARTY-LICENSES stub");
+            false
         }
         Err(e) => {
             println!(
@@ -144,8 +186,31 @@ fn generate_one(manifest: &Path, config: &Path, template: &Path, out_path: &Path
                 template.display()
             );
             std::fs::write(out_path, stub.into_bytes()).expect("write THIRD-PARTY-LICENSES stub");
+            false
         }
     }
+}
+
+/// Hash the byte contents of the license-bundle inputs into one value.
+/// `None` if any input can't be read, which makes the caller fall
+/// through to a full (re)generate rather than trust a partial hash.
+/// `DefaultHasher` seeds from fixed keys, so the digest is stable across
+/// separate runs of this build script — exactly what the stamp compares.
+fn hash_inputs(paths: &[&Path]) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for path in paths {
+        std::fs::read(path).ok()?.hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
+/// True when the stamp file exists and records exactly `hash`.
+fn stamp_matches(stamp_path: &Path, hash: u64) -> bool {
+    std::fs::read_to_string(stamp_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .is_some_and(|stored| stored == hash)
 }
 
 fn stub_notices_blob_html() -> String {
