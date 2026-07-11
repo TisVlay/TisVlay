@@ -3,8 +3,13 @@
 #
 # `[licenses]` enforces the SPDX allow-list. `[bans]` surfaces
 # multi-version dep duplication as warnings (non-blocking) with a
-# curated skip-list documenting known-and-accepted offenders. The
-# other cargo-deny checks (`advisories`, `sources`) are out of scope.
+# curated skip-list documenting known-and-accepted offenders.
+# `[sources]` pins code provenance to crates.io and is gated by
+# `just deny`. `[advisories]` gates RustSec/yanked crates but is
+# deliberately NOT in `just deny` — it runs in a separate weekly
+# workflow (.github/workflows/audit.yml) so a newly-disclosed advisory
+# against an unchanged pinned dep still surfaces, without gating every
+# PR/commit on transitive vulnerabilities that have no upstream fix.
 
 # Restrict resolution to the platforms we ship for. Without this,
 # cargo-deny's default view considers every target triple and
@@ -119,3 +124,35 @@ skip = [
     { crate = "zune-core", reason = "image decoder ecosystem churn" },
     { crate = "zune-jpeg", reason = "image decoder ecosystem churn" },
 ]
+
+# RustSec advisory + yanked-crate gate. Run by the weekly audit workflow
+# (.github/workflows/audit.yml), NOT by `just deny` — see the file header.
+# The ignore-list records advisories already triaged against the current
+# lockfile so the weekly run stays green until a NEW advisory lands; each
+# entry carries a reason. Drop an entry once a dep bump clears it.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # No upstream fix — transitive, accepted:
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin-attack timing sidechannel; no fixed release; transitive via the TLS stack" },
+    # Unmaintained, no safe upgrade — accepted:
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; no safe upgrade; transitive" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; no safe upgrade; transitive" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via Slint resvg" },
+    # Fix available upstream — deferred to a dependency bump:
+    { id = "RUSTSEC-2026-0204", reason = "crossbeam-epoch invalid pointer deref; fixed >=0.9.20; transitive, pending bump" },
+    { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic-attribute DoS; fixed >=0.41.0 (semver break); transitive, pending bump" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml namespace-alloc DoS; fixed >=0.41.0 (semver break); transitive, pending bump" },
+]
+
+# Code provenance: crates.io only. The workspace has no git or alternate-
+# registry dependencies, so this is a tripwire against one sneaking in.
+# Gated by `just deny`.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

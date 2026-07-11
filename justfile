@@ -12,6 +12,10 @@ default:
 
 # --- Quality checks (prek hooks + CI) -----------------------------------
 
+# Shared build + clippy scope, kept in one place so the two recipes can't
+# drift: test profile, whole workspace, all targets + all features.
+check_flags := "--profile test --workspace --all-targets --all-features"
+
 # Format all Rust code
 [group('check')]
 fmt:
@@ -20,12 +24,12 @@ fmt:
 # Build the workspace (test profile, all targets, all features)
 [group('check')]
 build:
-    cargo build --profile test --workspace --all-targets --all-features
+    cargo build {{ check_flags }}
 
 # Run clippy with warnings denied
 [group('check')]
 clippy:
-    cargo clippy --profile test --workspace --all-targets --all-features -- -D warnings
+    cargo clippy {{ check_flags }} -- -D warnings
 
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
@@ -96,7 +100,7 @@ test-snapshot-accept:
 # fails the build; output is informational.
 [group('check')]
 deny:
-    cargo deny check --config packaging/licensing/deny.toml licenses bans
+    cargo deny check --config packaging/licensing/deny.toml licenses bans sources
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes). Doubles as the cargo-about
@@ -112,6 +116,18 @@ licenses-html:
         --workspace --all-features --locked --fail \
         packaging/licensing/about.html.hbs \
         -o packaging/licensing/THIRD-PARTY-LICENSES.html
+
+# Whole-workspace SBOM (SPDX 2.3) from the committed Cargo.lock, written under
+# target/sbom/ (gitignored). A supply-chain artifact, not a gate — the CI job
+# uploads it and it is available on demand. cargo-sbom emits one document to
+# stdout, so a single redirect is the whole recipe.
+sbom_dir := "target/sbom"
+
+[group('check')]
+sbom:
+    mkdir -p {{ sbom_dir }}
+    cargo sbom --output-format spdx_json_2_3 > {{ sbom_dir }}/tisvlay.spdx.json
+    @echo "wrote {{ sbom_dir }}/tisvlay.spdx.json"
 
 # --- i18n / translation catalogs ---------------------------------------
 #

@@ -33,7 +33,7 @@ In the workspace `Cargo.toml`:
 2. **Emit `VERGEN_*` env vars** for the diagnostic blob's `gui.{target,rustc,git_sha}` fields. Hand-rolled rather than via `vergen-gix`, which would pull tens of gitoxide crates for three env vars: target triple from cargo's `TARGET`, rustc semver parsed from `rustc -V`, git SHA from `git rev-parse --short=7 HEAD`. Failures emit the `VERGEN_IDEMPOTENT_OUTPUT` sentinel (vendored tarball, Nix sandbox without `.git/`, missing git binary); `diagnostic::maybe_git_sha` collapses that to JSON `null`.
 3. **Generate the bundled-dep license HTML** via `cargo-about generate`. On `Err(NotFound)` (cargo-about not on `$PATH`) writes a stub-blob HTML so the build still succeeds. The About-pane "View notices" button shows install instructions in the stub case.
 
-CI omits `cargo-about` from the toolchain install — the stub fallback is fine for tests that check About-pane structure, not embedded content. Shipped distro builds invoke `just licenses-html` from the Nix dev shell where `cargo-about` is provisioned. See [licensing.md](licensing.md) for the packaging path.
+CI provisions `cargo-about` via `taiki-e/install-action` (the Setup step), so the `licenses-html` gate and `build.rs` both run the real generator; the stub fallback covers only ad-hoc builds outside CI / the dev shell where `cargo-about` isn't on `$PATH`. Shipped distro builds invoke `just licenses-html` from the Nix dev shell where `cargo-about` is provisioned. See [licensing.md](licensing.md) for the packaging path.
 
 ## Dep-graph posture
 
