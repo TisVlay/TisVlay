@@ -173,8 +173,7 @@ fn kind_always_arms(kind: RemoteSourceKind) -> bool {
 /// Whether the given sources arm a TV with `screencast_arms` policy.
 ///
 /// True when any attributed source is live, or when a screencast source
-/// is live and the TV's profile opts capture in. General across kinds
-/// even though only `Manual` (an attributed kind) arrives this wave.
+/// is live and the TV's profile opts capture in.
 pub(crate) fn sources_arm(sources: &[RemoteSource], screencast_arms: bool) -> bool {
     sources.iter().any(|source| {
         kind_always_arms(source.kind)
