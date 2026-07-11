@@ -71,6 +71,8 @@ export struct ProfileFieldEntry {
     max-value: int,
     step: int,
     unit: string,
+    /// Switch state for `kind == "bool"`.
+    bool-value: bool,
     /// Drives the 2 px left gutter accent + reset-glyph visibility.
     is-locally-set: bool,
     /// Show the restore-input checkbox (on-ish action rows only).
@@ -178,6 +180,9 @@ export global Profiles {
     /// integer; Rust clamps to the field's `[min, max]` and casts to
     /// `u32` before dispatching the field patch.
     callback value-edited-number(string, int);
+    /// Boolean counterpart to `value-edited` (the Switch rows). Args:
+    /// field name, new checked state.
+    callback value-edited-bool(string, bool);
     /// Reset glyph on a `ProfileFieldRow` clicked. Arg is the
     /// field-name; Rust dispatches a body patch that sets the field
     /// to `None` (the inherit-from-chain signal).

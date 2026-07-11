@@ -136,6 +136,27 @@ enum Command {
     /// User-profile catalog (session-service side, via --user-socket).
     #[command(subcommand)]
     UserProfile(UserProfileCmd),
+    /// Arm or query a remote-session source (session-service side, via
+    /// --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd`
+    /// integration (do = start, undo = stop).
+    #[command(subcommand)]
+    RemoteSession(RemoteSessionCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum RemoteSessionCmd {
+    /// Arm the named source.
+    Start {
+        #[arg(long, default_value = "manual")]
+        source: String,
+    },
+    /// Disarm the named source.
+    Stop {
+        #[arg(long, default_value = "manual")]
+        source: String,
+    },
+    /// Show the current remote-session fact (live sources + armed TVs).
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -420,6 +441,20 @@ async fn main() -> Result<()> {
                 })?;
             user_profile_cmd(&user, &Caller::new(user.clone()), site, cmd, json_out).await
         }
+        Command::RemoteSession(cmd) => {
+            let user_socket = cli
+                .user_socket
+                .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
+            let user = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "session service unreachable at {}: {e}",
+                        user_socket.display()
+                    )
+                })?;
+            remote_session_cmd(&Caller::new(user.clone()), site, cmd, json_out).await
+        }
     }
 }
 
@@ -653,6 +688,56 @@ async fn user_profile_cmd(
                 json!({ "tv": tv, "profile": profile }),
             )
             .await
+        }
+    }
+}
+
+/// Arm/disarm a remote-session source, or show the current fact. Rides
+/// the user socket (the session service serves the verb rpc there).
+async fn remote_session_cmd(
+    user_caller: &Caller,
+    site: &str,
+    cmd: RemoteSessionCmd,
+    json_out: bool,
+) -> Result<()> {
+    match cmd {
+        RemoteSessionCmd::Start { source } => {
+            call(
+                user_caller,
+                &keys::user_remote_rpc(site, "set"),
+                json!({ "source": source, "active": true }),
+            )
+            .await?;
+            if !json_out {
+                println!("armed source '{source}'");
+            }
+            Ok(())
+        }
+        RemoteSessionCmd::Stop { source } => {
+            call(
+                user_caller,
+                &keys::user_remote_rpc(site, "set"),
+                json!({ "source": source, "active": false }),
+            )
+            .await?;
+            if !json_out {
+                println!("disarmed source '{source}'");
+            }
+            Ok(())
+        }
+        RemoteSessionCmd::Status => {
+            let state = fetch(
+                user_caller,
+                &keys::user_remote_rpc(site, "status"),
+                Value::Null,
+            )
+            .await?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&state)?);
+            } else {
+                print_fields(&state);
+            }
+            Ok(())
         }
     }
 }

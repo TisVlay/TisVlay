@@ -79,7 +79,8 @@ pub use config::{
     DEFAULT_USER_PROFILE_UUID, DiscoveryConfig, EventAction, ResolvedSystemProfile,
     ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction, SystemConfig, SystemProfileConfig,
     SystemSection, TvConfig, TvProfileAssignment, USER_PROFILE_FIELDS, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, WhileRemoteOverride,
+    absolutize,
 };
 
 // Profile-reference computation (used by daemon + clients)

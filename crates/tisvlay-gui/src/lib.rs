@@ -1110,6 +1110,41 @@ fn register_callbacks(
         let s = session.clone();
         let ed = editor.clone();
         let app_weak = app.as_weak();
+        profiles_global.on_value_edited_bool(move |field, value| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let field = field.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = profiles::dispatch_value_edit_bool(
+                    &ed,
+                    &d,
+                    &s,
+                    editor_kind,
+                    uuid,
+                    &field,
+                    value,
+                )
+                .await
+                {
+                    warn!(field = %field, value, error = %e, "value_edited_bool failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
         profiles_global.on_reset_field(move |field| {
             let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
                 return;

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
-use tisvlay_session::{SessionEvent, SessionOptions, SessionStack};
+use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -372,6 +372,14 @@ async fn user_profile_overrides_and_guards() {
             "unlocked_idle_timeout_seconds": 0,
             "on_idle_timeout": "screen_off",
             "on_idle_resume": "screen_on",
+            // Remote awareness ships neutral: no connect/disconnect action,
+            // capture arming off, every while-remote override inheriting.
+            "on_remote_connect": "none",
+            "on_remote_disconnect": "none",
+            "remote_screencast_arms": false,
+            "while_remote_on_session_unlock": "inherit",
+            "while_remote_on_lock_wake": "inherit",
+            "while_remote_on_idle_resume": "inherit",
         })
     );
 
@@ -659,4 +667,267 @@ async fn user_store_and_idle_watch_round_trip() {
         payload_json(s)["profile"] == profile.to_string()
     })
     .await;
+}
+
+/// Create + assign a user profile carrying `body`; returns the profile id.
+async fn create_and_assign(rig: &Rig, tv: Uuid, body: Value) -> Uuid {
+    let ok = call(
+        &rig.user,
+        &keys::user_profile_rpc(&rig.site, "create"),
+        json!({ "body": body }),
+    )
+    .await
+    .expect("create ok");
+    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    call(
+        &rig.user,
+        &keys::user_profile_rpc(&rig.site, "assign"),
+        json!({ "tv": tv, "profile": profile }),
+    )
+    .await
+    .expect("assign ok");
+    profile
+}
+
+/// Toggle a manual source off→on until the TV reaches `want`, absorbing
+/// fleet-mirror hydration lag: each on-edge re-fires the connect
+/// dispatch, which is idempotent.
+async fn arm_until(rig: &Rig, sub: &Sub, source: &str, id: Uuid, want: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            rig.stack.remote.report(RemoteReport::manual(source, false)),
+            "session core gone"
+        );
+        assert!(
+            rig.stack.remote.report(RemoteReport::manual(source, true)),
+            "session core gone"
+        );
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, sub.recv_async()).await {
+            if keys::parse_tv_path(&rig.site, sample.key_expr().as_str())
+                .is_some_and(|(tv, p)| tv == id && p == "state/power")
+                && payload_json(&sample)["state"] == want
+            {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "TV never reached {want} after arming '{source}'"
+        );
+    }
+}
+
+/// While armed, a `none` while-remote override suppresses the wake action
+/// its event would otherwise fire — the physical TV stays dark for the
+/// empty room.
+#[tokio::test(flavor = "multi_thread")]
+async fn armed_remote_suppresses_wake_overrides() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-suppress").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // While remote is armed, unlock and idle-resume are suppressed.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Remote quiet",
+            "while_remote_on_session_unlock": "none",
+            "while_remote_on_idle_resume": "none",
+        }),
+    )
+    .await;
+
+    // Unarmed baseline: unlock wakes the panel (the default action fires).
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // Arm and confirm via the fact (this profile fires no connect
+    // action, so the armed set on the fact is the observable).
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", true)),
+        "core gone"
+    );
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put
+            && payload_json(s)["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    })
+    .await;
+
+    // Blank via lock. With the source live, unlock is suppressed — the
+    // panel must NOT come back.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    assert!(rig.stack.client.send(SessionEvent::Unlock), "core gone");
+    assert_no_sample(&sub, Duration::from_millis(600), |s| {
+        keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+            .is_some_and(|(t, p)| t == tv && p == "state/power")
+            && payload_json(s)["state"] == "active"
+    })
+    .await;
+}
+
+/// The connect/disconnect actions fire on arm and disarm edges.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_connect_disconnect_actions_fire() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-edges").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Remote edges",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_on",
+        }),
+    )
+    .await;
+
+    // The arm edge fires on_remote_connect (screen_off).
+    arm_until(&rig, &sub, "manual", tv, "screenoff").await;
+    // The disarm edge fires on_remote_disconnect (screen_on).
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", false)),
+        "core gone"
+    );
+    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
+        v["state"] == "active"
+    })
+    .await;
+}
+
+/// The fact publishes on the user socket (cached) and mirrors on the
+/// system socket (plain put) with the live sources + armed projection.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_fact_and_mirror_carry_sources_and_armed() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-fact").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // The user-socket fact is a cached pub (history-subscribable); the
+    // system-socket mirror is a plain put (live only).
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    let mirror = rig
+        .client
+        .declare_subscriber(keys::remote_session(&rig.site))
+        .await
+        .unwrap();
+
+    // Arm; both surfaces must show the manual source and the armed TV.
+    // Re-drive the arm edge (mirror interest races the plain put).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let armed_ok = |v: &Value| {
+        v["sources"]
+            .as_array()
+            .is_some_and(|s| s.iter().any(|src| src["kind"] == "manual"))
+            && v["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    };
+    // The cached fact hydrates from history — assert it once armed.
+    rig.stack
+        .remote
+        .report(RemoteReport::manual("manual", true));
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && armed_ok(&payload_json(s))
+    })
+    .await;
+    // The mirror is a plain put; re-toggle until interest catches one.
+    'mirror: loop {
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", false));
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", true));
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, mirror.recv_async()).await {
+            if armed_ok(&payload_json(&sample)) {
+                break 'mirror;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "mirror never carried the armed source"
+        );
+    }
+}
+
+/// The verb rpc round-trips through the Caller on the user socket:
+/// `set { source, active }` arms, `status` reflects it.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_verb_rpc_round_trips() {
+    use tisvlay_wire::caller::Caller;
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-rpc").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    let caller = Caller::new(rig.user.clone());
+    // Arm via the rpc — the reply echoes the fact.
+    let reply = caller
+        .call(
+            &keys::user_remote_rpc(&rig.site, "set"),
+            json!({ "source": "cli", "active": true }),
+        )
+        .await
+        .expect("set arms");
+    assert!(
+        reply["sources"].as_array().is_some_and(|s| s
+            .iter()
+            .any(|src| src["kind"] == "manual" && src["detail"] == "cli")),
+        "set reply carries the manual source, got {reply}"
+    );
+
+    // status reflects the armed source.
+    let status = caller
+        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .await
+        .expect("status ok");
+    assert!(
+        status["sources"]
+            .as_array()
+            .is_some_and(|s| s.iter().any(|src| src["detail"] == "cli")),
+        "status carries the armed source, got {status}"
+    );
+
+    // Disarm; status goes empty.
+    caller
+        .call(
+            &keys::user_remote_rpc(&rig.site, "set"),
+            json!({ "source": "cli", "active": false }),
+        )
+        .await
+        .expect("set disarms");
+    let status = caller
+        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .await
+        .expect("status ok");
+    assert_eq!(status["sources"], json!([]), "disarmed status is empty");
 }

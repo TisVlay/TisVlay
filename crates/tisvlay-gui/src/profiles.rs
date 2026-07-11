@@ -61,6 +61,8 @@ use crate::{AppWindow, ProfileFieldEntry, ProfileKind, Profiles, on_ui};
 pub(crate) enum EnumClass {
     SessionAction,
     AutomateWhen,
+    /// A while-remote override: `inherit` plus the action tokens.
+    WhileRemoteOverride,
 }
 
 /// Discriminator + per-variant data for one row in the profile-editor
@@ -81,6 +83,8 @@ pub(crate) enum FieldKind {
         step: i32,
         unit: &'static str,
     },
+    /// A boolean switch. Renders as a `ProfileFieldRowBool`.
+    Bool,
 }
 
 /// One field's wire-name plus its render kind. Tables below pin the
@@ -101,6 +105,17 @@ const SESSION_ACTION_OPTIONS: &[&str] =
 
 /// Concrete option list for [`AutomateWhen`].
 const AUTOMATE_WHEN_OPTIONS: &[&str] = &["always", "on_primary", "off_primary"];
+
+/// Concrete option list for a while-remote override: the `inherit`
+/// sentinel first, then the action tokens.
+const WHILE_REMOTE_OVERRIDE_OPTIONS: &[&str] = &[
+    "inherit",
+    "none",
+    "screen_off",
+    "screen_on",
+    "power_off",
+    "power_on",
+];
 
 /// System-profile field table. Order is the rendering order in the
 /// editor â `on_startup` first, automation gate last.
@@ -244,6 +259,45 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
             class: EnumClass::SessionAction,
         },
     },
+    FieldSpec {
+        wire: "on_remote_connect",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_remote_disconnect",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "remote_screencast_arms",
+        kind: FieldKind::Bool,
+    },
+    FieldSpec {
+        wire: "while_remote_on_session_unlock",
+        kind: FieldKind::Enum {
+            options: WHILE_REMOTE_OVERRIDE_OPTIONS,
+            class: EnumClass::WhileRemoteOverride,
+        },
+    },
+    FieldSpec {
+        wire: "while_remote_on_lock_wake",
+        kind: FieldKind::Enum {
+            options: WHILE_REMOTE_OVERRIDE_OPTIONS,
+            class: EnumClass::WhileRemoteOverride,
+        },
+    },
+    FieldSpec {
+        wire: "while_remote_on_idle_resume",
+        kind: FieldKind::Enum {
+            options: WHILE_REMOTE_OVERRIDE_OPTIONS,
+            class: EnumClass::WhileRemoteOverride,
+        },
+    },
 ];
 
 /// Translated label for `spec.wire`. Wrapped in `pgettext` with a
@@ -270,6 +324,14 @@ fn field_label(wire: &str) -> String {
         "idle_timeout_seconds" => pgettext("profile field", "Idle timeout"),
         "locked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (locked)"),
         "unlocked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (unlocked)"),
+        "on_remote_connect" => pgettext("profile field", "On remote connect"),
+        "on_remote_disconnect" => pgettext("profile field", "On remote disconnect"),
+        "remote_screencast_arms" => pgettext("profile field", "Screen capture arms"),
+        "while_remote_on_session_unlock" => {
+            pgettext("profile field", "While remote: on session unlock")
+        }
+        "while_remote_on_lock_wake" => pgettext("profile field", "While remote: on lock wake"),
+        "while_remote_on_idle_resume" => pgettext("profile field", "While remote: on idle resume"),
         // Unknown wire keys flow through verbatim â should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -454,6 +516,8 @@ fn read_user_action(body: &UserProfileBody, wire: &str) -> Option<tisvlay_core::
         "on_lock_wake" => body.on_lock_wake,
         "on_idle_timeout" => body.on_idle_timeout,
         "on_idle_resume" => body.on_idle_resume,
+        "on_remote_connect" => body.on_remote_connect,
+        "on_remote_disconnect" => body.on_remote_disconnect,
         _ => None,
     }
 }
@@ -532,6 +596,22 @@ fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
         "unlocked_idle_timeout_seconds" => {
             body.unlocked_idle_timeout_seconds.map(|v| v.to_string())
         }
+        "on_remote_connect" => body
+            .on_remote_connect
+            .map(|a| session_action_token(a.action())),
+        "on_remote_disconnect" => body
+            .on_remote_disconnect
+            .map(|a| session_action_token(a.action())),
+        "remote_screencast_arms" => body.remote_screencast_arms.map(|v| v.to_string()),
+        "while_remote_on_session_unlock" => body
+            .while_remote_on_session_unlock
+            .map(while_remote_override_token),
+        "while_remote_on_lock_wake" => body
+            .while_remote_on_lock_wake
+            .map(while_remote_override_token),
+        "while_remote_on_idle_resume" => body
+            .while_remote_on_idle_resume
+            .map(while_remote_override_token),
         _ => None,
     }
 }
@@ -558,6 +638,16 @@ fn automate_when_token(when: AutomateWhen) -> String {
         AutomateWhen::OffPrimary => "off_primary",
     }
     .to_string()
+}
+
+/// Map a [`WhileRemoteOverride`] to its ComboBox token: `inherit` or an
+/// action token. The action arm reuses [`session_action_token`] so the
+/// override dropdown reads identically to the plain action rows.
+fn while_remote_override_token(override_: tisvlay_core::WhileRemoteOverride) -> String {
+    match override_.replacement() {
+        Some(action) => session_action_token(action.action()),
+        None => "inherit".to_string(),
+    }
 }
 
 // =============================================================================
@@ -898,6 +988,7 @@ pub(crate) struct ProfileFieldRaw {
     pub max_value: i32,
     pub step: i32,
     pub unit: &'static str,
+    pub bool_value: bool,
     pub is_locally_set: bool,
     pub has_restore: bool,
     pub restore_value: bool,
@@ -918,6 +1009,7 @@ fn into_slint_entry(raw: ProfileFieldRaw) -> ProfileFieldEntry {
         max_value: raw.max_value,
         step: raw.step,
         unit: SharedString::from(raw.unit),
+        bool_value: raw.bool_value,
         is_locally_set: raw.is_locally_set,
         has_restore: raw.has_restore,
         restore_value: raw.restore_value,
@@ -991,6 +1083,7 @@ fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldR
         max_value: 0,
         step: 0,
         unit: "",
+        bool_value: false,
         is_locally_set: resolved.is_locally_set(),
         has_restore: false,
         restore_value: false,
@@ -1014,17 +1107,21 @@ fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldR
             raw.step = step;
             raw.unit = unit;
         }
+        FieldKind::Bool => {
+            raw.bool_value = resolved.current() == "true";
+        }
     }
 
     raw
 }
 
-/// Discriminator string matching the `kind == "enum" / "number"`
+/// Discriminator string matching the `kind == "enum" / "number" / "bool"`
 /// branches in `profiles_pane.slint`'s row dispatch.
 fn field_kind_tag(field: &FieldSpec) -> &'static str {
     match field.kind {
         FieldKind::Enum { .. } => "enum",
         FieldKind::Number { .. } => "number",
+        FieldKind::Bool => "bool",
     }
 }
 
@@ -1272,7 +1369,9 @@ pub(crate) enum BodyPatch {
     /// path, which must set both halves atomically.
     EventAction(tisvlay_core::EventAction),
     AutomateWhen(AutomateWhen),
+    WhileRemoteOverride(tisvlay_core::WhileRemoteOverride),
     Number(u64),
+    Bool(bool),
     Clear,
 }
 
@@ -1297,6 +1396,16 @@ fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
         "on_primary" => Ok(AutomateWhen::OnPrimary),
         "off_primary" => Ok(AutomateWhen::OffPrimary),
         other => Err(anyhow::anyhow!("Unknown AutomateWhen variant: {other}")),
+    }
+}
+
+/// Parse a while-remote override token: `inherit` or an action token.
+fn parse_while_remote_override(token: &str) -> anyhow::Result<tisvlay_core::WhileRemoteOverride> {
+    match token {
+        "inherit" => Ok(tisvlay_core::WhileRemoteOverride::INHERIT),
+        other => Ok(tisvlay_core::WhileRemoteOverride::from(
+            parse_session_action(other)?,
+        )),
     }
 }
 
@@ -1368,6 +1477,29 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
             body.unlocked_idle_timeout_seconds =
                 number_patch(patch, "unlocked_idle_timeout_seconds")?
         }
+        "on_remote_connect" => {
+            body.on_remote_connect =
+                action_field_patch(body.on_remote_connect, patch, "on_remote_connect")?
+        }
+        "on_remote_disconnect" => {
+            body.on_remote_disconnect =
+                action_field_patch(body.on_remote_disconnect, patch, "on_remote_disconnect")?
+        }
+        "remote_screencast_arms" => {
+            body.remote_screencast_arms = bool_patch(patch, "remote_screencast_arms")?
+        }
+        "while_remote_on_session_unlock" => {
+            body.while_remote_on_session_unlock =
+                while_remote_override_patch(patch, "while_remote_on_session_unlock")?
+        }
+        "while_remote_on_lock_wake" => {
+            body.while_remote_on_lock_wake =
+                while_remote_override_patch(patch, "while_remote_on_lock_wake")?
+        }
+        "while_remote_on_idle_resume" => {
+            body.while_remote_on_idle_resume =
+                while_remote_override_patch(patch, "while_remote_on_idle_resume")?
+        }
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
     Ok(())
@@ -1413,6 +1545,25 @@ fn number_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<u64>> {
     }
 }
 
+fn bool_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<bool>> {
+    match patch {
+        BodyPatch::Bool(b) => Ok(Some(b)),
+        BodyPatch::Clear => Ok(None),
+        other => anyhow::bail!("Field '{field}' expects Bool, got {other:?}"),
+    }
+}
+
+fn while_remote_override_patch(
+    patch: BodyPatch,
+    field: &str,
+) -> anyhow::Result<Option<tisvlay_core::WhileRemoteOverride>> {
+    match patch {
+        BodyPatch::WhileRemoteOverride(o) => Ok(Some(o)),
+        BodyPatch::Clear => Ok(None),
+        other => anyhow::bail!("Field '{field}' expects WhileRemoteOverride, got {other:?}"),
+    }
+}
+
 /// Look up a field's [`FieldKind`] from the wire name. Returns `None`
 /// for unknown wires.
 fn field_kind_for(kind: EditorKind, wire: &str) -> Option<FieldKind> {
@@ -1436,8 +1587,17 @@ fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
             class: EnumClass::AutomateWhen,
             ..
         } => Ok(BodyPatch::AutomateWhen(parse_automate_when(token)?)),
+        FieldKind::Enum {
+            class: EnumClass::WhileRemoteOverride,
+            ..
+        } => Ok(BodyPatch::WhileRemoteOverride(parse_while_remote_override(
+            token,
+        )?)),
         FieldKind::Number { .. } => {
             anyhow::bail!("Cannot parse an enum token for a number field")
+        }
+        FieldKind::Bool => {
+            anyhow::bail!("Cannot parse an enum token for a bool field")
         }
     }
 }
@@ -1565,6 +1725,30 @@ pub(crate) async fn dispatch_value_edit_number(
     };
     let clamped = value.max(min).min(max).max(0) as u64;
     let patch = BodyPatch::Number(clamped);
+    match kind {
+        EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
+        EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
+    }
+}
+
+/// Apply a Switch-driven boolean edit. Bool fields only exist
+/// user-side today (the screencast-arms switch); the dispatch fork
+/// keeps the system arm reachable if one ever lands there.
+pub(crate) async fn dispatch_value_edit_bool(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    kind: EditorKind,
+    uuid: Uuid,
+    field_wire: &str,
+    value: bool,
+) -> anyhow::Result<()> {
+    let field_kind = field_kind_for(kind, field_wire)
+        .ok_or_else(|| anyhow::anyhow!("Unknown field '{field_wire}'"))?;
+    if !matches!(field_kind, FieldKind::Bool) {
+        return Err(anyhow::anyhow!("Field '{field_wire}' is not a bool field"));
+    }
+    let patch = BodyPatch::Bool(value);
     match kind {
         EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
         EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
@@ -1801,6 +1985,12 @@ mod tests {
             on_idle_resume: Some(SessionAction::ScreenOn.into()),
             locked_idle_timeout_seconds: Some(0),
             unlocked_idle_timeout_seconds: Some(0),
+            on_remote_connect: Some(SessionAction::None.into()),
+            on_remote_disconnect: Some(SessionAction::None.into()),
+            remote_screencast_arms: Some(false),
+            while_remote_on_session_unlock: Some(tisvlay_core::WhileRemoteOverride::INHERIT),
+            while_remote_on_lock_wake: Some(tisvlay_core::WhileRemoteOverride::INHERIT),
+            while_remote_on_idle_resume: Some(tisvlay_core::WhileRemoteOverride::INHERIT),
         }
     }
 
@@ -2318,6 +2508,97 @@ mod tests {
         )
         .expect("known wire");
         assert_eq!(body.unlocked_idle_timeout_seconds, Some(900));
+    }
+
+    #[test]
+    fn set_user_field_writes_remote_screencast_arms_bool() {
+        let mut body = UserProfileBody::default();
+        set_user_field(&mut body, "remote_screencast_arms", BodyPatch::Bool(true))
+            .expect("known wire");
+        assert_eq!(body.remote_screencast_arms, Some(true));
+        set_user_field(&mut body, "remote_screencast_arms", BodyPatch::Clear).expect("known wire");
+        assert_eq!(body.remote_screencast_arms, None);
+    }
+
+    #[test]
+    fn set_user_field_writes_while_remote_overrides() {
+        let mut body = UserProfileBody::default();
+        // A concrete replacement token, and the inherit sentinel.
+        set_user_field(
+            &mut body,
+            "while_remote_on_session_unlock",
+            BodyPatch::WhileRemoteOverride(tisvlay_core::WhileRemoteOverride::from(
+                SessionAction::None,
+            )),
+        )
+        .expect("known wire");
+        assert_eq!(
+            body.while_remote_on_session_unlock,
+            Some(tisvlay_core::WhileRemoteOverride::from(SessionAction::None))
+        );
+        set_user_field(
+            &mut body,
+            "while_remote_on_idle_resume",
+            BodyPatch::WhileRemoteOverride(tisvlay_core::WhileRemoteOverride::INHERIT),
+        )
+        .expect("known wire");
+        assert_eq!(
+            body.while_remote_on_idle_resume,
+            Some(tisvlay_core::WhileRemoteOverride::INHERIT)
+        );
+    }
+
+    #[test]
+    fn parse_enum_token_routes_while_remote_override() {
+        let kind = FieldKind::Enum {
+            options: WHILE_REMOTE_OVERRIDE_OPTIONS,
+            class: EnumClass::WhileRemoteOverride,
+        };
+        assert_eq!(
+            parse_enum_token(kind, "inherit").unwrap(),
+            BodyPatch::WhileRemoteOverride(tisvlay_core::WhileRemoteOverride::INHERIT)
+        );
+        assert_eq!(
+            parse_enum_token(kind, "screen_off").unwrap(),
+            BodyPatch::WhileRemoteOverride(tisvlay_core::WhileRemoteOverride::from(
+                SessionAction::ScreenOff
+            ))
+        );
+    }
+
+    #[test]
+    fn build_field_raw_bool_reads_current_token() {
+        let spec = find_user("remote_screencast_arms");
+        assert!(matches!(spec.kind, FieldKind::Bool));
+        let on = build_field_raw(
+            spec,
+            &ResolvedValue::LocallySet {
+                current: "true".to_string(),
+            },
+        );
+        assert_eq!(on.kind, "bool");
+        assert!(on.bool_value);
+        let off = build_field_raw(
+            spec,
+            &ResolvedValue::Inheriting {
+                current: "false".to_string(),
+            },
+        );
+        assert!(!off.bool_value);
+    }
+
+    #[test]
+    fn while_remote_override_token_renders_inherit_and_actions() {
+        assert_eq!(
+            while_remote_override_token(tisvlay_core::WhileRemoteOverride::INHERIT),
+            "inherit"
+        );
+        assert_eq!(
+            while_remote_override_token(tisvlay_core::WhileRemoteOverride::from(
+                SessionAction::PowerOff
+            )),
+            "power_off"
+        );
     }
 
     #[test]

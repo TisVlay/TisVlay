@@ -212,6 +212,40 @@ pub mod payload {
             }
         }
     }
+
+    /// A remote-session fact: every live source tagged by kind, plus the
+    /// per-TV `armed` projection the session computes from the sources
+    /// crossed with each TV's resolved user profile. The world (via the
+    /// system mirror) consumes `armed` booleans only, staying
+    /// arming-policy-free.
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct RemoteSessionState {
+        pub sources: Vec<RemoteSource>,
+        pub armed: Vec<uuid::Uuid>,
+    }
+
+    /// One live remote source. `detail` names the specific origin (the
+    /// resolved exe for `Portal`, the source label for `Manual`); it's
+    /// carried for display and attribution, not routing.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct RemoteSource {
+        pub kind: RemoteSourceKind,
+        pub detail: String,
+    }
+
+    /// How a remote source was detected. Attributed kinds always arm;
+    /// the unattributed `Screencast` signal arms only when the resolved
+    /// profile opts in (`remote_screencast_arms`). `Ord` so the source
+    /// set keys deterministically.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RemoteSourceKind {
+        Manual,
+        Sunshine,
+        Logind,
+        Portal,
+        Screencast,
+    }
 }
 
 pub mod keys {
@@ -309,6 +343,35 @@ pub mod keys {
     /// Liveliness token for a running tray settings service.
     pub fn user_alive_tray(site: &str) -> String {
         format!("tisvlay/{site}/user/alive/tray")
+    }
+
+    /// The per-user remote-session fact (user socket, cached pub owned
+    /// by the session's router).
+    pub fn user_remote_session(site: &str) -> String {
+        format!("tisvlay/{site}/user/remote/session")
+    }
+
+    /// The system-socket mirror of the remote-session fact — a plain
+    /// put (no cache), since the session's system link is a connect-only
+    /// peer and served entities do not propagate over it.
+    pub fn remote_session(site: &str) -> String {
+        format!("tisvlay/{site}/remote/session")
+    }
+
+    /// Remote-session rpcs + the wildcard their queryable declares (own
+    /// family, not folded into the profile rpc queryable).
+    pub fn user_remote_rpc(site: &str, verb: &str) -> String {
+        format!("tisvlay/{site}/user/remote/rpc/{verb}")
+    }
+
+    pub fn user_remote_rpc_wild(site: &str) -> String {
+        format!("tisvlay/{site}/user/remote/rpc/*")
+    }
+
+    pub fn parse_user_remote_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/user/remote/rpc/")
     }
 
     /// Everything under the user subtree — must never be visible through
@@ -566,6 +629,33 @@ pub mod keys {
             assert_eq!(parse_manager_rpc("main", "tisvlay/main/tv/x/rpc/y"), None);
             assert_eq!(
                 parse_pairing_progress("main", "tisvlay/main/pairing/not-a-uuid/progress"),
+                None
+            );
+        }
+
+        #[test]
+        fn remote_session_key_shapes() {
+            assert_eq!(
+                user_remote_session("main"),
+                "tisvlay/main/user/remote/session"
+            );
+            assert_eq!(remote_session("main"), "tisvlay/main/remote/session");
+            assert_eq!(
+                parse_user_remote_rpc("main", &user_remote_rpc("main", "set")),
+                Some("set")
+            );
+            // The wildcard the queryable declares matches its own keys.
+            let wild = zenoh::key_expr::KeyExpr::try_from(user_remote_rpc_wild("main")).unwrap();
+            let verb =
+                zenoh::key_expr::KeyExpr::try_from(user_remote_rpc("main", "status")).unwrap();
+            assert!(wild.intersects(&verb));
+            // Wrong site is rejected; the tray family is not confused for it.
+            assert_eq!(
+                parse_user_remote_rpc("other", &user_remote_rpc("main", "set")),
+                None
+            );
+            assert_eq!(
+                parse_user_remote_rpc("main", &user_tray_rpc("main", "get")),
                 None
             );
         }

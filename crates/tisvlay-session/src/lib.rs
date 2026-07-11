@@ -9,10 +9,11 @@
 //! queryable, and the service's liveliness token. User-private keys
 //! physically never reach the system peer.
 
+mod remote;
 mod screensaver;
 mod store;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +37,7 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
+pub use remote::RemoteReport;
 pub use screensaver::watch_screensaver;
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
 
@@ -53,6 +55,10 @@ pub enum SessionEvent {
     LockWake,
     IdleTimeout,
     IdleResume,
+    /// A remote session began (the first source armed).
+    RemoteConnect,
+    /// The last remote session ended (all sources cleared).
+    RemoteDisconnect,
 }
 
 impl SessionEvent {
@@ -64,6 +70,8 @@ impl SessionEvent {
             Self::LockWake => "lock_wake",
             Self::IdleTimeout => "idle",
             Self::IdleResume => "resume",
+            Self::RemoteConnect => "remote_connect",
+            Self::RemoteDisconnect => "remote_disconnect",
         }
     }
 }
@@ -81,6 +89,22 @@ impl SessionClient {
     }
 }
 
+/// Handle for injecting remote-source reports — the detector-report
+/// seam. Real detectors (spawned in `main.rs`) and the test Rig both
+/// report through it; the verb rpc served on the user socket feeds the
+/// same channel from inside the core.
+#[derive(Debug, Clone)]
+pub struct RemoteClient {
+    tx: mpsc::UnboundedSender<RemoteReport>,
+}
+
+impl RemoteClient {
+    /// Returns false if the core loop is gone.
+    pub fn report(&self, report: RemoteReport) -> bool {
+        self.tx.send(report).is_ok()
+    }
+}
+
 #[derive(Debug)]
 pub struct SessionOptions {
     pub system_socket: PathBuf,
@@ -94,6 +118,9 @@ pub struct SessionOptions {
 #[derive(Debug)]
 pub struct SessionStack {
     pub client: SessionClient,
+    /// Detector-report seam for remote-session sources — `main.rs`'s
+    /// (future) real detectors and the test Rig both report through it.
+    pub remote: RemoteClient,
     /// Resolved user idle timeouts as `(locked, unlocked)` seconds —
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
@@ -175,13 +202,36 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("declare user rpc queryable: {e}"))?;
 
-    // Liveliness after the rpc queryable: a client that observes the
-    // service alive must find the rpc surface already declared.
+    // Remote-session rpcs on their own queryable family (verb rpc for
+    // manual/hook sources); routed into the same core loop.
+    let (remote_query_tx, remote_queries) = mpsc::unbounded_channel::<Query>();
+    let remote_queryable = user
+        .declare_queryable(keys::user_remote_rpc_wild(&options.site))
+        .complete(true)
+        .callback(move |query| {
+            let _ = remote_query_tx.send(query);
+        })
+        .await
+        .map_err(|e| anyhow!("declare remote rpc queryable: {e}"))?;
+
+    // Liveliness after the rpc queryables: a client that observes the
+    // service alive must find every rpc surface already declared.
     let alive = user
         .liveliness()
         .declare_token(keys::user_alive_session(&options.site))
         .await
         .map_err(|e| anyhow!("declare session liveliness: {e}"))?;
+
+    // The daemon's liveliness (re)appearance is the mirror re-put cue:
+    // the system mirror is a plain put over a connect-only peer, so a
+    // daemon restart mid-session must re-learn the current fact without
+    // waiting for the next detector edge.
+    let daemon_alive_sub = system
+        .liveliness()
+        .declare_subscriber(keys::daemon_alive(&options.site))
+        .history(true)
+        .await
+        .map_err(|e| anyhow!("subscribe daemon liveliness: {e}"))?;
 
     // Fleet mirror: every TV's meta/config, hydrated from history.
     let meta_sub = system
@@ -199,6 +249,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
 
     let (event_tx, events) = mpsc::unbounded_channel();
+    let (remote_tx, reports) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
     let is_locked = Arc::new(AtomicBool::new(false));
 
@@ -229,15 +280,28 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         idle_fired: false,
         screen_on: HashMap::new(),
         drift_at: HashMap::new(),
+        remote_sources: remote::RemoteSources::default(),
+        remote_armed: HashSet::new(),
         _alive: alive,
     };
     tokio::spawn(async move {
-        core.run(events, queries, meta_sub, power_sub).await;
+        core.run(
+            events,
+            reports,
+            queries,
+            remote_queries,
+            meta_sub,
+            power_sub,
+            daemon_alive_sub,
+        )
+        .await;
         drop(queryable);
+        drop(remote_queryable);
     });
 
     Ok(SessionStack {
         client: SessionClient { tx: event_tx },
+        remote: RemoteClient { tx: remote_tx },
         idle_timeouts: idle_rx,
         is_locked,
     })
@@ -267,18 +331,29 @@ struct Core {
     /// Armed drift re-asserts: TV → deadline (one idle-timeout of grace
     /// from the drift; a deliberate remote press gets its window).
     drift_at: HashMap<Uuid, tokio::time::Instant>,
+    /// Live remote-session sources (the detector aggregate).
+    remote_sources: remote::RemoteSources,
+    /// TVs the current sources arm, per their resolved profile — the
+    /// while-remote gate in `action_for` keys on membership.
+    remote_armed: HashSet<Uuid>,
     _alive: zenoh::liveliness::LivelinessToken,
 }
 
 impl Core {
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &mut self,
         mut events: mpsc::UnboundedReceiver<SessionEvent>,
+        mut reports: mpsc::UnboundedReceiver<RemoteReport>,
         mut queries: mpsc::UnboundedReceiver<Query>,
+        mut remote_queries: mpsc::UnboundedReceiver<Query>,
         meta_sub: zenoh_ext::AdvancedSubscriber<
             zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
         >,
         power_sub: zenoh_ext::AdvancedSubscriber<
+            zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
+        >,
+        daemon_alive_sub: zenoh::pubsub::Subscriber<
             zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
         >,
     ) {
@@ -290,6 +365,9 @@ impl Core {
             self.publish_assignment(&tv, Some(profile)).await;
         }
         self.recompute_idle();
+        // Seed the remote fact (empty sources / empty armed) so late
+        // joiners hydrate a defined state.
+        self.publish_remote().await;
         info!(site = %self.site, "session core running");
         loop {
             let next_drift = self.drift_at.values().min().copied();
@@ -298,24 +376,43 @@ impl Core {
                     None => return,
                     Some(event) => self.dispatch(event).await,
                 },
+                report = reports.recv() => match report {
+                    None => return,
+                    Some(report) => self.apply_remote_report(report).await,
+                },
                 query = queries.recv() => match query {
                     None => return,
                     Some(query) => self.handle_query(query).await,
                 },
+                query = remote_queries.recv() => match query {
+                    None => return,
+                    Some(query) => self.handle_remote_query(query).await,
+                },
                 sample = meta_sub.recv_async() => match sample {
                     Err(_) => return,
-                    Ok(sample) => self.apply_meta(&sample),
+                    Ok(sample) => self.apply_meta(&sample).await,
                 },
                 sample = power_sub.recv_async() => match sample {
                     Err(_) => return,
                     Ok(sample) => self.apply_power(&sample),
+                },
+                sample = daemon_alive_sub.recv_async() => match sample {
+                    Err(_) => return,
+                    Ok(sample) => {
+                        // The token's (re)appearance re-puts the mirror;
+                        // its disappearance needs nothing (a re-put lands
+                        // when it returns).
+                        if sample.kind() == SampleKind::Put {
+                            self.mirror_remote().await;
+                        }
+                    }
                 },
                 _ = drift_deadline(next_drift) => self.reassert_due(),
             }
         }
     }
 
-    fn apply_meta(&mut self, sample: &zenoh::sample::Sample) {
+    async fn apply_meta(&mut self, sample: &zenoh::sample::Sample) {
         let Some((tv, "meta/config")) = keys::parse_tv_path(&self.site, sample.key_expr().as_str())
         else {
             return;
@@ -334,6 +431,9 @@ impl Core {
             }
         }
         self.recompute_idle();
+        // The fleet changed — a new TV (or a profile shift reflected in
+        // its meta) can move the armed set.
+        self.recompute_remote_armed().await;
     }
 
     fn apply_power(&mut self, sample: &zenoh::sample::Sample) {
@@ -420,6 +520,136 @@ impl Core {
         }
     }
 
+    /// Apply a detector report: fold it into the source set, recompute
+    /// the armed projection, publish the fact, and drive the
+    /// connect/disconnect edge on the overall session state.
+    async fn apply_remote_report(&mut self, report: RemoteReport) {
+        let was_active = self.remote_sources.any();
+        if !self.remote_sources.apply(&report) {
+            return;
+        }
+        debug!(?report, "remote source report applied");
+        self.recompute_remote_armed().await;
+        self.publish_remote().await;
+        let now_active = self.remote_sources.any();
+        match (was_active, now_active) {
+            (false, true) => self.dispatch(SessionEvent::RemoteConnect).await,
+            (true, false) => self.dispatch(SessionEvent::RemoteDisconnect).await,
+            _ => {}
+        }
+    }
+
+    /// Recompute the armed set from the live sources crossed with each
+    /// known TV's resolved profile; publish the fact if it moved.
+    async fn recompute_remote_armed(&mut self) {
+        let sources = self.remote_sources.snapshot();
+        let armed: HashSet<Uuid> =
+            remote::compute_armed(self.tvs.keys(), &sources, |tv| self.resolve_for(tv))
+                .into_iter()
+                .collect();
+        if armed != self.remote_armed {
+            self.remote_armed = armed;
+            self.publish_remote().await;
+        }
+    }
+
+    /// Publish the fact both ways: cached pub on the user socket, plain
+    /// mirror on the system socket.
+    async fn publish_remote(&mut self) {
+        let state = self.remote_state();
+        let key = keys::user_remote_session(&self.site);
+        match serde_json::to_value(&state) {
+            Ok(payload) => self.publish(&key, &payload).await,
+            Err(e) => warn!(%e, "remote session serialize failed"),
+        }
+        self.mirror_remote().await;
+    }
+
+    /// Put the current fact on the system-socket mirror. A plain put (no
+    /// cache, no token) — the session's system link is a connect-only
+    /// peer, so a cached pub there would not propagate.
+    async fn mirror_remote(&self) {
+        let key = keys::remote_session(&self.site);
+        let bytes = match serde_json::to_vec(&self.remote_state()) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                warn!(%e, "remote mirror serialize failed");
+                return;
+            }
+        };
+        if let Err(e) = self
+            .system
+            .put(key.as_str(), bytes)
+            .encoding(Encoding::APPLICATION_JSON)
+            .await
+        {
+            warn!(%key, %e, "remote mirror put failed");
+        }
+    }
+
+    /// The current fact: live sources + the armed projection (sorted).
+    fn remote_state(&self) -> payload::RemoteSessionState {
+        let mut armed: Vec<Uuid> = self.remote_armed.iter().copied().collect();
+        armed.sort();
+        payload::RemoteSessionState {
+            sources: self.remote_sources.snapshot(),
+            armed,
+        }
+    }
+
+    /// Serve the remote verb rpc: `set { source, active }` toggles a
+    /// manual source; `status` returns the current fact.
+    async fn handle_remote_query(&mut self, query: Query) {
+        let key = query.key_expr().as_str().to_string();
+        let Some(verb) = keys::parse_user_remote_rpc(&self.site, &key).map(str::to_string) else {
+            reply_err(
+                &query,
+                &WireError::bad_request(format!("no such rpc: {key}")),
+            )
+            .await;
+            return;
+        };
+        let body: Value = query
+            .payload()
+            .and_then(|bytes| serde_json::from_slice(&bytes.to_bytes()).ok())
+            .unwrap_or(Value::Null);
+        match verb.as_str() {
+            "set" => {
+                // Default source `manual`; `active` required.
+                let source = body
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("manual")
+                    .to_string();
+                let Some(active) = body.get("active").and_then(Value::as_bool) else {
+                    reply_err(&query, &WireError::bad_request("set requires `active`")).await;
+                    return;
+                };
+                self.apply_remote_report(RemoteReport::manual(source, active))
+                    .await;
+                reply_json(
+                    &query,
+                    &serde_json::to_value(self.remote_state()).unwrap_or_default(),
+                )
+                .await;
+            }
+            "status" => {
+                reply_json(
+                    &query,
+                    &serde_json::to_value(self.remote_state()).unwrap_or_default(),
+                )
+                .await;
+            }
+            other => {
+                reply_err(
+                    &query,
+                    &WireError::bad_request(format!("no such rpc: {other}")),
+                )
+                .await;
+            }
+        }
+    }
+
     /// Session event → per-TV user-profile action, called through the
     /// system daemon's rpcs. The tap publish comes first so observers see
     /// the cause before the effects.
@@ -436,6 +666,9 @@ impl Core {
                 self.idle_fired = false;
                 self.drift_at.clear();
             }
+            // Remote connect/disconnect are orthogonal to the idle-drift
+            // window — they neither open nor close it.
+            SessionEvent::RemoteConnect | SessionEvent::RemoteDisconnect => {}
         }
         let tap = keys::session_event(&self.site, event.tap_name());
         if let Err(e) = self
@@ -461,15 +694,49 @@ impl Core {
     }
 
     /// Root chain per field: assignment → profile → editable default
-    /// profile → hard-coded floor.
+    /// profile → hard-coded floor. While a TV is armed, the wake-ish
+    /// events pass through the profile's while-remote override —
+    /// replace-only, so an override only ever substitutes for an action
+    /// that would otherwise fire (`inherit` = the normal action, `none`
+    /// = suppress); an unarmed TV is never affected.
     fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
         let resolved = self.resolve_for(tv);
+        let armed = self.remote_armed.contains(tv);
         match event {
             SessionEvent::Lock => resolved.on_session_lock,
-            SessionEvent::Unlock => resolved.on_session_unlock,
-            SessionEvent::LockWake => resolved.on_lock_wake,
+            SessionEvent::Unlock => self.while_remote(
+                armed,
+                resolved.while_remote_on_session_unlock,
+                resolved.on_session_unlock,
+            ),
+            SessionEvent::LockWake => self.while_remote(
+                armed,
+                resolved.while_remote_on_lock_wake,
+                resolved.on_lock_wake,
+            ),
             SessionEvent::IdleTimeout => resolved.on_idle_timeout,
-            SessionEvent::IdleResume => resolved.on_idle_resume,
+            SessionEvent::IdleResume => self.while_remote(
+                armed,
+                resolved.while_remote_on_idle_resume,
+                resolved.on_idle_resume,
+            ),
+            SessionEvent::RemoteConnect => resolved.on_remote_connect,
+            SessionEvent::RemoteDisconnect => resolved.on_remote_disconnect,
+        }
+    }
+
+    /// Apply a while-remote override only when the TV is armed; unarmed
+    /// TVs take the normal action untouched.
+    fn while_remote(
+        &self,
+        armed: bool,
+        override_: tisvlay_core::WhileRemoteOverride,
+        normal: tisvlay_core::EventAction,
+    ) -> tisvlay_core::EventAction {
+        if armed {
+            remote::while_remote_action(override_, normal)
+        } else {
+            normal
         }
     }
 
@@ -600,6 +867,7 @@ impl Core {
                 self.publish_profile(&id, &req.body).await;
                 self.persist();
                 self.recompute_idle();
+                self.recompute_remote_armed().await;
                 Ok(json!({ "id": id }))
             }
             "update" => {
@@ -619,6 +887,7 @@ impl Core {
                 self.publish_profile(&req.id, &req.body).await;
                 self.persist();
                 self.recompute_idle();
+                self.recompute_remote_armed().await;
                 Ok(json!({}))
             }
             "duplicate" => {
@@ -650,6 +919,7 @@ impl Core {
                     .await;
                 self.persist();
                 self.recompute_idle();
+                self.recompute_remote_armed().await;
                 Ok(json!({}))
             }
             "info" => Ok(json!({
@@ -683,6 +953,7 @@ impl Core {
                 }
                 self.persist();
                 self.recompute_idle();
+                self.recompute_remote_armed().await;
                 Ok(json!({}))
             }
             other => Err(WireError::bad_request(format!("no such rpc: {other}"))),
@@ -813,6 +1084,8 @@ fn call_tv(system: &Session, site: &str, tv: Uuid, spec: tisvlay_core::EventActi
 /// shape (string, or table when they carry modifiers).
 fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
     let action = |a: tisvlay_core::EventAction| serde_json::to_value(a).unwrap_or_default();
+    let override_ =
+        |o: tisvlay_core::WhileRemoteOverride| serde_json::to_value(o).unwrap_or_default();
     json!({
         "on_session_lock": action(resolved.on_session_lock),
         "on_session_unlock": action(resolved.on_session_unlock),
@@ -821,6 +1094,12 @@ fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
         "unlocked_idle_timeout_seconds": resolved.unlocked_idle_timeout_seconds,
         "on_idle_timeout": action(resolved.on_idle_timeout),
         "on_idle_resume": action(resolved.on_idle_resume),
+        "on_remote_connect": action(resolved.on_remote_connect),
+        "on_remote_disconnect": action(resolved.on_remote_disconnect),
+        "remote_screencast_arms": resolved.remote_screencast_arms,
+        "while_remote_on_session_unlock": override_(resolved.while_remote_on_session_unlock),
+        "while_remote_on_lock_wake": override_(resolved.while_remote_on_lock_wake),
+        "while_remote_on_idle_resume": override_(resolved.while_remote_on_idle_resume),
     })
 }
 
