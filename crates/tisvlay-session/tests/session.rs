@@ -931,3 +931,70 @@ async fn remote_verb_rpc_round_trips() {
         .expect("status ok");
     assert_eq!(status["sources"], json!([]), "disarmed status is empty");
 }
+
+/// A `Screencast`-kind report (the shape the PipeWire detector produces)
+/// travels the detector seam into the fact, and its unattributed signal
+/// arms a TV only when the resolved profile opts capture in — the whole
+/// detector→fact→policy→armed contract without a live PipeWire.
+#[tokio::test(flavor = "multi_thread")]
+async fn screencast_source_arms_only_under_capture_policy() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    // The detector emits `Screencast` reports keyed on a summary detail;
+    // reconstruct that shape here (the module's own pure fns are unit
+    // tested — this checks the wire contract through the running stack).
+    let screencast = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Screencast,
+        detail: "1 node (running)".into(),
+        active,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://screencast").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+
+    // Default profile does not arm on capture: the screencast source is
+    // published in `sources`, but the TV is NOT armed.
+    create_and_assign(&rig, tv, json!({ "name": "No capture arm" })).await;
+    assert!(rig.stack.remote.report(screencast(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"]
+                .as_array()
+                .is_some_and(|src| src.iter().any(|s| s["kind"] == "screencast"))
+                && v["armed"] == json!([])
+        }
+    })
+    .await;
+
+    // Opt capture in: the same live source now arms the TV.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({ "name": "Capture arms", "remote_screencast_arms": true }),
+    )
+    .await;
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put
+            && payload_json(s)["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    })
+    .await;
+
+    // Node gone: the source clears and the TV disarms.
+    assert!(rig.stack.remote.report(screencast(false)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"] == json!([]) && v["armed"] == json!([])
+        }
+    })
+    .await;
+}

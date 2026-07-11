@@ -83,6 +83,11 @@ async fn main() -> anyhow::Result<()> {
         is_locked,
     ));
 
+    // PipeWire screencast detector on its own supervised OS thread —
+    // reports the `Screencast` remote source through the detector seam.
+    // Absent/unreachable PipeWire is handled inside (retry, quiet).
+    tisvlay_session::spawn_screencast_detector(stack.remote.clone());
+
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down");
     Ok(())

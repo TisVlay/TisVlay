@@ -10,6 +10,7 @@
 //! physically never reach the system peer.
 
 mod remote;
+mod screencast;
 mod screensaver;
 mod store;
 
@@ -38,6 +39,7 @@ use zenoh_ext::{
 };
 
 pub use remote::RemoteReport;
+pub use screencast::spawn as spawn_screencast_detector;
 pub use screensaver::watch_screensaver;
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
 

@@ -1061,7 +1061,7 @@ checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
 dependencies = [
  "glob",
  "libc",
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1619,7 +1619,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2367,7 +2367,7 @@ dependencies = [
  "glutin_egl_sys",
  "glutin_glx_sys",
  "glutin_wgl_sys",
- "libloading",
+ "libloading 0.8.9",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -3507,6 +3507,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4049,6 +4059,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "num"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
+dependencies = [
+ "num-bigint",
+ "num-complex",
+ "num-integer",
+ "num-iter",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4072,6 +4096,15 @@ dependencies = [
  "rand 0.8.6",
  "smallvec",
  "zeroize",
+]
+
+[[package]]
+name = "num-complex"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -4942,6 +4975,45 @@ dependencies = [
  "atomic-waker",
  "fastrand",
  "futures-io",
+]
+
+[[package]]
+name = "pipewire-native"
+version = "0.1.4"
+source = "git+https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git?rev=ee381fa2f482d3545d35dfc3e2061526bbe48fea#ee381fa2f482d3545d35dfc3e2061526bbe48fea"
+dependencies = [
+ "bitflags 2.13.0",
+ "libc",
+ "parking_lot",
+ "paste",
+ "pipewire-native-macros",
+ "pipewire-native-spa",
+ "pkg-config",
+ "tinyjson",
+]
+
+[[package]]
+name = "pipewire-native-macros"
+version = "0.1.4"
+source = "git+https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git?rev=ee381fa2f482d3545d35dfc3e2061526bbe48fea#ee381fa2f482d3545d35dfc3e2061526bbe48fea"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "pipewire-native-spa"
+version = "0.1.4"
+source = "git+https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git?rev=ee381fa2f482d3545d35dfc3e2061526bbe48fea#ee381fa2f482d3545d35dfc3e2061526bbe48fea"
+dependencies = [
+ "bitflags 2.13.0",
+ "cc",
+ "libc",
+ "libloading 0.9.0",
+ "num",
+ "pipewire-native-macros",
+ "pkg-config",
 ]
 
 [[package]]
@@ -6959,10 +7031,16 @@ checksum = "a90a0ca3ee6a69f2ad28fd11621a4c3f03b371f366be500b64df260c4ffbafb4"
 dependencies = [
  "as-raw-xcb-connection",
  "ctor",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
  "tracing",
 ]
+
+[[package]]
+name = "tinyjson"
+version = "2.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ab95735ea2c8fd51154d01e39cf13912a78071c2d89abc49a7ef102a7dd725a"
 
 [[package]]
 name = "tinystr"
@@ -7191,6 +7269,8 @@ dependencies = [
  "clap",
  "directories",
  "futures-util",
+ "pipewire-native",
+ "pipewire-native-spa",
  "serde",
  "serde_json",
  "tempfile",
@@ -8938,7 +9018,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.4",
  "x11rb-protocol",
@@ -9545,7 +9625,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e235815d14b22448aa1db948560328761530932fa7a2f9a3c14853b3f0267941"
 dependencies = [
  "git-version",
- "libloading",
+ "libloading 0.8.9",
  "serde",
  "stabby",
  "tracing",
@@ -9673,7 +9753,7 @@ dependencies = [
  "humantime",
  "lazy_static",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pnet_datalink",
  "schemars 1.2.1",
  "serde",
