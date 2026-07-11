@@ -67,7 +67,37 @@ User-assisted instrumentation on the real system — timestamped traces (`busctl
 
 Both outcomes of each question are pre-approved above (Decisions 4 and 6): the freeze is a selection, not a re-draft. Anything Phase 0 drops (delay fields, poller, udev candidate, retroactive correction) routes to `docs/ideas/` with an index entry in `docs/ideas.md`.
 
-### 1. Wire vocabulary (`crates/tisvlay-wire/src/lib.rs`)
+#### Bench protocol
+
+Capture terminals (packaged stack running; remote clients on a second device). All stamps wall-clock — correlate across terminals by time.
+
+```sh
+# T1 — portal D-Bus signals (per-message time= stamps)
+dbus-monitor --session "path_namespace='/org/freedesktop/portal/desktop'"
+# T2 — PipeWire graph events (ts via moreutils: nix shell nixpkgs#moreutils)
+stdbuf -oL pw-mon | ts '%H:%M:%.S'
+# T3 — tisvlay logs: lock/unlock, idle, dpms watcher edges
+journalctl -f -o short-precise --user-unit tisvlay-session
+journalctl -f -o short-precise -u tisvlay-daemon
+# T4 — DPMS sysfs edges (set $p to the TV's connector)
+p=/sys/class/drm/cardX-HDMI-A-Y/dpms; l=; while :; do v=$(cat $p); [ "$v" != "$l" ] && echo "$(date +%T.%3N) $v"; l=$v; sleep 0.1; done
+# T5 — Sunshine /serverinfo poll (1 s)
+while :; do echo "$(date +%T.%3N) $(curl -sm1 http://127.0.0.1:47989/serverinfo | grep -oE 'SUNSHINE_SERVER_(BUSY|FREE)')"; sleep 1; done
+# T6 — udev input-device add/remove (Sunshine per-client candidate)
+udevadm monitor --udev --subsystem-match=input
+```
+
+Optional hook-timing sample: give Sunshine a bench-only `global_prep_cmd` whose do/undo append `date +%T.%3N` to a file — measures hook latency vs T5 without wiring anything.
+
+Scenarios — ≥3 cycles each, for each of krdp (RDP client), RustDesk, Sunshine+Moonlight (note which capture backend Sunshine logs at startup):
+
+- **A locked**: screen locked → connect → unlock via remote → interact → disconnect. (Race: portal signal vs unlock in T3.)
+- **B dark**: idle until DPMS off → connect → interact → disconnect. (Race: portal/node vs T4 dpms-on.)
+- **C blip**: mid-session client reconnect (Moonlight quit+resume, RustDesk reconnect, RDP re-attach). (Flap: count T1/T2/T5 edges.)
+
+False-positive probes (T2 only, once): OBS record start/stop, browser tab-share start/stop, taskbar-thumbnail hover, Overview toggle.
+
+Fill the three decision rows from the traces: race-window sizes (earliest remote signal → unlock/dpms-on deltas), flap counts per blip, poller/hook latency.
 
 - `keys` (subsystem-family shape, matching `user/profile/*` and `user/tray/*`): `user_remote_session(site)` → `tisvlay/<site>/user/remote/session` (cached pub on the user socket — the session owns that router, so full cached-pub hygiene applies: advanced pub, `sample_miss_detection` + `publisher_detection`, liveliness declared after serving); `remote_session(site)` → `tisvlay/<site>/remote/session` (**plain put** mirror on the system socket — no cache, no detection, no token; the session's system link is a connect-only peer and served entities do not propagate over it, per the consume-only-peer law); `user_remote_rpc(site, verb)` → `tisvlay/<site>/user/remote/rpc/<verb>` + `_wild` + `parse_` (own queryable family, tray-settings precedent — not folded into the profile rpc queryable).
 - `payload`: `RemoteSessionState { sources: Vec<RemoteSource>, armed: Vec<Uuid> }`, `RemoteSource { kind: RemoteSourceKind, detail: String }`, `RemoteSourceKind { Manual, Sunshine, Logind, Portal, Screencast }`.
