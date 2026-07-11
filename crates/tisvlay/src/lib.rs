@@ -25,6 +25,7 @@ use tisvlay_wire::caller::Caller;
 use tisvlay_wire::{bootstrap, keys, rpc};
 
 pub use tisvlay_wire::caller::RpcError;
+pub use tisvlay_wire::payload::{RemoteSessionState, RemoteSource, RemoteSourceKind};
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 use uuid::Uuid;
@@ -83,6 +84,7 @@ pub enum StateEvent {
     UserProfileChanged(Uuid),
     UserProfileAdded(Uuid),
     UserProfileRemoved(Uuid),
+    RemoteSessionChanged,
     TrayAppeared,
     TrayDisappeared,
     TrayNotificationSettingsChanged,
@@ -185,6 +187,9 @@ pub struct TvInfo {
     pub connected: bool,
     pub managed: bool,
     pub automated: bool,
+    /// Whether a remote session currently arms this TV — the read-only
+    /// projection of the world's `remote_armed` gate.
+    pub remote_armed: bool,
     pub system_profile: String,
     pub primary_input: String,
     pub hardware_id: HardwareId,
@@ -1029,6 +1034,39 @@ impl SessionClient {
         serde_json::from_value(defaults).context("decode resolved user defaults")
     }
 
+    /// Arm or disarm a manual remote-session source through the session
+    /// service's verb rpc — the same escape hatch the CLI and the
+    /// Sunshine `global_prep_cmd` hook drive.
+    pub async fn remote_session_set(&self, source: &str, active: bool) -> Result<()> {
+        self.call(
+            &keys::user_remote_rpc(&self.site, "set"),
+            json!({ "source": source, "active": active }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// The current remote-session fact: live sources plus the armed
+    /// projection. Read from the session service directly (the cached
+    /// mirror slot is the passive view).
+    pub async fn remote_session_status(&self) -> Result<RemoteSessionState> {
+        let state = self
+            .fetch(&keys::user_remote_rpc(&self.site, "status"), Value::Null)
+            .await?;
+        serde_json::from_value(state).context("decode remote-session status")
+    }
+
+    /// The remote-session fact as last mirrored from the cached fact key
+    /// — the passive counterpart to [`Self::remote_session_status`],
+    /// updated on every `RemoteSessionChanged` event.
+    pub async fn remote_session(&self) -> Option<RemoteSessionState> {
+        self.mirror
+            .lock()
+            .expect("mirror lock")
+            .remote_session
+            .clone()
+    }
+
     fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
         self.events.subscribe()
     }
@@ -1378,6 +1416,7 @@ mod mirror_row {
                 connected: self.link.as_ref().is_some_and(|l| l.connected),
                 managed: meta.managed,
                 automated: meta.automated,
+                remote_armed: meta.remote_armed,
                 system_profile: meta
                     .system_profile
                     .map(|p| p.to_string())

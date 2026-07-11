@@ -162,6 +162,137 @@ async fn sdk_mirrors_rpcs_and_watches() {
     let _ = Uuid::parse_str(&tv).unwrap();
 }
 
+/// The remote-session surface end to end: the manual verb rpc arms a
+/// source, the user-socket fact hydrates the session mirror (and the
+/// `status` rpc reflects it), and the per-TV armed flag rides the full
+/// round-trip through the world back into `TvInfo.remote_armed`.
+#[tokio::test(flavor = "multi_thread")]
+async fn sdk_remote_session_arms_and_mirrors() {
+    let dir = tempfile::tempdir().unwrap();
+    let system_socket = dir.path().join("sys.sock");
+    let user_socket = dir.path().join("user.sock");
+    let (connector, discovery, _handle) = new_test_parts();
+    let _daemon = tisvlay_daemon::serve(
+        &system_socket,
+        "t",
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+    let _session = tisvlay_session::serve(tisvlay_session::SessionOptions {
+        system_socket: system_socket.clone(),
+        user_socket: user_socket.clone(),
+        site: "t".into(),
+        store: None,
+    })
+    .await
+    .unwrap();
+
+    let daemon = DaemonClient::connect(&system_socket, "t").await.unwrap();
+    let session = SessionClient::connect(&user_socket, "t").await.unwrap();
+    let mut watcher =
+        StateWatcher::new(&daemon, Some(&session), None, StateWatcherConfig::default());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !daemon.is_available().await || !session.is_available().await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "peers never became available"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A connected TV the session knows about — the arming set is computed
+    // over the session's fleet mirror, so the TV must be up first.
+    let tv = daemon
+        .pair_tv(
+            "Den",
+            "mock",
+            &json!({ "address": "mock://remote", "pairing": "accept" }).to_string(),
+            true,
+        )
+        .await
+        .unwrap();
+    let tv_id = Uuid::parse_str(&tv).unwrap();
+    wait_for(&daemon, |tvs| {
+        tvs.iter().any(|info| info.uuid == tv && info.connected)
+    })
+    .await;
+
+    // No source yet: the fact is empty (or absent) and nothing is armed.
+    assert!(
+        session
+            .remote_session_status()
+            .await
+            .unwrap()
+            .sources
+            .is_empty()
+    );
+
+    // Arm a manual source. `manual` always arms, so the connected TV
+    // enters the armed set.
+    session.remote_session_set("laptop", true).await.unwrap();
+
+    // The user-socket fact hydrates the session mirror: one manual source
+    // tagged `laptop`, the TV in the armed list. Drain the watcher until
+    // the mirror slot converges (RemoteSessionChanged rides the same
+    // stream as the other user deltas).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(state) = session.remote_session().await
+            && state
+                .sources
+                .iter()
+                .any(|s| s.kind == tisvlay::RemoteSourceKind::Manual && s.detail == "laptop")
+            && state.armed.contains(&tv_id)
+        {
+            break;
+        }
+        let event = tokio::time::timeout_at(deadline, watcher.next())
+            .await
+            .expect("watcher timed out for remote-session")
+            .expect("watcher closed");
+        let _ = event;
+    }
+    // The status rpc reports the same live fact.
+    let status = session.remote_session_status().await.unwrap();
+    assert!(status.armed.contains(&tv_id));
+
+    // The armed flag completes the round-trip through the world and lands
+    // on the per-TV meta projection the daemon mirror carries.
+    wait_for(&daemon, |tvs| {
+        tvs.iter().any(|info| info.uuid == tv && info.remote_armed)
+    })
+    .await;
+
+    // Disarm: the source clears and the TV disarms both in the fact and
+    // in the meta projection.
+    session.remote_session_set("laptop", false).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if session
+            .remote_session()
+            .await
+            .is_some_and(|state| state.sources.is_empty() && state.armed.is_empty())
+        {
+            break;
+        }
+        let event = tokio::time::timeout_at(deadline, watcher.next())
+            .await
+            .expect("watcher timed out for disarm")
+            .expect("watcher closed");
+        let _ = event;
+    }
+    wait_for(&daemon, |tvs| {
+        tvs.iter().any(|info| info.uuid == tv && !info.remote_armed)
+    })
+    .await;
+}
+
 async fn wait_for(daemon: &DaemonClient, pred: impl Fn(&[tisvlay::TvInfo]) -> bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {

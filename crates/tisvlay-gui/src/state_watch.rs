@@ -306,6 +306,7 @@ async fn watch_state(
             }
             StateEvent::DaemonStateChanged(_)
             | StateEvent::TvUserProfileChanged
+            | StateEvent::RemoteSessionChanged
             | StateEvent::FallbackPoll => {
                 trigger_refresh();
             }
