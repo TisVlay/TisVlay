@@ -13,14 +13,14 @@ Research fan-out (2026-07-11, six agents: Sunshine/RustDesk/krdp source, LGTVCom
 - **Live false-positive specimen**: lan-mouse holds a standing portal **InputCapture** session on this box while the user is physically present — InputCapture-only sessions must never count.
 - **Prior art** (LGTVCompanion, Windows — the only project with this feature): OR-aggregate of per-source detectors, edge-triggered with asymmetric debounce, gates display/idle events but never sleep/shutdown, manual CLI escape hatch, restores HDMI input on disconnect. No Linux prior art exists.
 
-## Decisions (user-confirmed 2026-07-11)
+## Decisions (user-confirmed 2026-07-11; review pass applied)
 
-1. **Scope: system + session.** The session service detects and publishes the fact; a mirror on the system socket lets the world gate `dispatch_system_events` (DPMS-on is the main TV-wake path). Sleep/shutdown/startup paths are **never** gated (LGTVCompanion lesson).
-2. **Fact model A: one fact, source-kind tags.** The fact publishes all live sources tagged by kind (`manual` / `sunshine` / `logind` / `portal:<exe>` / `screencast`), no baked-in aggregate. Attributed kinds always arm; one profile switch (`remote_capture_arms`, default off) decides whether the unattributed screencast signal also arms. Alternatives considered and dropped: attributed-only (no fallback when attribution misses, no capture-suppression option) and two separate facts (double schema/wire/GUI surface, precedence rule, no motivating use case for distinct capture actions — model A's tagged payload migrates forward without a wire break if one appears).
-3. **Policy shape: while-remote override block** — per-event override fields remapping event→action while armed (unset = inherit the normal action, `none` = suppress) + `on_remote_connect`/`on_remote_disconnect` as first-class events. Arming policy lives in **user** profiles only; system profiles carry only their override actions.
-4. **v1 detectors (all session-side)**: manual/hook RPC verb, PipeWire screencast watcher, D-Bus portal monitor, Sunshine `/serverinfo` poller, logind Remote watcher.
-5. **PipeWire crate: `pipewire-native` git-pinned** to a current upstream rev (crates.io 0.1.4 aborts the process at an FFI-callback boundary on protocol decode errors vs PipeWire ≥ 1.4; the fix is unreleased and upstream tags rarely). One documented `allow-git` entry in `packaging/licensing/deny.toml`, revert-to-crates.io when 0.1.5+ ships. Verify the pinned rev against PipeWire 1.6 during implementation.
-6. **Debounce**: arming is immediate-on / delayed-off; the connect/disconnect **actions** debounce (defaults 10 s / 1 s; profile knobs). One shared delayed-off knob covers both disarm and the disconnect action.
+1. **Scope: system + session.** The session service detects and publishes the fact; a mirror on the system socket lets the world gate `dispatch_system_events` (DPMS-on is the main TV-wake path). Sleep/shutdown/startup paths are **never** gated (LGTVCompanion lesson), and greeter events (`GreeterIdle`/`GreeterResume`) are exempt too — they fire at the login screen, before any user session or remote fact exists.
+2. **Fact model A: one fact, source-kind tags.** The fact publishes all live sources tagged by kind (`manual` / `sunshine` / `logind` / `portal:<exe>` / `screencast`), no baked-in aggregate. Attributed kinds always arm; one profile switch (`remote_screencast_arms`, default false — GUI label "Screen capture arms") decides whether the unattributed screencast signal also arms. Alternatives considered and dropped: attributed-only (no fallback when attribution misses, no capture-suppression option) and two separate facts (double schema/wire/GUI surface, precedence rule, no motivating use case for distinct capture actions — model A's tagged payload migrates forward without a wire break if one appears).
+3. **Policy shape: while-remote override block** — per-event override fields remapping event→action while armed (unset = inherit the normal action, `none` = suppress) + `on_remote_connect`/`on_remote_disconnect` as first-class events. **Overrides cover wake-ish events only** (suppressing an off-going blank during remote is never wanted) and they **only ever replace an action that would fire — they can never cause an action an unarmed TV wouldn't take** (otherwise remote-connect becomes a wake vector; "switch the TV to a desired state" rides on `on_remote_connect`, not on overrides). Arming policy lives in **user** profiles only; system profiles carry only their override actions — never `on_remote_*` events (the connect/disconnect events are session-detected and session-dispatched).
+4. **v1 detectors (all session-side)**: manual/hook RPC verb, PipeWire screencast watcher, D-Bus portal monitor, Sunshine `/serverinfo` poller, logind Remote watcher. Sunshine offers **no subscription surface** (verified in source: no D-Bus published, no event/push API — only hooks, the poll endpoint, and log lines), so the event-driven Sunshine path is the documented `prep-cmd` hook; the poller is the zero-config fallback *(Phase 0-conditional: keep / demote to opt-in / drop)*. Candidate event-driven alternative to evaluate on the bench: a udev monitor for Sunshine's per-client uinput devices (gamepad/touch/pen are created per session; keyboard/mouse are persistent, so coverage is partial).
+5. **PipeWire crate: `pipewire-native` git-pinned** to a current upstream rev (crates.io 0.1.4 aborts the process at an FFI-callback boundary on protocol decode errors vs PipeWire ≥ 1.4; the fix is unreleased and upstream tags rarely). One documented `allow-git` entry in `packaging/licensing/deny.toml`, revert-to-crates.io when 0.1.5+ ships. Verify the pinned rev against PipeWire 1.6 during implementation. The pin drags three sibling crates from one URL (`pipewire-native`, `-spa`, `-macros`; all MIT — no license exceptions needed).
+6. **Debounce**: arming is immediate-on / delayed-off; the connect/disconnect **actions** debounce. Whether action debounce is merited at all — and the defaults if so (LGTVCompanion ships fixed 10 s / 1 s on Windows; that's their event model, not ours) — is **pending Phase 0 bench measurement**. The delay fields (`remote_connect_delay_seconds` / `remote_disconnect_delay_seconds`) **do not enter the schema, macro tables, or GUI until Phase 0 shows real flapping** — removing them later would be a coordinated multi-site revert across two crates; adding them is a small follow-up commit.
 
 ## Architecture
 
@@ -30,62 +30,93 @@ detectors (session service, independent tasks)          policy (profiles)
   pipewire ─┤   aggregator (remote.rs)                    system: overrides only
   monitor ──┼─► sources: Vec<RemoteSource>  ──resolve──►  armed(tv) per user profile
   sunshine ─┤        │                                         │
-  logind ───┘        │ cached pub                              │
+  logind ───┘        │ cached pub (user socket = session-owned router)
                      ▼                                         ▼
-   user socket   tisvlay/<site>/user/remote_session   Core::dispatch gate (session actions)
-                     │ mirror (client link, like event/session/* taps)
+   user socket   tisvlay/<site>/user/remote/session   Core::action_for gate (session actions)
+                     │ plain put (the greeter-idle shape; NOT a cached pub —
+                     │ the session's system link is a connect-only peer, and served
+                     │ entities do not propagate over it; re-put on daemon liveliness)
                      ▼
-   system socket  tisvlay/<site>/remote_session ──► daemon subscriber ──► InEvent::RemoteSession
+   system socket  tisvlay/<site>/remote/session ──► daemon bare subscriber ──► InEvent::RemoteSession
                                                           │
                                                           ▼
-                                    world RemoteArmed marker/resource ──► dispatch_system_events gate
+                                    world RemoteArmed resource ──► dispatch_system_events gate
 ```
 
-- **Arming is computed session-side** from sources × the per-TV resolved user profile (`remote_capture_arms`), because arming is a user-session policy question. The mirror payload carries both raw `sources` and the computed `armed: Vec<Uuid>` so the world consumes a boolean per TV and stays arming-policy-free.
+- **Arming is computed session-side** from sources × the per-TV resolved user profile (`remote_screencast_arms`), because arming is a user-session policy question. The mirror payload carries both raw `sources` and the computed `armed: Vec<Uuid>` so the world consumes booleans per TV and stays arming-policy-free. **Invariant: no session service → empty armed set → nothing gated** (a headless TV with no user session never arms; that's intended). Multiple concurrent user sessions per seat are out of scope (one session service per user socket). Mirror re-publishes are debounced against profile-watch storms.
 - **Gates are additive to `automated`/`automate_when`** — orthogonal checks, never a replacement (avoid double-suppression interplay).
-- The fact is **hydratable**: the PipeWire watcher enumerates the graph at startup, the monitor bootstraps via a portal session-object tree-walk (owner exe + video-node presence heuristic join), the Sunshine poller reads current state — a session-service restart mid-remote-session re-arms.
+- The fact is **hydratable**: the PipeWire watcher enumerates the graph at startup, the monitor bootstraps via a portal session-object tree-walk (owner exe + video-node presence heuristic join), the Sunshine poller reads current state — a session-service restart mid-remote-session re-arms. **Hydration completeness for Sunshine's NvFBC path depends on the poller** (no portal session, no PipeWire node to rediscover); the hook alone cannot re-arm after a restart. Daemon-side: the mirror is a plain put, so the session re-puts current state when the daemon's liveliness token (re)appears — a daemon restart mid-session re-arms without waiting for the next detector edge.
+
+### Event-ordering races (user-flagged; resolved by Phase 0)
+
+The gate only helps if a remote source is seen **before** the events it must override: an RDP-injected unlock could reach `Core::dispatch` before the portal monitor reports the session, and KWin can flip DPMS-on the moment capture or injected input starts. Event stalling is explicitly out — we never delay event dispatch to wait for corroborating signals. Non-stalling mitigation candidates, preference order:
+
+- **Arm on the earliest observable signal**: the monitor arms on `CreateSession` (precedes `Start` and any injected input); the PipeWire watcher treats node *appearance* (even pre-RUNNING) as arming-eligible; Sunshine's hook fires at app launch, before the stream starts.
+- **Retroactive correction** (only if the bench shows real misses): if a wake-ish action fired and a remote source arms within a short window, apply the compensating while-remote action (e.g. screen back off). Bounded window, off by default.
+- Expected orderings favor us for krdp/RustDesk — portal session setup precedes the human typing their password by seconds — but Phase 0 measures instead of assuming.
 
 ## Implementation steps
 
+### 0. Bench measurements (before code freezes the knobs)
+
+User-assisted instrumentation on the real system — timestamped traces (`busctl --user monitor` on the portal namespace, `pw-mon`, `journalctl -f`, `tisvlay watch`, dpms sysfs) across ≥3 connect/disconnect cycles each for krdp, RustDesk, and Sunshine/Moonlight:
+
+- **Ordering**: remote signal (`CreateSession`/`Start`/node-add/hook/poll flip) vs ScreenSaver unlock vs dpms sysfs flip vs idle-resume — sizes the race windows and decides whether retroactive correction ships.
+- **Debounce**: how connect/disconnect edges actually flap during stream negotiation and Moonlight reconnects — decides whether action debounce is merited; if no flapping, the delay fields never enter the schema.
+- **Sunshine poller**: latency vs the prep-cmd hook, wakeup cost at 3–5 s intervals, and the udev per-client-device candidate — keep, demote to opt-in, or drop.
+
+Both outcomes of each question are pre-approved above (Decisions 4 and 6): the freeze is a selection, not a re-draft. Anything Phase 0 drops (delay fields, poller, udev candidate, retroactive correction) routes to `docs/ideas/` with an index entry in `docs/ideas.md`.
+
 ### 1. Wire vocabulary (`crates/tisvlay-wire/src/lib.rs`)
 
-- `keys`: `user_remote_session(site)` → `tisvlay/<site>/user/remote_session` (cached pub, user socket); `remote_session(site)` → `tisvlay/<site>/remote_session` (mirror, system socket); `user_remote_rpc(site, verb)` + `_wild` + `parse_` (RPC family on the user socket).
-- `payload`: `RemoteSessionState { sources: Vec<RemoteSource>, armed: Vec<Uuid> }`, `RemoteSource { kind: RemoteSourceKind, detail: String }`, `RemoteSourceKind { Manual, Sunshine, Logind, Portal, Screencast }`. New cached pubs follow the existing hygiene: `sample_miss_detection` + `publisher_detection`, liveliness declared after serving.
+- `keys` (subsystem-family shape, matching `user/profile/*` and `user/tray/*`): `user_remote_session(site)` → `tisvlay/<site>/user/remote/session` (cached pub on the user socket — the session owns that router, so full cached-pub hygiene applies: advanced pub, `sample_miss_detection` + `publisher_detection`, liveliness declared after serving); `remote_session(site)` → `tisvlay/<site>/remote/session` (**plain put** mirror on the system socket — no cache, no detection, no token; the session's system link is a connect-only peer and served entities do not propagate over it, per the consume-only-peer law); `user_remote_rpc(site, verb)` → `tisvlay/<site>/user/remote/rpc/<verb>` + `_wild` + `parse_` (own queryable family, tray-settings precedent — not folded into the profile rpc queryable).
+- `payload`: `RemoteSessionState { sources: Vec<RemoteSource>, armed: Vec<Uuid> }`, `RemoteSource { kind: RemoteSourceKind, detail: String }`, `RemoteSourceKind { Manual, Sunshine, Logind, Portal, Screencast }`.
 
-### 2. Profile schema (`crates/tisvlay-core/src/config.rs`, 3-edit macro pattern per field)
+### 2. Profile schema (`crates/tisvlay-core/src/config.rs`)
 
-User profile (`UserProfileConfig` :431, macro `fields:[]` :472, `ResolvedUserProfile` + `Default` :497/:514):
-`on_remote_connect`, `on_remote_disconnect` (`Option<EventAction>`, default None), `remote_connect_delay_seconds` (default 10), `remote_disconnect_delay_seconds` (default 1), `remote_capture_arms` (`Option<bool>`, default false), `while_remote_on_session_unlock`, `while_remote_on_lock_wake`, `while_remote_on_idle_resume` (`Option<EventAction>`, default None — flat fields, macro-native merge, and the GUI field-table renders them directly).
+Per-field cost is ~5 hand-edits, not 3: config `Option<T>` field, macro `fields:[]` entry, `Resolved*` field, its `Default` line, and the `resolved_json` projection in the session's `effective` rpc (`tisvlay-session/src/lib.rs:814`) — miss the last one and the GUI/CLI effective view silently omits the field.
 
-System profile (`SystemProfileConfig` :288, macro :341, `ResolvedSystemProfile` :370/:395):
-`while_remote_on_dpms_on`, `while_remote_on_wake`, `while_remote_on_dpms_off` (`Option<EventAction>`, default None). Stock defaults keep every new field neutral — the feature is opt-in via profile editing (PR #34 precedent: novel behavior ships opt-in). No versioning/migration (absence defines v1).
+User profile (`UserProfileConfig` :431, macro :472, `ResolvedUserProfile` + `Default` :497/:514) — 6 fields:
+`on_remote_connect`, `on_remote_disconnect` (`Option<EventAction>`, default None), `remote_screencast_arms` (`Option<bool>`, default false), `while_remote_on_session_unlock`, `while_remote_on_lock_wake`, `while_remote_on_idle_resume` (override fields, default Inherit).
+
+System profile (`SystemProfileConfig` :288, macro :341, `ResolvedSystemProfile` :370/:395) — 2 fields:
+`while_remote_on_dpms_on`, `while_remote_on_wake` (override fields, default Inherit). No `while_remote_on_dpms_off` — overrides are wake-events-only. Never add `on_remote_*` events to the system schema.
+
+**Override representation**: "unset = inherit" does not survive the macro's uniform `Option<T> → T` resolve (`Option<Option<EventAction>>` is a serde wart, and no `EventAction` value means Inherit — `none` means suppress). Use a dedicated override type with an explicit `Inherit` variant as the resolve default (wire token `inherit`, unset field = Inherit via serde default); it must compose with `EventAction`'s untagged bare-string/object duality — exact serde shape decided at implementation. GUI override dropdowns list `inherit` + the five action tokens.
+
+Delay fields are **excluded from v1** (Phase 0-conditional; see Decision 6). Stock defaults keep every new field neutral — the feature is opt-in via profile editing (PR #34 precedent). No versioning/migration (absence defines v1).
 
 ### 3. Session service (`crates/tisvlay-session`)
 
-- New `remote.rs` module: aggregator task owning source state; detectors report over an `mpsc`; recomputes `armed` on source or profile changes (profile watch like `idle_timeouts`); publishes the user-socket fact + system-socket mirror; drives debounced `SessionEvent::RemoteConnect`/`RemoteDisconnect` into `Core` (extend the enum at `lib.rs:48` + `tap_name()`).
-- Detector tasks (each copies the `watch_screensaver` shape — spawn in `main.rs`, report into the aggregator):
-  - **verb**: extend `Core::route` (`lib.rs:577`) with the `user_remote_rpc` family (`set {source, active}` / `status`); inline replies like the profile verbs.
-  - **pipewire**: dedicated OS thread (pipewire-native `ThreadLoop` + `Core` + `Registry`; Context held alongside Core — PR #34 `volume_sync.rs` pattern), registry `global`/`global_remove` + node-info listeners, predicate `media.class == "Stream/Output/Video" && node.name == "kwin_wayland" && state == RUNNING` factored as a pure fn; reports the `Screencast` source; enumerates at startup (hydration).
-  - **monitor**: second zbus connection → `org.freedesktop.DBus.Monitoring.BecomeMonitor` with match rules on the portal path namespace; parses ScreenCast/RemoteDesktop `CreateSession`/`Start`/`Closed` (pure parser fn over message fixtures); sender → `GetConnectionUnixProcessID` on the **main** connection (monitor connections are receive-only) → `/proc/<pid>/exe` → built-in allow-list (`krdpserver`, `rustdesk`, `sunshine`) → `Portal` source; **InputCapture interface ignored unconditionally**; bootstrap tree-walk of `/org/freedesktop/portal/desktop/session/*` joins owner exe × video-node presence.
-  - **sunshine**: 3 s localhost poll of `:47989/serverinfo` gated on a cheap procfs presence check for the sunshine process; `SUNSHINE_SERVER_BUSY` → `Sunshine` source.
+- New `remote.rs` module: aggregator task owning source state; detectors report over an `mpsc`; recomputes `armed` on source or profile changes (profile watch like `idle_timeouts`, re-publish debounced); publishes the user-socket fact (cached) + system-socket mirror (plain put; re-put on daemon liveliness appearance); drives `SessionEvent::RemoteConnect`/`RemoteDisconnect` into `Core` (extend the enum at `lib.rs:48` + `tap_name()`; add match arms in `action_for` :467 mapping to the new resolved fields).
+- **Seam (required by both main.rs and tests)**: extend `SessionStack` (`lib.rs:95`) and `serve()` with the detector-report sender — real detector tasks (spawned in `main.rs` like `watch_screensaver`/`idle_adapter`) and the test Rig both inject through it.
+- `Core` tracks per-TV armed state (new map beside `screen_on`/`drift_at`); the while-remote override gate lives in `action_for`, keyed on `armed(tv)` — additive to the `automated` checks, replace-only semantics (Decision 3).
+- Detector tasks:
+  - **verb**: new queryable on `user_remote_rpc_wild` (own family + callback, tray-settings precedent) serving `set {source, active}` / `status`; inline replies.
+  - **pipewire**: dedicated OS thread (pipewire-native `ThreadLoop` + `Core` + `Registry`; Context held alongside Core), registry `global`/`global_remove` + node-info listeners, predicate `media.class == "Stream/Output/Video" && node.name == "kwin_wayland"` (+ state) factored as a pure fn; reports the `Screencast` source; enumerates at startup (hydration). Keep the glue thin — it is the one CI-untestable strip and pulls against `cov_baseline_lines`.
+  - **monitor**: second zbus connection → `become_monitor` (zbus 5.16 `fdo::MonitoringProxy`, confirmed) with match rules on the portal path namespace; parses ScreenCast/RemoteDesktop `CreateSession`/`Start`/`Closed` (pure parser fn over captured-message fixtures); sender → `get_connection_unix_process_id` on the **main** connection (monitor connections are receive-only) → `/proc/<pid>/exe` → built-in allow-list (`krdpserver`, `rustdesk`, `sunshine`) → `Portal` source; **InputCapture interface ignored unconditionally**; bootstrap tree-walk of `/org/freedesktop/portal/desktop/session/*` joins owner exe × video-node presence.
+  - **sunshine** *(Phase 0-conditional)*: 3 s localhost poll of `:47989/serverinfo` gated on a cheap procfs presence check for the sunshine process (fine here — the session service runs unsandboxed in the user session, unlike the daemon's `ProcSubset` lesson); `SUNSHINE_SERVER_BUSY` → `Sunshine` source.
   - **logind**: system-bus zbus watch of `SessionNew`/`SessionRemoved` + `Remote` property for own-uid sessions → `Logind` source.
-- Gating: in `Core::dispatch`/`action_for` (`lib.rs:426+`), when `armed(tv)`, resolve the while-remote override for Unlock/LockWake/IdleResume before `call_tv` — beside the existing checks, additive to `automated`.
 
 ### 4. Daemon + world
 
-- Daemon: subscribe to the mirror key (greeter pattern, `crates/tisvlay-daemon/src/lib.rs:274`) → forward a new `InEvent::RemoteSession { state }` to the world.
-- World (`crates/tisvlay-world`): `RemoteArmed` resource/marker updated from the event; gate in `dispatch_system_events` (`systems.rs:1959`, beside `is_automated`): for armed TVs, resolve the while-remote system-profile override for `DpmsOn`/`Resume`/`DpmsOff` (unset → normal, `none` → skip). `Sleep`/`Shutdown`/`Startup` arms untouched. Publish the armed projection for clients (`publish_changed` chain, `systems.rs:58`) so the tray/GUI can indicate it.
+- Daemon: bare `declare_subscriber` on the mirror key (greeter pattern, `crates/tisvlay-daemon/src/lib.rs:274`) → forward to the world.
+- World (`crates/tisvlay-world`) — three net-new pieces: an `InEvent::RemoteSession { state }` variant (`events.rs:17` family), a `RemoteArmed(HashSet<Uuid>)` resource + its updater system, and a `resolve_while_remote_override` helper (separate from `profile_event_action` — override fields have no stock floor in the `SystemProfile` resource; unset = inherit is correct). Gate in `dispatch_system_events` (`systems.rs:1959`, beside `is_automated`): for armed TVs, resolve the override for `DpmsOn`/`Resume` (unset → normal, `none` → skip, action → replace). `Sleep`/`Shutdown`/`Startup`/`GreeterIdle`/`GreeterResume`/`DpmsOff` arms untouched. Publish the armed projection for clients (`publish_changed` chain, `systems.rs:58`) so the tray/GUI can indicate it.
 
 ### 5. SDK, CLI, tray
 
-- SDK (`crates/tisvlay/src/lib.rs` + `mirror.rs`): fact in `UserMirror` + `StateWatcher` surface; `SessionClient::remote_session_set/status`.
+- SDK (`crates/tisvlay/src/lib.rs` + `mirror.rs`): `remote_session` slot in `UserMirror` + parse branch in `apply()` + `StateEvent::RemoteSessionChanged`; `SessionClient::remote_session_set/status` (RPC via `Caller` — matching-gated, no-reply retry).
 - CLI (`crates/tisvlay-cli/src/main.rs`): `tisvlay remote-session start|stop|status [--source NAME]` — the documented Sunshine `global_prep_cmd` integration (`do` = start, `undo` = stop; fast, fire-and-forget so a slow hook can't stall Sunshine's launch).
 - Tray (`crates/tisvlay-tray`): read-only "Remote session active" indicator item following the `managed_toggle` shape; quick-toggle deferred.
 
-### 6. GUI (`crates/tisvlay-gui`)
+### 6. GUI (`crates/tisvlay-gui`) — honestly scoped: a multi-file feature, not table rows
 
-- Extend `USER_FIELDS`/`SYSTEM_FIELDS` + `field_label` + read/write match arms (`src/profiles.rs`); new `WHILE_REMOTE_FIELDS` table rendering as a second card below FIELDS in `ui/components/profiles_pane.slint` (uppercase mini-title convention; Switch row for `remote_capture_arms`; same row anatomy — gutter accent, reset glyph, restore-input on wake actions). Field-table tests validate against `*_PROFILE_FIELDS`.
-- Chosen pane (user profile; system profiles get the parallel override card for DPMS/wake rows):
+- **New `FieldKind::Bool`** (`src/profiles.rs:73` — currently Enum/Number only, Bool explicitly reserved): extend `build_field_raw`, `read_*_field`/`set_*_field`, and add a `ProfileFieldRowBool` Slint component (Switch-based) + a new repeater branch (`ui/components/profiles_pane.slint:1007`).
+- **Second field table** `WHILE_REMOTE_FIELDS` + second model/repeater rendering as the WHILE REMOTE ACTIVE card below FIELDS (uppercase mini-title convention), or a merged model with a card-break marker — implementer's choice, but the card visual is the approved design (storyboard below).
+- **Divergence tests**: the existing per-table GUI validation (`profiles.rs:1986/2000`) must assert `USER_FIELDS ∪ WHILE_REMOTE_FIELDS == USER_PROFILE_FIELDS` (and the system-side union) or the new table silently drifts.
+- Override dropdowns list `inherit` + action tokens; `remote_screencast_arms` renders as the Switch row (label "Screen capture arms").
+- New strings via `@tr()` / `pgettext("profile field", …)`; run `just i18n-extract` and commit the `.pot` diff.
+- Chosen pane (user profile; system profiles get the parallel override card for their wake rows):
 
 ```
 USER PROFILE                                    [⧉] [↻]
@@ -95,44 +126,51 @@ USER PROFILE                                    [⧉] [↻]
 │ On idle resume          [ screen_on        ▾ ] ⟳   │
 │ On remote connect       [ none             ▾ ]  NEW│
 │ On remote disconnect    [ none             ▾ ]  NEW│
-│ Remote connect delay    [   10 ▴▾ ] seconds     NEW│
-│ Remote disconnect delay [    1 ▴▾ ] seconds     NEW│
 └────────────────────────────────────────────────────┘
 WHILE REMOTE ACTIVE  ⓘ                            NEW
 ┌────────────────────────────────────────────────────┐
 │ Screen capture arms       ⭘ off   (Switch)         │
 │   · remote apps / hooks / logind always arm        │
 │   · on: any screencast (OBS, tab-share) also arms  │
-│ On session unlock       [ none             ▾ ]     │
-│ On lock wake            [ none             ▾ ]     │
-│ On idle resume          [ none             ▾ ]     │
-│   unset override row = behave as normal            │
+│ On session unlock       [ inherit          ▾ ]     │
+│ On lock wake            [ inherit          ▾ ]     │
+│ On idle resume          [ inherit          ▾ ]     │
+│   inherit = behave as normal                       │
 └────────────────────────────────────────────────────┘
 ```
 
-- New strings via `@tr()` / `pgettext("profile field", …)`; run `just i18n-extract` and commit the `.pot` diff.
+(Delay spinboxes appear here only if Phase 0 ships them.)
 
-### 7. Packaging
+### 7. Packaging & licensing
 
-- `packaging/licensing/deny.toml`: `allow-git = ["https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git"]` with the rationale + revert condition commented at the entry (single canonical comment; the Cargo.toml pin references nothing else).
-- cargo-about/NOTICE pass for the new dependency tree (`just licenses`).
+- `packaging/licensing/deny.toml`: `allow-git = ["https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git"]` with the rationale + revert condition commented **at the entry** (the single canonical home for the 0.1.4/0.1.5 facts; the Cargo.toml pin carries no duplicate rationale).
+- **`packaging/nix/package.nix`: add `cargoLock.outputHashes` for the pipewire-native rev** — `importCargoLock` hard-requires it for git deps; without it `nix build`, `test.nix`, and the NixOS module (the primary deployment path) all fail. Remove on the crates.io revert.
+- Update the two now-stale tripwire sentences asserting the workspace has no git deps: the `deny.toml` `[sources]` header comment and the `docs/licensing.md` pipeline paragraph.
+- `just licenses` / cargo-about pass (three MIT sibling crates; NOTICE/THIRD-PARTY regenerate, no exceptions).
+
+### 8. Docs
+
+- **`docs/remote/detection.md`** (new; sibling to docs/watchers/): the user-facing setup + reference home — Sunshine `global_prep_cmd` JSON snippet, detector matrix (what covers what), false-positive list (lan-mouse, OBS with the switch on), poller opt-out, and the D-Bus note (BecomeMonitor rides the session bus, owner-allowed under both dbus-daemon and dbus-broker — no packaged policy needed).
+- `docs/plans/README.md` active-plans entry (added with this plan's baseline commit).
+- **On-merge migration map** (per README convention): architecture.md gains the two keys in the key-space table + a session-watchers paragraph; CLAUDE.md quirk candidates (InputCapture never arms; monitor connections are receive-only — resolve senders on the main connection; Sunshine is portal-invisible on Nvidia); Phase 0-dropped items + deferred list → `docs/ideas/<topic>.md` with index entries in `docs/ideas.md`; this plan file then deletes.
+- Pre-merge sweep: no plan-phase/PR references or tombstones in code comments.
 
 ## Testing
 
-- **Pure fns** (unit): arming computation (sources × capture-arms policy), debounce edges (immediate-on/delayed-off, action delays), while-remote override resolution, the PipeWire node predicate (struct fixtures), the portal-monitor message parser (captured-message fixtures) — same factoring discipline as `idle_dispatch`/`lock_wake_policy`.
-- **Session integration** (`crates/tisvlay-session/tests/session.rs` `Rig`): inject detector reports through the aggregator channel (test seam) and `SessionEvent::RemoteConnect/Disconnect` via `client.send`; assert mock-TV actions, override suppression of idle-resume/unlock, fact + mirror key contents. Zenoh tests stay `#[tokio::test(flavor = "multi_thread")]`; waits use combined predicates in a single drain.
-- **Daemon/world integration** (`crates/tisvlay-daemon/tests/`): mirror-key consumption → world gate honored for DpmsOn (greeter-test pattern); sleep path unaffected while armed.
-- **Wire/SDK** (`crates/tisvlay/tests/client.rs`): fact hydration from cache, RPC verb round-trip via `Caller` (no-reply retry).
-- **Fakes**: fake logind exists (`tisvlay-test`); a fake portal-monitor source is just the parser fixtures + channel injection; PipeWire is covered by the pure predicate + a manual live check (no fake graph in v1 — documented gap).
+- **Pure fns** (unit): arming computation (sources × screencast-arms policy), immediate-on/delayed-off edges, override resolution (inherit/replace/suppress semantics incl. the replace-only invariant), the PipeWire node predicate (struct fixtures), the portal-monitor message parser (captured-message fixtures, **with capture provenance — xdp version — recorded beside them**) — same factoring discipline as `idle_dispatch`/`lock_wake_policy`.
+- **Session integration** (`crates/tisvlay-session/tests/session.rs` `Rig`): inject detector reports through the new `SessionStack` report-channel seam and `SessionEvent::RemoteConnect/Disconnect` via `client.send`; assert mock-TV actions, override suppression of idle-resume/unlock, fact + mirror key contents, re-put on daemon liveliness. Zenoh tests stay `#[tokio::test(flavor = "multi_thread")]`; waits use combined predicates in a single drain.
+- **Daemon/world integration** (`crates/tisvlay-daemon/tests/`): mirror-key consumption → world gate honored for DpmsOn (greeter-test pattern); sleep path unaffected while armed; empty-armed-set invariant.
+- **Wire/SDK** (`crates/tisvlay/tests/client.rs`): fact hydration from the user-socket cache, RPC verb round-trip via `Caller`.
+- **Fakes**: fake logind exists (`tisvlay-test`); the portal monitor is covered by parser fixtures + channel injection; PipeWire has no fake in v1 — the pure predicate carries the logic, the thin glue is verified live (documented gap; candidate for docs/ideas/).
 
 ## Live verification (user-assisted, real hardware)
 
-1. krdp session from another machine: fact arms (`portal:krdpserver` + `screencast`), unlock/idle-resume/DPMS-on suppressed per overrides, TV stays off; disconnect → disarm after delay, `on_remote_disconnect` action fires.
+1. krdp session from another machine: fact arms (`portal:krdpserver` + `screencast`), unlock/idle-resume/DPMS-on suppressed per overrides, TV stays off; disconnect → disarm, `on_remote_disconnect` action fires.
 2. RustDesk: same expectations via portal attribution.
-3. Sunshine + Moonlight (NvFBC path): arms via `/serverinfo` poller and/or the documented prep-cmd hook; confirm Moonlight input trips ext-idle-notify unsuppressed *before* the feature and suppressed after.
-4. False-positive probes: OBS recording and a browser tab-share with `remote_capture_arms` off (no arming) and on (arms); lan-mouse present throughout (must never arm); Plasma thumbnails/Overview spot-check for transient `Stream/Output/Video` nodes.
-5. `tisvlay remote-session start` / `stop` round-trip; `tisvlay watch` shows fact transitions; session-service restart mid-krdp-session re-arms (hydration).
+3. Sunshine + Moonlight (NvFBC path): arms via the prep-cmd hook and/or poller; confirm Moonlight input trips ext-idle-notify unsuppressed *before* the feature and suppressed after.
+4. False-positive probes: OBS recording and a browser tab-share with `remote_screencast_arms` off (no arming) and on (arms); lan-mouse present throughout (must never arm); Plasma thumbnails/Overview spot-check for transient `Stream/Output/Video` nodes.
+5. `tisvlay remote-session start` / `stop` round-trip; fact transitions visible via the mirror on `tisvlay watch` (system socket) and via `--user-socket` for the user-socket fact; session-service restart mid-krdp-session re-arms (hydration); daemon restart mid-session re-arms (liveliness re-put).
 
-## Deferred (file into docs/ideas/ on merge)
+## Deferred (docs/ideas/ with index entries, on merge)
 
-Tray quick-toggle + richer indicator; GUI editing of the portal allow-list; GNOME portability (mutter node names, first-class Mutter APIs); Steam Remote Play / Parsec detectors; configurable Sunshine endpoint; greeter-session remote interplay; PipeWire fake for integration tests; journald-tail detectors (rejected for brittleness — revisit only if a target app loses its signal).
+Tray quick-toggle + richer indicator; GUI editing of the portal allow-list; GNOME portability (mutter node names, first-class Mutter APIs); Steam Remote Play / Parsec detectors; configurable Sunshine endpoint; greeter-session remote interplay; PipeWire fake for integration tests; journald-tail detectors (rejected for brittleness — revisit only if a target app loses its signal); plus whatever Phase 0 drops (delay fields, poller, udev candidate, retroactive correction).

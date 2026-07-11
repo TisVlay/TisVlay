@@ -15,6 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
+- [`remote-session-awareness.md`](remote-session-awareness.md) — a per-user "remote session active" fact (Sunshine/RustDesk/krdp detection + hooks) with profile policy to suppress or redirect TV wake actions while remoted in; bench-first knobs for debounce, poller fate, and event-ordering races.
 - [`routable-dials.md`](routable-dials.md) — the connect budget only spends against a network that exists: dials defer while the TV's route is absent, closing the resume/boot carrier race for any NIC cycle time.
 - [`wake-screen-primary-input.md`](wake-screen-primary-input.md) — **implemented**; reliable screen elevation (pre-flight wake, root parity), the desired-state latch, and primary-input restoration on automation wakes (CEC selects the requesting port; WoL resumes the last input). Listed until the PR #106 soak confirms it in the field.
 - [`gui-state-consistency.md`](gui-state-consistency.md) — **implemented** (matching-gated `caller::Caller`, availability single-sourcing); listed until the PR #106 soak confirms it in the field.
