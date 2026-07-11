@@ -875,6 +875,158 @@ async fn remote_fact_and_mirror_carry_sources_and_armed() {
     }
 }
 
+/// The exact QA failure shape: a source arms while the session knows no
+/// TVs yet (empty armed set), then a TV hydrates over the fleet mirror —
+/// the arming edge that fires on TV *arrival* (not on a source or profile
+/// change) must carry both the user-socket fact and the system-socket
+/// mirror to the full armed set.
+#[tokio::test(flavor = "multi_thread")]
+async fn armed_converges_when_tv_hydrates_after_arming() {
+    let rig = rig().await;
+
+    // The user-socket fact (cached) and the system-socket mirror (plain
+    // put), subscribed before any TV exists.
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    let mirror = rig
+        .client
+        .declare_subscriber(keys::remote_session(&rig.site))
+        .await
+        .unwrap();
+
+    // Arm with no TV known: the source is live but the armed set is empty.
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", true)),
+        "core gone"
+    );
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"]
+                .as_array()
+                .is_some_and(|src| src.iter().any(|s| s["kind"] == "manual"))
+                && v["armed"] == json!([])
+        }
+    })
+    .await;
+
+    // Now a TV arrives — its meta hydrates into the session over the fleet
+    // mirror, and the arming edge on TV arrival must move the armed set.
+    let tv = add_tv(&rig, "Den", "mock://late-tv").await;
+    let armed_ok = |v: &Value| {
+        v["sources"]
+            .as_array()
+            .is_some_and(|s| s.iter().any(|src| src["kind"] == "manual"))
+            && v["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    };
+    // The cached fact hydrates from history — assert it converges.
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && armed_ok(&payload_json(s))
+    })
+    .await;
+    // The mirror is a plain put racing subscriber interest; the daemon
+    // liveliness re-put and the meta recompute both re-mirror, so a drain
+    // catches the converged set.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(deadline, mirror.recv_async()).await {
+            Ok(Ok(sample)) if armed_ok(&payload_json(&sample)) => break,
+            Ok(Ok(_)) => {}
+            _ => panic!("mirror never converged to the armed TV"),
+        }
+    }
+}
+
+/// The outage variant: the session starts before its system daemon, so
+/// its first mirror put (issued while arming with the link down) is
+/// silently dropped. When the daemon comes up and a TV hydrates, the
+/// daemon-liveliness re-put and the TV-arrival recompute must compose so
+/// the system-socket mirror still converges to the full armed set —
+/// regardless of which lands first on link recovery.
+#[tokio::test(flavor = "multi_thread")]
+async fn armed_survives_a_system_link_outage_at_arm_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let system_socket = dir.path().join("sys.sock");
+    let user_socket = dir.path().join("user.sock");
+
+    // The session boots first, dialing a socket no daemon is listening on
+    // yet — the resilient link retries in the background.
+    let stack = tisvlay_session::serve(SessionOptions {
+        system_socket: system_socket.clone(),
+        user_socket: user_socket.clone(),
+        site: "t".into(),
+        store: None,
+    })
+    .await
+    .unwrap();
+
+    // Arm while the link is down: the mirror put is dropped (no daemon),
+    // and no TV is known, so the armed set is empty at this point.
+    assert!(
+        stack.remote.report(RemoteReport::manual("manual", true)),
+        "core gone"
+    );
+    // Let the dropped put(s) flush before the daemon exists.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Bring the daemon up on the socket the session is dialing.
+    let (connector, discovery, _mock) = new_test_parts();
+    let _daemon = tisvlay_daemon::serve(
+        &system_socket,
+        "t",
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+
+    // A system-socket client observes the mirror and adds a TV.
+    let client = zenoh::open(bootstrap::client_config(&system_socket).unwrap())
+        .await
+        .unwrap();
+    let mirror = client
+        .declare_subscriber(keys::remote_session("t"))
+        .await
+        .unwrap();
+    let tv = {
+        let body = serde_json::to_value(rpc::AddTv {
+            id: None,
+            name: "Den".into(),
+            vendor: "mock".into(),
+            managed: true,
+            config: json!({ "address": "mock://outage" }),
+        })
+        .unwrap();
+        let ok = call(&client, &keys::manager_rpc("t", "add-tv"), body)
+            .await
+            .expect("add-tv ok");
+        Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap()
+    };
+
+    // Once the link recovers, the mirror must converge to the armed TV —
+    // the regression this guards is the stale-snapshot re-put (empty armed)
+    // never being corrected by the TV-arrival edge.
+    let armed_tv = |v: &Value| {
+        v["armed"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(deadline, mirror.recv_async()).await {
+            Ok(Ok(sample)) if armed_tv(&payload_json(&sample)) => break,
+            Ok(Ok(_)) => {}
+            _ => panic!("mirror never converged to the armed TV after link recovery"),
+        }
+    }
+}
+
 /// The verb rpc round-trips through the Caller on the user socket:
 /// `set { source, active }` arms, `status` reflects it.
 #[tokio::test(flavor = "multi_thread")]

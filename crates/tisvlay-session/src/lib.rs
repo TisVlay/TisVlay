@@ -405,10 +405,15 @@ impl Core {
                 sample = daemon_alive_sub.recv_async() => match sample {
                     Err(_) => return,
                     Ok(sample) => {
-                        // The token's (re)appearance re-puts the mirror;
-                        // its disappearance needs nothing (a re-put lands
-                        // when it returns).
+                        // The token's (re)appearance re-learns the current
+                        // fact; its disappearance needs nothing (a re-put
+                        // lands when it returns). Recompute first so the
+                        // re-put folds in any TVs hydrated by now, then
+                        // mirror unconditionally: a put issued while the
+                        // link was down was silently dropped, so re-send it
+                        // even when the armed set did not move.
                         if sample.kind() == SampleKind::Put {
+                            self.recompute_remote_armed().await;
                             self.mirror_remote().await;
                         }
                     }
@@ -438,7 +443,10 @@ impl Core {
         }
         self.recompute_idle();
         // The fleet changed — a new TV (or a profile shift reflected in
-        // its meta) can move the armed set.
+        // its meta) can move the armed set. TV hydration can postdate a
+        // detector report on a cold start (the system link's first connect
+        // may fail and reconnect after a source is already live), so this
+        // is the edge that arms a just-learned TV.
         self.recompute_remote_armed().await;
     }
 

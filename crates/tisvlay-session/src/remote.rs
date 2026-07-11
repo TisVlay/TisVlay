@@ -277,6 +277,27 @@ mod tests {
         assert_eq!(armed, vec![a, b]);
     }
 
+    /// The same live sources arm nothing while the TV set is empty and the
+    /// full set once TVs appear — the recompute must key on the TV set, not
+    /// only on a source or profile change, because TV hydration can postdate
+    /// a source going live on a cold start.
+    #[test]
+    fn compute_armed_tracks_a_tv_set_that_grows_under_static_sources() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let sources = [source(RemoteSourceKind::Manual)];
+        let resolve = |_: &Uuid| ResolvedUserProfile::default();
+
+        // No TVs known yet: an attributed source arms nothing.
+        assert_eq!(
+            compute_armed([].iter(), &sources, resolve),
+            Vec::<Uuid>::new()
+        );
+        // The same sources, once the TVs hydrate, arm every one of them.
+        assert_eq!(compute_armed([a].iter(), &sources, resolve), vec![a]);
+        assert_eq!(compute_armed([a, b].iter(), &sources, resolve), vec![a, b]);
+    }
+
     #[test]
     fn sources_set_is_idempotent_and_toggles() {
         let mut sources = RemoteSources::default();
