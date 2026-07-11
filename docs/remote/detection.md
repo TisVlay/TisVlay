@@ -41,6 +41,8 @@ Sunshine publishes no D-Bus interface and no push/event API, and its default NvF
 
 The CLI verb is fast and fire-and-forget by design, so a slow or stalled hook cannot delay Sunshine's stream launch. The hook fires at application launch, ahead of the stream and any injected input, which is the ordering the gate needs.
 
+Sunshine spawns hook commands outside the user's shell environment, so unpackaged setups (a dev checkout, a manually installed CLI) must use an absolute path to the `tisvlay` binary and pass the socket flags explicitly; edits to `global_prep_cmd` take effect on the next Sunshine restart. The hook brackets the app's lifetime, not the client's: a Moonlight reconnect to a still-running app re-runs nothing (the source is already armed), and the source disarms when the app quits, not when a client merely disconnects.
+
 A localhost `/serverinfo` poller (the unauthenticated `SUNSHINE_SERVER_BUSY`/`_FREE` endpoint) is a candidate zero-config fallback that would also re-arm a mid-session restart of the NvFBC path — the hook alone cannot, because there is no portal session or PipeWire node to rediscover. Whether it ships, and at what poll interval, is a pending decision gated on bench measurement of its latency and wakeup cost versus the hook.
 
 ## False positives and filtering
