@@ -229,10 +229,15 @@ export global Profiles {
     /// `UserProfileChanged` signal echo. Empty when no profile is
     /// selected.
     in property <[ProfileFieldEntry]> editor-fields;
+    /// The WHILE REMOTE ACTIVE card's rows for the selected profile —
+    /// the while-remote overrides (plus the screencast-arms switch on
+    /// user profiles). Primed and refreshed alongside `editor-fields`;
+    /// empty when no profile is selected.
+    in property <[ProfileFieldEntry]> editor-remote-fields;
     /// True when the selected profile has at least one
-    /// locally-set field — drives the "Reset all" button's
-    /// enabled state. Greys out when there's nothing to reset
-    /// so the affordance reads as inert rather than performing
-    /// a no-op round-trip.
+    /// locally-set field (across both cards) — drives the "Reset
+    /// all" button's enabled state. Greys out when there's nothing
+    /// to reset so the affordance reads as inert rather than
+    /// performing a no-op round-trip.
     in property <bool> editor-can-reset-all: false;
 }

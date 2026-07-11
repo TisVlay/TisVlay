@@ -296,6 +296,28 @@ pub async fn serve(
             }
         }
     });
+    // The remote-session fact arrives as a plain-put mirror from the
+    // session service (the session's system link is a connect-only peer,
+    // so the fact rides a put, not a served entity). Forward the computed
+    // armed set into the world, which gates the wake-ish system events.
+    let remote_sub = session
+        .declare_subscriber(tisvlay_wire::keys::remote_session(site))
+        .await
+        .map_err(|e| anyhow!("declare remote session subscriber: {e}"))?;
+    let remote_world = world.clone();
+    tokio::spawn(async move {
+        let sub = remote_sub;
+        while let Ok(sample) = sub.recv_async().await {
+            let Ok(state) = serde_json::from_slice::<tisvlay_wire::payload::RemoteSessionState>(
+                &sample.payload().to_bytes(),
+            ) else {
+                continue;
+            };
+            if !remote_world.send(InEvent::RemoteSession { armed: state.armed }) {
+                return;
+            }
+        }
+    });
     // Liveliness comes last: a client that observes the daemon alive
     // must find every rpc queryable already declared.
     bridge_declared

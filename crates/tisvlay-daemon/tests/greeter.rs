@@ -161,6 +161,24 @@ async fn put_greeter_idle(w: &Wire, idle: bool) {
         .unwrap();
 }
 
+/// Publish the remote-session mirror the way the session service does —
+/// a plain put on the system-socket mirror key carrying the computed
+/// armed set.
+async fn put_remote_session(w: &Wire, armed: &[Uuid]) {
+    let state = tisvlay_wire::payload::RemoteSessionState {
+        sources: Vec::new(),
+        armed: armed.to_vec(),
+    };
+    w.client
+        .put(
+            keys::remote_session(&w.site),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .encoding(Encoding::APPLICATION_JSON)
+        .await
+        .unwrap();
+}
+
 /// The full greeter loop: the timeout key tracks profile assignments, and
 /// idle/resume puts drive the stock `on_idle_timeout`/`on_idle_resume`
 /// actions.
@@ -294,6 +312,46 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
     put_greeter_idle(&w, true).await;
     wait_tv_state(&sub, &w.site, tv, "state/power", |v| {
         v["state"] == "screenoff"
+    })
+    .await;
+}
+
+/// The remote-session mirror seam: a plain-put armed set on the system
+/// socket flows through the daemon's subscriber into the world, flipping
+/// the published `remote_armed` projection — and disarming clears it.
+/// (The gate's effect on DPMS-on/resume dispatch is covered by the
+/// world's dispatch tests, which can inject those events directly.)
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_session_mirror_flips_the_armed_projection() {
+    let w = wire().await;
+    let tv = add_tv(&w, "Remote", "mock://remote").await;
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    // Combined drain: link up and remote_armed starts false (the meta's
+    // initial publish), so a sequential wait could miss the sample.
+    let (mut connected, mut unarmed) = (false, false);
+    recv_until(&sub, |s| {
+        if let Some((id, path)) = keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            && id == tv
+        {
+            let value = payload_json(s);
+            connected |= path == "state/link" && value["connected"] == true;
+            unarmed |= path == "meta/config" && value["remote_armed"] == false;
+        }
+        connected && unarmed
+    })
+    .await;
+
+    // Arm via the mirror → the projection flips true.
+    put_remote_session(&w, &[tv]).await;
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == true
+    })
+    .await;
+
+    // An empty set disarms.
+    put_remote_session(&w, &[]).await;
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == false
     })
     .await;
 }

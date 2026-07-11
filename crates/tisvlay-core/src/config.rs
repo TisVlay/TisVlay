@@ -418,6 +418,18 @@ pub struct SystemProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_resume: Option<EventAction>,
 
+    /// While a remote session is armed, override the DPMS-on action.
+    /// Unset = inherit the normal action; `none` = suppress. Overrides
+    /// are wake-events-only and replace-only — they never originate an
+    /// action an unarmed TV wouldn't take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub while_remote_on_dpms_on: Option<WhileRemoteOverride>,
+
+    /// While armed, override the resume (wake) action. Same
+    /// inherit/suppress/replace semantics as `while_remote_on_dpms_on`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub while_remote_on_wake: Option<WhileRemoteOverride>,
+
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automate_when: Option<AutomateWhen>,
@@ -438,6 +450,8 @@ profile_plumbing! {
         idle_timeout_seconds,
         on_idle_timeout,
         on_idle_resume,
+        while_remote_on_dpms_on,
+        while_remote_on_wake,
         automate_when,
     ],
 }
@@ -473,6 +487,10 @@ pub struct ResolvedSystemProfile {
     pub on_idle_timeout: EventAction,
     /// Action when greeter activity resumes after idle.
     pub on_idle_resume: EventAction,
+    /// While armed, the DPMS-on override.
+    pub while_remote_on_dpms_on: WhileRemoteOverride,
+    /// While armed, the resume (wake) override.
+    pub while_remote_on_wake: WhileRemoteOverride,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
 }
@@ -496,6 +514,10 @@ impl Default for ResolvedSystemProfile {
             idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff.into(),
             on_idle_resume: SessionAction::ScreenOn.into(),
+            // Remote awareness is opt-in: the wake overrides inherit
+            // until a profile edits them.
+            while_remote_on_dpms_on: WhileRemoteOverride::INHERIT,
+            while_remote_on_wake: WhileRemoteOverride::INHERIT,
             automate_when: AutomateWhen::Always,
         }
     }
@@ -1974,6 +1996,44 @@ ip = "192.168.1.101"
         // DPMS actions mirror the host display by default.
         assert_eq!(resolved.on_dpms_off, SessionAction::ScreenOff);
         assert_eq!(resolved.on_dpms_on, SessionAction::ScreenOn);
+        // Remote awareness is opt-in: both wake overrides inherit.
+        assert_eq!(
+            resolved.while_remote_on_dpms_on,
+            WhileRemoteOverride::INHERIT
+        );
+        assert_eq!(resolved.while_remote_on_wake, WhileRemoteOverride::INHERIT);
+    }
+
+    #[test]
+    fn system_profile_while_remote_overrides_round_trip() {
+        // The two system-side override fields survive a TOML round-trip;
+        // an unset field defaults to Inherit.
+        let toml_str = r#"
+name = "gated"
+while_remote_on_dpms_on = "none"
+while_remote_on_wake = { action = "screen_on", restore_input = true }
+"#;
+        let body: SystemProfileConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            body.while_remote_on_dpms_on,
+            Some(WhileRemoteOverride::from(SessionAction::None))
+        );
+        assert_eq!(
+            body.while_remote_on_wake,
+            Some(WhileRemoteOverride::from(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+            }))
+        );
+        // Unset resolves to Inherit through the resolve chain.
+        assert_eq!(
+            body.resolve().while_remote_on_dpms_on,
+            WhileRemoteOverride::from(SessionAction::None)
+        );
+
+        let text = toml::to_string(&body).unwrap();
+        let reparsed: SystemProfileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(reparsed, body);
     }
 
     #[test]

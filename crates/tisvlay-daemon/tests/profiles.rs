@@ -321,6 +321,8 @@ async fn defaults_and_effective_expose_field_resolution() {
         "on_idle_timeout": "screen_off",
         "on_idle_resume": "screen_on",
         "idle_timeout_seconds": 0,
+        "while_remote_on_dpms_on": "inherit",
+        "while_remote_on_wake": "inherit",
         "automate_when": "always",
     });
 
@@ -386,6 +388,8 @@ async fn defaults_and_effective_expose_field_resolution() {
             "on_idle_timeout": "screen_off",
             "on_idle_resume": "screen_on",
             "idle_timeout_seconds": 300,
+            "while_remote_on_dpms_on": "inherit",
+            "while_remote_on_wake": "inherit",
             "automate_when": "always",
         })
     );

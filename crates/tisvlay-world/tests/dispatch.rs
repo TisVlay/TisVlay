@@ -6,8 +6,50 @@ mod support;
 use std::time::{Duration, Instant};
 
 use support::*;
-use tisvlay_core::PowerState;
-use tisvlay_world::{Command, InEvent, SystemEvent};
+use tisvlay_core::{PowerState, SessionAction, SystemProfileConfig, WhileRemoteOverride};
+use tisvlay_world::{Command, InEvent, ProfileRecord, SystemEvent};
+use uuid::Uuid;
+
+/// Add a system profile carrying the two while-remote overrides, assign
+/// it to `tv`, and return the profile id. The overrides ride otherwise
+/// stock fields so DPMS-on / resume still resolve to their normal
+/// actions when the TV is unarmed.
+async fn assign_remote_profile(
+    effects: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::WireEffect>,
+    client: &tisvlay_world::WorldClient,
+    tv: Uuid,
+    on_dpms_on: WhileRemoteOverride,
+    on_wake: WhileRemoteOverride,
+) -> Uuid {
+    let profile = Uuid::new_v4();
+    client.command(Command::AddProfile {
+        record: Box::new(ProfileRecord {
+            id: profile,
+            body: SystemProfileConfig {
+                name: "Remote".into(),
+                while_remote_on_dpms_on: Some(on_dpms_on),
+                while_remote_on_wake: Some(on_wake),
+                ..Default::default()
+            },
+        }),
+        reply: Some(90),
+    });
+    collect_until(effects, |e| reply_to(e, 90)).await;
+    client.command(Command::SetSystemProfile {
+        id: tv,
+        profile: Some(profile),
+        reply: Some(91),
+    });
+    collect_until(effects, |e| reply_to(e, 91)).await;
+    profile
+}
+
+/// Mirror the session service's armed set into the world.
+fn arm(client: &tisvlay_world::WorldClient, armed: &[Uuid]) {
+    client.send(InEvent::RemoteSession {
+        armed: armed.to_vec(),
+    });
+}
 
 fn cec_like_config(address: &str) -> toml::Value {
     let mut table = toml::value::Table::new();
@@ -473,6 +515,203 @@ async fn escalation_reasserts_on_reconnect_then_gives_up() {
         4,
         "send + retry on each side of the reconnect"
     );
+}
+
+/// While a remote session arms the TV, a `Replace(none)` DPMS-on
+/// override suppresses the wake the empty room doesn't want: the panel,
+/// blanked by DPMS-off, stays dark across the DPMS-on. Disarming lets
+/// the next DPMS-on light it normally.
+#[tokio::test]
+async fn while_remote_override_suppresses_dpms_on() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://supp").await;
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        WhileRemoteOverride::from(SessionAction::None),
+        WhileRemoteOverride::INHERIT,
+    )
+    .await;
+
+    // Blank via DPMS-off (unarmed, the normal screen_off), then arm.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+    arm(&client, &[id]);
+
+    // DPMS-on is suppressed: no power change follows. Prove it by
+    // driving a disarm + second DPMS-on and catching the panel going
+    // active only then — a suppressed first pass would have lit it.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+
+    arm(&client, &[]);
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
+/// A `Replace(screen_off)` override swaps the wake for a blank: a
+/// resume that would normally power the TV on instead drives it dark
+/// while armed (the compensating action).
+#[tokio::test]
+async fn while_remote_override_replaces_resume_action() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://repl").await;
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        WhileRemoteOverride::INHERIT,
+        WhileRemoteOverride::from(SessionAction::ScreenOff),
+    )
+    .await;
+    arm(&client, &[id]);
+
+    // Stock on_wake is power_on; the override replaces it with
+    // screen_off, so Resume drives the panel dark instead of waking it.
+    client.send(InEvent::System {
+        event: SystemEvent::Resume,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+}
+
+/// An unset override inherits: an armed TV whose profile leaves the
+/// DPMS-on override at `inherit` takes the normal screen_on.
+#[tokio::test]
+async fn while_remote_override_inherit_takes_normal_action() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://inh").await;
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        WhileRemoteOverride::INHERIT,
+        WhileRemoteOverride::INHERIT,
+    )
+    .await;
+
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+    arm(&client, &[id]);
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
+/// Sleep is never gated, even with a suppress override present and the
+/// TV armed: the off-going power-off always lands (sleep/shutdown gating
+/// is forbidden). Only the wake events (DpmsOn/Resume) consult overrides.
+#[tokio::test]
+async fn sleep_is_unaffected_while_armed() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://sleep").await;
+    // Suppress overrides on both wake events — none of which touch Sleep.
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        WhileRemoteOverride::from(SessionAction::None),
+        WhileRemoteOverride::from(SessionAction::None),
+    )
+    .await;
+    arm(&client, &[id]);
+
+    // Stock on_sleep is power_off — the connection ends as the TV powers
+    // down. Nothing about the armed state or the wake-event overrides
+    // suppresses it.
+    client.send(InEvent::System {
+        event: SystemEvent::Sleep,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+}
+
+/// The no-session invariant: an empty armed set gates nothing. A TV
+/// whose profile suppresses DPMS-on still wakes normally while unarmed —
+/// a headless TV with no user session never has its wakes overridden.
+#[tokio::test]
+async fn empty_armed_set_gates_nothing() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://none").await;
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        WhileRemoteOverride::from(SessionAction::None),
+        WhileRemoteOverride::INHERIT,
+    )
+    .await;
+    // Never armed (an empty set is also the default).
+
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
+/// The armed projection: the mirrored set flips `meta.remote_armed` on
+/// the published `meta/config` payload, and disarming clears it.
+#[tokio::test]
+async fn remote_armed_projection_tracks_the_set() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://proj").await;
+
+    arm(&client, &[id]);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/meta/config").is_some_and(|p| p["remote_armed"] == true)
+    })
+    .await;
+
+    arm(&client, &[]);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/meta/config").is_some_and(|p| p["remote_armed"] == false)
+    })
+    .await;
 }
 
 /// Primary-input restore: a restore-flagged automation wake lands the

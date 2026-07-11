@@ -1079,6 +1079,84 @@ component ProfileDetail inherits Rectangle {
                             }
                         }
                     }
+
+                    // WHILE REMOTE ACTIVE card — the while-remote
+                    // overrides (and, user-side, the screencast-arms
+                    // switch). Same surface + full-bleed row treatment as
+                    // the FIELDS card; the uppercase mini-title + ⓘ scope
+                    // the rows so their labels read bare ("On session
+                    // unlock" rather than "While remote: …").
+                    VerticalLayout {
+                        spacing: 0;
+                        HorizontalLayout {
+                            padding-left: 2px;
+                            padding-bottom: Design.gap-stack;
+                            spacing: Design.gap-form;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: @tr("WHILE REMOTE ACTIVE");
+                                    color: Theme.text-dim;
+                                    font-size: Design.font-mini;
+                                    font-weight: 600;
+                                    letter-spacing: 0.6px;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                ContextualHelpButton {
+                                    text: @tr("While a remote session is active, override these events. Inherit behaves as normal; none suppresses the action. Overrides only ever replace an action that would fire — never wake the TV for an empty room.");
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Rectangle {
+                            background: Theme.surface;
+                            border-color: Theme.border;
+                            border-width: Design.border-thin;
+                            border-radius: Design.radius-card;
+
+                            VerticalLayout {
+                                width: 100%;
+                                padding-top: Design.pad-card - Design.gap-stack;
+                                padding-bottom: Design.pad-card - Design.gap-stack;
+                                spacing: 0;
+                                alignment: start;
+                                for entry[i] in Profiles.editor-remote-fields: VerticalLayout {
+                                    if entry.kind == "enum": ProfileFieldRowEnum {
+                                        entry: entry;
+                                    }
+                                    if entry.kind == "number": ProfileFieldRowNumber {
+                                        entry: entry;
+                                    }
+                                    if entry.kind == "bool": ProfileFieldRowBool {
+                                        entry: entry;
+                                    }
+                                    // Helper copy under the screencast-arms
+                                    // switch: what always arms vs. what the
+                                    // switch adds.
+                                    if entry.field-name == "remote_screencast_arms": VerticalLayout {
+                                        padding-left: Design.gap-row;
+                                        padding-right: Design.gap-row;
+                                        padding-bottom: Design.gap-stack;
+                                        spacing: 2px;
+                                        Text {
+                                            text: @tr("Remote apps, hooks and remote logins always arm.");
+                                            color: Theme.text-dim;
+                                            font-size: Design.font-meta;
+                                            wrap: word-wrap;
+                                        }
+                                        Text {
+                                            text: @tr("On: any screen capture (OBS, browser tab-share) also arms.");
+                                            color: Theme.text-dim;
+                                            font-size: Design.font-meta;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

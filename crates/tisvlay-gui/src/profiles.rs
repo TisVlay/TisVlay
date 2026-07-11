@@ -273,6 +273,14 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
             class: EnumClass::SessionAction,
         },
     },
+];
+
+/// User-profile while-remote fields — the second editor card (WHILE
+/// REMOTE ACTIVE), rendered below the main FIELDS card. The screencast
+/// arming switch leads, followed by the three wake-event overrides. The
+/// union of this and [`USER_FIELDS`] is validated against
+/// `tisvlay_core::USER_PROFILE_FIELDS`.
+pub(crate) const USER_WHILE_REMOTE_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "remote_screencast_arms",
         kind: FieldKind::Bool,
@@ -300,6 +308,51 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
     },
 ];
 
+/// System-profile while-remote fields — the parallel WHILE REMOTE ACTIVE
+/// card on the system pane. Only the two wake-event overrides (no arming
+/// switch: arming is a user-session policy question). The union of this
+/// and [`SYSTEM_FIELDS`] is validated against
+/// `tisvlay_core::SYSTEM_PROFILE_FIELDS`.
+pub(crate) const SYSTEM_WHILE_REMOTE_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        wire: "while_remote_on_dpms_on",
+        kind: FieldKind::Enum {
+            options: WHILE_REMOTE_OVERRIDE_OPTIONS,
+            class: EnumClass::WhileRemoteOverride,
+        },
+    },
+    FieldSpec {
+        wire: "while_remote_on_wake",
+        kind: FieldKind::Enum {
+            options: WHILE_REMOTE_OVERRIDE_OPTIONS,
+            class: EnumClass::WhileRemoteOverride,
+        },
+    },
+];
+
+/// The main-card field table for an editor kind.
+fn main_fields(kind: EditorKind) -> &'static [FieldSpec] {
+    match kind {
+        EditorKind::System => SYSTEM_FIELDS,
+        EditorKind::User => USER_FIELDS,
+    }
+}
+
+/// The WHILE REMOTE ACTIVE card's field table for an editor kind.
+fn while_remote_fields(kind: EditorKind) -> &'static [FieldSpec] {
+    match kind {
+        EditorKind::System => SYSTEM_WHILE_REMOTE_FIELDS,
+        EditorKind::User => USER_WHILE_REMOTE_FIELDS,
+    }
+}
+
+/// Every field an editor kind renders, across both cards — the lookup
+/// surface for kind/resolve queries that don't care which card a field
+/// lives in.
+fn all_fields(kind: EditorKind) -> impl Iterator<Item = &'static FieldSpec> {
+    main_fields(kind).iter().chain(while_remote_fields(kind))
+}
+
 /// Translated label for `spec.wire`. Wrapped in `pgettext` with a
 /// "profile field" context so the .pot extractor sees the literal
 /// English copy and translators get a disambiguating context (the
@@ -326,12 +379,14 @@ fn field_label(wire: &str) -> String {
         "unlocked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (unlocked)"),
         "on_remote_connect" => pgettext("profile field", "On remote connect"),
         "on_remote_disconnect" => pgettext("profile field", "On remote disconnect"),
+        // The while-remote override labels read bare: the WHILE REMOTE
+        // ACTIVE card title already scopes them.
         "remote_screencast_arms" => pgettext("profile field", "Screen capture arms"),
-        "while_remote_on_session_unlock" => {
-            pgettext("profile field", "While remote: on session unlock")
-        }
-        "while_remote_on_lock_wake" => pgettext("profile field", "While remote: on lock wake"),
-        "while_remote_on_idle_resume" => pgettext("profile field", "While remote: on idle resume"),
+        "while_remote_on_session_unlock" => pgettext("profile field", "On session unlock"),
+        "while_remote_on_lock_wake" => pgettext("profile field", "On lock wake"),
+        "while_remote_on_idle_resume" => pgettext("profile field", "On idle resume"),
+        "while_remote_on_dpms_on" => pgettext("profile field", "On display wake"),
+        "while_remote_on_wake" => pgettext("profile field", "On system resume"),
         // Unknown wire keys flow through verbatim â should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -571,6 +626,10 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
             .on_idle_resume
             .map(|a| session_action_token(a.action())),
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
+        "while_remote_on_dpms_on" => body
+            .while_remote_on_dpms_on
+            .map(while_remote_override_token),
+        "while_remote_on_wake" => body.while_remote_on_wake.map(while_remote_override_token),
         "automate_when" => body.automate_when.map(automate_when_token),
         _ => None,
     }
@@ -922,51 +981,80 @@ fn push_editor_rows(
     kind: EditorKind,
     uuid: Uuid,
 ) {
-    let (raw, can_reset_all, same_profile) = {
+    let (main_raw, remote_raw, can_reset_all, same_profile) = {
         let mut state = editor.lock();
-        let (raw, can_reset_all) = match kind {
-            EditorKind::System => build_system_rows(&state.system, uuid),
-            EditorKind::User => build_user_rows(&state.user, uuid),
+        // Both cards resolve off the same layer state; `can-reset-all`
+        // is a catalog-body action spanning them, so OR their flags.
+        let ((main_raw, main_reset), (remote_raw, remote_reset)) = match kind {
+            EditorKind::System => (
+                build_system_rows(&state.system, uuid, SYSTEM_FIELDS),
+                build_system_rows(&state.system, uuid, SYSTEM_WHILE_REMOTE_FIELDS),
+            ),
+            EditorKind::User => (
+                build_user_rows(&state.user, uuid, USER_FIELDS),
+                build_user_rows(&state.user, uuid, USER_WHILE_REMOTE_FIELDS),
+            ),
         };
         // Is this a refresh of the profile already shown, or a switch to a
         // different one? All profiles of a kind share the same field schema,
         // so field-name shape alone can't tell them apart.
         let same_profile = state.displayed == Some((kind, uuid));
         state.displayed = Some((kind, uuid));
-        (raw, can_reset_all, same_profile)
+        (
+            main_raw,
+            remote_raw,
+            main_reset || remote_reset,
+            same_profile,
+        )
     };
 
     on_ui(&app_weak, move |app| {
         let profiles = app.global::<Profiles>();
-        let rows: Vec<ProfileFieldEntry> = raw.into_iter().map(into_slint_entry).collect();
-        // Update the model in place only when refreshing the SAME profile
-        // (a value edit / echo) and the field shape is unchanged, so Slint
-        // reuses the existing row elements and keyboard focus survives.
-        // A switch to a different profile replaces the model with fresh
-        // elements â reusing rows across a switch could let an in-flight
-        // edit in a focused row commit against the newly-selected profile.
-        let existing = profiles.get_editor_fields();
-        let same_shape = same_profile
-            && existing.row_count() == rows.len()
-            && rows.iter().enumerate().all(|(i, r)| {
-                existing
-                    .row_data(i)
-                    .is_some_and(|e| e.field_name == r.field_name)
-            });
-        if same_shape {
-            for (i, row) in rows.into_iter().enumerate() {
-                // Only write rows that actually changed â an unchanged
-                // set_row_data still fires a Slint row-changed notification
-                // and re-renders that row.
-                if existing.row_data(i).as_ref() != Some(&row) {
-                    existing.set_row_data(i, row);
-                }
-            }
-        } else {
-            profiles.set_editor_fields(ModelRc::new(VecModel::from(rows)));
-        }
+        push_card_model(profiles.get_editor_fields(), main_raw, same_profile, |m| {
+            profiles.set_editor_fields(m)
+        });
+        push_card_model(
+            profiles.get_editor_remote_fields(),
+            remote_raw,
+            same_profile,
+            |m| profiles.set_editor_remote_fields(m),
+        );
         profiles.set_editor_can_reset_all(can_reset_all);
     });
+}
+
+/// Push one card's rows into its Slint model. Updates in place when
+/// refreshing the SAME profile with an unchanged field shape (a value
+/// edit / echo) so Slint reuses the row elements and keyboard focus
+/// survives; otherwise replaces the model with fresh elements — reusing
+/// rows across a profile switch could let an in-flight edit in a focused
+/// row commit against the newly-selected profile.
+fn push_card_model(
+    existing: ModelRc<ProfileFieldEntry>,
+    raw: Vec<ProfileFieldRaw>,
+    same_profile: bool,
+    replace: impl FnOnce(ModelRc<ProfileFieldEntry>),
+) {
+    let rows: Vec<ProfileFieldEntry> = raw.into_iter().map(into_slint_entry).collect();
+    let same_shape = same_profile
+        && existing.row_count() == rows.len()
+        && rows.iter().enumerate().all(|(i, r)| {
+            existing
+                .row_data(i)
+                .is_some_and(|e| e.field_name == r.field_name)
+        });
+    if same_shape {
+        for (i, row) in rows.into_iter().enumerate() {
+            // Only write rows that actually changed — an unchanged
+            // set_row_data still fires a Slint row-changed notification
+            // and re-renders that row.
+            if existing.row_data(i).as_ref() != Some(&row) {
+                existing.set_row_data(i, row);
+            }
+        }
+    } else {
+        replace(ModelRc::new(VecModel::from(rows)));
+    }
 }
 
 /// Thread-safe intermediate for one editor row. Built from
@@ -1016,12 +1104,18 @@ fn into_slint_entry(raw: ProfileFieldRaw) -> ProfileFieldEntry {
     }
 }
 
-/// Build the system-side editor rows for one selected profile. Used
-/// both from [`push_editor_rows`] and the signal dispatch path.
-fn build_system_rows(layers: &ProfileLayers, uuid: Uuid) -> (Vec<ProfileFieldRaw>, bool) {
-    let mut rows = Vec::with_capacity(SYSTEM_FIELDS.len());
+/// Build system-side editor rows for one selected profile over the
+/// given field table (the main FIELDS card or the WHILE REMOTE ACTIVE
+/// card). Returns the rows plus whether any is locally set — the caller
+/// ORs the two cards' flags into one catalog-body `can-reset-all`.
+fn build_system_rows(
+    layers: &ProfileLayers,
+    uuid: Uuid,
+    table: &[FieldSpec],
+) -> (Vec<ProfileFieldRaw>, bool) {
+    let mut rows = Vec::with_capacity(table.len());
     let mut can_reset = false;
-    for field in SYSTEM_FIELDS {
+    for field in table {
         let resolved = resolve_system_field(layers, uuid, field);
         if resolved.is_locally_set() {
             can_reset = true;
@@ -1037,10 +1131,14 @@ fn build_system_rows(layers: &ProfileLayers, uuid: Uuid) -> (Vec<ProfileFieldRaw
 }
 
 /// User-side mirror of [`build_system_rows`].
-fn build_user_rows(layers: &UserProfileLayers, uuid: Uuid) -> (Vec<ProfileFieldRaw>, bool) {
-    let mut rows = Vec::with_capacity(USER_FIELDS.len());
+fn build_user_rows(
+    layers: &UserProfileLayers,
+    uuid: Uuid,
+    table: &[FieldSpec],
+) -> (Vec<ProfileFieldRaw>, bool) {
+    let mut rows = Vec::with_capacity(table.len());
     let mut can_reset = false;
-    for field in USER_FIELDS {
+    for field in table {
         let resolved = resolve_user_field(layers, uuid, field);
         if resolved.is_locally_set() {
             can_reset = true;
@@ -1350,6 +1448,7 @@ fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
             active: false,
         });
         profiles.set_editor_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
+        profiles.set_editor_remote_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
         profiles.set_editor_can_reset_all(false);
     });
 }
@@ -1442,6 +1541,13 @@ fn set_system_field(
         }
         "idle_timeout_seconds" => {
             body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
+        }
+        "while_remote_on_dpms_on" => {
+            body.while_remote_on_dpms_on =
+                while_remote_override_patch(patch, "while_remote_on_dpms_on")?
+        }
+        "while_remote_on_wake" => {
+            body.while_remote_on_wake = while_remote_override_patch(patch, "while_remote_on_wake")?
         }
         "automate_when" => body.automate_when = automate_when_patch(patch, "automate_when")?,
         other => anyhow::bail!("Unknown system-profile field: {other}"),
@@ -1567,11 +1673,7 @@ fn while_remote_override_patch(
 /// Look up a field's [`FieldKind`] from the wire name. Returns `None`
 /// for unknown wires.
 fn field_kind_for(kind: EditorKind, wire: &str) -> Option<FieldKind> {
-    let table = match kind {
-        EditorKind::System => SYSTEM_FIELDS,
-        EditorKind::User => USER_FIELDS,
-    };
-    table.iter().find(|f| f.wire == wire).map(|f| f.kind)
+    all_fields(kind).find(|f| f.wire == wire).map(|f| f.kind)
 }
 
 /// Parse an enum-field's ComboBox token into a [`BodyPatch`]. Routes
@@ -1769,12 +1871,7 @@ pub(crate) async fn dispatch_restore_edit(
 ) -> anyhow::Result<()> {
     let token = {
         let state = editor.lock();
-        let table = match kind {
-            EditorKind::System => SYSTEM_FIELDS,
-            EditorKind::User => USER_FIELDS,
-        };
-        let field = table
-            .iter()
+        let field = all_fields(kind)
             .find(|f| f.wire == field_wire)
             .ok_or_else(|| anyhow::anyhow!("Unknown field '{field_wire}'"))?;
         match kind {
@@ -1971,6 +2068,8 @@ mod tests {
             idle_timeout_seconds: Some(0),
             on_idle_timeout: Some(SessionAction::ScreenOff.into()),
             on_idle_resume: Some(SessionAction::ScreenOn.into()),
+            while_remote_on_dpms_on: Some(tisvlay_core::WhileRemoteOverride::INHERIT),
+            while_remote_on_wake: Some(tisvlay_core::WhileRemoteOverride::INHERIT),
             automate_when: Some(AutomateWhen::Always),
         }
     }
@@ -1995,15 +2094,13 @@ mod tests {
     }
 
     fn find_system(wire: &str) -> &'static FieldSpec {
-        SYSTEM_FIELDS
-            .iter()
+        all_fields(EditorKind::System)
             .find(|f| f.wire == wire)
             .expect("field present")
     }
 
     fn find_user(wire: &str) -> &'static FieldSpec {
-        USER_FIELDS
-            .iter()
+        all_fields(EditorKind::User)
             .find(|f| f.wire == wire)
             .expect("field present")
     }
@@ -2168,19 +2265,28 @@ mod tests {
 
     #[test]
     fn system_field_table_matches_core_schema() {
-        // The GUI field table must cover exactly the inheritable fields
-        // the core profile declares. `tisvlay_core::SYSTEM_PROFILE_FIELDS`
-        // is the single source of truth (generated alongside the profile
+        // The GUI field tables — the FIELDS card plus the WHILE REMOTE
+        // ACTIVE card — must together cover exactly the inheritable
+        // fields the core profile declares. `SYSTEM_PROFILE_FIELDS` is
+        // the single source of truth (generated alongside the profile
         // merge/resolve plumbing); a field added to the core profile but
-        // not here would silently render as an empty row.
+        // to neither table would silently vanish from the editor, and a
+        // field split across both cards must appear in exactly one.
         let core: std::collections::BTreeSet<&str> = tisvlay_core::SYSTEM_PROFILE_FIELDS
             .iter()
             .copied()
             .collect();
-        let gui: std::collections::BTreeSet<&str> = SYSTEM_FIELDS.iter().map(|f| f.wire).collect();
+        let gui: std::collections::BTreeSet<&str> =
+            all_fields(EditorKind::System).map(|f| f.wire).collect();
         assert_eq!(
             gui, core,
-            "GUI SYSTEM_FIELDS diverged from core SYSTEM_PROFILE_FIELDS"
+            "GUI SYSTEM_FIELDS ∪ SYSTEM_WHILE_REMOTE_FIELDS diverged from core SYSTEM_PROFILE_FIELDS"
+        );
+        // Disjoint: no field is rendered in both cards.
+        assert_eq!(
+            SYSTEM_FIELDS.len() + SYSTEM_WHILE_REMOTE_FIELDS.len(),
+            gui.len(),
+            "a system field appears in both cards"
         );
     }
 
@@ -2188,10 +2294,16 @@ mod tests {
     fn user_field_table_matches_core_schema() {
         let core: std::collections::BTreeSet<&str> =
             tisvlay_core::USER_PROFILE_FIELDS.iter().copied().collect();
-        let gui: std::collections::BTreeSet<&str> = USER_FIELDS.iter().map(|f| f.wire).collect();
+        let gui: std::collections::BTreeSet<&str> =
+            all_fields(EditorKind::User).map(|f| f.wire).collect();
         assert_eq!(
             gui, core,
-            "GUI USER_FIELDS diverged from core USER_PROFILE_FIELDS"
+            "GUI USER_FIELDS ∪ USER_WHILE_REMOTE_FIELDS diverged from core USER_PROFILE_FIELDS"
+        );
+        assert_eq!(
+            USER_FIELDS.len() + USER_WHILE_REMOTE_FIELDS.len(),
+            gui.len(),
+            "a user field appears in both cards"
         );
     }
 
@@ -2264,7 +2376,7 @@ mod tests {
             default_body: SystemProfileBody::default(),
             bodies,
         };
-        let (rows, can_reset) = build_system_rows(&layers, uuid);
+        let (rows, can_reset) = build_system_rows(&layers, uuid, SYSTEM_FIELDS);
         assert!(can_reset);
         assert_eq!(rows.len(), SYSTEM_FIELDS.len());
     }
@@ -2285,7 +2397,7 @@ mod tests {
             default_body: SystemProfileBody::default(),
             bodies,
         };
-        let (_rows, can_reset) = build_system_rows(&layers, uuid);
+        let (_rows, can_reset) = build_system_rows(&layers, uuid, SYSTEM_FIELDS);
         assert!(!can_reset);
     }
 
@@ -2421,6 +2533,63 @@ mod tests {
         )
         .expect("known wire");
         assert_eq!(body.automate_when, Some(AutomateWhen::OnPrimary));
+    }
+
+    #[test]
+    fn set_system_field_writes_while_remote_overrides() {
+        let mut body = SystemProfileBody::default();
+        set_system_field(
+            &mut body,
+            "while_remote_on_dpms_on",
+            BodyPatch::WhileRemoteOverride(tisvlay_core::WhileRemoteOverride::from(
+                SessionAction::None,
+            )),
+        )
+        .expect("known wire");
+        assert_eq!(
+            body.while_remote_on_dpms_on,
+            Some(tisvlay_core::WhileRemoteOverride::from(SessionAction::None))
+        );
+        // Inherit clears via the reset path, distinct from a concrete action.
+        set_system_field(
+            &mut body,
+            "while_remote_on_wake",
+            BodyPatch::WhileRemoteOverride(tisvlay_core::WhileRemoteOverride::INHERIT),
+        )
+        .expect("known wire");
+        assert_eq!(
+            body.while_remote_on_wake,
+            Some(tisvlay_core::WhileRemoteOverride::INHERIT)
+        );
+    }
+
+    #[test]
+    fn while_remote_card_holds_the_override_fields() {
+        // The WHILE REMOTE ACTIVE card carries exactly the override rows
+        // (user-side: the screencast switch too), and the main card holds
+        // none of them.
+        let user_remote: Vec<&str> = USER_WHILE_REMOTE_FIELDS.iter().map(|f| f.wire).collect();
+        assert_eq!(
+            user_remote,
+            [
+                "remote_screencast_arms",
+                "while_remote_on_session_unlock",
+                "while_remote_on_lock_wake",
+                "while_remote_on_idle_resume",
+            ]
+        );
+        let system_remote: Vec<&str> = SYSTEM_WHILE_REMOTE_FIELDS.iter().map(|f| f.wire).collect();
+        assert_eq!(
+            system_remote,
+            ["while_remote_on_dpms_on", "while_remote_on_wake"]
+        );
+        // The connect/disconnect events stay in the main user card.
+        assert!(USER_FIELDS.iter().any(|f| f.wire == "on_remote_connect"));
+        assert!(
+            USER_FIELDS
+                .iter()
+                .all(|f| !f.wire.starts_with("while_remote_"))
+        );
     }
 
     #[test]

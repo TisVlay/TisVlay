@@ -146,6 +146,12 @@ pub mod payload {
         /// `automate_when` holds against the current input. Consumers
         /// (session service, tray) act only on automated TVs.
         pub automated: bool,
+        /// Whether a remote session currently arms this TV (mirrored
+        /// from the session service). While set, the world honors the
+        /// system profile's while-remote overrides on DPMS-on/resume; a
+        /// read-only projection for clients to surface the state.
+        #[serde(default)]
+        pub remote_armed: bool,
     }
 
     impl Meta {
@@ -158,6 +164,8 @@ pub mod payload {
                 // `should_automate` gives unknown inputs the benefit of
                 // the doubt, so a fresh managed TV starts automated.
                 automated: managed,
+                // No remote session until the mirror says so.
+                remote_armed: false,
             }
         }
     }

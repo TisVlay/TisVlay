@@ -17,7 +17,7 @@ use crate::components::{
     AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DirtyStore, DispatchRetry,
     DispatchVerify, Effect, KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox,
     PairVerifying, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
-    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt, Site, SystemProfile,
+    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, Site, SystemProfile,
     TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
@@ -49,6 +49,7 @@ pub(crate) fn build_schedule() -> Schedule {
             handle_carrier_events,
             verify_dispatch,
             reconcile_input,
+            apply_remote_session,
             dispatch_system_events,
             reconcile_connections,
         )
@@ -59,6 +60,7 @@ pub(crate) fn build_schedule() -> Schedule {
         (
             derive_link_state,
             derive_automated,
+            derive_remote_armed,
             publish_greeter_timeout,
             publish_changed::<payload::Power>,
             publish_changed::<payload::Volume>,
@@ -166,6 +168,8 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
             automate_when: "always".into(),
             // derive_automated refines this once input state exists.
             automated: record.managed,
+            // derive_remote_armed sets this once a mirror update lands.
+            remote_armed: false,
         },
         payload::Link {
             connected: false,
@@ -1913,6 +1917,34 @@ fn apply_transport_facts(
     }
 }
 
+/// Fold mirrored remote-session updates into the `RemoteArmed` resource.
+/// Runs ahead of `dispatch_system_events` in the ingest chain so an arm
+/// arriving in the same batch as a DPMS-on gates that dispatch. The
+/// latest update wins outright — the mirror always carries the full
+/// armed set, so a shrinking set (a source disarming) is applied by
+/// replacement, and an empty set disarms every TV.
+fn apply_remote_session(mut reader: MessageReader<InEvent>, mut armed: ResMut<RemoteArmed>) {
+    for msg in reader.read() {
+        let InEvent::RemoteSession { armed: set } = msg else {
+            continue;
+        };
+        let next: std::collections::HashSet<Uuid> = set.iter().copied().collect();
+        armed.set_if_neq(RemoteArmed(next));
+    }
+}
+
+/// Keep the published `remote_armed` flag in step with the `RemoteArmed`
+/// resource — the read-only projection clients read to surface which TVs
+/// a remote session currently arms.
+fn derive_remote_armed(armed: Res<RemoteArmed>, mut q: Query<(&TvId, &mut payload::Meta)>) {
+    for (id, mut meta) in &mut q {
+        let is_armed = armed.0.contains(&id.0);
+        if meta.remote_armed != is_armed {
+            meta.remote_armed = is_armed;
+        }
+    }
+}
+
 /// Map system events (DPMS, sleep, greeter idle) through the profile onto
 /// every automated TV — screen actions ride the reliable tier, and
 /// wake-capable power/screen-on reach even disconnected TVs via the wake
@@ -1945,6 +1977,7 @@ fn dispatch_system_events(
     >,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
+    remote_armed: Res<RemoteArmed>,
 ) {
     for msg in reader.read() {
         let InEvent::System { event, connector } = msg else {
@@ -1967,6 +2000,31 @@ fn dispatch_system_events(
             else {
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
+            };
+            // While a remote session arms this TV, the system profile's
+            // while-remote overrides remap the wake-ish events
+            // (`DpmsOn`/`Resume`) replace-only: `inherit` keeps the normal
+            // action, `none` suppresses it, a concrete action swaps in.
+            // The override only ever replaces an action that would already
+            // fire (`resolve_action` returned `Some`) — never originates
+            // one. Non-wake events and unarmed TVs pass straight through.
+            let (action, restore) = if remote_armed.0.contains(&id.0)
+                && let Some(override_) =
+                    resolve_while_remote_override(event, meta, &profile_index, &bodies)
+            {
+                let normal = profile_action_to_event(action, restore);
+                match session_action(override_.resolve(normal)) {
+                    Some(gated) => {
+                        tracing::debug!(tv = %id.0, ?event, ?gated, "while-remote override applied");
+                        gated
+                    }
+                    None => {
+                        tracing::debug!(tv = %id.0, ?event, "while-remote override suppressed dispatch");
+                        continue;
+                    }
+                }
+            } else {
+                (action, restore)
             };
             tracing::debug!(tv = %id.0, ?event, ?action, restore, "profile action dispatched");
             let restore_to = if restore {
@@ -2196,6 +2254,77 @@ fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, boo
     Some((action, spec.restore_input()))
 }
 
+/// Rebuild an [`EventAction`] from a resolved `(ProfileAction, bool)` —
+/// the inverse of [`session_action`] for the two verbs an override can
+/// compose against. Restores the `restore_input` modifier so a while-
+/// remote `inherit` yields the normal action byte-for-byte.
+fn profile_action_to_event(action: ProfileAction, restore: bool) -> tisvlay_core::EventAction {
+    use tisvlay_core::SessionAction as S;
+    let session = match action {
+        ProfileAction::ScreenOff => S::ScreenOff,
+        ProfileAction::ScreenOn => S::ScreenOn,
+        ProfileAction::PowerOff => S::PowerOff,
+        ProfileAction::PowerOn => S::PowerOn,
+    };
+    tisvlay_core::EventAction::With {
+        action: session,
+        restore_input: restore,
+    }
+}
+
+/// The system-profile while-remote override field for a gated event —
+/// `DpmsOn`/`Resume` only. Every other event is ungated (sleep/shutdown
+/// gating is forbidden; off-going blanks are never overridden), so it
+/// returns `None`, which the resolver reads as "no override applies".
+fn while_remote_override_field(
+    body: &tisvlay_core::SystemProfileConfig,
+    event: &SystemEvent,
+) -> Option<Option<tisvlay_core::WhileRemoteOverride>> {
+    match event {
+        SystemEvent::DpmsOn => Some(body.while_remote_on_dpms_on),
+        SystemEvent::Resume => Some(body.while_remote_on_wake),
+        _ => None,
+    }
+}
+
+/// Resolve the while-remote override for a gated event through the
+/// profile chain (per-TV profile, then editable default). Unlike
+/// [`profile_event_action`], override fields have no stock floor — an
+/// unset field is `Inherit`, so the chain bottoms out at
+/// [`WhileRemoteOverride::INHERIT`]. `None` means the event is ungated
+/// (not a wake event); the caller then dispatches the normal action
+/// unchanged.
+fn resolve_while_remote_override(
+    event: &SystemEvent,
+    meta: Option<&payload::Meta>,
+    profile_index: &ProfileIndex,
+    bodies: &Query<&ProfileBody>,
+) -> Option<tisvlay_core::WhileRemoteOverride> {
+    // A non-wake event carries no override at all — signalled by the
+    // field accessor returning `None`.
+    while_remote_override_field(&tisvlay_core::SystemProfileConfig::default(), event)?;
+    // Per-TV profile field wins outright (explicit `inherit` there also
+    // pins the resolution, matching `resolve_action`'s precedence).
+    if let Some(profile_id) = meta.and_then(|m| m.system_profile)
+        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+        && let Some(body) = profile_body(profile_id, profile_index, bodies)
+        && let Some(Some(override_)) = while_remote_override_field(body, event)
+    {
+        return Some(override_);
+    }
+    // Then the editable default profile.
+    if let Some(body) = profile_body(
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+        profile_index,
+        bodies,
+    ) && let Some(Some(override_)) = while_remote_override_field(body, event)
+    {
+        return Some(override_);
+    }
+    // Unset everywhere: inherit the normal action.
+    Some(tisvlay_core::WhileRemoteOverride::INHERIT)
+}
+
 /// Dial TVs with an outstanding connect request, respecting backoff.
 #[allow(clippy::type_complexity)]
 fn reconcile_connections(
@@ -2330,4 +2459,78 @@ fn snapshot_store(
         tv,
         system_profile,
     })));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tisvlay_core::{SessionAction, SystemProfileConfig, WhileRemoteOverride};
+
+    /// Only the wake-ish events carry a while-remote override field;
+    /// everything else is ungated (`None`). Sleep/shutdown gating is
+    /// forbidden, and off-going blanks are never overridden.
+    #[test]
+    fn while_remote_override_field_gates_wake_events_only() {
+        let body = SystemProfileConfig {
+            while_remote_on_dpms_on: Some(WhileRemoteOverride::from(SessionAction::None)),
+            while_remote_on_wake: Some(WhileRemoteOverride::from(SessionAction::ScreenOff)),
+            ..Default::default()
+        };
+        assert_eq!(
+            while_remote_override_field(&body, &SystemEvent::DpmsOn),
+            Some(Some(WhileRemoteOverride::from(SessionAction::None)))
+        );
+        assert_eq!(
+            while_remote_override_field(&body, &SystemEvent::Resume),
+            Some(Some(WhileRemoteOverride::from(SessionAction::ScreenOff)))
+        );
+        // Every ungated event returns `None` — no override applies.
+        for event in [
+            SystemEvent::Sleep,
+            SystemEvent::Shutdown,
+            SystemEvent::Startup,
+            SystemEvent::Reboot,
+            SystemEvent::DpmsOff,
+            SystemEvent::GreeterIdle,
+            SystemEvent::GreeterResume,
+        ] {
+            assert_eq!(while_remote_override_field(&body, &event), None);
+        }
+    }
+
+    /// The gate composes an override against the reconstructed normal
+    /// action: inherit keeps it (modifier intact), a replacement swaps
+    /// in, and `none` suppresses (resolves to no dispatchable action).
+    #[test]
+    fn override_composition_is_replace_only() {
+        // Reconstruct the stock DPMS-on: screen_on, no restore. The
+        // rebuild always uses the table (`With`) form so the restore
+        // modifier round-trips; the action and modifier are what matter.
+        let normal = profile_action_to_event(ProfileAction::ScreenOn, false);
+        assert_eq!(normal.action(), SessionAction::ScreenOn);
+        assert!(!normal.restore_input());
+
+        // Inherit yields the normal action unchanged.
+        assert_eq!(
+            session_action(WhileRemoteOverride::INHERIT.resolve(normal)),
+            Some((ProfileAction::ScreenOn, false))
+        );
+        // A concrete replacement substitutes.
+        assert_eq!(
+            session_action(WhileRemoteOverride::from(SessionAction::ScreenOff).resolve(normal)),
+            Some((ProfileAction::ScreenOff, false))
+        );
+        // `none` suppresses — no dispatchable action survives.
+        assert_eq!(
+            session_action(WhileRemoteOverride::from(SessionAction::None).resolve(normal)),
+            None
+        );
+
+        // A restore-carrying normal action survives inherit byte-for-byte.
+        let restoring = profile_action_to_event(ProfileAction::PowerOn, true);
+        assert_eq!(
+            session_action(WhileRemoteOverride::INHERIT.resolve(restoring)),
+            Some((ProfileAction::PowerOn, true))
+        );
+    }
 }
