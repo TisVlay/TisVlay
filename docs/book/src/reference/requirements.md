@@ -8,13 +8,14 @@
 | HDMI-CEC | Supported — power + screen-blank on any CEC-capable TV; needs a CEC adapter (see below) |
 | Samsung, Sony, … | Not yet — the architecture is vendor- and transport-agnostic and open to new backends |
 
-For LG, enable **"TV On via Wi-Fi"** (sometimes "Mobile TV On") in the TV's network settings so Wake-on-LAN works.
+For LG, enable **"TV On via Wi-Fi"** (sometimes "Mobile TV On") in the TV's network settings so Wake-on-LAN works. LG control works over IPv4 or IPv6; SSDP discovery and Wake-on-LAN are IPv4-only (the TV doesn't answer v6 multicast, and WoL is an L2 IPv4 broadcast).
 
 For HDMI-CEC, the kernel must expose a `/dev/cecN` node — most GPU HDMI ports don't wire the CEC pin. Known-working adapters: a **USB CEC adapter** (e.g. Pulse-Eight), or an active **DisplayPort→HDMI adapter on an amdgpu/i915 output** (the GPU driver tunnels DP-AUX CEC — **Nvidia does not**). On NixOS, grant the daemon device access with `services.tisvlay.cec.enable = true`. See [Installation](../getting-started/installation.md#hdmi-cec-backend-optional).
 
 ## Host requirements
 
-- **Linux with D-Bus** — required for `tisvlayd` and the session/tray services.
+- **Linux** — the daemon needs no D-Bus (it uses a local IPC socket). The desktop **session and tray** services do use the session/system D-Bus for desktop integration (logind, the screensaver, the system tray, and notifications), so they expect a normal desktop bus.
+- **The `tisvlay` group** — a user must be a member to reach the daemon's control socket (the socket is `0660`, group-owned). See [Installation](../getting-started/installation.md).
 - **Network reachability** — the host and TV on the same L2 network (Wake-on-LAN magic packets don't cross routers).
 - **Wayland compositor with `ext-idle-notify-v1`** — optional, needed only for lock-wake detection (unblanking the TV when you interact with the lock screen before typing your password) and the in-session idle timer.
 - For the DPMS display-blank automation, the host must expose the matched connector's power state via `/sys/class/drm/*/dpms` (verified on KDE Plasma Wayland).
@@ -22,9 +23,9 @@ For HDMI-CEC, the kernel must expose a `/dev/cecN` node — most GPU HDMI ports 
 
 ## What runs where
 
-- `tisvlayd` runs on the system bus as a dedicated `tisvlay` user, with state under `/var/lib/tisvlay/`.
-- `tisvlay-session` and `tisvlay-tray` run as per-user services on the session bus.
-- The `tisvlay` CLI talks to whichever bus the daemon is on (add `--user` for a session-bus daemon started with `tisvlayd --session`).
+- `tisvlay-daemon` runs as a dedicated `tisvlay` system user; it owns the control socket (`/run/tisvlay/zenoh.sock` when packaged) and keeps its state under `/var/lib/tisvlay/`.
+- `tisvlay-session` and `tisvlay-tray` run as per-user services and reach the daemon over that socket (membership in the `tisvlay` group is what grants them access).
+- The `tisvlay` CLI targets the same socket; override it with `--socket` (default `$XDG_RUNTIME_DIR/tisvlay/zenoh.sock`, falling back to the packaged `/run/tisvlay/zenoh.sock`), and `--user-socket` for the session-service verbs (`user-profile`, `remote-session`).
 
 ## Limitations
 

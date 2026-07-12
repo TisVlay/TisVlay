@@ -6,7 +6,7 @@ tisvlay discovers TVs with SSDP (the same multicast protocol DLNA/UPnP use): it 
 
 LG TVs reply to SSDP from an **ephemeral** source port rather than the standard port 1900. On Linux, a default-deny firewall therefore drops the reply (the kernel has no conntrack entry that matches it), so discovery silently finds nothing — even though the TV is reachable and you can pair it by explicit IP.
 
-**Symptom:** `tisvlay-gui`'s discovery (or `Manager1.StartDiscovery`) returns no TVs, but `tisvlay pair <ip>` works.
+**Symptom:** `tisvlay discover` (or the GUI wizard's discovery) returns no TVs, but pairing by explicit IP works.
 
 ## Open the pinned source port
 
@@ -32,10 +32,10 @@ services.tisvlay.openFirewall = true;
 networking.firewall.allowedUDPPorts = [ 1901 ];
 ```
 
-To use a different port — or an OS-chosen ephemeral one, which can't be narrowed to a single firewall rule — set it in the daemon config:
+To use a different port — or an OS-chosen ephemeral one, which can't be narrowed to a single firewall rule — set it in the daemon config, or pass `tisvlay-daemon --ssdp-port <port>` (`0` = ephemeral):
 
 ```toml
-# /var/lib/tisvlay/config.toml
+# /var/lib/tisvlay/daemon.toml
 [discovery]
 bind_port = 1901   # the default; any unused port works, or 0 for ephemeral
 ```
@@ -55,4 +55,11 @@ sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address
 sudo firewall-cmd --reload
 ```
 
-Discovery is a convenience — you can always pair by IP address with `tisvlay pair <ip> --vendor lg`, no firewall changes required.
+## Ways to discover and add a TV
+
+- `tisvlay discover` — a bounded scan; found TVs stream back as they answer.
+- `tisvlay discover-session` — an open-ended discovery session that keeps streaming findings until you stop it (ctrl-c).
+- The **GUI wizard** does the same, live, and lists the host's CEC adapters alongside the network scan.
+- **Manual entry** — if discovery can't reach the TV, type its IP; the GUI auto-fills the MAC address for Wake-on-LAN from the kernel's ARP/NDP cache (an "Auto-detected" badge marks it, clearing if you edit).
+
+Discovery is a convenience — you can always pair by IP address with `tisvlay pair "<name>" --vendor lg --params '{"ip":"192.168.1.100"}'`, no firewall changes required.

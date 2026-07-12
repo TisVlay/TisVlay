@@ -14,23 +14,23 @@ No. The daemon plus the CLI is a complete remote control. Add `tisvlay-session` 
 
 ### Is `screen off` safe for an OLED?
 
-That's what it's for. `tisvlay screen off` turns the panel off while the TV stays powered and connected — no burn-in exposure, instant resume — which is why it's the default lock/idle action. `power off` is deeper (standby): the TV drops off the network and needs Wake-on-LAN to return.
+That's what it's for. `tisvlay screen <id> off` turns the panel off while the TV stays powered and connected — no burn-in exposure, instant resume — which is why it's the default lock/idle action. `power off` is deeper (standby): the TV drops off the network and needs Wake-on-LAN to return.
 
 ### Can I script tisvlay?
 
-Yes, two ways: every CLI command takes `--json` for machine-readable output, and the daemon's D-Bus interface (`org.tisvlay.Daemon`) is a stable public API you can drive directly with `busctl` or any D-Bus binding — that's all the bundled clients use. See the [CLI Reference](../guide/cli.md) and the `busctl` examples under [Troubleshooting](../operations/troubleshooting.md#inspecting-the-daemon).
+Yes. Every CLI command takes `--json` for machine-readable output, and `tisvlay watch` streams every state key (history first, then live changes) — the event-stream surface for reacting to state without polling. The bundled tray and GUI ride the same interface, so anything they show is scriptable. See the [CLI Reference](../guide/cli.md) and the `watch` note under [Troubleshooting](../operations/troubleshooting.md#inspecting-the-daemon).
 
 ### Where does tisvlay keep its settings?
 
-Three TOML files — the daemon's (TVs + system profiles), your session's (user profiles), and the tray's (notification preferences). Paths and schema in [Configuration](../guide/configuration.md).
+A few TOML files — the daemon's `daemon.toml` (TVs + system profiles), your session's `session.toml` (user profiles), and the tray's `tray.toml` (notification preferences). Paths and schema in [Configuration](../guide/configuration.md).
 
 ### Is the pairing key a secret?
 
-Moderately. The per-TV `client_key` lets any holder on your network control that TV (power, input, volume — it is not a system credential). It lives in the daemon's config at `/var/lib/tisvlay/config.toml`, readable only by the `tisvlay` service user. Treat it like a Wi-Fi password: not catastrophic, not for pasting into bug reports.
+Moderately. The per-TV `client_key` lets any holder on your network control that TV (power, input, volume — it is not a system credential). It lives in the daemon's store at `/var/lib/tisvlay/daemon.toml`, readable only by the `tisvlay` service user. Treat it like a Wi-Fi password: not catastrophic, not for pasting into bug reports.
 
 ### Can I control several TVs?
 
-Yes — pair each one, then target with `-t <tv-id>` (the default is the first configured TV). Automation is per-TV too: each TV carries its own profile assignments and `automate_when` gate, so one TV can blank on lock while another ignores the desktop entirely. See [Profiles](../guide/profiles.md).
+Yes — pair each one, then target it by its **UUID** (from `tisvlay list`) as the first argument to each verb. Automation is per-TV too: each TV carries its own profile assignments and `automate_when` gate, so one TV can blank on lock while another ignores the desktop entirely. See [Profiles](../guide/profiles.md).
 
 ---
 
