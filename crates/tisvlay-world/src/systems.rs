@@ -2169,8 +2169,9 @@ fn publish_greeter_timeout(
 
 /// The TV's assigned profile decides the action; unset fields (and TVs
 /// without a profile) fall back to the stock mapping. The trailing bool
-/// is the resolved `while_remote` gate — the stock floor has no gate
-/// field, so its actions always fire while armed.
+/// is the resolved `while_remote` gate — the stock floor carries the
+/// per-event gate honestly (sleep/shutdown fire while armed, everything
+/// else is suppressed), matching the core resolved defaults.
 fn resolve_action(
     event: &SystemEvent,
     meta: Option<&payload::Meta>,
@@ -2195,12 +2196,9 @@ fn resolve_action(
     {
         return session_action(action);
     }
-    // …and only then the hard-coded stock floor (always fires while
-    // armed — the stock mapping carries no gate).
-    stock
-        .0
-        .get(event)
-        .map(|&(action, restore)| (action, restore, true))
+    // …and only then the hard-coded stock floor, which carries its own
+    // per-event gate (sleep/shutdown fire while armed, the rest suppress).
+    stock.0.get(event).copied()
 }
 
 /// Look up a system-profile body by uuid through the profile index.
@@ -2391,21 +2389,21 @@ mod tests {
     /// The bare form fires while armed; a gated table suppresses.
     #[test]
     fn session_action_carries_the_while_remote_gate() {
-        // A bare action: fires while armed (gate implicitly true), no
-        // restore.
+        // A bare action: gated (gate implicitly false, suppress-by-
+        // default), no restore.
         assert_eq!(
             session_action(EventAction::from(SessionAction::ScreenOn)),
-            Some((ProfileAction::ScreenOn, false, true))
+            Some((ProfileAction::ScreenOn, false, false))
         );
-        // A table with `while_remote = false` carries the suppressed
+        // A table with `while_remote = true` carries the fire-while-armed
         // gate through, alongside the restore modifier.
         assert_eq!(
             session_action(EventAction::With {
                 action: SessionAction::PowerOn,
                 restore_input: true,
-                while_remote: false,
+                while_remote: true,
             }),
-            Some((ProfileAction::PowerOn, true, false))
+            Some((ProfileAction::PowerOn, true, true))
         );
         // `none` has no dispatchable action regardless of the gate.
         assert_eq!(session_action(EventAction::from(SessionAction::None)), None);

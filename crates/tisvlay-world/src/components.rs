@@ -175,11 +175,13 @@ pub(crate) enum ProfileAction {
     PowerOn,
 }
 
-/// Event → `(action, restore_input)` mapping applied when a TV has no
-/// assigned profile or its profile leaves the event's field unset —
-/// the inheritance base the `profile/rpc/defaults` projection serves.
+/// Event → `(action, restore_input, while_remote)` mapping applied when
+/// a TV has no assigned profile or its profile leaves the event's field
+/// unset — the inheritance base the `profile/rpc/defaults` projection
+/// serves. The trailing bool is the resolved remote-session gate: `true`
+/// fires while the TV is armed, `false` suppresses.
 #[derive(Resource, Debug)]
-pub(crate) struct SystemProfile(pub HashMap<SystemEvent, (ProfileAction, bool)>);
+pub(crate) struct SystemProfile(pub HashMap<SystemEvent, (ProfileAction, bool, bool)>);
 
 impl SystemProfile {
     /// Stock mapping — parity with the root stack's hard-coded resolved
@@ -187,18 +189,37 @@ impl SystemProfile {
     /// screen-blank mirroring for DPMS and the login greeter's idle timer.
     /// The session-start wakes restore the primary input (mirrors
     /// `ResolvedSystemProfile::default`).
+    ///
+    /// The `while_remote` floor is suppress-by-default with the same
+    /// exemptions as [`tisvlay_core::ResolvedSystemProfile::default`]:
+    /// sleep and shutdown fire while armed (the machine going away turns
+    /// the TV off for the empty room); every other stock event is gated.
+    /// Greeter events run before any session, so their gate never bites
+    /// (the armed set is empty at the login screen).
     pub(crate) fn stock() -> Self {
         Self(HashMap::from([
             // WoL at boot; a reboot deliberately has no stock action
             // (the TV stays on across a quick restart).
-            (SystemEvent::Startup, (ProfileAction::PowerOn, true)),
-            (SystemEvent::Sleep, (ProfileAction::PowerOff, false)),
-            (SystemEvent::Resume, (ProfileAction::PowerOn, true)),
-            (SystemEvent::Shutdown, (ProfileAction::PowerOff, false)),
-            (SystemEvent::DpmsOff, (ProfileAction::ScreenOff, false)),
-            (SystemEvent::DpmsOn, (ProfileAction::ScreenOn, false)),
-            (SystemEvent::GreeterIdle, (ProfileAction::ScreenOff, false)),
-            (SystemEvent::GreeterResume, (ProfileAction::ScreenOn, false)),
+            (SystemEvent::Startup, (ProfileAction::PowerOn, true, false)),
+            (SystemEvent::Sleep, (ProfileAction::PowerOff, false, true)),
+            (SystemEvent::Resume, (ProfileAction::PowerOn, true, false)),
+            (
+                SystemEvent::Shutdown,
+                (ProfileAction::PowerOff, false, true),
+            ),
+            (
+                SystemEvent::DpmsOff,
+                (ProfileAction::ScreenOff, false, false),
+            ),
+            (SystemEvent::DpmsOn, (ProfileAction::ScreenOn, false, false)),
+            (
+                SystemEvent::GreeterIdle,
+                (ProfileAction::ScreenOff, false, false),
+            ),
+            (
+                SystemEvent::GreeterResume,
+                (ProfileAction::ScreenOn, false, false),
+            ),
         ]))
     }
 }

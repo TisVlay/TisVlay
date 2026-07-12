@@ -551,8 +551,8 @@ pub(crate) fn resolve_user_restore(layers: &UserProfileLayers, uuid: Uuid, wire:
 
 /// Resolve an action field's `while_remote` gate through the same
 /// own → default → baseline chain as [`resolve_system_restore`]. A field
-/// resolving to no action defaults to fire-while-armed (`true`) — the
-/// gate is opt-in.
+/// resolving to no action defaults to gated (`false`) — the
+/// suppress-by-default floor.
 pub(crate) fn resolve_system_remote_gate(layers: &ProfileLayers, uuid: Uuid, wire: &str) -> bool {
     let own_body = layers
         .bodies
@@ -563,7 +563,7 @@ pub(crate) fn resolve_system_remote_gate(layers: &ProfileLayers, uuid: Uuid, wir
         .or_else(|| read_system_action(&layers.default_body, wire))
         .or_else(|| read_system_action(&layers.baseline, wire))
         .map(|a| a.while_remote())
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 /// User-side mirror of [`resolve_system_remote_gate`].
@@ -577,7 +577,38 @@ pub(crate) fn resolve_user_remote_gate(layers: &UserProfileLayers, uuid: Uuid, w
         .or_else(|| read_user_action(&layers.default_body, wire))
         .or_else(|| read_user_action(&layers.baseline, wire))
         .map(|a| a.while_remote())
-        .unwrap_or(true)
+        .unwrap_or(false)
+}
+
+/// The field's floor `restore_input` — the baseline (`Resolved*::default`)
+/// value the "differs from floor" accent compares against. An absent
+/// baseline field floors to `false`.
+fn floor_system_restore(layers: &ProfileLayers, wire: &str) -> bool {
+    read_system_action(&layers.baseline, wire)
+        .map(|a| a.restore_input())
+        .unwrap_or(false)
+}
+
+fn floor_user_restore(layers: &UserProfileLayers, wire: &str) -> bool {
+    read_user_action(&layers.baseline, wire)
+        .map(|a| a.restore_input())
+        .unwrap_or(false)
+}
+
+/// The field's floor `while_remote` gate — the baseline value the accent
+/// compares against. `false` for wake events, `true` for the exempted
+/// system events (sleep/shutdown/reboot); an absent baseline field floors
+/// to `false` (suppress-by-default).
+fn floor_system_remote_gate(layers: &ProfileLayers, wire: &str) -> bool {
+    read_system_action(&layers.baseline, wire)
+        .map(|a| a.while_remote())
+        .unwrap_or(false)
+}
+
+fn floor_user_remote_gate(layers: &UserProfileLayers, wire: &str) -> bool {
+    read_user_action(&layers.baseline, wire)
+        .map(|a| a.while_remote())
+        .unwrap_or(false)
 }
 
 /// Read one field off a `SystemProfileBody`. Returns `None` when the
@@ -1031,8 +1062,12 @@ pub(crate) struct ProfileFieldRaw {
     pub is_locally_set: bool,
     pub has_restore: bool,
     pub restore_value: bool,
+    pub restore_enabled: bool,
+    pub restore_differs: bool,
     pub has_remote_gate: bool,
     pub remote_gate_value: bool,
+    pub remote_gate_enabled: bool,
+    pub remote_gate_differs: bool,
 }
 
 /// Wrap a raw row into the Slint `ProfileFieldEntry`. Must run on
@@ -1054,8 +1089,12 @@ fn into_slint_entry(raw: ProfileFieldRaw) -> ProfileFieldEntry {
         is_locally_set: raw.is_locally_set,
         has_restore: raw.has_restore,
         restore_value: raw.restore_value,
+        restore_enabled: raw.restore_enabled,
+        restore_differs: raw.restore_differs,
         has_remote_gate: raw.has_remote_gate,
         remote_gate_value: raw.remote_gate_value,
+        remote_gate_enabled: raw.remote_gate_enabled,
+        remote_gate_differs: raw.remote_gate_differs,
     }
 }
 
@@ -1076,13 +1115,17 @@ fn build_system_rows(
             can_reset = true;
         }
         let mut raw = build_field_raw(field, &resolved);
-        if row_carries_restore(field, &resolved) {
+        if row_is_action(field) {
+            let restore = resolve_system_restore(layers, uuid, field.wire);
+            let gate = resolve_system_remote_gate(layers, uuid, field.wire);
             raw.has_restore = true;
-            raw.restore_value = resolve_system_restore(layers, uuid, field.wire);
-        }
-        if row_carries_remote_gate(field, &resolved) {
+            raw.restore_value = restore;
+            raw.restore_enabled = restore_is_enabled(&resolved);
+            raw.restore_differs = restore != floor_system_restore(layers, field.wire);
             raw.has_remote_gate = true;
-            raw.remote_gate_value = resolve_system_remote_gate(layers, uuid, field.wire);
+            raw.remote_gate_value = gate;
+            raw.remote_gate_enabled = remote_gate_is_enabled(field, &resolved);
+            raw.remote_gate_differs = gate != floor_system_remote_gate(layers, field.wire);
         }
         rows.push(raw);
     }
@@ -1103,43 +1146,52 @@ fn build_user_rows(
             can_reset = true;
         }
         let mut raw = build_field_raw(field, &resolved);
-        if row_carries_restore(field, &resolved) {
+        if row_is_action(field) {
+            let restore = resolve_user_restore(layers, uuid, field.wire);
+            let gate = resolve_user_remote_gate(layers, uuid, field.wire);
             raw.has_restore = true;
-            raw.restore_value = resolve_user_restore(layers, uuid, field.wire);
-        }
-        if row_carries_remote_gate(field, &resolved) {
+            raw.restore_value = restore;
+            raw.restore_enabled = restore_is_enabled(&resolved);
+            raw.restore_differs = restore != floor_user_restore(layers, field.wire);
             raw.has_remote_gate = true;
-            raw.remote_gate_value = resolve_user_remote_gate(layers, uuid, field.wire);
+            raw.remote_gate_value = gate;
+            raw.remote_gate_enabled = remote_gate_is_enabled(field, &resolved);
+            raw.remote_gate_differs = gate != floor_user_remote_gate(layers, field.wire);
         }
         rows.push(raw);
     }
     (rows, can_reset)
 }
 
-/// The restore-input checkbox renders only on action rows whose
-/// resolved verb is on-ish — the modifier is meaningless elsewhere.
-fn row_carries_restore(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
+/// Whether the row carries the restore-input + remote-gate toggle slots:
+/// every `SessionAction` action row does (never `automate_when`, number,
+/// or bool rows). Both toggles render on such a row unconditionally — the
+/// `*_enabled` predicates below decide interactivity, so there is no
+/// visibility-driven layout shift.
+fn row_is_action(field: &FieldSpec) -> bool {
     matches!(
         field.kind,
         FieldKind::Enum {
             class: EnumClass::SessionAction,
             ..
         }
-    ) && matches!(resolved.current(), "screen_on" | "power_on")
+    )
 }
 
-/// The remote-session gate toggle renders on any action row whose
-/// resolved verb is not `none` (there's an action to suppress) — except
-/// the connect/disconnect rows, whose action fires at the arming edge
-/// where its own gate would swallow it.
-fn row_carries_remote_gate(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
-    matches!(
-        field.kind,
-        FieldKind::Enum {
-            class: EnumClass::SessionAction,
-            ..
-        }
-    ) && resolved.current() != "none"
+/// Restore-input is interactive when the resolved verb actually does
+/// something (any verb but `none`) — including the off-going
+/// screen_off/power_off actions, not just the wake verbs. A `none` row
+/// renders the toggle inert + dimmed.
+fn restore_is_enabled(resolved: &ResolvedValue) -> bool {
+    resolved.current() != "none"
+}
+
+/// The remote-session gate is interactive when there is an action to
+/// suppress (verb is not `none`) and the row is not a connect/disconnect
+/// event — those fire at the arming edge where their own gate would
+/// swallow them. Elsewhere the toggle renders inert + dimmed.
+fn remote_gate_is_enabled(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
+    resolved.current() != "none"
         && !matches!(field.wire, "on_remote_connect" | "on_remote_disconnect")
 }
 
@@ -1163,8 +1215,12 @@ fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldR
         is_locally_set: resolved.is_locally_set(),
         has_restore: false,
         restore_value: false,
+        restore_enabled: false,
+        restore_differs: false,
         has_remote_gate: false,
-        remote_gate_value: true,
+        remote_gate_value: false,
+        remote_gate_enabled: false,
+        remote_gate_differs: false,
     };
 
     match field.kind {
@@ -2520,8 +2576,9 @@ mod tests {
     #[test]
     fn remote_gate_reads_and_resolves_through_the_chain() {
         // A gated table (`while_remote = false`) on the profile's own
-        // body resolves as suppressed; an ungated / bare action resolves
-        // as fire-while-armed (the opt-in default).
+        // body resolves as suppressed; an ungated table (`while_remote =
+        // true`) resolves as fire-while-armed. A bare action inherits the
+        // suppress-by-default floor.
         let uuid = Uuid::new_v4();
         let mut bodies = HashMap::new();
         bodies.insert(
@@ -2533,6 +2590,7 @@ mod tests {
                     restore_input: false,
                     while_remote: false,
                 }),
+                on_wake: Some(tisvlay_core::EventAction::ungated(SessionAction::PowerOn)),
                 ..Default::default()
             },
         );
@@ -2542,8 +2600,32 @@ mod tests {
             bodies,
         };
         assert!(!resolve_system_remote_gate(&layers, uuid, "on_dpms_on"));
-        // A field that inherits a bare action resolves fire-while-armed.
+        // An explicit ungated table fires while armed.
         assert!(resolve_system_remote_gate(&layers, uuid, "on_wake"));
+        // A field inheriting a bare baseline action resolves gated
+        // (suppress-by-default) — `on_shutdown` is a bare token in the
+        // test baseline below.
+        assert!(!resolve_system_remote_gate(&layers, uuid, "on_shutdown"));
+    }
+
+    #[test]
+    fn floor_gate_reads_the_baseline_exemptions() {
+        // The floor comparison the "differs" accent uses reads the
+        // baseline body. A baseline carrying the real exemptions (sleep
+        // ungated, dpms-on gated) floors accordingly; an absent field
+        // floors to suppress-by-default.
+        let mut baseline = baseline_system();
+        baseline.on_sleep = Some(tisvlay_core::EventAction::ungated(SessionAction::PowerOff));
+        baseline.on_dpms_on = Some(SessionAction::ScreenOn.into());
+        let layers = ProfileLayers {
+            baseline,
+            default_body: SystemProfileBody::default(),
+            bodies: HashMap::new(),
+        };
+        assert!(floor_system_remote_gate(&layers, "on_sleep"));
+        assert!(!floor_system_remote_gate(&layers, "on_dpms_on"));
+        // `automate_when` is not an action wire — floors to false.
+        assert!(!floor_system_remote_gate(&layers, "automate_when"));
     }
 
     #[test]
@@ -2559,33 +2641,89 @@ mod tests {
     }
 
     #[test]
-    fn gate_toggle_shows_on_action_rows_except_the_arming_events() {
-        // An on-ish action row carries the gate toggle; a `none` row does
-        // not (nothing to suppress); the connect/disconnect rows never do
-        // (their action fires at the arming edge).
+    fn toggles_slot_on_every_action_row_and_enable_selectively() {
+        // Every SessionAction row carries the toggle slots (uniform, no
+        // visibility shift); `automate_when` and non-action rows do not.
+        assert!(row_is_action(find_user("on_session_unlock")));
+        assert!(row_is_action(find_user("on_remote_connect")));
+        assert!(!row_is_action(find_system("automate_when")));
+        assert!(!row_is_action(find_user("unlocked_idle_timeout_seconds")));
+
         let action = |verb: &str| ResolvedValue::LocallySet {
             current: verb.to_string(),
         };
-        assert!(row_carries_remote_gate(
+        // Gate is interactive on any real-action row except the
+        // connect/disconnect events; inert on `none` and those two.
+        assert!(remote_gate_is_enabled(
             find_user("on_session_unlock"),
             &action("screen_on")
         ));
-        assert!(row_carries_remote_gate(
+        assert!(remote_gate_is_enabled(
             find_user("on_session_lock"),
             &action("screen_off")
         ));
-        assert!(!row_carries_remote_gate(
+        assert!(!remote_gate_is_enabled(
             find_user("on_session_unlock"),
             &action("none")
         ));
-        assert!(!row_carries_remote_gate(
+        assert!(!remote_gate_is_enabled(
             find_user("on_remote_connect"),
             &action("screen_off")
         ));
-        assert!(!row_carries_remote_gate(
+        assert!(!remote_gate_is_enabled(
             find_user("on_remote_disconnect"),
             &action("screen_on")
         ));
+
+        // Restore is interactive on any real-action row — including the
+        // off-going verbs now — and inert only on `none`.
+        assert!(restore_is_enabled(&action("screen_on")));
+        assert!(restore_is_enabled(&action("screen_off")));
+        assert!(restore_is_enabled(&action("power_off")));
+        assert!(!restore_is_enabled(&action("none")));
+    }
+
+    #[test]
+    fn build_rows_populate_differs_from_floor_accent() {
+        // A profile setting `on_dpms_on` ungated (`while_remote = true`)
+        // differs from the gated floor, so the gate accent lights; the
+        // toggle value tracks the set value independently.
+        let uuid = Uuid::new_v4();
+        let mut bodies = HashMap::new();
+        bodies.insert(
+            uuid,
+            SystemProfileBody {
+                name: "custom".into(),
+                on_dpms_on: Some(tisvlay_core::EventAction::ungated(SessionAction::ScreenOn)),
+                ..Default::default()
+            },
+        );
+        let layers = ProfileLayers {
+            // Baseline dpms-on is a bare token → floor gate false.
+            baseline: baseline_system(),
+            default_body: SystemProfileBody::default(),
+            bodies,
+        };
+        let (rows, _) = build_system_rows(&layers, uuid, SYSTEM_FIELDS);
+        let dpms_on = rows.iter().find(|r| r.field_name == "on_dpms_on").unwrap();
+        assert!(dpms_on.has_remote_gate);
+        assert!(
+            dpms_on.remote_gate_value,
+            "the set value is fire-while-armed"
+        );
+        assert!(dpms_on.remote_gate_differs, "differs from the gated floor");
+        assert!(dpms_on.remote_gate_enabled);
+
+        // An inheriting row sits at the floor → no differs accent.
+        let dpms_off = rows.iter().find(|r| r.field_name == "on_dpms_off").unwrap();
+        assert!(!dpms_off.remote_gate_differs);
+        // A number row carries neither toggle slot.
+        let idle = rows
+            .iter()
+            .find(|r| r.field_name == "idle_timeout_seconds")
+            .unwrap();
+        assert!(!idle.has_remote_gate);
+        assert!(!idle.has_restore);
     }
 
     #[test]

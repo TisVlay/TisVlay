@@ -611,15 +611,16 @@ async fn while_remote_gate_suppresses_a_formerly_exempt_sleep() {
     collect_until(&mut effects, |e| link_connected(e, false)).await;
 }
 
-/// An ungated (default) action passes through while armed: a profile
-/// leaving `on_dpms_on` at the stock `screen_on` (gate implicitly true)
-/// still lights the panel for an armed TV.
+/// Suppress-by-default: a stock action gates while armed. A profile
+/// leaving `on_dpms_on` at the stock `screen_on` (gate implicitly
+/// `false`) does NOT light the panel for an armed TV — the empty room
+/// stays dark. Disarming lets the next DPMS-on light it normally.
 #[tokio::test]
-async fn while_remote_default_action_fires_while_armed() {
+async fn while_remote_default_suppresses_dpms_on_while_armed() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://inh").await;
-    // No profile fields set — every event resolves to its stock action
-    // with the gate implicitly true.
+    // No profile fields set — every event resolves to its stock action;
+    // the wake-ish stock floor is gated by default.
     assign_remote_profile(
         &mut effects,
         &client,
@@ -640,6 +641,20 @@ async fn while_remote_default_action_fires_while_armed() {
     })
     .await;
     arm(&client, &[id]);
+
+    // The stock DPMS-on is suppressed while armed: no wake follows.
+    // Prove it by disarming + a second DPMS-on and catching the panel
+    // going active only then.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+
+    arm(&client, &[]);
     client.send(InEvent::System {
         event: SystemEvent::DpmsOn,
         connector: None,
@@ -648,6 +663,36 @@ async fn while_remote_default_action_fires_while_armed() {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
     })
     .await;
+}
+
+/// Floor exemption: the stock `on_sleep` fires while armed even with no
+/// profile fields set — the machine going away turns the TV off for the
+/// empty room. Contrast `while_remote_default_suppresses_dpms_on_while_armed`,
+/// where the wake-ish stock floor is gated.
+#[tokio::test]
+async fn stock_sleep_and_shutdown_fire_while_armed() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://floor").await;
+    // No profile fields set: sleep resolves to the stock power-off with
+    // its floor gate `true`.
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            ..Default::default()
+        },
+    )
+    .await;
+    arm(&client, &[id]);
+
+    // Sleep's stock power-off tears the link down even while armed.
+    client.send(InEvent::System {
+        event: SystemEvent::Sleep,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
 }
 
 /// The no-session invariant: an empty armed set gates nothing. A TV

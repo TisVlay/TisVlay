@@ -89,12 +89,15 @@ pub enum SessionAction {
 /// (`{ action = "screen_on", restore_input = true }`) — two shapes of
 /// one grammar, round-tripped in whichever form was written.
 ///
-/// The `while_remote` modifier is the remote-session gate: `true`
-/// (the bare-token default) fires this event's action normally even
-/// while the TV is armed by a remote session; `false` suppresses the
-/// action for the duration of that arming. Because it can only
-/// suppress, the gate can never originate an action an unarmed TV
-/// would not take. It is inert on `none` rows (nothing to suppress).
+/// The `while_remote` modifier is the remote-session gate: `false`
+/// (the bare-token default) suppresses this event's action while the
+/// TV is armed by a remote session; `true` lets it fire regardless.
+/// Suppress-by-default means an unconfigured profile keeps the TV dark
+/// for an empty room; the exceptions (sleep/shutdown/reboot, which turn
+/// the TV off as the machine goes away) carry an explicit `true` at the
+/// resolved floor. Because it can only suppress, the gate can never
+/// originate an action an unarmed TV would not take. It is inert on
+/// `none` rows (nothing to suppress).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EventAction {
@@ -110,27 +113,41 @@ pub enum EventAction {
         restore_input: bool,
         /// Whether this event's action still fires while the TV is
         /// armed by a remote session. `false` suppresses it. Defaults
-        /// to `true` so the bare-token form (and any table omitting
-        /// the field) fires normally.
+        /// to `false` so the bare-token form (and any table omitting
+        /// the field) is gated — one suppress-by-default rule.
         #[serde(default = "while_remote_default")]
         while_remote: bool,
     },
 }
 
-/// The default for [`EventAction`]'s `while_remote` field: fire normally
-/// while armed. A named fn (not an inline closure) so serde's
-/// `default = "…"` attribute can name it.
+/// The default for [`EventAction`]'s `while_remote` field: gated
+/// (suppressed while armed). A named fn (not an inline closure) so
+/// serde's `default = "…"` attribute can name it. Kept in sync with the
+/// [`Plain`](EventAction::Plain) arm of [`EventAction::while_remote`] so
+/// a bare token and a field-omitting table gate identically.
 fn while_remote_default() -> bool {
-    true
+    false
 }
 
 impl EventAction {
     /// Table-form constructor for restore-on mappings (the stock
-    /// session-start defaults). Gate defaults to fire-while-armed.
+    /// session-start defaults). Gate defaults to gated (suppress while
+    /// armed) — the suppress-by-default floor.
     pub fn restoring(action: SessionAction) -> Self {
         Self::With {
             action,
             restore_input: true,
+            while_remote: while_remote_default(),
+        }
+    }
+
+    /// Table-form constructor for a floor-exempt mapping — an action
+    /// that still fires while the TV is armed (sleep/shutdown/reboot,
+    /// where the machine going away should turn the TV off regardless).
+    pub fn ungated(action: SessionAction) -> Self {
+        Self::With {
+            action,
+            restore_input: false,
             while_remote: true,
         }
     }
@@ -149,11 +166,13 @@ impl EventAction {
     }
 
     /// Whether this event's action fires while the TV is armed by a
-    /// remote session. The bare (`Plain`) form is always `true` — the
-    /// gate is opt-in through the table form.
+    /// remote session. The bare (`Plain`) form is always gated
+    /// (`false`), matching [`while_remote_default`] — a bare token is
+    /// suppressed while armed; firing anyway is opt-in through the
+    /// table form.
     pub fn while_remote(self) -> bool {
         match self {
-            Self::Plain(_) => true,
+            Self::Plain(_) => while_remote_default(),
             Self::With { while_remote, .. } => while_remote,
         }
     }
@@ -429,10 +448,17 @@ impl Default for ResolvedSystemProfile {
             // The session-start wakes restore the primary input by
             // default (a CEC or WoL wake can land on another port);
             // every other mapping stays input-neutral.
+            //
+            // Floor exemptions: sleep/shutdown/reboot fire even while a
+            // remote session arms the TV — the machine going away should
+            // still turn the panel off for the empty room. Every other
+            // stock action stays gated by default (startup stays gated so
+            // a boot while remoted leaves the TV dark; the wake and DPMS
+            // mirrors are wake-ish and suppressed for an empty room).
             on_startup: EventAction::restoring(SessionAction::PowerOn),
-            on_shutdown: SessionAction::PowerOff.into(),
-            on_reboot: SessionAction::None.into(),
-            on_sleep: SessionAction::PowerOff.into(),
+            on_shutdown: EventAction::ungated(SessionAction::PowerOff),
+            on_reboot: EventAction::ungated(SessionAction::None),
+            on_sleep: EventAction::ungated(SessionAction::PowerOff),
             on_wake: EventAction::restoring(SessionAction::PowerOn),
             on_dpms_off: SessionAction::ScreenOff.into(),
             on_dpms_on: SessionAction::ScreenOn.into(),
@@ -579,8 +605,9 @@ impl Default for ResolvedUserProfile {
             on_idle_timeout: SessionAction::ScreenOff.into(),
             on_idle_resume: SessionAction::ScreenOn.into(),
             // Remote awareness is opt-in: no connect/disconnect action
-            // and no capture arming until a profile edits them. The
-            // per-event `while_remote` gate lives on each action.
+            // and no capture arming until a profile edits them. Every
+            // user event is wake-ish, so all carry the gated default —
+            // an unconfigured profile keeps the TV dark while armed.
             on_remote_connect: SessionAction::None.into(),
             on_remote_disconnect: SessionAction::None.into(),
             remote_screencast_arms: false,
@@ -1347,41 +1374,41 @@ mod tests {
     #[test]
     fn event_action_while_remote_gate_serde_shapes() {
         // The bare token round-trips as `Plain` and reads `while_remote
-        // = true` (fires while armed) — the gate is opt-in.
+        // = false` (gated) — suppress-by-default, one rule everywhere.
         let plain: EventAction = serde_json::from_value(serde_json::json!("screen_on")).unwrap();
         assert_eq!(plain, EventAction::from(SessionAction::ScreenOn));
-        assert!(plain.while_remote());
+        assert!(!plain.while_remote());
         assert_eq!(
             serde_json::to_value(EventAction::from(SessionAction::ScreenOn)).unwrap(),
             serde_json::json!("screen_on")
         );
 
-        // A table with `while_remote = false` round-trips to a suppressed
-        // action; the gate coexists with `restore_input`.
+        // A table with `while_remote = true` round-trips to a
+        // fire-while-armed action; the gate coexists with `restore_input`.
         let table = serde_json::json!({
             "action": "screen_on",
             "restore_input": true,
-            "while_remote": false,
+            "while_remote": true,
         });
-        let gated: EventAction = serde_json::from_value(table.clone()).unwrap();
+        let ungated: EventAction = serde_json::from_value(table.clone()).unwrap();
         assert_eq!(
-            gated,
+            ungated,
             EventAction::With {
                 action: SessionAction::ScreenOn,
                 restore_input: true,
-                while_remote: false,
+                while_remote: true,
             }
         );
-        assert!(gated.restore_input());
-        assert!(!gated.while_remote());
-        assert_eq!(serde_json::to_value(gated).unwrap(), table);
+        assert!(ungated.restore_input());
+        assert!(ungated.while_remote());
+        assert_eq!(serde_json::to_value(ungated).unwrap(), table);
 
-        // A table omitting `while_remote` defaults it to `true` (fires
-        // while armed) — absence never suppresses.
+        // A table omitting `while_remote` defaults it to `false` (gated)
+        // — absence gates, matching the bare token.
         let defaulted: EventAction =
             serde_json::from_value(serde_json::json!({ "action": "power_on" })).unwrap();
         assert_eq!(defaulted.action(), SessionAction::PowerOn);
-        assert!(defaulted.while_remote());
+        assert!(!defaulted.while_remote());
     }
 
     #[test]
@@ -1417,7 +1444,7 @@ remote_screencast_arms = true
         assert_eq!(body.on_remote_connect, Some(SessionAction::PowerOff.into()));
         assert_eq!(body.on_remote_disconnect, Some(SessionAction::None.into()));
         assert_eq!(body.remote_screencast_arms, Some(true));
-        // A bare-token field parses as `Plain` (gate implicitly true).
+        // A bare-token field parses as `Plain` (gate implicitly false).
         assert!(body.on_lock_wake.is_none());
 
         // Re-serialize and re-parse: shapes are stable across the trip.
@@ -1463,11 +1490,11 @@ remote_screencast_arms = true
         assert_eq!(resolved.on_remote_connect, SessionAction::None);
         assert_eq!(resolved.on_remote_disconnect, SessionAction::None);
         assert!(!resolved.remote_screencast_arms);
-        // Every stock event fires while armed — the gate is opt-in per
-        // event, so nothing is suppressed by default.
-        assert!(resolved.on_session_unlock.while_remote());
-        assert!(resolved.on_lock_wake.while_remote());
-        assert!(resolved.on_idle_resume.while_remote());
+        // Every stock user event is wake-ish and gated by default —
+        // an unconfigured profile suppresses these while armed.
+        assert!(!resolved.on_session_unlock.while_remote());
+        assert!(!resolved.on_lock_wake.while_remote());
+        assert!(!resolved.on_idle_resume.while_remote());
     }
 
     #[test]
@@ -1894,9 +1921,16 @@ ip = "192.168.1.101"
         // DPMS actions mirror the host display by default.
         assert_eq!(resolved.on_dpms_off, SessionAction::ScreenOff);
         assert_eq!(resolved.on_dpms_on, SessionAction::ScreenOn);
-        // Remote awareness is opt-in: every stock event fires while armed.
-        assert!(resolved.on_dpms_on.while_remote());
-        assert!(resolved.on_wake.while_remote());
+        // Suppress-by-default: the wake-ish stock events are gated while
+        // armed, so an unconfigured profile keeps the panel dark.
+        assert!(!resolved.on_dpms_on.while_remote());
+        assert!(!resolved.on_wake.while_remote());
+        assert!(!resolved.on_startup.while_remote());
+        // Floor exemptions: sleep/shutdown/reboot still fire while armed
+        // — the machine going away turns the TV off regardless.
+        assert!(resolved.on_sleep.while_remote());
+        assert!(resolved.on_shutdown.while_remote());
+        assert!(resolved.on_reboot.while_remote());
     }
 
     #[test]

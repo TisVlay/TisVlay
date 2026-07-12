@@ -75,16 +75,37 @@ export struct ProfileFieldEntry {
     bool-value: bool,
     /// Drives the 2 px left gutter accent + reset-glyph visibility.
     is-locally-set: bool,
-    /// Show the restore-input checkbox (on-ish action rows only).
+    /// This row carries the restore-input + remote-gate toggle slots —
+    /// true on every `SessionAction` action row (never on `automate_when`,
+    /// number, or bool rows). Both toggles always render on such rows; the
+    /// `*-enabled` flags decide whether each is interactive or inert.
     has-restore: bool,
-    /// The mapping's resolved `restore_input` modifier.
+    /// The mapping's resolved `restore_input` modifier (the toggle's
+    /// pressed/glyph state).
     restore-value: bool,
-    /// Show the remote-session gate toggle (action rows with a real
-    /// action, excluding the connect/disconnect events).
+    /// Restore-input is interactive on this row (resolved verb is not
+    /// `none`). When false the toggle renders inert + dimmed.
+    restore-enabled: bool,
+    /// The resolved `restore_input` differs from the field's floor
+    /// default — drives the accent tint (locally-changed language),
+    /// distinct from the toggle's on/off value.
+    restore-differs: bool,
+    /// Mirror of `has-restore`: this row carries the remote-session gate
+    /// slot (every `SessionAction` row).
     has-remote-gate: bool,
     /// The mapping's resolved `while_remote` gate — `true` fires while
-    /// armed by a remote session, `false` suppresses.
+    /// armed by a remote session, `false` suppresses. Drives the toggle's
+    /// pressed/glyph state.
     remote-gate-value: bool,
+    /// The gate is interactive on this row (resolved verb is not `none`
+    /// and this is not a connect/disconnect event). When false the toggle
+    /// renders inert + dimmed.
+    remote-gate-enabled: bool,
+    /// The resolved `while_remote` gate differs from the field's floor
+    /// default — drives the accent tint. Neutral at the floor (`false`
+    /// for wake events, `true` for the exempted system events), accented
+    /// when changed either way.
+    remote-gate-differs: bool,
 }
 
 /// One profile entry in either section. Read-only from Slint;

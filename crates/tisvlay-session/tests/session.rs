@@ -366,16 +366,16 @@ async fn user_profile_overrides_and_guards() {
         json!({
             "name": "default",
             "on_session_lock": "screen_off",
-            "on_session_unlock": { "action": "screen_on", "restore_input": true, "while_remote": true },
+            "on_session_unlock": { "action": "screen_on", "restore_input": true, "while_remote": false },
             "on_lock_wake": "screen_on",
             "locked_idle_timeout_seconds": 0,
             "unlocked_idle_timeout_seconds": 0,
             "on_idle_timeout": "screen_off",
             "on_idle_resume": "screen_on",
             // Remote awareness ships neutral: no connect/disconnect action
-            // and capture arming off. The per-event suppression gate rides
-            // each action's table form (default fires while armed), so it
-            // adds no field to the neutral projection.
+            // and capture arming off. The per-event gate rides each
+            // action's table form and is suppress-by-default, so the
+            // wake-ish stock unlock projects `while_remote = false`.
             "on_remote_connect": "none",
             "on_remote_disconnect": "none",
             "remote_screencast_arms": false,
@@ -415,7 +415,7 @@ async fn user_profile_overrides_and_guards() {
     assert_eq!(effective["on_session_lock"], "none");
     assert_eq!(
         effective["on_session_unlock"],
-        json!({ "action": "screen_on", "restore_input": true, "while_remote": true })
+        json!({ "action": "screen_on", "restore_input": true, "while_remote": false })
     );
 
     drive_until(&rig, &sub, SessionEvent::Lock, stock, "screenoff").await;
@@ -730,13 +730,18 @@ async fn armed_remote_suppresses_gated_events() {
     })
     .await;
 
-    // Gate the unlock (and idle-resume) actions off while armed. The
+    // Gate the unlock (and idle-resume) wake actions off while armed. The
     // gate rides the action's table form, replacing the whole mapping.
+    // `on_session_lock` is set ungated (`while_remote = true`) so the
+    // off-going blank still fires while armed — the test's setup depends
+    // on it, and under suppress-by-default a bare screen_off would itself
+    // be gated.
     create_and_assign(
         &rig,
         tv,
         json!({
             "name": "Remote quiet",
+            "on_session_lock": { "action": "screen_off", "while_remote": true },
             "on_session_unlock": { "action": "screen_on", "while_remote": false },
             "on_idle_resume": { "action": "screen_on", "while_remote": false },
         }),

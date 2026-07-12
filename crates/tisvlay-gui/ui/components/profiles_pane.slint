@@ -347,16 +347,97 @@ component ProfileList inherits Rectangle {
 // Field-editor rows — one per `ProfileFieldEntry`, dispatched by `kind`.
 // =============================================================================
 //
-// Two row shapes share the same three-column rhythm:
-//   [2 px gutter] [label] [control + reset glyph]
+// Three row shapes (enum / number / bool) share the same rhythm:
+//   [2 px gutter] [label] [control] [trailing: restore · gate · reset]
 // The gutter accent flips to `Theme.accent` when `is-locally-set`,
 // signaling at a glance which fields override the inherit chain.
-// Reset is only rendered for locally-set rows — inheriting fields
-// can't be "reset" because they already inherit.
 //
-// `entry.current-value` is the resolved token verbatim for both kinds
-// (enum and number); the inherit cue is the gutter accent + reset glyph,
-// not a marker baked into the value.
+// The trailing block (`ProfileRowTrailing`) is fixed-width and identical
+// across all three row kinds, so every reset glyph lands in the same
+// right-edge column — aligned under the detail-header's reset-all
+// button. On `SessionAction` action rows the two toggles are interactive;
+// everywhere else they render inert + dimmed spacers (no visibility-
+// driven layout shift). Reset is only interactive for locally-set rows —
+// inheriting fields can't be "reset" because they already inherit.
+//
+// `entry.current-value` is the resolved token verbatim for enum + number;
+// the inherit cue is the gutter accent + reset glyph, not a marker baked
+// into the value.
+
+// Fixed-width trailing controls, shared by every row kind so the reset
+// glyphs form one vertical column. `gap-form` between the slots matches
+// the detail-header's spacing between its Duplicate and Reset-all
+// buttons, tying the two toolbars to the same rhythm.
+//
+// Toggle accent (`active`) tracks "differs from the field's floor
+// default", not the on/off value — the pane's locally-set visual
+// language. The pressed/glyph state still reflects the value (the gate
+// swaps its glyph by value). On rows where a toggle is meaningless it is
+// `enabled: false`, which dims it and drops interactivity.
+component ProfileRowTrailing inherits HorizontalLayout {
+    in property <ProfileFieldEntry> entry;
+
+    spacing: Design.gap-form;
+    alignment: end;
+
+    // Restore-input toggle slot — 24 px whether the row is an action row
+    // or not, so the column stays put. On non-action rows `has-restore`
+    // is false and this renders an empty spacer.
+    Rectangle {
+        width: 24px;
+        if root.entry.has-restore: IconBtn {
+            width: 100%;
+            height: 100%;
+            source: Icons.restore-input;
+            enabled: root.entry.restore-enabled;
+            active: root.entry.restore-differs;
+            accessible-label: @tr("Land on primary input");
+            tip: @tr("Land on primary input");
+            clicked => {
+                Profiles.restore-edited(root.entry.field-name, !root.entry.restore-value);
+            }
+        }
+    }
+
+    // Remote-session gate slot. The glyph swaps by value (gated =
+    // network-off); the accent tracks differs-from-floor.
+    Rectangle {
+        width: 24px;
+        if root.entry.has-remote-gate: IconBtn {
+            width: 100%;
+            height: 100%;
+            source: root.entry.remote-gate-value
+                ? Icons.remote-gate-on
+                : Icons.remote-gate-off;
+            enabled: root.entry.remote-gate-enabled;
+            active: root.entry.remote-gate-differs;
+            accessible-label: root.entry.remote-gate-value
+                ? @tr("Fires during remote session")
+                : @tr("Suppressed during remote session");
+            tip: root.entry.remote-gate-value
+                ? @tr("Fires during remote session")
+                : @tr("Suppressed during remote session");
+            clicked => {
+                Profiles.remote-gated(root.entry.field-name, !root.entry.remote-gate-value);
+            }
+        }
+    }
+
+    // Reset glyph — the right-edge column, aligned under the header's
+    // reset-all. Interactive only for locally-set fields; a fixed 24 px
+    // wide whether populated or not so the rhythm stays consistent.
+    Rectangle {
+        width: 24px;
+        if root.entry.is-locally-set: IconBtn {
+            width: 100%;
+            height: 100%;
+            source: Icons.reload;
+            accessible-label: @tr("Reset {} to default", root.entry.label);
+            tip: @tr("Reset field");
+            clicked => { Profiles.reset-field(root.entry.field-name); }
+        }
+    }
+}
 
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;
@@ -413,58 +494,10 @@ component ProfileFieldRowEnum inherits Rectangle {
                 }
             }
 
-            // Restore-input modifier - only for on-ish action rows on
-            // a mapping that can carry it. Inert for backends without
-            // the INPUT capability (the daemon sheds the intent).
-            // Deliberately stateless: the accent state renders purely
-            // from the model, so a field reset repaints immediately.
-            if root.entry.has-restore: VerticalLayout {
-                alignment: center;
-                IconBtn {
-                    source: Icons.restore-input;
-                    active: root.entry.restore-value;
-                    accessible-label: @tr("Land on primary input");
-                    tip: @tr("Land on primary input");
-                    clicked => {
-                        Profiles.restore-edited(root.entry.field-name, !root.entry.restore-value);
-                    }
-                }
-            }
-
-            // Remote-session gate — on action rows that carry a real
-            // action (except the connect/disconnect events). The gated
-            // state (suppress while armed) is the active/accent
-            // treatment and swaps to the network-disconnect glyph.
-            if root.entry.has-remote-gate: VerticalLayout {
-                alignment: center;
-                IconBtn {
-                    source: root.entry.remote-gate-value
-                        ? Icons.remote-gate-on
-                        : Icons.remote-gate-off;
-                    active: !root.entry.remote-gate-value;
-                    accessible-label: root.entry.remote-gate-value
-                        ? @tr("Fires during remote session")
-                        : @tr("Suppressed during remote session");
-                    tip: root.entry.remote-gate-value
-                        ? @tr("Fires during remote session")
-                        : @tr("Suppressed during remote session");
-                    clicked => {
-                        Profiles.remote-gated(root.entry.field-name, !root.entry.remote-gate-value);
-                    }
-                }
-            }
-
-            // Reset glyph — only rendered for locally-set fields.
-            // 24 px column whether populated or not so the row
-            // rhythm stays consistent.
             VerticalLayout {
-                width: 24px;
                 alignment: center;
-                if root.entry.is-locally-set: IconBtn {
-                    source: Icons.reload;
-                    accessible-label: @tr("Reset {} to default", root.entry.label);
-                    tip: @tr("Reset field");
-                    clicked => { Profiles.reset-field(root.entry.field-name); }
+                ProfileRowTrailing {
+                    entry: root.entry;
                 }
             }
         }
@@ -566,14 +599,14 @@ component ProfileFieldRowNumber inherits Rectangle {
                 }
             }
 
+            // Same fixed-width trailing block as the enum row so this
+            // number row's reset glyph shares the right-edge column. The
+            // toggle slots render as inert spacers (a number field carries
+            // no action modifiers).
             VerticalLayout {
-                width: 24px;
                 alignment: center;
-                if root.entry.is-locally-set: IconBtn {
-                    source: Icons.reload;
-                    accessible-label: @tr("Reset {} to inherit", root.entry.label);
-                    tip: @tr("Reset field");
-                    clicked => { Profiles.reset-field(root.entry.field-name); }
+                ProfileRowTrailing {
+                    entry: root.entry;
                 }
             }
         }
@@ -628,14 +661,13 @@ component ProfileFieldRowBool inherits Rectangle {
                 }
             }
 
+            // Shared trailing block — the screencast-arms switch row's
+            // reset glyph joins the same right-edge column as the action
+            // rows; the two toggle slots render as inert spacers.
             VerticalLayout {
-                width: 24px;
                 alignment: center;
-                if root.entry.is-locally-set: IconBtn {
-                    source: Icons.reload;
-                    accessible-label: @tr("Reset {} to inherit", root.entry.label);
-                    tip: @tr("Reset field");
-                    clicked => { Profiles.reset-field(root.entry.field-name); }
+                ProfileRowTrailing {
+                    entry: root.entry;
                 }
             }
         }
