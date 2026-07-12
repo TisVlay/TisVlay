@@ -34,9 +34,19 @@ update-desktop-database /usr/share/applications 2>/dev/null || true
 # Enable (but don't start) the system daemon.
 systemctl enable tisvlay-daemon.service 2>/dev/null || true
 
-echo "tisvlay installed. Grant yourself socket access, start the daemon,"
-echo "then pair a TV:"
+# Enable the per-user session + tray for every user's graphical session
+# (mirrors the NixOS module's wantedBy=graphical-session.target). These
+# are user units, so a package script can't touch a live user manager;
+# --global installs the enablement symlinks under /etc/systemd/user, and
+# each user's next graphical login picks them up. They start only inside a
+# graphical session and no-op without socket access, so enabling globally
+# is safe for users not in the tisvlay group.
+systemctl --global enable tisvlay-session.service tisvlay-tray.service 2>/dev/null || true
+
+echo "tisvlay installed. Grant yourself socket access and start the daemon:"
 echo "  sudo usermod -aG tisvlay \$USER   # re-login to take effect"
 echo "  sudo systemctl start tisvlay-daemon"
 echo "  tisvlay pair \"My TV\" --vendor lg --json '{\"ip\":\"<address>\"}'"
-echo "  systemctl --user enable --now tisvlay-session tisvlay-tray"
+echo "The session + tray start automatically on your next graphical login;"
+echo "start them now without re-login with:"
+echo "  systemctl --user start tisvlay-session tisvlay-tray"
