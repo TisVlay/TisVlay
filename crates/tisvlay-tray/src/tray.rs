@@ -350,13 +350,19 @@ impl TvTray {
         }
         if tv.has_screen {
             if tv.is_screen_on {
-                items.push(command_item(tx, "Screen Off", "view-hidden-symbolic", move || {
-                    TrayCommand::ScreenOff(id)
-                }));
+                items.push(command_item(
+                    tx,
+                    "Screen Off",
+                    "view-hidden-symbolic",
+                    move || TrayCommand::ScreenOff(id),
+                ));
             } else {
-                items.push(command_item(tx, "Screen On", "view-visible-symbolic", move || {
-                    TrayCommand::ScreenOn(id)
-                }));
+                items.push(command_item(
+                    tx,
+                    "Screen On",
+                    "view-visible-symbolic",
+                    move || TrayCommand::ScreenOn(id),
+                ));
             }
         }
 
