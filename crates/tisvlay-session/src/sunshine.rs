@@ -85,11 +85,16 @@ pub(crate) fn report_for(state: ServerState) -> Option<RemoteReport> {
     }
 }
 
-/// Whether a `/proc/<pid>/comm` value names the Sunshine process. `comm`
-/// is the kernel's process name (truncated to 15 bytes, so the 8-byte
-/// `sunshine` is never clipped).
+/// Whether a `/proc/<pid>/comm` value plausibly names the Sunshine
+/// process. `comm` is the kernel's process name, truncated to 15 bytes and
+/// — under a Nix `makeWrapper` wrapper — carrying a leading `.` and a
+/// `-wrapped` suffix (`.sunshine-wrapped`, itself truncated to
+/// `.sunshine-wrapp`). This is only a gate to skip the HTTP probe when
+/// Sunshine is clearly absent; the authoritative check is the
+/// `/serverinfo` response, so a permissive prefix match (tolerating the
+/// wrapper decoration) is deliberate.
 pub(crate) fn is_sunshine_comm(comm: &str) -> bool {
-    comm.trim() == "sunshine"
+    comm.trim().trim_start_matches('.').starts_with("sunshine")
 }
 
 /// Spawn the Sunshine startup re-derive. Runs once — gate, resolve, report
@@ -209,13 +214,16 @@ mod tests {
     }
 
     #[test]
-    fn process_presence_matches_only_the_sunshine_comm() {
-        // comm carries a trailing newline off /proc; the exact process
-        // name arms, unrelated processes do not.
+    fn process_presence_matches_the_sunshine_comm_including_wrappers() {
+        // comm carries a trailing newline off /proc; the plain name and the
+        // Nix wrapper forms (leading dot, `-wrapped` suffix, truncated to
+        // 15 bytes as the kernel delivers it) all gate through.
         assert!(is_sunshine_comm("sunshine\n"));
         assert!(is_sunshine_comm("sunshine"));
+        assert!(is_sunshine_comm(".sunshine-wrapp\n"));
+        assert!(is_sunshine_comm(".sunshine-wrapped"));
+        // Unrelated processes do not gate.
         assert!(!is_sunshine_comm("firefox\n"));
-        assert!(!is_sunshine_comm("sunshine-helper"));
         assert!(!is_sunshine_comm(""));
     }
 
