@@ -7201,7 +7201,6 @@ dependencies = [
  "anyhow",
  "ashpd",
  "clap",
- "freedesktop-icons",
  "futures-util",
  "gettext-rs",
  "i-slint-backend-testing",
@@ -7215,6 +7214,7 @@ dependencies = [
  "tempfile",
  "tisvlay",
  "tisvlay-core",
+ "tisvlay-icons",
  "tisvlay-wire",
  "tokio",
  "tracing",
@@ -7223,6 +7223,14 @@ dependencies = [
  "webbrowser",
  "wl-clipboard-rs",
  "zbus",
+]
+
+[[package]]
+name = "tisvlay-icons"
+version = "0.3.0"
+dependencies = [
+ "freedesktop-icons",
+ "tracing",
 ]
 
 [[package]]
@@ -7332,6 +7340,7 @@ dependencies = [
  "tisvlay",
  "tisvlay-core",
  "tisvlay-daemon",
+ "tisvlay-icons",
  "tisvlay-mock",
  "tisvlay-session",
  "tisvlay-wire",

@@ -1,0 +1,15 @@
+[package]
+name = "tisvlay-icons"
+description = "TisVlay freedesktop icon-theme resolution: active-desktop theme detection + symbolic/color cascade to a file path"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+freedesktop-icons = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

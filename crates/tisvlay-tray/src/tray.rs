@@ -8,11 +8,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
+use tisvlay_icons::Variant;
 use tokio::sync::mpsc;
 use tracing::debug;
 use uuid::Uuid;
 
 use crate::state::{Mirror, TvView};
+
+/// Resolve `names` to the icon name that exists in the active desktop's
+/// theme, so the tray host loads (and, for `-symbolic`, recolors) a glyph
+/// it actually ships. Falls back to the first requested name so a host
+/// whose theme our detection can't read still gets the canonical name.
+/// Keeping resolution to a name — not a rendered pixmap — is what lets
+/// symbolic glyphs recolor to the panel foreground on light and dark.
+fn themed(names: &[&str], prefer: Variant) -> String {
+    tisvlay_icons::resolve_name(names, prefer)
+        .or_else(|| names.first().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
 
 /// What the scroll wheel adjusts (set by the last volume/backlight
 /// interaction).
@@ -123,9 +136,11 @@ impl Tray for TvTray {
 
     fn icon_name(&self) -> String {
         if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.connected) {
-            "video-display".into()
+            // Connected: the colored device glyph as a status signal.
+            themed(&["video-display"], Variant::Color)
         } else {
-            "video-display-symbolic".into()
+            // Idle/offline: the flat symbolic glyph.
+            themed(&["video-display"], Variant::Symbolic)
         }
     }
 
@@ -176,7 +191,7 @@ impl Tray for TvTray {
         ToolTip {
             title: "TisVlay".into(),
             description,
-            icon_name: "video-display".into(),
+            icon_name: themed(&["video-display"], Variant::Color),
             ..Default::default()
         }
     }
@@ -236,7 +251,7 @@ impl Tray for TvTray {
             items.push(MenuItem::Separator);
             items.push(status_line(
                 "Remote session active",
-                "network-connect-symbolic",
+                &["network-connect", "network-wired"],
             ));
         }
         items.push(MenuItem::Separator);
@@ -251,7 +266,10 @@ impl Tray for TvTray {
             let pending = Arc::clone(&self.open_gui_pending);
             StandardItem {
                 label: "Settings".into(),
-                icon_name: "settings-configure".into(),
+                icon_name: themed(
+                    &["settings-configure", "configure", "preferences-system"],
+                    Variant::Symbolic,
+                ),
                 activate: Box::new(move |_tray: &mut Self| {
                     if pending.swap(true, Ordering::Relaxed) {
                         debug!("Settings click dropped — previous OpenGui still in flight");
@@ -275,7 +293,7 @@ impl Tray for TvTray {
             items.push(command_item(
                 &self.cmd_tx,
                 "Quit",
-                "application-exit",
+                &["application-exit"],
                 || TrayCommand::Quit,
             ));
         }
@@ -292,14 +310,17 @@ impl TvTray {
         } else {
             self.down_tv_menu(id, tv)
         };
-        let icon = match (tv.connected, tv.automated) {
-            (true, true) => "tvconnected",
-            (true, false) => "tvtrusted",
-            (false, _) => "tvdisconnected",
+        // Colored device glyph as a status signal when reachable (the
+        // Breeze tv* names fall back to the plain video-display glyph on
+        // themes that lack them); the flat symbolic glyph when off.
+        let (names, variant): (&[&str], Variant) = match (tv.connected, tv.automated) {
+            (true, true) => (&["tvconnected", "video-display"], Variant::Color),
+            (true, false) => (&["tvtrusted", "video-display"], Variant::Color),
+            (false, _) => (&["tvdisconnected", "video-display"], Variant::Symbolic),
         };
         SubMenu {
             label: tv.name.clone(),
-            icon_name: icon.into(),
+            icon_name: themed(names, variant),
             submenu,
             ..Default::default()
         }
@@ -312,7 +333,7 @@ impl TvTray {
         items.push(command_item(
             tx,
             "Power Off",
-            "system-shutdown",
+            &["system-shutdown"],
             move || TrayCommand::PowerOff(id),
         ));
         items.push(self.profile_submenu(id, tv));
@@ -330,33 +351,39 @@ impl TvTray {
             if let Some(level) = tv.backlight {
                 items.push(status_line(
                     &format!("Backlight: {level}"),
-                    "high-brightness",
+                    &["high-brightness", "display-brightness"],
                 ));
             }
             items.push(backlight_item(
                 tx,
                 "Backlight Up (+10)",
-                "high-brightness",
+                &["high-brightness", "display-brightness"],
                 id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, 10),
             ));
             items.push(backlight_item(
                 tx,
                 "Backlight Down (-10)",
-                "low-brightness",
+                &["low-brightness", "display-brightness"],
                 id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, -10),
             ));
         }
         if tv.has_screen {
             if tv.is_screen_on {
-                items.push(command_item(tx, "Screen Off", "view-hidden", move || {
-                    TrayCommand::ScreenOff(id)
-                }));
+                items.push(command_item(
+                    tx,
+                    "Screen Off",
+                    &["view-hidden", "view-conceal"],
+                    move || TrayCommand::ScreenOff(id),
+                ));
             } else {
-                items.push(command_item(tx, "Screen On", "view-visible", move || {
-                    TrayCommand::ScreenOn(id)
-                }));
+                items.push(command_item(
+                    tx,
+                    "Screen On",
+                    &["view-visible", "view-reveal"],
+                    move || TrayCommand::ScreenOn(id),
+                ));
             }
         }
 
@@ -372,20 +399,20 @@ impl TvTray {
                 };
                 items.push(status_line(
                     &format!("Volume: {volume}{muted}"),
-                    "audio-volume-medium",
+                    &["audio-volume-medium"],
                 ));
             }
             items.push(volume_item(
                 tx,
                 "Volume Up (+10)",
-                "audio-volume-high",
+                &["audio-volume-high"],
                 id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, 10),
             ));
             items.push(volume_item(
                 tx,
                 "Volume Down (-10)",
-                "audio-volume-medium",
+                &["audio-volume-medium"],
                 id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, -10),
             ));
@@ -396,9 +423,9 @@ impl TvTray {
                 tx,
                 if muted { "Unmute" } else { "Mute" },
                 if muted {
-                    "audio-volume-high"
+                    &["audio-volume-high"]
                 } else {
-                    "audio-volume-muted"
+                    &["audio-volume-muted"]
                 },
                 id,
                 move || TrayCommand::ToggleMute(id),
@@ -412,7 +439,7 @@ impl TvTray {
         let mut items = vec![command_item(
             tx,
             "Power On (Wake)",
-            "system-run",
+            &["system-run"],
             move || TrayCommand::PowerOn(id),
         )];
         items.push(self.profile_submenu(id, tv));
@@ -430,7 +457,10 @@ impl TvTray {
         let tx = self.cmd_tx.clone();
         SubMenu {
             label: "Input".into(),
-            icon_name: "input-tvremote-symbolic".into(),
+            icon_name: themed(
+                &["input-tvremote", "tv", "video-display"],
+                Variant::Symbolic,
+            ),
             submenu: vec![
                 RadioGroup {
                     selected,
@@ -463,7 +493,7 @@ impl TvTray {
             profile_picker(
                 &self.cmd_tx,
                 "User",
-                "im-user",
+                &["im-user", "avatar-default"],
                 &self.mirror.user_profiles,
                 tv.user_profile,
                 tisvlay_core::DEFAULT_USER_PROFILE_UUID,
@@ -472,7 +502,7 @@ impl TvTray {
             profile_picker(
                 &self.cmd_tx,
                 "System",
-                "system-users",
+                &["system-users"],
                 &self.mirror.system_profiles,
                 tv.system_profile,
                 tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
@@ -481,7 +511,7 @@ impl TvTray {
         ];
         SubMenu {
             label: "Profiles".into(),
-            icon_name: "system-user-list".into(),
+            icon_name: themed(&["system-user-list", "system-users"], Variant::Symbolic),
             submenu,
             ..Default::default()
         }
@@ -495,7 +525,7 @@ impl TvTray {
 fn profile_picker(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     kind: &str,
-    icon: &str,
+    icon: &[&str],
     catalog: &std::collections::BTreeMap<Uuid, String>,
     assigned: Option<Uuid>,
     default_id: Uuid,
@@ -518,7 +548,7 @@ fn profile_picker(
     let tx = tx.clone();
     SubMenu {
         label: format!("{kind}: {current}"),
-        icon_name: icon.into(),
+        icon_name: themed(icon, Variant::Symbolic),
         submenu: vec![
             RadioGroup {
                 selected,
@@ -545,9 +575,9 @@ fn managed_toggle(
         tx,
         if managed { "Unmanage" } else { "Manage" },
         if managed {
-            "media-playback-pause"
+            &["media-playback-pause"]
         } else {
-            "media-playback-start"
+            &["media-playback-start"]
         },
         move || TrayCommand::SetManaged(id, !managed),
     )
@@ -558,14 +588,14 @@ fn managed_toggle(
 fn volume_item(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     label: &str,
-    icon: &str,
+    icon: &[&str],
     id: Uuid,
     command: impl Fn() -> TrayCommand + Send + Sync + 'static,
 ) -> MenuItem<TvTray> {
     let tx = tx.clone();
     StandardItem {
         label: label.into(),
-        icon_name: icon.into(),
+        icon_name: themed(icon, Variant::Symbolic),
         activate: Box::new(move |tray: &mut TvTray| {
             tray.scroll_target = ScrollTarget::Volume;
             tray.scroll_tv = Some(id);
@@ -581,14 +611,14 @@ fn volume_item(
 fn backlight_item(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     label: &str,
-    icon: &str,
+    icon: &[&str],
     id: Uuid,
     command: impl Fn() -> TrayCommand + Send + Sync + 'static,
 ) -> MenuItem<TvTray> {
     let tx = tx.clone();
     StandardItem {
         label: label.into(),
-        icon_name: icon.into(),
+        icon_name: themed(icon, Variant::Symbolic),
         activate: Box::new(move |tray: &mut TvTray| {
             tray.scroll_target = ScrollTarget::Backlight;
             tray.scroll_tv = Some(id);
@@ -600,10 +630,10 @@ fn backlight_item(
 }
 
 /// Disabled informational row with an icon (current volume/backlight).
-fn status_line(label: &str, icon: &str) -> MenuItem<TvTray> {
+fn status_line(label: &str, icon: &[&str]) -> MenuItem<TvTray> {
     StandardItem {
         label: label.into(),
-        icon_name: icon.into(),
+        icon_name: themed(icon, Variant::Symbolic),
         enabled: false,
         ..Default::default()
     }
@@ -622,12 +652,12 @@ fn disabled(label: &str) -> MenuItem<TvTray> {
 fn command_item(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     label: &str,
-    icon: &str,
+    icon: &[&str],
     command: impl Fn() -> TrayCommand + Send + Sync + 'static,
 ) -> MenuItem<TvTray> {
     StandardItem {
         label: label.into(),
-        icon_name: icon.into(),
+        icon_name: themed(icon, Variant::Symbolic),
         activate: activate(tx, command),
         ..Default::default()
     }
