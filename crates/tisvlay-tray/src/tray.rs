@@ -275,7 +275,7 @@ impl Tray for TvTray {
             items.push(command_item(
                 &self.cmd_tx,
                 "Quit",
-                "application-exit",
+                "application-exit-symbolic",
                 || TrayCommand::Quit,
             ));
         }
@@ -312,7 +312,7 @@ impl TvTray {
         items.push(command_item(
             tx,
             "Power Off",
-            "system-shutdown",
+            "system-shutdown-symbolic",
             move || TrayCommand::PowerOff(id),
         ));
         items.push(self.profile_submenu(id, tv));
@@ -330,31 +330,31 @@ impl TvTray {
             if let Some(level) = tv.backlight {
                 items.push(status_line(
                     &format!("Backlight: {level}"),
-                    "high-brightness",
+                    "high-brightness-symbolic",
                 ));
             }
             items.push(backlight_item(
                 tx,
                 "Backlight Up (+10)",
-                "high-brightness",
+                "high-brightness-symbolic",
                 id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, 10),
             ));
             items.push(backlight_item(
                 tx,
                 "Backlight Down (-10)",
-                "low-brightness",
+                "low-brightness-symbolic",
                 id,
                 move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, -10),
             ));
         }
         if tv.has_screen {
             if tv.is_screen_on {
-                items.push(command_item(tx, "Screen Off", "view-hidden", move || {
+                items.push(command_item(tx, "Screen Off", "view-hidden-symbolic", move || {
                     TrayCommand::ScreenOff(id)
                 }));
             } else {
-                items.push(command_item(tx, "Screen On", "view-visible", move || {
+                items.push(command_item(tx, "Screen On", "view-visible-symbolic", move || {
                     TrayCommand::ScreenOn(id)
                 }));
             }
@@ -412,7 +412,7 @@ impl TvTray {
         let mut items = vec![command_item(
             tx,
             "Power On (Wake)",
-            "system-run",
+            "system-run-symbolic",
             move || TrayCommand::PowerOn(id),
         )];
         items.push(self.profile_submenu(id, tv));
@@ -463,7 +463,7 @@ impl TvTray {
             profile_picker(
                 &self.cmd_tx,
                 "User",
-                "im-user",
+                "im-user-symbolic",
                 &self.mirror.user_profiles,
                 tv.user_profile,
                 tisvlay_core::DEFAULT_USER_PROFILE_UUID,
@@ -472,7 +472,7 @@ impl TvTray {
             profile_picker(
                 &self.cmd_tx,
                 "System",
-                "system-users",
+                "system-users-symbolic",
                 &self.mirror.system_profiles,
                 tv.system_profile,
                 tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
@@ -481,7 +481,7 @@ impl TvTray {
         ];
         SubMenu {
             label: "Profiles".into(),
-            icon_name: "system-user-list".into(),
+            icon_name: "system-user-list-symbolic".into(),
             submenu,
             ..Default::default()
         }
@@ -545,9 +545,9 @@ fn managed_toggle(
         tx,
         if managed { "Unmanage" } else { "Manage" },
         if managed {
-            "media-playback-pause"
+            "media-playback-pause-symbolic"
         } else {
-            "media-playback-start"
+            "media-playback-start-symbolic"
         },
         move || TrayCommand::SetManaged(id, !managed),
     )

@@ -39,7 +39,7 @@ use edit_pane::{
     compute_edit_valid, extract_invalid_vendor_config, is_not_pairing, mark_edit_field_invalid,
     publish_edit_error,
 };
-use icon_theme::load_themed_icon;
+use icon_theme::{load_color_icon, load_symbolic_icon};
 use power_cycle::run_power_on_with_progress;
 use profiles::{
     EditorKind, ProfileEditor, dispatch_rename, dispatch_reset_all, dispatch_reset_field,
@@ -386,102 +386,102 @@ pub fn run() -> Result<()> {
     // Resolve sidebar icons against the user's freedesktop icon
     // theme. Mirrors the tray's approach: by-name lookup with theme
     // cascade + hicolor fallback, so the sidebar feels native on
-    // Breeze / Adwaita / etc. without us shipping our own glyphs.
-    // Missing names render as empty (Slint draws nothing for an
-    // empty image source); the label still shows.
-    app.set_tvs_icon(load_themed_icon(&[
+    // Breeze / Adwaita / Yaru / etc. without us shipping our own
+    // glyphs. The sidebar is all symbolic (see icon_theme); only the
+    // About-pane app logo stays colored for identity. Missing names
+    // render as empty (Slint draws nothing for an empty image source);
+    // the label still shows.
+    app.set_tvs_icon(load_symbolic_icon(&[
         "video-television",
         "video-display",
         "tv",
     ]));
-    app.set_profiles_icon(load_themed_icon(&[
+    app.set_profiles_icon(load_symbolic_icon(&[
         "system-user-list",
         "preferences-desktop-user",
+        "system-users",
     ]));
-    app.set_settings_icon(load_themed_icon(&[
+    app.set_settings_icon(load_symbolic_icon(&[
         "configure",
         "settings-configure",
         "preferences-system",
     ]));
-    app.set_about_icon(load_themed_icon(&["help-about", "dialog-information"]));
+    app.set_about_icon(load_symbolic_icon(&["help-about", "dialog-information"]));
     // App-identity logo for the About pane header. Matches the
     // `.desktop` entry's `Icon=video-display` and the tray's
     // connected-state icon, so the launcher entry / tray / About
     // header all read as the same app visually.
-    app.set_app_logo(load_themed_icon(&["video-display"]));
+    app.set_app_logo(load_color_icon(&["video-display"]));
 
     // Action-glyph icons resolved from the user's freedesktop theme
     // and pushed onto the `Icons` global for any pane to reach.
     let icons = app.global::<Icons>();
-    icons.set_shutdown(load_themed_icon(&["system-shutdown"]));
-    icons.set_edit(load_themed_icon(&["document-edit", "edit"]));
+    icons.set_shutdown(load_symbolic_icon(&["system-shutdown"]));
+    icons.set_edit(load_symbolic_icon(&["document-edit", "edit"]));
     // `dialog-ok-apply` is the Breeze/Adwaita name for the
     // checkmark used as a "commit" affordance; `dialog-ok` is the
     // older fallback. `window-close` is the most reliable X glyph
     // across themes (`dialog-cancel` exists but is sometimes a
     // colored stop-sign which reads as destructive).
-    icons.set_save(load_themed_icon(&["dialog-ok-apply", "dialog-ok"]));
-    icons.set_cancel(load_themed_icon(&["window-close", "dialog-cancel"]));
+    icons.set_save(load_symbolic_icon(&["dialog-ok-apply", "dialog-ok"]));
+    icons.set_cancel(load_symbolic_icon(&["window-close", "dialog-cancel"]));
     // Folder-open glyph for the About-pane "reveal config in file
     // manager" buttons. `document-open-folder` is the Breeze name;
     // `folder-open` is the Adwaita / hicolor fallback.
-    icons.set_folder_open(load_themed_icon(&["document-open-folder", "folder-open"]));
+    icons.set_folder_open(load_symbolic_icon(&["document-open-folder", "folder-open"]));
     // Reload glyph for the sidebar's "Reload daemon config" button.
     // `view-refresh` is the canonical freedesktop name (per the icon
     // naming spec) and is present in every shipped theme. Same icon
     // the Tray uses for its reload-config affordance.
-    icons.set_reload(load_themed_icon(&["view-refresh"]));
+    icons.set_reload(load_symbolic_icon(&["view-refresh"]));
     // `edit-copy` is the canonical freedesktop name for the
     // duplicate / copy glyph; `Clipboard.copy-icon` carries the
     // same image but is wired to the clipboard-write callback. The
     // `Icons.copy` slot here is for "duplicate this thing"
     // affordances that don't touch the clipboard.
-    icons.set_copy(load_themed_icon(&["edit-copy"]));
+    icons.set_copy(load_symbolic_icon(&["edit-copy"]));
     // Delete: the action-verb `edit-delete` glyph.
-    icons.set_delete(load_themed_icon(&["edit-delete"]));
-    // Profile-identity tiles. `im-user` and `system-users` are the
-    // freedesktop names the tray already uses for its user / system
-    // profile submenus — pairing the GUI tile with the same glyph
-    // keeps the cross-surface affordance consistent.
-    icons.set_im_user(load_themed_icon(&["im-user"]));
-    icons.set_system_users(load_themed_icon(&["system-users"]));
+    icons.set_delete(load_symbolic_icon(&["edit-delete"]));
+    // Profile-identity tiles. `im-user` / `system-users` are the
+    // freedesktop names the tray uses for its user / system profile
+    // submenus; `avatar-default` covers Adwaita / Yaru, which drop
+    // `im-user`. Pairing the GUI tile with the same glyph keeps the
+    // cross-surface affordance consistent.
+    icons.set_im_user(load_symbolic_icon(&["im-user", "avatar-default"]));
+    icons.set_system_users(load_symbolic_icon(&["system-users"]));
     // Contextual-help "i" glyph for the help toggletip. Lead with the
     // name KDE's own help button uses; `dialog-information` is a
     // busier, different glyph kept only as a last-resort fallback.
-    icons.set_info(load_themed_icon(&[
-        "help-contextual-symbolic",
+    icons.set_info(load_symbolic_icon(&[
         "help-contextual",
         "documentinfo",
         "dialog-information",
     ]));
-    // External-link glyph for URL-launching UriBtns (About pane). Leads
-    // with the symbolic name; broader names cover Breeze / Adwaita.
-    icons.set_open_link(load_themed_icon(&[
-        "open-link-symbolic",
-        "external-link-symbolic",
+    // External-link glyph for URL-launching UriBtns (About pane).
+    icons.set_open_link(load_symbolic_icon(&[
+        "open-link",
+        "external-link",
         "emblem-symbolic-link",
         "internet-web-browser",
         "applications-internet",
     ]));
     // TV-remote glyph for the profile editor's restore-input toggle.
-    // `input-tvremote-symbolic` is the Breeze name; the plain and
-    // video-television names cover Adwaita / hicolor.
-    icons.set_restore_input(load_themed_icon(&[
-        "input-tvremote-symbolic",
+    // `input-tvremote` is the Breeze name; `tv` / `video-display` cover
+    // Adwaita / Yaru, which ship neither tvremote name.
+    icons.set_restore_input(load_symbolic_icon(&[
         "input-tvremote",
-        "video-television",
+        "tv",
+        "video-display",
     ]));
     // Network connect/disconnect glyphs for the profile editor's
     // remote-session gate toggle: the connected glyph marks the ungated
     // (fires-while-armed) state, the disconnected glyph the gated
-    // (suppressed) state. Symbolic-first fallback, plain names next.
-    icons.set_remote_gate_on(load_themed_icon(&[
-        "network-connect-symbolic",
-        "network-connect",
-    ]));
-    icons.set_remote_gate_off(load_themed_icon(&[
-        "network-disconnect-symbolic",
+    // (suppressed) state. `network-connect` / `network-disconnect` are
+    // the Breeze names; the `network-wired` pair covers Adwaita / Yaru.
+    icons.set_remote_gate_on(load_symbolic_icon(&["network-connect", "network-wired"]));
+    icons.set_remote_gate_off(load_symbolic_icon(&[
         "network-disconnect",
+        "network-wired-disconnected",
     ]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
@@ -492,7 +492,7 @@ pub fn run() -> Result<()> {
     // log a warning — the button appears to do nothing rather than
     // panicking, same UX as before.
     let clipboard = app.global::<Clipboard>();
-    clipboard.set_copy_icon(load_themed_icon(&["edit-copy"]));
+    clipboard.set_copy_icon(load_symbolic_icon(&["edit-copy"]));
     {
         let app_weak = app.as_weak();
         clipboard.on_copy(move |value, label| {
