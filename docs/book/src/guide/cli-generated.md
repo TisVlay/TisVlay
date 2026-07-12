@@ -420,7 +420,7 @@ System-profile catalog (daemon-side)
 * `create` — Create a profile: `--body` is a SystemProfileConfig body
 * `update` — Replace a profile's body (full JSON body; name required inside)
 * `duplicate` — Copy a profile under a new name
-* `delete` — 
+* `delete` —
 * `defaults` — The stock mapping unset fields inherit
 * `effective` — One TV's resolved mapping (assigned profile over stock)
 
@@ -514,13 +514,13 @@ User-profile catalog (session-service side, via --user-socket)
 
 ###### **Subcommands:**
 
-* `list` — 
+* `list` —
 * `create` — Create a profile: `--body` is a UserProfileConfig body
-* `update` — 
-* `duplicate` — 
-* `delete` — 
-* `defaults` — 
-* `effective` — 
+* `update` —
+* `duplicate` —
+* `delete` —
+* `defaults` —
+* `effective` —
 * `assign` — Assign (or with no value clear) a TV's user profile
 
 
