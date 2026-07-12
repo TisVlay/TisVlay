@@ -52,7 +52,19 @@ jobs:
             cargo-nfpm
             cargo-zigbuild
             just
-            zig
+
+      # `zig` is not in install-action's manifest, so listing it above sends
+      # it to the cargo-binstall fallback — which can only resolve crates.io
+      # crates and aborts the whole batch on `zig`. Install it from its own
+      # release channel instead, pinned to the dev shell's version so CI
+      # produces the same glibc-baselined binaries. cargo-zigbuild picks up
+      # `zig` from PATH. (cargo-nfpm stays above: it *is* a crate, so its
+      # binstall fallback builds it from source fine once zig is out of the
+      # batch.)
+      - name: Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Cache
         uses: Swatinem/rust-cache@v2

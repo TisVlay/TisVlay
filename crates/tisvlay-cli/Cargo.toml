@@ -1,16 +1,11 @@
 [package]
 name = "tisvlay-cli"
-description = "CLI tool for TV control"
+description = "TisVlay CLI: multi-vendor TV control from the command line"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-authors.workspace = true
 license.workspace = true
-publish = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+publish.workspace = true
 
 [lib]
 name = "tisvlay_cli"
@@ -20,12 +15,11 @@ path = "src/lib.rs"
 name = "tisvlay"
 path = "src/main.rs"
 
-# The gen-cli-docs helper renders the clap tree to Markdown for the CLI
-# reference (`just docs-cli`). Gated behind `gen-docs` (optional
-# clap-markdown) so it stays out of the shipped `tisvlay` binary, and so
-# generating the docs builds only the CLI — not the dev-dependency graph
-# (tisvlay-harness → Slint → fontconfig), which the minimal docs CI job
-# can't build.
+# The gen-cli-docs helper renders the clap tree (in this crate's lib
+# target) to Markdown for the CLI reference (`just docs-cli`). Gated
+# behind `gen-docs` (optional clap-markdown) so clap-markdown never links
+# into the shipped `tisvlay` binary; the docs CI job builds it with
+# `--features gen-docs` and pulls only the CLI, not the GUI stack.
 [[bin]]
 name = "gen-cli-docs"
 path = "src/bin/gen-cli-docs.rs"
@@ -35,25 +29,18 @@ required-features = ["gen-docs"]
 gen-docs = ["dep:clap-markdown"]
 
 [dependencies]
-tisvlay-core = { workspace = true, features = ["dbus"] }
-tokio = { workspace = true }
-clap = { workspace = true }
 anyhow = { workspace = true }
-tracing-subscriber = { workspace = true }
+clap = { workspace = true }
 serde_json = { workspace = true }
-futures-util = { workspace = true }
+tokio = { workspace = true }
+tisvlay-wire = { workspace = true }
+uuid = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
 
 # CLI-reference Markdown generator; optional + gen-docs-gated (see the
 # gen-cli-docs bin) so it never links into the shipped binary.
 clap-markdown = { version = "0.1", optional = true }
-
-[dev-dependencies]
-tisvlay-harness = { workspace = true }
-tisvlay-test = { workspace = true }
-tisvlay-backends = { workspace = true, features = ["mock"] }
-tokio = { workspace = true, features = ["test-util"] }
-insta = { workspace = true }
-insta-cmd = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,4 +1,6 @@
-# tisvlay Design Document
+# tisvlay Design Document (retired D-Bus architecture)
+
+> **Historical document.** This describes the served-D-Bus architecture that shipped through v0.2.0 and was removed in v0.3.0. The current architecture — bevy_ecs world + zenoh IPC — is documented in [plans/parity-zenoh-ecs.md](plans/parity-zenoh-ecs.md) (topology, key space, persistence, phase history). A fresh consolidated design doc is a P7 follow-up. Vendor-level material referenced from here (LG SSAP behavior, CEC model, discovery, network watching) still applies and lives in its own docs.
 
 ## Overview
 
@@ -280,7 +282,7 @@ Signals:
 
 `ReloadConfig` is observationally identical to an external client performing equivalent `Update` / `Create` / `Delete` calls: the daemon computes a three-way diff against the prior in-memory catalog and emits the matching `Added` / `Changed` / `Removed` signals so client caches invalidate through the same path. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
 
-`PairingProgress(tv_id: s, phase: s, message: s)` is bus-wide — any client may be running a concurrent pairing. Clients filter on the `tv_id` they got from `Manager1.AddTv` (or passed to `Tv1.RePair`) and drain to a terminal phase (`complete` or `failed`). Non-terminal phases are `awaiting_tv` and `awaiting_input`. `tisvlay-core` exposes `DaemonClient::drain_pair_to_terminal(stream, target_tv_id, on_progress) -> Result<PairTerminal>` as the canonical client-side drain — used by the GUI wizard, the `tisvlay pair` / `tisvlay re-pair` CLI subcommands, and the integration test suite.
+`PairingProgress(tv_id: s, phase: s, detail: a{sv})` is bus-wide — any client may be running a concurrent pairing. Clients filter on the `tv_id` they got from `Manager1.AddTv` (or passed to `Tv1.RePair`) and drain to a terminal phase (`complete` or `failed`). Non-terminal phases are `awaiting_tv` and `awaiting_input`. `detail` is the typed `PairingProgressDetail`: always a human `message`, plus — on `failed` — a namespaced reason `code` (e.g. `device.permission-denied`, `pairing.rejected`) and its optional `path` parameter, so clients can localize and branch on the reason rather than parse the message string. `PairingProgressDetail` is a `tisvlay-core` struct projected onto the `a{sv}` at the boundary (and serde-serializable for any other transport). `tisvlay-core` exposes `DaemonClient::drain_pair_to_terminal(stream, target_tv_id, on_progress) -> Result<PairTerminal>` as the canonical client-side drain — used by the GUI wizard, the `tisvlay pair` / `tisvlay re-pair` CLI subcommands, and the integration test suite.
 
 ### org.tisvlay.Tv1 (per-TV lifecycle)
 

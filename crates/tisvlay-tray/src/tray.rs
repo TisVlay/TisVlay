@@ -1,167 +1,104 @@
-//! System tray implementation using ksni (StatusNotifierItem).
-//!
-//! The tray renders a menu from cached TV state. Menu callbacks are synchronous
-//! (ksni constraint), so they send [`TrayCommand`] messages on a channel for
-//! async processing by the command handler in main.rs.
+//! ksni `Tray` implementation: renders the mirror, funnels every click
+//! into `TrayCommand`s over an mpsc — the async processor owns the zenoh
+//! rpcs. Structure ports the root `tisvlay-tray` menu; strings stay
+//! English literals until the workspace grows its i18n pass at promotion.
 
-use gettextrs::gettext;
-use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
-use ksni::{MenuItem, ToolTip, Tray};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
+use ksni::{ToolTip, Tray};
 use tokio::sync::mpsc;
 use tracing::debug;
+use uuid::Uuid;
 
-use crate::state::CachedTvState;
+use crate::state::{Mirror, TvView};
 
-/// Helper to build a menu item that sends a TV command.
-///
-/// The command factory `cmd_fn` is called each time the item is activated,
-/// since `Fn` closures must be callable multiple times.
-fn tv_item(
-    label: impl Into<String>,
-    icon: &str,
-    tx: &mpsc::UnboundedSender<TrayCommand>,
-    cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
-) -> MenuItem<TisvlayTray> {
-    let tx = tx.clone();
-    StandardItem {
-        label: label.into(),
-        icon_name: icon.into(),
-        activate: Box::new(move |_: &mut TisvlayTray| {
-            let _ = tx.send(cmd_fn());
-        }),
-        ..Default::default()
-    }
-    .into()
-}
-
-/// Menu item that sends a command and sets scroll target to volume.
-fn volume_item(
-    label: impl Into<String>,
-    icon: &str,
-    tx: &mpsc::UnboundedSender<TrayCommand>,
-    tv_id: impl Into<String>,
-    cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
-) -> MenuItem<TisvlayTray> {
-    let tx = tx.clone();
-    let tv_id = tv_id.into();
-    StandardItem {
-        label: label.into(),
-        icon_name: icon.into(),
-        activate: Box::new(move |tray: &mut TisvlayTray| {
-            tray.scroll_target = ScrollTarget::Volume;
-            tray.scroll_tv_id = Some(tv_id.clone());
-            let _ = tx.send(cmd_fn());
-        }),
-        ..Default::default()
-    }
-    .into()
-}
-
-/// Menu item that sends a command and sets scroll target to backlight.
-fn backlight_item(
-    label: impl Into<String>,
-    icon: &str,
-    tx: &mpsc::UnboundedSender<TrayCommand>,
-    tv_id: impl Into<String>,
-    cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
-) -> MenuItem<TisvlayTray> {
-    let tx = tx.clone();
-    let tv_id = tv_id.into();
-    StandardItem {
-        label: label.into(),
-        icon_name: icon.into(),
-        activate: Box::new(move |tray: &mut TisvlayTray| {
-            tray.scroll_target = ScrollTarget::Backlight;
-            tray.scroll_tv_id = Some(tv_id.clone());
-            let _ = tx.send(cmd_fn());
-        }),
-        ..Default::default()
-    }
-    .into()
-}
-
-/// Scroll delta units per notch (X11/Wayland smooth-scroll convention).
-///
-/// Standard click-wheels emit 120 units per detent. Dividing the raw delta
-/// by this gives notch-equivalent steps; sub-notch events (e.g. trackpads
-/// sending 5–15 units at a time) are floored to 1 step so they always
-/// register. Fast-spinning wheels that emit 240–480+ per event produce
-/// proportionally more steps, making the scroll feel snappier.
-const SCROLL_NOTCH: i32 = 120;
-
-/// What the scroll wheel adjusts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ScrollTarget {
+/// What the scroll wheel adjusts (set by the last volume/backlight
+/// interaction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTarget {
     Volume,
-    #[default]
     Backlight,
 }
 
-/// Commands sent from tray menu callbacks to the async command processor.
 #[derive(Debug)]
-pub(crate) enum TrayCommand {
-    PowerOn(String),
-    PowerOff(String),
-    ScreenOn(String),
-    ScreenOff(String),
-    SwitchInput(String, String),
-    SetUserProfile(String, String),
-    SetSystemProfile(String, String),
-    /// Scroll-wheel or menu step: positive steps = up, negative = down.
-    /// Multiple events for the same TV and target are coalesced by the
-    /// command processor into a single D-Bus call to prevent queue buildup.
-    ScrollBy(String, ScrollTarget, i32),
-    ToggleMute(String),
-    SetManaged(String, bool),
-    Reload,
+pub enum TrayCommand {
+    PowerOn(Uuid),
+    PowerOff(Uuid),
+    ScreenOn(Uuid),
+    ScreenOff(Uuid),
+    SwitchInput(Uuid, String),
+    SetSystemProfile(Uuid, Option<Uuid>),
+    SetUserProfile(Uuid, Option<Uuid>),
+    /// Scroll-wheel or menu step: positive = up. The processor coalesces
+    /// bursts for the same TV + target into one rpc.
+    ScrollBy(Uuid, ScrollTarget, i32),
+    ToggleMute(Uuid),
+    SetManaged(Uuid, bool),
     /// Activate the GUI: spawn a new window if none, raise the
     /// existing one otherwise. Routes through the GUI's
     /// `org.freedesktop.Application` interface so the same path
     /// serves launcher entries (KRunner, app menu) and the tray.
     OpenGui,
-    /// Dev-only exit-from-menu signal. Gated symmetrically with
-    /// the menu-item construction below so release builds don't
-    /// carry an always-dead variant. SIGINT/SIGTERM remain the
-    /// production shutdown path.
     #[cfg(debug_assertions)]
     Quit,
 }
 
-/// System tray state.
-///
-/// Holds cached TV state for menu rendering and a channel sender for
-/// dispatching async commands from synchronous menu callbacks.
-pub(crate) struct TisvlayTray {
-    /// Cached state for all configured TVs.
-    pub tvs: Vec<CachedTvState>,
-    /// Whether the daemon is reachable.
-    pub daemon_available: bool,
-    /// Channel for sending commands to the async processor.
+/// Raw wheel delta per notch on a standard click-wheel.
+const SCROLL_NOTCH: i32 = 120;
+
+#[derive(Debug)]
+pub struct TvTray {
+    pub mirror: Mirror,
     pub cmd_tx: mpsc::UnboundedSender<TrayCommand>,
-    /// What the scroll wheel adjusts (set by last volume/backlight interaction).
     pub scroll_target: ScrollTarget,
-    /// TV ID last interacted with via volume/backlight; scroll targets this TV.
-    pub scroll_tv_id: Option<String>,
-    /// Coalescer for the "Settings" menu item — set to `true`
-    /// when an `OpenGui` is enqueued, cleared by the dispatch arm
-    /// once `activate_gui` returns. Drops further clicks while one
-    /// is in flight so a burst of clicks can't queue multiple
-    /// Activates that would each respawn a fresh GUI if the user
-    /// closes the window between calls.
-    ///
-    /// Per-click dispatch is now a single D-Bus round-trip (~10ms)
-    /// since "raise existing window" is handled GUI-side via
-    /// `winit::Window::request_user_attention`, so multi-spawn
-    /// pressure is low in practice. The coalescer is kept as
-    /// defense-in-depth against a slow round-trip racing with a
-    /// rapid click burst landing while the GUI is closing.
+    /// TV the wheel adjusts; middle-click cycles it.
+    pub scroll_tv: Option<Uuid>,
+    /// Coalescer for the Settings menu item — set when an `OpenGui`
+    /// is enqueued, cleared by the processor once the Activate call
+    /// returns. Drops further clicks while one is in flight so a
+    /// click burst can't queue multiple Activates that each respawn
+    /// a fresh GUI via D-Bus session auto-activation.
     pub open_gui_pending: Arc<AtomicBool>,
 }
 
-impl Tray for TisvlayTray {
-    // Left-click opens menu, not just right-click.
+impl TvTray {
+    pub fn new(
+        cmd_tx: mpsc::UnboundedSender<TrayCommand>,
+        open_gui_pending: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            mirror: Mirror::default(),
+            cmd_tx,
+            scroll_target: ScrollTarget::Volume,
+            scroll_tv: None,
+            open_gui_pending,
+        }
+    }
+
+    /// The TV the wheel drives: last interacted with, else first
+    /// connected-and-on.
+    fn effective_scroll_tv(&self) -> Option<Uuid> {
+        self.scroll_tv
+            .filter(|id| {
+                self.mirror
+                    .tvs
+                    .get(id)
+                    .is_some_and(|tv| tv.connected && tv.is_on)
+            })
+            .or_else(|| {
+                self.mirror
+                    .tvs
+                    .iter()
+                    .find(|(_, tv)| tv.connected && tv.is_on)
+                    .map(|(id, _)| *id)
+            })
+    }
+}
+
+impl Tray for TvTray {
+    // Left-click opens the menu, not just right-click.
     const MENU_ON_ACTIVATE: bool = true;
 
     fn id(&self) -> String {
@@ -173,24 +110,19 @@ impl Tray for TisvlayTray {
     }
 
     fn title(&self) -> String {
-        let connected = self.tvs.iter().filter(|tv| tv.connected).count();
-        let total = self.tvs.len();
-        // "TisVlay" is a brand name and per CLAUDE.md i18n conventions
-        // should be left untranslated; translators see it inside the
-        // bracketed templates and pass it through verbatim.
-        if !self.daemon_available {
-            gettext("TisVlay [daemon offline]")
+        let connected = self.mirror.tvs.values().filter(|tv| tv.connected).count();
+        let total = self.mirror.tvs.len();
+        if !self.mirror.daemon_alive {
+            "TisVlay [daemon offline]".into()
         } else if total == 0 {
             "TisVlay".into()
         } else {
-            gettext("TisVlay [{0}/{1}]")
-                .replace("{0}", &connected.to_string())
-                .replace("{1}", &total.to_string())
+            format!("TisVlay [{connected}/{total}]")
         }
     }
 
     fn icon_name(&self) -> String {
-        if self.daemon_available && self.tvs.iter().any(|tv| tv.connected) {
+        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.connected) {
             "video-display".into()
         } else {
             "video-display-symbolic".into()
@@ -198,10 +130,7 @@ impl Tray for TisvlayTray {
     }
 
     fn status(&self) -> ksni::Status {
-        if !self.daemon_available {
-            return ksni::Status::Passive;
-        }
-        if self.tvs.iter().any(|tv| tv.connected) {
+        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.connected) {
             ksni::Status::Active
         } else {
             ksni::Status::Passive
@@ -209,60 +138,42 @@ impl Tray for TisvlayTray {
     }
 
     fn tool_tip(&self) -> ToolTip {
-        // Resolve effective scroll target: explicit selection or first connected TV.
-        let effective_scroll_tv: Option<&str> = self
-            .scroll_tv_id
-            .as_deref()
-            .filter(|id| {
-                self.tvs
-                    .iter()
-                    .any(|tv| tv.id == *id && tv.connected && tv.is_on)
-            })
-            .or_else(|| {
-                self.tvs
-                    .iter()
-                    .find(|tv| tv.connected && tv.is_on)
-                    .map(|tv| tv.id.as_str())
-            });
-
-        let description = if !self.daemon_available {
-            gettext("Daemon not available")
+        let scroll_tv = self.effective_scroll_tv();
+        let description = if !self.mirror.daemon_alive {
+            "Daemon not available".into()
         } else {
-            self.tvs
+            self.mirror
+                .tvs
                 .iter()
-                .map(|tv| {
-                    let active =
-                        |t| effective_scroll_tv == Some(tv.id.as_str()) && self.scroll_target == t;
-                    let m = |t| if active(t) { "►" } else { " " };
+                .map(|(id, tv)| {
+                    let active = |t| scroll_tv == Some(*id) && self.scroll_target == t;
+                    let marker = |t| if active(t) { "►" } else { " " };
                     if !tv.connected {
-                        return format!("{}\n  {}", tv.name, gettext("off"));
+                        return format!("{}\n  off", tv.name);
                     }
-                    let vol = tv.volume.map(|v| {
+                    let volume = tv.volume.map(|v| {
                         let muted = if tv.muted == Some(true) {
-                            gettext(" (muted)")
+                            " (muted)"
                         } else {
-                            String::new()
+                            ""
                         };
-                        let label = gettext("volume {0}").replace("{0}", &v.to_string());
-                        format!("\n{} {label}{muted}", m(ScrollTarget::Volume))
+                        format!("\n{} volume {v}{muted}", marker(ScrollTarget::Volume))
                     });
-                    let bl = tv.backlight.map(|b| {
-                        let label = gettext("backlight {0}").replace("{0}", &b.to_string());
-                        format!("\n{} {label}", m(ScrollTarget::Backlight))
-                    });
+                    let backlight = tv
+                        .backlight
+                        .filter(|_| tv.has_backlight)
+                        .map(|b| format!("\n{} backlight {b}", marker(ScrollTarget::Backlight)));
                     format!(
                         "{}:{}{}",
                         tv.name,
-                        vol.unwrap_or_default(),
-                        bl.unwrap_or_default()
+                        volume.unwrap_or_default(),
+                        backlight.unwrap_or_default()
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-
         ToolTip {
-            // Brand name — see comment in `title()`.
             title: "TisVlay".into(),
             description,
             icon_name: "video-display".into(),
@@ -271,29 +182,12 @@ impl Tray for TisvlayTray {
     }
 
     fn scroll(&mut self, delta: i32, orientation: ksni::Orientation) {
-        if orientation != ksni::Orientation::Vertical {
+        if orientation != ksni::Orientation::Vertical || delta == 0 {
             return;
         }
-        // Prefer the TV last interacted with; fall back to first connected TV.
-        let target = self
-            .scroll_tv_id
-            .as_deref()
-            .and_then(|id| {
-                self.tvs
-                    .iter()
-                    .find(|tv| tv.id == id && tv.connected && tv.is_on)
-            })
-            .or_else(|| self.tvs.iter().find(|tv| tv.connected && tv.is_on));
-        if let Some(tv) = target {
-            let id = tv.id.clone();
-            if delta == 0 {
-                return;
-            }
-            // Normalize raw delta to notch-equivalent steps:
-            //   - standard click-wheel (120/notch): 1 step per notch
-            //   - fast-spinning wheel (240–480+/event): 2–4 steps per event
-            //   - trackpad / sub-notch (< 120): floor to 1 step so every event registers
-            // The command processor coalesces multiple ScrollBy events into one D-Bus call.
+        if let Some(id) = self.effective_scroll_tv() {
+            // Normalize raw delta to notch-equivalent steps; sub-notch
+            // trackpad events floor to one step so every event registers.
             let steps = (delta.abs() / SCROLL_NOTCH).max(1) * delta.signum();
             let _ = self
                 .cmd_tx
@@ -302,82 +196,70 @@ impl Tray for TisvlayTray {
     }
 
     fn secondary_activate(&mut self, _x: i32, _y: i32) {
-        // Middle-click cycles the scroll target TV to the next connected TV.
-        let connected: Vec<&str> = self
+        // Middle-click cycles the scroll target to the next live TV.
+        let live: Vec<Uuid> = self
+            .mirror
             .tvs
             .iter()
-            .filter(|tv| tv.connected && tv.is_on)
-            .map(|tv| tv.id.as_str())
+            .filter(|(_, tv)| tv.connected && tv.is_on)
+            .map(|(id, _)| *id)
             .collect();
-        if connected.is_empty() {
+        if live.is_empty() {
             return;
         }
-        let next = match &self.scroll_tv_id {
-            Some(current) => {
-                let pos = connected.iter().position(|id| *id == current);
-                match pos {
-                    Some(i) => connected[(i + 1) % connected.len()],
-                    None => connected[0],
-                }
-            }
-            None => connected[0],
+        let next = match self
+            .scroll_tv
+            .and_then(|c| live.iter().position(|id| *id == c))
+        {
+            Some(i) => live[(i + 1) % live.len()],
+            None => live[0],
         };
-        debug!(tv_id = %next, target = ?self.scroll_target, "Middle-click: scroll target switched");
-        self.scroll_tv_id = Some(next.to_string());
+        debug!(tv = %next, target = ?self.scroll_target, "scroll target switched");
+        self.scroll_tv = Some(next);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let mut items = Vec::new();
-
-        if !self.daemon_available {
-            items.push(
-                StandardItem {
-                    label: gettext("Daemon unavailable"),
-                    enabled: false,
-                    ..Default::default()
-                }
-                .into(),
-            );
-        } else if self.tvs.is_empty() {
-            items.push(
-                StandardItem {
-                    label: gettext("No TVs configured"),
-                    enabled: false,
-                    ..Default::default()
-                }
-                .into(),
-            );
+        let mut items: Vec<MenuItem<Self>> = Vec::new();
+        if !self.mirror.daemon_alive {
+            items.push(disabled("Daemon unavailable"));
+        } else if self.mirror.tvs.is_empty() {
+            items.push(disabled("No TVs configured"));
         } else {
-            for tv in &self.tvs {
-                items.push(build_tv_submenu(tv, &self.cmd_tx));
+            for (id, tv) in &self.mirror.tvs {
+                items.push(self.tv_submenu(*id, tv));
             }
         }
-
+        // A read-only banner while a remote session arms any TV — the
+        // while-remote overrides are suppressing the usual wake actions.
+        // No quick-toggle; the indicator only reflects the fact.
+        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.remote_armed) {
+            items.push(MenuItem::Separator);
+            items.push(status_line(
+                "Remote session active",
+                "network-connect-symbolic",
+            ));
+        }
         items.push(MenuItem::Separator);
         items.push({
-            // Settings uses a coalescing callback instead of
-            // the plain tv_item helper: rapid clicks while an
-            // OpenGui is already in flight are dropped at the
-            // source, so the tray's mpsc never holds more than
-            // one pending Activate. Without this, a click burst
-            // landing while the GUI is closing can queue
-            // multiple Activates that each respawn a fresh GUI
-            // via D-Bus session auto-activation — observed
-            // cascade of 2–3 windows the user has to close in
-            // sequence. See `open_gui_pending` for rationale.
+            // Settings coalesces instead of using the plain command
+            // helper: rapid clicks while an OpenGui is in flight are
+            // dropped at the source, so the mpsc never holds more
+            // than one pending Activate (a burst landing while the
+            // GUI is closing would otherwise respawn a window per
+            // click). See `open_gui_pending`.
             let tx = self.cmd_tx.clone();
-            let pending = self.open_gui_pending.clone();
+            let pending = Arc::clone(&self.open_gui_pending);
             StandardItem {
-                label: gettext("Settings"),
+                label: "Settings".into(),
                 icon_name: "settings-configure".into(),
-                activate: Box::new(move |_tray| {
+                activate: Box::new(move |_tray: &mut Self| {
                     if pending.swap(true, Ordering::Relaxed) {
-                        debug!("Open Settings click dropped — previous OpenGui still in flight");
+                        debug!("Settings click dropped — previous OpenGui still in flight");
                         return;
                     }
                     if tx.send(TrayCommand::OpenGui).is_err() {
-                        // Channel closed (tray shutting down); clear so we
-                        // don't leak the locked state.
+                        // Channel closed (tray shutting down); clear so
+                        // the locked state can't leak.
                         pending.store(false, Ordering::Relaxed);
                     }
                 }),
@@ -385,458 +267,380 @@ impl Tray for TisvlayTray {
             }
             .into()
         });
-        items.push(tv_item(
-            gettext("Reload"),
-            "view-refresh",
-            &self.cmd_tx,
-            || TrayCommand::Reload,
-        ));
-
-        // Quit is dev-only. In release builds the tray runs as a
-        // systemd user service and end users should stop it via
-        // `systemctl --user stop tisvlay-tray`, not from the menu.
+        // Quit is dev-only: in production the tray is a systemd user
+        // service, stopped via `systemctl --user`, not from the menu.
         #[cfg(debug_assertions)]
         {
             items.push(MenuItem::Separator);
-            items.push(tv_item(
-                gettext("Quit"),
-                "application-exit",
+            items.push(command_item(
                 &self.cmd_tx,
+                "Quit",
+                "application-exit",
                 || TrayCommand::Quit,
             ));
         }
-
         items
     }
 }
 
-/// Build the submenu for a single TV.
-fn build_tv_submenu(
-    tv: &CachedTvState,
-    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
-) -> MenuItem<TisvlayTray> {
-    // Key on powered-on, not merely connected: a CEC TV reachable in
-    // standby is connected-but-off and must offer "Power On (Wake)", not
-    // "Power Off".
-    let submenu = if tv.connected && tv.is_on {
-        build_connected_tv_menu(tv, cmd_tx)
-    } else {
-        build_disconnected_tv_menu(tv, cmd_tx)
-    };
-
-    let icon = match (tv.connected, tv.automated) {
-        (true, true) => "tvconnected",
-        (true, false) => "tvtrusted",
-        (false, _) => "tvdisconnected",
-    };
-
-    let label = tv.name.clone();
-
-    SubMenu {
-        label,
-        icon_name: icon.into(),
-        submenu,
-        ..Default::default()
-    }
-    .into()
-}
-
-/// Menu items for a connected, powered-on TV.
-fn build_connected_tv_menu(
-    tv: &CachedTvState,
-    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
-) -> Vec<MenuItem<TisvlayTray>> {
-    let mut items = Vec::new();
-    let id = tv.id.clone();
-
-    // Power Off
-    let id = id.clone();
-    items.push(tv_item(gettext("Power Off"), "system-shutdown", cmd_tx, {
-        let id = id.clone();
-        move || TrayCommand::PowerOff(id.clone())
-    }));
-
-    // Profile submenu (user + system nested under one parent)
-    if !tv.available_user_profiles.is_empty() || !tv.available_system_profiles.is_empty() {
-        items.push(build_profile_submenu(tv, cmd_tx));
-    }
-    items.push(build_managed_toggle(tv, cmd_tx));
-
-    // Input submenu (if inputs available)
-    if !tv.inputs.is_empty() {
-        items.push(MenuItem::Separator);
-        items.push(build_input_submenu(tv, cmd_tx));
+impl TvTray {
+    fn tv_submenu(&self, id: Uuid, tv: &TvView) -> MenuItem<Self> {
+        // Key on powered-on, not merely connected: a CEC TV reachable in
+        // standby is connected-but-off and must offer wake, not power-off.
+        let submenu = if tv.connected && tv.is_on {
+            self.live_tv_menu(id, tv)
+        } else {
+            self.down_tv_menu(id, tv)
+        };
+        let icon = match (tv.connected, tv.automated) {
+            (true, true) => "tvconnected",
+            (true, false) => "tvtrusted",
+            (false, _) => "tvdisconnected",
+        };
+        SubMenu {
+            label: tv.name.clone(),
+            icon_name: icon.into(),
+            submenu,
+            ..Default::default()
+        }
+        .into()
     }
 
-    // Picture section (backlight + screen). Omitted entirely for a
-    // backend that drives neither — e.g. a CEC TV.
-    if tv.has_backlight || tv.has_screen {
-        items.push(MenuItem::Separator);
-    }
+    fn live_tv_menu(&self, id: Uuid, tv: &TvView) -> Vec<MenuItem<Self>> {
+        let tx = &self.cmd_tx;
+        let mut items = Vec::new();
+        items.push(command_item(
+            tx,
+            "Power Off",
+            "system-shutdown",
+            move || TrayCommand::PowerOff(id),
+        ));
+        items.push(self.profile_submenu(id, tv));
+        items.push(managed_toggle(tx, id, tv));
 
-    if tv.has_backlight {
-        if let Some(bl) = tv.backlight {
-            items.push(
-                StandardItem {
-                    label: gettext("Backlight: {0}").replace("{0}", &bl.to_string()),
-                    icon_name: "high-brightness".into(),
-                    enabled: false,
-                    ..Default::default()
-                }
-                .into(),
-            );
+        if !tv.inputs.is_empty() {
+            items.push(MenuItem::Separator);
+            items.push(self.input_submenu(id, tv));
         }
 
-        items.push(backlight_item(
-            gettext("Backlight Up (+10)"),
-            "high-brightness",
-            cmd_tx,
-            &id,
-            {
-                let id = id.clone();
-                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 10)
-            },
-        ));
-        items.push(backlight_item(
-            gettext("Backlight Down (-10)"),
-            "low-brightness",
-            cmd_tx,
-            &id,
-            {
-                let id = id.clone();
-                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -10)
-            },
-        ));
-    }
-
-    // Screen blank/unblank (visual mute — OLED-safe)
-    if tv.has_screen {
-        if tv.is_screen_on {
+        if tv.has_backlight || tv.has_screen {
+            items.push(MenuItem::Separator);
+        }
+        if tv.has_backlight {
+            if let Some(level) = tv.backlight {
+                items.push(status_line(
+                    &format!("Backlight: {level}"),
+                    "high-brightness",
+                ));
+            }
             items.push(backlight_item(
-                gettext("Screen Off"),
-                "view-hidden",
-                cmd_tx,
-                &id,
-                {
-                    let id = id.clone();
-                    move || TrayCommand::ScreenOff(id.clone())
-                },
+                tx,
+                "Backlight Up (+10)",
+                "high-brightness",
+                id,
+                move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, 10),
             ));
-        } else {
             items.push(backlight_item(
-                gettext("Screen On"),
-                "view-visible",
-                cmd_tx,
-                &id,
-                {
-                    let id = id.clone();
-                    move || TrayCommand::ScreenOn(id.clone())
-                },
+                tx,
+                "Backlight Down (-10)",
+                "low-brightness",
+                id,
+                move || TrayCommand::ScrollBy(id, ScrollTarget::Backlight, -10),
             ));
         }
-    }
-
-    // Audio section (volume + mute). Omitted for a backend that drives
-    // neither — e.g. a CEC TV.
-    if tv.has_volume || tv.has_mute {
-        items.push(MenuItem::Separator);
-    }
-
-    if tv.has_volume {
-        if let Some(vol) = tv.volume {
-            let muted_str = if tv.muted == Some(true) {
-                gettext(" (muted)")
+        if tv.has_screen {
+            if tv.is_screen_on {
+                items.push(command_item(tx, "Screen Off", "view-hidden", move || {
+                    TrayCommand::ScreenOff(id)
+                }));
             } else {
-                String::new()
-            };
-            items.push(
-                StandardItem {
-                    label: gettext("Volume: {0}{1}")
-                        .replace("{0}", &vol.to_string())
-                        .replace("{1}", &muted_str),
-                    icon_name: "audio-volume-medium".into(),
-                    enabled: false,
-                    ..Default::default()
+                items.push(command_item(tx, "Screen On", "view-visible", move || {
+                    TrayCommand::ScreenOn(id)
+                }));
+            }
+        }
+
+        if tv.has_volume || tv.has_mute {
+            items.push(MenuItem::Separator);
+        }
+        if tv.has_volume {
+            if let Some(volume) = tv.volume {
+                let muted = if tv.muted == Some(true) {
+                    " (muted)"
+                } else {
+                    ""
+                };
+                items.push(status_line(
+                    &format!("Volume: {volume}{muted}"),
+                    "audio-volume-medium",
+                ));
+            }
+            items.push(volume_item(
+                tx,
+                "Volume Up (+10)",
+                "audio-volume-high",
+                id,
+                move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, 10),
+            ));
+            items.push(volume_item(
+                tx,
+                "Volume Down (-10)",
+                "audio-volume-medium",
+                id,
+                move || TrayCommand::ScrollBy(id, ScrollTarget::Volume, -10),
+            ));
+        }
+        if tv.has_mute {
+            let muted = tv.muted == Some(true);
+            items.push(volume_item(
+                tx,
+                if muted { "Unmute" } else { "Mute" },
+                if muted {
+                    "audio-volume-high"
+                } else {
+                    "audio-volume-muted"
+                },
+                id,
+                move || TrayCommand::ToggleMute(id),
+            ));
+        }
+        items
+    }
+
+    fn down_tv_menu(&self, id: Uuid, tv: &TvView) -> Vec<MenuItem<Self>> {
+        let tx = &self.cmd_tx;
+        let mut items = vec![command_item(
+            tx,
+            "Power On (Wake)",
+            "system-run",
+            move || TrayCommand::PowerOn(id),
+        )];
+        items.push(self.profile_submenu(id, tv));
+        items.push(managed_toggle(tx, id, tv));
+        items
+    }
+
+    fn input_submenu(&self, id: Uuid, tv: &TvView) -> MenuItem<Self> {
+        let selected = tv
+            .inputs
+            .iter()
+            .position(|(input, _)| Some(input.as_str()) == tv.current_input.as_deref())
+            .unwrap_or(0);
+        let inputs: Vec<String> = tv.inputs.iter().map(|(input, _)| input.clone()).collect();
+        let tx = self.cmd_tx.clone();
+        SubMenu {
+            label: "Input".into(),
+            icon_name: "input-tvremote-symbolic".into(),
+            submenu: vec![
+                RadioGroup {
+                    selected,
+                    select: Box::new(move |_tray: &mut Self, index| {
+                        if let Some(input) = inputs.get(index) {
+                            let _ = tx.send(TrayCommand::SwitchInput(id, input.clone()));
+                        }
+                    }),
+                    options: tv
+                        .inputs
+                        .iter()
+                        .map(|(_, label)| RadioItem {
+                            label: label.clone(),
+                            ..Default::default()
+                        })
+                        .collect(),
                 }
                 .into(),
-            );
+            ],
+            ..Default::default()
         }
-
-        items.push(volume_item(
-            gettext("Volume Up (+10)"),
-            "audio-volume-high",
-            cmd_tx,
-            &id,
-            {
-                let id = id.clone();
-                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, 10)
-            },
-        ));
-        items.push(volume_item(
-            gettext("Volume Down (-10)"),
-            "audio-volume-medium",
-            cmd_tx,
-            &id,
-            {
-                let id = id.clone();
-                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, -10)
-            },
-        ));
+        .into()
     }
 
-    if tv.has_mute {
-        let is_muted = tv.muted == Some(true);
-        items.push(volume_item(
-            if is_muted {
-                gettext("Unmute")
-            } else {
-                gettext("Mute")
-            },
-            if is_muted {
-                "audio-volume-high"
-            } else {
-                "audio-volume-muted"
-            },
-            cmd_tx,
-            &id,
-            {
-                let id = id.clone();
-                move || TrayCommand::ToggleMute(id.clone())
-            },
-        ));
-    }
-
-    items
-}
-
-/// Build a "Managed / Unmanaged" toggle item for the TV submenu.
-fn build_managed_toggle(
-    tv: &CachedTvState,
-    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
-) -> MenuItem<TisvlayTray> {
-    let tx = cmd_tx.clone();
-    let tv_id = tv.id.clone();
-    let currently_managed = tv.managed;
-    StandardItem {
-        label: if currently_managed {
-            gettext("Unmanage")
-        } else {
-            gettext("Manage")
-        },
-        icon_name: if currently_managed {
-            "media-playback-pause"
-        } else {
-            "media-playback-start"
+    /// Root shape: "Profiles" parent with nested "User: {current}" and
+    /// "System: {current}" pickers over the catalog; an unassigned TV
+    /// renders as the reserved default entity selected.
+    fn profile_submenu(&self, id: Uuid, tv: &TvView) -> MenuItem<Self> {
+        let submenu = vec![
+            profile_picker(
+                &self.cmd_tx,
+                "User",
+                "im-user",
+                &self.mirror.user_profiles,
+                tv.user_profile,
+                tisvlay_core::DEFAULT_USER_PROFILE_UUID,
+                move |profile| TrayCommand::SetUserProfile(id, profile),
+            ),
+            profile_picker(
+                &self.cmd_tx,
+                "System",
+                "system-users",
+                &self.mirror.system_profiles,
+                tv.system_profile,
+                tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+                move |profile| TrayCommand::SetSystemProfile(id, profile),
+            ),
+        ];
+        SubMenu {
+            label: "Profiles".into(),
+            icon_name: "system-user-list".into(),
+            submenu,
+            ..Default::default()
         }
-        .into(),
-        activate: Box::new(move |_: &mut TisvlayTray| {
-            let _ = tx.send(TrayCommand::SetManaged(tv_id.clone(), !currently_managed));
-        }),
-        ..Default::default()
+        .into()
     }
-    .into()
 }
 
-/// Menu items for a disconnected or powered-off TV.
-fn build_disconnected_tv_menu(
-    tv: &CachedTvState,
-    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
-) -> Vec<MenuItem<TisvlayTray>> {
-    let id = tv.id.clone();
-    let mut items = vec![tv_item(
-        gettext("Power On (Wake)"),
-        "system-run",
-        cmd_tx,
-        move || TrayCommand::PowerOn(id.clone()),
-    )];
-
-    // Profile submenu (available even when disconnected)
-    if !tv.available_user_profiles.is_empty() || !tv.available_system_profiles.is_empty() {
-        items.push(build_profile_submenu(tv, cmd_tx));
-    }
-    items.push(build_managed_toggle(tv, cmd_tx));
-
-    items
-}
-
-/// Build the combined profile submenu with user and system profile
-/// radio groups.
-///
-/// Profile identity rides as UUID on the wire; display rides as the
-/// friendly name. `tv.{user,system}_profile_uuid` is matched against
-/// the catalog's `(uuid, name)` pairs by UUID — that gives both the
-/// radio-group `selected` index AND the friendly name for the submenu
-/// label. Click dispatch sends the UUID, matching what
-/// `Tv1.SystemProfile` and `Session1.SetTvUserProfile` validate
-/// against; sending a name would round-trip to `InvalidArgs`.
-///
-/// Stale-state guard: if the assigned UUID isn't in the catalog
-/// (selection drift between fetches, race with a profile delete),
-/// the submenu label falls back to the literal UUID rather than
-/// silently relabeling — keeps the drift visible. `selected`
-/// defaults to 0 in that case so the radio group renders something
-/// rather than nothing.
-fn build_profile_submenu(
-    tv: &CachedTvState,
-    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
-) -> MenuItem<TisvlayTray> {
-    let mut submenu: Vec<MenuItem<TisvlayTray>> = Vec::new();
-
-    // User profile sub-submenu
-    if !tv.available_user_profiles.is_empty() {
-        let assigned_uuid = tv.user_profile_uuid.as_deref().unwrap_or("");
-        let selected = tv
-            .available_user_profiles
-            .iter()
-            .position(|(uuid, _)| uuid == assigned_uuid)
-            .unwrap_or(0);
-        let current_label = tv
-            .available_user_profiles
-            .iter()
-            .find(|(uuid, _)| uuid == assigned_uuid)
-            .map(|(_, name)| name.as_str())
-            .unwrap_or(assigned_uuid);
-
-        let options: Vec<RadioItem> = tv
-            .available_user_profiles
-            .iter()
-            .map(|(_, name)| RadioItem {
-                label: name.clone(),
-                ..Default::default()
-            })
-            .collect();
-
-        let tx = cmd_tx.clone();
-        let profiles: Vec<(String, String)> = tv.available_user_profiles.clone();
-        let tv_id = tv.id.clone();
-
-        submenu.push(
-            SubMenu {
-                label: gettext("User: {0}").replace("{0}", current_label),
-                icon_name: "im-user".into(),
-                submenu: vec![RadioGroup {
-                    selected,
-                    options,
-                    select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                        if let Some((profile_uuid, profile_name)) = profiles.get(idx) {
-                            debug!(tv_id = %tv_id, profile = %profile_name, uuid = %profile_uuid, "Switching user profile");
-                            let _ = tx.send(TrayCommand::SetUserProfile(
-                                tv_id.clone(),
-                                profile_uuid.clone(),
-                            ));
-                        }
-                    }),
-                }
-                .into()],
-                ..Default::default()
-            }
-            .into(),
-        );
-    }
-
-    // System profile sub-submenu
-    if !tv.available_system_profiles.is_empty() {
-        let assigned_uuid = tv.system_profile_uuid.as_str();
-        let selected = tv
-            .available_system_profiles
-            .iter()
-            .position(|(uuid, _)| uuid == assigned_uuid)
-            .unwrap_or(0);
-        let current_label = tv
-            .available_system_profiles
-            .iter()
-            .find(|(uuid, _)| uuid == assigned_uuid)
-            .map(|(_, name)| name.as_str())
-            .unwrap_or(assigned_uuid);
-
-        let options: Vec<RadioItem> = tv
-            .available_system_profiles
-            .iter()
-            .map(|(_, name)| RadioItem {
-                label: name.clone(),
-                ..Default::default()
-            })
-            .collect();
-
-        let tx = cmd_tx.clone();
-        let profiles: Vec<(String, String)> = tv.available_system_profiles.clone();
-        let tv_id = tv.id.clone();
-
-        submenu.push(
-            SubMenu {
-                label: gettext("System: {0}").replace("{0}", current_label),
-                icon_name: "system-users".into(),
-                submenu: vec![RadioGroup {
-                    selected,
-                    options,
-                    select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                        if let Some((profile_uuid, profile_name)) = profiles.get(idx) {
-                            debug!(tv_id = %tv_id, profile = %profile_name, uuid = %profile_uuid, "Switching system profile");
-                            let _ = tx.send(TrayCommand::SetSystemProfile(
-                                tv_id.clone(),
-                                profile_uuid.clone(),
-                            ));
-                        }
-                    }),
-                }
-                .into()],
-                ..Default::default()
-            }
-            .into(),
-        );
-    }
-
-    SubMenu {
-        label: gettext("Profiles"),
-        icon_name: "system-user-list".into(),
-        submenu,
-        ..Default::default()
-    }
-    .into()
-}
-
-/// Build the input switching submenu with radio buttons.
-fn build_input_submenu(
-    tv: &CachedTvState,
-    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
-) -> MenuItem<TisvlayTray> {
-    let current = tv.current_input.as_deref().unwrap_or("");
-    let selected = tv
-        .inputs
-        .iter()
-        .position(|(id, _)| id == current)
-        .unwrap_or(0);
-
-    let options: Vec<RadioItem> = tv
-        .inputs
-        .iter()
-        .map(|(_, label)| RadioItem {
-            label: label.clone(),
+/// One "User: {current}" / "System: {current}" picker: a radio over
+/// the catalog (the reserved default is a real, editable entity; an
+/// unassigned TV renders as the default selected).
+fn profile_picker(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    kind: &str,
+    icon: &str,
+    catalog: &std::collections::BTreeMap<Uuid, String>,
+    assigned: Option<Uuid>,
+    default_id: Uuid,
+    command: impl Fn(Option<Uuid>) -> TrayCommand + Send + Sync + 'static,
+) -> MenuItem<TvTray> {
+    let ids: Vec<Uuid> = catalog.keys().copied().collect();
+    let effective = assigned.unwrap_or(default_id);
+    let selected = ids.iter().position(|id| *id == effective).unwrap_or(0);
+    let current = catalog
+        .get(&effective)
+        .map(String::as_str)
+        .unwrap_or("default");
+    let options: Vec<RadioItem> = catalog
+        .values()
+        .map(|name| RadioItem {
+            label: name.clone(),
             ..Default::default()
         })
         .collect();
-
-    let tx = cmd_tx.clone();
-    let inputs: Vec<String> = tv.inputs.iter().map(|(id, _)| id.clone()).collect();
-    let tv_id = tv.id.clone();
-
+    let tx = tx.clone();
     SubMenu {
-        label: gettext("Input"),
-        icon_name: "input-tvremote-symbolic".into(),
+        label: format!("{kind}: {current}"),
+        icon_name: icon.into(),
         submenu: vec![
             RadioGroup {
                 selected,
-                options,
-                select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                    if let Some(input_id) = inputs.get(idx) {
-                        debug!(tv_id = %tv_id, input = %input_id, "Switching input");
-                        let _ = tx.send(TrayCommand::SwitchInput(tv_id.clone(), input_id.clone()));
-                    }
+                select: Box::new(move |_tray: &mut TvTray, index| {
+                    let _ = tx.send(command(ids.get(index).copied()));
                 }),
+                options,
             }
             .into(),
         ],
         ..Default::default()
     }
     .into()
+}
+
+/// Root's "Manage"/"Unmanage" toggle with the play/pause icon pair.
+fn managed_toggle(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    id: Uuid,
+    tv: &TvView,
+) -> MenuItem<TvTray> {
+    let managed = tv.managed;
+    command_item(
+        tx,
+        if managed { "Unmanage" } else { "Manage" },
+        if managed {
+            "media-playback-pause"
+        } else {
+            "media-playback-start"
+        },
+        move || TrayCommand::SetManaged(id, !managed),
+    )
+}
+
+/// Menu item that sends a command and points the scroll wheel at this
+/// TV's volume.
+fn volume_item(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    label: &str,
+    icon: &str,
+    id: Uuid,
+    command: impl Fn() -> TrayCommand + Send + Sync + 'static,
+) -> MenuItem<TvTray> {
+    let tx = tx.clone();
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: Box::new(move |tray: &mut TvTray| {
+            tray.scroll_target = ScrollTarget::Volume;
+            tray.scroll_tv = Some(id);
+            let _ = tx.send(command());
+        }),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Menu item that sends a command and points the scroll wheel at this
+/// TV's backlight.
+fn backlight_item(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    label: &str,
+    icon: &str,
+    id: Uuid,
+    command: impl Fn() -> TrayCommand + Send + Sync + 'static,
+) -> MenuItem<TvTray> {
+    let tx = tx.clone();
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: Box::new(move |tray: &mut TvTray| {
+            tray.scroll_target = ScrollTarget::Backlight;
+            tray.scroll_tv = Some(id);
+            let _ = tx.send(command());
+        }),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Disabled informational row with an icon (current volume/backlight).
+fn status_line(label: &str, icon: &str) -> MenuItem<TvTray> {
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        enabled: false,
+        ..Default::default()
+    }
+    .into()
+}
+
+fn disabled(label: &str) -> MenuItem<TvTray> {
+    StandardItem {
+        label: label.into(),
+        enabled: false,
+        ..Default::default()
+    }
+    .into()
+}
+
+fn command_item(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    label: &str,
+    icon: &str,
+    command: impl Fn() -> TrayCommand + Send + Sync + 'static,
+) -> MenuItem<TvTray> {
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: activate(tx, command),
+        ..Default::default()
+    }
+    .into()
+}
+
+#[allow(clippy::type_complexity)]
+fn activate(
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    command: impl Fn() -> TrayCommand + Send + Sync + 'static,
+) -> Box<dyn Fn(&mut TvTray) + Send + Sync> {
+    let tx = tx.clone();
+    Box::new(move |_tray| {
+        let _ = tx.send(command());
+    })
 }

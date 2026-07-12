@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 /// Phases a power-on (wake-and-connect) flow walks through.
 ///
-/// Emitted as a `(s)` D-Bus signal on `Tv1.Power.PowerCycleProgress`
+/// Published as wire strings on the per-TV `progress/power` key
 /// so GUIs can show staged feedback ("Sending wake-up..." →
 /// "Connecting..." → "Connected" / "Failed") instead of a single
 /// 5-30 s spinner.
@@ -167,8 +167,8 @@ impl PowerState {
             "active standby" | "activestandby" => Self::ActiveStandby,
             "screen saver" | "screensaver" => Self::ScreenSaver,
             "screen off" | "screenoff" => Self::ScreenOff,
-            "warming up" | "warmingup" | "warming_up" => Self::WarmingUp,
-            "cooling down" | "coolingdown" | "cooling_down" => Self::CoolingDown,
+            "warming up" | "warmingup" => Self::WarmingUp,
+            "cooling down" | "coolingdown" => Self::CoolingDown,
             _ => Self::Unknown,
         }
     }
@@ -184,27 +184,39 @@ impl PowerState {
                 | Self::WarmingUp
         )
     }
+
+    /// Whether a `screen_on` must ride the power path first: in every
+    /// state outside this whitelist, screen commands stall or
+    /// false-ACK (`ActiveStandby` acknowledges without ever lighting
+    /// the panel), so the reliable-dispatch tier wakes the TV instead
+    /// of retrying a command it cannot win.
+    ///
+    /// `ScreenOff` is deliberately *not* wake-needy — a lock-screen
+    /// blank leaves the cache there, and a plain `screen_on` suffices;
+    /// waking would be pure added latency. The whitelist form keeps
+    /// `Unknown` and future `#[non_exhaustive]` variants on the safe
+    /// fall-through the enum docs prescribe: treat as wake-preflight
+    /// needed.
+    pub fn needs_wake_preflight(self) -> bool {
+        !matches!(self, Self::Active | Self::ScreenSaver | Self::ScreenOff)
+    }
 }
 
-/// Shared client-side interpretation of the daemon's
-/// `Tv1.Power.PowerState` wire string: whether the TV is "on".
+/// Shared client-side interpretation of a TV's power-state wire
+/// string: whether the TV is "on".
 ///
-/// Clients (CLI, tray, GUI) read the collapsed wire vocabulary the
-/// daemon's `derive_power_state` emits — `"active"`, `"screen_off"`,
-/// `"warming_up"`, `"cooling_down"`, `"standby"` — rather than the rich
-/// [`PowerState`] enum. This is the single place that maps that
-/// vocabulary to an on/off bit, so every client agrees: a TV is *not*
-/// on for `"standby"`, `"unknown"`, or `"cooling_down"` (powering down,
-/// no longer usable), and on otherwise — `"active"`, `"screen_off"`
-/// (powered, panel blanked), and `"warming_up"` (powering up) all read
-/// as on.
-///
-/// Kept consistent with [`PowerState::is_on`] for the variants that
-/// share a wire string; the one deliberate divergence is the
-/// `ActiveStandby` substate, which the daemon collapses to `"standby"`
-/// (off) on the wire even though the enum's `is_on` treats it as on.
+/// Clients (CLI, tray, GUI) read the string projection of the per-TV
+/// `state/power` payload (surfaced as `TvInfo::power_state` by the
+/// SDK) rather than the rich [`PowerState`] enum. This is the single
+/// place that maps that vocabulary to an on/off bit, and it delegates
+/// to the enum — [`PowerState::parse`] accepts every serde wire
+/// spelling (plus the vendor-side spellings), and
+/// [`PowerState::is_on`] is the one on/off classification — so the
+/// string gate can never drift from the enum's semantics. Strings
+/// the vocabulary doesn't know parse as [`PowerState::Unknown`] and
+/// read as off, same as a stale or hand-set `"unknown"` value.
 pub fn power_state_str_is_on(power_state: &str) -> bool {
-    !matches!(power_state, "standby" | "unknown" | "cooling_down")
+    PowerState::parse(power_state).is_on()
 }
 
 impl TvState {
@@ -263,8 +275,8 @@ pub struct DiscoveredTv {
     /// Carries any extra fields the discovery channel was able to
     /// gather beyond the structured columns above — populated either
     /// by the vendor backend itself or by a post-discovery enrichment
-    /// step in the daemon (the daemon's `Manager1.DiscoverTvs`
-    /// handler fills `vendor_data["mac"]` from the kernel neighbour
+    /// step in the daemon (the daemon's `discover` / `discover-start`
+    /// rpc handlers fill `vendor_data["mac"]` from the kernel neighbor
     /// table after each SSDP hit, for IP-addressed backends).
     ///
     /// Consumers match these entries against the vendor's pairing
@@ -321,14 +333,12 @@ mod tests {
     /// Regression test for the Action-QoS field-test failure: when an LG
     /// TV transitions from `ScreenOff` to `ActiveStandby` (user presses
     /// Power on the remote while the screen is blank), the subscription
-    /// pushes `PowerState::ActiveStandby`. The forwarder derives the
-    /// cached `Tv1.Power.PowerState` property from the raw `power_state`
-    /// enum (via the daemon's `derive_power_state`), and `ActiveStandby`
-    /// collapses to `"standby"` there — but only because `is_screen_on`
-    /// is `false` keeps the substate honest for the reliable-dispatch
-    /// tier's verify check, which would otherwise think `screen_on`
-    /// succeeded while the panel is dark. See `docs/lg/firmware-quirks.md`
-    /// — "Bug A".
+    /// pushes `PowerState::ActiveStandby`. The daemon publishes the raw
+    /// `power_state` enum on the `state/power` payload alongside the
+    /// derived bools, and `is_screen_on = false` is what keeps the
+    /// substate honest for the reliable-dispatch tier's verify check,
+    /// which would otherwise think `screen_on` succeeded while the
+    /// panel is dark. See `docs/lg/firmware-quirks.md` — "Bug A".
     #[test]
     fn active_standby_marks_screen_off() {
         let mut state = TvState::new();
@@ -342,6 +352,33 @@ mod tests {
         );
     }
 
+    /// Pin the wake-preflight set variant by variant: only the states
+    /// where a screen command can actually land (`Active`,
+    /// `ScreenSaver`, `ScreenOff`) skip the power path. `Unknown`
+    /// pins the `#[non_exhaustive]` fall-through — a state the daemon
+    /// can't vouch for must wake rather than retry into a void — and
+    /// `ScreenOff` pins the lock-screen case that must *not* wake.
+    #[test]
+    fn wake_preflight_set_is_pinned() {
+        for (state, needs_wake) in [
+            (PowerState::Active, false),
+            (PowerState::ScreenSaver, false),
+            (PowerState::ScreenOff, false),
+            (PowerState::ActiveStandby, true),
+            (PowerState::Standby, true),
+            (PowerState::Suspend, true),
+            (PowerState::WarmingUp, true),
+            (PowerState::CoolingDown, true),
+            (PowerState::Unknown, true),
+        ] {
+            assert_eq!(
+                state.needs_wake_preflight(),
+                needs_wake,
+                "needs_wake_preflight mismatch for {state:?}",
+            );
+        }
+    }
+
     /// Companion to [`active_standby_marks_screen_off`]: spell out the
     /// expected mapping for every `PowerState` variant so future changes
     /// have to touch this table.
@@ -350,9 +387,8 @@ mod tests {
     /// `update_power` derives the bool from a positive whitelist of
     /// fully-usable substates (`Active` / `ScreenSaver`). Anything
     /// outside the whitelist — including `Unknown` and any future
-    /// `#[non_exhaustive]` variant — is treated as panel-off, which
-    /// matches the daemon-side `derive_power_state` collapse of
-    /// `Unknown` to `STANDBY`.
+    /// `#[non_exhaustive]` variant — is treated as panel-off, so a
+    /// state the daemon can't vouch for never reads as panel-on.
     #[test]
     fn update_power_screen_on_mapping_is_complete() {
         for (state, expected_is_on, expected_screen_on) in [
@@ -386,20 +422,37 @@ mod tests {
         }
     }
 
-    /// Pins the shared client-side on/off interpretation against the
-    /// full daemon wire vocabulary. The two transient projector codes
-    /// are the ones that bit the three-way client fork: `warming_up`
-    /// reads as on (powering up), `cooling_down` as off (powering down).
+    /// Pins the string gate to `PowerState::is_on` across every
+    /// variant's actual serde wire spelling, so a serde rename (or a
+    /// new variant) can't silently split the two interpretations.
     #[test]
-    fn power_state_str_is_on_covers_wire_vocabulary() {
-        assert!(power_state_str_is_on("active"));
-        assert!(power_state_str_is_on("screen_off"));
-        assert!(power_state_str_is_on("warming_up"));
-        assert!(!power_state_str_is_on("cooling_down"));
-        assert!(!power_state_str_is_on("standby"));
-        // `unknown` is not part of `derive_power_state`'s emitted set
-        // (it collapses `Unknown` to `standby`), but a client reading a
-        // stale or hand-set value must still classify it as off.
-        assert!(!power_state_str_is_on("unknown"));
+    fn power_state_str_is_on_matches_enum_for_every_wire_spelling() {
+        for state in [
+            PowerState::Active,
+            PowerState::Standby,
+            PowerState::ActiveStandby,
+            PowerState::Suspend,
+            PowerState::ScreenSaver,
+            PowerState::ScreenOff,
+            PowerState::WarmingUp,
+            PowerState::CoolingDown,
+            PowerState::Unknown,
+        ] {
+            let wire = serde_json::to_value(state).unwrap();
+            let wire = wire.as_str().unwrap();
+            assert_eq!(
+                power_state_str_is_on(wire),
+                state.is_on(),
+                "string gate diverges from PowerState::is_on for wire spelling {wire:?}"
+            );
+        }
+    }
+
+    /// Strings outside the vocabulary read as off — a client must
+    /// never treat an unclassifiable power state as powered.
+    #[test]
+    fn power_state_str_is_on_reads_unknown_strings_as_off() {
+        assert!(!power_state_str_is_on("no such state"));
+        assert!(!power_state_str_is_on(""));
     }
 }

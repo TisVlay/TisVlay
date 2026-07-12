@@ -21,6 +21,13 @@ export struct WizardDiscoveredTv {
     brand: string,
     address: string,
     hw-model: string,
+    /// Discovery-source label for the row's status chip (e.g. `SSDP`,
+    /// `CEC`), derived from the daemon's `vendor_data["source"]`. A
+    /// machine/protocol identifier — shown verbatim, not translated.
+    source-label: string,
+    /// The daemon could enumerate this device node but not open it
+    /// (insufficient permissions). Flips the status chip to a warning.
+    access-warning: bool,
 }
 
 // `supports-ipv4` / `supports-ipv6` mirror the vendor's
@@ -35,6 +42,15 @@ export struct VendorOption {
     name: string,
     supports-ipv4: bool,
     supports-ipv6: bool,
+    // The vendor's primary descriptor — its pairing schema's first
+    // field (LG: IP, CEC: device path, mock: address). Drives the
+    // manual-entry panel's label/placeholder so onboarding isn't
+    // hardcoded to IP-addressed vendors; `primary-is-ip` gates the
+    // manual-entry MAC enrichment (an ARP lookup only makes sense
+    // for an IP).
+    primary-label: string,
+    primary-placeholder: string,
+    primary-is-ip: bool,
 }
 
 // One row in the dynamic pairing-form schema. Mirrors
@@ -151,13 +167,13 @@ export global PairingWizard {
     in-out property <string> system-profile;
     in-out property <bool> managed: true;
     // Index into `supported-vendors` for the vendor the user picked
-    // in the manual-add path's ComboBox. Default 0 = first
+    // in the manual-add path's vendor select. Default 0 = first
     // alphabetically-sorted vendor (the `state_watch` publisher
-    // sorts before publishing). The ComboBox is bound via
-    // `current-index <=>` so user picks write back here directly,
-    // and Rust at `manual-add` time reads
-    // `supported-vendors[manual-vendor-index]` to recover the id +
-    // display name. Single source of truth replaces the prior
+    // sorts before publishing). The ThemedSelect shows
+    // `supported-vendor-names[manual-vendor-index]` and writes picks
+    // back here via its `selected-index` callback; Rust at `manual-add`
+    // time reads `supported-vendors[manual-vendor-index]` to recover the
+    // id + display name. Single source of truth replaces the prior
     // `manual-vendor` (id) + `manual-vendor-name` (display) pair.
     in-out property <int> manual-vendor-index: 0;
     in-out property <string> manual-ip;

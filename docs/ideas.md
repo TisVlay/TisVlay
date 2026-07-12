@@ -18,6 +18,9 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
 - [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
+- [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
+- [Eager remote-state refresh on gated events (world-side DPMS path)](ideas/eager-remote-state-refresh.md)
+- [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, configurable Sunshine endpoint, PipeWire test fake)](ideas/remote-session-followups.md)
 
 ## Operational
 
@@ -41,9 +44,10 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 ## Build & CI
 
-- [Consolidate `tisvlayd` integration test binaries](ideas/tisvlayd-test-consolidation.md)
+- [Switchover follow-ups: tray gettext, mock-backend gating, coverage baseline, fresh design doc](ideas/switchover-followups.md)
 - [Move the pre-publish artifact smoke-test into CI](ideas/ci-artifact-smoke-test.md)
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
+- [MSRV verification job (keep the `rust-version` floor honest under the pinned channel)](ideas/msrv-verification-job.md)
 - [Replace hardcoded sleeps in dispatch integration tests with poll-with-deadline](ideas/dispatch-test-event-driven-waits.md)
 
 ## Diagnostics & telemetry

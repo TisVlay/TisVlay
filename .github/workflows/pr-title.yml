@@ -1,0 +1,23 @@
+# Lint the pull-request title against Conventional Commits. The repo
+# squash-merges, so the PR title is the subject that lands on the default
+# branch and feeds release-plz's version + CHANGELOG derivation — this is the
+# authoritative commit-subject gate. (Local commits get an advisory check from
+# the prek commit-msg hook.) A dedicated workflow with an `edited` trigger so a
+# title fix re-runs just this lint, not the full CI build.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

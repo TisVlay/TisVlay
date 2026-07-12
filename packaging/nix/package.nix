@@ -11,11 +11,22 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tisvlay";
-  version = "0.1.0";
+  version = "0.3.0";
 
   src = lib.cleanSource ../../.;
 
-  cargoLock.lockFile = ../../Cargo.lock;
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    # importCargoLock hard-requires a hash for every git dependency. The
+    # three pipewire-native sibling crates share one upstream rev, so one
+    # tree hash covers all three. Drop this (and the deny.toml allow-git
+    # entry) when the crates.io pin returns.
+    outputHashes = {
+      "pipewire-native-0.1.4" = "sha256-z0f6KOPGPWqeqI/EUx7BrGBYDfjGNxGZ9V29AH//azo=";
+      "pipewire-native-spa-0.1.4" = "sha256-z0f6KOPGPWqeqI/EUx7BrGBYDfjGNxGZ9V29AH//azo=";
+      "pipewire-native-macros-0.1.4" = "sha256-z0f6KOPGPWqeqI/EUx7BrGBYDfjGNxGZ9V29AH//azo=";
+    };
+  };
 
   # tisvlay-gui dlopens Slint's femtovg + winit runtime libs;
   # tisvlay-session and tisvlay-greeter dlopen libwayland-client.so via
@@ -136,12 +147,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # `cargo build` picks it up, so the crate list lives in one place
   # instead of being repeated here as `-p` flags. Without it the default
   # build would also compile the dev-only crates (tisvlay-mock /
-  # tisvlay-test / tisvlay-harness).
-
-  # Ship the daemon's "Mock (testing)" backend for field debugging, in
-  # step with the justfile's package-build. Scoped to tisvlayd — only the
-  # daemon builds the backend registry.
-  buildFeatures = [ "tisvlayd/mock" ];
+  # tisvlay-test).
 
   # No binary cache for this flake, so every consumer builds from source —
   # the checkPhase would re-run, from scratch, the same suite CI already

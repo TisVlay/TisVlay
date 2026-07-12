@@ -18,7 +18,8 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { ComboBox, ScrollView, SpinBox } from "std-widgets.slint";
+import { ScrollView, SpinBox, Switch } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
@@ -346,17 +347,107 @@ component ProfileList inherits Rectangle {
 // Field-editor rows — one per `ProfileFieldEntry`, dispatched by `kind`.
 // =============================================================================
 //
-// Two row shapes share the same three-column rhythm:
-//   [2 px gutter] [label] [control + reset glyph]
+// Three row shapes (enum / number / bool) share the same rhythm:
+//   [2 px gutter] [label] [control] [trailing: (restore · gate ·) reset]
 // The gutter accent flips to `Theme.accent` when `is-locally-set`,
 // signaling at a glance which fields override the inherit chain.
-// Reset is only rendered for locally-set rows — inheriting fields
-// can't be "reset" because they already inherit.
 //
-// The inherit overlay on `entry.current-value` for enum rows is the
-// visual inherit cue AND the workaround for `ComboBox.selected(v)`
-// no-op when picked == current. Number rows skip the overlay; the
-// gutter + reset glyph carry the inherit signal alone.
+// The trailing block (`ProfileRowTrailing`) ends every row with the reset
+// slot, so every reset glyph lands in the same right-edge column — aligned
+// under the detail-header's reset-all button. The two toggles precede it
+// only on `SessionAction` action rows; number and bool rows carry the
+// reset slot alone. Reset is only interactive for locally-set rows —
+// inheriting fields can't be "reset" because they already inherit.
+//
+// `entry.current-value` is the resolved token verbatim for enum + number;
+// the inherit cue is the gutter accent + reset glyph, not a marker baked
+// into the value.
+
+// Fixed-width trailing controls, shared by every row kind so the reset
+// glyphs form one vertical column. `gap-form` between the slots matches
+// the detail-header's spacing between its Duplicate and Reset-all
+// buttons, tying the two toolbars to the same rhythm.
+//
+// The reset slot is the last fixed-width column on every row, so it lands
+// at the same right edge whether or not the toggles precede it (the
+// `alignment: end` right-anchors the block). The two toggle slots render
+// only on action rows (`has-toggles`) — non-action rows (number, bool)
+// carry the reset slot alone, so a SpinBox is not squeezed by empty
+// toggle spacers.
+//
+// Each slot is a fixed 24×24 box: the explicit height gives the
+// `if`-gated `IconBtn` (bound `height: 100%`) a nonzero hit area — a
+// bare width-only Rectangle collapses to zero height and swallows the
+// click. Toggle accent (`active`) tracks "differs from the field's floor
+// default", not the on/off value — the pane's locally-set visual
+// language. The pressed/glyph state still reflects the value (the gate
+// swaps its glyph by value). Where a toggle is meaningless it is
+// `enabled: false`, which dims it and drops interactivity.
+component ProfileRowTrailing inherits HorizontalLayout {
+    in property <ProfileFieldEntry> entry;
+
+    spacing: Design.gap-form;
+    alignment: end;
+
+    // Restore-input toggle slot — action rows only.
+    if root.entry.has-toggles: Rectangle {
+        width: 24px;
+        height: 24px;
+        IconBtn {
+            width: 100%;
+            height: 100%;
+            source: Icons.restore-input;
+            enabled: root.entry.restore-enabled;
+            active: root.entry.restore-differs;
+            accessible-label: @tr("Land on primary input");
+            tip: @tr("Land on primary input");
+            clicked => {
+                Profiles.restore-edited(root.entry.field-name, !root.entry.restore-value);
+            }
+        }
+    }
+
+    // Remote-session gate slot — action rows only. The glyph swaps by
+    // value (gated = network-off); the accent tracks differs-from-floor.
+    if root.entry.has-toggles: Rectangle {
+        width: 24px;
+        height: 24px;
+        IconBtn {
+            width: 100%;
+            height: 100%;
+            source: root.entry.remote-gate-value
+                ? Icons.remote-gate-on
+                : Icons.remote-gate-off;
+            enabled: root.entry.remote-gate-enabled;
+            active: root.entry.remote-gate-differs;
+            accessible-label: root.entry.remote-gate-value
+                ? @tr("Fires during remote session")
+                : @tr("Suppressed during remote session");
+            tip: root.entry.remote-gate-value
+                ? @tr("Fires during remote session")
+                : @tr("Suppressed during remote session");
+            clicked => {
+                Profiles.remote-gated(root.entry.field-name, !root.entry.remote-gate-value);
+            }
+        }
+    }
+
+    // Reset glyph — the right-edge column, aligned under the header's
+    // reset-all. Interactive only for locally-set fields; a fixed 24 px
+    // box whether populated or not so the rhythm stays consistent.
+    Rectangle {
+        width: 24px;
+        height: 24px;
+        if root.entry.is-locally-set: IconBtn {
+            width: 100%;
+            height: 100%;
+            source: Icons.reload;
+            accessible-label: @tr("Reset {} to default", root.entry.label);
+            tip: @tr("Reset field");
+            clicked => { Profiles.reset-field(root.entry.field-name); }
+        }
+    }
+}
 
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;
@@ -406,24 +497,17 @@ component ProfileFieldRowEnum inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ComboBox {
+                ThemedSelect {
                     model: root.entry.options;
                     current-value: root.entry.current-value;
                     selected(v) => { Profiles.value-edited(root.entry.field-name, v); }
                 }
             }
 
-            // Reset glyph — only rendered for locally-set fields.
-            // 24 px column whether populated or not so the row
-            // rhythm stays consistent.
             VerticalLayout {
-                width: 24px;
                 alignment: center;
-                if root.entry.is-locally-set: IconBtn {
-                    source: Icons.reload;
-                    accessible-label: @tr("Reset {} to default", root.entry.label);
-                    tip: @tr("Reset field");
-                    clicked => { Profiles.reset-field(root.entry.field-name); }
+                ProfileRowTrailing {
+                    entry: root.entry;
                 }
             }
         }
@@ -525,14 +609,76 @@ component ProfileFieldRowNumber inherits Rectangle {
                 }
             }
 
+            // Same trailing block as the enum row; on a number row it
+            // resolves to the reset slot alone (no action modifiers), so
+            // its reset glyph shares the enum rows' right-edge column
+            // without stealing width from the SpinBox.
             VerticalLayout {
-                width: 24px;
                 alignment: center;
-                if root.entry.is-locally-set: IconBtn {
-                    source: Icons.reload;
-                    accessible-label: @tr("Reset {} to inherit", root.entry.label);
-                    tip: @tr("Reset field");
-                    clicked => { Profiles.reset-field(root.entry.field-name); }
+                ProfileRowTrailing {
+                    entry: root.entry;
+                }
+            }
+        }
+    }
+}
+
+component ProfileFieldRowBool inherits Rectangle {
+    in property <ProfileFieldEntry> entry;
+
+    height: row-layout.preferred-height;
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: 0;
+        alignment: stretch;
+
+        Rectangle {
+            width: 2px;
+            background: root.entry.is-locally-set ? Theme.accent : transparent;
+        }
+
+        row-layout := HorizontalLayout {
+            horizontal-stretch: 1;
+            padding-left: Design.gap-row;
+            padding-right: Design.gap-row;
+            padding-top: Design.gap-stack;
+            padding-bottom: Design.gap-stack;
+            spacing: Design.gap-row;
+            alignment: stretch;
+
+            VerticalLayout {
+                width: Design.width-label-col-profile;
+                alignment: center;
+                Text {
+                    text: root.entry.label;
+                    color: Theme.text;
+                    font-size: Design.font-meta;
+                    font-weight: 500;
+                    wrap: word-wrap;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Switch {
+                    checked: root.entry.bool-value;
+                    accessible-label: root.entry.label;
+                    toggled => {
+                        Profiles.value-edited-bool(root.entry.field-name, self.checked);
+                    }
+                }
+            }
+
+            // Shared trailing block — on the screencast-arms switch row it
+            // resolves to the reset slot alone (no action modifiers), so
+            // its reset glyph joins the same right-edge column as the
+            // action rows.
+            VerticalLayout {
+                alignment: center;
+                ProfileRowTrailing {
+                    entry: root.entry;
                 }
             }
         }
@@ -905,6 +1051,12 @@ component ProfileDetail inherits Rectangle {
                 spacing: Design.gap-pane;
                 alignment: start;
 
+                // FIELDS section — title row + card. A sibling of the
+                // REMOTE SESSION section below; the body's `gap-pane`
+                // sets the section-to-section rhythm, matching the TVs
+                // pane's stacked `Group`s. Each section keeps its own
+                // `spacing: 0` so the title's `padding-bottom` (gap-stack)
+                // is the only title-to-card gap, exactly as `Group` does.
                 VerticalLayout {
                     spacing: 0;
 
@@ -992,6 +1144,88 @@ component ProfileDetail inherits Rectangle {
                                 }
                                 if entry.kind == "number": ProfileFieldRowNumber {
                                     entry: entry;
+                                }
+                                if entry.kind == "bool": ProfileFieldRowBool {
+                                    entry: entry;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // REMOTE SESSION section — the screencast-arming switch
+                // (user profiles only). The per-event suppression gate
+                // rides each action row in the FIELDS card as a toggle,
+                // not a card row, so the system pane pushes no rows here
+                // and the section hides. A sibling of the FIELDS section:
+                // the body's `gap-pane` sets the gap between them. Same
+                // surface + full-bleed row treatment as the FIELDS card.
+                if Profiles.editor-remote-fields.length > 0: VerticalLayout {
+                    spacing: 0;
+                    HorizontalLayout {
+                        padding-left: 2px;
+                        padding-bottom: Design.gap-stack;
+                        spacing: Design.gap-form;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: @tr("REMOTE SESSION");
+                                color: Theme.text-dim;
+                                font-size: Design.font-mini;
+                                font-weight: 600;
+                                letter-spacing: 0.6px;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            ContextualHelpButton {
+                                text: @tr("What counts as a remote session, so events can be suppressed for an empty room. Suppress an individual event with the network toggle on its row in FIELDS above.");
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    Rectangle {
+                        background: Theme.surface;
+                        border-color: Theme.border;
+                        border-width: Design.border-thin;
+                        border-radius: Design.radius-card;
+
+                        VerticalLayout {
+                            width: 100%;
+                            padding-top: Design.pad-card - Design.gap-stack;
+                            padding-bottom: Design.pad-card - Design.gap-stack;
+                            spacing: 0;
+                            alignment: start;
+                            for entry[i] in Profiles.editor-remote-fields: VerticalLayout {
+                                if entry.kind == "enum": ProfileFieldRowEnum {
+                                    entry: entry;
+                                }
+                                if entry.kind == "number": ProfileFieldRowNumber {
+                                    entry: entry;
+                                }
+                                if entry.kind == "bool": ProfileFieldRowBool {
+                                    entry: entry;
+                                }
+                                // Helper copy under the screencast-arms
+                                // switch: what always arms vs. what the
+                                // switch adds.
+                                if entry.field-name == "remote_screencast_arms": VerticalLayout {
+                                    padding-left: Design.gap-row;
+                                    padding-right: Design.gap-row;
+                                    padding-bottom: Design.gap-stack;
+                                    spacing: 2px;
+                                    Text {
+                                        text: @tr("Remote apps, hooks and remote logins always arm.");
+                                        color: Theme.text-dim;
+                                        font-size: Design.font-meta;
+                                        wrap: word-wrap;
+                                    }
+                                    Text {
+                                        text: @tr("On: any screen capture (OBS, browser tab-share) also arms.");
+                                        color: Theme.text-dim;
+                                        font-size: Design.font-meta;
+                                        wrap: word-wrap;
+                                    }
                                 }
                             }
                         }

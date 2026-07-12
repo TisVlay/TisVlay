@@ -8,7 +8,8 @@
 // VendorTile, Group, …) come from ../widgets.slint; pane-local
 // helpers like `FormRow` and `LabeledRow` live further down.
 
-import { Button, ComboBox, ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
+import { Button, ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Daemon } from "../globals/daemon.slint";
@@ -716,7 +717,7 @@ component TvDetail inherits Rectangle {
                         help: @tr("Drives daemon lifecycle (boot / shutdown / sleep).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
-                            ComboBox {
+                            ThemedSelect {
                                 model: root.system-profiles;
                                 current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
                                 enabled: root.system-profiles.length > 0;
@@ -746,7 +747,7 @@ component TvDetail inherits Rectangle {
                         help: @tr("Drives session events (lock / unlock / idle).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
-                            ComboBox {
+                            ThemedSelect {
                                 model: root.user-profiles;
                                 current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
                                 enabled: root.user-profiles.length > 0;
@@ -842,7 +843,7 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         label: @tr("current input" => "Current");
                         help: @tr("Current input shown now; changing it switches the live input.");
-                        ComboBox {
+                        ThemedSelect {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
                             enabled: root.tv.connected
@@ -854,7 +855,7 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         label: @tr("primary input" => "Primary");
                         help: @tr("Primary input gating automation; E.g. input used for display.");
-                        ComboBox {
+                        ThemedSelect {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;
                             enabled: root.tv.available-input-ids.length > 0;

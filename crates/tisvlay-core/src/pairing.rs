@@ -182,6 +182,13 @@ impl fmt::Display for PairingError {
 impl std::error::Error for PairingError {}
 
 /// Error codes for pairing failures.
+///
+/// The wire/routing form is [`Self::as_str`] (namespaced `pairing.<kebab>`),
+/// carried as the pairing-progress payload's `code` field and matched
+/// by clients. The derived
+/// serde impl exists only because the in-process [`PairingError`] /
+/// [`PairingState`] derive it — those are never serialized across a
+/// boundary, so its (snake_case) form is not a wire contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairingErrorCode {
@@ -199,16 +206,26 @@ pub enum PairingErrorCode {
     Unknown,
 }
 
+impl PairingErrorCode {
+    /// Stable machine-readable identifier for routing on clients.
+    /// Format mirrors the `<domain>.<kebab-case-variant>` convention
+    /// shared with the other typed-error domains (`power.*`, `config.*`,
+    /// `device.*`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rejected => "pairing.rejected",
+            Self::Timeout => "pairing.timeout",
+            Self::ConnectionFailed => "pairing.connection-failed",
+            Self::InvalidInput => "pairing.invalid-input",
+            Self::Cancelled => "pairing.cancelled",
+            Self::Unknown => "pairing.unknown",
+        }
+    }
+}
+
 impl fmt::Display for PairingErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Rejected => write!(f, "rejected"),
-            Self::Timeout => write!(f, "timeout"),
-            Self::ConnectionFailed => write!(f, "connection_failed"),
-            Self::InvalidInput => write!(f, "invalid_input"),
-            Self::Cancelled => write!(f, "cancelled"),
-            Self::Unknown => write!(f, "unknown"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -442,10 +459,9 @@ impl PairingSession {
     ///
     /// Allows callers outside the session's owning scope to send
     /// `PairingCommand::Cancel` (and future commands) without holding
-    /// the session itself. Used by `tisvlayd::tv_manager`'s
-    /// `pairing_sessions` map so `Manager1.CancelPair(tv_id)` can
-    /// reach in-flight pair handshakes owned by `pair_tv` /
-    /// `re_pair_tv`.
+    /// the session itself. The daemon's world keeps this sender on
+    /// the pairing entity so the `cancel-pair` rpc can reach
+    /// in-flight pair and re-pair handshakes.
     pub fn command_sender(&self) -> mpsc::Sender<PairingCommand> {
         self.command_tx.clone()
     }
@@ -506,6 +522,21 @@ mod tests {
         assert_eq!(InputType::None.to_string(), "none");
         assert_eq!(InputType::Pin.to_string(), "pin");
         assert_eq!(InputType::Password.to_string(), "password");
+    }
+
+    #[test]
+    fn pairing_error_code_as_str_is_namespaced() {
+        assert_eq!(PairingErrorCode::Rejected.as_str(), "pairing.rejected");
+        assert_eq!(
+            PairingErrorCode::ConnectionFailed.as_str(),
+            "pairing.connection-failed",
+        );
+        assert_eq!(PairingErrorCode::Unknown.as_str(), "pairing.unknown");
+        // Display delegates to as_str.
+        assert_eq!(
+            PairingErrorCode::Timeout.to_string(),
+            PairingErrorCode::Timeout.as_str(),
+        );
     }
 
     #[test]

@@ -1,31 +1,22 @@
 [package]
 name = "tisvlay-greeter"
-description = "Login-greeter idle client for TV control"
+description = "TisVlay login-greeter idle client: wayland ext-idle-notify to greeter/idle puts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-authors.workspace = true
 license.workspace = true
-publish = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
-
-[lib]
-name = "tisvlay_greeter"
-path = "src/lib.rs"
-
-[[bin]]
-name = "tisvlay-greeter"
-path = "src/main.rs"
+publish.workspace = true
 
 [dependencies]
-tisvlay-core = { workspace = true, features = ["dbus", "logging", "wayland"] }
-tokio = { workspace = true }
-tracing = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+serde_json = { workspace = true }
+tisvlay-core = { workspace = true, features = ["wayland", "logging"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tisvlay-wire = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
 
 [lints]
 workspace = true

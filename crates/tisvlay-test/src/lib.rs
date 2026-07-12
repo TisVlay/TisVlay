@@ -1,4 +1,4 @@
-//! Shared test harness for the tisvlay workspace.
+//! OS-environment fakes for the tisvlay workspace.
 //!
 //! This crate is **dev-only**. It is never shipped in release builds
 //! and its dependencies (zbus, tempfile, `dbus-daemon` as a runtime
@@ -26,11 +26,11 @@
 //! # Parallelism
 //!
 //! Tests within a single binary share one bus. That's fine for tests
-//! that use unique object paths (e.g., per-TV under the same daemon
-//! service), but tests that both want to own `org.tisvlay.Daemon`
-//! cannot run in parallel on one bus — name ownership is bus-global.
-//! For such tests, use nextest's `test-groups` to serialize them
-//! within the binary.
+//! that use unique object paths, but tests that both want to own the
+//! same well-known name (e.g. `org.freedesktop.login1` for a
+//! [`fake_logind::FakeLogind`]) cannot run in parallel on one bus —
+//! name ownership is bus-global. For such tests, use nextest's
+//! `test-groups` to serialize them within the binary.
 
 pub mod dbus;
 pub mod fake_logind;

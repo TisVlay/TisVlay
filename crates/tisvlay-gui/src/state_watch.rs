@@ -4,13 +4,14 @@
 
 use std::sync::Arc;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{
+use crate::compat::{
     DaemonClient, NotificationSettingsBody, RefreshTrigger, SessionClient, StateEvent,
     StateWatcher, TrayClient,
 };
+use gettextrs::gettext;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
 use crate::profiles::{self, ProfileEditor};
@@ -33,8 +34,12 @@ pub(crate) async fn initial_fetch_and_watch(
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
 ) {
-    let initial_session_available = session.read().await.is_some();
-    let initial_tray_available = tray.read().await.is_some();
+    // The client always exists (background-retry link); availability is
+    // the liveliness state, not the client's existence.
+    let initial_tray_available = match tray.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
     let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
         Ok(mut s) => {
             reconcilers.reconcile(&mut s);
@@ -63,7 +68,6 @@ pub(crate) async fn initial_fetch_and_watch(
     // once the daemon comes up.
     fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
 
-    let initial_daemon_available = initial_snapshot.is_some();
     // Seed `Tray.notifications` with documented defaults from core
     // before any successful fetch. Gives the settings pane sensible
     // switch positions even if the GUI starts while the tray is
@@ -74,25 +78,11 @@ pub(crate) async fn initial_fetch_and_watch(
         if let Some(snapshot) = initial_snapshot {
             push_snapshot(&app, snapshot);
         }
-        app.set_daemon_available(initial_daemon_available);
-        app.set_session_available(initial_session_available);
-        app.set_tray_available(initial_tray_available);
-        let tray_global = app.global::<Tray>();
-        tray_global.set_notifications(initial_tray_notifications);
-        // Settings pane binds switch `enabled` + the offline banner
-        // to `Tray.available`, which is a global property distinct
-        // from `AppWindow.tray-available` (used by the About-pane
-        // footer). Mirror writes to both so the settings pane
-        // re-enables when the tray comes online — same pattern as
-        // `Profiles.session-available` below.
-        tray_global.set_available(initial_tray_available);
-        // Profiles-pane User section needs its own copy of the
-        // session-bus availability flag so the "Session service
-        // unavailable" hint and the disabled "+" button can bind
-        // against the Profiles global directly.
-        app.global::<Profiles>()
-            .set_session_available(initial_session_available);
+        app.global::<Tray>()
+            .set_notifications(initial_tray_notifications);
     });
+    // Every availability copy goes through the single writer.
+    publish_availability(&daemon, &session, &tray, &app_weak).await;
 
     if initial_tray_available {
         refresh_tray_notifications(&tray, &app_weak).await;
@@ -111,8 +101,9 @@ pub(crate) async fn initial_fetch_and_watch(
     .await;
 }
 
-/// Fetch the daemon's supported-vendor list (`Manager1.GetSupportedVendors`)
-/// and publish it to the pairing-wizard global plus the diagnostic-blob
+/// Fetch the daemon's supported-vendor list (the `manager/vendors`
+/// catalog) and publish it to the pairing-wizard global plus the
+/// diagnostic-blob
 /// cache. Sorted by display name (case-insensitive) so the wizard's
 /// ComboBox renders in stable, scannable order regardless of registration
 /// order.
@@ -138,8 +129,8 @@ async fn fetch_and_publish_vendors(
         *cache = vendor_pairs.iter().map(|(id, _)| id.clone()).collect();
     }
 
-    // Per-vendor capability fetch in a second pass — keeps the wire
-    // payload of `GetSupportedVendors` unchanged (still `a(ss)`) and
+    // Per-vendor capability fetch in a second pass — keeps the
+    // vendor-catalog payload unchanged (still `(id, name)` pairs) and
     // lets vendors come and go without renegotiating shape. Vendor
     // counts are O(1) in practice (one to a handful), so the extra
     // round-trips are negligible against the cost of any user-visible
@@ -148,37 +139,86 @@ async fn fetch_and_publish_vendors(
     // conservative — placeholder reverts to v4-only — rather than
     // silently asserting transport support the daemon didn't
     // actually confirm.
-    let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities)> =
+    let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities, PrimaryField)> =
         Vec::with_capacity(vendor_pairs.len());
     for (id, name) in vendor_pairs {
-        let caps = daemon
-            .get_vendor_capabilities(&id)
-            .await
-            .unwrap_or_else(|e| {
-                debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
-                tisvlay_core::Capabilities::empty()
-            });
-        vendors_with_caps.push((id, name, caps));
+        // Capabilities and pairing schema are independent rpcs —
+        // fetch them concurrently.
+        let (caps, schema) = tokio::join!(
+            daemon.get_vendor_capabilities(&id),
+            daemon.get_pairing_schema(&id),
+        );
+        let caps = caps.unwrap_or_else(|e| {
+            debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
+            tisvlay_core::Capabilities::empty()
+        });
+        // The schema's first field is the vendor's primary descriptor
+        // (schema-ordering convention) — it becomes the manual-entry
+        // panel's identity input. Fetch failure falls back to a
+        // generic "Address" so manual entry stays usable.
+        let primary = schema
+            .ok()
+            .and_then(|schema| schema.into_iter().next())
+            .map(|field| {
+                let is_ip = field.field_type == tisvlay_core::PairingFieldType::Ip;
+                let placeholder = if !field.placeholder.is_empty() {
+                    field.placeholder
+                } else if is_ip
+                    && caps.contains(tisvlay_core::Capabilities::IPV6)
+                    && !caps.contains(tisvlay_core::Capabilities::IPV4)
+                {
+                    // v6-only vendors get the RFC 3849 documentation
+                    // prefix; everything else keeps the familiar v4.
+                    "2001:db8::1".into()
+                } else if is_ip {
+                    "192.168.1.100".into()
+                } else {
+                    String::new()
+                };
+                PrimaryField {
+                    label: field.label,
+                    placeholder,
+                    is_ip,
+                }
+            })
+            .unwrap_or_default();
+        vendors_with_caps.push((id, name, caps, primary));
     }
 
     on_ui(app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();
         let names: Vec<SharedString> = vendors_with_caps
             .iter()
-            .map(|(_, name, _)| SharedString::from(name.as_str()))
+            .map(|(_, name, _, _)| SharedString::from(name.as_str()))
             .collect();
         let vendors: Vec<VendorOption> = vendors_with_caps
             .into_iter()
-            .map(|(id, name, caps)| VendorOption {
+            .map(|(id, name, caps, primary)| VendorOption {
                 id: SharedString::from(id),
                 name: SharedString::from(name),
                 supports_ipv4: caps.contains(tisvlay_core::Capabilities::IPV4),
                 supports_ipv6: caps.contains(tisvlay_core::Capabilities::IPV6),
+                primary_label: SharedString::from(if primary.label.is_empty() {
+                    gettext("Address")
+                } else {
+                    primary.label
+                }),
+                primary_placeholder: SharedString::from(primary.placeholder),
+                primary_is_ip: primary.is_ip,
             })
             .collect();
         wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
     });
+}
+
+/// Manual-entry identity-input shape derived from a vendor schema's
+/// first field.
+#[derive(Default)]
+struct PrimaryField {
+    label: String,
+    placeholder: String,
+    is_ip: bool,
 }
 
 async fn watch_state(
@@ -190,7 +230,7 @@ async fn watch_state(
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
 ) {
-    // No debounce: every D-Bus state signal triggers a refresh fire.
+    // No debounce: every state event triggers a refresh fire.
     // The default 100ms (originally a flood guard before
     // `RefreshTrigger` existed) is now redundant — `RefreshTrigger`
     // already folds concurrent fires into a single in-flight refresh
@@ -208,17 +248,20 @@ async fn watch_state(
     // `invoke_from_event_loop` is cheap; the property tracker dedups
     // and only one paint per frame happens regardless of how many
     // updates feed in.
-    let watcher_config = tisvlay_core::StateWatcherConfig {
+    let watcher_config = crate::compat::StateWatcherConfig {
         signal_debounce: std::time::Duration::ZERO,
         ..Default::default()
     };
-    let mut watcher = match StateWatcher::new(&daemon, watcher_config).await {
-        Ok(w) => w,
-        Err(e) => {
-            warn!(error = %e, "Failed to create state watcher; live updates disabled");
-            return;
-        }
-    };
+    // Session/tray events ride the clients built at startup (resilient
+    // links, never replaced); the watcher synthesizes `*Appeared` for
+    // peers already alive at construction, so the initial availability
+    // reads above can't leave the flags permanently stale.
+    let mut watcher = StateWatcher::new(
+        &daemon,
+        session.read().await.as_ref(),
+        tray.read().await.as_ref(),
+        watcher_config,
+    );
 
     // `watcher.next() → refresh.await` inline halts signal_stream
     // draining and wedges the connection under flood. See
@@ -258,10 +301,12 @@ async fn watch_state(
                 // defaults on disk, in which case the inherit walk
                 // would otherwise resolve against a stale ancestor.
                 profiles::prime_system_layers(&daemon, &editor).await;
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
             | StateEvent::TvUserProfileChanged
+            | StateEvent::RemoteSessionChanged
             | StateEvent::FallbackPoll => {
                 trigger_refresh();
             }
@@ -313,59 +358,46 @@ async fn watch_state(
             }
             StateEvent::DaemonDisappeared => {
                 on_ui(&app_weak, move |app| {
-                    app.set_daemon_available(false);
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                     app.set_tvs_connected_count(0);
                 });
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
-                if let Ok(client) = SessionClient::new().await
-                    && client.is_available().await
-                {
-                    profiles::prime_user_layers(&client, &editor).await;
-                    *session.write().await = Some(client);
-                    on_ui(&app_weak, move |app| {
-                        app.set_session_available(true);
-                        app.global::<Profiles>().set_session_available(true);
-                    });
-                    trigger_refresh();
+                // The client exists from startup (background-retry link);
+                // the token arriving means the service is answering now.
+                if let Some(client) = session.read().await.as_ref() {
+                    profiles::prime_user_layers(client, &editor).await;
                 }
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
-                *session.write().await = None;
-                on_ui(&app_weak, move |app| {
-                    app.set_session_available(false);
-                    app.global::<Profiles>().set_session_available(false);
-                });
+                // The client stays — its resilient link redials and its
+                // liveliness subscriber delivers the next Appeared.
+                // Only the availability flags flip.
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
-                if let Ok(client) = TrayClient::new().await
-                    && client.is_available().await
+                // The client exists from startup (background-retry link).
                 {
-                    *tray.write().await = Some(client);
-                    on_ui(&app_weak, move |app| {
-                        app.set_tray_available(true);
-                        app.global::<Tray>().set_available(true);
-                    });
+                    publish_availability(&daemon, &session, &tray, &app_weak).await;
                     refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
                 }
             }
             StateEvent::TrayDisappeared => {
-                *tray.write().await = None;
-                on_ui(&app_weak, move |app| {
-                    app.set_tray_available(false);
-                    app.global::<Tray>().set_available(false);
-                });
+                // Client stays, same as the session arm above.
+                publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayNotificationSettingsChanged => {
-                // Property-change signal from the tray's
-                // `Tray1.NotificationSettings` — re-fetch the body
-                // and update the Slint global. Switch values get
-                // their new bindings on the next render.
+                // The tray republished its cached settings key —
+                // re-fetch the body and update the Slint global.
+                // Switch values get their new bindings on the next
+                // render.
                 refresh_tray_notifications(&tray, &app_weak).await;
             }
         }
@@ -375,9 +407,9 @@ async fn watch_state(
 /// Pull the current notification body from the tray and push into the
 /// `Tray.notifications` Slint global. Used on `TrayAppeared` (initial
 /// sync after the tray comes up) and on `TrayNotificationSettingsChanged`
-/// (every subsequent mutation, whether via D-Bus or a hand-edit +
-/// `ReloadConfig`). Tray-offline → no-op (the global keeps its
-/// last-fetched values for the visible-but-disabled UX).
+/// (every subsequent settings-key republish). Tray-offline → the
+/// fetch fails quietly and the global keeps its last-fetched values
+/// for the visible-but-disabled UX.
 pub(crate) async fn refresh_tray_notifications(
     tray: &RwLock<Option<TrayClient>>,
     app_weak: &slint::Weak<AppWindow>,
@@ -431,24 +463,21 @@ async fn refresh(
             reconcilers.reconcile(&mut snapshot);
             on_ui(app_weak, move |app| {
                 push_snapshot(&app, snapshot);
-                app.set_daemon_available(true);
             });
         }
-        Err(e) => {
-            debug!(error = %e, "State refresh failed");
-            on_ui(app_weak, move |app| {
-                app.set_daemon_available(false);
-            });
-        }
+        // Content-only failure: availability is liveliness's job
+        // (publish_availability), never a fetch outcome's.
+        Err(e) => debug!(error = %e, "State refresh failed"),
     }
     drop(session_ref);
+    publish_availability(daemon, session, tray, app_weak).await;
     refresh_about_components(daemon, session, tray, app_weak).await;
 }
 
-/// Probe each peer's `Version` + `ConfigPath` D-Bus properties and
-/// push the COMPONENTS-table model to the About pane. Both
-/// properties are `const` upstream, so this is cheap to invoke after
-/// every state-affecting event; caching would save a couple of zbus
+/// Probe each peer's version + config-path info rpcs and push the
+/// COMPONENTS-table model to the About pane. Both values are
+/// constant for a peer's lifetime, so this is cheap to invoke after
+/// every state-affecting event; caching would save a couple of
 /// round-trips on a flap-storm but isn't worth the extra plumbing.
 async fn refresh_about_components(
     daemon: &DaemonClient,
@@ -467,24 +496,63 @@ async fn refresh_about_components(
         })
     }
 
+    // Availability is liveliness; the probes fill content only. A
+    // failed probe on a live peer renders an online row with "—".
+    let daemon_up = daemon.is_available().await;
     let daemon_info = probe(daemon.version(), daemon.config_path()).await;
-    let session_info = match session.read().await.as_ref() {
-        Some(s) => probe(s.version(), s.config_path()).await,
-        None => None,
+    let (session_up, session_info) = match session.read().await.as_ref() {
+        Some(s) => (
+            s.is_available().await,
+            probe(s.version(), s.config_path()).await,
+        ),
+        None => (false, None),
     };
-    let tray_info = match tray.read().await.as_ref() {
-        Some(t) => probe(t.version(), t.config_path()).await,
-        None => None,
+    let (tray_up, tray_info) = match tray.read().await.as_ref() {
+        Some(t) => (
+            t.is_available().await,
+            probe(t.version(), t.config_path()).await,
+        ),
+        None => (false, None),
     };
     let cli_version = probe_cli_version().await;
     let rows = make_about_components(
-        daemon_info.as_ref(),
-        session_info.as_ref(),
-        tray_info.as_ref(),
+        &crate::endpoints().site,
+        (daemon_up, daemon_info.as_ref()),
+        (session_up, session_info.as_ref()),
+        (tray_up, tray_info.as_ref()),
         cli_version.as_deref(),
     );
     on_ui(app_weak, move |app| {
         app.set_about_components(ModelRc::new(VecModel::from(rows)));
+    });
+}
+
+/// The single writer for every Slint availability property — presence
+/// is liveliness, only; rpc outcomes are content, never online/offline.
+/// Writing all copies (window props + the Tray/Profiles globals) in
+/// one place is what keeps the footer, settings pane, profiles pane,
+/// and About rows from ever disagreeing.
+async fn publish_availability(
+    daemon: &DaemonClient,
+    session: &RwLock<Option<SessionClient>>,
+    tray: &RwLock<Option<TrayClient>>,
+    app_weak: &slint::Weak<AppWindow>,
+) {
+    let daemon_up = daemon.is_available().await;
+    let session_up = match session.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
+    let tray_up = match tray.read().await.as_ref() {
+        Some(client) => client.is_available().await,
+        None => false,
+    };
+    on_ui(app_weak, move |app| {
+        app.set_daemon_available(daemon_up);
+        app.set_session_available(session_up);
+        app.set_tray_available(tray_up);
+        app.global::<Tray>().set_available(tray_up);
+        app.global::<Profiles>().set_session_available(session_up);
     });
 }
 

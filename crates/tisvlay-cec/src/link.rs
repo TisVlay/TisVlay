@@ -121,7 +121,9 @@ struct LinuxCecMonitor {
 
 impl LinuxCecMonitor {
     async fn open(device: &str) -> Result<Self> {
-        let dev = AsyncDevice::open(device).await.map_err(map_cec_err)?;
+        let dev = AsyncDevice::open(device)
+            .await
+            .map_err(|e| map_open_err(device, e))?;
         dev.set_follower_mode(FollowerMode::Enabled)
             .await
             .map_err(map_cec_err)?;
@@ -172,7 +174,9 @@ struct LinuxCecLink {
 
 impl LinuxCecLink {
     async fn open(device: &str, physical_address: PhysicalAddress) -> Result<Self> {
-        let dev = AsyncDevice::open(device).await.map_err(map_cec_err)?;
+        let dev = AsyncDevice::open(device)
+            .await
+            .map_err(|e| map_open_err(device, e))?;
         // Enable transmit before configuring any addresses.
         dev.set_initiator_mode(InitiatorMode::Enabled)
             .await
@@ -306,14 +310,73 @@ fn map_cec_err(e: linux_cec::Error) -> Error {
         L::Unsupported => Error::not_supported("CEC operation", Capabilities::empty()),
         L::Timeout => Error::RequestTimeout,
         L::Disconnected => Error::ConnectionClosed,
-        other => Error::backend_with_source(VENDOR_ID, "CEC error", other),
+        // Render the underlying error into the message (not just "CEC
+        // error") so a stray errno reaches the log. Not also passed as
+        // `#[source]` — that would double-render the errno under chain /
+        // alternate formatting (`{:#}`).
+        other => Error::backend(VENDOR_ID, format!("CEC error: {other}")),
     }
 }
 
-#[cfg(test)]
-pub(crate) use fake::{FakeCecLink, FakeCecLinkOpener};
+/// Map a `linux_cec::Error` from *opening* a device node, attaching the
+/// path. A permission failure (`EACCES` / `EPERM` — the daemon's user
+/// isn't in the group owning the node, or the udev rule isn't installed)
+/// becomes the typed, transport-agnostic [`Error::PermissionDenied`] so
+/// clients can surface an actionable message; anything else falls back to
+/// [`map_cec_err`].
+fn map_open_err(device: &str, e: linux_cec::Error) -> Error {
+    use linux_cec::Error as L;
+    // Compare the raw errno against the ABI-stable `libc` constants rather
+    // than naming `nix::errno::Errno` variants: `linux-cec` surfaces the
+    // errno as its own transitively-selected `nix::Errno`, and matching the
+    // integer value keeps this classification from pinning us to whatever
+    // `nix` major that happens to be.
+    if let L::SystemError(errno) = &e {
+        let raw = *errno as i32;
+        if raw == libc::EACCES || raw == libc::EPERM {
+            return Error::PermissionDenied {
+                path: device.to_string(),
+            };
+        }
+    }
+    map_cec_err(e)
+}
 
 #[cfg(test)]
+mod map_tests {
+    use super::*;
+
+    // Exercise the REAL classification path — an `io::Error` with an errno,
+    // through `linux_cec`'s `From<io::Error>` into `SystemError(errno)`,
+    // into `map_open_err` — rather than the `FakeCecLinkOpener` shortcut
+    // (which returns `Error::PermissionDenied` directly). Guards against a
+    // `linux-cec` change that remaps open failures away from `SystemError`.
+    #[test]
+    fn map_open_err_classifies_eacces_eperm_as_permission_denied() {
+        for raw in [libc::EACCES, libc::EPERM] {
+            let e = linux_cec::Error::from(std::io::Error::from_raw_os_error(raw));
+            let mapped = map_open_err("/dev/cec0", e);
+            assert!(
+                matches!(mapped, Error::PermissionDenied { ref path } if path == "/dev/cec0"),
+                "errno {raw} should map to PermissionDenied, got {mapped:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn map_open_err_passes_other_errnos_through() {
+        let e = linux_cec::Error::from(std::io::Error::from_raw_os_error(libc::EBUSY));
+        assert!(
+            !matches!(map_open_err("/dev/cec0", e), Error::PermissionDenied { .. }),
+            "a non-permission errno must not classify as PermissionDenied",
+        );
+    }
+}
+
+#[cfg(any(test, feature = "test-link"))]
+pub use fake::{FakeCecLink, FakeCecLinkOpener};
+
+#[cfg(any(test, feature = "test-link"))]
 mod fake {
     use super::*;
     use parking_lot::Mutex;
@@ -325,7 +388,7 @@ mod fake {
     /// drops the first N `power_on` sends before reporting on, so tests
     /// can exercise the wake re-send loop.
     #[derive(Debug)]
-    pub(crate) struct FakeCecLink {
+    pub struct FakeCecLink {
         power: Mutex<PowerStatus>,
         ignore_wakes: Mutex<usize>,
         /// Scripted identity for `query_osd_name` / `query_vendor_id`.
@@ -336,7 +399,7 @@ mod fake {
     }
 
     impl FakeCecLink {
-        pub(crate) fn new(power: PowerStatus) -> Self {
+        pub fn new(power: PowerStatus) -> Self {
             Self {
                 power: Mutex::new(power),
                 ignore_wakes: Mutex::new(0),
@@ -346,7 +409,7 @@ mod fake {
         }
 
         /// Seed the scripted TV identity the connection/discovery queries.
-        pub(crate) fn with_identity(
+        pub fn with_identity(
             mut self,
             osd_name: &str,
             vendor_id: Option<linux_cec::VendorId>,
@@ -396,7 +459,7 @@ mod fake {
     /// Opener that yields a [`FakeCecLink`] seeded with a fixed initial
     /// power status, regardless of the requested device path.
     #[derive(Debug)]
-    pub(crate) struct FakeCecLinkOpener {
+    pub struct FakeCecLinkOpener {
         initial: PowerStatus,
         ignore_wakes: usize,
         /// Scripted inbound (initiator, message) pairs the first
@@ -409,35 +472,41 @@ mod fake {
         /// Scripted `(osd_name, vendor_id)` the opened [`FakeCecLink`]
         /// reports; `None` = no identity.
         identity: Option<(String, Option<linux_cec::VendorId>)>,
+        /// When set, `open` fails with [`Error::PermissionDenied`] —
+        /// models the daemon's user lacking access to the node, for the
+        /// discovery-badge and connect-failure paths.
+        deny_permission: bool,
     }
 
     impl FakeCecLinkOpener {
-        pub(crate) fn new(initial: PowerStatus) -> Self {
+        pub fn new(initial: PowerStatus) -> Self {
             Self {
                 initial,
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(None),
                 monitor_fails: false,
                 identity: None,
+                deny_permission: false,
             }
         }
 
         /// Opener yielding a standby TV that only wakes after `ignored`
         /// dropped `power_on` sends — exercises the wake re-send loop.
-        pub(crate) fn new_flaky_wake(ignored: usize) -> Self {
+        pub fn new_flaky_wake(ignored: usize) -> Self {
             Self {
                 initial: PowerStatus::Standby,
                 ignore_wakes: ignored,
                 monitor_script: Mutex::new(None),
                 monitor_fails: false,
                 identity: None,
+                deny_permission: false,
             }
         }
 
         /// Opener whose monitor handle replays `script` (one message per
         /// `recv`) as if each came from the TV, then idles — drives
         /// `subscribe_state` tests.
-        pub(crate) fn with_monitor_script(script: Vec<Message>) -> Self {
+        pub fn with_monitor_script(script: Vec<Message>) -> Self {
             Self::with_monitor_script_from(
                 script
                     .into_iter()
@@ -448,41 +517,54 @@ mod fake {
 
         /// Like [`Self::with_monitor_script`] but with explicit initiators,
         /// so tests can exercise the monitor's initiator filter.
-        pub(crate) fn with_monitor_script_from(script: Vec<(LogicalAddress, Message)>) -> Self {
+        pub fn with_monitor_script_from(script: Vec<(LogicalAddress, Message)>) -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(Some(script.into())),
                 monitor_fails: false,
                 identity: None,
+                deny_permission: false,
             }
         }
 
         /// Opener whose opened links report the given TV identity — for the
         /// discovery-probe tests.
-        pub(crate) fn with_identity(
-            osd_name: &str,
-            vendor_id: Option<linux_cec::VendorId>,
-        ) -> Self {
+        pub fn with_identity(osd_name: &str, vendor_id: Option<linux_cec::VendorId>) -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(None),
                 monitor_fails: false,
                 identity: Some((osd_name.to_string(), vendor_id)),
+                deny_permission: false,
+            }
+        }
+
+        /// Opener whose `open` fails with [`Error::PermissionDenied`],
+        /// modeling a node the daemon's user can enumerate but not open.
+        pub fn permission_denied() -> Self {
+            Self {
+                initial: PowerStatus::On,
+                ignore_wakes: 0,
+                monitor_script: Mutex::new(None),
+                monitor_fails: false,
+                identity: None,
+                deny_permission: true,
             }
         }
 
         /// Opener whose monitor `recv` returns `ConnectionClosed` — models a
         /// real adapter disconnect, so tests can assert the monitor flips
         /// `is_connected()`.
-        pub(crate) fn with_monitor_disconnect() -> Self {
+        pub fn with_monitor_disconnect() -> Self {
             Self {
                 initial: PowerStatus::On,
                 ignore_wakes: 0,
                 monitor_script: Mutex::new(None),
                 monitor_fails: true,
                 identity: None,
+                deny_permission: false,
             }
         }
     }
@@ -491,9 +573,14 @@ mod fake {
     impl CecLinkOpener for FakeCecLinkOpener {
         async fn open(
             &self,
-            _device: &str,
+            device: &str,
             _physical_address: PhysicalAddress,
         ) -> Result<Box<dyn CecLink>> {
+            if self.deny_permission {
+                return Err(Error::PermissionDenied {
+                    path: device.to_string(),
+                });
+            }
             let (osd_name, vendor_id) = self.identity.clone().unwrap_or_default();
             Ok(Box::new(FakeCecLink {
                 power: Mutex::new(self.initial),

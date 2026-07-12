@@ -1,0 +1,17 @@
+# Sample seed config for tisvlay-daemon (--seed). Provisioning
+# semantics: re-applied on every start; an entry lands only when its
+# id is absent from the daemon's own file (daemon.toml), so runtime
+# edits stick, new declarations appear on restart, and a still-
+# declared TV removed at runtime comes back — drop the entry to drop
+# the TV. Omitted `id`s derive deterministically from the entry's
+# content; declare one to keep identity stable across edits.
+
+[[tv]]
+name = "Den"
+vendor = "mock"
+config = { address = "mock://den" }
+
+[[tv]]
+name = "Living Room"
+vendor = "lg"
+config = { ip = "192.168.1.170", mac = "84:90:0a:63:a9:94" }

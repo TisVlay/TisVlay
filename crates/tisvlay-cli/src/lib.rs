@@ -1,197 +1,218 @@
-//! Library surface for the `tisvlay` CLI.
-//!
-//! The clap command tree lives here (rather than in `main.rs`) so it can
-//! be consumed outside the binary — specifically by
-//! `examples/gen-cli-docs.rs`, which renders it to Markdown for the
-//! user-facing mdBook docs. The binary in `main.rs` re-uses these types
-//! and owns all runtime behavior.
+//! Clap command tree for the `tisvlay` CLI, exposed as a library so the
+//! `gen-cli-docs` binary can render it to Markdown for the mdBook user
+//! guide (`just docs-cli`). `main.rs` parses and dispatches these types;
+//! keeping them here is the only reason this crate has a lib target.
+
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[command(name = "tisvlay")]
-#[command(author, version, about = "TV Control")]
+#[command(name = "tisvlay", author, version, about = "TisVlay TV control")]
 #[command(propagate_version = true)]
 pub struct Cli {
-    /// Target TV ID (default: first configured TV)
-    #[arg(short, long, global = true)]
-    pub tv: Option<String>,
+    /// Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
 
-    /// Enable verbose output
-    #[arg(short, long, global = true)]
-    pub verbose: bool,
+    /// Session-service user socket for `user-profile` verbs (default:
+    /// $XDG_RUNTIME_DIR/tisvlay/session.sock).
+    #[arg(long)]
+    pub user_socket: Option<PathBuf>,
 
-    /// Use session bus instead of system D-Bus (e.g. with `tisvlayd --session`)
-    #[arg(long, global = true)]
-    pub user: bool,
+    /// Site chunk used in all key expressions.
+    #[arg(long, default_value = "main")]
+    pub site: String,
 
-    /// Output in JSON format (for scripting and tools like Nushell)
+    /// Machine-readable JSON output on read verbs.
     #[arg(long, global = true)]
     pub json: bool,
 
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Command,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Power control
-    Power {
-        #[command(subcommand)]
-        action: PowerAction,
-    },
-
-    /// Screen control (blank/unblank for OLED protection)
-    Screen {
-        #[command(subcommand)]
-        action: ScreenAction,
-    },
-
-    /// Switch HDMI input (lists available inputs when no ID given)
-    Input {
-        /// Input ID (e.g., HDMI_1, HDMI_2)
-        input_id: Option<String>,
-    },
-
-    /// Volume control
-    Volume {
-        /// Volume level (0-100), or +/- for relative adjustment
-        #[arg(allow_hyphen_values = true)]
-        level: Option<String>,
-    },
-
-    /// Mute/unmute audio
-    Mute {
-        #[arg(default_value = "toggle")]
-        state: MuteState,
-    },
-
-    /// Backlight control (OLED pixel brightness)
-    Backlight {
-        /// Backlight level (0-100)
-        level: Option<u8>,
-    },
-
-    /// Show TV status
+pub enum Command {
+    /// Probe the daemon's liveliness token.
     Status,
-
-    /// Pair a new TV
-    Pair {
-        /// TV address (e.g., IP address, serial port)
-        address: String,
-
-        /// TV name
-        #[arg(short, long)]
-        name: Option<String>,
-
-        /// Hardware ID for wake support (e.g., MAC address for WoL)
-        #[arg(short = 'w', long)]
-        wake_id: Option<String>,
-
-        /// Vendor backend to use (e.g., lg)
+    /// List TVs with their current state (hydrates from publisher caches).
+    List,
+    /// Stream every data key: history first, then live samples.
+    Watch,
+    /// Scan for TVs (bounded window; findings stream back as replies).
+    Discover {
         #[arg(long)]
+        vendor: Option<String>,
+        #[arg(long, default_value_t = 3000)]
+        timeout_ms: u64,
+    },
+    /// Pair a new TV, streaming the pairing progress (ctrl-c cancels).
+    Pair {
+        name: String,
+        #[arg(long, default_value = "lg")]
         vendor: String,
-
-        /// Participate in automation (boot WoL, session events, shutdown).
-        /// Pass --managed false to pair for manual control only.
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        /// Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'.
+        #[arg(long)]
+        params: Option<String>,
+        /// Mock shorthand for --params '{"address":"mock://…"}'.
+        #[arg(long)]
+        address: Option<String>,
+    },
+    /// Add a mock TV (shortcut around the add-tv rpc).
+    Add {
+        name: String,
+        /// Mock vendor address, e.g. mock://den.
+        #[arg(long)]
+        address: String,
+        #[arg(long, default_value = "mock")]
+        vendor: String,
+        #[arg(long)]
+        unmanaged: bool,
+    },
+    /// Set a TV's volume.
+    SetVolume { id: Uuid, level: u8 },
+    /// Switch a TV's input.
+    Input { id: Uuid, input: String },
+    /// Set a TV's backlight level.
+    Backlight { id: Uuid, level: u8 },
+    /// Blank or wake the screen.
+    Screen {
+        id: Uuid,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Rename a TV.
+    Rename { id: Uuid, name: String },
+    /// Toggle whether the daemon drives this TV.
+    Managed {
+        id: Uuid,
+        #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
         managed: bool,
     },
-
-    /// Re-pair an existing TV (refresh expired credentials in place)
-    RePair {
-        /// TV ID to re-pair
-        tv_id: String,
+    /// Read a TV's config (vendor secrets redacted).
+    Config { id: Uuid },
+    /// Patch a TV's config with a JSON object (null unsets a vendor key).
+    ConfigSet { id: Uuid, patch: String },
+    /// Re-run the pairing handshake for an existing TV.
+    Repair { id: Uuid },
+    /// Power a TV on or off.
+    Power {
+        id: Uuid,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
     },
+    /// Ask a downed TV to reconnect.
+    Reconnect { id: Uuid },
+    /// Remove a TV (deletes all its keys).
+    Remove { id: Uuid },
+    /// Mute or unmute a TV.
+    Mute {
+        id: Uuid,
+        #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
+        muted: bool,
+    },
+    /// Set (or with no value clear) the TV's primary input.
+    PrimaryInput { id: Uuid, input: Option<String> },
+    /// Assign (or with no value clear) the TV's system profile.
+    Assign { id: Uuid, profile: Option<Uuid> },
+    /// List registered vendor backends with their capabilities.
+    Vendors,
+    /// Show a vendor's pairing form schema.
+    Schema { vendor: String },
+    /// Open-ended discovery session: findings stream until ctrl-c.
+    DiscoverSession {
+        #[arg(long)]
+        vendor: Option<String>,
+    },
+    /// System-profile catalog (daemon-side).
+    #[command(subcommand)]
+    Profile(ProfileCmd),
+    /// User-profile catalog (session-service side, via --user-socket).
+    #[command(subcommand)]
+    UserProfile(UserProfileCmd),
+    /// Arm or query a remote-session source (session-service side, via
+    /// --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd`
+    /// integration (do = start, undo = stop).
+    #[command(subcommand)]
+    RemoteSession(RemoteSessionCmd),
+}
 
-    /// List configured TVs
+#[derive(Subcommand, Debug)]
+pub enum RemoteSessionCmd {
+    /// Arm the named source.
+    Start {
+        #[arg(long, default_value = "manual")]
+        source: String,
+    },
+    /// Disarm the named source.
+    Stop {
+        #[arg(long, default_value = "manual")]
+        source: String,
+    },
+    /// Show the current remote-session fact (live sources + armed TVs).
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileCmd {
+    /// List profile bodies from the catalog caches.
     List,
-
-    /// Remove a TV from configuration
-    Remove {
-        /// TV ID to remove
-        tv_id: String,
+    /// Create a profile: `--body` is a SystemProfileConfig body.
+    Create {
+        name: String,
+        #[arg(long)]
+        body: Option<String>,
     },
-
-    /// Enable or disable automated management for a TV (shows current status if no argument given)
-    Manage { state: Option<ManageState> },
-
-    /// Profile management (requires tisvlay-session to be running)
-    Profile {
-        #[command(subcommand)]
-        action: ProfileAction,
+    /// Replace a profile's body (full JSON body; name required inside).
+    Update {
+        id: Uuid,
+        body: String,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ProfileAction {
-    /// User profile management
-    User {
-        #[command(subcommand)]
-        action: UserProfileAction,
+    /// Copy a profile under a new name.
+    Duplicate {
+        id: Uuid,
+        name: String,
     },
-    /// System profile management (daemon lifecycle events)
-    System {
-        #[command(subcommand)]
-        action: SystemProfileAction,
+    Delete {
+        id: Uuid,
+    },
+    /// The stock mapping unset fields inherit.
+    Defaults,
+    /// One TV's resolved mapping (assigned profile over stock).
+    Effective {
+        tv: Uuid,
     },
 }
 
 #[derive(Subcommand, Debug)]
-pub enum UserProfileAction {
-    /// List all available user profiles
+pub enum UserProfileCmd {
     List,
-
-    /// Show the user profile assigned to a TV
-    Get,
-
-    /// Assign a user profile to a TV
-    Set {
-        /// Profile UUID to assign (string-formatted)
-        profile_uuid: String,
+    /// Create a profile: `--body` is a UserProfileConfig body.
+    Create {
+        name: String,
+        #[arg(long)]
+        body: Option<String>,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SystemProfileAction {
-    /// List all available system profiles
-    List,
-
-    /// Show the system profile assigned to a TV
-    Get,
-
-    /// Assign a system profile to a TV
-    Set {
-        /// Profile UUID to assign (string-formatted)
-        profile_uuid: String,
+    Update {
+        id: Uuid,
+        body: String,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum PowerAction {
-    /// Turn on the TV (Wake-on-LAN)
-    On,
-    /// Turn off the TV (standby)
-    Off,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ScreenAction {
-    /// Turn on the screen
-    On,
-    /// Turn off the screen (OLED-safe blank)
-    Off,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub enum ManageState {
-    True,
-    False,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub enum MuteState {
-    On,
-    Off,
-    Toggle,
+    Duplicate {
+        id: Uuid,
+        name: String,
+    },
+    Delete {
+        id: Uuid,
+    },
+    Defaults,
+    Effective {
+        tv: Uuid,
+    },
+    /// Assign (or with no value clear) a TV's user profile.
+    Assign {
+        tv: Uuid,
+        profile: Option<Uuid>,
+    },
 }

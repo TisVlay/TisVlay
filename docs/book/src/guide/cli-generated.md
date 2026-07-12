@@ -5,347 +5,660 @@ This document contains the help content for the `tisvlay` command-line program.
 **Command Overview:**
 
 * [`tisvlay`↴](#tisvlay)
-* [`tisvlay power`↴](#tisvlay-power)
-* [`tisvlay power on`↴](#tisvlay-power-on)
-* [`tisvlay power off`↴](#tisvlay-power-off)
-* [`tisvlay screen`↴](#tisvlay-screen)
-* [`tisvlay screen on`↴](#tisvlay-screen-on)
-* [`tisvlay screen off`↴](#tisvlay-screen-off)
-* [`tisvlay input`↴](#tisvlay-input)
-* [`tisvlay volume`↴](#tisvlay-volume)
-* [`tisvlay mute`↴](#tisvlay-mute)
-* [`tisvlay backlight`↴](#tisvlay-backlight)
 * [`tisvlay status`↴](#tisvlay-status)
-* [`tisvlay pair`↴](#tisvlay-pair)
-* [`tisvlay re-pair`↴](#tisvlay-re-pair)
 * [`tisvlay list`↴](#tisvlay-list)
+* [`tisvlay watch`↴](#tisvlay-watch)
+* [`tisvlay discover`↴](#tisvlay-discover)
+* [`tisvlay pair`↴](#tisvlay-pair)
+* [`tisvlay add`↴](#tisvlay-add)
+* [`tisvlay set-volume`↴](#tisvlay-set-volume)
+* [`tisvlay input`↴](#tisvlay-input)
+* [`tisvlay backlight`↴](#tisvlay-backlight)
+* [`tisvlay screen`↴](#tisvlay-screen)
+* [`tisvlay rename`↴](#tisvlay-rename)
+* [`tisvlay managed`↴](#tisvlay-managed)
+* [`tisvlay config`↴](#tisvlay-config)
+* [`tisvlay config-set`↴](#tisvlay-config-set)
+* [`tisvlay repair`↴](#tisvlay-repair)
+* [`tisvlay power`↴](#tisvlay-power)
+* [`tisvlay reconnect`↴](#tisvlay-reconnect)
 * [`tisvlay remove`↴](#tisvlay-remove)
-* [`tisvlay manage`↴](#tisvlay-manage)
+* [`tisvlay mute`↴](#tisvlay-mute)
+* [`tisvlay primary-input`↴](#tisvlay-primary-input)
+* [`tisvlay assign`↴](#tisvlay-assign)
+* [`tisvlay vendors`↴](#tisvlay-vendors)
+* [`tisvlay schema`↴](#tisvlay-schema)
+* [`tisvlay discover-session`↴](#tisvlay-discover-session)
 * [`tisvlay profile`↴](#tisvlay-profile)
-* [`tisvlay profile user`↴](#tisvlay-profile-user)
-* [`tisvlay profile user list`↴](#tisvlay-profile-user-list)
-* [`tisvlay profile user get`↴](#tisvlay-profile-user-get)
-* [`tisvlay profile user set`↴](#tisvlay-profile-user-set)
-* [`tisvlay profile system`↴](#tisvlay-profile-system)
-* [`tisvlay profile system list`↴](#tisvlay-profile-system-list)
-* [`tisvlay profile system get`↴](#tisvlay-profile-system-get)
-* [`tisvlay profile system set`↴](#tisvlay-profile-system-set)
+* [`tisvlay profile list`↴](#tisvlay-profile-list)
+* [`tisvlay profile create`↴](#tisvlay-profile-create)
+* [`tisvlay profile update`↴](#tisvlay-profile-update)
+* [`tisvlay profile duplicate`↴](#tisvlay-profile-duplicate)
+* [`tisvlay profile delete`↴](#tisvlay-profile-delete)
+* [`tisvlay profile defaults`↴](#tisvlay-profile-defaults)
+* [`tisvlay profile effective`↴](#tisvlay-profile-effective)
+* [`tisvlay user-profile`↴](#tisvlay-user-profile)
+* [`tisvlay user-profile list`↴](#tisvlay-user-profile-list)
+* [`tisvlay user-profile create`↴](#tisvlay-user-profile-create)
+* [`tisvlay user-profile update`↴](#tisvlay-user-profile-update)
+* [`tisvlay user-profile duplicate`↴](#tisvlay-user-profile-duplicate)
+* [`tisvlay user-profile delete`↴](#tisvlay-user-profile-delete)
+* [`tisvlay user-profile defaults`↴](#tisvlay-user-profile-defaults)
+* [`tisvlay user-profile effective`↴](#tisvlay-user-profile-effective)
+* [`tisvlay user-profile assign`↴](#tisvlay-user-profile-assign)
+* [`tisvlay remote-session`↴](#tisvlay-remote-session)
+* [`tisvlay remote-session start`↴](#tisvlay-remote-session-start)
+* [`tisvlay remote-session stop`↴](#tisvlay-remote-session-stop)
+* [`tisvlay remote-session status`↴](#tisvlay-remote-session-status)
 
 ## `tisvlay`
 
-TV Control
+TisVlay TV control
 
 **Usage:** `tisvlay [OPTIONS] <COMMAND>`
 
 ###### **Subcommands:**
 
-* `power` — Power control
-* `screen` — Screen control (blank/unblank for OLED protection)
-* `input` — Switch HDMI input (lists available inputs when no ID given)
-* `volume` — Volume control
-* `mute` — Mute/unmute audio
-* `backlight` — Backlight control (OLED pixel brightness)
-* `status` — Show TV status
-* `pair` — Pair a new TV
-* `re-pair` — Re-pair an existing TV (refresh expired credentials in place)
-* `list` — List configured TVs
-* `remove` — Remove a TV from configuration
-* `manage` — Enable or disable automated management for a TV (shows current status if no argument given)
-* `profile` — Profile management (requires tisvlay-session to be running)
+* `status` — Probe the daemon's liveliness token
+* `list` — List TVs with their current state (hydrates from publisher caches)
+* `watch` — Stream every data key: history first, then live samples
+* `discover` — Scan for TVs (bounded window; findings stream back as replies)
+* `pair` — Pair a new TV, streaming the pairing progress (ctrl-c cancels)
+* `add` — Add a mock TV (shortcut around the add-tv rpc)
+* `set-volume` — Set a TV's volume
+* `input` — Switch a TV's input
+* `backlight` — Set a TV's backlight level
+* `screen` — Blank or wake the screen
+* `rename` — Rename a TV
+* `managed` — Toggle whether the daemon drives this TV
+* `config` — Read a TV's config (vendor secrets redacted)
+* `config-set` — Patch a TV's config with a JSON object (null unsets a vendor key)
+* `repair` — Re-run the pairing handshake for an existing TV
+* `power` — Power a TV on or off
+* `reconnect` — Ask a downed TV to reconnect
+* `remove` — Remove a TV (deletes all its keys)
+* `mute` — Mute or unmute a TV
+* `primary-input` — Set (or with no value clear) the TV's primary input
+* `assign` — Assign (or with no value clear) the TV's system profile
+* `vendors` — List registered vendor backends with their capabilities
+* `schema` — Show a vendor's pairing form schema
+* `discover-session` — Open-ended discovery session: findings stream until ctrl-c
+* `profile` — System-profile catalog (daemon-side)
+* `user-profile` — User-profile catalog (session-service side, via --user-socket)
+* `remote-session` — Arm or query a remote-session source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
 
 ###### **Options:**
 
-* `-t`, `--tv <TV>` — Target TV ID (default: first configured TV)
-* `-v`, `--verbose` — Enable verbose output
-* `--user` — Use session bus instead of system D-Bus (e.g. with `tisvlayd --session`)
-* `--json` — Output in JSON format (for scripting and tools like Nushell)
-
-
-
-## `tisvlay power`
-
-Power control
-
-**Usage:** `tisvlay power <COMMAND>`
-
-###### **Subcommands:**
-
-* `on` — Turn on the TV (Wake-on-LAN)
-* `off` — Turn off the TV (standby)
-
-
-
-## `tisvlay power on`
-
-Turn on the TV (Wake-on-LAN)
-
-**Usage:** `tisvlay power on`
-
-
-
-## `tisvlay power off`
-
-Turn off the TV (standby)
-
-**Usage:** `tisvlay power off`
-
-
-
-## `tisvlay screen`
-
-Screen control (blank/unblank for OLED protection)
-
-**Usage:** `tisvlay screen <COMMAND>`
-
-###### **Subcommands:**
-
-* `on` — Turn on the screen
-* `off` — Turn off the screen (OLED-safe blank)
-
-
-
-## `tisvlay screen on`
-
-Turn on the screen
-
-**Usage:** `tisvlay screen on`
-
-
-
-## `tisvlay screen off`
-
-Turn off the screen (OLED-safe blank)
-
-**Usage:** `tisvlay screen off`
-
-
-
-## `tisvlay input`
-
-Switch HDMI input (lists available inputs when no ID given)
-
-**Usage:** `tisvlay input [INPUT_ID]`
-
-###### **Arguments:**
-
-* `<INPUT_ID>` — Input ID (e.g., HDMI_1, HDMI_2)
-
-
-
-## `tisvlay volume`
-
-Volume control
-
-**Usage:** `tisvlay volume [LEVEL]`
-
-###### **Arguments:**
-
-* `<LEVEL>` — Volume level (0-100), or +/- for relative adjustment
-
-
-
-## `tisvlay mute`
-
-Mute/unmute audio
-
-**Usage:** `tisvlay mute [STATE]`
-
-###### **Arguments:**
-
-* `<STATE>`
-
-  Default value: `toggle`
-
-  Possible values: `on`, `off`, `toggle`
-
-
-
-
-## `tisvlay backlight`
-
-Backlight control (OLED pixel brightness)
-
-**Usage:** `tisvlay backlight [LEVEL]`
-
-###### **Arguments:**
-
-* `<LEVEL>` — Backlight level (0-100)
+* `--socket <SOCKET>` — Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--user-socket <USER_SOCKET>` — Session-service user socket for `user-profile` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
+* `--site <SITE>` — Site chunk used in all key expressions
+
+  Default value: `main`
+* `--json` — Machine-readable JSON output on read verbs
 
 
 
 ## `tisvlay status`
 
-Show TV status
+Probe the daemon's liveliness token
 
 **Usage:** `tisvlay status`
 
 
 
-## `tisvlay pair`
-
-Pair a new TV
-
-**Usage:** `tisvlay pair [OPTIONS] --vendor <VENDOR> <ADDRESS>`
-
-###### **Arguments:**
-
-* `<ADDRESS>` — TV address (e.g., IP address, serial port)
-
-###### **Options:**
-
-* `-n`, `--name <NAME>` — TV name
-* `-w`, `--wake-id <WAKE_ID>` — Hardware ID for wake support (e.g., MAC address for WoL)
-* `--vendor <VENDOR>` — Vendor backend to use (e.g., lg)
-* `--managed <MANAGED>` — Participate in automation (boot WoL, session events, shutdown). Pass --managed false to pair for manual control only
-
-  Default value: `true`
-
-  Possible values: `true`, `false`
-
-
-
-
-## `tisvlay re-pair`
-
-Re-pair an existing TV (refresh expired credentials in place)
-
-**Usage:** `tisvlay re-pair <TV_ID>`
-
-###### **Arguments:**
-
-* `<TV_ID>` — TV ID to re-pair
-
-
-
 ## `tisvlay list`
 
-List configured TVs
+List TVs with their current state (hydrates from publisher caches)
 
 **Usage:** `tisvlay list`
 
 
 
-## `tisvlay remove`
+## `tisvlay watch`
 
-Remove a TV from configuration
+Stream every data key: history first, then live samples
 
-**Usage:** `tisvlay remove <TV_ID>`
+**Usage:** `tisvlay watch`
+
+
+
+## `tisvlay discover`
+
+Scan for TVs (bounded window; findings stream back as replies)
+
+**Usage:** `tisvlay discover [OPTIONS]`
+
+###### **Options:**
+
+* `--vendor <VENDOR>`
+* `--timeout-ms <TIMEOUT_MS>`
+
+  Default value: `3000`
+
+
+
+## `tisvlay pair`
+
+Pair a new TV, streaming the pairing progress (ctrl-c cancels)
+
+**Usage:** `tisvlay pair [OPTIONS] <NAME>`
 
 ###### **Arguments:**
 
-* `<TV_ID>` — TV ID to remove
+* `<NAME>`
+
+###### **Options:**
+
+* `--vendor <VENDOR>`
+
+  Default value: `lg`
+* `--params <PARAMS>` — Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'
+* `--address <ADDRESS>` — Mock shorthand for --params '{"address":"mock://…"}'
 
 
 
-## `tisvlay manage`
+## `tisvlay add`
 
-Enable or disable automated management for a TV (shows current status if no argument given)
+Add a mock TV (shortcut around the add-tv rpc)
 
-**Usage:** `tisvlay manage [STATE]`
+**Usage:** `tisvlay add [OPTIONS] --address <ADDRESS> <NAME>`
 
 ###### **Arguments:**
 
+* `<NAME>`
+
+###### **Options:**
+
+* `--address <ADDRESS>` — Mock vendor address, e.g. mock://den
+* `--vendor <VENDOR>`
+
+  Default value: `mock`
+* `--unmanaged`
+
+
+
+## `tisvlay set-volume`
+
+Set a TV's volume
+
+**Usage:** `tisvlay set-volume <ID> <LEVEL>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<LEVEL>`
+
+
+
+## `tisvlay input`
+
+Switch a TV's input
+
+**Usage:** `tisvlay input <ID> <INPUT>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<INPUT>`
+
+
+
+## `tisvlay backlight`
+
+Set a TV's backlight level
+
+**Usage:** `tisvlay backlight <ID> <LEVEL>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<LEVEL>`
+
+
+
+## `tisvlay screen`
+
+Blank or wake the screen
+
+**Usage:** `tisvlay screen <ID> <STATE>`
+
+###### **Arguments:**
+
+* `<ID>`
 * `<STATE>`
+
+  Possible values: `on`, `off`
+
+
+
+
+## `tisvlay rename`
+
+Rename a TV
+
+**Usage:** `tisvlay rename <ID> <NAME>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<NAME>`
+
+
+
+## `tisvlay managed`
+
+Toggle whether the daemon drives this TV
+
+**Usage:** `tisvlay managed <ID> <MANAGED>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<MANAGED>`
 
   Possible values: `true`, `false`
 
 
 
 
+## `tisvlay config`
+
+Read a TV's config (vendor secrets redacted)
+
+**Usage:** `tisvlay config <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+
+
+## `tisvlay config-set`
+
+Patch a TV's config with a JSON object (null unsets a vendor key)
+
+**Usage:** `tisvlay config-set <ID> <PATCH>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<PATCH>`
+
+
+
+## `tisvlay repair`
+
+Re-run the pairing handshake for an existing TV
+
+**Usage:** `tisvlay repair <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+
+
+## `tisvlay power`
+
+Power a TV on or off
+
+**Usage:** `tisvlay power <ID> <STATE>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<STATE>`
+
+  Possible values: `on`, `off`
+
+
+
+
+## `tisvlay reconnect`
+
+Ask a downed TV to reconnect
+
+**Usage:** `tisvlay reconnect <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+
+
+## `tisvlay remove`
+
+Remove a TV (deletes all its keys)
+
+**Usage:** `tisvlay remove <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+
+
+## `tisvlay mute`
+
+Mute or unmute a TV
+
+**Usage:** `tisvlay mute <ID> <MUTED>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<MUTED>`
+
+  Possible values: `true`, `false`
+
+
+
+
+## `tisvlay primary-input`
+
+Set (or with no value clear) the TV's primary input
+
+**Usage:** `tisvlay primary-input <ID> [INPUT]`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<INPUT>`
+
+
+
+## `tisvlay assign`
+
+Assign (or with no value clear) the TV's system profile
+
+**Usage:** `tisvlay assign <ID> [PROFILE]`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<PROFILE>`
+
+
+
+## `tisvlay vendors`
+
+List registered vendor backends with their capabilities
+
+**Usage:** `tisvlay vendors`
+
+
+
+## `tisvlay schema`
+
+Show a vendor's pairing form schema
+
+**Usage:** `tisvlay schema <VENDOR>`
+
+###### **Arguments:**
+
+* `<VENDOR>`
+
+
+
+## `tisvlay discover-session`
+
+Open-ended discovery session: findings stream until ctrl-c
+
+**Usage:** `tisvlay discover-session [OPTIONS]`
+
+###### **Options:**
+
+* `--vendor <VENDOR>`
+
+
+
 ## `tisvlay profile`
 
-Profile management (requires tisvlay-session to be running)
+System-profile catalog (daemon-side)
 
 **Usage:** `tisvlay profile <COMMAND>`
 
 ###### **Subcommands:**
 
-* `user` — User profile management
-* `system` — System profile management (daemon lifecycle events)
+* `list` — List profile bodies from the catalog caches
+* `create` — Create a profile: `--body` is a SystemProfileConfig body
+* `update` — Replace a profile's body (full JSON body; name required inside)
+* `duplicate` — Copy a profile under a new name
+* `delete` — 
+* `defaults` — The stock mapping unset fields inherit
+* `effective` — One TV's resolved mapping (assigned profile over stock)
 
 
 
-## `tisvlay profile user`
+## `tisvlay profile list`
 
-User profile management
+List profile bodies from the catalog caches
 
-**Usage:** `tisvlay profile user <COMMAND>`
-
-###### **Subcommands:**
-
-* `list` — List all available user profiles
-* `get` — Show the user profile assigned to a TV
-* `set` — Assign a user profile to a TV
+**Usage:** `tisvlay profile list`
 
 
 
-## `tisvlay profile user list`
+## `tisvlay profile create`
 
-List all available user profiles
+Create a profile: `--body` is a SystemProfileConfig body
 
-**Usage:** `tisvlay profile user list`
-
-
-
-## `tisvlay profile user get`
-
-Show the user profile assigned to a TV
-
-**Usage:** `tisvlay profile user get`
-
-
-
-## `tisvlay profile user set`
-
-Assign a user profile to a TV
-
-**Usage:** `tisvlay profile user set <PROFILE_UUID>`
+**Usage:** `tisvlay profile create [OPTIONS] <NAME>`
 
 ###### **Arguments:**
 
-* `<PROFILE_UUID>` — Profile UUID to assign (string-formatted)
+* `<NAME>`
+
+###### **Options:**
+
+* `--body <BODY>`
 
 
 
-## `tisvlay profile system`
+## `tisvlay profile update`
 
-System profile management (daemon lifecycle events)
+Replace a profile's body (full JSON body; name required inside)
 
-**Usage:** `tisvlay profile system <COMMAND>`
-
-###### **Subcommands:**
-
-* `list` — List all available system profiles
-* `get` — Show the system profile assigned to a TV
-* `set` — Assign a system profile to a TV
-
-
-
-## `tisvlay profile system list`
-
-List all available system profiles
-
-**Usage:** `tisvlay profile system list`
-
-
-
-## `tisvlay profile system get`
-
-Show the system profile assigned to a TV
-
-**Usage:** `tisvlay profile system get`
-
-
-
-## `tisvlay profile system set`
-
-Assign a system profile to a TV
-
-**Usage:** `tisvlay profile system set <PROFILE_UUID>`
+**Usage:** `tisvlay profile update <ID> <BODY>`
 
 ###### **Arguments:**
 
-* `<PROFILE_UUID>` — Profile UUID to assign (string-formatted)
+* `<ID>`
+* `<BODY>`
+
+
+
+## `tisvlay profile duplicate`
+
+Copy a profile under a new name
+
+**Usage:** `tisvlay profile duplicate <ID> <NAME>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<NAME>`
+
+
+
+## `tisvlay profile delete`
+
+**Usage:** `tisvlay profile delete <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+
+
+## `tisvlay profile defaults`
+
+The stock mapping unset fields inherit
+
+**Usage:** `tisvlay profile defaults`
+
+
+
+## `tisvlay profile effective`
+
+One TV's resolved mapping (assigned profile over stock)
+
+**Usage:** `tisvlay profile effective <TV>`
+
+###### **Arguments:**
+
+* `<TV>`
+
+
+
+## `tisvlay user-profile`
+
+User-profile catalog (session-service side, via --user-socket)
+
+**Usage:** `tisvlay user-profile <COMMAND>`
+
+###### **Subcommands:**
+
+* `list` — 
+* `create` — Create a profile: `--body` is a UserProfileConfig body
+* `update` — 
+* `duplicate` — 
+* `delete` — 
+* `defaults` — 
+* `effective` — 
+* `assign` — Assign (or with no value clear) a TV's user profile
+
+
+
+## `tisvlay user-profile list`
+
+**Usage:** `tisvlay user-profile list`
+
+
+
+## `tisvlay user-profile create`
+
+Create a profile: `--body` is a UserProfileConfig body
+
+**Usage:** `tisvlay user-profile create [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>`
+
+###### **Options:**
+
+* `--body <BODY>`
+
+
+
+## `tisvlay user-profile update`
+
+**Usage:** `tisvlay user-profile update <ID> <BODY>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<BODY>`
+
+
+
+## `tisvlay user-profile duplicate`
+
+**Usage:** `tisvlay user-profile duplicate <ID> <NAME>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<NAME>`
+
+
+
+## `tisvlay user-profile delete`
+
+**Usage:** `tisvlay user-profile delete <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+
+
+## `tisvlay user-profile defaults`
+
+**Usage:** `tisvlay user-profile defaults`
+
+
+
+## `tisvlay user-profile effective`
+
+**Usage:** `tisvlay user-profile effective <TV>`
+
+###### **Arguments:**
+
+* `<TV>`
+
+
+
+## `tisvlay user-profile assign`
+
+Assign (or with no value clear) a TV's user profile
+
+**Usage:** `tisvlay user-profile assign <TV> [PROFILE]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<PROFILE>`
+
+
+
+## `tisvlay remote-session`
+
+Arm or query a remote-session source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
+
+**Usage:** `tisvlay remote-session <COMMAND>`
+
+###### **Subcommands:**
+
+* `start` — Arm the named source
+* `stop` — Disarm the named source
+* `status` — Show the current remote-session fact (live sources + armed TVs)
+
+
+
+## `tisvlay remote-session start`
+
+Arm the named source
+
+**Usage:** `tisvlay remote-session start [OPTIONS]`
+
+###### **Options:**
+
+* `--source <SOURCE>`
+
+  Default value: `manual`
+
+
+
+## `tisvlay remote-session stop`
+
+Disarm the named source
+
+**Usage:** `tisvlay remote-session stop [OPTIONS]`
+
+###### **Options:**
+
+* `--source <SOURCE>`
+
+  Default value: `manual`
+
+
+
+## `tisvlay remote-session status`
+
+Show the current remote-session fact (live sources + armed TVs)
+
+**Usage:** `tisvlay remote-session status`
 
 
 

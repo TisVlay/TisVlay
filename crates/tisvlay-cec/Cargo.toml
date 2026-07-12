@@ -19,6 +19,10 @@ tisvlay-core = { workspace = true }
 # packaging/licensing). `async` pulls the tokio `AsyncDevice` wrapper.
 linux-cec = { workspace = true }
 
+# ABI-stable `EACCES`/`EPERM` constants to classify a `/dev/cecN` open
+# failure into a typed `Error::PermissionDenied` (see `map_open_err`).
+libc = { workspace = true }
+
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
@@ -26,6 +30,10 @@ serde = { workspace = true }
 toml = { workspace = true }
 
 tracing = { workspace = true }
+
+# Interior mutability for the scripted FakeCecLink; a dev-dependency for
+# in-crate tests, pulled into normal builds only by `test-link`.
+parking_lot = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `test-util` gives `#[tokio::test(start_paused = true)]` so the
@@ -38,3 +46,8 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+# Exposes the FakeCecLink/FakeCecLinkOpener test doubles and the
+# CecConnector::with_fake_opener constructor for out-of-crate tests.
+test-link = ["dep:parking_lot"]

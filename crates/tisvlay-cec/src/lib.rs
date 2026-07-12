@@ -35,3 +35,10 @@ pub const VENDOR_ID: &str = "cec";
 
 /// Human-readable name for the CEC backend.
 pub const VENDOR_NAME: &str = "HDMI CEC";
+
+/// Out-of-crate test seam (`test-link` feature): the scripted CEC link
+/// doubles and the power vocabulary they speak.
+#[cfg(any(test, feature = "test-link"))]
+pub use link::{FakeCecLink, FakeCecLinkOpener};
+#[cfg(any(test, feature = "test-link"))]
+pub use linux_cec::operand::PowerStatus;

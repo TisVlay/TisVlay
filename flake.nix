@@ -32,6 +32,10 @@
         overlays = [ rust-overlay.overlays.default ];
         pkgs = import nixpkgs { inherit overlays system; };
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        # LLVM bintools for cargo-llvm-cov (llvm-cov / llvm-profdata), pinned
+        # once here to the major matching this toolchain's rustc; keep in step
+        # on a channel bump.
+        llvmPkgs = pkgs.llvmPackages_22;
       in
       {
         packages = {
@@ -46,6 +50,11 @@
           # (config.boot.kernelPackages) so vermagic matches at runtime. See
           # services.tisvlay.cec.pulse8.enable.
           pulse8-cec = pkgs.linuxPackages.callPackage ./packaging/nix/pulse8-cec.nix { };
+
+          # slint-viewer pinned to the workspace's slint version (1.17.0);
+          # nixpkgs' is 1.16.1, which predates `--check` / `--screenshot`.
+          # Exposed so the devShell and CI can share one definition.
+          slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
         };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
@@ -64,6 +73,26 @@
         devShells.default =
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
+            slintViewer = self.packages.${system}.slint-viewer;
+            # cargo-about pinned to the first release whose generator honors
+            # LicenseRef-* clarify files (0.9.1) — without it the vendored Slint
+            # crates' royalty-free license text is dropped from the generated
+            # bundle. nixpkgs still lags on 0.9.0; drop this override once it
+            # ships >= 0.9.1.
+            cargoAboutSrc = pkgs.fetchFromGitHub {
+              owner = "EmbarkStudios";
+              repo = "cargo-about";
+              tag = "0.9.1";
+              hash = "sha256-mZyfECnlpYom/XI445DOeUAthqK3HKC+QkkK+5gf0/E=";
+            };
+            cargoAbout = pkgs.cargo-about.overrideAttrs {
+              version = "0.9.1";
+              src = cargoAboutSrc;
+              cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                src = cargoAboutSrc;
+                hash = "sha256-//t3ASNljC4rosk5oOmcJy8PZKRYjlQ0euzzAmfiSPQ=";
+              };
+            };
           in
           pkgs.mkShell {
             packages =
@@ -73,12 +102,14 @@
                 # attribution; cargo-deny enforces the SPDX allow-list
                 # at PR time via prek so a future dep bump can't drag
                 # in a forbidden license. Maintenance reference:
-                # docs/licensing.md.
-                cargo-about
+                # docs/licensing.md. Pinned to 0.9.1 via cargoAbout (above).
+                cargoAbout
                 cargo-deny
                 cargo-insta
                 cargo-llvm-cov
                 cargo-nextest
+                # cargo-sbom emits a whole-workspace SBOM (SPDX) for `just sbom`.
+                cargo-sbom
                 # cargo-zigbuild + zig drive the release build: zig serves
                 # as the linker so the resulting glibc-dynamic binary
                 # carries an explicit min-glibc baseline (see justfile's
@@ -99,7 +130,7 @@
                 mdbook
                 mdbook-mermaid
                 lldb
-                llvmPackages_21.bintools-unwrapped
+                llvmPkgs.bintools-unwrapped
                 # nfpm (Go binary) is the packager that cargo-nfpm shells
                 # out to. cargo-nfpm itself is not in nixpkgs — install
                 # with `cargo install cargo-nfpm` to drive `just package-*`.
@@ -111,6 +142,9 @@
                 # instead of failing to find a bundled binary.
                 # Tracks slint-ui/slint#2577 (NixOS LSP discovery).
                 slint-lsp
+                # slint-viewer pinned to 1.17.0 (packaging/nix/slint-viewer.nix)
+                # for headless `--check` / `--screenshot` during GUI work.
+                slintViewer
                 socat
                 tcpdump
                 wakeonlan
@@ -128,11 +162,11 @@
             # Tell rust-analyzer where to find std sources for go-to-definition.
             RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";
 
-            # Tell cargo-llvm-cov where to find LLVM tools matching rustc's LLVM 21.
-            # rustup's llvm-tools-preview is not available with the Nix-managed
-            # toolchain, so we point at nixpkgs' LLVM 21 bintools instead.
-            LLVM_COV = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-cov";
-            LLVM_PROFDATA = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-profdata";
+            # cargo-llvm-cov needs llvm-cov / llvm-profdata whose LLVM major
+            # matches rustc's (see llvmPkgs above); rustup's llvm-tools-preview
+            # isn't available under the Nix toolchain, so point at nixpkgs'.
+            LLVM_COV = "${llvmPkgs.bintools-unwrapped}/bin/llvm-cov";
+            LLVM_PROFDATA = "${llvmPkgs.bintools-unwrapped}/bin/llvm-profdata";
 
             # Slint's femtovg renderer dlopens libGL / wayland / xcb at runtime;
             # without LD_LIBRARY_PATH the GUI binary built in the dev shell

@@ -1,43 +1,37 @@
 [package]
 name = "tisvlay-session"
-description = "User session service for TV control"
+description = "TisVlay per-user session service: gateway owning user/**, user profiles, lock/idle dispatch"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-authors.workspace = true
 license.workspace = true
-publish = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
-
-[lib]
-name = "tisvlay_session"
-path = "src/lib.rs"
-
-[[bin]]
-name = "tisvlay-session"
-path = "src/main.rs"
+publish.workspace = true
 
 [dependencies]
-# Wayland idle detection (lock wake) comes from tisvlay-core's `wayland` feature.
-tisvlay-core = { workspace = true, features = ["dbus", "logging", "wayland"] }
-tokio = { workspace = true }
-zbus = { workspace = true }
-tracing = { workspace = true }
-serde_json = { workspace = true }
 anyhow = { workspace = true }
-futures-util = { workspace = true }
 clap = { workspace = true }
+directories = { workspace = true }
+futures-util = { workspace = true }
+libc = { workspace = true }
+pipewire-native = { workspace = true }
+pipewire-native-spa = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tisvlay-core = { workspace = true, features = ["wayland", "logging"] }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tisvlay-wire = { workspace = true }
 uuid = { workspace = true }
-thiserror = { workspace = true }
+zbus = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
-tisvlay-harness = { workspace = true }
-tisvlay-test = { workspace = true }
 tempfile = { workspace = true }
+tisvlay-mock = { workspace = true }
+tisvlay-test = { workspace = true }
+tisvlay-daemon = { workspace = true }
 
 [lints]
 workspace = true

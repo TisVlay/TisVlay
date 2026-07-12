@@ -12,10 +12,12 @@
 // callback interfaces and the outer pane forwards them to the
 // global.
 
-import { Button, CheckBox, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
@@ -152,7 +154,10 @@ component DiscoveryRow inherits Rectangle {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 10px;
-        alignment: start;
+        // `stretch` (not `start`) so the center column's `horizontal-stretch`
+        // actually expands and the trailing status column sits flush-right —
+        // same discipline as the About pane's ComponentRow.
+        alignment: stretch;
 
         // Vendor swatch — shared widget so the brand colors + match
         // arms stay in sync with the TVs pane.
@@ -165,18 +170,44 @@ component DiscoveryRow inherits Rectangle {
             }
         }
 
+        // Two-line detail column, each line pairing left content with a
+        // right-adjusted status element so the layout is fixed regardless
+        // of state — mirrors the About pane's ComponentRow chip column.
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
             spacing: 2px;
 
-            Text {
-                text: root.tv.name == "" ? root.tv.address : root.tv.name;
-                color: root.selected ? Theme.row-selected-text : Theme.text;
-                font-size: Design.font-body;
-                font-weight: root.selected ? 600 : 500;
-                overflow: elide;
+            // Primary line: name (elides) + the status chip pinned
+            // top-right. Every row shows a discovery-source chip (`SSDP` /
+            // `CEC`, success-toned); a flagged (unusable) device flips it
+            // to a warn `No access` chip. On the name line so it stays put
+            // whether or not the hint below is present.
+            HorizontalLayout {
+                spacing: Design.gap-stack;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.tv.name == "" ? root.tv.address : root.tv.name;
+                    color: root.selected ? Theme.row-selected-text : Theme.text;
+                    font-size: Design.font-body;
+                    font-weight: root.selected ? 600 : 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                // No chip on a row that is neither flagged nor
+                // discovery-sourced (e.g. a manually-entered TV), rather
+                // than an empty pill or a mislabeled one.
+                if root.tv.access-warning || root.tv.source-label != "": Chip {
+                    // `source-label` is a machine/protocol id — shown
+                    // verbatim, not translated.
+                    label: root.tv.access-warning ? @tr("No access") : root.tv.source-label;
+                    tone: root.tv.access-warning ? "warn" : "success";
+                }
             }
+
+            // Secondary line: address · model (left) + a succinct hint
+            // right-adjusted, shown only when flagged. The full remedy
+            // rides the whole-row help bubble (see `warn-tip`).
             HorizontalLayout {
                 spacing: Design.gap-stack;
                 Text {
@@ -185,7 +216,7 @@ component DiscoveryRow inherits Rectangle {
                     font-size: Design.font-caption;
                     font-family: "ui-monospace, monospace";
                     // ~39-char v6 addresses would otherwise push the
-                    // trailing hw-model chip off the row.
+                    // trailing model chip off the row.
                     overflow: elide;
                 }
                 if root.tv.hw-model != "": Text {
@@ -198,12 +229,37 @@ component DiscoveryRow inherits Rectangle {
                     color: Theme.text-faint;
                     font-size: Design.font-caption;
                 }
+                Rectangle { horizontal-stretch: 1; }
+                if root.tv.access-warning: Text {
+                    text: @tr("check permissions");
+                    color: Theme.text-dim;
+                    font-size: Design.font-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
         }
     }
 
+    // Whole-row help anchor. Kept out of the layout (an absolutely
+    // positioned child overlaying the right column) so it stays
+    // referenceable from `touch` — an `if`-gated element would not be —
+    // and the entire row is the hover target, so the user is most likely
+    // to surface the full remedy. Invisible (no background, no
+    // TouchArea): `touch` above it still owns clicks and hover.
+    warn-tip := HelpTrigger {
+        x: parent.width - self.width - 12px;
+        y: 0;
+        width: 180px;
+        height: parent.height;
+        text: root.tv.access-warning ? @tr("The daemon can't access {} \u{2014} insufficient permissions. Check that node's permissions or the daemon user's group membership.", root.tv.address) : "";
+    }
+
     touch := TouchArea {
         clicked => { root.clicked(); }
+        changed has-hover => {
+            warn-tip.set-hover(self.has-hover);
+        }
     }
 }
 
@@ -224,9 +280,8 @@ component StepDiscover {
     /// button so double-clicks can't spawn parallel RPCs.
     in property <bool> manual-lookup-streaming;
     in-out property <int> selected-index;
-    // Index into `supported-vendors`; ComboBox is bound to it via
-    // `current-index <=>` so user picks round-trip without a Rust
-    // callback.
+    // Index into `supported-vendors`; the vendor ThemedSelect shows the
+    // name at this index and writes picks back through `selected-index`.
     in-out property <int> manual-vendor-index;
     in-out property <string> manual-ip;
     callback selection-changed(int);
@@ -236,19 +291,36 @@ component StepDiscover {
     VerticalLayout {
         spacing: Design.gap-block;
 
-        // Section heading
-        VerticalLayout {
-            spacing: Design.gap-form;
+        // Title row: the liveness dot + dynamic discovery status IS the
+        // step heading — the stepper above already names the step, so a
+        // static title plus separate status line would say the same
+        // thing twice. Radar PulseDot while scanning, still dot at rest
+        // (`tv-pulse` keyframe — `.claude/ui/pairing-wizard-motion.md` § 1).
+        HorizontalLayout {
+            spacing: Design.gap-stack;
+            alignment: start;
+            VerticalLayout {
+                alignment: center;
+                if root.streaming: PulseDot {}
+                if !root.streaming: Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.text-faint;
+                }
+            }
             Text {
-                text: @tr("Find your TV");
+                text: root.streaming
+                    ? (root.discovered.length == 0
+                        ? @tr("Scanning for TVs…")
+                        : @tr("Scanning — found {}, listening for more…", root.discovered.length))
+                    : (root.discovered.length == 0
+                        ? @tr("No TVs found")
+                        : @tr("Found {} TV" | "Found {} TVs" % root.discovered.length, root.discovered.length));
                 color: Theme.text;
                 font-size: 16px;
                 font-weight: 600;
-            }
-            Text {
-                text: @tr("Searching the local network for compatible TVs.");
-                color: Theme.text-dim;
-                font-size: Design.font-meta;
+                vertical-alignment: center;
             }
         }
 
@@ -278,34 +350,6 @@ component StepDiscover {
                 }
             }
         }
-        if root.error-message == "": HorizontalLayout {
-            spacing: Design.gap-stack;
-            alignment: start;
-            // Radar PulseDot while scanning, plain still dot otherwise.
-            // The `tv-pulse` keyframe is the design's blessed liveness
-            // signal — see `.claude/ui/pairing-wizard-motion.md` § 1.
-            VerticalLayout {
-                alignment: center;
-                if root.streaming: PulseDot {}
-                if !root.streaming: Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: Theme.text-faint;
-                }
-            }
-            Text {
-                text: root.streaming
-                    ? @tr("Scanning via SSDP — found {}, listening for more…", root.discovered.length)
-                    : (root.discovered.length == 0
-                        ? @tr("No TVs found. Make sure your TV is on the same network.")
-                        : @tr("Found {} TV" | "Found {} TVs" % root.discovered.length, root.discovered.length));
-                color: Theme.text-dim;
-                font-size: Design.font-helper;
-                vertical-alignment: center;
-            }
-        }
-
         // Discovered list / empty-state. A single region with a stable
         // `min-height` so the layout doesn't shift the moment the first
         // TV arrives — that shift previously pushed the manual-entry
@@ -359,20 +403,10 @@ component StepDiscover {
                     vertical-stretch: 1;
                     width: 100%;
                     alignment: center;
-                    spacing: Design.gap-tight;
                     HorizontalLayout {
                         alignment: center;
                         Text {
-                            text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
-                            color: Theme.text;
-                            font-size: 14px;
-                            font-weight: 600;
-                        }
-                    }
-                    HorizontalLayout {
-                        alignment: center;
-                        Text {
-                            text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
+                            text: @tr("Network TVs may only answer while awake — make sure the TV is on, or add it manually below.");
                             color: Theme.text-dim;
                             font-size: Design.font-helper;
                             horizontal-alignment: center;
@@ -431,12 +465,12 @@ component StepDiscover {
                             font-weight: 500;
                         }
                         // ≤ 1 vendor: static chip (no point in a
-                        // single-option dropdown). > 1: ComboBox bound
-                        // by `current-index <=>` — user picks write
-                        // straight back to `manual-vendor-index` with
-                        // no Rust callback in the path. Rust at
-                        // manual-add time reads `supported-vendors[idx]`
-                        // for both id and display name.
+                        // single-option dropdown). > 1: a vendor select
+                        // whose shown value is derived from
+                        // `manual-vendor-index` and whose picks write back
+                        // via `selected-index`. Rust at manual-add time
+                        // reads `supported-vendors[idx]` for both id and
+                        // display name.
                         if root.supported-vendors.length <= 1: Rectangle {
                             background: Theme.surface;
                             border-color: Theme.border-strong;
@@ -458,9 +492,14 @@ component StepDiscover {
                                 }
                             }
                         }
-                        if root.supported-vendors.length > 1: ComboBox {
+                        if root.supported-vendors.length > 1: ThemedSelect {
                             model: root.supported-vendor-names;
-                            current-index <=> root.manual-vendor-index;
+                            // Clamp: the vendor set can shrink under a stale
+                            // index (daemon re-publishes fewer vendors), which
+                            // would otherwise read past the model and show blank.
+                            current-value: root.supported-vendor-names[
+                                root.manual-vendor-index.clamp(0, root.supported-vendor-names.length - 1)];
+                            selected-index(i) => { root.manual-vendor-index = i; }
                         }
                     }
 
@@ -468,29 +507,23 @@ component StepDiscover {
                         horizontal-stretch: 2;
                         spacing: Design.gap-form;
                         Text {
-                            text: @tr("IP");
+                            // The selected vendor's primary descriptor —
+                            // its schema's first field (LG: IP, CEC:
+                            // device path). The bounds check covers the
+                            // zero-registered-vendor edge so we never
+                            // index an empty model.
+                            text: root.supported-vendors.length > root.manual-vendor-index
+                                ? root.supported-vendors[root.manual-vendor-index].primary-label
+                                : @tr("Address");
                             color: Theme.text;
                             font-size: Design.font-helper;
                             font-weight: 500;
                         }
                         LineEditField {
-                            // Vendor-aware placeholder. The selected
-                            // vendor's `supports-ipv4` / `supports-ipv6`
-                            // flags come from
-                            // `Manager1.GetVendorCapabilities` —
-                            // v6-only vendors get the RFC 3849
-                            // documentation prefix; everything else
-                            // (v4-only and v4+v6) keeps the familiar
-                            // v4 example. The bounds check (`length
-                            // > index`) covers the
-                            // zero-registered-vendor edge so we never
-                            // index an empty model.
                             placeholder-text:
                                 root.supported-vendors.length > root.manual-vendor-index
-                                && root.supported-vendors[root.manual-vendor-index].supports-ipv6
-                                && !root.supported-vendors[root.manual-vendor-index].supports-ipv4
-                                    ? "2001:db8::1"
-                                    : "192.168.1.100";
+                                    ? root.supported-vendors[root.manual-vendor-index].primary-placeholder
+                                    : "";
                             font-family: "ui-monospace, monospace";
                             text <=> root.manual-ip;
                             edited(v) => { root.manual-ip-edited(v); }
@@ -509,11 +542,11 @@ component StepDiscover {
                     }
                 }
                 Text {
-                    // Vendor-specific extras (MAC for Wake-on-LAN, API
+                    // Vendor-specific extras (Wake-on-LAN MAC, API
                     // keys, ports, etc.) are filled in the next step
                     // from the vendor's pairing schema; we just need
                     // enough here to identify the TV.
-                    text: @tr("You'll fill the rest (MAC, etc.) in the next step.");
+                    text: @tr("Any remaining details are filled in on the next step.");
                     color: Theme.text-faint;
                     font-size: Design.font-mini;
                     wrap: word-wrap;
@@ -632,9 +665,7 @@ component StepConfigure {
             value-edited(i, v) => { root.field-value-edited(i, v); }
         }
 
-        // System profile — std ComboBox wrapped in a themed border so
-        // the field is always visible. The dropdown uses the platform
-        // style; that's acceptable since it's only briefly visible.
+        // System profile — a ThemedSelect for the initial assignment.
         VerticalLayout {
             spacing: Design.gap-form;
             Text {
@@ -643,7 +674,7 @@ component StepConfigure {
                 font-size: Design.font-meta;
                 font-weight: 500;
             }
-            ComboBox {
+            ThemedSelect {
                 model: root.system-profiles;
                 current-value: root.system-profile == "" ? "default" : root.system-profile;
                 enabled: root.system-profiles.length > 0;
@@ -964,7 +995,7 @@ export component PairingWizardPane inherits Rectangle {
         }
 
         // Body
-        ScrollView {
+        HelpScrollView {
             VerticalLayout {
                 width: 100%;
                 padding: 20px;

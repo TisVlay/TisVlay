@@ -12,6 +12,10 @@ default:
 
 # --- Quality checks (prek hooks + CI) -----------------------------------
 
+# Shared build + clippy scope, kept in one place so the two recipes can't
+# drift: test profile, whole workspace, all targets + all features.
+check_flags := "--profile test --workspace --all-targets --all-features"
+
 # Format all Rust code
 [group('check')]
 fmt:
@@ -20,36 +24,18 @@ fmt:
 # Build the workspace (test profile, all targets, all features)
 [group('check')]
 build:
-    cargo build --profile test --workspace --all-targets --all-features
+    cargo build {{ check_flags }}
 
 # Run clippy with warnings denied
 [group('check')]
 clippy:
-    cargo clippy --profile test --workspace --all-targets --all-features -- -D warnings
+    cargo clippy {{ check_flags }} -- -D warnings
 
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
 test:
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
-
-# Feature subset for CI's coverage and clippy paths. Excludes
-# `tisvlay-gui`'s `dev-mcp`, which pulls
-# `i-slint-backend-testing/mcp`'s prost/pbjson/protox stack and busts
-# the runner's ~14 GB free-disk ceiling. Audit: every `#[cfg(feature
-# = "X")]` block in `crates/*/src/` is covered either directly by
-# `mock` or transitively (`discovery`, `dbus`, `logging` are reached
-# through `tisvlayd/mock`'s default + workspace consumers). prek
-# locally still runs `--all-features` clippy, which is the
-# dep-resolution gate for `dev-mcp`.
-#
-# When to extend:
-# - New `#[cfg(feature = "X")]` block in `src/` where X isn't already
-#   `mock` / `discovery` / `dbus` / `logging` → add the feature here
-#   so CI lints + tests it (or the gate becomes silent on PRs).
-# - New workspace crate with a mock-style test-only feature → add
-#   `<crate>/mock` here.
-ci_features := "tisvlay-backends/mock,tisvlayd/mock"
 
 # Run the full check pipeline (clippy + tests + doc tests + coverage
 # report) under a single coverage-instrumented build. `cargo llvm-cov
@@ -82,10 +68,9 @@ test-ci:
     export NEXTEST_PROFILE=ci
     eval "$(cargo llvm-cov show-env --sh)"
     cargo llvm-cov clean --profraw-only
-    cargo clippy --workspace --all-targets \
-        --features {{ ci_features }} -- -D warnings
-    cargo nextest run --workspace --features {{ ci_features }}
-    cargo test --workspace --features {{ ci_features }} --doc
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo nextest run --workspace --all-features
+    cargo test --workspace --all-features --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     cargo llvm-cov report {{ cov_exclude }} \
         --fail-under-lines {{ cov_baseline_lines }} --summary-only
@@ -115,7 +100,7 @@ test-snapshot-accept:
 # fails the build; output is informational.
 [group('check')]
 deny:
-    cargo deny check --config packaging/licensing/deny.toml licenses bans
+    cargo deny check --config packaging/licensing/deny.toml licenses bans sources
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes). Doubles as the cargo-about
@@ -132,37 +117,44 @@ licenses-html:
         packaging/licensing/about.html.hbs \
         -o packaging/licensing/THIRD-PARTY-LICENSES.html
 
+# Whole-workspace SBOM (SPDX 2.3) from the committed Cargo.lock, written under
+# target/sbom/ (gitignored). A supply-chain artifact, not a gate — the CI job
+# uploads it and it is available on demand. cargo-sbom emits one document to
+# stdout, so a single redirect is the whole recipe.
+sbom_dir := "target/sbom"
+
+[group('check')]
+sbom:
+    mkdir -p {{ sbom_dir }}
+    cargo sbom --output-format spdx_json_2_3 > {{ sbom_dir }}/tisvlay.spdx.json
+    @echo "wrote {{ sbom_dir }}/tisvlay.spdx.json"
+
 # --- i18n / translation catalogs ---------------------------------------
 #
-# Two translatable crates today: `tisvlay-gui` (Slint UI + Rust) and
-# `tisvlay-tray` (Rust only). Each owns its own gettext domain and
-# `.pot` template; per-locale `.po` files live under
-# `crates/<crate>/lang/<locale>/LC_MESSAGES/<crate>.po`.
+# One translatable crate today: `tisvlay-gui` (Slint UI + Rust). It owns
+# its gettext domain and `.pot` template; per-locale `.po` files live
+# under `crates/tisvlay-gui/lang/<locale>/LC_MESSAGES/tisvlay-gui.po`.
+# The tray's user-facing strings (menu items, notification copy) are
+# not gettext-wired yet — tracked in docs/ideas.md.
 #
-# `i18n-extract` rebuilds both `.pot` templates from source. The GUI
-# pass combines Rust (`gettext("…")` via xgettext) and Slint
-# (`@tr("…")` via slint-tr-extractor) into one `.pot`; the tray
-# pass is Rust-only. Run this whenever user-facing strings change.
+# `i18n-extract` rebuilds the `.pot` template from source. The pass
+# combines Rust (`gettext("…")` via xgettext) and Slint (`@tr("…")`
+# via slint-tr-extractor) into one `.pot`. Run this whenever
+# user-facing strings change.
 #
-# `i18n-update` merges the refreshed `.pot`s into every existing
+# `i18n-update` merges the refreshed `.pot` into every existing
 # per-locale `.po`, marking new entries fuzzy and obsoleting
 # removed ones.
 #
-# `.mo` files are generated at compile time — by `slint_build` for
-# the GUI and by `crates/tisvlay-tray/build.rs` for the tray — so
+# `.mo` files are generated at compile time by `slint_build`, so
 # there's no separate compile recipe. `cargo build` after editing
-# a `.po` is enough to refresh runtime catalogs for either crate.
+# a `.po` is enough to refresh runtime catalogs.
 gui_lang_dir := "crates/tisvlay-gui/lang"
 gui_pot := gui_lang_dir + "/tisvlay-gui.pot"
-tray_lang_dir := "crates/tisvlay-tray/lang"
-tray_pot := tray_lang_dir + "/tisvlay-tray.pot"
 
-# Extract translatable strings for both crates into their .pot templates.
+# Extract translatable strings into the .pot template.
 [group('check')]
-i18n-extract: i18n-extract-gui i18n-extract-tray
-
-# GUI: Rust (`gettext()`) + Slint (`@tr()`) into tisvlay-gui.pot.
-i18n-extract-gui:
+i18n-extract:
     @mkdir -p {{ gui_lang_dir }}
     # Rust pass: xgettext on every gettext()/ngettext() call site.
     xgettext --language=Rust --keyword=gettext --keyword=ngettext:1,2 \
@@ -177,28 +169,14 @@ i18n-extract-gui:
         $(find crates/tisvlay-gui/ui -name '*.slint')
     @echo "Wrote {{ gui_pot }} — review and commit."
 
-# Tray: Rust-only (`gettext()`) into tisvlay-tray.pot.
-i18n-extract-tray:
-    @mkdir -p {{ tray_lang_dir }}
-    xgettext --language=Rust --keyword=gettext --keyword=ngettext:1,2 \
-        --from-code=UTF-8 --package-name=tisvlay-tray \
-        --copyright-holder='TisVlay contributors' \
-        --output={{ tray_pot }} \
-        $(find crates/tisvlay-tray/src -name '*.rs')
-    @echo "Wrote {{ tray_pot }} — review and commit."
-
 # Merge the refreshed .pot into every existing per-locale .po file.
 [group('check')]
 i18n-update: i18n-extract
-    @for crate_dir in {{ gui_lang_dir }} {{ tray_lang_dir }}; do \
-        domain=$(basename $(dirname $crate_dir)); \
-        pot="$crate_dir/$domain.pot"; \
-        for po in $crate_dir/*/LC_MESSAGES/$domain.po; do \
-            if [ -f "$po" ]; then \
-                echo "Merging $pot into $po"; \
-                msgmerge --update --backup=none "$po" "$pot"; \
-            fi; \
-        done; \
+    @for po in {{ gui_lang_dir }}/*/LC_MESSAGES/tisvlay-gui.po; do \
+        if [ -f "$po" ]; then \
+            echo "Merging {{ gui_pot }} into $po"; \
+            msgmerge --update --backup=none "$po" "{{ gui_pot }}"; \
+        fi; \
     done
 
 # --- Documentation site (mdBook → Read the Docs) ------------------------
@@ -243,18 +221,16 @@ cov_baseline_lines := "52"
 
 # Exclude test infrastructure from coverage reports - measure production
 # code only. Matches crate names and test-only modules.
-cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock|harness)/|test_server)'"
+cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock)/|test_server)'"
 
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
 # Mirrors `test-ci` — see that recipe's comment for the
-# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale, and the
-# `ci_features` comment for the feature-subset rationale.
+# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale.
 [private]
 _cov-collect:
     CARGO_PROFILE_DEV_DEBUG=line-tables-only \
-        cargo llvm-cov --no-report nextest --workspace \
-            --features {{ ci_features }}
-    cargo test --workspace --features {{ ci_features }} --doc
+        cargo llvm-cov --no-report nextest --workspace --all-features
+    cargo test --workspace --all-features --doc
 
 # Text summary of workspace coverage
 [group('coverage')]
@@ -279,97 +255,129 @@ cov-ratchet lines=cov_baseline_lines: _cov-collect
 
 # --- Dev run targets ----------------------------------------------------
 #
-# Each peer has a single `<peer>-start` recipe parameterized by the
-# top-level `bus` / `gui_mcp` variables below. Edit defaults for your
-# usual workflow, or override per-call via env or --set:
+# Every peer takes the same socket/site parameters, defaulted below so
+# a bare `just daemon-start` + `just session-start` + `just tray-start`
+# find each other with no flags. Override per-call via env or --set:
 #
-#   BUS=system just daemon-start          # env-var override
-#   just --set bus system daemon-start    # --set override
-#   GUI_MCP=true just gui-start           # GUI with Slint MCP on :9315
+#   SITE=home just daemon-start                # env-var override
+#   just --set site home daemon-start          # --set override
+#   DPMS_CONNECTOR=card1-HDMI-A-1 just daemon-start
+#   EPHEMERAL=true just daemon-start           # no state file
+#   GUI_MCP=true just gui-start                # Slint MCP on :9315
 #
 # These are dev-only; no production / CI path goes through them.
 
-# "user" = session/user bus, "system" = system bus (daemon needs sudo).
-bus := env("BUS", "user")
+runtime_dir := env("XDG_RUNTIME_DIR", "/tmp")
 
-# GUI only. "true" → build with the `dev-mcp` Cargo feature and start
-# the Slint MCP server on http://127.0.0.1:9315/mcp. See
-# `.claude/slint.md`.
+# System-daemon socket every client connects to.
+socket := env("TISVLAY_SOCKET", runtime_dir / "tisvlay/zenoh.sock")
+
+# Per-user session-service socket (user profiles live behind it).
+user_socket := env("TISVLAY_USER_SOCKET", runtime_dir / "tisvlay/session.sock")
+
+# Site chunk used in all key expressions.
+site := env("SITE", "main")
+
+# "true" → daemon/session run without persistence.
+ephemeral := env("EPHEMERAL", "false")
+
+# Extra DRM connector to watch for DPMS transitions, dispatched to
+# every automated TV (e.g. card1-HDMI-A-1) — the override for mocks
+# and failed EDID matches. EDID-matched connectors are watched
+# automatically, scoped per TV. Empty = automatic watchers only.
+dpms_connector := env("DPMS_CONNECTOR", "")
+
+# Pinned SSDP source port for LG discovery — must match the firewall
+# rule (docs/firewall.md); 0 = ephemeral.
+ssdp_port := env("SSDP_PORT", "1901")
+
+# GUI only. "true" → build with `--features slint/mcp` and start the
+# Slint MCP server on http://127.0.0.1:9315/mcp. See `.claude/slint.md`.
 gui_mcp := env("GUI_MCP", "false")
 
-_daemon_log := "debug,zbus=warn,rustls=warn,tungstenite=warn"
-_session_log := "debug,zbus=warn"
-_tray_log := "debug,zbus=warn,ksni=warn"
-_gui_log := "debug,zbus=warn,slint=warn,winit=warn"
+# zenoh is chatty at debug; keep app crates loud and transports quiet.
+_daemon_log := "info,tisvlay_daemon=debug,tisvlay_world=debug,zbus=warn,rustls=warn,tungstenite=warn"
+_session_log := "info,tisvlay_session=debug,zbus=warn"
+_greeter_log := "info,tisvlay_greeter=debug"
+_tray_log := "info,tisvlay_tray=debug,zbus=warn,ksni=warn"
+_gui_log := "info,tisvlay_gui=debug,slint=warn,winit=warn"
 
-# `--user` flag for binaries that take it. Empty when bus=system, so
-# the binary defaults to the system bus.
-_user_flag := if bus == "user" { "--user" } else { "" }
+_ephemeral_flag := if ephemeral == "true" { "--ephemeral" } else { "" }
 
-# `sudo cargo run` for the system bus would write artifacts into
-# root's target dir, so the system path pre-builds as the user and
-# then sudo-runs the resulting binary.
-#
-# Start the daemon.
+# Start the daemon (system socket owner).
 [group('dev')]
 daemon-start:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ "{{ bus }}" = "system" ]; then
-        cargo build --bin tisvlayd
-        RUST_LOG="{{ _daemon_log }}" \
-            sudo -E ./target/debug/tisvlayd \
-                --config docs/configs/daemon.toml
-    else
-        RUST_LOG="{{ _daemon_log }}" \
-            cargo run --bin tisvlayd -- --session \
-                --config docs/configs/daemon.toml
+    dpms=()
+    if [ -n "{{ dpms_connector }}" ]; then
+        dpms=(--dpms-connector "{{ dpms_connector }}")
     fi
+    RUST_LOG="{{ _daemon_log }}" \
+        cargo run --release --bin tisvlay-daemon -- \
+            --socket "{{ socket }}" --site "{{ site }}" \
+            --ssdp-port "{{ ssdp_port }}" {{ _ephemeral_flag }} "${dpms[@]}"
 
-# Start the session service.
+# Start the session service (user socket owner; lock/idle dispatch).
 [group('dev')]
 session-start:
     RUST_LOG="{{ _session_log }}" \
-        cargo run --bin tisvlay-session -- {{ _user_flag }} \
-            --config docs/configs/session.toml
+        cargo run --release --bin tisvlay-session -- \
+            --system-socket "{{ socket }}" --user-socket "{{ user_socket }}" \
+            --site "{{ site }}" {{ _ephemeral_flag }}
 
-# Start the tray.
+# Start the greeter idle client (needs a wayland compositor).
+[group('dev')]
+greeter-start:
+    RUST_LOG="{{ _greeter_log }}" \
+        cargo run --release --bin tisvlay-greeter -- \
+            --socket "{{ socket }}" --site "{{ site }}"
+
+# Start the tray (user profiles appear when session-start is up).
 [group('dev')]
 tray-start:
     RUST_LOG="{{ _tray_log }}" \
-        cargo run --bin tisvlay-tray -- {{ _user_flag }} \
-            --config docs/configs/tray.toml
+        cargo run --release --bin tisvlay-tray -- \
+            --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
+            --site "{{ site }}"
 
 # Start the GUI (paired with `daemon-start`).
 [group('dev')]
 gui-start:
     {{ if gui_mcp == "true" { "SLINT_MCP_PORT=9315" } else { "" } }} \
         RUST_LOG="{{ _gui_log }}" \
-        cargo run {{ if gui_mcp == "true" { "--features dev-mcp" } else { "" } }} \
-        --bin tisvlay-gui -- {{ _user_flag }}
+        cargo run {{ if gui_mcp == "true" { "--features slint/mcp" } else { "" } }} \
+        --release --bin tisvlay-gui -- \
+            --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
+            --site "{{ site }}"
 
 # Kill all running dev processes
 [group('dev')]
 stop-all:
-    -pkill -f 'target/debug/tisvlayd'
-    -pkill -f 'target/debug/tisvlay-session'
-    -pkill -f 'target/debug/tisvlay-tray'
-    -pkill -f 'target/debug/tisvlay-gui'
-    # The SIGTERM above returns immediately, but the daemon takes
-    # a beat to release its `org.tisvlay.Daemon` bus name. A fresh
-    # `tisvlayd` started by `all: restart` would race against that
-    # release. Block until all four binaries are actually gone so
-    # the VS Code task chain `[all: stop, all: start]` with
-    # `dependsOrder: sequence` does the right thing on its own. 5 s
-    # timeout (`|| true`) so a stuck process can't wedge the recipe
-    # indefinitely.
-    @timeout 5 sh -c 'while pgrep -f "target/debug/(tisvlayd|tisvlay-(session|tray|gui))" > /dev/null; do sleep 0.1; done' || true
+    -pkill -f 'tisvlay-daemon'
+    -pkill -f 'tisvlay-session'
+    -pkill -f 'tisvlay-greeter'
+    -pkill -f 'tisvlay-tray'
+    -pkill -f 'tisvlay-gui'
+    # SIGTERM returns immediately; wait until the processes are gone so
+    # a follow-up start can't race the exit. Stale socket files are
+    # fine — zenoh's `.lock` protocol takes over an unclean listener
+    # path on the next bind. 5 s timeout (`|| true`) so a stuck
+    # process can't wedge the recipe.
+    @timeout 5 sh -c 'while pgrep -f "target/debug/tisvlay-(daemon|session|greeter|tray|gui)" > /dev/null; do sleep 0.1; done' || true
     @echo "All stopped"
 
 # Show CLI status (manual smoke test)
 [group('dev')]
 cli-status:
-    cargo run --bin tisvlay -- --user status
+    cargo run --release --bin tisvlay -- --socket "{{ socket }}" --site "{{ site }}" status
+
+# Run any CLI verb against the dev sockets, e.g. `just cli list`.
+[group('dev')]
+cli *args:
+    cargo run --release --bin tisvlay -- \
+        --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
+        --site "{{ site }}" {{ args }}
 
 # --- Packaging ----------------------------------------------------------
 
@@ -381,28 +389,26 @@ glibc_baseline := "2.34"
 # pipeline rationale. Output lands in target/x86_64-unknown-linux-gnu
 # /release/; zigbuild strips the `.<glibc>` suffix when invoking cargo.
 # Crate scoping comes from `workspace.default-members` (the shipping
-# binaries) in the root Cargo.toml — no `-p` flags repeated here. The
-# `mock` feature ships the daemon's "Mock (testing)" field-debug backend.
+# binaries) in the root Cargo.toml — no `-p` flags repeated here.
 [private]
 package-build:
     cargo zigbuild --release \
-        --target x86_64-unknown-linux-gnu.{{ glibc_baseline }} \
-        --features tisvlayd/mock
+        --target x86_64-unknown-linux-gnu.{{ glibc_baseline }}
 
 # Build .deb package
 [group('package')]
 package-deb: licenses-html package-build
-    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f deb
+    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f deb
 
 # Build .rpm package
 [group('package')]
 package-rpm: licenses-html package-build
-    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f rpm
+    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f rpm
 
 # Build Arch Linux package
 [group('package')]
 package-archlinux: licenses-html package-build
-    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f archlinux
+    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f archlinux
 
 # Build all package formats
 [group('package')]

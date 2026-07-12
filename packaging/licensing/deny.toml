@@ -3,8 +3,13 @@
 #
 # `[licenses]` enforces the SPDX allow-list. `[bans]` surfaces
 # multi-version dep duplication as warnings (non-blocking) with a
-# curated skip-list documenting known-and-accepted offenders. The
-# other cargo-deny checks (`advisories`, `sources`) are out of scope.
+# curated skip-list documenting known-and-accepted offenders.
+# `[sources]` pins code provenance to crates.io and is gated by
+# `just deny`. `[advisories]` gates RustSec/yanked crates but is
+# deliberately NOT in `just deny` — it runs in a separate weekly
+# workflow (.github/workflows/audit.yml) so a newly-disclosed advisory
+# against an unchanged pinned dep still surfaces, without gating every
+# PR/commit on transitive vulnerabilities that have no upstream fix.
 
 # Restrict resolution to the platforms we ship for. Without this,
 # cargo-deny's default view considers every target triple and
@@ -15,11 +20,12 @@
 # systemd, GUI is Wayland-only since the share-target sprint.
 #
 # Default-feature resolution intentionally — matches the dep graph
-# we actually ship. Dev-only features (`dev-mcp` on `tisvlay-gui`)
-# pull `i-slint-backend-testing/mcp`'s prost chain which contains
-# crates we don't audit for production (e.g. `generational-arena`
-# under MPL-2.0). Those pollutants are kept out of the licenses
-# check by leaving `all-features` unset.
+# we actually ship. The MCP debug stack (`i-slint-backend-testing/mcp`'s
+# prost chain, which contains crates we don't audit for production, e.g.
+# `generational-arena` under MPL-2.0) is reachable only via an ad-hoc
+# `cargo run --features slint/mcp` — a `slint` dependency feature that no
+# workspace crate enables — so it is absent from both default- and
+# all-feature resolution and never reaches the licenses check.
 [graph]
 targets = [
     { triple = "x86_64-unknown-linux-gnu" },
@@ -118,3 +124,44 @@ skip = [
     { crate = "zune-core", reason = "image decoder ecosystem churn" },
     { crate = "zune-jpeg", reason = "image decoder ecosystem churn" },
 ]
+
+# RustSec advisory + yanked-crate gate. Run by the weekly audit workflow
+# (.github/workflows/audit.yml), NOT by `just deny` — see the file header.
+# The ignore-list records advisories already triaged against the current
+# lockfile so the weekly run stays green until a NEW advisory lands; each
+# entry carries a reason. Drop an entry once a dep bump clears it.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # No upstream fix — transitive, accepted:
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin-attack timing sidechannel; no fixed release; transitive via the TLS stack" },
+    # Unmaintained, no safe upgrade — accepted:
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; no safe upgrade; transitive" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; no safe upgrade; transitive" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via Slint resvg" },
+    # Fix available upstream — deferred to a dependency bump:
+    { id = "RUSTSEC-2026-0204", reason = "crossbeam-epoch invalid pointer deref; fixed >=0.9.20; transitive, pending bump" },
+    { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic-attribute DoS; fixed >=0.41.0 (semver break); transitive, pending bump" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml namespace-alloc DoS; fixed >=0.41.0 (semver break); transitive, pending bump" },
+]
+
+# Code provenance: crates.io only, save for one deliberate git pin. Any
+# other git or alternate-registry dependency fails the gate — a tripwire
+# against an unvetted source sneaking in. Gated by `just deny`.
+#
+# The lone `allow-git` exception is `pipewire-native` (the session's
+# screencast detector): the crates.io 0.1.4 release aborts the process
+# inside an FFI callback on a protocol decode error against PipeWire ≥ 1.4,
+# and the fix is unreleased with upstream tagging rarely. Pinned to a
+# current upstream rev in the root Cargo.toml; revert to a crates.io pin
+# once 0.1.5+ ships (also drop the cargoLock.outputHashes in package.nix).
+# All three sibling crates from this URL are MIT — covered by the global
+# license allow-list, no per-crate exception needed.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git"]

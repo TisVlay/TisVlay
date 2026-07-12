@@ -462,6 +462,23 @@ pub trait TvConnector: Send + Sync {
         )
     }
 
+    /// Backend's primary descriptor — the value of the first
+    /// `UserInput`-visibility entry from the vendor config.
+    /// Convention: backends order their `config_schema` so the most
+    /// informative editable field (LG: ip; future Bluetooth: MAC;
+    /// USB-CEC: serial port) comes first. Used by daemon-internal log
+    /// formatters and route resolution where a single
+    /// transport-appropriate string is needed.
+    ///
+    /// Returns `None` when the backend declines to surface any
+    /// editable info.
+    fn primary_descriptor(&self, vendor_config: &toml::Value) -> Option<String> {
+        self.display_config(vendor_config)
+            .into_iter()
+            .next()
+            .map(|(_, value)| value)
+    }
+
     /// Backend-discovered diagnostic fields, ordered
     /// `(label, value)` pairs. The GUI's TVs-pane INFO group uses
     /// this for its read-only diagnostic rows (LG: WebSocket
@@ -548,8 +565,8 @@ pub trait TvConnector: Send + Sync {
     /// Pairing form schema — declares the input fields the user
     /// must provide before pairing can start.
     ///
-    /// The daemon exposes this over D-Bus
-    /// (`Manager1.GetPairingSchema(vendor)`) as JSON; the GUI's
+    /// The daemon serves this as JSON from its
+    /// `manager/vendors/<id>/schema` queryable; the GUI's
     /// pairing wizard renders the form dynamically from the
     /// returned [`PairingField`] list. See
     /// [`pairing_schema`](crate::pairing_schema) for the field

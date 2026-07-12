@@ -1,5 +1,5 @@
 [Unit]
-Description=tisvlay greeter idle client (plasma-login-manager)
+Description=TisVlay greeter idle client (plasma-login-manager)
 Documentation=https://github.com/ruffsl/tisvlay
 # A systemd *user* unit for the greeter user (e.g. plasmalogin). Plasma-login
 # specific: the unit names below only exist under plasma-login-manager; other
@@ -14,7 +14,8 @@ PartOf=plasma-login-wayland.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/tisvlay-greeter
+# The greeter user must be in the tisvlay group to reach the socket.
+ExecStart=/usr/bin/tisvlay-greeter --socket /run/tisvlay/zenoh.sock
 # on-failure (not always): a clean exit — compositor disconnect at login, or
 # the timeout-disabled early-exit — must not restart-loop.
 Restart=on-failure

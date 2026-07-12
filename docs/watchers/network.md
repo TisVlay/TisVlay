@@ -4,30 +4,30 @@ How the daemon detects network connectivity changes and scopes them to individua
 
 ## Kernel Netlink Monitoring
 
-File: `crates/tisvlayd/src/netlink.rs`
+File: `crates/tisvlay-daemon/src/netlink.rs`
 
 A single `rtnetlink` multicast connection subscribes to five groups:
 
 | Group | Events | Daemon action |
 |-------|--------|---------------|
-| `RTMGRP_LINK` | Carrier up/down | `InterfaceUp` / `InterfaceDown` per NIC |
-| `RTMGRP_IPV4_ROUTE` | Route add/delete | `RouteChanged` (re-resolve all TVs) |
-| `RTMGRP_IPV6_ROUTE` | Route add/delete | `RouteChanged` (re-resolve all TVs) |
-| `RTMGRP_IPV4_IFADDR` | IPv4 address add/remove | `RouteChanged` |
-| `RTMGRP_IPV6_IFADDR` | IPv6 address add/remove | `RouteChanged` |
+| `RTMGRP_LINK` | Carrier up/down | `InEvent::Carrier { interface, up }` per NIC |
+| `RTMGRP_IPV4_ROUTE` | Route add/delete | Re-resolve monitored TVs → `InEvent::RouteResolved` |
+| `RTMGRP_IPV6_ROUTE` | Route add/delete | Re-resolve monitored TVs → `InEvent::RouteResolved` |
+| `RTMGRP_IPV4_IFADDR` | IPv4 address add/remove | Re-resolve monitored TVs |
+| `RTMGRP_IPV6_IFADDR` | IPv6 address add/remove | Re-resolve monitored TVs |
 
 This is kernel-level, fires within milliseconds of a state change, and works without NetworkManager.
 
 ## Route-Based Device Resolution
 
-When a network-transport TV connects, the daemon resolves which NIC carries traffic to its IP via `RTM_GETROUTE` (equivalent to `ip route get <IP>`):
+For every network-transport TV, the daemon resolves which NIC carries traffic to its IP via `RTM_GETROUTE` (equivalent to `ip route get <IP>`):
 
 ```
 ip route get 192.168.1.170
 → 192.168.1.170 dev eno2 src 192.168.1.79
 ```
 
-The result is stored on `ManagedTv::monitored_interface`. This scopes carrier events to the correct NIC — a carrier drop on `wlan0` doesn't disconnect a TV routed through `eno2`.
+The reactor requests monitoring per TV (`RouteRequest::Monitor`, carrying the connector's `primary_descriptor`); the netlink watcher answers with `InEvent::RouteResolved`, which the world stores as the `MonitoredInterface` component. This scopes carrier events to the correct NIC — a carrier drop on `wlan0` doesn't disconnect a TV routed through `eno2`.
 
 The daemon never asks the user which interface to use — the kernel routing table is the source of truth. Works correctly with bridges, VLANs, bonding, VPNs, etc.
 
@@ -45,9 +45,9 @@ Backends declare `Transport::Network` and provide the IP via `display_address()`
 
 ### When routes are resolved
 
-- **Connection time**: TV connects → resolve route → monitor that NIC
-- **Reconnection time**: new route may point to a different NIC
-- **Route change events**: coalesced → re-resolve all TVs
+- **Enrollment**: AddTv → monitor request → resolve → monitor that NIC
+- **Every dial spawn**: a merged config (update-config, re-pair) re-registers, so an edited IP re-resolves
+- **Route change events**: coalesced → re-resolve all monitored TVs
 
 ## Carrier Detection
 
@@ -62,13 +62,13 @@ This catches both:
 
 ## Route Transition Actions
 
-When `resolve_monitored_interface` detects a route change:
+When a `RouteResolved` changes a TV's monitored interface (`apply_route_resolutions` in `tisvlay-world`):
 
 | Previous | Current | Action |
 |----------|---------|--------|
-| `Some("eno2")` | `None` | Disconnect TV |
-| `None` | `Some("eno2")` | Signal reconnection |
-| `Some("eno2")` | `Some("wlp7s0")` | Disconnect + reconnect if `!survives_source_ip_change()` |
+| `Some("eno2")` | `None` | Park the connection (`CarrierParked`) |
+| `Some("eno2")` \| parked | `Some(_)` | Redial (`PendingConnect`) |
+| `Some("eno2")` | `Some("wlp7s0")` | Drop + redial if `!survives_source_ip_change()` |
 | `Some("eno2")` | `Some("eno2")` | No change |
 
 The NIC-change case checks `TvConnector::survives_source_ip_change()` — TCP/TLS protocols (WebSocket) return `false` (connection bound to 4-tuple), while future QUIC backends could return `true`. This is a connector-level property, not a transport category — see the design decision in `TvConnector` docs.
@@ -121,7 +121,7 @@ The kernel routing table is the source of truth — same approach as WireGuard a
 
 ### Sleep/wake
 
-A per-TV `reconnecting` flag guards carrier/route event handlers, preventing them from interfering with in-flight WoL retry loops during system resume.
+Carrier/route parking only acts on live connections (`ConnectionHandle`); an in-flight dial (`Reconnecting`) fails and retries on its own schedule, so WoL retry loops during system resume are never fought. Route resolution also gates dial *spawning*, not just parking: a `MonitoredInterface` reading `Some(None)` defers any pending dial (attempt budget reset, `AwaitingRoute` marker, `awaiting_network` phase for wakes) until a route returns — the resume/boot wake can no longer spend its budget into a NIC that has not come up yet. Component absence never defers: monitoring is requested by the dial spawn itself, so first dials and non-IP transports dial as always.
 
 ## Crates
 
@@ -138,7 +138,7 @@ A per-TV `reconnecting` flag guards carrier/route event handlers, preventing the
 | Cable pull | Instant disconnect | `RTMGRP_LINK` carrier detection |
 | Cable pull with virbr0 | Instant disconnect | Per-interface, not NM global state |
 | NM GUI disconnect | ~100ms detection | Route re-resolution + coalesce |
-| NM GUI reconnect | ~100ms detection | Route reappears → `InterfaceUp` |
+| NM GUI reconnect | ~100ms detection | Route reappears → redial |
 | Wi-Fi connect while wired | No false trigger | Route stays on preferred NIC |
 | Wired disconnect (failover) | Instant disconnect + reconnect via Wi-Fi | Carrier + route + `survives_source_ip_change` |
 | Wired reconnect (failback) | NIC change → reconnect via wired | Route change + `survives_source_ip_change` |

@@ -1,0 +1,113 @@
+[package]
+name = "tisvlay-daemon"
+description = "TisVlay system daemon: bevy_ecs world + zenoh wire host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+directories = { workspace = true }
+edidkit = { workspace = true }
+futures-util = { workspace = true }
+netlink-packet-core = { workspace = true }
+netlink-packet-route = { workspace = true }
+rtnetlink = { workspace = true }
+zbus = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tisvlay-cec = { workspace = true }
+tisvlay-core = { workspace = true, features = ["logging"] }
+tisvlay-lg = { workspace = true, features = ["discovery"] }
+tisvlay-mock = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tisvlay-wire = { workspace = true }
+tisvlay-world = { workspace = true }
+uuid = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tisvlay-cec = { workspace = true, features = ["test-link"] }
+tisvlay-test = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.nfpm]
+name = "tisvlay"
+section = "utils"
+priority = "optional"
+
+contents = [
+    # Binaries (tisvlay-daemon is auto-added by cargo-nfpm from the -p target)
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay", dst = "/usr/bin/tisvlay" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-greeter", dst = "/usr/bin/tisvlay-greeter" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
+    # Systemd system service. The activated tisvlay-daemon runs as the
+    # dedicated `tisvlay` system user (postinstall.sh creates it), owning
+    # the zenoh socket in /run/tisvlay/. Clients join the tisvlay group.
+    { src = "packaging/systemd/tisvlay-daemon.service", dst = "/usr/lib/systemd/system/tisvlay-daemon.service" },
+    # Systemd user services
+    { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
+    # Greeter idle client (plasma-login-manager); enablement into the greeter
+    # target is distro-specific — NixOS uses the services.tisvlay.greeter.enable
+    # module option. See docs/design.md "Greeter idle client".
+    { src = "packaging/systemd/tisvlay-greeter.service", dst = "/usr/lib/systemd/user/tisvlay-greeter.service" },
+    { src = "packaging/systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
+    # D-Bus activation service on the session bus — tisvlay-gui
+    # runs as the calling user. Auto-spawns on Activate() from
+    # KRunner / Plasma app menu / the tray's "Settings" /
+    # `gdbus call …` against the org.tisvlay.Gui bus name.
+    { src = "packaging/systemd/org.tisvlay.Gui.service", dst = "/usr/share/dbus-1/services/org.tisvlay.Gui.service" },
+    # Desktop entry — the basename must match the bus name when
+    # DBusActivatable=true (freedesktop Desktop Entry spec).
+    { src = "packaging/freedesktop/org.tisvlay.Gui.desktop", dst = "/usr/share/applications/org.tisvlay.Gui.desktop" },
+    # Third-party FOSS attribution. Regenerated at the repo root by
+    # `just licenses-html` (a prerequisite of every `package-*`
+    # recipe), gitignored so it doesn't churn between dep bumps. Lives
+    # at /usr/share/doc/tisvlay/ so distro audit tools (rpm-sequoia,
+    # lintian) find it via the conventional path.
+    { src = "packaging/licensing/THIRD-PARTY-LICENSES.html", dst = "/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html" },
+    # Project-level NOTICE — our own copyright + Apache-2.0 election.
+    # Upstream NOTICE propagation lives inside THIRD-PARTY-LICENSES.html.
+    { src = "packaging/licensing/NOTICE", dst = "/usr/share/doc/tisvlay/NOTICE" },
+]
+
+[package.metadata.nfpm.scripts]
+postinstall = "packaging/scripts/postinstall.sh"
+preremove = "packaging/scripts/preremove.sh"
+
+# Runtime deps. Daemons / CLI / session / tray only need glibc; the GUI
+# additionally links fontconfig at load time and dlopens libGL/libEGL
+# and libwayland-{client,egl} at startup (Slint femtovg + winit's
+# Wayland backend). Names follow Debian/Ubuntu (deb) and Fedora/RHEL
+# (rpm) conventions — verify against the target distro before each
+# release.
+[package.metadata.nfpm.deb]
+depends = [
+    "libc6",
+    "libfontconfig1",
+    "libgl1",
+    "libegl1",
+    "libwayland-client0",
+    "libwayland-egl1",
+]
+
+[package.metadata.nfpm.rpm]
+depends = [
+    "glibc",
+    "fontconfig",
+    "mesa-libGL",
+    "mesa-libEGL",
+    "libwayland-client",
+    "libwayland-egl",
+]

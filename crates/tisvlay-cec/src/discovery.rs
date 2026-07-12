@@ -21,7 +21,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use linux_cec::PhysicalAddress;
-use tisvlay_core::{DiscoveredTv, Result, TvDiscovery};
+use tisvlay_core::{DiscoveredTv, Error, Result, TvDiscovery};
+use tracing::{debug, warn};
 
 use crate::link::{CecLinkOpener, LinuxCecLinkOpener};
 
@@ -73,12 +74,32 @@ impl TvDiscovery for CecDiscovery {
         for tv in &mut tvs {
             // Best-effort: an open failure (device busy / not a real CEC node)
             // or a TV that answers nothing leaves the bare entry intact.
-            let Ok(link) = self
+            let link = match self
                 .opener
                 .open(&tv.address, probe_physical_address())
                 .await
-            else {
-                continue;
+            {
+                Ok(link) => link,
+                Err(e) => {
+                    // Every probe failure gets a diagnostic line — silence
+                    // here is what made a permission problem read as an
+                    // off/absent TV. A permission failure warns (it's
+                    // actionable: grant the daemon's user access to the
+                    // node) and additionally tags the row so the wizard
+                    // can badge it: the node was enumerable but the
+                    // daemon's user can't open it.
+                    if let Error::PermissionDenied { .. } = e {
+                        warn!(
+                            device = %tv.address,
+                            "CEC device not accessible (permission denied) — grant the daemon's user access to the node (its owning group, e.g. via a udev rule)"
+                        );
+                        tv.vendor_data
+                            .insert("access".to_string(), "permission_denied".to_string());
+                    } else {
+                        debug!(device = %tv.address, error = %e, "CEC probe open failed");
+                    }
+                    continue;
+                }
             };
             let identity = crate::identity::query(link.as_ref()).await;
             if let Some(hw) = identity.hardware_id {
@@ -126,7 +147,13 @@ fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
                 hardware_id: None,
                 vendor: crate::VENDOR_ID.to_string(),
                 location: String::new(),
-                vendor_data: HashMap::from([("device".to_string(), device)]),
+                // `source` tags how the TV was found so the wizard can show
+                // a discovery-source chip; `device` carries the node path
+                // for the config autofill.
+                vendor_data: HashMap::from([
+                    ("device".to_string(), device),
+                    ("source".to_string(), "cec".to_string()),
+                ]),
             }
         })
         .collect();
@@ -232,6 +259,26 @@ mod tests {
             tv.vendor_data.get("device").map(String::as_str),
             Some(tv.address.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn discover_flags_permission_denied_node() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::File::create(tmp.path().join("cec0")).expect("create fixture");
+        // The node enumerates, but the daemon's user can't open it.
+        let opener = Arc::new(FakeCecLinkOpener::permission_denied());
+        let tvs = CecDiscovery::with_dir_and_opener(tmp.path(), opener)
+            .discover(Duration::ZERO)
+            .await
+            .expect("discover");
+        assert_eq!(tvs.len(), 1);
+        let tv = &tvs[0];
+        // Tagged so the wizard can badge it; identity stays unprobed.
+        assert_eq!(
+            tv.vendor_data.get("access").map(String::as_str),
+            Some("permission_denied"),
+        );
+        assert!(tv.hardware_id.is_none());
     }
 
     #[tokio::test]

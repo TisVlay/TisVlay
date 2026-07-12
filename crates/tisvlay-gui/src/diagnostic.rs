@@ -44,7 +44,7 @@ const GUI_GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 const VERGEN_IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
 
 /// Per-component snapshot. One of these per row in the About pane's
-/// COMPONENTS table. `name` is the catalogue id (`"tisvlayd"`,
+/// COMPONENTS table. `name` is the catalogue id (`"tisvlay-daemon"`,
 /// `"tisvlay-session"`, `"tisvlay-tray"`); the renderer routes by it.
 #[derive(Debug, Clone, Default)]
 pub struct ComponentSnap {
@@ -68,11 +68,12 @@ pub struct TvSnap {
 pub struct Inputs<'a> {
     pub components: &'a [ComponentSnap],
     pub tvs: &'a [TvSnap],
-    /// `true` when the GUI is bound to the session bus (`--user`),
-    /// `false` for the system bus (production).
+    /// `true` when the GUI is dialed into the per-user dev daemon
+    /// socket, `false` for the packaged system socket.
     pub user_bus: bool,
-    /// Cached `Manager1.GetSupportedVendors` IDs. Empty before the
-    /// startup fetch returns; renderer sorts a copy for stable diffs.
+    /// Cached supported-vendor IDs (the daemon's `manager/vendors`
+    /// catalog). Empty before the startup fetch returns; renderer
+    /// sorts a copy for stable diffs.
     pub supported_vendors: &'a [String],
 }
 
@@ -132,7 +133,7 @@ fn components_section(components: &[ComponentSnap]) -> Value {
             .unwrap_or_else(|| json!({ "version": "", "connected": false, "config": false }))
     };
     json!({
-        "daemon": lookup("tisvlayd"),
+        "daemon": lookup("tisvlay-daemon"),
         "session": lookup("tisvlay-session"),
         "tray": lookup("tisvlay-tray"),
     })
@@ -201,7 +202,7 @@ mod tests {
     fn sample_inputs() -> (Vec<ComponentSnap>, Vec<TvSnap>, Vec<String>) {
         let components = vec![
             ComponentSnap {
-                name: "tisvlayd".into(),
+                name: "tisvlay-daemon".into(),
                 version: "0.1.0".into(),
                 connected: true,
                 has_config: true,

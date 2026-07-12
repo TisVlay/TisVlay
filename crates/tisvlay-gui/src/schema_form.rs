@@ -18,8 +18,8 @@
 
 use std::collections::HashMap;
 
+use crate::compat::{PairingField, PairingFieldType};
 use slint::{Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{PairingField, PairingFieldType};
 
 use crate::PairingFieldRow;
 
@@ -101,7 +101,7 @@ pub fn parse_field_type(s: &str) -> PairingFieldType {
 /// Compute `(state, error)` for one row's `value` by reusing the
 /// daemon's canonical [`PairingField::validate`] — same checks the
 /// daemon will run server-side, so a value that passes here also
-/// passes in `Manager1.AddTv` / `Manager1.UpdateTvConfig`. Empty +
+/// passes the `pair` / `update-config` rpcs. Empty +
 /// non-required → "pristine" (no opinion yet); otherwise validation
 /// routes us into "valid" or "invalid".
 pub fn validate_value(
@@ -176,7 +176,8 @@ pub(crate) fn autofill_schema(
 ) -> Vec<AutofilledRow> {
     schema
         .iter()
-        .map(|f| {
+        .enumerate()
+        .map(|(index, f)| {
             let mut value = f.default.clone();
             // Track whether the value came from a real autofill
             // source (not the schema's static default). The trust
@@ -192,14 +193,17 @@ pub(crate) fn autofill_schema(
                     autofilled = true;
                 }
             }
-            // Conventional fallback: a field literally named "ip" /
-            // "address" gets the supplied address even without an
-            // explicit `autofill` directive — IP-addressed backends
-            // discovered via SSDP should never make the user retype
-            // what we just received from the device.
-            if value.is_empty() && (f.name == "ip" || f.name == "address") {
+            // Conventional fallback: the schema's FIRST field is the
+            // vendor's primary descriptor and `address` is the value
+            // the user just picked or typed for exactly that field —
+            // never make them retype it. Fields literally named
+            // "ip" / "address" keep the same treatment at any position.
+            if value.is_empty()
+                && (index == 0 || f.name == "ip" || f.name == "address")
+                && !address.is_empty()
+            {
                 value = address.to_string();
-                autofilled = !value.is_empty();
+                autofilled = true;
             }
             AutofilledRow {
                 name: f.name.clone(),
@@ -217,7 +221,7 @@ pub(crate) fn autofill_schema(
 }
 
 /// Build an [`AutofilledRow`] list by projecting current values from
-/// a `Tv1.GetConfig` JSON payload through a schema.
+/// a `get-config` rpc JSON payload through a schema.
 ///
 /// Mirrors [`autofill_schema`] but the value source is the daemon's
 /// existing config rather than a freshly-discovered TV: each
@@ -225,11 +229,20 @@ pub(crate) fn autofill_schema(
 /// falling back to the field's `default` when absent. Used by the
 /// TVs pane's edit-pencil flow to prefill the form with the TV's
 /// current values before the user makes any changes.
+///
+/// The `get-config` reply nests the vendor table under `config`
+/// (top level carries the TV-level fields: `name`, `managed`, …);
+/// the schema fields live in that nested table, so it wins when
+/// present. A flat object still works — callers can pass the vendor
+/// table directly.
 pub(crate) fn prefill_schema_from_config(
     schema: &[PairingField],
     config: &serde_json::Value,
 ) -> Vec<AutofilledRow> {
-    let table = config.as_object();
+    let table = config
+        .get("config")
+        .and_then(|nested| nested.as_object())
+        .or_else(|| config.as_object());
     schema
         .iter()
         .map(|f| {
@@ -271,8 +284,8 @@ pub(crate) fn prefill_schema_from_config(
 /// Build a config-payload JSON object from the schema-fields model.
 /// Walks each row, drops empty optional fields, and emits
 /// `{ <name>: <value>, ... }` matching the schema's `name` keys.
-/// The daemon then validates each value server-side via
-/// `Manager1.AddTv` (pairing) or `Manager1.UpdateTvConfig` (edit).
+/// The daemon then validates each value server-side via the
+/// `pair` rpc (pairing) or the `update-config` rpc (edit).
 ///
 /// Bool fields convert to JSON booleans; numeric fields (port /
 /// int) convert to JSON numbers when parseable, falling back to
@@ -455,9 +468,15 @@ mod tests {
 
     #[test]
     fn autofill_schema_leaves_value_empty_when_no_source_matches() {
+        // The first field is the vendor's primary descriptor and
+        // always receives the supplied address; a later field with no
+        // autofill source stays empty.
+        let first = field("device", PairingFieldType::Path, true);
         let f = field("port", PairingFieldType::Port, false);
-        let rows = autofill_schema(&[f], &HashMap::new(), "192.168.1.10");
-        assert_eq!(rows[0].value, "");
+        let rows = autofill_schema(&[first, f], &HashMap::new(), "/dev/cec0");
+        assert_eq!(rows[0].value, "/dev/cec0");
+        assert!(rows[0].autofilled);
+        assert_eq!(rows[1].value, "");
     }
 
     // ---------- prefill_schema_from_config ----------
@@ -468,6 +487,24 @@ mod tests {
         let cfg = serde_json::json!({ "ip": "10.0.0.5" });
         let rows = prefill_schema_from_config(&[f], &cfg);
         assert_eq!(rows[0].value, "10.0.0.5");
+    }
+
+    #[test]
+    fn prefill_schema_from_config_reads_the_nested_vendor_table() {
+        // The full `get-config` reply shape: TV-level fields at the
+        // top, vendor fields nested under `config`. The prefill must
+        // read the nested table — otherwise every field misses and
+        // the edit pane opens blank over a fully-configured TV.
+        let ip = field("ip", PairingFieldType::Ip, true);
+        let mac = field("mac", PairingFieldType::Mac, false);
+        let reply = serde_json::json!({
+            "name": "Living Room",
+            "managed": true,
+            "config": { "ip": "192.168.1.50", "mac": "84:90:0a:63:a9:94" }
+        });
+        let rows = prefill_schema_from_config(&[ip, mac], &reply);
+        assert_eq!(rows[0].value, "192.168.1.50");
+        assert_eq!(rows[1].value, "84:90:0a:63:a9:94");
     }
 
     #[test]

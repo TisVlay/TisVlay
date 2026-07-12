@@ -1,11 +1,11 @@
 # Firewall Configuration for SSDP Discovery
 
-The `DiscoverTvs` D-Bus method uses SSDP (Simple Service Discovery Protocol) to find LG TVs on your network. SSDP uses UDP multicast, which may be blocked by strict firewalls.
+TV discovery (`tisvlay discover`, the GUI's pairing wizard) uses SSDP (Simple Service Discovery Protocol) to find LG TVs on your network. SSDP uses UDP multicast, which may be blocked by strict firewalls.
 
 ## How SSDP Works
 
 1. Client sends M-SEARCH to multicast address `239.255.255.250:1900`
-2. TVs respond via unicast from their IP, **from a high ephemeral port** (e.g., 50000), **to our source port** — which `tisvlayd` pins to 1901 by default (see below)
+2. TVs respond via unicast from their IP, **from a high ephemeral port** (e.g., 50000), **to our source port** — which `tisvlay-daemon` pins to 1901 by default (see below)
 
 The key issue: responses don't come from port 1900, so `--sport 1900` rules won't help — match on the destination port instead.
 
@@ -15,14 +15,13 @@ If discovery returns 0 TVs but the TV is reachable (WebSocket connection works),
 
 ## The SSDP source port is pinned by default
 
-`tisvlayd` binds its SSDP source socket to **port 1901 by default**, so discovery replies arrive at a known port and a single `--dport` rule suffices — no config needed. Override only to use a different port or to opt back into ephemeral, in `/var/lib/tisvlay/config.toml` (or `~/.config/tisvlay/config.toml` when running `tisvlayd --session`):
+`tisvlay-daemon` binds its SSDP source socket to **port 1901 by default**, so discovery replies arrive at a known port and a single `--dport` rule suffices — no config needed. Override only to use a different port or to opt back into ephemeral, via the daemon's `--ssdp-port` flag (`0` = ephemeral):
 
-```toml
-[discovery]
-bind_port = 1901   # the default; any unused port above 1024 works, or 0 for ephemeral
+```bash
+tisvlay-daemon --ssdp-port 1901   # the default; any unused port above 1024 works
 ```
 
-1901 is adjacent to SSDP's well-known 1900 and isn't assigned by IANA. Restart `tisvlayd` after changing it.
+1901 is adjacent to SSDP's well-known 1900 and isn't assigned by IANA. Restart the daemon after changing it.
 
 With the pinned `bind_port`, every distro recipe below collapses to a single-port `--dport` rule:
 
@@ -36,7 +35,7 @@ sudo iptables -I INPUT -p udp --dport 1901 -j ACCEPT
 networking.firewall.allowedUDPPorts = [ 1901 ];
 ```
 
-NixOS users who manage tisvlayd via the project's NixOS module
+NixOS users who manage the daemon via the project's NixOS module
 ([`packaging/nix/module.nix`](../packaging/nix/module.nix)) can do
 both the bind-port pinning and the firewall rule in one
 declaration — no separate `[discovery]` config edit needed:
@@ -49,9 +48,7 @@ services.tisvlay = {
 };
 ```
 
-`bindPort` adds `--bind-port 1901` to `tisvlayd`'s `ExecStart` (the
-CLI flag overrides `[discovery] bind_port` from the config file, so
-the daemon's writable config stays usable for the pairing wizard).
+`bindPort` adds `--ssdp-port 1901` to `tisvlay-daemon`'s `ExecStart`.
 `openFirewall = true` then adds the port to
 `networking.firewall.allowedUDPPorts`. The module asserts the two
 together — `openFirewall` without `bindPort` set is rejected at
@@ -181,7 +178,7 @@ A planned follow-up adds a passive `NOTIFY` listener so the daemon notices TV po
 
 ## Alternative: Skip Discovery
 
-If you can't modify firewall rules, you can skip discovery and configure TVs manually by IP address using the `PairTv` D-Bus method with a known IP.
+If you can't modify firewall rules, you can skip discovery and pair by IP address directly: `tisvlay pair "My TV" --vendor lg --params '{"ip":"192.168.1.100"}'` (or the wizard's manual-entry path).
 
 ## Future Alternative: mDNS/DNS-SD Discovery
 

@@ -875,8 +875,8 @@ export component InlineError inherits Rectangle {
 // Use for any value mirrored on the daemon as a numeric property and
 // driven via a "live preview" slider thumb (volume, backlight,
 // future contrast / brightness / color balance). For discrete
-// selection inputs use std-widgets `ComboBox` — the flicker pattern
-// doesn't apply.
+// selection inputs use `ThemedSelect` (globals/select.slint) — the
+// flicker pattern doesn't apply.
 
 export component OptimisticSlider {
     /// Gated authoritative value from the model (Rust drives it
@@ -1201,6 +1201,12 @@ export component IconBtn inherits Rectangle {
     /// Optional hover help. Especially useful for icon-only buttons
     /// (label == ""), where the glyph alone doesn't name the action.
     in property <string> tip;
+    /// Toggle-state accent: an active button colorizes its glyph with
+    /// the theme accent at full opacity, so a stateless button can
+    /// render an on/off fact owned by the model (no internal checked
+    /// state to go stale - a std CheckBox severs its binding on the
+    /// first user toggle).
+    in property <bool> active: false;
     callback clicked();
 
     accessible-role: button;
@@ -1231,8 +1237,8 @@ export component IconBtn inherits Rectangle {
     /// fade substitutes for the missing border. Framed mode follows
     /// `UriBtn` / `DangerBtn` and keeps a stable foreground; only
     /// the surface fill changes on hover.
-    property <brush> fg-rest: root.framed ? Theme.text : Theme.text-dim;
-    property <brush> fg-hover: Theme.text;
+    property <brush> fg-rest: root.active ? Theme.accent : (root.framed ? Theme.text : Theme.text-dim);
+    property <brush> fg-hover: root.active ? Theme.accent : Theme.text;
     property <brush> fg: !root.enabled ? Theme.text-faint
         : (touch.has-hover && root.interactive ? root.fg-hover : root.fg-rest);
 
@@ -1269,7 +1275,7 @@ export component IconBtn inherits Rectangle {
                 // Ghost mode also fades icon opacity at rest. Framed
                 // mode stays fully opaque so the icon reads as a
                 // first-class button glyph alongside `UriBtn` text.
-                opacity: root.framed ? 1.0 : (touch.has-hover ? 1.0 : 0.7);
+                opacity: root.framed || root.active ? 1.0 : (touch.has-hover ? 1.0 : 0.7);
             }
         }
 

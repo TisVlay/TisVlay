@@ -37,9 +37,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: |
-            cargo-deny
+            cargo-about@0.9.1
+            cargo-deny@0.19.9
             cargo-llvm-cov
             cargo-nextest
+            cargo-sbom@0.10.0
             just
 
       - name: Cache
@@ -49,20 +51,6 @@ jobs:
           # a flaky test or a coverage-ratchet failure wipes the warm
           # target/ tarball and the next run pays the full cold cost.
           cache-on-failure: true
-
-      # `cargo-about` is not in taiki-e/install-action's tool list, and its
-      # cargo-binstall fallback builds from source *without* the `cli`
-      # feature the binary gates behind (`required-features = ["cli"]`, no
-      # default features) — leaving the crate compiled but no `cargo about`
-      # command. Install it directly with the feature enabled instead.
-      #
-      # It's needed by the gated `licenses-html` prek hook, which runs
-      # `just licenses-html` (--all-features --fail) to catch a Slint-style
-      # dep bump pulling an unclarified crate into the all-features graph.
-      # (tisvlay-gui's build.rs also calls it, but stubs the bundle when the
-      # tool is absent, so the build itself doesn't depend on it.)
-      - name: Install cargo-about
-        run: cargo install cargo-about --locked --version 0.9.1 --features cli
 
       - name: Lint
         uses: j178/prek-action@v2
@@ -98,13 +86,31 @@ jobs:
           path: lcov.info
           retention-days: 14
 
+      # Whole-workspace SBOM (SPDX) as a build artifact. Generated from
+      # Cargo.lock (no build needed); `!cancelled()` mirrors the coverage
+      # upload so it is captured even when a later step fails.
+      - name: SBOM
+        if: ${{ !cancelled() }}
+        run: just sbom
+
+      - name: Upload SBOM
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-spdx
+          path: target/sbom/
+          retention-days: 14
+
       # NOTE: When this repo becomes public, fork PRs cannot create check
       # runs (read-only token). See the "Recommended setup for public
       # repositories" section of the dorny/test-reporter README — the
       # workflow_run pattern with two workflows is the workaround.
+      # hashFiles guard: if a step before nextest failed there is no JUnit
+      # file, and without it the reporter logs a confusing "no report files"
+      # line over the real failure (it is already fail-on-error: false).
       - name: Report
         uses: dorny/test-reporter@v3
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
         with:
           name: Tests
           path: target/nextest/ci/junit.xml

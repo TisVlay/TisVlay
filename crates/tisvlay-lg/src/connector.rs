@@ -74,8 +74,9 @@ impl TvConnector for LgConnector {
                 .await?;
 
         // Best-effort identity fetch right after connect. Lets the
-        // daemon's `Tv1.HardwareId` property be populated on the
-        // first registration, before any user interaction.
+        // daemon fill the identity payload's hardware fields
+        // (`meta/identity`) on the first registration, before any
+        // user interaction.
         let hardware_id = match client.get_hardware_id().await {
             Ok(id) => {
                 debug!(ip = %config.ip, ?id, "fetched LG hardware identity");

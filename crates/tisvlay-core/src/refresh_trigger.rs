@@ -4,9 +4,9 @@
 //! that motivated extracting it.
 
 /// Spawn-with-dedupe trigger for refresh-style work driven by
-/// [`StateWatcher`](crate::StateWatcher) events.
+/// state-watcher events.
 ///
-/// The canonical pattern for consuming a `StateWatcher` is to dispatch
+/// The canonical pattern for consuming a state watcher is to dispatch
 /// each `DaemonStateChanged` (and friends) to `RefreshTrigger::fire()`,
 /// which spawns the refresh on a separate task. The watcher loop body
 /// MUST NOT `await` the refresh inline — see "Why this matters" below.
@@ -47,18 +47,20 @@
 /// # Why this matters
 ///
 /// Awaiting refresh work inline in the `watcher.next()` loop body
-/// halts signal_stream draining → zbus's bounded internal channel
-/// fills → its I/O task blocks pushing → the connection stops reading
-/// from the socket → method-call replies queue behind unread signal
-/// frames in the kernel recv buffer. Subsequent client commands hang
-/// waiting for replies that can't be read.
+/// halts event-stream draining → the transport's bounded internal
+/// channel fills → its I/O task blocks pushing → the connection stops
+/// reading from the socket → replies queue behind unread event frames
+/// in the kernel recv buffer. Subsequent client commands hang waiting
+/// for replies that can't be read.
 ///
-/// Verified repro for the bug fixed by introducing this helper: a
-/// fast volume-slider drag in the GUI flooded the daemon, the tray's
-/// recv-q grew to 36 KB, and a subsequent ScrollBy command hung
-/// indefinitely while `busctl` against the same daemon replied in
-/// 4 ms — confirming the daemon was healthy and the tray's
-/// connection was wedged on its own consumption pattern.
+/// Verified repro for the bug fixed by introducing this helper
+/// (observed on the root project's D-Bus stack; the failure mode is
+/// transport-agnostic): a fast volume-slider drag in the GUI flooded
+/// the daemon, the tray's recv-q grew to 36 KB, and a subsequent
+/// ScrollBy command hung indefinitely while an out-of-band probe of
+/// the same daemon replied in 4 ms — confirming the daemon was
+/// healthy and the tray's connection was wedged on its own
+/// consumption pattern.
 pub struct RefreshTrigger {
     in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
