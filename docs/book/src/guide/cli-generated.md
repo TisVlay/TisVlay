@@ -1,7 +1,3 @@
-# Command-Line Help for `tisvlay`
-
-This document contains the help content for the `tisvlay` command-line program.
-
 **Command Overview:**
 
 * [`tisvlay`↴](#tisvlay)
@@ -659,12 +655,3 @@ Disarm the named source
 Show the current remote-session fact (live sources + armed TVs)
 
 **Usage:** `tisvlay remote-session status`
-
-
-
-<hr/>
-
-<small><i>
-    This document was generated automatically by
-    <a href="https://crates.io/crates/clap-markdown"><code>clap-markdown</code></a>.
-</i></small>

@@ -89,7 +89,7 @@ A four-agent read-only audit (getting-started+reference / guide-behavioral / CLI
 - [x] Batch C — operations/{firewall-discovery, troubleshooting}, reference/{requirements, faq}, `cli.md` intro + comment-path fix (`11fcc99`).
 - [x] Batch D — new chapters `guide/remote-sessions.md` + `operations/networking-reliability.md` + `SUMMARY.md`. **HDMI-CEC** stays folded into the existing pages (installation/pairing/configuration/requirements/faq) per the pre-rewrite maintainer decision — no separate nav chapter; **Observability** folded into the CLI Reference intro (`watch`/`status`/`list`), not a standalone page.
 
-**Remaining polish** (non-blocking): `cli.md`'s own `# CLI Reference` H1 sits above the generated file's `# Command-Line Help for tisvlay` H1 (a double heading) — the clean fix is wiring `gen-cli-docs` to `help_markdown_custom` with the generated title suppressed (see Gotchas). A field review of the rewritten commands/config against a live v0.3.0 stack, and the still-deferred GUI/Tray screenshots, are the maintainer's to do.
+**Remaining** (maintainer's, non-blocking): a field review of the rewritten commands/config against a live v0.3.0 stack, and the still-deferred GUI/Tray screenshots. *(The `cli.md` double-heading is resolved — `gen-cli-docs` now renders via `help_markdown_custom` with `show_footer(false)` and strips clap-markdown's title + preamble line, so the CLI Reference page carries a single content H1; the drift gate stays green.)*
 
 ## Context
 
