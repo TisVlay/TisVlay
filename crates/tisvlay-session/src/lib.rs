@@ -721,24 +721,31 @@ impl Core {
         }
     }
 
-    /// Eager Sunshine refresh, run before a wake-ish gated event dispatches.
-    /// The continuous poll disarms the Sunshine source only within its
-    /// interval, so a user returning inside that window could hit a
-    /// suppressed wake for up to one tick. The gate and the detector share
-    /// this process, so a gated wake pulls `/serverinfo` synchronously and
-    /// decides on fresh state: if the stream has ended the source clears
-    /// here, un-gating the wake immediately instead of waiting for the poll.
+    /// Eager Sunshine refresh, run before an event whose dispatch the gate
+    /// is currently suppressing. The continuous poll disarms the Sunshine
+    /// source only within its interval, so a user returning inside that
+    /// window could hit a suppressed dispatch for up to one tick. The gate
+    /// and the detector share this process, so a suppressed dispatch pulls
+    /// `/serverinfo` synchronously and decides on fresh state: if the stream
+    /// has ended the source clears here, un-gating the action immediately
+    /// instead of waiting for the poll.
     ///
     /// Bounded: awaits up to `EAGER_TIMEOUT` in the single-owner Core loop,
-    /// and only on the three wake events while a live Sunshine source exists
-    /// — infrequent and tight, which is why the budget is small and the
-    /// trigger narrow. It refreshes the source only; the connect/disconnect
-    /// edge accounting stays with the poll and the report path.
+    /// and only when a live Sunshine source is holding down a real dispatch
+    /// (see `eager_refresh_applies`) — infrequent and tight, which is why the
+    /// budget is small and the trigger narrow. It refreshes the source only;
+    /// the connect/disconnect edge accounting stays with the poll and the
+    /// report path.
     async fn eager_refresh_sunshine(&mut self, event: SessionEvent) {
         let has_sunshine = self
             .remote_sources
             .has_kind(payload::RemoteSourceKind::Sunshine);
-        if !eager_refresh_applies(event, has_sunshine) {
+        let armed_actions: Vec<tisvlay_core::EventAction> = self
+            .remote_armed
+            .iter()
+            .map(|tv| self.raw_action_for(tv, event))
+            .collect();
+        if !eager_refresh_applies(event, has_sunshine, armed_actions.into_iter()) {
             return;
         }
         // The poll owns the single (Sunshine, "serverinfo") key and it is
@@ -824,16 +831,14 @@ impl Core {
         });
     }
 
-    /// Root chain per field: assignment → profile → editable default
-    /// profile → hard-coded floor. While a TV is armed, an action whose
-    /// `while_remote` gate is `false` is suppressed (dispatches nothing)
-    /// — a pure gate, so an unarmed TV is never affected and the gate
-    /// can never originate an action. The gate is ignored on the
-    /// connect/disconnect events (those fire at the arming edge itself,
-    /// where honoring the gate would swallow the action).
-    fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
+    /// The resolved action for this event *before* the remote gate: the
+    /// root chain per field (assignment → profile → editable default
+    /// profile → hard-coded floor). One field per event, no direction bias
+    /// — an event carries no inherent wake/off-going meaning, only the
+    /// profile it resolves through does.
+    fn raw_action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
         let resolved = self.resolve_for(tv);
-        let action = match event {
+        match event {
             SessionEvent::Lock => resolved.on_session_lock,
             SessionEvent::Unlock => resolved.on_session_unlock,
             SessionEvent::LockWake => resolved.on_lock_wake,
@@ -841,9 +846,17 @@ impl Core {
             SessionEvent::IdleResume => resolved.on_idle_resume,
             SessionEvent::RemoteConnect => resolved.on_remote_connect,
             SessionEvent::RemoteDisconnect => resolved.on_remote_disconnect,
-        };
-        // The gate is inert on the arming edges (dispatch reads only the
-        // action for those) and never touches an unarmed TV.
+        }
+    }
+
+    /// The dispatched action: the raw mapping with the remote gate applied.
+    /// While a TV is armed, an action whose `while_remote` gate is `false`
+    /// is suppressed (dispatches nothing) — a pure gate, so an unarmed TV is
+    /// never affected and the gate can never originate an action. The gate
+    /// is ignored on the connect/disconnect events (those fire at the arming
+    /// edge itself, where honoring the gate would swallow the action).
+    fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
+        let action = self.raw_action_for(tv, event);
         if !event.is_remote_edge() && self.remote_armed.contains(tv) && !action.while_remote() {
             return SessionAction::None.into();
         }
@@ -1145,17 +1158,25 @@ impl Core {
     }
 }
 
-/// Whether a session-side eager `/serverinfo` pull should run before this
-/// event dispatches: only the wake-ish gated events (unlock, lock-wake,
-/// idle-resume) while a live Sunshine source exists. The off-going events
-/// (lock, idle-timeout) and the remote edges never trigger it — they carry
-/// no suppressible wake to un-gate, or fire at the arming boundary itself.
-fn eager_refresh_applies(event: SessionEvent, has_sunshine: bool) -> bool {
-    has_sunshine
-        && matches!(
-            event,
-            SessionEvent::Unlock | SessionEvent::LockWake | SessionEvent::IdleResume
-        )
+/// Whether a session-side eager `/serverinfo` pull is worthwhile before
+/// this event dispatches. Policy-driven, not an event allow-list: it runs
+/// when a live Sunshine source exists, the event is gate-eligible (not an
+/// arming edge — those fire at the arming boundary itself), and some armed
+/// TV's resolved action is a real dispatch the gate is currently holding
+/// down (non-`none`, `while_remote` false) that a freshly-cleared source
+/// could release. For the stock floor that is exactly the wake-ish events
+/// (unlock, lock-wake, idle-resume) and no others, but a profile that gates
+/// any other event is served the same — the event carries no inherent
+/// direction, only the resolved action does.
+fn eager_refresh_applies(
+    event: SessionEvent,
+    has_sunshine: bool,
+    mut armed_actions: impl Iterator<Item = tisvlay_core::EventAction>,
+) -> bool {
+    if event.is_remote_edge() || !has_sunshine {
+        return false;
+    }
+    armed_actions.any(|a| a.action() != SessionAction::None && !a.while_remote())
 }
 
 /// Pend forever with no drift armed, so the core select stays
@@ -1380,27 +1401,55 @@ mod tests {
     use tisvlay_core::wayland::IdleTransition;
 
     #[test]
-    fn eager_refresh_only_on_wake_events_with_a_live_sunshine_source() {
-        // Wake-ish gated events pull /serverinfo — but only with a live
-        // Sunshine source to refresh.
-        for event in [
+    fn eager_refresh_fires_on_a_gated_suppressible_dispatch_not_an_event_list() {
+        use tisvlay_core::{EventAction, SessionAction};
+        // A non-`none` action the gate holds down (a bare token is gated).
+        let gated_wake = EventAction::from(SessionAction::ScreenOn);
+        // A floor-exempt action that fires while armed — nothing to release.
+        let ungated = EventAction::ungated(SessionAction::ScreenOff);
+        // No dispatch to release either way.
+        let none = EventAction::from(SessionAction::None);
+
+        // Live Sunshine + an armed TV whose action the gate suppresses → pull.
+        assert!(eager_refresh_applies(
             SessionEvent::Unlock,
-            SessionEvent::LockWake,
-            SessionEvent::IdleResume,
-        ] {
-            assert!(eager_refresh_applies(event, true));
-            assert!(!eager_refresh_applies(event, false));
-        }
-        // Off-going events and the remote edges never trigger it, source or
-        // not.
-        for event in [
+            true,
+            [gated_wake].into_iter()
+        ));
+        // The same policy on any event — no allow-list. A profile that gates
+        // an off-going event as a wake is served identically to unlock; the
+        // event carries no inherent direction.
+        assert!(eager_refresh_applies(
             SessionEvent::Lock,
-            SessionEvent::IdleTimeout,
-            SessionEvent::RemoteConnect,
-            SessionEvent::RemoteDisconnect,
-        ] {
-            assert!(!eager_refresh_applies(event, true));
-            assert!(!eager_refresh_applies(event, false));
+            true,
+            [gated_wake].into_iter()
+        ));
+        // No live Sunshine source → nothing to refresh.
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            false,
+            [gated_wake].into_iter()
+        ));
+        // Ungated (fires while armed) or `none` (no dispatch) → nothing held.
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            true,
+            [ungated].into_iter()
+        ));
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            true,
+            [none].into_iter()
+        ));
+        // No armed TV → nothing to un-gate.
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            true,
+            std::iter::empty::<EventAction>()
+        ));
+        // The arming edges never trigger it, whatever the action.
+        for edge in [SessionEvent::RemoteConnect, SessionEvent::RemoteDisconnect] {
+            assert!(!eager_refresh_applies(edge, true, [gated_wake].into_iter()));
         }
     }
 
