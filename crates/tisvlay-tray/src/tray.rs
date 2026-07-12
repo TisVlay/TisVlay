@@ -236,7 +236,7 @@ impl Tray for TvTray {
             items.push(MenuItem::Separator);
             items.push(status_line(
                 "Remote session active",
-                "network-transmit-receive",
+                "network-connect-symbolic",
             ));
         }
         items.push(MenuItem::Separator);
