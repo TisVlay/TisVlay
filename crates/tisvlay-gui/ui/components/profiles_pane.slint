@@ -431,6 +431,29 @@ component ProfileFieldRowEnum inherits Rectangle {
                 }
             }
 
+            // Remote-session gate — on action rows that carry a real
+            // action (except the connect/disconnect events). The gated
+            // state (suppress while armed) is the active/accent
+            // treatment and swaps to the network-disconnect glyph.
+            if root.entry.has-remote-gate: VerticalLayout {
+                alignment: center;
+                IconBtn {
+                    source: root.entry.remote-gate-value
+                        ? Icons.remote-gate-on
+                        : Icons.remote-gate-off;
+                    active: !root.entry.remote-gate-value;
+                    accessible-label: root.entry.remote-gate-value
+                        ? @tr("Fires during remote session")
+                        : @tr("Suppressed during remote session");
+                    tip: root.entry.remote-gate-value
+                        ? @tr("Fires during remote session")
+                        : @tr("Suppressed during remote session");
+                    clicked => {
+                        Profiles.remote-gated(root.entry.field-name, !root.entry.remote-gate-value);
+                    }
+                }
+            }
+
             // Reset glyph — only rendered for locally-set fields.
             // 24 px column whether populated or not so the row
             // rhythm stays consistent.
@@ -1080,13 +1103,13 @@ component ProfileDetail inherits Rectangle {
                         }
                     }
 
-                    // WHILE REMOTE ACTIVE card — the while-remote
-                    // overrides (and, user-side, the screencast-arms
-                    // switch). Same surface + full-bleed row treatment as
-                    // the FIELDS card; the uppercase mini-title + ⓘ scope
-                    // the rows so their labels read bare ("On session
-                    // unlock" rather than "While remote: …").
-                    VerticalLayout {
+                    // REMOTE SESSION card — the screencast-arming switch
+                    // (user profiles only). The per-event suppression gate
+                    // rides each action row in the FIELDS card as a toggle,
+                    // not a card row, so the system pane pushes no rows here
+                    // and the card hides. Same surface + full-bleed row
+                    // treatment as the FIELDS card.
+                    if Profiles.editor-remote-fields.length > 0: VerticalLayout {
                         spacing: 0;
                         HorizontalLayout {
                             padding-left: 2px;
@@ -1095,7 +1118,7 @@ component ProfileDetail inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 Text {
-                                    text: @tr("WHILE REMOTE ACTIVE");
+                                    text: @tr("REMOTE SESSION");
                                     color: Theme.text-dim;
                                     font-size: Design.font-mini;
                                     font-weight: 600;
@@ -1105,7 +1128,7 @@ component ProfileDetail inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 ContextualHelpButton {
-                                    text: @tr("While a remote session is active, override these events. Inherit behaves as normal; none suppresses the action. Overrides only ever replace an action that would fire — never wake the TV for an empty room.");
+                                    text: @tr("What counts as a remote session, so events can be suppressed for an empty room. Suppress an individual event with the network toggle on its row in FIELDS above.");
                                 }
                             }
                             Rectangle { horizontal-stretch: 1; }

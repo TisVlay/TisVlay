@@ -55,4 +55,12 @@ export global Icons {
     /// TV-remote glyph (`input-tvremote-symbolic`). The profile
     /// editor's restore-input toggle on on-ish action rows.
     in property <image> restore_input;
+    /// Network-connected glyph (`network-connect`). The ungated
+    /// (fires-while-armed) state of the profile editor's remote-session
+    /// gate toggle on action rows.
+    in property <image> remote_gate_on;
+    /// Network-disconnected glyph (`network-disconnect`). The gated
+    /// (suppressed-while-armed) state of the remote-session gate toggle
+    /// — carries the toggle's active/accent treatment.
+    in property <image> remote_gate_off;
 }

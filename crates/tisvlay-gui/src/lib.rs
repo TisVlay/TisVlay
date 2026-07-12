@@ -471,6 +471,18 @@ pub fn run() -> Result<()> {
         "input-tvremote",
         "video-television",
     ]));
+    // Network connect/disconnect glyphs for the profile editor's
+    // remote-session gate toggle: the connected glyph marks the ungated
+    // (fires-while-armed) state, the disconnected glyph the gated
+    // (suppressed) state. Symbolic-first fallback, plain names next.
+    icons.set_remote_gate_on(load_themed_icon(&[
+        "network-connect-symbolic",
+        "network-connect",
+    ]));
+    icons.set_remote_gate_off(load_themed_icon(&[
+        "network-disconnect-symbolic",
+        "network-disconnect",
+    ]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
@@ -1070,6 +1082,41 @@ fn register_callbacks(
                         .await
                 {
                     warn!(field = %field, checked, error = %e, "restore_edited failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_remote_gated(move |field, fires_while_remote| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let field = field.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = profiles::dispatch_remote_gate_edit(
+                    &ed,
+                    &d,
+                    &s,
+                    editor_kind,
+                    uuid,
+                    &field,
+                    fires_while_remote,
+                )
+                .await
+                {
+                    warn!(field = %field, fires_while_remote, error = %e, "remote_gated failed");
                     show_toast(
                         app_weak,
                         &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),

@@ -206,9 +206,9 @@ impl SystemProfile {
 /// The set of TVs a remote session currently arms — mirrored from the
 /// session service (which owns arming policy) via
 /// [`InEvent::RemoteSession`](crate::events::InEvent::RemoteSession).
-/// The dispatch gate consults membership to apply while-remote
-/// overrides; an empty set (no session service, or no active remote
-/// session) gates nothing.
+/// The dispatch gate consults membership to suppress events whose action
+/// carries a `while_remote = false` gate; an empty set (no session
+/// service, or no active remote session) gates nothing.
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RemoteArmed(pub HashSet<Uuid>);
 

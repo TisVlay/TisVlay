@@ -1995,37 +1995,22 @@ fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
-            let Some((action, restore)) =
+            let Some((action, restore, while_remote)) =
                 resolve_action(event, meta, &profile_index, &bodies, &profile)
             else {
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
             };
-            // While a remote session arms this TV, the system profile's
-            // while-remote overrides remap the wake-ish events
-            // (`DpmsOn`/`Resume`) replace-only: `inherit` keeps the normal
-            // action, `none` suppresses it, a concrete action swaps in.
-            // The override only ever replaces an action that would already
-            // fire (`resolve_action` returned `Some`) — never originates
-            // one. Non-wake events and unarmed TVs pass straight through.
-            let (action, restore) = if remote_armed.0.contains(&id.0)
-                && let Some(override_) =
-                    resolve_while_remote_override(event, meta, &profile_index, &bodies)
-            {
-                let normal = profile_action_to_event(action, restore);
-                match session_action(override_.resolve(normal)) {
-                    Some(gated) => {
-                        tracing::debug!(tv = %id.0, ?event, ?gated, "while-remote override applied");
-                        gated
-                    }
-                    None => {
-                        tracing::debug!(tv = %id.0, ?event, "while-remote override suppressed dispatch");
-                        continue;
-                    }
-                }
-            } else {
-                (action, restore)
-            };
+            // While a remote session arms this TV, an action whose
+            // `while_remote` gate is `false` is suppressed — a pure gate,
+            // uniform across every event (the docs recommend leaving
+            // sleep/shutdown ungated, but the schema honors an explicit
+            // gate wherever it's set). Unarmed TVs and gate-`true` actions
+            // pass straight through.
+            if remote_armed.0.contains(&id.0) && !while_remote {
+                tracing::debug!(tv = %id.0, ?event, "while-remote gate suppressed dispatch");
+                continue;
+            }
             tracing::debug!(tv = %id.0, ?event, ?action, restore, "profile action dispatched");
             let restore_to = if restore {
                 meta.and_then(|m| m.primary_input.clone())
@@ -2183,14 +2168,16 @@ fn publish_greeter_timeout(
 }
 
 /// The TV's assigned profile decides the action; unset fields (and TVs
-/// without a profile) fall back to the stock mapping.
+/// without a profile) fall back to the stock mapping. The trailing bool
+/// is the resolved `while_remote` gate — the stock floor has no gate
+/// field, so its actions always fire while armed.
 fn resolve_action(
     event: &SystemEvent,
     meta: Option<&payload::Meta>,
     profile_index: &ProfileIndex,
     bodies: &Query<&ProfileBody>,
     stock: &SystemProfile,
-) -> Option<(ProfileAction, bool)> {
+) -> Option<(ProfileAction, bool, bool)> {
     // Per-TV profile field wins outright (explicit `none` suppresses).
     if let Some(profile_id) = meta.and_then(|m| m.system_profile)
         && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
@@ -2208,8 +2195,12 @@ fn resolve_action(
     {
         return session_action(action);
     }
-    // …and only then the hard-coded stock floor.
-    stock.0.get(event).copied()
+    // …and only then the hard-coded stock floor (always fires while
+    // armed — the stock mapping carries no gate).
+    stock
+        .0
+        .get(event)
+        .map(|&(action, restore)| (action, restore, true))
 }
 
 /// Look up a system-profile body by uuid through the profile index.
@@ -2242,7 +2233,7 @@ fn profile_event_action(
     }
 }
 
-fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, bool)> {
+fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, bool, bool)> {
     use tisvlay_core::SessionAction as S;
     let action = match spec.action() {
         S::ScreenOff => ProfileAction::ScreenOff,
@@ -2251,78 +2242,7 @@ fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, boo
         S::PowerOn => ProfileAction::PowerOn,
         _ => return None,
     };
-    Some((action, spec.restore_input()))
-}
-
-/// Rebuild an [`EventAction`] from a resolved `(ProfileAction, bool)` —
-/// the inverse of [`session_action`] for the two verbs an override can
-/// compose against. Restores the `restore_input` modifier so a while-
-/// remote `inherit` yields the normal action byte-for-byte.
-fn profile_action_to_event(action: ProfileAction, restore: bool) -> tisvlay_core::EventAction {
-    use tisvlay_core::SessionAction as S;
-    let session = match action {
-        ProfileAction::ScreenOff => S::ScreenOff,
-        ProfileAction::ScreenOn => S::ScreenOn,
-        ProfileAction::PowerOff => S::PowerOff,
-        ProfileAction::PowerOn => S::PowerOn,
-    };
-    tisvlay_core::EventAction::With {
-        action: session,
-        restore_input: restore,
-    }
-}
-
-/// The system-profile while-remote override field for a gated event —
-/// `DpmsOn`/`Resume` only. Every other event is ungated (sleep/shutdown
-/// gating is forbidden; off-going blanks are never overridden), so it
-/// returns `None`, which the resolver reads as "no override applies".
-fn while_remote_override_field(
-    body: &tisvlay_core::SystemProfileConfig,
-    event: &SystemEvent,
-) -> Option<Option<tisvlay_core::WhileRemoteOverride>> {
-    match event {
-        SystemEvent::DpmsOn => Some(body.while_remote_on_dpms_on),
-        SystemEvent::Resume => Some(body.while_remote_on_wake),
-        _ => None,
-    }
-}
-
-/// Resolve the while-remote override for a gated event through the
-/// profile chain (per-TV profile, then editable default). Unlike
-/// [`profile_event_action`], override fields have no stock floor — an
-/// unset field is `Inherit`, so the chain bottoms out at
-/// [`WhileRemoteOverride::INHERIT`]. `None` means the event is ungated
-/// (not a wake event); the caller then dispatches the normal action
-/// unchanged.
-fn resolve_while_remote_override(
-    event: &SystemEvent,
-    meta: Option<&payload::Meta>,
-    profile_index: &ProfileIndex,
-    bodies: &Query<&ProfileBody>,
-) -> Option<tisvlay_core::WhileRemoteOverride> {
-    // A non-wake event carries no override at all — signalled by the
-    // field accessor returning `None`.
-    while_remote_override_field(&tisvlay_core::SystemProfileConfig::default(), event)?;
-    // Per-TV profile field wins outright (explicit `inherit` there also
-    // pins the resolution, matching `resolve_action`'s precedence).
-    if let Some(profile_id) = meta.and_then(|m| m.system_profile)
-        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
-        && let Some(body) = profile_body(profile_id, profile_index, bodies)
-        && let Some(Some(override_)) = while_remote_override_field(body, event)
-    {
-        return Some(override_);
-    }
-    // Then the editable default profile.
-    if let Some(body) = profile_body(
-        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
-        profile_index,
-        bodies,
-    ) && let Some(Some(override_)) = while_remote_override_field(body, event)
-    {
-        return Some(override_);
-    }
-    // Unset everywhere: inherit the normal action.
-    Some(tisvlay_core::WhileRemoteOverride::INHERIT)
+    Some((action, spec.restore_input(), spec.while_remote()))
 }
 
 /// Dial TVs with an outstanding connect request, respecting backoff.
@@ -2464,73 +2384,30 @@ fn snapshot_store(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay_core::{SessionAction, SystemProfileConfig, WhileRemoteOverride};
+    use tisvlay_core::{EventAction, SessionAction};
 
-    /// Only the wake-ish events carry a while-remote override field;
-    /// everything else is ungated (`None`). Sleep/shutdown gating is
-    /// forbidden, and off-going blanks are never overridden.
+    /// `session_action` threads the resolved action's `while_remote`
+    /// gate (and `restore_input`) alongside the mapped `ProfileAction`.
+    /// The bare form fires while armed; a gated table suppresses.
     #[test]
-    fn while_remote_override_field_gates_wake_events_only() {
-        let body = SystemProfileConfig {
-            while_remote_on_dpms_on: Some(WhileRemoteOverride::from(SessionAction::None)),
-            while_remote_on_wake: Some(WhileRemoteOverride::from(SessionAction::ScreenOff)),
-            ..Default::default()
-        };
+    fn session_action_carries_the_while_remote_gate() {
+        // A bare action: fires while armed (gate implicitly true), no
+        // restore.
         assert_eq!(
-            while_remote_override_field(&body, &SystemEvent::DpmsOn),
-            Some(Some(WhileRemoteOverride::from(SessionAction::None)))
+            session_action(EventAction::from(SessionAction::ScreenOn)),
+            Some((ProfileAction::ScreenOn, false, true))
         );
+        // A table with `while_remote = false` carries the suppressed
+        // gate through, alongside the restore modifier.
         assert_eq!(
-            while_remote_override_field(&body, &SystemEvent::Resume),
-            Some(Some(WhileRemoteOverride::from(SessionAction::ScreenOff)))
+            session_action(EventAction::With {
+                action: SessionAction::PowerOn,
+                restore_input: true,
+                while_remote: false,
+            }),
+            Some((ProfileAction::PowerOn, true, false))
         );
-        // Every ungated event returns `None` — no override applies.
-        for event in [
-            SystemEvent::Sleep,
-            SystemEvent::Shutdown,
-            SystemEvent::Startup,
-            SystemEvent::Reboot,
-            SystemEvent::DpmsOff,
-            SystemEvent::GreeterIdle,
-            SystemEvent::GreeterResume,
-        ] {
-            assert_eq!(while_remote_override_field(&body, &event), None);
-        }
-    }
-
-    /// The gate composes an override against the reconstructed normal
-    /// action: inherit keeps it (modifier intact), a replacement swaps
-    /// in, and `none` suppresses (resolves to no dispatchable action).
-    #[test]
-    fn override_composition_is_replace_only() {
-        // Reconstruct the stock DPMS-on: screen_on, no restore. The
-        // rebuild always uses the table (`With`) form so the restore
-        // modifier round-trips; the action and modifier are what matter.
-        let normal = profile_action_to_event(ProfileAction::ScreenOn, false);
-        assert_eq!(normal.action(), SessionAction::ScreenOn);
-        assert!(!normal.restore_input());
-
-        // Inherit yields the normal action unchanged.
-        assert_eq!(
-            session_action(WhileRemoteOverride::INHERIT.resolve(normal)),
-            Some((ProfileAction::ScreenOn, false))
-        );
-        // A concrete replacement substitutes.
-        assert_eq!(
-            session_action(WhileRemoteOverride::from(SessionAction::ScreenOff).resolve(normal)),
-            Some((ProfileAction::ScreenOff, false))
-        );
-        // `none` suppresses — no dispatchable action survives.
-        assert_eq!(
-            session_action(WhileRemoteOverride::from(SessionAction::None).resolve(normal)),
-            None
-        );
-
-        // A restore-carrying normal action survives inherit byte-for-byte.
-        let restoring = profile_action_to_event(ProfileAction::PowerOn, true);
-        assert_eq!(
-            session_action(WhileRemoteOverride::INHERIT.resolve(restoring)),
-            Some((ProfileAction::PowerOn, true))
-        );
+        // `none` has no dispatchable action regardless of the gate.
+        assert_eq!(session_action(EventAction::from(SessionAction::None)), None);
     }
 }

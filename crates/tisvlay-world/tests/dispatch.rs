@@ -6,32 +6,31 @@ mod support;
 use std::time::{Duration, Instant};
 
 use support::*;
-use tisvlay_core::{PowerState, SessionAction, SystemProfileConfig, WhileRemoteOverride};
+use tisvlay_core::{EventAction, PowerState, SessionAction, SystemProfileConfig};
 use tisvlay_world::{Command, InEvent, ProfileRecord, SystemEvent};
 use uuid::Uuid;
 
-/// Add a system profile carrying the two while-remote overrides, assign
-/// it to `tv`, and return the profile id. The overrides ride otherwise
-/// stock fields so DPMS-on / resume still resolve to their normal
-/// actions when the TV is unarmed.
+/// A gated version of one action: the stock verb with `while_remote =
+/// false`, so it fires normally while unarmed and is suppressed while
+/// armed.
+fn gated(action: SessionAction) -> EventAction {
+    EventAction::With {
+        action,
+        restore_input: false,
+        while_remote: false,
+    }
+}
+
+/// Add a system profile from a body, assign it to `tv`, return the id.
 async fn assign_remote_profile(
     effects: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::WireEffect>,
     client: &tisvlay_world::WorldClient,
     tv: Uuid,
-    on_dpms_on: WhileRemoteOverride,
-    on_wake: WhileRemoteOverride,
+    body: SystemProfileConfig,
 ) -> Uuid {
     let profile = Uuid::new_v4();
     client.command(Command::AddProfile {
-        record: Box::new(ProfileRecord {
-            id: profile,
-            body: SystemProfileConfig {
-                name: "Remote".into(),
-                while_remote_on_dpms_on: Some(on_dpms_on),
-                while_remote_on_wake: Some(on_wake),
-                ..Default::default()
-            },
-        }),
+        record: Box::new(ProfileRecord { id: profile, body }),
         reply: Some(90),
     });
     collect_until(effects, |e| reply_to(e, 90)).await;
@@ -517,20 +516,22 @@ async fn escalation_reasserts_on_reconnect_then_gives_up() {
     );
 }
 
-/// While a remote session arms the TV, a `Replace(none)` DPMS-on
-/// override suppresses the wake the empty room doesn't want: the panel,
-/// blanked by DPMS-off, stays dark across the DPMS-on. Disarming lets
-/// the next DPMS-on light it normally.
+/// While a remote session arms the TV, a `while_remote = false` DPMS-on
+/// action is suppressed: the panel, blanked by DPMS-off, stays dark
+/// across the DPMS-on. Disarming lets the next DPMS-on light it normally.
 #[tokio::test]
-async fn while_remote_override_suppresses_dpms_on() {
+async fn while_remote_gate_suppresses_dpms_on() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://supp").await;
     assign_remote_profile(
         &mut effects,
         &client,
         id,
-        WhileRemoteOverride::from(SessionAction::None),
-        WhileRemoteOverride::INHERIT,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            on_dpms_on: Some(gated(SessionAction::ScreenOn)),
+            ..Default::default()
+        },
     )
     .await;
 
@@ -568,47 +569,65 @@ async fn while_remote_override_suppresses_dpms_on() {
     .await;
 }
 
-/// A `Replace(screen_off)` override swaps the wake for a blank: a
-/// resume that would normally power the TV on instead drives it dark
-/// while armed (the compensating action).
+/// The gate reverses the review's never-gate rule for explicit events:
+/// a `while_remote = false` on `on_sleep` suppresses the off-going
+/// power-off while armed, even though the docs recommend leaving
+/// sleep ungated. This proves the exemption list is gone — the world
+/// honors the gate wherever it's set.
 #[tokio::test]
-async fn while_remote_override_replaces_resume_action() {
+async fn while_remote_gate_suppresses_a_formerly_exempt_sleep() {
     let (mut effects, client, _handle) = spawn_reactor();
-    let id = add_connected_tv(&mut effects, &client, "mock://repl").await;
+    let id = add_connected_tv(&mut effects, &client, "mock://sleep").await;
     assign_remote_profile(
         &mut effects,
         &client,
         id,
-        WhileRemoteOverride::INHERIT,
-        WhileRemoteOverride::from(SessionAction::ScreenOff),
+        SystemProfileConfig {
+            name: "Remote".into(),
+            on_sleep: Some(gated(SessionAction::PowerOff)),
+            ..Default::default()
+        },
     )
     .await;
     arm(&client, &[id]);
 
-    // Stock on_wake is power_on; the override replaces it with
-    // screen_off, so Resume drives the panel dark instead of waking it.
+    // Sleep's gated power-off is suppressed while armed: the link stays
+    // up. Prove it by disarming + re-sleeping and catching the teardown
+    // only then.
     client.send(InEvent::System {
-        event: SystemEvent::Resume,
+        event: SystemEvent::Sleep,
         connector: None,
     });
-    collect_until(&mut effects, |e| {
-        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, false)
     })
     .await;
+
+    arm(&client, &[]);
+    client.send(InEvent::System {
+        event: SystemEvent::Sleep,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
 }
 
-/// An unset override inherits: an armed TV whose profile leaves the
-/// DPMS-on override at `inherit` takes the normal screen_on.
+/// An ungated (default) action passes through while armed: a profile
+/// leaving `on_dpms_on` at the stock `screen_on` (gate implicitly true)
+/// still lights the panel for an armed TV.
 #[tokio::test]
-async fn while_remote_override_inherit_takes_normal_action() {
+async fn while_remote_default_action_fires_while_armed() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://inh").await;
+    // No profile fields set — every event resolves to its stock action
+    // with the gate implicitly true.
     assign_remote_profile(
         &mut effects,
         &client,
         id,
-        WhileRemoteOverride::INHERIT,
-        WhileRemoteOverride::INHERIT,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            ..Default::default()
+        },
     )
     .await;
 
@@ -631,37 +650,9 @@ async fn while_remote_override_inherit_takes_normal_action() {
     .await;
 }
 
-/// Sleep is never gated, even with a suppress override present and the
-/// TV armed: the off-going power-off always lands (sleep/shutdown gating
-/// is forbidden). Only the wake events (DpmsOn/Resume) consult overrides.
-#[tokio::test]
-async fn sleep_is_unaffected_while_armed() {
-    let (mut effects, client, _handle) = spawn_reactor();
-    let id = add_connected_tv(&mut effects, &client, "mock://sleep").await;
-    // Suppress overrides on both wake events — none of which touch Sleep.
-    assign_remote_profile(
-        &mut effects,
-        &client,
-        id,
-        WhileRemoteOverride::from(SessionAction::None),
-        WhileRemoteOverride::from(SessionAction::None),
-    )
-    .await;
-    arm(&client, &[id]);
-
-    // Stock on_sleep is power_off — the connection ends as the TV powers
-    // down. Nothing about the armed state or the wake-event overrides
-    // suppresses it.
-    client.send(InEvent::System {
-        event: SystemEvent::Sleep,
-        connector: None,
-    });
-    collect_until(&mut effects, |e| link_connected(e, false)).await;
-}
-
 /// The no-session invariant: an empty armed set gates nothing. A TV
-/// whose profile suppresses DPMS-on still wakes normally while unarmed —
-/// a headless TV with no user session never has its wakes overridden.
+/// whose profile gates DPMS-on off still wakes normally while unarmed —
+/// a headless TV with no user session never has its wakes suppressed.
 #[tokio::test]
 async fn empty_armed_set_gates_nothing() {
     let (mut effects, client, _handle) = spawn_reactor();
@@ -670,8 +661,11 @@ async fn empty_armed_set_gates_nothing() {
         &mut effects,
         &client,
         id,
-        WhileRemoteOverride::from(SessionAction::None),
-        WhileRemoteOverride::INHERIT,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            on_dpms_on: Some(gated(SessionAction::ScreenOn)),
+            ..Default::default()
+        },
     )
     .await;
     // Never armed (an empty set is also the default).

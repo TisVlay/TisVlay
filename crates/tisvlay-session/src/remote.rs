@@ -7,11 +7,11 @@
 //! fact two ways — a cached pub on the user socket (the session owns that
 //! router) and a plain-put mirror on the system socket (a connect-only
 //! peer link, so served entities would not propagate). While armed,
-//! `Core::action_for` gates its wake actions through the profile's
-//! while-remote overrides.
+//! `Core::action_for` suppresses any event whose action carries a
+//! `while_remote = false` gate.
 //!
-//! Arming and override composition are pure functions here so the policy
-//! is unit-tested without a live stack.
+//! Arming is a pure function here so the policy is unit-tested without a
+//! live stack.
 //!
 //! Provisional sources: the portal monitor's bootstrap walk can only see
 //! *which* app owns a live portal session, not whether that session is a
@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 
-use tisvlay_core::{EventAction, ResolvedUserProfile, WhileRemoteOverride};
+use tisvlay_core::ResolvedUserProfile;
 use tisvlay_wire::payload::{RemoteSource, RemoteSourceKind};
 use uuid::Uuid;
 
@@ -198,22 +198,9 @@ pub(crate) fn compute_armed<'a>(
     armed
 }
 
-/// Compose a while-remote override against the normal action for one
-/// event. Replace-only: an `Inherit` override yields the normal action
-/// unchanged, a `Replace` substitutes (its `none` suppresses). Because
-/// the caller has already resolved `normal`, the override can only ever
-/// replace an action that would fire — never originate one.
-pub(crate) fn while_remote_action(
-    override_: WhileRemoteOverride,
-    normal: EventAction,
-) -> EventAction {
-    override_.resolve(normal)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay_core::SessionAction;
 
     fn source(kind: RemoteSourceKind) -> RemoteSource {
         RemoteSource {
@@ -394,18 +381,5 @@ mod tests {
             provisional: false,
         }));
         assert!(!sources.any());
-    }
-
-    #[test]
-    fn while_remote_action_is_replace_only() {
-        let normal = EventAction::from(SessionAction::ScreenOn);
-        assert_eq!(
-            while_remote_action(WhileRemoteOverride::INHERIT, normal),
-            normal
-        );
-        assert_eq!(
-            while_remote_action(WhileRemoteOverride::from(SessionAction::None), normal),
-            EventAction::from(SessionAction::None)
-        );
     }
 }

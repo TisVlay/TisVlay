@@ -79,6 +79,12 @@ export struct ProfileFieldEntry {
     has-restore: bool,
     /// The mapping's resolved `restore_input` modifier.
     restore-value: bool,
+    /// Show the remote-session gate toggle (action rows with a real
+    /// action, excluding the connect/disconnect events).
+    has-remote-gate: bool,
+    /// The mapping's resolved `while_remote` gate — `true` fires while
+    /// armed by a remote session, `false` suppresses.
+    remote-gate-value: bool,
 }
 
 /// One profile entry in either section. Read-only from Slint;
@@ -176,6 +182,11 @@ export global Profiles {
     /// The restore-input checkbox on an on-ish action row toggled.
     /// Args: field name, new checked state.
     callback restore-edited(string, bool);
+    /// The remote-session gate toggle on an action row toggled. Args:
+    /// field name, new `while_remote` value (true fires while armed).
+    /// Rust writes the whole event table (verb + modifiers) — the gate
+    /// is a per-event modifier, not a separate field.
+    callback remote-gated(string, bool);
     /// Numeric counterpart to `value-edited`. Arg 2 is the picked
     /// integer; Rust clamps to the field's `[min, max]` and casts to
     /// `u32` before dispatching the field patch.

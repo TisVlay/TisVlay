@@ -366,20 +366,19 @@ async fn user_profile_overrides_and_guards() {
         json!({
             "name": "default",
             "on_session_lock": "screen_off",
-            "on_session_unlock": { "action": "screen_on", "restore_input": true },
+            "on_session_unlock": { "action": "screen_on", "restore_input": true, "while_remote": true },
             "on_lock_wake": "screen_on",
             "locked_idle_timeout_seconds": 0,
             "unlocked_idle_timeout_seconds": 0,
             "on_idle_timeout": "screen_off",
             "on_idle_resume": "screen_on",
-            // Remote awareness ships neutral: no connect/disconnect action,
-            // capture arming off, every while-remote override inheriting.
+            // Remote awareness ships neutral: no connect/disconnect action
+            // and capture arming off. The per-event suppression gate rides
+            // each action's table form (default fires while armed), so it
+            // adds no field to the neutral projection.
             "on_remote_connect": "none",
             "on_remote_disconnect": "none",
             "remote_screencast_arms": false,
-            "while_remote_on_session_unlock": "inherit",
-            "while_remote_on_lock_wake": "inherit",
-            "while_remote_on_idle_resume": "inherit",
         })
     );
 
@@ -416,7 +415,7 @@ async fn user_profile_overrides_and_guards() {
     assert_eq!(effective["on_session_lock"], "none");
     assert_eq!(
         effective["on_session_unlock"],
-        json!({ "action": "screen_on", "restore_input": true })
+        json!({ "action": "screen_on", "restore_input": true, "while_remote": true })
     );
 
     drive_until(&rig, &sub, SessionEvent::Lock, stock, "screenoff").await;
@@ -719,11 +718,10 @@ async fn arm_until(rig: &Rig, sub: &Sub, source: &str, id: Uuid, want: &str) {
     }
 }
 
-/// While armed, a `none` while-remote override suppresses the wake action
-/// its event would otherwise fire — the physical TV stays dark for the
-/// empty room.
+/// While armed, an action whose `while_remote` gate is `false` is
+/// suppressed — the physical TV stays dark for the empty room.
 #[tokio::test(flavor = "multi_thread")]
-async fn armed_remote_suppresses_wake_overrides() {
+async fn armed_remote_suppresses_gated_events() {
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://remote-suppress").await;
     let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
@@ -732,14 +730,15 @@ async fn armed_remote_suppresses_wake_overrides() {
     })
     .await;
 
-    // While remote is armed, unlock and idle-resume are suppressed.
+    // Gate the unlock (and idle-resume) actions off while armed. The
+    // gate rides the action's table form, replacing the whole mapping.
     create_and_assign(
         &rig,
         tv,
         json!({
             "name": "Remote quiet",
-            "while_remote_on_session_unlock": "none",
-            "while_remote_on_idle_resume": "none",
+            "on_session_unlock": { "action": "screen_on", "while_remote": false },
+            "on_idle_resume": { "action": "screen_on", "while_remote": false },
         }),
     )
     .await;

@@ -708,50 +708,29 @@ impl Core {
     }
 
     /// Root chain per field: assignment → profile → editable default
-    /// profile → hard-coded floor. While a TV is armed, the wake-ish
-    /// events pass through the profile's while-remote override —
-    /// replace-only, so an override only ever substitutes for an action
-    /// that would otherwise fire (`inherit` = the normal action, `none`
-    /// = suppress); an unarmed TV is never affected.
+    /// profile → hard-coded floor. While a TV is armed, an action whose
+    /// `while_remote` gate is `false` is suppressed (dispatches nothing)
+    /// — a pure gate, so an unarmed TV is never affected and the gate
+    /// can never originate an action. The gate is ignored on the
+    /// connect/disconnect events (those fire at the arming edge itself,
+    /// where honoring the gate would swallow the action).
     fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
         let resolved = self.resolve_for(tv);
-        let armed = self.remote_armed.contains(tv);
-        match event {
+        let action = match event {
             SessionEvent::Lock => resolved.on_session_lock,
-            SessionEvent::Unlock => self.while_remote(
-                armed,
-                resolved.while_remote_on_session_unlock,
-                resolved.on_session_unlock,
-            ),
-            SessionEvent::LockWake => self.while_remote(
-                armed,
-                resolved.while_remote_on_lock_wake,
-                resolved.on_lock_wake,
-            ),
+            SessionEvent::Unlock => resolved.on_session_unlock,
+            SessionEvent::LockWake => resolved.on_lock_wake,
             SessionEvent::IdleTimeout => resolved.on_idle_timeout,
-            SessionEvent::IdleResume => self.while_remote(
-                armed,
-                resolved.while_remote_on_idle_resume,
-                resolved.on_idle_resume,
-            ),
-            SessionEvent::RemoteConnect => resolved.on_remote_connect,
-            SessionEvent::RemoteDisconnect => resolved.on_remote_disconnect,
+            SessionEvent::IdleResume => resolved.on_idle_resume,
+            // The gate is inert on the arming edge — dispatch reads only
+            // the action here.
+            SessionEvent::RemoteConnect => return resolved.on_remote_connect,
+            SessionEvent::RemoteDisconnect => return resolved.on_remote_disconnect,
+        };
+        if self.remote_armed.contains(tv) && !action.while_remote() {
+            return SessionAction::None.into();
         }
-    }
-
-    /// Apply a while-remote override only when the TV is armed; unarmed
-    /// TVs take the normal action untouched.
-    fn while_remote(
-        &self,
-        armed: bool,
-        override_: tisvlay_core::WhileRemoteOverride,
-        normal: tisvlay_core::EventAction,
-    ) -> tisvlay_core::EventAction {
-        if armed {
-            remote::while_remote_action(override_, normal)
-        } else {
-            normal
-        }
+        action
     }
 
     /// Merge an assignment through the editable default profile down to
@@ -1098,8 +1077,6 @@ fn call_tv(system: &Session, site: &str, tv: Uuid, spec: tisvlay_core::EventActi
 /// shape (string, or table when they carry modifiers).
 fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
     let action = |a: tisvlay_core::EventAction| serde_json::to_value(a).unwrap_or_default();
-    let override_ =
-        |o: tisvlay_core::WhileRemoteOverride| serde_json::to_value(o).unwrap_or_default();
     json!({
         "on_session_lock": action(resolved.on_session_lock),
         "on_session_unlock": action(resolved.on_session_unlock),
@@ -1111,9 +1088,6 @@ fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
         "on_remote_connect": action(resolved.on_remote_connect),
         "on_remote_disconnect": action(resolved.on_remote_disconnect),
         "remote_screencast_arms": resolved.remote_screencast_arms,
-        "while_remote_on_session_unlock": override_(resolved.while_remote_on_session_unlock),
-        "while_remote_on_lock_wake": override_(resolved.while_remote_on_lock_wake),
-        "while_remote_on_idle_resume": override_(resolved.while_remote_on_idle_resume),
     })
 }
 

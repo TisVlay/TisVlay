@@ -88,6 +88,13 @@ pub enum SessionAction {
 /// Serializes as the bare action string (`"screen_on"`) or as a table
 /// (`{ action = "screen_on", restore_input = true }`) — two shapes of
 /// one grammar, round-tripped in whichever form was written.
+///
+/// The `while_remote` modifier is the remote-session gate: `true`
+/// (the bare-token default) fires this event's action normally even
+/// while the TV is armed by a remote session; `false` suppresses the
+/// action for the duration of that arming. Because it can only
+/// suppress, the gate can never originate an action an unarmed TV
+/// would not take. It is inert on `none` rows (nothing to suppress).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EventAction {
@@ -101,16 +108,30 @@ pub enum EventAction {
         /// backend advertising the INPUT capability; inert otherwise.
         #[serde(default)]
         restore_input: bool,
+        /// Whether this event's action still fires while the TV is
+        /// armed by a remote session. `false` suppresses it. Defaults
+        /// to `true` so the bare-token form (and any table omitting
+        /// the field) fires normally.
+        #[serde(default = "while_remote_default")]
+        while_remote: bool,
     },
+}
+
+/// The default for [`EventAction`]'s `while_remote` field: fire normally
+/// while armed. A named fn (not an inline closure) so serde's
+/// `default = "…"` attribute can name it.
+fn while_remote_default() -> bool {
+    true
 }
 
 impl EventAction {
     /// Table-form constructor for restore-on mappings (the stock
-    /// session-start defaults).
+    /// session-start defaults). Gate defaults to fire-while-armed.
     pub fn restoring(action: SessionAction) -> Self {
         Self::With {
             action,
             restore_input: true,
+            while_remote: true,
         }
     }
 
@@ -124,6 +145,16 @@ impl EventAction {
         match self {
             Self::Plain(_) => false,
             Self::With { restore_input, .. } => restore_input,
+        }
+    }
+
+    /// Whether this event's action fires while the TV is armed by a
+    /// remote session. The bare (`Plain`) form is always `true` — the
+    /// gate is opt-in through the table form.
+    pub fn while_remote(self) -> bool {
+        match self {
+            Self::Plain(_) => true,
+            Self::With { while_remote, .. } => while_remote,
         }
     }
 }
@@ -144,91 +175,6 @@ impl PartialEq<SessionAction> for EventAction {
 impl Default for EventAction {
     fn default() -> Self {
         Self::Plain(SessionAction::None)
-    }
-}
-
-// =============================================================================
-// WhileRemoteOverride — per-event action override while a remote session
-// is active
-// =============================================================================
-
-/// The literal `inherit` token, its own single-variant enum so serde
-/// deserializes it only from that exact string. Kept separate from
-/// [`SessionAction`] (whose variants are real actions) so the untagged
-/// dispatch in [`WhileRemoteOverride`] can tell `"inherit"` apart from
-/// `"none"` and the rest. Public only to satisfy the enclosing enum's
-/// public variant; construct [`WhileRemoteOverride::INHERIT`] instead.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InheritToken {
-    Inherit,
-}
-
-/// A while-remote event override: either `Inherit` (behave as the
-/// normal action would) or a concrete [`EventAction`] that replaces it.
-/// An unset field is `Inherit` via serde default, so an override only
-/// ever *replaces* an action that would otherwise fire — never causes
-/// one.
-///
-/// Serializes as the bare string `"inherit"`, a bare action string
-/// (`"screen_on"`), or an action table (`{ action = "screen_on",
-/// restore_input = true }`) — the `Inherit` marker composes with
-/// [`EventAction`]'s untagged bare-string/object duality. The
-/// `Inherit` arm is tried first so `"inherit"` never falls through to
-/// the action arm (`SessionAction` has no `inherit` variant, so a
-/// concrete action string can't be mistaken for it either).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum WhileRemoteOverride {
-    Inherit(InheritToken),
-    Replace(EventAction),
-}
-
-impl WhileRemoteOverride {
-    /// The inherit sentinel — the resolve default and the "unset" value.
-    pub const INHERIT: Self = Self::Inherit(InheritToken::Inherit);
-
-    /// Compose the override against the action an unarmed TV would take.
-    /// `Inherit` yields the normal action unchanged; a `Replace` swaps
-    /// in its own action (which may be `None` to suppress). The caller
-    /// only consults this once it has resolved a concrete `normal`, so
-    /// a `Replace` can only substitute for that action, never originate
-    /// one an unarmed TV wouldn't take.
-    pub fn resolve(self, normal: EventAction) -> EventAction {
-        match self {
-            Self::Inherit(_) => normal,
-            Self::Replace(action) => action,
-        }
-    }
-
-    /// The replacing action, or `None` when inheriting. The
-    /// representation-facing accessor (GUI token, effective-view
-    /// projection) — distinct from [`resolve`](Self::resolve), which
-    /// folds in the normal action.
-    pub fn replacement(self) -> Option<EventAction> {
-        match self {
-            Self::Inherit(_) => None,
-            Self::Replace(action) => Some(action),
-        }
-    }
-}
-
-impl Default for WhileRemoteOverride {
-    fn default() -> Self {
-        Self::INHERIT
-    }
-}
-
-impl From<EventAction> for WhileRemoteOverride {
-    fn from(action: EventAction) -> Self {
-        Self::Replace(action)
-    }
-}
-
-impl From<SessionAction> for WhileRemoteOverride {
-    fn from(action: SessionAction) -> Self {
-        Self::Replace(action.into())
     }
 }
 
@@ -418,18 +364,6 @@ pub struct SystemProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_resume: Option<EventAction>,
 
-    /// While a remote session is armed, override the DPMS-on action.
-    /// Unset = inherit the normal action; `none` = suppress. Overrides
-    /// are wake-events-only and replace-only — they never originate an
-    /// action an unarmed TV wouldn't take.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub while_remote_on_dpms_on: Option<WhileRemoteOverride>,
-
-    /// While armed, override the resume (wake) action. Same
-    /// inherit/suppress/replace semantics as `while_remote_on_dpms_on`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub while_remote_on_wake: Option<WhileRemoteOverride>,
-
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automate_when: Option<AutomateWhen>,
@@ -450,8 +384,6 @@ profile_plumbing! {
         idle_timeout_seconds,
         on_idle_timeout,
         on_idle_resume,
-        while_remote_on_dpms_on,
-        while_remote_on_wake,
         automate_when,
     ],
 }
@@ -487,10 +419,6 @@ pub struct ResolvedSystemProfile {
     pub on_idle_timeout: EventAction,
     /// Action when greeter activity resumes after idle.
     pub on_idle_resume: EventAction,
-    /// While armed, the DPMS-on override.
-    pub while_remote_on_dpms_on: WhileRemoteOverride,
-    /// While armed, the resume (wake) override.
-    pub while_remote_on_wake: WhileRemoteOverride,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
 }
@@ -514,10 +442,6 @@ impl Default for ResolvedSystemProfile {
             idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff.into(),
             on_idle_resume: SessionAction::ScreenOn.into(),
-            // Remote awareness is opt-in: the wake overrides inherit
-            // until a profile edits them.
-            while_remote_on_dpms_on: WhileRemoteOverride::INHERIT,
-            while_remote_on_wake: WhileRemoteOverride::INHERIT,
             automate_when: AutomateWhen::Always,
         }
     }
@@ -589,19 +513,6 @@ pub struct UserProfileConfig {
     /// tab-share). Default off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_screencast_arms: Option<bool>,
-
-    /// While a remote session is armed, override the unlock action.
-    /// Unset = inherit the normal action; `none` = suppress.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub while_remote_on_session_unlock: Option<WhileRemoteOverride>,
-
-    /// While armed, override the lock-wake action.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub while_remote_on_lock_wake: Option<WhileRemoteOverride>,
-
-    /// While armed, override the idle-resume action.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub while_remote_on_idle_resume: Option<WhileRemoteOverride>,
 }
 
 profile_plumbing! {
@@ -619,9 +530,6 @@ profile_plumbing! {
         on_remote_connect,
         on_remote_disconnect,
         remote_screencast_arms,
-        while_remote_on_session_unlock,
-        while_remote_on_lock_wake,
-        while_remote_on_idle_resume,
     ],
 }
 
@@ -656,12 +564,6 @@ pub struct ResolvedUserProfile {
     pub on_remote_disconnect: EventAction,
     /// Whether an unattributed screen-capture signal arms.
     pub remote_screencast_arms: bool,
-    /// While armed, the unlock override.
-    pub while_remote_on_session_unlock: WhileRemoteOverride,
-    /// While armed, the lock-wake override.
-    pub while_remote_on_lock_wake: WhileRemoteOverride,
-    /// While armed, the idle-resume override.
-    pub while_remote_on_idle_resume: WhileRemoteOverride,
 }
 
 impl Default for ResolvedUserProfile {
@@ -676,16 +578,12 @@ impl Default for ResolvedUserProfile {
             unlocked_idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff.into(),
             on_idle_resume: SessionAction::ScreenOn.into(),
-            // Remote awareness is opt-in: no connect/disconnect action,
-            // no capture arming, and every while-remote override
-            // inherits (the feature does nothing until a profile edits
-            // it).
+            // Remote awareness is opt-in: no connect/disconnect action
+            // and no capture arming until a profile edits them. The
+            // per-event `while_remote` gate lives on each action.
             on_remote_connect: SessionAction::None.into(),
             on_remote_disconnect: SessionAction::None.into(),
             remote_screencast_arms: false,
-            while_remote_on_session_unlock: WhileRemoteOverride::INHERIT,
-            while_remote_on_lock_wake: WhileRemoteOverride::INHERIT,
-            while_remote_on_idle_resume: WhileRemoteOverride::INHERIT,
         }
     }
 }
@@ -1447,84 +1345,80 @@ mod tests {
     use super::*;
 
     #[test]
-    fn while_remote_override_serde_shapes() {
-        // The three wire shapes: bare inherit, bare action, action table.
+    fn event_action_while_remote_gate_serde_shapes() {
+        // The bare token round-trips as `Plain` and reads `while_remote
+        // = true` (fires while armed) — the gate is opt-in.
+        let plain: EventAction = serde_json::from_value(serde_json::json!("screen_on")).unwrap();
+        assert_eq!(plain, EventAction::from(SessionAction::ScreenOn));
+        assert!(plain.while_remote());
         assert_eq!(
-            serde_json::to_value(WhileRemoteOverride::INHERIT).unwrap(),
-            serde_json::json!("inherit")
-        );
-        assert_eq!(
-            serde_json::to_value(WhileRemoteOverride::from(SessionAction::ScreenOn)).unwrap(),
+            serde_json::to_value(EventAction::from(SessionAction::ScreenOn)).unwrap(),
             serde_json::json!("screen_on")
         );
-        assert_eq!(
-            serde_json::to_value(WhileRemoteOverride::from(EventAction::restoring(
-                SessionAction::ScreenOn
-            )))
-            .unwrap(),
-            serde_json::json!({ "action": "screen_on", "restore_input": true })
-        );
 
-        // Deserialize each back. The untagged dispatch must resolve the
-        // bare `"inherit"` to Inherit (not fall through to an action)
-        // and every concrete action string to Replace.
+        // A table with `while_remote = false` round-trips to a suppressed
+        // action; the gate coexists with `restore_input`.
+        let table = serde_json::json!({
+            "action": "screen_on",
+            "restore_input": true,
+            "while_remote": false,
+        });
+        let gated: EventAction = serde_json::from_value(table.clone()).unwrap();
         assert_eq!(
-            serde_json::from_value::<WhileRemoteOverride>(serde_json::json!("inherit")).unwrap(),
-            WhileRemoteOverride::INHERIT
+            gated,
+            EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: false,
+            }
         );
-        assert_eq!(
-            serde_json::from_value::<WhileRemoteOverride>(serde_json::json!("none")).unwrap(),
-            WhileRemoteOverride::from(SessionAction::None)
-        );
-        assert_eq!(
-            serde_json::from_value::<WhileRemoteOverride>(serde_json::json!("screen_on")).unwrap(),
-            WhileRemoteOverride::from(SessionAction::ScreenOn)
-        );
-        // A table always deserializes to the `With` form (even when
-        // `restore_input` is false), distinct from the bare `Plain`.
-        assert_eq!(
-            serde_json::from_value::<WhileRemoteOverride>(
-                serde_json::json!({ "action": "power_on", "restore_input": false })
-            )
-            .unwrap(),
-            WhileRemoteOverride::from(EventAction::With {
-                action: SessionAction::PowerOn,
-                restore_input: false,
-            })
-        );
+        assert!(gated.restore_input());
+        assert!(!gated.while_remote());
+        assert_eq!(serde_json::to_value(gated).unwrap(), table);
+
+        // A table omitting `while_remote` defaults it to `true` (fires
+        // while armed) — absence never suppresses.
+        let defaulted: EventAction =
+            serde_json::from_value(serde_json::json!({ "action": "power_on" })).unwrap();
+        assert_eq!(defaulted.action(), SessionAction::PowerOn);
+        assert!(defaulted.while_remote());
     }
 
     #[test]
-    fn while_remote_override_toml_round_trips_in_a_profile() {
-        // Each override shape survives a full profile TOML round-trip;
-        // an unset field defaults to Inherit; capture-arms and the
+    fn event_action_gate_toml_round_trips_in_a_profile() {
+        // `while_remote = false` survives a full profile TOML round-trip
+        // and coexists with `restore_input`; capture-arms and the
         // connect/disconnect actions ride the same body.
         let toml_str = r#"
 name = "remote"
+on_session_unlock = { action = "screen_on", while_remote = false }
+on_idle_resume = { action = "screen_on", restore_input = true, while_remote = false }
 on_remote_connect = "power_off"
 on_remote_disconnect = "none"
 remote_screencast_arms = true
-while_remote_on_session_unlock = "none"
-while_remote_on_idle_resume = { action = "screen_off", restore_input = false }
 "#;
         let body: UserProfileConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            body.on_session_unlock,
+            Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: false,
+                while_remote: false,
+            })
+        );
+        assert_eq!(
+            body.on_idle_resume,
+            Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: false,
+            })
+        );
         assert_eq!(body.on_remote_connect, Some(SessionAction::PowerOff.into()));
         assert_eq!(body.on_remote_disconnect, Some(SessionAction::None.into()));
         assert_eq!(body.remote_screencast_arms, Some(true));
-        assert_eq!(
-            body.while_remote_on_session_unlock,
-            Some(WhileRemoteOverride::from(SessionAction::None))
-        );
-        // Unset field parses as absent (`None`), which resolves to Inherit.
-        assert_eq!(body.while_remote_on_lock_wake, None);
-        // The table form round-trips as `With` (restore_input carried).
-        assert_eq!(
-            body.while_remote_on_idle_resume,
-            Some(WhileRemoteOverride::from(EventAction::With {
-                action: SessionAction::ScreenOff,
-                restore_input: false,
-            }))
-        );
+        // A bare-token field parses as `Plain` (gate implicitly true).
+        assert!(body.on_lock_wake.is_none());
 
         // Re-serialize and re-parse: shapes are stable across the trip.
         let text = toml::to_string(&body).unwrap();
@@ -1533,23 +1427,34 @@ while_remote_on_idle_resume = { action = "screen_off", restore_input = false }
     }
 
     #[test]
-    fn while_remote_override_resolve_is_replace_only() {
-        let normal = EventAction::restoring(SessionAction::ScreenOn);
-        // Inherit yields the normal action verbatim (modifiers intact).
-        assert_eq!(WhileRemoteOverride::INHERIT.resolve(normal), normal);
-        // A concrete replacement substitutes for the normal action.
+    fn setting_an_event_replaces_the_whole_table() {
+        // Whole-value merge (the `restore_input` precedent): gating one
+        // event on a custom profile replaces that event's entire table,
+        // so the base action must be restated alongside the gate. A
+        // merge onto a base leaves the base's own action untouched only
+        // because the custom value is the whole table.
+        let base = UserProfileConfig {
+            on_session_unlock: Some(EventAction::restoring(SessionAction::ScreenOn)),
+            ..UserProfileConfig::default()
+        };
+        let custom = UserProfileConfig {
+            on_session_unlock: Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: false,
+            }),
+            ..UserProfileConfig::default()
+        };
+        let merged = custom.merge_with_base(&base);
+        // The custom table wins wholesale — action + both modifiers.
         assert_eq!(
-            WhileRemoteOverride::from(SessionAction::PowerOff).resolve(normal),
-            EventAction::from(SessionAction::PowerOff)
+            merged.on_session_unlock,
+            Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: false,
+            })
         );
-        // `none` suppresses — the resolved action is None, so the caller
-        // fires nothing.
-        assert_eq!(
-            WhileRemoteOverride::from(SessionAction::None).resolve(normal),
-            EventAction::from(SessionAction::None)
-        );
-        // The resolve default (unset) is Inherit.
-        assert_eq!(WhileRemoteOverride::default(), WhileRemoteOverride::INHERIT);
     }
 
     #[test]
@@ -1558,18 +1463,11 @@ while_remote_on_idle_resume = { action = "screen_off", restore_input = false }
         assert_eq!(resolved.on_remote_connect, SessionAction::None);
         assert_eq!(resolved.on_remote_disconnect, SessionAction::None);
         assert!(!resolved.remote_screencast_arms);
-        assert_eq!(
-            resolved.while_remote_on_session_unlock,
-            WhileRemoteOverride::INHERIT
-        );
-        assert_eq!(
-            resolved.while_remote_on_lock_wake,
-            WhileRemoteOverride::INHERIT
-        );
-        assert_eq!(
-            resolved.while_remote_on_idle_resume,
-            WhileRemoteOverride::INHERIT
-        );
+        // Every stock event fires while armed — the gate is opt-in per
+        // event, so nothing is suppressed by default.
+        assert!(resolved.on_session_unlock.while_remote());
+        assert!(resolved.on_lock_wake.while_remote());
+        assert!(resolved.on_idle_resume.while_remote());
     }
 
     #[test]
@@ -1996,40 +1894,31 @@ ip = "192.168.1.101"
         // DPMS actions mirror the host display by default.
         assert_eq!(resolved.on_dpms_off, SessionAction::ScreenOff);
         assert_eq!(resolved.on_dpms_on, SessionAction::ScreenOn);
-        // Remote awareness is opt-in: both wake overrides inherit.
-        assert_eq!(
-            resolved.while_remote_on_dpms_on,
-            WhileRemoteOverride::INHERIT
-        );
-        assert_eq!(resolved.while_remote_on_wake, WhileRemoteOverride::INHERIT);
+        // Remote awareness is opt-in: every stock event fires while armed.
+        assert!(resolved.on_dpms_on.while_remote());
+        assert!(resolved.on_wake.while_remote());
     }
 
     #[test]
-    fn system_profile_while_remote_overrides_round_trip() {
-        // The two system-side override fields survive a TOML round-trip;
-        // an unset field defaults to Inherit.
+    fn system_profile_event_gate_round_trips() {
+        // A system event's `while_remote = false` gate survives a TOML
+        // round-trip and resolves through the chain.
         let toml_str = r#"
 name = "gated"
-while_remote_on_dpms_on = "none"
-while_remote_on_wake = { action = "screen_on", restore_input = true }
+on_dpms_on = { action = "screen_on", while_remote = false }
+on_wake = { action = "power_on", restore_input = true, while_remote = false }
 "#;
         let body: SystemProfileConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(
-            body.while_remote_on_dpms_on,
-            Some(WhileRemoteOverride::from(SessionAction::None))
-        );
-        assert_eq!(
-            body.while_remote_on_wake,
-            Some(WhileRemoteOverride::from(EventAction::With {
+            body.on_dpms_on,
+            Some(EventAction::With {
                 action: SessionAction::ScreenOn,
-                restore_input: true,
-            }))
+                restore_input: false,
+                while_remote: false,
+            })
         );
-        // Unset resolves to Inherit through the resolve chain.
-        assert_eq!(
-            body.resolve().while_remote_on_dpms_on,
-            WhileRemoteOverride::from(SessionAction::None)
-        );
+        assert!(!body.resolve().on_dpms_on.while_remote());
+        assert!(!body.resolve().on_wake.while_remote());
 
         let text = toml::to_string(&body).unwrap();
         let reparsed: SystemProfileConfig = toml::from_str(&text).unwrap();

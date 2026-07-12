@@ -311,18 +311,16 @@ async fn defaults_and_effective_expose_field_resolution() {
     // profile is seeded from this at first boot.
     let stock_map = json!({
         "name": "default",
-        "on_startup": { "action": "power_on", "restore_input": true },
+        "on_startup": { "action": "power_on", "restore_input": true, "while_remote": true },
         "on_shutdown": "power_off",
         "on_reboot": "none",
         "on_sleep": "power_off",
-        "on_wake": { "action": "power_on", "restore_input": true },
+        "on_wake": { "action": "power_on", "restore_input": true, "while_remote": true },
         "on_dpms_off": "screen_off",
         "on_dpms_on": "screen_on",
         "on_idle_timeout": "screen_off",
         "on_idle_resume": "screen_on",
         "idle_timeout_seconds": 0,
-        "while_remote_on_dpms_on": "inherit",
-        "while_remote_on_wake": "inherit",
         "automate_when": "always",
     });
 
@@ -378,18 +376,16 @@ async fn defaults_and_effective_expose_field_resolution() {
         effective,
         json!({
             "name": "Quiet",
-            "on_startup": { "action": "power_on", "restore_input": true },
+            "on_startup": { "action": "power_on", "restore_input": true, "while_remote": true },
             "on_shutdown": "power_off",
             "on_reboot": "none",
             "on_sleep": "screen_off",
-            "on_wake": { "action": "power_on", "restore_input": true },
+            "on_wake": { "action": "power_on", "restore_input": true, "while_remote": true },
             "on_dpms_off": "none",
             "on_dpms_on": "screen_on",
             "on_idle_timeout": "screen_off",
             "on_idle_resume": "screen_on",
             "idle_timeout_seconds": 300,
-            "while_remote_on_dpms_on": "inherit",
-            "while_remote_on_wake": "inherit",
             "automate_when": "always",
         })
     );
