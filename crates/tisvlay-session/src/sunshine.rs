@@ -1,30 +1,42 @@
-//! Sunshine startup re-derive: the manual path's self-heal.
+//! Sunshine level poll: a continuous `/serverinfo` level detector owning
+//! its own `Sunshine` remote source.
 //!
 //! Sunshine's default NvFBC capture on Nvidia is invisible to every
-//! scanning detector (portal, PipeWire, logind), so its live signal is the
-//! `global_prep_cmd` hook, which arms a `(Manual, "sunshine")` source
-//! through the CLI verb. That source is edge-triggered and lives only in
-//! the session aggregator, so a session restart mid-stream drops it and the
-//! one-shot hook will not re-fire — the TV goes un-suppressed while a
-//! stream is still running.
+//! scanning detector (portal, PipeWire, logind), so nothing rediscovers a
+//! live stream, and Sunshine exposes no push or event API. Its one
+//! machine-readable state signal is the unauthenticated `/serverinfo`
+//! endpoint on loopback, which reports `SUNSHINE_SERVER_BUSY` while a
+//! stream is active and `SUNSHINE_SERVER_FREE` while idle. This detector
+//! polls it on a fixed cadence and reports a `Sunshine` source that is on
+//! while a stream is busy and off while it is free or the process is gone.
 //!
-//! This detector closes that gap at session start: if a `sunshine` process
-//! is present, it queries Sunshine's own unauthenticated `/serverinfo`
-//! endpoint once (with a few bounded retries for startup timing) and, when
-//! the server reports `SUNSHINE_SERVER_BUSY`, re-arms the same
-//! `(Manual, "sunshine")` source key the hook uses. The re-arm is
-//! idempotent with the hook: the hook remains the live event signal, its
-//! later `undo` clears the same key, and a duplicate arm is a no-op.
+//! Own source key: the poll reports `(Sunshine, "serverinfo")` — a source
+//! it fully owns, distinct from the `(Manual, "sunshine")` key the optional
+//! `global_prep_cmd` hook arms. The separate key is deliberate:
+//! `/serverinfo` reads briefly `FREE` during the hook's do -> app-launch
+//! window, so a shared-key disarm would clear the hook's just-armed source.
+//! With its own key the poll and the hook coexist — the aggregate is armed
+//! while either is, and both disarm on stream end. The continuous poll also
+//! subsumes a startup self-heal: it re-derives the level every tick, so a
+//! session restart mid-stream re-arms within one interval.
 //!
-//! It is startup-only by design — one resolution, then the task ends. It
-//! does not correct mid-session staleness, and it needs Sunshine's HTTP
-//! port reachable on loopback. When no `sunshine` process is present it
-//! costs one procfs scan and exits, so it is free on a box without
-//! Sunshine.
+//! Coexistence: the hook stays the optional *instant* arm — it fires at app
+//! launch, ahead of any injected input, beating the poll's interval
+//! latency. The poll owns disarm, self-heal, and the zero-config fallback,
+//! so Sunshine detection works with no hook configured at all. One residual
+//! remains: a full Sunshine *crash* while the hook is configured strands
+//! the hook's `(Manual, "sunshine")` key until the next session restart —
+//! the poll cannot clear the hook's key without racing the hook. It is
+//! narrow and self-clears on restart.
+//!
+//! The probe gates on process presence (a cheap procfs scan) so an idle box
+//! pays nothing while Sunshine is absent, and it needs Sunshine's HTTP port
+//! reachable on loopback — a firewall or a non-default port defeats it.
 
 use std::io;
 use std::time::Duration;
 
+use tisvlay_wire::payload::RemoteSourceKind;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::debug;
@@ -35,29 +47,45 @@ use crate::{RemoteClient, RemoteReport};
 /// clear (the HTTPS port needs a paired client cert).
 const SERVERINFO_ADDR: (&str, u16) = ("127.0.0.1", 47989);
 
-/// Per-attempt connect+read budget. Loopback is fast; this only has to
-/// cover a briefly-unready listener before the retry.
+/// Per-probe connect+read budget. Loopback is fast; this only bounds a
+/// listener that accepts but then stalls, so a wedged endpoint cannot hang
+/// a tick.
 const POLL_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Bounded startup retries: Sunshine's HTTP listener can lag the process
-/// by a moment at session start, so a connect failure is retried a few
-/// times before giving up. A reachable server (any classifiable body)
-/// resolves on the first hit — retries only cover unreachability.
-const START_RETRIES: u32 = 5;
+/// Poll cadence while a sunshine process is present — short so arm latency
+/// stays low when no hook is configured.
+const PRESENT_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Delay between startup retries.
-const RETRY_DELAY: Duration = Duration::from_secs(1);
+/// Poll cadence while no sunshine process is present — a coarse presence
+/// re-check, since nothing can be streaming without the process.
+const ABSENT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// The fixed `detail` for the single `Sunshine` source this poll owns —
+/// separate from the hook's `(Manual, "sunshine")` key.
+const SOURCE_DETAIL: &str = "serverinfo";
 
 /// The classification of a `/serverinfo` response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ServerState {
-    /// A stream is active (`SUNSHINE_SERVER_BUSY`) — re-arm.
+    /// A stream is active (`SUNSHINE_SERVER_BUSY`) — arm.
     Busy,
-    /// Idle (`SUNSHINE_SERVER_FREE`) — do not arm.
+    /// Idle (`SUNSHINE_SERVER_FREE`) — disarm.
     Free,
     /// The server answered but the body carried no recognizable state
-    /// token — reachable but unclassifiable, so conservatively no arm.
+    /// token — reachable but unclassifiable.
     Unknown,
+}
+
+/// What one poll tick observed. `Absent` short-circuits the HTTP probe on a
+/// missing process; the rest classify a `/serverinfo` response, with an
+/// unreachable-but-present endpoint folded into `Unknown` so a transient
+/// blip keeps the last level rather than flapping the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Observation {
+    Busy,
+    Free,
+    Unknown,
+    Absent,
 }
 
 /// Classify a `/serverinfo` response body. Sunshine reports its level in a
@@ -74,14 +102,33 @@ pub(crate) fn parse_serverinfo(body: &str) -> ServerState {
     }
 }
 
-/// The re-arm decision from a resolved server state. Only `Busy` arms; a
-/// free or unclassifiable server leaves the source clear. The re-derive
-/// never clears — a stale hook source is cleared by the hook's own `undo`,
-/// and reporting an inactive source here would race a concurrent hook arm.
-pub(crate) fn report_for(state: ServerState) -> Option<RemoteReport> {
-    match state {
-        ServerState::Busy => Some(RemoteReport::manual("sunshine", true)),
-        ServerState::Free | ServerState::Unknown => None,
+/// The per-tick decision: fold a fresh observation into the last reported
+/// arm state, yielding the new state and a report to emit only when the
+/// state changes. `Busy` arms; `Free` or an absent process disarms; a
+/// present-but-`Unknown` endpoint keeps the last state so a transient blip
+/// does not flap the source. Emitting only on change keeps needless traffic
+/// off the aggregator channel (its `apply` is idempotent regardless).
+pub(crate) fn decide(armed: bool, observation: Observation) -> (bool, Option<RemoteReport>) {
+    let target = match observation {
+        Observation::Busy => Some(true),
+        Observation::Free | Observation::Absent => Some(false),
+        Observation::Unknown => None,
+    };
+    match target {
+        Some(next) if next != armed => (next, Some(report(next))),
+        Some(next) => (next, None),
+        None => (armed, None),
+    }
+}
+
+/// The `Sunshine` source report for a given arm state — always the single
+/// fixed-detail key this poll owns.
+fn report(active: bool) -> RemoteReport {
+    RemoteReport {
+        kind: RemoteSourceKind::Sunshine,
+        detail: SOURCE_DETAIL.to_string(),
+        active,
+        provisional: false,
     }
 }
 
@@ -97,34 +144,52 @@ pub(crate) fn is_sunshine_comm(comm: &str) -> bool {
     comm.trim().trim_start_matches('.').starts_with("sunshine")
 }
 
-/// Spawn the Sunshine startup re-derive. Runs once — gate, resolve, report
-/// if busy — then the task ends; it is not a continuous poller.
+/// Spawn the Sunshine level poll: a continuous `/serverinfo` detector that
+/// arms and disarms a `Sunshine` source on its own key. Runs for the
+/// session lifetime; the only exit is a dead core (nothing left to report
+/// to).
 pub fn spawn(client: RemoteClient) {
     tokio::spawn(run(client));
 }
 
-/// Gate on process presence, then resolve `/serverinfo` once (with bounded
-/// startup retries) and re-arm the manual source if a stream is live.
+/// The poll loop: observe, fold into the arm state, emit on change, sleep.
+/// A short interval while the process is present keeps arm latency low in
+/// the hook-less case; a longer interval while it is absent keeps an idle
+/// box cheap.
 async fn run(client: RemoteClient) {
-    if !sunshine_present() {
-        debug!("no sunshine process; skipping /serverinfo re-derive");
-        return;
-    }
-    for attempt in 0..START_RETRIES {
-        match query_serverinfo().await {
-            Ok(state) => {
-                debug!(?state, "sunshine /serverinfo re-derive resolved");
-                if let Some(report) = report_for(state) {
-                    let _ = client.report(report);
-                }
+    let mut armed = false;
+    loop {
+        let observation = observe().await;
+        let (next, change) = decide(armed, observation);
+        armed = next;
+        if let Some(report) = change {
+            debug!(active = report.active, "sunshine /serverinfo level change");
+            if !client.report(report) {
                 return;
             }
-            Err(error) => {
-                debug!(%error, attempt, "sunshine /serverinfo unreachable");
-                if attempt + 1 < START_RETRIES {
-                    tokio::time::sleep(RETRY_DELAY).await;
-                }
-            }
+        }
+        let interval = match observation {
+            Observation::Absent => ABSENT_INTERVAL,
+            _ => PRESENT_INTERVAL,
+        };
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// One poll tick's observation: gate on process presence, then classify
+/// `/serverinfo`. An unreachable endpoint while the process is present is
+/// `Unknown` (keep the last level), never `Free`.
+async fn observe() -> Observation {
+    if !sunshine_present() {
+        return Observation::Absent;
+    }
+    match query_serverinfo().await {
+        Ok(ServerState::Busy) => Observation::Busy,
+        Ok(ServerState::Free) => Observation::Free,
+        Ok(ServerState::Unknown) => Observation::Unknown,
+        Err(error) => {
+            debug!(%error, "sunshine /serverinfo unreachable; keeping last level");
+            Observation::Unknown
         }
     }
 }
@@ -157,7 +222,7 @@ fn sunshine_present() -> bool {
 /// One `/serverinfo` GET over loopback, hand-rolled HTTP/1.0 (a single
 /// unauthenticated localhost request does not justify an HTTP client dep).
 /// `Ok` means the server answered and the body was classified; `Err` is a
-/// connect/read failure or timeout, which the caller retries.
+/// connect/read failure or timeout, which the caller folds into `Unknown`.
 async fn query_serverinfo() -> io::Result<ServerState> {
     let exchange = async {
         let mut stream = TcpStream::connect(SERVERINFO_ADDR).await?;
@@ -176,7 +241,6 @@ async fn query_serverinfo() -> io::Result<ServerState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay_wire::payload::RemoteSourceKind;
 
     #[test]
     fn parses_the_busy_and_free_state_tokens() {
@@ -191,7 +255,8 @@ mod tests {
     #[test]
     fn a_body_without_a_state_token_is_unknown() {
         // Reachable but unclassifiable — an empty body, an error page, or
-        // an unexpected schema — must not arm.
+        // an unexpected schema — resolves to Unknown, which keeps the last
+        // level rather than arming or disarming.
         assert_eq!(parse_serverinfo(""), ServerState::Unknown);
         assert_eq!(
             parse_serverinfo("HTTP/1.0 404 Not Found\r\n\r\n"),
@@ -201,16 +266,53 @@ mod tests {
     }
 
     #[test]
-    fn only_a_busy_server_re_arms_the_manual_sunshine_source() {
-        // Busy re-arms the same (Manual, "sunshine") key the hook uses.
-        let report = report_for(ServerState::Busy).expect("busy re-arms");
-        assert_eq!(report.kind, RemoteSourceKind::Manual);
-        assert_eq!(report.detail, "sunshine");
+    fn busy_arms_on_the_sunshine_key() {
+        let (armed, change) = decide(false, Observation::Busy);
+        assert!(armed);
+        let report = change.expect("busy arms");
+        assert_eq!(report.kind, RemoteSourceKind::Sunshine);
+        assert_eq!(report.detail, SOURCE_DETAIL);
         assert!(report.active);
         assert!(!report.provisional);
-        // Free and unclassifiable resolve to no report — never a clear.
-        assert!(report_for(ServerState::Free).is_none());
-        assert!(report_for(ServerState::Unknown).is_none());
+    }
+
+    #[test]
+    fn free_disarms_the_sunshine_key() {
+        let (armed, change) = decide(true, Observation::Free);
+        assert!(!armed);
+        let report = change.expect("free disarms");
+        assert_eq!(report.kind, RemoteSourceKind::Sunshine);
+        assert_eq!(report.detail, SOURCE_DETAIL);
+        assert!(!report.active);
+    }
+
+    #[test]
+    fn an_absent_process_disarms() {
+        // A vanished process is treated as not-streaming, so the poll owns
+        // disarm even when the hook's `undo` never runs.
+        let (armed, change) = decide(true, Observation::Absent);
+        assert!(!armed);
+        assert!(!change.expect("absent disarms").active);
+    }
+
+    #[test]
+    fn unknown_keeps_the_last_state_and_never_reports() {
+        // A transient endpoint blip must not flap the source either way.
+        assert_eq!(decide(true, Observation::Unknown), (true, None));
+        assert_eq!(decide(false, Observation::Unknown), (false, None));
+    }
+
+    #[test]
+    fn a_steady_level_reports_only_on_change() {
+        // First BUSY arms; a second BUSY is a no-op — no needless channel
+        // traffic to the aggregator.
+        let (armed, first) = decide(false, Observation::Busy);
+        assert!(first.is_some());
+        let (armed, second) = decide(armed, Observation::Busy);
+        assert!(armed);
+        assert!(second.is_none());
+        // A steady FREE while already disarmed likewise stays silent.
+        assert_eq!(decide(false, Observation::Free), (false, None));
     }
 
     #[test]
@@ -225,16 +327,5 @@ mod tests {
         // Unrelated processes do not gate.
         assert!(!is_sunshine_comm("firefox\n"));
         assert!(!is_sunshine_comm(""));
-    }
-
-    /// The composed decision the task spells out: a present process plus a
-    /// busy server yields the manual/sunshine re-arm; an absent process or
-    /// a free server yields nothing.
-    #[test]
-    fn present_and_busy_arms_absent_or_free_does_not() {
-        let present = is_sunshine_comm("sunshine\n");
-        assert!(present && report_for(ServerState::Busy).is_some());
-        assert!(report_for(ServerState::Free).is_none());
-        assert!(!is_sunshine_comm("other"));
     }
 }

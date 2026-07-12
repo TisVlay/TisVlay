@@ -10,7 +10,8 @@ Each detector reports a source tagged by kind. Attributed kinds always arm; the 
 
 | Detector | Source kind | Attribution | Arms | Covers |
 |----------|-------------|-------------|------|--------|
-| Manual / hook verb | `manual` | the `--source` label | unconditionally | Sunshine `global_prep_cmd`, any scripted escape hatch |
+| Manual / hook verb | `manual` | the `--source` label | unconditionally | any scripted escape hatch, incl. the optional Sunshine `global_prep_cmd` hook |
+| Sunshine level poll | `sunshine` | `serverinfo` | unconditionally | Sunshine's NvFBC/KMS path (zero-config, no hook needed) |
 | Portal monitor | `portal` | caller exe (allow-list) | unconditionally, on `CreateSession` | krdp (both modes), RustDesk, allow-listed portal capture |
 | PipeWire screencast | `screencast` | none | only with "Screen capture arms" on | any KWin-serviced capture (krdp, RustDesk, OBS, browser tab-share) |
 | logind | `logind` | graphical session `Remote=yes` | unconditionally | xrdp-class RDP stacks that mint a real login session |
@@ -25,7 +26,11 @@ The logind detector watches the system bus for own-uid sessions that are both `R
 
 ## Sunshine integration
 
-Sunshine publishes no D-Bus interface and no push/event API, and its default NvFBC capture on Nvidia is invisible to both the portal monitor and the PipeWire watcher. The reliable, event-driven signal is its command hooks. Add a `global_prep_cmd` that arms on setup (`do`) and disarms on teardown (`undo`):
+Sunshine publishes no D-Bus interface and no push/event API, and its default NvFBC capture on Nvidia is invisible to both the portal monitor and the PipeWire watcher. Its one machine-readable state signal is the unauthenticated `/serverinfo` endpoint on loopback, which reports `SUNSHINE_SERVER_BUSY` while a stream is active and `SUNSHINE_SERVER_FREE` while idle. The session service runs a continuous poll against it, so Sunshine detection works **zero-config** — no hook required.
+
+The poll gates on process presence (a cheap procfs scan, free when Sunshine is absent) and, while a `sunshine` process is running, issues a `GET http://127.0.0.1:47989/serverinfo` on a short cadence (~2 s; a coarser ~10 s while no process is present). It reports a `sunshine` source keyed by `serverinfo` that it fully owns: `BUSY` arms it, `FREE` or a vanished process disarms it, and a reachable-but-unclassifiable or transiently-unreachable endpoint keeps the last level so a blip does not flap the source. Reporting only on a level change keeps needless traffic off the aggregator. Because it re-derives the level every tick, a session-service restart mid-stream re-arms within one interval — no separate startup step. It needs Sunshine's HTTP port reachable on loopback; a firewall or a non-default port defeats it.
+
+The `global_prep_cmd` hook is now **optional**. Its sole remaining value is ordering: it arms the instant the app launches, ahead of the poll's interval latency and ahead of any injected input. Add one only if that sub-interval arm latency matters:
 
 ```json
 {
@@ -39,13 +44,11 @@ Sunshine publishes no D-Bus interface and no push/event API, and its default NvF
 }
 ```
 
-The CLI verb is fast and fire-and-forget by design, so a slow or stalled hook cannot delay Sunshine's stream launch. The hook fires at application launch, ahead of the stream and any injected input, which is the ordering the gate needs.
+The CLI verb is fast and fire-and-forget by design, so a slow or stalled hook cannot delay Sunshine's stream launch. The hook fires at application launch, ahead of the stream and any injected input. It arms a **separate** `manual/sunshine` source, distinct from the poll's `sunshine/serverinfo` key, so the two coexist without racing: `/serverinfo` reads briefly `FREE` during the hook's `do` -> app-launch window, and a shared key would let the poll's disarm clear the hook's just-armed source. The aggregate is armed while either source is; both disarm on stream end.
 
 Sunshine spawns hook commands outside the user's shell environment, so unpackaged setups (a dev checkout, a manually installed CLI) must use an absolute path to the `tisvlay` binary and pass the socket flags explicitly; edits to `global_prep_cmd` take effect on the next Sunshine restart. The hook brackets the app's lifetime, not the client's: a Moonlight reconnect to a still-running app re-runs nothing (the source is already armed), and the source disarms when the app quits, not when a client merely disconnects.
 
-The hook is the live event signal, but it is edge-triggered and fires only once, at launch: a session-service restart mid-stream drops the in-memory source, and there is no portal session or PipeWire node for the scanning detectors to rediscover. A startup re-derive closes that gap. When the session service starts, it checks for a running `sunshine` process (a cheap procfs scan, free when Sunshine is absent) and, if present, issues one `GET http://127.0.0.1:47989/serverinfo` to the unauthenticated HTTP port. A `SUNSHINE_SERVER_BUSY` response re-arms the same `manual/sunshine` source the hook uses, so a restart during an active stream self-heals; a `SUNSHINE_SERVER_FREE`, unreachable, or unclassifiable response arms nothing. The endpoint can lag the process by a moment at startup, so an unreachable port is retried a few times with a short backoff before giving up.
-
-This is startup-only by design. It re-derives the source once, when the session service comes up, and then the task ends — it is not a continuous poller and does not correct staleness that develops mid-session (the hook's `undo` clears the source on app quit). It needs Sunshine's HTTP port reachable on loopback; a firewall or a non-default port defeats it, leaving the hook as the sole signal.
+One residual remains when the hook is configured: a full Sunshine *crash* strands the hook's `manual/sunshine` source until the next session restart — the poll cannot clear the hook's key without racing the hook, so it only ever clears its own `sunshine/serverinfo` key. It is narrow and self-clears on restart. Without a hook there is nothing to strand: the poll owns both arm and disarm.
 
 ## False positives and filtering
 

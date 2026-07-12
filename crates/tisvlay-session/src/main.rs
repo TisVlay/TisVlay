@@ -96,10 +96,12 @@ async fn main() -> anyhow::Result<()> {
     // Absent/unreachable system bus is handled inside (retry, quiet).
     tisvlay_session::spawn_logind_detector(stack.remote.clone());
 
-    // Sunshine startup re-derive — one `/serverinfo` GET (gated on a
-    // sunshine process being present) re-arming the `manual/sunshine`
-    // source if a stream is already live, so a session restart mid-stream
-    // self-heals the hook-only NvFBC path. Runs once, then the task ends.
+    // Sunshine level poll — a continuous `/serverinfo` detector, gated on
+    // a sunshine process being present, that arms a `Sunshine` source on
+    // BUSY and disarms it on FREE (or when the process is gone). It owns
+    // its own source key, coexisting with the optional `global_prep_cmd`
+    // hook: the hook is the instant arm, the poll owns disarm, self-heal,
+    // and the zero-config fallback. Runs for the session lifetime.
     tisvlay_session::spawn_sunshine_detector(stack.remote.clone());
 
     tokio::signal::ctrl_c().await?;

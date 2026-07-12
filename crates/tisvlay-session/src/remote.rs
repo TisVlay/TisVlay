@@ -166,12 +166,15 @@ impl RemoteSources {
 }
 
 /// Whether a source kind arms unconditionally. Attributed kinds (a named
-/// remote app, a hook, a logind remote session) always arm; the
-/// unattributed `Screencast` signal defers to the per-TV
+/// remote app, a hook, a logind remote session, the Sunshine level poll)
+/// always arm; the unattributed `Screencast` signal defers to the per-TV
 /// `remote_screencast_arms` policy.
 fn kind_always_arms(kind: RemoteSourceKind) -> bool {
     match kind {
-        RemoteSourceKind::Manual | RemoteSourceKind::Logind | RemoteSourceKind::Portal => true,
+        RemoteSourceKind::Manual
+        | RemoteSourceKind::Logind
+        | RemoteSourceKind::Portal
+        | RemoteSourceKind::Sunshine => true,
         RemoteSourceKind::Screencast => false,
     }
 }
@@ -215,6 +218,7 @@ mod tests {
             RemoteSourceKind::Manual,
             RemoteSourceKind::Logind,
             RemoteSourceKind::Portal,
+            RemoteSourceKind::Sunshine,
         ] {
             assert!(kinds_arm(&[kind], false));
             assert!(kinds_arm(&[kind], true));

@@ -246,9 +246,10 @@ pub mod payload {
     /// profile opts in (`remote_screencast_arms`). `Ord` so the source
     /// set keys deterministically.
     ///
-    /// A dedicated `Sunshine` kind is intentionally absent: Sunshine
-    /// reports through the `Manual` hook verb, and the portal path reports
-    /// `Portal`. Re-add one if the bench-gated `/serverinfo` poller ships.
+    /// `Sunshine` is the continuous `/serverinfo` level poll's own key,
+    /// kept distinct from the `Manual` hook verb so the poll and the
+    /// optional `global_prep_cmd` hook coexist without racing each other's
+    /// arm.
     #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     #[serde(rename_all = "snake_case")]
     pub enum RemoteSourceKind {
@@ -256,6 +257,7 @@ pub mod payload {
         Logind,
         Portal,
         Screencast,
+        Sunshine,
     }
 }
 
