@@ -50,6 +50,45 @@ Merged `origin/main` into this branch. Three conflicts, all mechanical: `Cargo.l
 - [x] **#92 (GUI contextual help)** — a one-line "Contextual help" note on `gui-tray.md` (the "i" toggletip + hover tips).
 - Non-items, checked: #91/#93/#102 (cargo/CI dep bumps) carry no book surface beyond the `Cargo.lock` resolution; #95 (cargo-about `i-slint-renderer-software` coverage) is packaging/licensing, not user-guide material; #101 (session idle-watch survives config reload) is an internal reliability fix with no user-facing statement to correct; `cli-generated.md` unchanged — the merge doesn't touch the `tisvlay` clap surface (`docs-cli-check` green). Still deferred: the `cargo install tisvlay-cli` channel (unpublished) and the GUI/Tray screenshots.
 
+### Post-merge reconciliation (the v0.3.0 rewrite — #106 onward, 2026-07-12)
+
+The branch had forked at #102, **before** the D-Bus → zenoh + bevy_ecs rewrite (v0.3.0, #106) and everything after it (notably #110 remote-session awareness). Merged `origin/main` into the branch (`f5511ec`, 109 commits of divergence): CONFLICTING → MERGEABLE, `just build` + CLI clap self-check + `docs-cli-check` all green. The CLI doc-gen was re-wired — main's rewritten clap tree moved into `crates/tisvlay-cli/src/lib.rs` (`pub`), `main.rs` imports it, `gen-cli-docs` (now at `src/bin/`, not `examples/`) renders it, and `cli-generated.md` was regenerated (old `power on`/`screen` verbs → new `watch`/`set-volume`/`remote-session`). Old D-Bus clap tree, its dev-deps, and old-CLI snapshot tests dropped.
+
+A four-agent read-only audit (getting-started+reference / guide-behavioral / CLI+operations / feature-farming) then mapped the book against current `main`. **Every prose chapter predates the rewrite;** the auto-generated CLI reference is now exact, and the conceptual bones survive almost everywhere, but the *surface* (commands, config paths, IPC model) is wrong throughout and four major features have no coverage.
+
+**Cross-cutting corrections (apply in nearly every chapter):**
+1. `tisvlayd` → `tisvlay-daemon` (binary + `.service`).
+2. D-Bus IPC → **zenoh over Unix sockets**. Delete every `busctl` / `org.tisvlay.*` / `ReloadConfig` / system-vs-session-bus / `--user` / `tisvlayd --session` / "D-Bus policy". Auth = **`tisvlay` group membership on a 0660 socket** (`docs/architecture.md:94-96`; `packaging/nix/module.nix:48`).
+3. CLI grammar: control verbs take a **positional TV UUID**; `pair "<name>" --vendor lg --params '{"ip":…,"mac":…}'`; renames (`repair`, `managed <id> <bool>`, `set-volume`, `assign`, `user-profile assign`); no `--tv`/`-t`, no relative volume, no mute-toggle; `--json` is read-verbs only. Ground truth: `crates/tisvlay-cli/src/lib.rs`.
+4. Paths/versions: `config.toml` → `daemon.toml` (`store.rs:79`); `0.1.0` → `0.3.0`.
+5. Observability: `busctl monitor` → `tisvlay watch`; `GetManagedObjects` → `tisvlay list`.
+
+**Per-chapter plan (existing 13):**
+
+| Chapter | Verdict | Headline actions |
+|---|---|---|
+| introduction | rewrite (arch half) | daemon name; drop D-Bus + fix mermaid; add greeter, remote-session, reliability to Features |
+| getting-started/installation | heavy-edit | `tisvlay-daemon` unit; add mandatory `services.tisvlay.users` grant; `cec`/`greeter`/`openFirewall` opts; socket-group auth; drop "D-Bus policy"; `0.3.0` |
+| getting-started/quick-start | rewrite | every command literal (positional id, `set-volume`, `mute <bool>`); `tisvlay` group prereq |
+| getting-started/pairing | rewrite | `pair <name> --params`; MAC in JSON; `repair`; `schema`; MAC auto-fill & CEC device probe |
+| guide/cli | accurate + gap | generated ref current; optional prose; fix `cli.md:2` comment path (`examples/` → `src/bin/`) |
+| guide/configuration | heavy-edit | drop `ReloadConfig`; `daemon.toml`; EventAction table grammar; `while_remote`/`remote_screencast_arms`; locked/unlocked idle; `restore_input`; `seed.toml` |
+| guide/profiles | heavy-edit | fix assignment verbs; add `while_remote` gate layer; keep resolution chains + `automate_when` table |
+| guide/session-automation | heavy-edit | daemon name; remote-session suppression; per-lock-state idle + drift; `restore_input`; expand reliability; keep DPMS/lifecycle/greeter |
+| guide/gui-tray | heavy-edit | drop D-Bus; REMOTE SESSION card + `while_remote`/`restore` toggles + tray "Remote session active" indicator |
+| operations/firewall-discovery | light-edit | pair syntax ×2; `--ssdp-port` (no `[discovery] bind_port` key); broaden to streaming discovery + MAC enrichment |
+| operations/troubleshooting | heavy-edit | rewrite `busctl`/`ReloadConfig` sections → `list`/`watch`/`add`; ~11 command fixes; `automate_when` is policy |
+| reference/requirements | heavy-edit | drop "D-Bus [for the daemon]"; socket-group auth; IPv6 note; keep hardware/CEC/WoL/DPMS |
+| reference/faq | heavy-edit | rewrite `busctl` scripting answer → key space/`--json`/`watch`; `daemon.toml`; drop `-t` |
+
+**New chapters to add** (SUMMARY delta): **Remote-Session Awareness** (User Guide — flagship, from `docs/remote/detection.md`, + Sunshine `global_prep_cmd` recipe); **Networking & Reliability** (Operations — routable dials, carrier/route watchers, verify-retry + latch); **HDMI-CEC** (User Guide, or fold into a Vendors chapter); **Observability** or an expanded CLI Reference (`watch`, `status`/`list`, liveliness, `vendors`/`schema`). Broaden **Firewall & Discovery** to cover streaming discovery + manual-entry MAC enrichment. Nothing is deleted wholesale — every chapter maps to a still-real feature.
+
+**Writing progress** (decided with the user: I draft, surface fixes first, then new chapters):
+- [x] Batch A — introduction, getting-started/{installation, quick-start, pairing} rewritten against `lib.rs`/`module.nix`.
+- [ ] Batch B — guide/{configuration, profiles, session-automation, gui-tray}.
+- [ ] Batch C — operations/{firewall-discovery, troubleshooting}, reference/{requirements, faq}, `cli.md` comment fix.
+- [ ] Batch D — new chapters (Remote-Session Awareness, Networking & Reliability, HDMI-CEC, Observability) + `SUMMARY.md` update.
+
 ## Context
 
 tisvlay has no user-facing docs site today — `docs/*.md` is ~95% developer-facing (design, testing, ideas, plans), and the `main` README is a 67-line stub. We want a published user guide (install / pair / CLI / config / firewall / troubleshooting) on **Read the Docs**.

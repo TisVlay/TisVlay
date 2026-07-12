@@ -5,16 +5,16 @@ Pairing establishes a trusted connection between tisvlay and your TV. For LG Web
 ## Pair from the command line
 
 ```sh
-tisvlay pair <address> --vendor lg [--name <name>] [--wake-id <mac>] [--managed <true|false>]
+tisvlay pair "<name>" --vendor lg --params '{"ip":"192.168.1.100","mac":"AA:BB:CC:DD:EE:FF"}'
 ```
 
-- `<address>` — the TV's IP address (e.g. `192.168.1.100`).
-- `--vendor lg` — the backend to use.
-- `--name` — a friendly label shown in `tisvlay list` and the GUI.
-- `--wake-id` — the TV's MAC address for Wake-on-LAN. Strongly recommended: without it the TV cannot be powered on from standby.
-- `--managed` — whether this TV participates in automation (boot, session events, shutdown). Defaults to `true`; pass `--managed false` to pair for manual control only.
+- `"<name>"` — a friendly label shown in `tisvlay list` and the GUI (the first positional argument).
+- `--vendor lg` — the backend to use. `tisvlay vendors` lists the registered backends, and `tisvlay schema <vendor>` shows a vendor's pairing fields.
+- `--params` — the vendor's pairing fields as a JSON object. For LG: `ip` (required) and `mac` (the MAC address for Wake-on-LAN — strongly recommended, since without it the TV cannot be powered on from standby; `wake_id` is accepted as an alias for `mac`).
 
-Accept the prompt on the TV when it appears. On success the TV is added to the configuration.
+Accept the prompt on the TV when it appears. On success the TV is added and appears in `tisvlay list` with its assigned **UUID** — the id you pass to every control and configuration verb.
+
+Newly paired TVs are **managed** (they take part in automation) by default. To pair one for manual control only, mark it unmanaged afterward: `tisvlay managed <id> false`.
 
 ## Pair from the GUI
 
@@ -25,16 +25,16 @@ Accept the prompt on the TV when it appears. On success the TV is added to the c
 HDMI-CEC has no credentials and no on-screen prompt — any device on the CEC bus is reachable, so "pairing" a CEC TV just means telling tisvlay which adapter it's on:
 
 - **GUI wizard** — the pairing wizard lists the host's CEC adapters (`/dev/cec0`, `/dev/cec1`, …), probes each for the TV's own name and make/model, and prefills the device. Pick the adapter and confirm.
-- **By hand** — add a `[tv.cec]` block to the daemon config (at minimum `device = "/dev/cec0"`) and reload; see [Configuration](../guide/configuration.md#tv-definitions).
+- **By hand** — declare the TV in the daemon configuration with a `[tv.cec]` block (at minimum `device = "/dev/cec0"`); see [Configuration](../guide/configuration.md#tv-definitions).
 
 The TV must be on the CEC bus — powered, or even in standby (the bus reaches a standby TV) — and on the input the adapter is plugged into. See [Installation](./installation.md#hdmi-cec-backend-optional) for adapter requirements.
 
 ## Re-pairing
 
-Credentials can expire or be revoked by the TV. Refresh them in place without changing the TV's ID or settings:
+Credentials can expire or be revoked by the TV. Refresh them in place without changing the TV's id or settings:
 
 ```sh
-tisvlay re-pair <tv-id>
+tisvlay repair <id>
 ```
 
 ## Requirements for pairing
@@ -43,4 +43,4 @@ tisvlay re-pair <tv-id>
 - For LG: **"TV On via Wi-Fi"** (or "Mobile TV On") is enabled in the TV's network settings, so Wake-on-LAN works.
 - Newer LG firmware requires a secure (`wss://`) connection with a self-signed certificate — tisvlay handles this automatically.
 
-If discovery doesn't find your TV, it's usually a firewall blocking SSDP — see [Firewall & Discovery](../operations/firewall-discovery.md). You can always pair by explicit IP address regardless of discovery.
+If discovery doesn't find your TV, it's usually a firewall blocking SSDP — see [Firewall & Discovery](../operations/firewall-discovery.md). You can always pair by explicit IP address (in `--params`) regardless of discovery.

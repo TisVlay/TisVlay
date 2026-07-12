@@ -10,9 +10,11 @@ Today tisvlay supports **LG WebOS** TVs over the network, plus any TV that speak
 
 - **Power** — turn the TV on (Wake-on-LAN, or a CEC bus wake) and off (standby).
 - **Screen blanking** — OLED-safe screen on/off for burn-in protection, distinct from a full power-off.
-- **HDMI input switching** — change inputs programmatically.
+- **HDMI input switching** — change inputs programmatically, and restore your PC's input automatically on a wake.
 - **Volume & backlight** — adjust volume, mute, and OLED pixel brightness.
 - **Desktop automation** — react to session lock/unlock, suspend/resume, idle timeout, and host-display DPMS blank/wake.
+- **Remote-session aware** — when you stream in remotely (Sunshine/Moonlight, RustDesk, RDP), tisvlay keeps the physical TV asleep instead of waking it for an empty room.
+- **Reliable & network-aware** — screen commands are verified and retried, and a wake is held until the network route to the TV actually exists.
 - **Multi-TV** — manage several TVs, each matched to its host display connector by EDID.
 
 ## Components
@@ -22,12 +24,13 @@ tisvlay is a small set of cooperating programs:
 | Component | What it is |
 |-----------|------------|
 | `tisvlay` | Command-line tool for direct control and configuration |
-| `tisvlayd` | System daemon that owns the TV connections and exposes a D-Bus interface |
-| `tisvlay-session` | Per-user service that maps desktop events (lock, idle, …) to TV actions |
+| `tisvlay-daemon` | System daemon that owns the TV connections and the persistent configuration |
+| `tisvlay-session` | Per-user service that maps desktop events (lock, idle, remote sessions, …) to TV actions |
 | `tisvlay-tray` | System-tray applet for quick control and status |
 | `tisvlay-gui` | Settings window (pair TVs, edit profiles) |
+| `tisvlay-greeter` | Optional login-screen client that drives the TV before anyone logs in |
 
-The CLI and the desktop services all talk to `tisvlayd` over D-Bus; the daemon holds the persistent configuration and the live TV connections.
+The CLI and the desktop services all reach `tisvlay-daemon` over a local IPC socket; the daemon holds the persistent configuration and the live TV connections. Access to that socket is granted by membership in the **`tisvlay` group** (see [Installation](./getting-started/installation.md)).
 
 ```mermaid
 graph LR
@@ -39,7 +42,7 @@ graph LR
     end
 
     subgraph System
-        Daemon["tisvlayd<br/><i>system daemon</i>"]
+        Daemon["tisvlay-daemon<br/><i>system daemon</i>"]
     end
 
     subgraph TVs
@@ -47,10 +50,10 @@ graph LR
         TV2["CEC TV"]
     end
 
-    Session -->|D-Bus| Daemon
-    Tray -->|D-Bus| Daemon
-    Gui -->|D-Bus| Daemon
-    Cli -->|D-Bus| Daemon
+    Session -->|socket| Daemon
+    Tray -->|socket| Daemon
+    Gui -->|socket| Daemon
+    Cli -->|socket| Daemon
     Daemon -.->|WebSocket / WoL| TV1
     Daemon -.->|HDMI-CEC| TV2
 ```
@@ -59,4 +62,5 @@ graph LR
 
 - New here? Start with [Installation](./getting-started/installation.md), then [Quick Start](./getting-started/quick-start.md).
 - Already running? See the [CLI Reference](./guide/cli.md) and [Configuration](./guide/configuration.md).
+- Streaming in remotely? See [Remote-Session Awareness](./guide/remote-sessions.md).
 - Discovery not finding your TV? See [Firewall & Discovery](./operations/firewall-discovery.md).

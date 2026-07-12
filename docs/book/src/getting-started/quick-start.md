@@ -1,36 +1,43 @@
 # Quick Start
 
-This walks through pairing your first TV and controlling it from the command line. It assumes `tisvlayd` is installed and running (see [Installation](./installation.md)).
+This walks through pairing your first TV and controlling it from the command line. It assumes `tisvlay-daemon` is installed and running, and that your user is in the `tisvlay` group (see [Installation](./installation.md)).
 
 ## 1. Pair the TV
 
 Make sure the TV is on and on the same network, then pair it. The TV shows an on-screen prompt — accept it.
 
 ```sh
-tisvlay pair 192.168.1.100 --vendor lg --name "Living Room" --wake-id AA:BB:CC:DD:EE:FF
+tisvlay pair "Living Room" --vendor lg --params '{"ip":"192.168.1.100","mac":"AA:BB:CC:DD:EE:FF"}'
 ```
 
+- The first argument (`"Living Room"`) is the TV's name.
 - `--vendor lg` selects the LG WebOS backend.
-- `--wake-id` is the TV's MAC address, used for Wake-on-LAN. Without it, tisvlay can't power the TV back on from standby.
+- `--params` carries the vendor's pairing fields as JSON. For LG that's `ip` (required) and `mac` (the MAC address for Wake-on-LAN — without it, tisvlay can't power the TV back on from standby).
 
-See [Pairing](./pairing.md) for discovery and troubleshooting.
+See [Pairing](./pairing.md) for discovery, the GUI wizard, and HDMI-CEC.
 
 ## 2. Control it
 
+Control verbs take the TV's **UUID**. List your TVs to get it:
+
 ```sh
-tisvlay power on          # Wake-on-LAN
-tisvlay screen off        # OLED-safe blank (TV stays powered)
-tisvlay input HDMI_1      # switch input
-tisvlay volume 25         # set volume (0–100)
-tisvlay volume +5         # relative adjustment
-tisvlay mute              # toggle mute
-tisvlay status            # show current state
+tisvlay list
 ```
 
-When you have more than one TV, target a specific one with `--tv <id>` (see `tisvlay list` for the IDs).
+Then, using that id (shown as `<id>` below):
+
+```sh
+tisvlay power <id> on          # Wake-on-LAN
+tisvlay screen <id> off        # OLED-safe blank (TV stays powered)
+tisvlay input <id> HDMI_1      # switch input
+tisvlay set-volume <id> 25     # set volume (0–100)
+tisvlay mute <id> true         # mute (false to unmute)
+```
+
+`tisvlay list` shows the current state of every TV; `tisvlay status` is a quick liveliness check on the daemon itself. To watch state change live, use `tisvlay watch`.
 
 ## 3. Automate it (optional)
 
-The `tisvlay-session` service can drive the TV from desktop events — for example blanking the screen when you lock, and unblanking when you return. This is configured with **profiles**; see [Session Automation](./session-automation.md) and [Configuration](./guide/configuration.md).
+The `tisvlay-session` service can drive the TV from desktop events — for example blanking the screen when you lock, and unblanking when you return. This is configured with **profiles**; see [Session Automation](../guide/session-automation.md) and [Configuration](../guide/configuration.md).
 
-For machine-readable output (scripting, Nushell, etc.), add `--json` to any command.
+For machine-readable output (scripting, Nushell, etc.), add `--json` to read verbs like `list`.
