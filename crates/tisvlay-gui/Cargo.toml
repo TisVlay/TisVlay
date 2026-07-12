@@ -42,7 +42,6 @@ os_info = { version = "3", default-features = false }
 rustix = { version = "1", features = ["system"] }
 libc = "0.2"
 zbus = { workspace = true }
-zenoh = { workspace = true }
 
 [dev-dependencies]
 # Headless Slint backend for element-tree tests; preliminary API, so

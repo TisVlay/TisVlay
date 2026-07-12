@@ -373,9 +373,13 @@ pub mod keys {
         format!("tisvlay/{site}/user/remote/session")
     }
 
-    /// The system-socket mirror of the remote-session fact — a plain
-    /// put (no cache), since the session's system link is a connect-only
-    /// peer and served entities do not propagate over it.
+    /// The system-socket mirror of the remote-session fact — a cache-1
+    /// AdvancedPublisher the session serves on its connect-only-peer system
+    /// link. A connect-only peer cannot fan a served entity out to *other*
+    /// leaves, but the directly-dialed daemon does hydrate its `@adv` cache,
+    /// so a daemon (re)start relearns the armed set without any re-put. The
+    /// counter-sequenced cache shape constructs without an HLC, so this
+    /// needs no daemon-side timestamping.
     pub fn remote_session(site: &str) -> String {
         format!("tisvlay/{site}/remote/session")
     }
