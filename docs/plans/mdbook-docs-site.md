@@ -84,10 +84,12 @@ A four-agent read-only audit (getting-started+reference / guide-behavioral / CLI
 **New chapters to add** (SUMMARY delta): **Remote-Session Awareness** (User Guide — flagship, from `docs/remote/detection.md`, + Sunshine `global_prep_cmd` recipe); **Networking & Reliability** (Operations — routable dials, carrier/route watchers, verify-retry + latch); **HDMI-CEC** (User Guide, or fold into a Vendors chapter); **Observability** or an expanded CLI Reference (`watch`, `status`/`list`, liveliness, `vendors`/`schema`). Broaden **Firewall & Discovery** to cover streaming discovery + manual-entry MAC enrichment. Nothing is deleted wholesale — every chapter maps to a still-real feature.
 
 **Writing progress** (decided with the user: I draft, surface fixes first, then new chapters):
-- [x] Batch A — introduction, getting-started/{installation, quick-start, pairing} rewritten against `lib.rs`/`module.nix`.
-- [ ] Batch B — guide/{configuration, profiles, session-automation, gui-tray}.
-- [ ] Batch C — operations/{firewall-discovery, troubleshooting}, reference/{requirements, faq}, `cli.md` comment fix.
-- [ ] Batch D — new chapters (Remote-Session Awareness, Networking & Reliability, HDMI-CEC, Observability) + `SUMMARY.md` update.
+- [x] Batch A — introduction, getting-started/{installation, quick-start, pairing} rewritten against `lib.rs`/`module.nix` (`9aba954`).
+- [x] Batch B — guide/{configuration, profiles, session-automation, gui-tray}, verified vs `config.rs` + the real `daemon.toml`/`seed.toml` (`8da8cac`).
+- [x] Batch C — operations/{firewall-discovery, troubleshooting}, reference/{requirements, faq}, `cli.md` intro + comment-path fix (`11fcc99`).
+- [x] Batch D — new chapters `guide/remote-sessions.md` + `operations/networking-reliability.md` + `SUMMARY.md`. **HDMI-CEC** stays folded into the existing pages (installation/pairing/configuration/requirements/faq) per the pre-rewrite maintainer decision — no separate nav chapter; **Observability** folded into the CLI Reference intro (`watch`/`status`/`list`), not a standalone page.
+
+**Remaining polish** (non-blocking): `cli.md`'s own `# CLI Reference` H1 sits above the generated file's `# Command-Line Help for tisvlay` H1 (a double heading) — the clean fix is wiring `gen-cli-docs` to `help_markdown_custom` with the generated title suppressed (see Gotchas). A field review of the rewritten commands/config against a live v0.3.0 stack, and the still-deferred GUI/Tray screenshots, are the maintainer's to do.
 
 ## Context
 
