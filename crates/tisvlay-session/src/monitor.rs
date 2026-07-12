@@ -45,14 +45,13 @@
 //! never blocks or kills the session service, and the screencast detector
 //! remains the fallback.
 
-use std::time::Duration;
-
 use futures_util::StreamExt;
 use tisvlay_wire::payload::RemoteSourceKind;
-use tracing::{debug, warn};
+use tracing::debug;
 use zbus::MatchRule;
 use zbus::message::Type as MessageType;
 
+use crate::detector::Backoff;
 use crate::{RemoteClient, RemoteReport};
 
 /// The portal object namespace the monitor scopes its match rules to —
@@ -72,10 +71,6 @@ const CLOSED: &str = "Closed";
 /// Executable basenames that mint an attributed `Portal` source. A portal
 /// user outside this list is left to the unattributed screencast signal.
 const ALLOW_LIST: &[&str] = &["krdpserver", "rustdesk", "sunshine"];
-
-/// Backoff bounds for the supervised monitor loop.
-const RETRY_MIN: Duration = Duration::from_secs(2);
-const RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// The parsed shape of one monitored portal message, reduced to the
 /// header fields the detector acts on. Owned so the parser is a pure fn
@@ -246,33 +241,26 @@ pub fn spawn(main_bus: zbus::Connection, client: RemoteClient) {
 /// does not spam the log.
 async fn run(main_bus: zbus::Connection, client: RemoteClient) {
     let mut tracker = PortalTracker::default();
-    let mut backoff = RETRY_MIN;
-    let mut warned = false;
+    let mut backoff = Backoff::default();
     loop {
         match session(&main_bus, &client, &mut tracker).await {
             Ok(()) => {
                 debug!("portal monitor: connection ended; reconnecting");
-                backoff = RETRY_MIN;
+                backoff.reset();
             }
             Err(Fault::CoreGone) => return,
-            Err(Fault::Bus(e)) => {
-                if !warned {
-                    warn!(%e, "portal monitor: session bus unavailable; retrying quietly");
-                    warned = true;
-                } else {
-                    debug!(%e, "portal monitor: monitor connect failed");
-                }
-            }
+            Err(Fault::Bus(e)) => backoff.note_failure("portal monitor: session bus", e),
         }
         // Whatever we thought was live is stale after a reconnect; clear
         // it so nothing lingers armed, then re-bootstrap on the next pass.
+        // (A panic in `session` would skip this and strand the tracker's
+        // sources until a restart — a design-pending residual.)
         for report in tracker.clear() {
             if !client.report(report) {
                 return;
             }
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(RETRY_MAX);
+        tokio::time::sleep(backoff.next_delay()).await;
     }
 }
 
@@ -421,19 +409,35 @@ pub(crate) fn introspect_children(xml: &str) -> Vec<String> {
 }
 
 /// Tracks the live portal sessions this detector has attributed, so the
-/// aggregate `Portal` source per exe stays live while any of that exe's
-/// sessions is open and clears when the last closes.
+/// aggregate `Portal` source per exe stays live while any of that owner's
+/// sessions is open and clears only when the last closes.
 ///
 /// A session is either **confirmed** (seen opening on the wire, direct
 /// attribution, always arms) or **provisional** (bootstrapped, owner-only,
-/// admitted by the aggregator only while a screencast corroborates). Both
-/// map an owner unique name to the resolved exe; a confirmed open for an
-/// owner promotes it out of provisional.
+/// admitted by the aggregator only while a screencast corroborates). One
+/// owner unique name can hold several concurrent sessions (krdp opens a
+/// ScreenCast *and* a RemoteDesktop session), so each owner carries an
+/// open-session count: an open increments it, a `Closed` decrements it,
+/// and the source clears when the count reaches zero — closing the first
+/// of two concurrent sessions must not disarm while the other still
+/// captures. A confirmed open for an owner promotes it out of provisional.
 #[derive(Debug, Default)]
 pub(crate) struct PortalTracker {
-    /// Owner unique name → (exe, confirmed?). One entry per owner; the
-    /// portal serves at most one session object subtree per owner.
-    owners: std::collections::BTreeMap<String, (String, bool)>,
+    /// Owner unique name → its tracked state. One entry per owner; the
+    /// portal serves all of an owner's session objects under one subtree.
+    owners: std::collections::BTreeMap<String, OwnerState>,
+}
+
+/// The per-owner tracking state: the attributed exe, whether any of its
+/// sessions was confirmed on the wire, and the count of live sessions.
+#[derive(Debug)]
+struct OwnerState {
+    exe: String,
+    confirmed: bool,
+    /// Live sessions for this owner: a bootstrap guess counts as one, and
+    /// each confirmed `CreateSession` on the wire adds one. The source
+    /// clears when this reaches zero.
+    open: usize,
 }
 
 impl PortalTracker {
@@ -452,37 +456,57 @@ impl PortalTracker {
     }
 
     fn record(&mut self, owner: &str, exe: String, confirmed: bool) -> Vec<RemoteReport> {
-        match self.owners.get(owner) {
-            // Already tracked with the same exe: only a provisional→
-            // confirmed promotion is worth re-reporting (it drops the
-            // corroboration requirement).
-            Some((known, was_confirmed)) if *known == exe => {
-                if confirmed && !was_confirmed {
-                    self.owners.insert(owner.to_string(), (exe.clone(), true));
+        match self.owners.get_mut(owner) {
+            // Already tracked with the same exe: count the new session and
+            // re-report only on a provisional→confirmed promotion (it drops
+            // the corroboration requirement). An additional session under
+            // an already-live source needs no fresh report.
+            Some(state) if state.exe == exe => {
+                state.open += 1;
+                if confirmed && !state.confirmed {
+                    state.confirmed = true;
                     return vec![portal_report(exe, true, false)];
                 }
                 Vec::new()
             }
-            // A different exe for a known owner (or brand new): clear any
-            // prior source for this owner, then report the new one.
-            prior => {
-                let mut reports = Vec::new();
-                if let Some((old_exe, _)) = prior.cloned() {
-                    reports.push(portal_report(old_exe, false, false));
-                }
-                reports.push(portal_report(exe.clone(), true, !confirmed));
-                self.owners.insert(owner.to_string(), (exe, confirmed));
-                reports
+            // A different exe for a known owner: clear the prior source,
+            // then report the new one starting a fresh count.
+            Some(state) => {
+                let old_exe = std::mem::replace(&mut state.exe, exe.clone());
+                state.confirmed = confirmed;
+                state.open = 1;
+                vec![
+                    portal_report(old_exe, false, false),
+                    portal_report(exe, true, !confirmed),
+                ]
+            }
+            // Brand new owner: track it and report the source.
+            None => {
+                self.owners.insert(
+                    owner.to_string(),
+                    OwnerState {
+                        exe: exe.clone(),
+                        confirmed,
+                        open: 1,
+                    },
+                );
+                vec![portal_report(exe, true, !confirmed)]
             }
         }
     }
 
-    /// The session for `owner` closed: drop it and clear its source.
+    /// One of `owner`'s sessions closed: decrement its count and clear the
+    /// source only when the last one closes.
     pub(crate) fn closed(&mut self, owner: &str) -> Vec<RemoteReport> {
-        match self.owners.remove(owner) {
-            Some((exe, _)) => vec![portal_report(exe, false, false)],
-            None => Vec::new(),
+        let Some(state) = self.owners.get_mut(owner) else {
+            return Vec::new();
+        };
+        state.open = state.open.saturating_sub(1);
+        if state.open > 0 {
+            return Vec::new();
         }
+        let exe = self.owners.remove(owner).expect("just borrowed").exe;
+        vec![portal_report(exe, false, false)]
     }
 
     /// Tear down every tracked session (a monitor reconnect): clear each
@@ -491,7 +515,7 @@ impl PortalTracker {
         let reports = self
             .owners
             .values()
-            .map(|(exe, _)| portal_report(exe.clone(), false, false))
+            .map(|state| portal_report(state.exe.clone(), false, false))
             .collect();
         self.owners.clear();
         reports
@@ -669,14 +693,37 @@ mod tests {
         assert!(r[0].active);
         assert!(!r[0].provisional, "a confirmed open always arms");
         assert_eq!(r[0].detail, "krdpserver");
-        // A second CreateSession from the same owner/exe is idempotent.
-        assert!(t.opened(":1.42", "krdpserver".into()).is_empty());
-        // Close clears the source.
+        // The single session closes: the source clears.
         let r = t.closed(":1.42");
         assert_eq!(r.len(), 1);
         assert!(!r[0].active);
         // Closing an unknown owner is a no-op.
         assert!(t.closed(":1.99").is_empty());
+    }
+
+    #[test]
+    fn tracker_refcounts_concurrent_sessions_per_owner() {
+        let mut t = PortalTracker::default();
+        // krdp opens two capture sessions (ScreenCast + RemoteDesktop) from
+        // one bus name: the first reports the source active, the second is
+        // an already-armed no-op.
+        let r = t.opened(":1.42", "krdpserver".into());
+        assert_eq!(r.len(), 1);
+        assert!(r[0].active);
+        assert!(t.opened(":1.42", "krdpserver".into()).is_empty());
+        // Closing the first handle must NOT clear the source — the other
+        // session is still capturing.
+        assert!(
+            t.closed(":1.42").is_empty(),
+            "one of two concurrent sessions closing keeps the source live"
+        );
+        // Closing the last handle clears it.
+        let r = t.closed(":1.42");
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].active);
+        assert_eq!(r[0].detail, "krdpserver");
+        // Fully drained: another close is a no-op.
+        assert!(t.closed(":1.42").is_empty());
     }
 
     #[test]

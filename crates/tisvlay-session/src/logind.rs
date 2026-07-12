@@ -14,17 +14,14 @@
 //! system bus (headless CI) warns once and idles with supervised retry;
 //! it never blocks or kills the session service.
 
-use std::time::Duration;
+use std::collections::HashMap;
 
 use futures_util::StreamExt;
 use tisvlay_wire::payload::RemoteSourceKind;
-use tracing::{debug, warn};
+use tracing::debug;
 
+use crate::detector::Backoff;
 use crate::{RemoteClient, RemoteReport};
-
-/// Backoff bounds for the supervised watch loop.
-const RETRY_MIN: Duration = Duration::from_secs(2);
-const RETRY_MAX: Duration = Duration::from_secs(60);
 
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
@@ -137,28 +134,23 @@ pub fn spawn(client: RemoteClient) {
 
 /// Supervised watch loop: connect to the system bus, hydrate + watch, and
 /// run until the connection ends; back off and retry. Quiet after the
-/// first warning so a box without logind does not spam the log.
+/// first warning so a box without logind does not spam the log. The
+/// reachable exits are a dead core (nothing left to report to) and, in
+/// defense, a panic in `watch` — the latter strands this detector's
+/// sources until a service restart re-hydrates, a design-pending residual
+/// with no cross-process TTL to cover it.
 async fn run(client: RemoteClient) {
-    let mut backoff = RETRY_MIN;
-    let mut warned = false;
+    let mut backoff = Backoff::default();
     loop {
         match watch(&client).await {
             Ok(()) => {
                 debug!("logind detector: connection ended; reconnecting");
-                backoff = RETRY_MIN;
+                backoff.reset();
             }
             Err(Fault::CoreGone) => return,
-            Err(Fault::Bus(e)) => {
-                if !warned {
-                    warn!(%e, "logind detector: system bus unavailable; retrying quietly");
-                    warned = true;
-                } else {
-                    debug!(%e, "logind detector: connect failed");
-                }
-            }
+            Err(Fault::Bus(e)) => backoff.note_failure("logind detector: system bus", e),
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(RETRY_MAX);
+        tokio::time::sleep(backoff.next_delay()).await;
     }
 }
 
@@ -184,12 +176,21 @@ async fn watch(client: &RemoteClient) -> Result<(), Fault> {
     let mut new_stream = manager.receive_session_new().await?;
     let mut gone_stream = manager.receive_session_removed().await?;
 
+    // Arm-time detail per session id: `SessionRemoved` cannot read the
+    // gone object's properties, and the arm detail prefers the remote host
+    // over the id, so the removal must clear by the *exact* detail the arm
+    // used — reconstructing a bare `session <id>` key would leave a
+    // host-bearing source armed forever. Rebuilt each connection; the
+    // hydration below re-populates it after a reconnect.
+    let mut armed_detail: HashMap<String, String> = HashMap::new();
+
     // Hydrate: a session that predates this service (a restart inside a
     // live RDP session) is re-armed from the current list.
     for (id, uid, _user, _seat, path) in manager.list_sessions().await.unwrap_or_default() {
         if let Some(info) = read_session(&connection, &id, uid, &path).await
             && let Some(report) = report_for(&info, own_uid, true)
         {
+            armed_detail.insert(info.id.clone(), report.detail.clone());
             emit(client, report)?;
         }
     }
@@ -205,26 +206,32 @@ async fn watch(client: &RemoteClient) -> Result<(), Fault> {
                     read_session(&connection, args.id(), u32::MAX, args.path()).await
                     && let Some(report) = report_for(&info, own_uid, true)
                 {
+                    armed_detail.insert(info.id.clone(), report.detail.clone());
                     emit(client, report)?;
                 }
             }
             signal = gone_stream.next() => {
                 let Some(signal) = signal else { return Ok(()) };
                 let Ok(args) = signal.args() else { continue };
-                // The object is gone by removal time, so its properties are
-                // unreadable — reconstruct the same detail the connect edge
-                // used to clear the matching source. A removed session with
-                // no cached facts falls back to the id detail; a source
-                // that was never armed clears to a no-op in the aggregator.
-                let report = RemoteReport {
-                    kind: RemoteSourceKind::Logind,
-                    detail: format!("session {}", args.id()),
-                    active: false,
-                    provisional: false,
-                };
-                emit(client, report)?;
+                emit(client, clear_for(&mut armed_detail, args.id()))?;
             }
         }
+    }
+}
+
+/// The `Logind` clear report for a removed session id, keyed on the exact
+/// detail the arm edge cached (the gone object's properties are
+/// unreadable). Consumes the cache entry. An id that was never armed
+/// clears by a bare `session <id>` detail — a no-op in the aggregator.
+fn clear_for(armed_detail: &mut HashMap<String, String>, id: &str) -> RemoteReport {
+    let detail = armed_detail
+        .remove(id)
+        .unwrap_or_else(|| format!("session {id}"));
+    RemoteReport {
+        kind: RemoteSourceKind::Logind,
+        detail,
+        active: false,
+        provisional: false,
     }
 }
 
@@ -358,5 +365,32 @@ mod tests {
         assert!(report_for(&info(1000, false, ""), 1000, true).is_none());
         // A remote SSH shell (Type=tty) yields nothing.
         assert!(report_for(&typed(1000, true, "host.lan", "tty"), 1000, true).is_none());
+    }
+
+    /// A host-bearing session arms under its host detail, so the removal
+    /// must clear by that same host — not a reconstructed `session <id>`.
+    /// Reconstruction left a host-keyed source armed forever (the removal
+    /// never matched the arm key), so the TV stayed armed after disconnect.
+    #[test]
+    fn removal_clears_by_the_cached_arm_detail() {
+        let info = info(1000, true, "10.0.0.5"); // id "7"
+        let report = report_for(&info, 1000, true).unwrap();
+        assert_eq!(report.detail, "10.0.0.5");
+
+        let mut armed_detail = HashMap::new();
+        armed_detail.insert(info.id.clone(), report.detail.clone());
+
+        // The clear reports the armed detail (the host), so it matches the
+        // aggregator key the arm inserted, and consumes the cache entry.
+        let clear = clear_for(&mut armed_detail, &info.id);
+        assert!(!clear.active);
+        assert_eq!(clear.kind, RemoteSourceKind::Logind);
+        assert_eq!(clear.detail, report.detail, "removal clears the armed key");
+        assert!(armed_detail.is_empty(), "the cache entry is consumed");
+
+        // A session never armed (no cache entry) clears by the bare id — a
+        // harmless no-op against a source that was never live.
+        let clear = clear_for(&mut armed_detail, "99");
+        assert_eq!(clear.detail, "session 99");
     }
 }

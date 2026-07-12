@@ -1157,6 +1157,98 @@ async fn screencast_source_arms_only_under_capture_policy() {
     .await;
 }
 
+/// The connect/disconnect edge keys on the ARMED set, not raw source
+/// presence: an unarmed screencast (capture arming off — an OBS record or
+/// a browser tab-share) publishes its source but must not fire the connect
+/// action and blank every TV. Opting capture in makes the same signal arm
+/// and drive the edge.
+#[tokio::test(flavor = "multi_thread")]
+async fn unarmed_screencast_publishes_but_fires_no_connect_action() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let screencast = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Screencast,
+        detail: "1 node (running)".into(),
+        active,
+        provisional: false,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://screencast-edge").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+
+    // A profile whose connect action would blank the panel and whose
+    // disconnect action wakes it — capture arming stays off (default).
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Capture edges",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_on",
+        }),
+    )
+    .await;
+
+    // The unattributed screencast: the fact carries the source but the
+    // armed set stays empty, and — the regression — NO connect action
+    // reaches the TV, so the panel is never blanked for a mere capture.
+    assert!(rig.stack.remote.report(screencast(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"]
+                .as_array()
+                .is_some_and(|src| src.iter().any(|s| s["kind"] == "screencast"))
+                && v["armed"] == json!([])
+        }
+    })
+    .await;
+    assert_no_sample(&sub, Duration::from_millis(500), |s| {
+        keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+            .is_some_and(|(t, p)| t == tv && p == "state/power")
+            && payload_json(s)["state"] == "screenoff"
+    })
+    .await;
+
+    // Opt capture in: the same live signal now arms the TV, so a re-toggled
+    // source drives the arm edge and the connect action (screen_off) fires.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Capture arms edges",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_on",
+            "remote_screencast_arms": true,
+        }),
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(rig.stack.remote.report(screencast(false)), "core gone");
+        assert!(rig.stack.remote.report(screencast(true)), "core gone");
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, sub.recv_async()).await {
+            if keys::parse_tv_path(&rig.site, sample.key_expr().as_str())
+                .is_some_and(|(t, p)| t == tv && p == "state/power")
+                && payload_json(&sample)["state"] == "screenoff"
+            {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "capture-armed screencast never fired the connect action"
+        );
+    }
+}
+
 /// A `Portal`-kind report (the shape the portal monitor produces for an
 /// allow-listed remote app) is attributed, so it arms the TV with no
 /// `remote_screencast_arms` opt-in — unlike the unattributed screencast

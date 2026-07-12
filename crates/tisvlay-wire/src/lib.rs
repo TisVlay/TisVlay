@@ -245,11 +245,14 @@ pub mod payload {
     /// the unattributed `Screencast` signal arms only when the resolved
     /// profile opts in (`remote_screencast_arms`). `Ord` so the source
     /// set keys deterministically.
+    ///
+    /// A dedicated `Sunshine` kind is intentionally absent: Sunshine
+    /// reports through the `Manual` hook verb, and the portal path reports
+    /// `Portal`. Re-add one if the bench-gated `/serverinfo` poller ships.
     #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     #[serde(rename_all = "snake_case")]
     pub enum RemoteSourceKind {
         Manual,
-        Sunshine,
         Logind,
         Portal,
         Screencast,

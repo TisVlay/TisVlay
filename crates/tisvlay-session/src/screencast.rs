@@ -26,11 +26,11 @@
 //! it never blocks or kills the session service.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use tisvlay_wire::payload::RemoteSourceKind;
-use tracing::{debug, warn};
+use tracing::debug;
 
+use crate::detector::Backoff;
 use crate::{RemoteClient, RemoteReport};
 
 /// PipeWire property keys and the values the predicate matches. Plain
@@ -39,10 +39,6 @@ const MEDIA_CLASS: &str = "media.class";
 const NODE_NAME: &str = "node.name";
 const SCREENCAST_MEDIA_CLASS: &str = "Stream/Output/Video";
 const KWIN_NODE_NAME: &str = "kwin_wayland";
-
-/// Backoff bounds for the supervised connect loop.
-const RETRY_MIN: Duration = Duration::from_secs(2);
-const RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// The properties the predicate needs, lifted out of a PipeWire
 /// `Properties` bag into an owned struct so the predicate and the tracker
@@ -197,28 +193,19 @@ pub fn spawn(client: RemoteClient) {
 /// gone (nothing left to report to).
 fn run(client: RemoteClient) {
     ffi::init();
-    let mut backoff = RETRY_MIN;
-    let mut warned = false;
+    let mut backoff = Backoff::default();
     loop {
         match ffi::run_session(&client) {
             Ok(()) => {
                 // Clean session end (server disconnect). Reset backoff —
                 // a returning server reconnects promptly.
                 debug!("screencast: pipewire session ended; reconnecting");
-                backoff = RETRY_MIN;
+                backoff.reset();
             }
             Err(FfiError::CoreGone) => return,
-            Err(FfiError::Connect(e)) => {
-                if !warned {
-                    warn!(%e, "screencast: pipewire unavailable; retrying quietly");
-                    warned = true;
-                } else {
-                    debug!(%e, "screencast: pipewire connect failed");
-                }
-            }
+            Err(FfiError::Connect(e)) => backoff.note_failure("screencast: pipewire", e),
         }
-        std::thread::sleep(backoff);
-        backoff = (backoff * 2).min(RETRY_MAX);
+        std::thread::sleep(backoff.next_delay());
     }
 }
 
@@ -331,13 +318,19 @@ mod ffi {
                 if type_ != types::interface::NODE {
                     return;
                 }
+                // Cheap borrowed pre-check before allocating: most graph
+                // nodes are not KWin captures, so only build a `NodeProps`
+                // (and bind the node) for one that matches the predicate.
+                if props.get(super::MEDIA_CLASS) != Some(super::SCREENCAST_MEDIA_CLASS)
+                    || props.get(super::NODE_NAME) != Some(super::KWIN_NODE_NAME)
+                {
+                    return;
+                }
                 let np = node_props(props);
                 let reports = tracker.lock().unwrap().on_global(id, &np);
                 emit(client, flags, reports);
-                // Bind matching nodes to receive their state for `detail`.
-                if super::is_screencast(&np) {
-                    watch_node_state(&reg_for_bind, id, version, tracker, client, flags);
-                }
+                // A matching node: bind it to receive its run state for `detail`.
+                watch_node_state(&reg_for_bind, id, version, tracker, client, flags);
             }),
             global_remove: some_closure!([^(tracker, client, flags)] id, {
                 let reports = tracker.lock().unwrap().on_removed(id);

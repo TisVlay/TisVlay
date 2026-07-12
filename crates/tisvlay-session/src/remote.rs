@@ -145,9 +145,18 @@ impl RemoteSources {
     }
 
     /// The current live sources, in stable order (pending provisionals
-    /// excluded until corroborated).
+    /// excluded until corroborated). For the wire path (`remote_state`),
+    /// which needs each source's `detail`; the arming path reads only
+    /// kinds — see [`kinds`](Self::kinds).
     pub(crate) fn snapshot(&self) -> Vec<RemoteSource> {
         self.live.values().cloned().collect()
+    }
+
+    /// The live source kinds (no `detail` clone) — the arming
+    /// computation reads only the kind, so this is the cheap view for
+    /// [`compute_armed`].
+    pub(crate) fn kinds(&self) -> Vec<RemoteSourceKind> {
+        self.live.values().map(|source| source.kind).collect()
     }
 
     /// Any live source at all — the cheap "is a session active" check.
@@ -162,36 +171,34 @@ impl RemoteSources {
 /// `remote_screencast_arms` policy.
 fn kind_always_arms(kind: RemoteSourceKind) -> bool {
     match kind {
-        RemoteSourceKind::Manual
-        | RemoteSourceKind::Sunshine
-        | RemoteSourceKind::Logind
-        | RemoteSourceKind::Portal => true,
+        RemoteSourceKind::Manual | RemoteSourceKind::Logind | RemoteSourceKind::Portal => true,
         RemoteSourceKind::Screencast => false,
     }
 }
 
-/// Whether the given sources arm a TV with `screencast_arms` policy.
+/// Whether the given source kinds arm a TV with `screencast_arms` policy.
 ///
-/// True when any attributed source is live, or when a screencast source
-/// is live and the TV's profile opts capture in.
-pub(crate) fn sources_arm(sources: &[RemoteSource], screencast_arms: bool) -> bool {
-    sources.iter().any(|source| {
-        kind_always_arms(source.kind)
-            || (source.kind == RemoteSourceKind::Screencast && screencast_arms)
+/// True when any attributed kind is live, or when a screencast source is
+/// live and the TV's profile opts capture in.
+pub(crate) fn kinds_arm(kinds: &[RemoteSourceKind], screencast_arms: bool) -> bool {
+    kinds.iter().any(|&kind| {
+        kind_always_arms(kind) || (kind == RemoteSourceKind::Screencast && screencast_arms)
     })
 }
 
-/// Recompute the armed set: every TV whose resolved profile the sources
-/// arm. `resolve` yields the TV's resolved user profile (the same chain
-/// the session uses everywhere). Returns a sorted `Vec<Uuid>` so the
-/// published projection is stable.
+/// Recompute the armed set: every TV whose resolved profile the live
+/// source `kinds` arm. `resolve` yields the TV's resolved user profile
+/// (the same chain the session uses everywhere). Returns a sorted
+/// `Vec<Uuid>` so the published projection is stable. Callers early-out
+/// on an empty source set, so this only resolves profiles when at least
+/// one source is live.
 pub(crate) fn compute_armed<'a>(
     tvs: impl Iterator<Item = &'a Uuid>,
-    sources: &[RemoteSource],
+    kinds: &[RemoteSourceKind],
     mut resolve: impl FnMut(&Uuid) -> ResolvedUserProfile,
 ) -> Vec<Uuid> {
     let mut armed: Vec<Uuid> = tvs
-        .filter(|tv| sources_arm(sources, resolve(tv).remote_screencast_arms))
+        .filter(|tv| kinds_arm(kinds, resolve(tv).remote_screencast_arms))
         .copied()
         .collect();
     armed.sort();
@@ -202,63 +209,49 @@ pub(crate) fn compute_armed<'a>(
 mod tests {
     use super::*;
 
-    fn source(kind: RemoteSourceKind) -> RemoteSource {
-        RemoteSource {
-            kind,
-            detail: "x".into(),
-        }
-    }
-
     #[test]
-    fn attributed_sources_arm_regardless_of_capture_policy() {
+    fn attributed_kinds_arm_regardless_of_capture_policy() {
         for kind in [
             RemoteSourceKind::Manual,
-            RemoteSourceKind::Sunshine,
             RemoteSourceKind::Logind,
             RemoteSourceKind::Portal,
         ] {
-            assert!(sources_arm(&[source(kind)], false));
-            assert!(sources_arm(&[source(kind)], true));
+            assert!(kinds_arm(&[kind], false));
+            assert!(kinds_arm(&[kind], true));
         }
     }
 
     #[test]
     fn screencast_arms_only_when_the_policy_opts_in() {
-        assert!(!sources_arm(&[source(RemoteSourceKind::Screencast)], false));
-        assert!(sources_arm(&[source(RemoteSourceKind::Screencast)], true));
-        // A capture source next to an attributed one still arms via the
+        assert!(!kinds_arm(&[RemoteSourceKind::Screencast], false));
+        assert!(kinds_arm(&[RemoteSourceKind::Screencast], true));
+        // A capture kind next to an attributed one still arms via the
         // attributed one, whatever the capture policy.
-        let mixed = [
-            source(RemoteSourceKind::Screencast),
-            source(RemoteSourceKind::Manual),
-        ];
-        assert!(sources_arm(&mixed, false));
+        let mixed = [RemoteSourceKind::Screencast, RemoteSourceKind::Manual];
+        assert!(kinds_arm(&mixed, false));
     }
 
     #[test]
     fn no_sources_never_arms() {
-        assert!(!sources_arm(&[], true));
-        assert!(!sources_arm(&[], false));
+        assert!(!kinds_arm(&[], true));
+        assert!(!kinds_arm(&[], false));
     }
 
     #[test]
     fn compute_armed_selects_per_profile_capture_policy() {
         let a = Uuid::from_u128(1);
         let b = Uuid::from_u128(2);
-        // Only `a` opts capture in; a bare screencast source arms `a`
-        // alone.
-        let armed = compute_armed(
-            [a, b].iter(),
-            &[source(RemoteSourceKind::Screencast)],
-            |tv| ResolvedUserProfile {
+        // Only `a` opts capture in; a bare screencast kind arms `a` alone.
+        let armed = compute_armed([a, b].iter(), &[RemoteSourceKind::Screencast], |tv| {
+            ResolvedUserProfile {
                 remote_screencast_arms: *tv == a,
                 ..Default::default()
-            },
-        );
+            }
+        });
         assert_eq!(armed, vec![a]);
 
-        // An attributed source arms both, sorted.
-        let armed = compute_armed([b, a].iter(), &[source(RemoteSourceKind::Manual)], |_| {
+        // An attributed kind arms both, sorted.
+        let armed = compute_armed([b, a].iter(), &[RemoteSourceKind::Manual], |_| {
             ResolvedUserProfile::default()
         });
         assert_eq!(armed, vec![a, b]);
@@ -272,17 +265,17 @@ mod tests {
     fn compute_armed_tracks_a_tv_set_that_grows_under_static_sources() {
         let a = Uuid::from_u128(1);
         let b = Uuid::from_u128(2);
-        let sources = [source(RemoteSourceKind::Manual)];
+        let kinds = [RemoteSourceKind::Manual];
         let resolve = |_: &Uuid| ResolvedUserProfile::default();
 
         // No TVs known yet: an attributed source arms nothing.
         assert_eq!(
-            compute_armed([].iter(), &sources, resolve),
+            compute_armed([].iter(), &kinds, resolve),
             Vec::<Uuid>::new()
         );
         // The same sources, once the TVs hydrate, arm every one of them.
-        assert_eq!(compute_armed([a].iter(), &sources, resolve), vec![a]);
-        assert_eq!(compute_armed([a, b].iter(), &sources, resolve), vec![a, b]);
+        assert_eq!(compute_armed([a].iter(), &kinds, resolve), vec![a]);
+        assert_eq!(compute_armed([a, b].iter(), &kinds, resolve), vec![a, b]);
     }
 
     #[test]
