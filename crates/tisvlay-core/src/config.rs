@@ -92,12 +92,13 @@ pub enum SessionAction {
 /// The `while_remote` modifier is the remote-session gate: `false`
 /// (the bare-token default) suppresses this event's action while the
 /// TV is armed by a remote session; `true` lets it fire regardless.
-/// Suppress-by-default means an unconfigured profile keeps the TV dark
-/// for an empty room; the exceptions (sleep/shutdown/reboot, which turn
-/// the TV off as the machine goes away) carry an explicit `true` at the
-/// resolved floor. Because it can only suppress, the gate can never
-/// originate an action an unarmed TV would not take. It is inert on
-/// `none` rows (nothing to suppress).
+/// The resolved floor splits by event direction: suppression protects
+/// against unwanted wakes, so wake-ish stock events keep the gated
+/// default (an unconfigured profile stays dark for an empty room),
+/// while off-going stock events (blanks and power-offs) carry an
+/// explicit `true` — a blank is always safe to let through. Because it
+/// can only suppress, the gate can never originate an action an unarmed
+/// TV would not take. It is inert on `none` rows (nothing to suppress).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EventAction {
@@ -142,8 +143,10 @@ impl EventAction {
     }
 
     /// Table-form constructor for a floor-exempt mapping — an action
-    /// that still fires while the TV is armed (sleep/shutdown/reboot,
-    /// where the machine going away should turn the TV off regardless).
+    /// that still fires while the TV is armed. Off-going stock events
+    /// (blanks and power-offs) use this: a blank is always safe to let
+    /// through, and the machine going away should turn the TV off
+    /// regardless.
     pub fn ungated(action: SessionAction) -> Self {
         Self::With {
             action,
@@ -449,24 +452,26 @@ impl Default for ResolvedSystemProfile {
             // default (a CEC or WoL wake can land on another port);
             // every other mapping stays input-neutral.
             //
-            // Floor exemptions: sleep/shutdown/reboot fire even while a
-            // remote session arms the TV — the machine going away should
-            // still turn the panel off for the empty room. Every other
-            // stock action stays gated by default (startup stays gated so
-            // a boot while remoted leaves the TV dark; the wake and DPMS
-            // mirrors are wake-ish and suppressed for an empty room).
+            // Floor gate splits by direction: off-going events fire even
+            // while armed (a blank is always safe to let through, and the
+            // machine going away should still turn the panel off for the
+            // empty room), so the DPMS-off blank and the idle-timeout
+            // blank join sleep/shutdown/reboot as ungated. Wake-ish events
+            // stay gated (startup so a boot while remoted leaves the TV
+            // dark; the wake, DPMS-on, and idle-resume mirrors so a wake
+            // for an empty room is suppressed).
             on_startup: EventAction::restoring(SessionAction::PowerOn),
             on_shutdown: EventAction::ungated(SessionAction::PowerOff),
             on_reboot: EventAction::ungated(SessionAction::None),
             on_sleep: EventAction::ungated(SessionAction::PowerOff),
             on_wake: EventAction::restoring(SessionAction::PowerOn),
-            on_dpms_off: SessionAction::ScreenOff.into(),
+            on_dpms_off: EventAction::ungated(SessionAction::ScreenOff),
             on_dpms_on: SessionAction::ScreenOn.into(),
             // Off by default: the greeter idle timer is opt-in (set a non-zero
             // timeout, e.g. via the NixOS `greeter.enable` option). The DPMS
             // mirror above is the only default-on screen automation.
             idle_timeout_seconds: 0,
-            on_idle_timeout: SessionAction::ScreenOff.into(),
+            on_idle_timeout: EventAction::ungated(SessionAction::ScreenOff),
             on_idle_resume: SessionAction::ScreenOn.into(),
             automate_when: AutomateWhen::Always,
         }
@@ -595,19 +600,24 @@ pub struct ResolvedUserProfile {
 impl Default for ResolvedUserProfile {
     fn default() -> Self {
         Self {
-            on_session_lock: SessionAction::ScreenOff.into(),
-            // Unlock means a desktop session is incoming — restore the
-            // primary input by default; the other mappings stay neutral.
+            // Floor gate splits by direction: the off-going blanks (lock,
+            // idle-timeout) are ungated — a blank is always safe to let
+            // through even for an armed TV — while the wake-ish events
+            // (unlock, lock-wake, idle-resume) stay gated so a wake for an
+            // empty room is suppressed. Unlock also restores the primary
+            // input (a desktop session is incoming); the other mappings
+            // stay input-neutral.
+            on_session_lock: EventAction::ungated(SessionAction::ScreenOff),
             on_session_unlock: EventAction::restoring(SessionAction::ScreenOn),
             on_lock_wake: SessionAction::ScreenOn.into(),
             locked_idle_timeout_seconds: 0,
             unlocked_idle_timeout_seconds: 0,
-            on_idle_timeout: SessionAction::ScreenOff.into(),
+            on_idle_timeout: EventAction::ungated(SessionAction::ScreenOff),
             on_idle_resume: SessionAction::ScreenOn.into(),
             // Remote awareness is opt-in: no connect/disconnect action
-            // and no capture arming until a profile edits them. Every
-            // user event is wake-ish, so all carry the gated default —
-            // an unconfigured profile keeps the TV dark while armed.
+            // and no capture arming until a profile edits them. The
+            // connect/disconnect actions ignore the gate (they fire on the
+            // arm/disarm edge itself), so they carry the plain default.
             on_remote_connect: SessionAction::None.into(),
             on_remote_disconnect: SessionAction::None.into(),
             remote_screencast_arms: false,
@@ -1490,11 +1500,14 @@ remote_screencast_arms = true
         assert_eq!(resolved.on_remote_connect, SessionAction::None);
         assert_eq!(resolved.on_remote_disconnect, SessionAction::None);
         assert!(!resolved.remote_screencast_arms);
-        // Every stock user event is wake-ish and gated by default —
-        // an unconfigured profile suppresses these while armed.
+        // Floor splits by direction: the wake-ish user events are gated
+        // (suppressed while armed)…
         assert!(!resolved.on_session_unlock.while_remote());
         assert!(!resolved.on_lock_wake.while_remote());
         assert!(!resolved.on_idle_resume.while_remote());
+        // …while the off-going blanks fire while armed.
+        assert!(resolved.on_session_lock.while_remote());
+        assert!(resolved.on_idle_timeout.while_remote());
     }
 
     #[test]
@@ -1921,13 +1934,16 @@ ip = "192.168.1.101"
         // DPMS actions mirror the host display by default.
         assert_eq!(resolved.on_dpms_off, SessionAction::ScreenOff);
         assert_eq!(resolved.on_dpms_on, SessionAction::ScreenOn);
-        // Suppress-by-default: the wake-ish stock events are gated while
-        // armed, so an unconfigured profile keeps the panel dark.
+        // Wake-ish stock events are gated while armed, so an unconfigured
+        // profile keeps the panel dark for the empty room.
         assert!(!resolved.on_dpms_on.while_remote());
         assert!(!resolved.on_wake.while_remote());
         assert!(!resolved.on_startup.while_remote());
-        // Floor exemptions: sleep/shutdown/reboot still fire while armed
-        // — the machine going away turns the TV off regardless.
+        assert!(!resolved.on_idle_resume.while_remote());
+        // Off-going stock events fire while armed: the blanks (DPMS-off,
+        // idle-timeout) alongside the power-offs (sleep/shutdown/reboot).
+        assert!(resolved.on_dpms_off.while_remote());
+        assert!(resolved.on_idle_timeout.while_remote());
         assert!(resolved.on_sleep.while_remote());
         assert!(resolved.on_shutdown.while_remote());
         assert!(resolved.on_reboot.while_remote());

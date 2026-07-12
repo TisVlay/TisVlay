@@ -128,9 +128,13 @@ async fn sdk_mirrors_rpcs_and_watches() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let defaults = daemon.get_resolved_system_profile_defaults().await.unwrap();
+    // DPMS-off is an off-going blank: ungated at the floor (fires while
+    // armed) since a blank is always safe to let through.
     assert_eq!(
         defaults.on_dpms_off,
-        Some(tisvlay_core::SessionAction::ScreenOff.into())
+        Some(tisvlay_core::EventAction::ungated(
+            tisvlay_core::SessionAction::ScreenOff
+        ))
     );
 
     assert!(session.is_available().await);
@@ -353,7 +357,9 @@ async fn client_before_daemon_connects_when_it_appears() {
             assert_eq!(body.name, "default");
             assert_eq!(
                 body.on_dpms_off,
-                Some(tisvlay_core::SessionAction::ScreenOff.into())
+                Some(tisvlay_core::EventAction::ungated(
+                    tisvlay_core::SessionAction::ScreenOff
+                ))
             );
             break;
         }

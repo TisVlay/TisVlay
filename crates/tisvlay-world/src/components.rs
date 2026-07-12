@@ -190,12 +190,14 @@ impl SystemProfile {
     /// The session-start wakes restore the primary input (mirrors
     /// `ResolvedSystemProfile::default`).
     ///
-    /// The `while_remote` floor is suppress-by-default with the same
-    /// exemptions as [`tisvlay_core::ResolvedSystemProfile::default`]:
-    /// sleep and shutdown fire while armed (the machine going away turns
-    /// the TV off for the empty room); every other stock event is gated.
-    /// Greeter events run before any session, so their gate never bites
-    /// (the armed set is empty at the login screen).
+    /// The `while_remote` floor splits by event direction, mirroring
+    /// [`tisvlay_core::ResolvedSystemProfile::default`]: off-going events
+    /// fire while armed (a blank is always safe to let through, and the
+    /// machine going away turns the TV off for the empty room), so sleep,
+    /// shutdown, and the DPMS-off/greeter-idle blanks are ungated; the
+    /// wake-ish events (startup, resume, DPMS-on, greeter-resume) stay
+    /// gated. Greeter events run before any session, so their gate never
+    /// bites either way (the armed set is empty at the login screen).
     pub(crate) fn stock() -> Self {
         Self(HashMap::from([
             // WoL at boot; a reboot deliberately has no stock action
@@ -209,12 +211,12 @@ impl SystemProfile {
             ),
             (
                 SystemEvent::DpmsOff,
-                (ProfileAction::ScreenOff, false, false),
+                (ProfileAction::ScreenOff, false, true),
             ),
             (SystemEvent::DpmsOn, (ProfileAction::ScreenOn, false, false)),
             (
                 SystemEvent::GreeterIdle,
-                (ProfileAction::ScreenOff, false, false),
+                (ProfileAction::ScreenOff, false, true),
             ),
             (
                 SystemEvent::GreeterResume,

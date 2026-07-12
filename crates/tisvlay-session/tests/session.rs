@@ -365,17 +365,19 @@ async fn user_profile_overrides_and_guards() {
         defaults,
         json!({
             "name": "default",
-            "on_session_lock": "screen_off",
+            // Floor splits by direction: the off-going blanks (lock,
+            // idle-timeout) project ungated (`while_remote = true`); the
+            // wake-ish events (unlock, lock-wake, idle-resume) stay gated.
+            "on_session_lock": { "action": "screen_off", "restore_input": false, "while_remote": true },
             "on_session_unlock": { "action": "screen_on", "restore_input": true, "while_remote": false },
             "on_lock_wake": "screen_on",
             "locked_idle_timeout_seconds": 0,
             "unlocked_idle_timeout_seconds": 0,
-            "on_idle_timeout": "screen_off",
+            "on_idle_timeout": { "action": "screen_off", "restore_input": false, "while_remote": true },
             "on_idle_resume": "screen_on",
             // Remote awareness ships neutral: no connect/disconnect action
-            // and capture arming off. The per-event gate rides each
-            // action's table form and is suppress-by-default, so the
-            // wake-ish stock unlock projects `while_remote = false`.
+            // and capture arming off. The connect/disconnect actions ignore
+            // the gate, so they project the plain default.
             "on_remote_connect": "none",
             "on_remote_disconnect": "none",
             "remote_screencast_arms": false,
@@ -732,16 +734,15 @@ async fn armed_remote_suppresses_gated_events() {
 
     // Gate the unlock (and idle-resume) wake actions off while armed. The
     // gate rides the action's table form, replacing the whole mapping.
-    // `on_session_lock` is set ungated (`while_remote = true`) so the
-    // off-going blank still fires while armed — the test's setup depends
-    // on it, and under suppress-by-default a bare screen_off would itself
-    // be gated.
+    // `on_session_lock` is left at the stock floor, which is ungated for
+    // the off-going blank — the test's setup depends on the lock still
+    // blanking while armed, and the floor provides that without an
+    // explicit `while_remote = true` here.
     create_and_assign(
         &rig,
         tv,
         json!({
             "name": "Remote quiet",
-            "on_session_lock": { "action": "screen_off", "while_remote": true },
             "on_session_unlock": { "action": "screen_on", "while_remote": false },
             "on_idle_resume": { "action": "screen_on", "while_remote": false },
         }),

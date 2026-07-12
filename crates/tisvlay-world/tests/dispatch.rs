@@ -665,16 +665,17 @@ async fn while_remote_default_suppresses_dpms_on_while_armed() {
     .await;
 }
 
-/// Floor exemption: the stock `on_sleep` fires while armed even with no
-/// profile fields set — the machine going away turns the TV off for the
-/// empty room. Contrast `while_remote_default_suppresses_dpms_on_while_armed`,
-/// where the wake-ish stock floor is gated.
+/// Floor exemption: the off-going stock actions fire while armed even
+/// with no profile fields set — a blank is always safe to let through,
+/// and the machine going away turns the TV off for the empty room.
+/// Contrast `while_remote_default_suppresses_dpms_on_while_armed`, where
+/// the wake-ish stock floor is gated.
 #[tokio::test]
 async fn stock_sleep_and_shutdown_fire_while_armed() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://floor").await;
-    // No profile fields set: sleep resolves to the stock power-off with
-    // its floor gate `true`.
+    // No profile fields set: the off-going events resolve to their stock
+    // actions with the floor gate `true`.
     assign_remote_profile(
         &mut effects,
         &client,
@@ -686,6 +687,16 @@ async fn stock_sleep_and_shutdown_fire_while_armed() {
     )
     .await;
     arm(&client, &[id]);
+
+    // The stock DPMS-off blanks the panel even while armed.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
 
     // Sleep's stock power-off tears the link down even while armed.
     client.send(InEvent::System {

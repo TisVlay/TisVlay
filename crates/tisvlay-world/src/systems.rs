@@ -2170,8 +2170,8 @@ fn publish_greeter_timeout(
 /// The TV's assigned profile decides the action; unset fields (and TVs
 /// without a profile) fall back to the stock mapping. The trailing bool
 /// is the resolved `while_remote` gate — the stock floor carries the
-/// per-event gate honestly (sleep/shutdown fire while armed, everything
-/// else is suppressed), matching the core resolved defaults.
+/// per-event gate honestly (off-going events fire while armed, wake-ish
+/// events suppress), matching the core resolved defaults.
 fn resolve_action(
     event: &SystemEvent,
     meta: Option<&payload::Meta>,
@@ -2197,7 +2197,7 @@ fn resolve_action(
         return session_action(action);
     }
     // …and only then the hard-coded stock floor, which carries its own
-    // per-event gate (sleep/shutdown fire while armed, the rest suppress).
+    // per-event gate (off-going events fire while armed, wake-ish suppress).
     stock.0.get(event).copied()
 }
 

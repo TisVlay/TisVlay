@@ -596,9 +596,9 @@ fn floor_user_restore(layers: &UserProfileLayers, wire: &str) -> bool {
 }
 
 /// The field's floor `while_remote` gate — the baseline value the accent
-/// compares against. `false` for wake events, `true` for the exempted
-/// system events (sleep/shutdown/reboot); an absent baseline field floors
-/// to `false` (suppress-by-default).
+/// compares against. `false` for wake-ish events, `true` for the off-going
+/// events (blanks and power-offs); an absent baseline field floors to
+/// `false` (suppress-by-default).
 fn floor_system_remote_gate(layers: &ProfileLayers, wire: &str) -> bool {
     read_system_action(&layers.baseline, wire)
         .map(|a| a.while_remote())
@@ -2611,11 +2611,13 @@ mod tests {
     #[test]
     fn floor_gate_reads_the_baseline_exemptions() {
         // The floor comparison the "differs" accent uses reads the
-        // baseline body. A baseline carrying the real exemptions (sleep
-        // ungated, dpms-on gated) floors accordingly; an absent field
-        // floors to suppress-by-default.
+        // baseline body, so it tracks the direction split automatically:
+        // off-going events ungated (the sleep power-off, the DPMS-off
+        // blank), wake-ish events gated (DPMS-on). An absent field floors
+        // to suppress-by-default.
         let mut baseline = baseline_system();
         baseline.on_sleep = Some(tisvlay_core::EventAction::ungated(SessionAction::PowerOff));
+        baseline.on_dpms_off = Some(tisvlay_core::EventAction::ungated(SessionAction::ScreenOff));
         baseline.on_dpms_on = Some(SessionAction::ScreenOn.into());
         let layers = ProfileLayers {
             baseline,
@@ -2623,6 +2625,7 @@ mod tests {
             bodies: HashMap::new(),
         };
         assert!(floor_system_remote_gate(&layers, "on_sleep"));
+        assert!(floor_system_remote_gate(&layers, "on_dpms_off"));
         assert!(!floor_system_remote_gate(&layers, "on_dpms_on"));
         // `automate_when` is not an action wire — floors to false.
         assert!(!floor_system_remote_gate(&layers, "automate_when"));
