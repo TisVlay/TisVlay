@@ -2408,4 +2408,53 @@ mod tests {
         // `none` has no dispatchable action regardless of the gate.
         assert_eq!(session_action(EventAction::from(SessionAction::None)), None);
     }
+
+    /// The world's stock floor and the root stack's resolved defaults are
+    /// two hand-written tables that must agree event-for-event, including
+    /// the `while_remote` gate — a drift here silently diverges the
+    /// daemon's DPMS gate from what the session and GUI resolve. Derive
+    /// the expected tuple from `ResolvedSystemProfile::default` through the
+    /// same event-to-field map the dispatch path uses, and assert parity.
+    #[test]
+    fn stock_floor_matches_the_resolved_defaults() {
+        let resolved = tisvlay_core::ResolvedSystemProfile::default();
+        let field = |event: &SystemEvent| match event {
+            SystemEvent::Startup => resolved.on_startup,
+            SystemEvent::Sleep => resolved.on_sleep,
+            SystemEvent::Resume => resolved.on_wake,
+            SystemEvent::Shutdown => resolved.on_shutdown,
+            SystemEvent::Reboot => resolved.on_reboot,
+            SystemEvent::DpmsOff => resolved.on_dpms_off,
+            SystemEvent::DpmsOn => resolved.on_dpms_on,
+            SystemEvent::GreeterIdle => resolved.on_idle_timeout,
+            SystemEvent::GreeterResume => resolved.on_idle_resume,
+        };
+        for (event, tuple) in SystemProfile::stock().0 {
+            assert_eq!(
+                session_action(field(&event)),
+                Some(tuple),
+                "stock floor for {event:?} diverged from ResolvedSystemProfile::default"
+            );
+        }
+        // Every event the resolved defaults leave dispatchable must have a
+        // stock entry; a `none` field (e.g. reboot) legitimately has none.
+        let stock = SystemProfile::stock().0;
+        for event in [
+            SystemEvent::Startup,
+            SystemEvent::Sleep,
+            SystemEvent::Resume,
+            SystemEvent::Shutdown,
+            SystemEvent::Reboot,
+            SystemEvent::DpmsOff,
+            SystemEvent::DpmsOn,
+            SystemEvent::GreeterIdle,
+            SystemEvent::GreeterResume,
+        ] {
+            assert_eq!(
+                session_action(field(&event)).is_some(),
+                stock.contains_key(&event),
+                "stock presence for {event:?} disagrees with the resolved default's dispatchability"
+            );
+        }
+    }
 }
