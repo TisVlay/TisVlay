@@ -371,9 +371,9 @@ component ProfileList inherits Rectangle {
 // The reset slot is the last fixed-width column on every row, so it lands
 // at the same right edge whether or not the toggles precede it (the
 // `alignment: end` right-anchors the block). The two toggle slots render
-// only on action rows (`has-restore` / `has-remote-gate`) — non-action
-// rows (number, bool) carry the reset slot alone, so a SpinBox is not
-// squeezed by empty toggle spacers.
+// only on action rows (`has-toggles`) — non-action rows (number, bool)
+// carry the reset slot alone, so a SpinBox is not squeezed by empty
+// toggle spacers.
 //
 // Each slot is a fixed 24×24 box: the explicit height gives the
 // `if`-gated `IconBtn` (bound `height: 100%`) a nonzero hit area — a
@@ -390,7 +390,7 @@ component ProfileRowTrailing inherits HorizontalLayout {
     alignment: end;
 
     // Restore-input toggle slot — action rows only.
-    if root.entry.has-restore: Rectangle {
+    if root.entry.has-toggles: Rectangle {
         width: 24px;
         height: 24px;
         IconBtn {
@@ -409,7 +409,7 @@ component ProfileRowTrailing inherits HorizontalLayout {
 
     // Remote-session gate slot — action rows only. The glyph swaps by
     // value (gated = network-off); the accent tracks differs-from-floor.
-    if root.entry.has-remote-gate: Rectangle {
+    if root.entry.has-toggles: Rectangle {
         width: 24px;
         height: 24px;
         IconBtn {

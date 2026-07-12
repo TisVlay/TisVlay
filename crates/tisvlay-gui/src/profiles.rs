@@ -520,9 +520,18 @@ fn read_user_action(body: &UserProfileBody, wire: &str) -> Option<tisvlay_core::
     }
 }
 
-/// Resolve an action field's `restore_input` modifier through the same
-/// own → default → baseline chain as [`resolve_system_field`].
-pub(crate) fn resolve_system_restore(layers: &ProfileLayers, uuid: Uuid, wire: &str) -> bool {
+/// Resolve an action field's full [`EventAction`] (verb + both
+/// modifiers) through the same own → default → baseline chain as
+/// [`resolve_system_field`]. `None` when no layer maps the field — the
+/// caller floors the derived modifiers (`restore_input = false`,
+/// gated). One walk backs both toggle modifiers (via [`action_modifier`])
+/// at the per-row build and the dispatch seam, so the chain is traversed
+/// once, not once per modifier.
+fn resolve_system_action(
+    layers: &ProfileLayers,
+    uuid: Uuid,
+    wire: &str,
+) -> Option<tisvlay_core::EventAction> {
     let own_body = layers
         .bodies
         .get(&uuid)
@@ -531,12 +540,14 @@ pub(crate) fn resolve_system_restore(layers: &ProfileLayers, uuid: Uuid, wire: &
         .and_then(|body| read_system_action(body, wire))
         .or_else(|| read_system_action(&layers.default_body, wire))
         .or_else(|| read_system_action(&layers.baseline, wire))
-        .map(|a| a.restore_input())
-        .unwrap_or(false)
 }
 
-/// User-side mirror of [`resolve_system_restore`].
-pub(crate) fn resolve_user_restore(layers: &UserProfileLayers, uuid: Uuid, wire: &str) -> bool {
+/// User-side mirror of [`resolve_system_action`].
+fn resolve_user_action(
+    layers: &UserProfileLayers,
+    uuid: Uuid,
+    wire: &str,
+) -> Option<tisvlay_core::EventAction> {
     let own_body = layers
         .bodies
         .get(&uuid)
@@ -545,70 +556,19 @@ pub(crate) fn resolve_user_restore(layers: &UserProfileLayers, uuid: Uuid, wire:
         .and_then(|body| read_user_action(body, wire))
         .or_else(|| read_user_action(&layers.default_body, wire))
         .or_else(|| read_user_action(&layers.baseline, wire))
-        .map(|a| a.restore_input())
-        .unwrap_or(false)
 }
 
-/// Resolve an action field's `while_remote` gate through the same
-/// own → default → baseline chain as [`resolve_system_restore`]. A field
-/// resolving to no action defaults to gated (`false`) — the
-/// suppress-by-default floor.
-pub(crate) fn resolve_system_remote_gate(layers: &ProfileLayers, uuid: Uuid, wire: &str) -> bool {
-    let own_body = layers
-        .bodies
-        .get(&uuid)
-        .or_else(|| (uuid == DEFAULT_SYSTEM_PROFILE_UUID).then_some(&layers.default_body));
-    own_body
-        .and_then(|body| read_system_action(body, wire))
-        .or_else(|| read_system_action(&layers.default_body, wire))
-        .or_else(|| read_system_action(&layers.baseline, wire))
-        .map(|a| a.while_remote())
-        .unwrap_or(false)
-}
-
-/// User-side mirror of [`resolve_system_remote_gate`].
-pub(crate) fn resolve_user_remote_gate(layers: &UserProfileLayers, uuid: Uuid, wire: &str) -> bool {
-    let own_body = layers
-        .bodies
-        .get(&uuid)
-        .or_else(|| (uuid == DEFAULT_USER_PROFILE_UUID).then_some(&layers.default_body));
-    own_body
-        .and_then(|body| read_user_action(body, wire))
-        .or_else(|| read_user_action(&layers.default_body, wire))
-        .or_else(|| read_user_action(&layers.baseline, wire))
-        .map(|a| a.while_remote())
-        .unwrap_or(false)
-}
-
-/// The field's floor `restore_input` — the baseline (`Resolved*::default`)
-/// value the "differs from floor" accent compares against. An absent
-/// baseline field floors to `false`.
-fn floor_system_restore(layers: &ProfileLayers, wire: &str) -> bool {
-    read_system_action(&layers.baseline, wire)
-        .map(|a| a.restore_input())
-        .unwrap_or(false)
-}
-
-fn floor_user_restore(layers: &UserProfileLayers, wire: &str) -> bool {
-    read_user_action(&layers.baseline, wire)
-        .map(|a| a.restore_input())
-        .unwrap_or(false)
-}
-
-/// The field's floor `while_remote` gate — the baseline value the accent
-/// compares against. `false` for wake-ish events, `true` for the off-going
-/// events (blanks and power-offs); an absent baseline field floors to
-/// `false` (suppress-by-default).
-fn floor_system_remote_gate(layers: &ProfileLayers, wire: &str) -> bool {
-    read_system_action(&layers.baseline, wire)
-        .map(|a| a.while_remote())
-        .unwrap_or(false)
-}
-
-fn floor_user_remote_gate(layers: &UserProfileLayers, wire: &str) -> bool {
-    read_user_action(&layers.baseline, wire)
-        .map(|a| a.while_remote())
-        .unwrap_or(false)
+/// Derive one boolean modifier off a resolved (or floored) action via
+/// the terminal accessor (`EventAction::restore_input` /
+/// `EventAction::while_remote`). An absent action floors to `false`
+/// (no restore, gated) — the suppress-by-default floor. Callers resolve
+/// the `EventAction` once (own → default → baseline, or baseline alone
+/// for the floor) and derive both modifiers from it.
+fn action_modifier(
+    action: Option<tisvlay_core::EventAction>,
+    of: fn(tisvlay_core::EventAction) -> bool,
+) -> bool {
+    action.map(of).unwrap_or(false)
 }
 
 /// Read one field off a `SystemProfileBody`. Returns `None` when the
@@ -966,11 +926,14 @@ fn push_editor_rows(
     let (main_raw, remote_raw, can_reset_all, same_profile) = {
         let mut state = editor.lock();
         // Both cards resolve off the same layer state; `can-reset-all`
-        // is a catalog-body action spanning them, so OR their flags.
+        // is a catalog-body action spanning them, so OR their flags. The
+        // system editor has no REMOTE SESSION card — arming is a user
+        // policy and the per-event gate rides the action rows — so its
+        // remote card stays empty (no `SYSTEM_WHILE_REMOTE_FIELDS` build).
         let ((main_raw, main_reset), (remote_raw, remote_reset)) = match kind {
             EditorKind::System => (
                 build_system_rows(&state.system, uuid, SYSTEM_FIELDS),
-                build_system_rows(&state.system, uuid, SYSTEM_WHILE_REMOTE_FIELDS),
+                (Vec::new(), false),
             ),
             EditorKind::User => (
                 build_user_rows(&state.user, uuid, USER_FIELDS),
@@ -1060,11 +1023,13 @@ pub(crate) struct ProfileFieldRaw {
     pub unit: &'static str,
     pub bool_value: bool,
     pub is_locally_set: bool,
-    pub has_restore: bool,
+    /// This row carries the restore-input + remote-gate toggle slots —
+    /// true on every `SessionAction` action row. Drives both trailing
+    /// toggle slots; the `*_enabled` flags decide interactivity.
+    pub has_toggles: bool,
     pub restore_value: bool,
     pub restore_enabled: bool,
     pub restore_differs: bool,
-    pub has_remote_gate: bool,
     pub remote_gate_value: bool,
     pub remote_gate_enabled: bool,
     pub remote_gate_differs: bool,
@@ -1087,11 +1052,10 @@ fn into_slint_entry(raw: ProfileFieldRaw) -> ProfileFieldEntry {
         unit: SharedString::from(raw.unit),
         bool_value: raw.bool_value,
         is_locally_set: raw.is_locally_set,
-        has_restore: raw.has_restore,
+        has_toggles: raw.has_toggles,
         restore_value: raw.restore_value,
         restore_enabled: raw.restore_enabled,
         restore_differs: raw.restore_differs,
-        has_remote_gate: raw.has_remote_gate,
         remote_gate_value: raw.remote_gate_value,
         remote_gate_enabled: raw.remote_gate_enabled,
         remote_gate_differs: raw.remote_gate_differs,
@@ -1116,16 +1080,21 @@ fn build_system_rows(
         }
         let mut raw = build_field_raw(field, &resolved);
         if row_is_action(field) {
-            let restore = resolve_system_restore(layers, uuid, field.wire);
-            let gate = resolve_system_remote_gate(layers, uuid, field.wire);
-            raw.has_restore = true;
+            // One inherit-chain walk plus one baseline read back both
+            // toggles' value and floor — no per-modifier re-walk.
+            let action = resolve_system_action(layers, uuid, field.wire);
+            let floor = read_system_action(&layers.baseline, field.wire);
+            let restore = action_modifier(action, tisvlay_core::EventAction::restore_input);
+            let gate = action_modifier(action, tisvlay_core::EventAction::while_remote);
+            raw.has_toggles = true;
             raw.restore_value = restore;
             raw.restore_enabled = restore_is_enabled(&resolved);
-            raw.restore_differs = restore != floor_system_restore(layers, field.wire);
-            raw.has_remote_gate = true;
+            raw.restore_differs =
+                restore != action_modifier(floor, tisvlay_core::EventAction::restore_input);
             raw.remote_gate_value = gate;
             raw.remote_gate_enabled = remote_gate_is_enabled(field, &resolved);
-            raw.remote_gate_differs = gate != floor_system_remote_gate(layers, field.wire);
+            raw.remote_gate_differs =
+                gate != action_modifier(floor, tisvlay_core::EventAction::while_remote);
         }
         rows.push(raw);
     }
@@ -1147,16 +1116,21 @@ fn build_user_rows(
         }
         let mut raw = build_field_raw(field, &resolved);
         if row_is_action(field) {
-            let restore = resolve_user_restore(layers, uuid, field.wire);
-            let gate = resolve_user_remote_gate(layers, uuid, field.wire);
-            raw.has_restore = true;
+            // One inherit-chain walk plus one baseline read back both
+            // toggles' value and floor — no per-modifier re-walk.
+            let action = resolve_user_action(layers, uuid, field.wire);
+            let floor = read_user_action(&layers.baseline, field.wire);
+            let restore = action_modifier(action, tisvlay_core::EventAction::restore_input);
+            let gate = action_modifier(action, tisvlay_core::EventAction::while_remote);
+            raw.has_toggles = true;
             raw.restore_value = restore;
             raw.restore_enabled = restore_is_enabled(&resolved);
-            raw.restore_differs = restore != floor_user_restore(layers, field.wire);
-            raw.has_remote_gate = true;
+            raw.restore_differs =
+                restore != action_modifier(floor, tisvlay_core::EventAction::restore_input);
             raw.remote_gate_value = gate;
             raw.remote_gate_enabled = remote_gate_is_enabled(field, &resolved);
-            raw.remote_gate_differs = gate != floor_user_remote_gate(layers, field.wire);
+            raw.remote_gate_differs =
+                gate != action_modifier(floor, tisvlay_core::EventAction::while_remote);
         }
         rows.push(raw);
     }
@@ -1213,11 +1187,10 @@ fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldR
         unit: "",
         bool_value: false,
         is_locally_set: resolved.is_locally_set(),
-        has_restore: false,
+        has_toggles: false,
         restore_value: false,
         restore_enabled: false,
         restore_differs: false,
-        has_remote_gate: false,
         remote_gate_value: false,
         remote_gate_enabled: false,
         remote_gate_differs: false,
@@ -1546,24 +1519,15 @@ fn set_system_field(
     // collapses the four possible `BodyPatch` shapes into the one
     // the field accepts.
     match wire {
-        "on_startup" => body.on_startup = action_field_patch(body.on_startup, patch, "on_startup")?,
-        "on_shutdown" => {
-            body.on_shutdown = action_field_patch(body.on_shutdown, patch, "on_shutdown")?
-        }
-        "on_reboot" => body.on_reboot = action_field_patch(body.on_reboot, patch, "on_reboot")?,
-        "on_sleep" => body.on_sleep = action_field_patch(body.on_sleep, patch, "on_sleep")?,
-        "on_wake" => body.on_wake = action_field_patch(body.on_wake, patch, "on_wake")?,
-        "on_dpms_off" => {
-            body.on_dpms_off = action_field_patch(body.on_dpms_off, patch, "on_dpms_off")?
-        }
-        "on_dpms_on" => body.on_dpms_on = action_field_patch(body.on_dpms_on, patch, "on_dpms_on")?,
-        "on_idle_timeout" => {
-            body.on_idle_timeout =
-                action_field_patch(body.on_idle_timeout, patch, "on_idle_timeout")?
-        }
-        "on_idle_resume" => {
-            body.on_idle_resume = action_field_patch(body.on_idle_resume, patch, "on_idle_resume")?
-        }
+        "on_startup" => body.on_startup = action_field_patch(patch, "on_startup")?,
+        "on_shutdown" => body.on_shutdown = action_field_patch(patch, "on_shutdown")?,
+        "on_reboot" => body.on_reboot = action_field_patch(patch, "on_reboot")?,
+        "on_sleep" => body.on_sleep = action_field_patch(patch, "on_sleep")?,
+        "on_wake" => body.on_wake = action_field_patch(patch, "on_wake")?,
+        "on_dpms_off" => body.on_dpms_off = action_field_patch(patch, "on_dpms_off")?,
+        "on_dpms_on" => body.on_dpms_on = action_field_patch(patch, "on_dpms_on")?,
+        "on_idle_timeout" => body.on_idle_timeout = action_field_patch(patch, "on_idle_timeout")?,
+        "on_idle_resume" => body.on_idle_resume = action_field_patch(patch, "on_idle_resume")?,
         "idle_timeout_seconds" => {
             body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
         }
@@ -1576,24 +1540,13 @@ fn set_system_field(
 /// User-side mirror of [`set_system_field`].
 fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> anyhow::Result<()> {
     match wire {
-        "on_session_lock" => {
-            body.on_session_lock =
-                action_field_patch(body.on_session_lock, patch, "on_session_lock")?
-        }
+        "on_session_lock" => body.on_session_lock = action_field_patch(patch, "on_session_lock")?,
         "on_session_unlock" => {
-            body.on_session_unlock =
-                action_field_patch(body.on_session_unlock, patch, "on_session_unlock")?
+            body.on_session_unlock = action_field_patch(patch, "on_session_unlock")?
         }
-        "on_lock_wake" => {
-            body.on_lock_wake = action_field_patch(body.on_lock_wake, patch, "on_lock_wake")?
-        }
-        "on_idle_timeout" => {
-            body.on_idle_timeout =
-                action_field_patch(body.on_idle_timeout, patch, "on_idle_timeout")?
-        }
-        "on_idle_resume" => {
-            body.on_idle_resume = action_field_patch(body.on_idle_resume, patch, "on_idle_resume")?
-        }
+        "on_lock_wake" => body.on_lock_wake = action_field_patch(patch, "on_lock_wake")?,
+        "on_idle_timeout" => body.on_idle_timeout = action_field_patch(patch, "on_idle_timeout")?,
+        "on_idle_resume" => body.on_idle_resume = action_field_patch(patch, "on_idle_resume")?,
         "locked_idle_timeout_seconds" => {
             body.locked_idle_timeout_seconds = number_patch(patch, "locked_idle_timeout_seconds")?
         }
@@ -1602,12 +1555,10 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
                 number_patch(patch, "unlocked_idle_timeout_seconds")?
         }
         "on_remote_connect" => {
-            body.on_remote_connect =
-                action_field_patch(body.on_remote_connect, patch, "on_remote_connect")?
+            body.on_remote_connect = action_field_patch(patch, "on_remote_connect")?
         }
         "on_remote_disconnect" => {
-            body.on_remote_disconnect =
-                action_field_patch(body.on_remote_disconnect, patch, "on_remote_disconnect")?
+            body.on_remote_disconnect = action_field_patch(patch, "on_remote_disconnect")?
         }
         "remote_screencast_arms" => {
             body.remote_screencast_arms = bool_patch(patch, "remote_screencast_arms")?
@@ -1617,30 +1568,19 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
     Ok(())
 }
 
-/// Apply an action edit while preserving the field's modifier form:
-/// changing the verb through the ComboBox must not silently drop a
-/// `restore_input` flag the mapping already carries.
+/// Map an action-field patch onto a body slot: a fully-formed
+/// [`EventAction`] passes through, `Clear` resets the slot to inherit,
+/// and a bare verb wraps as the modifier-free `Plain` form. All modifier
+/// resolution for the interactive edit paths lives in the dispatch seam
+/// ([`resolve_action_modifiers`] + [`materialize_event_action`]), which
+/// hands this a whole `EventAction` — so this stays a pure patch → slot
+/// mapper with no hidden inherit-chain read.
 fn action_field_patch(
-    current: Option<tisvlay_core::EventAction>,
     patch: BodyPatch,
     field: &str,
 ) -> anyhow::Result<Option<tisvlay_core::EventAction>> {
     match patch {
-        BodyPatch::SessionAction(action) => Ok(Some(match current {
-            // Preserve the table form's modifiers (restore_input, the
-            // remote-session gate) when only the verb changes through the
-            // ComboBox — dropping either would silently un-set a toggle.
-            Some(tisvlay_core::EventAction::With {
-                restore_input,
-                while_remote,
-                ..
-            }) => tisvlay_core::EventAction::With {
-                action,
-                restore_input,
-                while_remote,
-            },
-            _ => tisvlay_core::EventAction::Plain(action),
-        })),
+        BodyPatch::SessionAction(action) => Ok(Some(tisvlay_core::EventAction::Plain(action))),
         BodyPatch::EventAction(spec) => Ok(Some(spec)),
         BodyPatch::Clear => Ok(None),
         other => anyhow::bail!("Field '{field}' expects an action, got {other:?}"),
@@ -1793,7 +1733,26 @@ pub(crate) async fn dispatch_value_edit(
 ) -> anyhow::Result<()> {
     let field_kind = field_kind_for(kind, field_wire)
         .ok_or_else(|| anyhow::anyhow!("Unknown field '{field_wire}'"))?;
-    let patch = parse_enum_token(field_kind, value)?;
+    let patch = match field_kind {
+        // A verb change on an action row materializes the new verb with
+        // the row's RESOLVED modifiers, so an inheriting row keeps the
+        // restore/gate it was rendered with — the same seam the restore
+        // and gate toggles write through.
+        FieldKind::Enum {
+            class: EnumClass::SessionAction,
+            ..
+        } => {
+            let action = parse_session_action(value)?;
+            let (_token, restore_input, while_remote) =
+                resolve_action_modifiers(editor, kind, uuid, field_wire)?;
+            BodyPatch::EventAction(materialize_event_action(
+                action,
+                restore_input,
+                while_remote,
+            ))
+        }
+        _ => parse_enum_token(field_kind, value)?,
+    };
     match kind {
         EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
         EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
@@ -1865,13 +1824,9 @@ pub(crate) async fn dispatch_restore_edit(
     field_wire: &str,
     checked: bool,
 ) -> anyhow::Result<()> {
-    let (token, while_remote) = resolve_action_modifiers(editor, kind, uuid, field_wire)?;
+    let (token, _restore, while_remote) = resolve_action_modifiers(editor, kind, uuid, field_wire)?;
     let action = parse_session_action(&token)?;
-    let patch = BodyPatch::EventAction(tisvlay_core::EventAction::With {
-        action,
-        restore_input: checked,
-        while_remote,
-    });
+    let patch = BodyPatch::EventAction(materialize_event_action(action, checked, while_remote));
     match kind {
         EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
         EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
@@ -1891,51 +1846,79 @@ pub(crate) async fn dispatch_remote_gate_edit(
     field_wire: &str,
     fires_while_remote: bool,
 ) -> anyhow::Result<()> {
-    let (token, _) = resolve_action_modifiers(editor, kind, uuid, field_wire)?;
+    let (token, restore_input, _gate) = resolve_action_modifiers(editor, kind, uuid, field_wire)?;
     let action = parse_session_action(&token)?;
-    let restore_input = match kind {
-        EditorKind::System => resolve_system_restore(&editor.lock().system, uuid, field_wire),
-        EditorKind::User => resolve_user_restore(&editor.lock().user, uuid, field_wire),
-    };
-    let patch = BodyPatch::EventAction(tisvlay_core::EventAction::With {
+    let patch = BodyPatch::EventAction(materialize_event_action(
         action,
         restore_input,
-        while_remote: fires_while_remote,
-    });
+        fires_while_remote,
+    ));
     match kind {
         EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
         EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
     }
 }
 
-/// Resolve an action row's current verb token and its `while_remote`
-/// gate through the inherit chain — the shared read the restore/gate
-/// toggles both need before writing the whole event table.
+/// Resolve an action row's current verb token plus BOTH modifiers
+/// (`restore_input`, `while_remote`) through the inherit chain under one
+/// editor lock — the single read every action-row edit path shares. The
+/// verb ComboBox, the restore toggle, and the remote-gate toggle each
+/// override exactly one dimension of this triple and preserve the other
+/// two.
 fn resolve_action_modifiers(
     editor: &ProfileEditor,
     kind: EditorKind,
     uuid: Uuid,
     field_wire: &str,
-) -> anyhow::Result<(String, bool)> {
+) -> anyhow::Result<(String, bool, bool)> {
     let state = editor.lock();
     let field = all_fields(kind)
         .find(|f| f.wire == field_wire)
         .ok_or_else(|| anyhow::anyhow!("Unknown field '{field_wire}'"))?;
-    let (token, while_remote) = match kind {
-        EditorKind::System => (
-            resolve_system_field(&state.system, uuid, field)
-                .current()
-                .to_string(),
-            resolve_system_remote_gate(&state.system, uuid, field_wire),
-        ),
-        EditorKind::User => (
-            resolve_user_field(&state.user, uuid, field)
-                .current()
-                .to_string(),
-            resolve_user_remote_gate(&state.user, uuid, field_wire),
-        ),
-    };
-    Ok((token, while_remote))
+    Ok(match kind {
+        EditorKind::System => {
+            let action = resolve_system_action(&state.system, uuid, field_wire);
+            (
+                resolve_system_field(&state.system, uuid, field)
+                    .current()
+                    .to_string(),
+                action_modifier(action, tisvlay_core::EventAction::restore_input),
+                action_modifier(action, tisvlay_core::EventAction::while_remote),
+            )
+        }
+        EditorKind::User => {
+            let action = resolve_user_action(&state.user, uuid, field_wire);
+            (
+                resolve_user_field(&state.user, uuid, field)
+                    .current()
+                    .to_string(),
+                action_modifier(action, tisvlay_core::EventAction::restore_input),
+                action_modifier(action, tisvlay_core::EventAction::while_remote),
+            )
+        }
+    })
+}
+
+/// Build the minimal [`EventAction`] for a verb plus its two resolved
+/// modifiers: a bare `Plain` when both sit at the suppress-by-default
+/// floor (`restore_input = false`, `while_remote = false`) so the
+/// persisted TOML stays a bare token, the `With` table form otherwise.
+/// Shared by all three action-row edit paths (verb, restore toggle,
+/// gate toggle) so touching one control preserves the other two.
+fn materialize_event_action(
+    action: SessionAction,
+    restore_input: bool,
+    while_remote: bool,
+) -> tisvlay_core::EventAction {
+    if !restore_input && !while_remote {
+        tisvlay_core::EventAction::Plain(action)
+    } else {
+        tisvlay_core::EventAction::With {
+            action,
+            restore_input,
+            while_remote,
+        }
+    }
 }
 
 /// Reset one field to inherit-from-chain by setting its body slot to
@@ -2130,6 +2113,17 @@ mod tests {
             on_remote_disconnect: Some(SessionAction::ScreenOff.into()),
             remote_screencast_arms: Some(false),
         }
+    }
+
+    /// Wrap prepared layers in a `ProfileEditor` so the dispatch-seam
+    /// resolvers (which lock the editor) can be exercised without the
+    /// live daemon/session clients.
+    fn editor_from(system: ProfileLayers, user: UserProfileLayers) -> ProfileEditor {
+        Arc::new(Mutex::new(ProfileEditorState {
+            system,
+            user,
+            ..Default::default()
+        }))
     }
 
     fn find_system(wire: &str) -> &'static FieldSpec {
@@ -2599,13 +2593,22 @@ mod tests {
             default_body: SystemProfileBody::default(),
             bodies,
         };
-        assert!(!resolve_system_remote_gate(&layers, uuid, "on_dpms_on"));
+        // The gate resolves off the chain-walked action through the
+        // `while_remote` accessor — the same derivation the row build
+        // and the dispatch seam share.
+        let gate = |wire| {
+            action_modifier(
+                resolve_system_action(&layers, uuid, wire),
+                tisvlay_core::EventAction::while_remote,
+            )
+        };
+        assert!(!gate("on_dpms_on"));
         // An explicit ungated table fires while armed.
-        assert!(resolve_system_remote_gate(&layers, uuid, "on_wake"));
+        assert!(gate("on_wake"));
         // A field inheriting a bare baseline action resolves gated
         // (suppress-by-default) — `on_shutdown` is a bare token in the
-        // test baseline below.
-        assert!(!resolve_system_remote_gate(&layers, uuid, "on_shutdown"));
+        // test baseline.
+        assert!(!gate("on_shutdown"));
     }
 
     #[test]
@@ -2624,11 +2627,20 @@ mod tests {
             default_body: SystemProfileBody::default(),
             bodies: HashMap::new(),
         };
-        assert!(floor_system_remote_gate(&layers, "on_sleep"));
-        assert!(floor_system_remote_gate(&layers, "on_dpms_off"));
-        assert!(!floor_system_remote_gate(&layers, "on_dpms_on"));
+        // The floor the accent compares against is the baseline read
+        // through the `while_remote` accessor — the same derivation the
+        // per-row build inlines.
+        let floor_gate = |wire| {
+            action_modifier(
+                read_system_action(&layers.baseline, wire),
+                tisvlay_core::EventAction::while_remote,
+            )
+        };
+        assert!(floor_gate("on_sleep"));
+        assert!(floor_gate("on_dpms_off"));
+        assert!(!floor_gate("on_dpms_on"));
         // `automate_when` is not an action wire — floors to false.
-        assert!(!floor_system_remote_gate(&layers, "automate_when"));
+        assert!(!floor_gate("automate_when"));
     }
 
     #[test]
@@ -2709,7 +2721,7 @@ mod tests {
         };
         let (rows, _) = build_system_rows(&layers, uuid, SYSTEM_FIELDS);
         let dpms_on = rows.iter().find(|r| r.field_name == "on_dpms_on").unwrap();
-        assert!(dpms_on.has_remote_gate);
+        assert!(dpms_on.has_toggles);
         assert!(
             dpms_on.remote_gate_value,
             "the set value is fire-while-armed"
@@ -2725,8 +2737,7 @@ mod tests {
             .iter()
             .find(|r| r.field_name == "idle_timeout_seconds")
             .unwrap();
-        assert!(!idle.has_remote_gate);
-        assert!(!idle.has_restore);
+        assert!(!idle.has_toggles);
     }
 
     #[test]
@@ -2851,27 +2862,122 @@ mod tests {
     }
 
     #[test]
-    fn action_patch_preserves_the_gate_across_a_verb_edit() {
-        // Changing the verb through the ComboBox must not drop a
-        // previously-set `while_remote = false` gate.
-        let current = Some(tisvlay_core::EventAction::With {
-            action: SessionAction::ScreenOn,
-            restore_input: false,
-            while_remote: false,
-        });
-        let patched = action_field_patch(
-            current,
-            BodyPatch::SessionAction(SessionAction::PowerOn),
-            "f",
-        )
-        .unwrap();
+    fn materialize_event_action_minimizes_to_the_floor() {
+        // Both modifiers at their suppress-by-default floor → the bare
+        // token form (minimal TOML); any non-default modifier forces the
+        // table form.
         assert_eq!(
-            patched,
-            Some(tisvlay_core::EventAction::With {
-                action: SessionAction::PowerOn,
-                restore_input: false,
+            materialize_event_action(SessionAction::PowerOn, false, false),
+            tisvlay_core::EventAction::Plain(SessionAction::PowerOn)
+        );
+        assert_eq!(
+            materialize_event_action(SessionAction::ScreenOn, true, false),
+            tisvlay_core::EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
                 while_remote: false,
-            })
+            }
+        );
+        assert_eq!(
+            materialize_event_action(SessionAction::PowerOff, false, true),
+            tisvlay_core::EventAction::With {
+                action: SessionAction::PowerOff,
+                restore_input: false,
+                while_remote: true,
+            }
+        );
+    }
+
+    #[test]
+    fn verb_edit_preserves_the_resolved_gate_on_an_inheriting_off_going_row() {
+        // An off-going row (on_sleep / on_session_lock) floors ungated —
+        // it fires while armed. Its own slot is None (inheriting), yet a
+        // verb change through the ComboBox must carry that resolved gate,
+        // not silently re-gate the row (the TV-left-on / sleep-gated
+        // regression). Mirrors dispatch_value_edit's SessionAction path:
+        // resolve the row's modifiers, pair them with the new verb.
+        let uuid = Uuid::new_v4();
+
+        // System side: on_sleep floors ungated.
+        let mut sb = baseline_system();
+        sb.on_sleep = Some(tisvlay_core::EventAction::ungated(SessionAction::PowerOff));
+        let editor = editor_from(
+            ProfileLayers {
+                baseline: sb,
+                ..Default::default()
+            },
+            UserProfileLayers::default(),
+        );
+        let (_token, restore, gate) =
+            resolve_action_modifiers(&editor, EditorKind::System, uuid, "on_sleep").unwrap();
+        let edited = materialize_event_action(SessionAction::ScreenOff, restore, gate);
+        assert!(
+            edited.while_remote(),
+            "inherited ungated gate survives the verb edit"
+        );
+
+        // User side: on_session_lock floors ungated.
+        let mut ub = baseline_user();
+        ub.on_session_lock = Some(tisvlay_core::EventAction::ungated(SessionAction::ScreenOff));
+        let editor = editor_from(
+            ProfileLayers::default(),
+            UserProfileLayers {
+                baseline: ub,
+                ..Default::default()
+            },
+        );
+        let (_token, restore, gate) =
+            resolve_action_modifiers(&editor, EditorKind::User, uuid, "on_session_lock").unwrap();
+        let edited = materialize_event_action(SessionAction::PowerOff, restore, gate);
+        assert!(
+            edited.while_remote(),
+            "inherited ungated gate survives the verb edit"
+        );
+    }
+
+    #[test]
+    fn verb_edit_preserves_the_resolved_restore_on_an_inheriting_row() {
+        // on_session_unlock (user) / on_startup (system) floor with
+        // restore_input = true. An inheriting row's verb edit must carry
+        // the resolved restore, not drop it to a bare token.
+        let uuid = Uuid::new_v4();
+
+        // User side: on_session_unlock floors restoring.
+        let mut ub = baseline_user();
+        ub.on_session_unlock = Some(tisvlay_core::EventAction::restoring(
+            SessionAction::ScreenOn,
+        ));
+        let editor = editor_from(
+            ProfileLayers::default(),
+            UserProfileLayers {
+                baseline: ub,
+                ..Default::default()
+            },
+        );
+        let (_token, restore, gate) =
+            resolve_action_modifiers(&editor, EditorKind::User, uuid, "on_session_unlock").unwrap();
+        let edited = materialize_event_action(SessionAction::PowerOn, restore, gate);
+        assert!(
+            edited.restore_input(),
+            "inherited restore survives the verb edit"
+        );
+
+        // System side: on_startup floors restoring.
+        let mut sb = baseline_system();
+        sb.on_startup = Some(tisvlay_core::EventAction::restoring(SessionAction::PowerOn));
+        let editor = editor_from(
+            ProfileLayers {
+                baseline: sb,
+                ..Default::default()
+            },
+            UserProfileLayers::default(),
+        );
+        let (_token, restore, gate) =
+            resolve_action_modifiers(&editor, EditorKind::System, uuid, "on_startup").unwrap();
+        let edited = materialize_event_action(SessionAction::ScreenOn, restore, gate);
+        assert!(
+            edited.restore_input(),
+            "inherited restore survives the verb edit"
         );
     }
 

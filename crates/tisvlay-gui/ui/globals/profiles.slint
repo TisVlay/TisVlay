@@ -79,7 +79,7 @@ export struct ProfileFieldEntry {
     /// true on every `SessionAction` action row (never on `automate_when`,
     /// number, or bool rows). Both toggles always render on such rows; the
     /// `*-enabled` flags decide whether each is interactive or inert.
-    has-restore: bool,
+    has-toggles: bool,
     /// The mapping's resolved `restore_input` modifier (the toggle's
     /// pressed/glyph state).
     restore-value: bool,
@@ -90,9 +90,6 @@ export struct ProfileFieldEntry {
     /// default — drives the accent tint (locally-changed language),
     /// distinct from the toggle's on/off value.
     restore-differs: bool,
-    /// Mirror of `has-restore`: this row carries the remote-session gate
-    /// slot (every `SessionAction` row).
-    has-remote-gate: bool,
     /// The mapping's resolved `while_remote` gate — `true` fires while
     /// armed by a remote session, `false` suppresses. Drives the toggle's
     /// pressed/glyph state.
