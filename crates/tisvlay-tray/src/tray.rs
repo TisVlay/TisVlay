@@ -251,7 +251,7 @@ impl Tray for TvTray {
             let pending = Arc::clone(&self.open_gui_pending);
             StandardItem {
                 label: "Settings".into(),
-                icon_name: "settings-configure".into(),
+                icon_name: "settings-configure-symbolic".into(),
                 activate: Box::new(move |_tray: &mut Self| {
                     if pending.swap(true, Ordering::Relaxed) {
                         debug!("Settings click dropped — previous OpenGui still in flight");
