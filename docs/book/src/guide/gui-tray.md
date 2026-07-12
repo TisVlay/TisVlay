@@ -1,6 +1,6 @@
 # GUI & Tray
 
-Two optional desktop frontends: a settings window for setup and configuration, and a tray applet for day-to-day control. Both talk to the daemon over D-Bus — anything you change in one shows up live in the other (and in the CLI).
+Two optional desktop frontends: a settings window for setup and configuration, and a tray applet for day-to-day control. Both reach the daemon over its local control socket — anything you change in one shows up live in the other (and in the CLI).
 
 ## Settings window (`tisvlay-gui`)
 
@@ -12,7 +12,7 @@ Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single
 - The pencil toggles edit mode for the TV's configuration: name, managed flag, profile assignments, primary input, and the vendor-specific settings (IP, MAC, …).
 - **Add TV** opens the pairing wizard: discovered TVs stream into the list as they answer; or switch to manual entry, pick a vendor, and fill the vendor's form (the *Mock (testing)* vendor lives here too — see [the troubleshooting page](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend)). Pairing progress and the TV's accept prompt are narrated step by step.
 
-**Profiles** — the full profile catalog editor: create, rename, duplicate, delete, and a per-field editor showing whether each field is set or inherited. See [Profiles](./profiles.md).
+**Profiles** — the full profile catalog editor: create, rename, duplicate, delete, and a per-field editor showing whether each field is set or inherited. Each action row also carries two small icon toggles: **restore input** (switch the TV back to its primary input after this action) and the **while-remote** gate (a network toggle — whether the action still fires while a remote session has the TV armed). A user profile additionally has a **REMOTE SESSION** card with the *Screen capture arms* switch (whether an unattributed screen capture should arm the TV). See [Profiles](./profiles.md) and [Remote-Session Awareness](./remote-sessions.md).
 
 **Settings** — the tray's notification preferences (the four categories below) and a test-notification button to verify your desktop's notification stack.
 
@@ -30,6 +30,8 @@ A connected TV's submenu offers: power off, profile assignment (user and system,
 
 The **scroll wheel** on the tray icon adjusts volume — or backlight, after you last touched a backlight control — for the TV you most recently interacted with.
 
+While a remote session has any TV armed, the tray shows a read-only **Remote session active** indicator, so you can tell at a glance that TV wakes are being suppressed. See [Remote-Session Awareness](./remote-sessions.md).
+
 ## Notifications
 
 The tray owns desktop notifications, in four categories (all on by default, toggled from the GUI's Settings pane):
@@ -39,4 +41,4 @@ The tray owns desktop notifications, in four categories (all on by default, togg
 | TV connection | a TV connects or drops |
 | Pairing | a pairing attempt completes or fails |
 | Wake | a power-on cycle completes or fails |
-| Daemon offline | the daemon disappears from the bus (stays up until it returns, then dismisses itself) |
+| Daemon offline | the daemon disappears (stays up until it returns, then dismisses itself) |

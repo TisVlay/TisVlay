@@ -2,8 +2,8 @@
 
 Two services drive automation, each through its own profile kind:
 
-- **`tisvlay-session`** (a per-user service) watches *your desktop session* — lock, unlock, lock-screen interaction, idle — and dispatches the **user profile** actions.
-- **`tisvlayd`** (the system daemon) watches *machine lifecycle* — boot, shutdown, suspend/resume, host-display power — and dispatches the **system profile** actions.
+- **`tisvlay-session`** (a per-user service) watches *your desktop session* — lock, unlock, lock-screen interaction, idle, and remote sessions — and dispatches the **user profile** actions.
+- **`tisvlay-daemon`** (the system daemon) watches *machine lifecycle* — boot, shutdown, suspend/resume, host-display power — and dispatches the **system profile** actions.
 
 Field-by-field configuration is in [Configuration](./configuration.md#profiles); which TVs react is governed by the [automation gate](./profiles.md#the-automation-gate).
 
@@ -14,15 +14,19 @@ Field-by-field configuration is in [Configuration](./configuration.md#profiles);
 | Session locks | `on_session_lock` | `screen_off` |
 | You interact with the lock screen | `on_lock_wake` | `screen_on` |
 | Session unlocks | `on_session_unlock` | `screen_on` |
-| No input for `idle_timeout_seconds` | `on_idle_timeout` | `screen_off` |
+| Idle timer elapses (per lock state) | `on_idle_timeout` | `screen_off` |
 | Activity resumes after idle | `on_idle_resume` | `screen_on` |
+| A remote session arms the TV | `on_remote_connect` | `screen_off` |
+| The remote session ends | `on_remote_disconnect` | `screen_off` |
 
 Notes:
 
 - **Lock wake** exists so the TV is lit *before* you type your password: the moment you wiggle the mouse at the lock screen, `on_lock_wake` fires — the later unlock is then a no-op. (Wayland sessions only.)
-- **Idle** is off by default (`idle_timeout_seconds = 0`). It is independent of your desktop's own screen-locking/DPMS timers — it blanks the TV even if the desktop never locks.
+- **Idle** has two timers — `locked_idle_timeout_seconds` and `unlocked_idle_timeout_seconds` — each firing only in its own lock state, so you can blank aggressively at the lock screen without touching the active-session timer. Both default to `0` (off), and idle is independent of your desktop's own screen-locking/DPMS timers. If a stray remote press lights the panel while an idle blank is meant to hold, the daemon re-blanks after one more interval — closing a gap the edge-triggered desktop timers can't see.
+- **Remote sessions**: streaming in via Sunshine, RustDesk, or RDP *arms* the TV; the arm and disarm edges fire `on_remote_connect` / `on_remote_disconnect`. More importantly, while a TV is armed the wake events above are suppressed by default, so the injected input of a remote session doesn't wake the physical TV for an empty room. See [Remote-Session Awareness](./remote-sessions.md).
+- **Input restore**: the on-ish wakes carry `restore_input` (stock-on for `on_session_unlock`), so a wake also switches an LG TV back to your PC's input — you return to the desktop, not to whatever input was last selected. Set the TV's `primary_input` for this to take effect (see [Configuration](./configuration.md#tv-definitions)).
 
-A typical day with the defaults: lock the screen → TV blanks (OLED-safe, instant resume) → come back and tap a key → TV is already lit when the password prompt appears → unlock → nothing left to do. Suspend the machine → `on_sleep` powers the TV off → resume → `on_wake` wakes it via Wake-on-LAN.
+A typical day with the defaults: lock the screen → TV blanks (OLED-safe, instant resume) → come back and tap a key → TV is already lit when the password prompt appears → unlock → nothing left to do but land on the PC input. Suspend the machine → `on_sleep` powers the TV off → resume → `on_wake` wakes it via Wake-on-LAN.
 
 ## System events (daemon)
 
@@ -47,4 +51,4 @@ If an event fires but the TV does nothing, see [Automation does nothing](../oper
 
 ## Reliability
 
-Screen actions are verify-and-retry, not fire-and-forget: the daemon confirms the panel actually changed state, retries if it didn't, and escalates `screen_on` to a Wake-on-LAN power-on when the TV turns out to be in standby. The *desired* screen state is also latched, so it survives a TV reconnect or the login-screen→session handoff rather than being lost. Automation works from any starting state without you scripting the difference.
+Screen actions are verify-and-retry, not fire-and-forget: the daemon confirms the panel actually changed state, retries if it didn't, and escalates `screen_on` to a Wake-on-LAN power-on when the TV turns out to be in standby (capped at one wake, so it can't ping-pong). The *desired* screen state is latched, so it survives a TV reconnect or the login-screen→session handoff rather than being lost. And a boot- or resume-time wake is held until the network route to the TV actually exists, so it can't waste its retries firing into a NIC that hasn't come up yet. Automation works from any starting state without you scripting the difference — see [Networking & Reliability](../operations/networking-reliability.md).

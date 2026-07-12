@@ -4,7 +4,7 @@ Profiles map **events** to **actions** — they are the entire automation vocabu
 
 ## The reserved default profiles
 
-Every install has one reserved profile per kind, both named `default` (system profile UUID ending `…5159`, user profile UUID ending `…515a`). They are special in three ways:
+Every install has one reserved profile per kind, both named `default` (system profile id ending `…5159`, user profile id ending `…515a`). They are special in three ways:
 
 - A TV with no explicit assignment uses the default — so the defaults alone already give working automation.
 - Every other profile inherits from them.
@@ -20,30 +20,27 @@ TV's assigned profile  →  the default profile  →  built-in defaults
 
 A profile therefore only needs to spell out what it changes. For example, a system profile for a guest-room TV that should never turn on by itself:
 
-```toml
-[system.profiles.3c8d0a51-9b7e-4f2d-8e6a-1b5c9d3f7a20]
-name = "guest"
-on_startup = "none"
-on_shutdown = "screen_off"
+```sh
+tisvlay profile create "guest" --body '{"on_startup":"none","on_shutdown":"screen_off"}'
 ```
 
 Every other field (`on_sleep`, `on_wake`, …) flows through from `default`, and tracks `default` if you later edit it — only the two overridden fields are pinned.
 
-For **user** profiles the chain is one layer longer: your profile → your `default` → the admin-set baseline in the daemon config (a `[user.profiles]` section there) → built-ins. On a single-user machine you can ignore the admin layer.
+For **user** profiles the chain is one layer longer: your profile → your `default` → an admin-set baseline (a system-wide user-profile default) → built-ins. On a single-user machine you can ignore the admin layer.
 
 ## Assigning profiles to TVs
 
-Each TV carries up to two assignments: `profile.system` (in the daemon config) and `profile.user` (in your per-user config). Set them with:
+Each TV carries up to two assignments: a **system** profile (in the daemon store) and a **user** profile (in your per-user config). Set them with:
 
-- **CLI** — `tisvlay profile system set <uuid> -t <tv-id>` / `tisvlay profile user set <uuid>`; `… list` shows the catalogs with UUIDs.
-- **Tray** — the per-TV *Profile* submenu (radio groups for user and system).
+- **CLI** — `tisvlay assign <tv-id> <profile-id>` (system) and `tisvlay user-profile assign <tv-id> <profile-id>` (user); pass no profile id to clear the assignment back to the default. `tisvlay profile list` / `tisvlay user-profile list` show the catalogs with their ids.
+- **Tray** — the per-TV *Profiles* submenu (radio groups for user and system).
 - **GUI** — the TVs pane detail view.
 
 ## Creating and editing profiles
 
 The **GUI Profiles pane** is the full editor: create, rename, duplicate, and delete profiles, with a per-field editor where each field is either *set* on this profile or *inheriting* — a reset control flips a field back to inherited. See [GUI & Tray](./gui-tray.md).
 
-Alternatively hand-edit the config files and call `ReloadConfig` ([Configuration](./configuration.md)). The CLI manages *assignments*, not profile bodies.
+The CLI manages both bodies and assignments: `tisvlay profile create|update|duplicate|delete` (and `tisvlay user-profile …` for user profiles), `tisvlay profile defaults` for the stock mapping, and `tisvlay profile effective <tv>` to print one TV's fully-resolved mapping.
 
 ## The automation gate
 
@@ -61,7 +58,11 @@ Whether an event acts on a TV at all composes `managed`, the profile's `automate
 
 Manual actions — tray, GUI, CLI — always execute regardless of the gate.
 
+## The remote-session gate
+
+A second, independent gate rides on top: while a TV is **armed by a remote session** (you streamed in via Sunshine, RustDesk, or RDP), an event whose action has `while_remote = false` is suppressed. This is the suppress-by-default rule — a plain action is quiet while armed, so a remote session's injected input doesn't wake the physical TV for an empty room, while blanks and power-offs still fire. It is per-event invertible, and orthogonal to `automate_when`. See [Remote-Session Awareness](./remote-sessions.md).
+
 ## Patterns
 
-- **Gaming TV that ignores the desktop**: a user profile with `on_session_lock = "none"` and `on_idle_timeout = "none"` assigned to that TV — or simply `automate_when = "on_primary"` in its system profile, so it automates only while showing the PC.
+- **Gaming TV that ignores the desktop**: a user profile with `on_session_lock = "none"` and the idle actions set to `none`, assigned to that TV — or simply `automate_when = "on_primary"` in its system profile, so it automates only while showing the PC.
 - **Different users, different behavior**: user profiles live per account, so your account can blank aggressively while a shared account does nothing — same TV, same daemon.
