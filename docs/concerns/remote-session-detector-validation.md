@@ -19,4 +19,25 @@ These three profile knobs are deliberately **not** in the schema until the bench
 
 ## When picked up
 
-Run the plan's scenario matrix (A locked / B dark / C blip) per app, capturing timestamped traces (`busctl --user monitor` on the portal namespace, `pw-mon`, the daemon/session journals, dpms sysfs). The `while-remote gate suppressed dispatch` daemon log line and the `journalctl -o verbose` `F_EVENT`/`F_TARGET_ON` fields are the load-bearing observations (the Sunshine runs established the reading discipline).
+Run the scenario matrix below per app (krdp via an RDP client, RustDesk from a second machine), ≥3 cycles each, correlating timestamped traces across terminals by wall-clock:
+
+- **A locked**: screen locked → connect → unlock via remote → interact → disconnect. Race: portal signal vs the ScreenSaver unlock.
+- **B dark**: idle until DPMS-off → connect → interact → disconnect. Race: portal/node appearance vs the DPMS-on sysfs flip.
+- **C blip**: mid-session client reconnect (RustDesk reconnect, RDP re-attach). Flap: count the portal/node edges per blip to decide whether the debounce delay fields are merited.
+- False-positive probes (once): OBS record start/stop, browser tab-share start/stop, Plasma thumbnail hover, Overview toggle — none should arm with "Screen capture arms" off.
+
+Capture terminals (packaged stack running; remote clients on a second device):
+
+```sh
+# portal D-Bus signals
+dbus-monitor --session "path_namespace='/org/freedesktop/portal/desktop'"
+# PipeWire graph events (ts via moreutils: nix shell nixpkgs#moreutils)
+stdbuf -oL pw-mon | ts '%H:%M:%.S'
+# tisvlay session + daemon logs
+journalctl -f -o short-precise --user-unit tisvlay-session
+journalctl -f -o short-precise -u tisvlay-daemon
+# DPMS sysfs edges (set $p to the TV's connector)
+p=/sys/class/drm/cardX-HDMI-A-Y/dpms; l=; while :; do v=$(cat $p); [ "$v" != "$l" ] && echo "$(date +%T.%3N) $v"; l=$v; sleep 0.1; done
+```
+
+Fill three decision rows from the traces: race-window sizes (earliest remote signal → unlock/DPMS-on deltas), flap counts per blip, and — for a udev-based live detector — input-device add/remove timing (`udevadm monitor --udev --subsystem-match=input`). The `while-remote gate suppressed dispatch` daemon log line and the `journalctl -o verbose` `F_EVENT`/`F_TARGET_ON` fields are the load-bearing observations (the Sunshine runs established the reading discipline).

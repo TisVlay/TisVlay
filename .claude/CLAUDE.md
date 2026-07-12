@@ -105,6 +105,14 @@ Vendor/protocol quirks (unchanged by the rewrite):
 - SSDP discovery pins source port 1901 to match the firewall rule (docs/firewall.md)
 - KWin on Wayland writes DPMS-off through to the legacy sysfs `dpms` connector attribute, so the daemon polls it without a per-DE compositor protocol; the watcher gates on `status == connected`
 
+Remote-session detection quirks (session-side detectors — see docs/remote/detection.md):
+
+- No first-class "remote session active" API on the Linux desktop — detection is side-effect observation (PipeWire capture node, portal `BecomeMonitor`, logind) plus app hooks. Sunshine's default NvFBC/KMS capture on Nvidia is invisible to the portal monitor *and* PipeWire; its only machine-readable signal is the unauthenticated `GET 127.0.0.1:47989/serverinfo` (`SUNSHINE_SERVER_BUSY|FREE`), polled as a level detector
+- Portal `BecomeMonitor` connections are receive-only — resolve a caller's bus name → PID → exe on the *main* session-bus connection, not the monitor connection
+- InputCapture portal sessions must never arm (lan-mouse holds a standing one while the user is present); it shares the portal object path + `CreateSession` member with the capture interfaces, so exclude it by interface, not heuristic
+- logind mints `Remote=yes` for plain SSH shells too (`Type=tty`); the remote-*desktop* detector must require a graphical `Type` (`x11`/`wayland`)
+- NixOS `makeWrapper` truncates process comm to the kernel's 15-byte limit, so Sunshine's comm is `.sunshine-wrapp` (from `.sunshine-wrapped`) — procfs presence gates match `comm.trim_start_matches('.').starts_with("sunshine")`, not `== "sunshine"`
+
 Zenoh stack findings (load-bearing, learned empirically):
 
 - **Consume-only peer leaves**: a connect-only peer (resilient link) can subscribe, query, and hydrate caches, but anything it SERVES (queryables, liveliness tokens, cached pubs) is invisible to other leaves through a hub — under both peer-mode and router-mode hubs. Servers must use client-mode links (fail-fast open, supervised retry loop) into a router hub. The session service's user socket is a router for exactly this reason; the tray's settings service is a supervised client link.
