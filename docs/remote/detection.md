@@ -13,7 +13,7 @@ Each detector reports a source tagged by kind. Attributed kinds always arm; the 
 | Manual / hook verb | `manual` | the `--source` label | unconditionally | Sunshine `global_prep_cmd`, any scripted escape hatch |
 | Portal monitor | `portal` | caller exe (allow-list) | unconditionally, on `CreateSession` | krdp (both modes), RustDesk, allow-listed portal capture |
 | PipeWire screencast | `screencast` | none | only with "Screen capture arms" on | any KWin-serviced capture (krdp, RustDesk, OBS, browser tab-share) |
-| logind | `logind` | session `Remote=yes` | unconditionally | xrdp-class RDP stacks that mint a real login session |
+| logind | `logind` | graphical session `Remote=yes` | unconditionally | xrdp-class RDP stacks that mint a real login session |
 
 The manual verb (`tisvlay remote-session start|stop [--source NAME]`, or the SDK's `SessionClient::remote_session_set`) is the hook of last resort and the documented integration point for apps that expose no observable signal.
 
@@ -21,7 +21,7 @@ The PipeWire watcher matches KWin's capture node (`media.class = "Stream/Output/
 
 The portal monitor is a receive-only second connection to the session bus (`BecomeMonitor`) narrowly scoped to the portal object namespace. It parses ScreenCast/RemoteDesktop `CreateSession` calls (the earliest observable portal edge, before `Start` and before any injected input) and resolves the caller's unique bus name to a PID and then to the executable basename. Only an allow-listed exe (`krdpserver`, `rustdesk`, `sunshine`) reports an attributed `portal` source; a portal user outside the list falls back to the unattributed screencast signal. Because the monitor connection is receive-only, the sender lookup runs on the main session-bus connection.
 
-The logind detector watches the system bus for own-uid sessions with `Remote=yes`. Only xrdp-class stacks mint such a session; krdp, RustDesk, and Sunshine are logind-invisible, so this detector is a supplement for RDP-family remoting, not a primary signal for the three main targets.
+The logind detector watches the system bus for own-uid sessions that are both `Remote=yes` and graphical (`Type=x11` or `Type=wayland`). Plain SSH sessions also mint `Remote=yes` logind sessions but are `Type=tty`, so they are excluded — the graphical type is what distinguishes a remote *desktop* from a remote shell, and only a desktop drives the outputs this arms against. Only xrdp-class stacks mint a qualifying session; krdp, RustDesk, and Sunshine are logind-invisible, so this detector is a supplement for RDP-family remoting, not a primary signal for the three main targets.
 
 ## Sunshine integration
 
@@ -57,7 +57,7 @@ The fact is hydratable, so a service restart mid-session re-arms without waiting
 
 - The PipeWire watcher enumerates the graph at startup and rediscovers a live capture node.
 - The portal monitor tree-walks `/org/freedesktop/portal/desktop/session/*`; the session-object path segment encodes the owner's bus name, which resolves to an exe. Session objects are interface-blind (an InputCapture session looks identical to a capture session), so a bootstrapped allow-listed owner is admitted only provisionally, and enters the live set only while a screencast source corroborates a real capture. A `CreateSession` later seen directly on the wire supersedes the guess and arms unconditionally.
-- The logind detector lists current sessions and reports any own-uid `Remote=yes` session.
+- The logind detector lists current sessions and reports any own-uid graphical `Remote=yes` session.
 - A session-service restart therefore re-arms via graph and session enumeration; a daemon restart re-arms via the mirror re-put (the session re-publishes the fact when the daemon's liveliness token reappears, since the system-socket mirror is a plain put over a connect-only peer).
 
 Sunshine's NvFBC path is the exception: with no portal session and no PipeWire node to rediscover, only the poller could re-arm it after a restart — the hook fires once, at launch.

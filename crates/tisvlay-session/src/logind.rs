@@ -4,7 +4,8 @@
 //! RustDesk and Sunshine are logind-invisible, so this covers the RDP
 //! server family the portal monitor does not). The detector watches
 //! `org.freedesktop.login1` for `SessionNew`/`SessionRemoved`, keeps the
-//! ones that are both remote and owned by this service's own uid, and
+//! ones that are remote, graphical (`Type=x11`/`wayland` — a remote
+//! *desktop*, not an SSH shell), and owned by this service's own uid, and
 //! reports a `Logind` source per such session — detail is the remote host
 //! if the session carries one, else the session id.
 //!
@@ -61,6 +62,11 @@ trait Login1Session {
     #[zbus(property)]
     fn remote_host(&self) -> zbus::Result<String>;
 
+    /// The session's `Type`: `x11`/`wayland`/`mir` for graphical logins,
+    /// `tty`/`unspecified` otherwise.
+    #[zbus(property, name = "Type")]
+    fn session_type(&self) -> zbus::Result<String>;
+
     /// `(uid, object_path)` of the session's owner.
     #[zbus(property)]
     fn user(&self) -> zbus::Result<(u32, zbus::zvariant::OwnedObjectPath)>;
@@ -79,13 +85,24 @@ pub(crate) struct SessionInfo {
     pub remote: bool,
     /// The client host, empty when the session carries none.
     pub remote_host: String,
+    /// The logind session `Type` — the remote-desktop discriminator.
+    pub session_type: String,
+}
+
+/// Whether a session `Type` is a graphical (remote-desktop) login. Plain
+/// SSH shells also mint `Remote=yes` sessions but are `Type=tty`; the
+/// graphical type is what distinguishes a remote *desktop* from a remote
+/// shell, and only a desktop drives the outputs this arms against.
+fn is_graphical(session_type: &str) -> bool {
+    matches!(session_type, "x11" | "wayland")
 }
 
 /// Whether a session is a remote source for `own_uid`: it must be a remote
-/// session owned by this user. A remote session under a *different* uid is
-/// someone else's and never arms this user's TVs.
+/// graphical session owned by this user. A remote session under a
+/// *different* uid is someone else's and never arms this user's TVs; a
+/// non-graphical remote session (an SSH shell) never drives the display.
 pub(crate) fn is_own_remote(info: &SessionInfo, own_uid: u32) -> bool {
-    info.remote && info.uid == own_uid
+    info.remote && info.uid == own_uid && is_graphical(&info.session_type)
 }
 
 /// The source detail for a qualifying session: the remote host when the
@@ -235,6 +252,7 @@ async fn read_session(
             uid: hint_uid,
             remote: false,
             remote_host: String::new(),
+            session_type: String::new(),
         });
     }
     let uid = if hint_uid == u32::MAX {
@@ -243,11 +261,13 @@ async fn read_session(
         hint_uid
     };
     let remote_host = session.remote_host().await.unwrap_or_default();
+    let session_type = session.session_type().await.unwrap_or_default();
     Some(SessionInfo {
         id: id.to_string(),
         uid,
         remote,
         remote_host,
+        session_type,
     })
 }
 
@@ -270,23 +290,46 @@ fn own_uid() -> u32 {
 mod tests {
     use super::*;
 
+    /// A remote graphical (wayland) session — the baseline qualifying shape.
     fn info(uid: u32, remote: bool, host: &str) -> SessionInfo {
+        typed(uid, remote, host, "wayland")
+    }
+
+    fn typed(uid: u32, remote: bool, host: &str, session_type: &str) -> SessionInfo {
         SessionInfo {
             id: "7".into(),
             uid,
             remote,
             remote_host: host.into(),
+            session_type: session_type.into(),
         }
     }
 
     #[test]
     fn only_own_uid_remote_sessions_arm() {
-        // Remote + own uid: arms.
+        // Remote graphical + own uid: arms.
         assert!(is_own_remote(&info(1000, true, "10.0.0.5"), 1000));
         // Remote but someone else's uid: never arms this user's TVs.
         assert!(!is_own_remote(&info(1001, true, "10.0.0.5"), 1000));
         // Own uid but a local (non-remote) session: not a remote source.
         assert!(!is_own_remote(&info(1000, false, ""), 1000));
+    }
+
+    #[test]
+    fn only_graphical_remote_sessions_arm() {
+        // x11 and wayland remote desktops arm.
+        assert!(is_own_remote(&typed(1000, true, "10.0.0.5", "x11"), 1000));
+        assert!(is_own_remote(
+            &typed(1000, true, "10.0.0.5", "wayland"),
+            1000
+        ));
+        // A plain SSH shell is Remote=yes too but Type=tty — never arms.
+        assert!(!is_own_remote(&typed(1000, true, "10.0.0.5", "tty"), 1000));
+        // A tty session that is not remote stays rejected.
+        assert!(!is_own_remote(&typed(1000, false, "", "tty"), 1000));
+        // A graphical session that is not remote (the local seat) stays
+        // rejected — graphical alone is not a remote source.
+        assert!(!is_own_remote(&typed(1000, false, "", "wayland"), 1000));
     }
 
     #[test]
@@ -313,5 +356,7 @@ mod tests {
         // A non-qualifying session yields nothing.
         assert!(report_for(&info(1001, true, "host.lan"), 1000, true).is_none());
         assert!(report_for(&info(1000, false, ""), 1000, true).is_none());
+        // A remote SSH shell (Type=tty) yields nothing.
+        assert!(report_for(&typed(1000, true, "host.lan", "tty"), 1000, true).is_none());
     }
 }
