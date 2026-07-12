@@ -270,6 +270,17 @@ pub mod keys {
         format!("tisvlay/{site}/alive/daemon")
     }
 
+    /// Liveliness token a running session service declares on its system
+    /// link — the daemon's crash-robust presence signal for the session.
+    /// A connect-only peer cannot serve entities to *other* leaves through
+    /// the hub, but the directly-dialed daemon does observe this token, and
+    /// its DELETE fires within a millisecond of the session's departure
+    /// (clean exit or `kill -9`). Distinct from the user-socket
+    /// [`user_alive_session`] token, which never reaches the system peer.
+    pub fn session_alive(site: &str) -> String {
+        format!("tisvlay/{site}/alive/session")
+    }
+
     /// A per-TV key: `tisvlay/<site>/tv/<uuid>/<path>` where `path` is a
     /// [`StatePayload::PATH`](crate::payload::StatePayload::PATH) tail.
     pub fn tv_path(site: &str, tv: &Uuid, path: &str) -> String {
@@ -573,6 +584,14 @@ pub mod keys {
         #[test]
         fn daemon_alive_key_shape() {
             assert_eq!(daemon_alive("main"), "tisvlay/main/alive/daemon");
+        }
+
+        #[test]
+        fn session_alive_key_shape() {
+            // System-namespace presence token (daemon-observable), distinct
+            // from the user-socket session token the daemon cannot see.
+            assert_eq!(session_alive("main"), "tisvlay/main/alive/session");
+            assert_ne!(session_alive("main"), user_alive_session("main"));
         }
 
         #[test]

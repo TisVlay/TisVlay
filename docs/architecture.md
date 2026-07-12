@@ -25,7 +25,7 @@ Zenoh peer routing is transitive: one connected mesh would let any client read a
 
 Every *consuming* link is a **connect-only peer** (`mode=peer`, empty listen, `exit_on_failure: false`): the session opens before any link exists, dials the hub forever, and liveliness tokens are the availability signal (the `NameOwnerChanged` equivalent). This buys start-order freedom — any client can boot before the daemon.
 
-The law learned empirically: **a connect-only peer leaf is consume-only.** Queryables, liveliness tokens, and cached publishers it declares are invisible to other leaves through a hub — under both peer-mode and router-mode hubs. Anything that *serves* on a hub it merely connects to must use a **client-mode link into a router** (routers relay client-declared entities), supervised with a fail-fast open + retry loop so it re-serves after a hub restart. This is why the user socket is a router and the tray's settings service is a supervised client link, while all consumers everywhere stay connect-only peers.
+The law learned empirically: **a connect-only peer leaf cannot fan out what it serves.** Queryables, liveliness tokens, and cached publishers it declares are invisible to *other* leaves re-broadcast through a hub (both peer-mode and router-mode hubs) — but the **directly-dialed hub itself does observe them** (verified on zenoh 1.9's Regions routing; the rule governs third-party fan-out, not observation by the endpoint you dial). So anything that must serve *to other leaves* uses a **client-mode link into a router** (routers relay client-declared entities), supervised with a fail-fast open + retry loop so it re-serves after a hub restart — hence the user socket is a router and the tray's settings service is a supervised client link. Where only the dialed peer needs the signal, a connect-only peer suffices: the session declares its `alive/session` token on its system link and the daemon (the peer it dials) observes both the PUT and the crash-time DELETE.
 
 ## Key space
 
@@ -44,7 +44,7 @@ manager/rpc/<verb>                                    add-tv, pair, discover[-st
 discovery/<session>/found/<id>                        streaming findings + alive/discovery/<session> token
 event/session/<name>, event/connect-failed            observability taps
 greeter/{idle,timeout}                                greeter idle events + published timeout
-alive/{daemon,…}                                      liveliness tokens
+alive/{daemon,session,…}                              liveliness tokens (session = presence on its system link)
 --- user socket only ---
 user/profile/<uuid>, user/profile/rpc/<verb>          user-profile catalog + CRUD
 user/tv/<uuid>/profile                                per-TV user-profile assignment

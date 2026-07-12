@@ -2,6 +2,7 @@
 //! puts driving system-profile actions) and the `automate_when` gate
 //! (published `automated` flag + suppressed dispatch).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,13 +22,16 @@ struct Wire {
     _dir: tempfile::TempDir,
     client: Session,
     site: String,
+    socket: PathBuf,
+    // Held for the test lifetime — dropping the stack tears down the world.
+    _stack: tisvlay_daemon::Stack,
 }
 
 async fn wire() -> Wire {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("g.sock");
     let (connector, discovery, _handle) = new_test_parts();
-    let _stack = tisvlay_daemon::serve(
+    let stack = tisvlay_daemon::serve(
         &socket,
         "t",
         vec![
@@ -45,6 +49,8 @@ async fn wire() -> Wire {
         _dir: dir,
         client,
         site: "t".into(),
+        socket,
+        _stack: stack,
     }
 }
 
@@ -354,4 +360,69 @@ async fn remote_session_mirror_flips_the_armed_projection() {
         v["remote_armed"] == false
     })
     .await;
+}
+
+/// The session-liveliness clear (`#4-crash`): a `session_alive` token on
+/// the session's system link arms nothing by itself, but its DELETE — the
+/// session departing — clears any armed state the session had mirrored,
+/// even though the mirror (a plain put) is never re-put to empty. A
+/// graceful undeclare exercises the same DELETE path a crash takes; the
+/// kill -9 timing (DELETE observed within ~1 ms) is experiment-proven.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_liveliness_delete_clears_the_armed_projection() {
+    let w = wire().await;
+    let tv = add_tv(&w, "Remote", "mock://alive").await;
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+
+    // Model the session's system link: a connect-only peer that declares
+    // the presence token and mirrors an armed set (exactly what the real
+    // session does on its `client_config_resilient` link). Resilient open
+    // returns before the link is up, so wait for the daemon's liveliness
+    // to appear — the link is live and delivering — before serving on it.
+    let session = zenoh::open(bootstrap::client_config_resilient(&w.socket).unwrap())
+        .await
+        .unwrap();
+    let daemon_alive = session
+        .liveliness()
+        .declare_subscriber(keys::daemon_alive(&w.site))
+        .history(true)
+        .await
+        .unwrap();
+    daemon_alive
+        .recv_async()
+        .await
+        .expect("daemon liveliness on the resilient link");
+    let token = session
+        .liveliness()
+        .declare_token(keys::session_alive(&w.site))
+        .await
+        .unwrap();
+    let state = tisvlay_wire::payload::RemoteSessionState {
+        sources: Vec::new(),
+        armed: vec![tv],
+    };
+    session
+        .put(
+            keys::remote_session(&w.site),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .encoding(Encoding::APPLICATION_JSON)
+        .await
+        .unwrap();
+    // The arm flips the projection true — a live republish, so it does not
+    // depend on catching the world-derived keys in the history replay.
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == true
+    })
+    .await;
+
+    // The session departs: the token DELETEs and the daemon clears the
+    // armed set on the DELETE alone — no empty mirror put ever arrives, so
+    // the disarm is attributable purely to the liveliness signal.
+    token.undeclare().await.unwrap();
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == false
+    })
+    .await;
+    drop(session);
 }

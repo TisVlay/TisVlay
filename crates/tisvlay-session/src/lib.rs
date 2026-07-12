@@ -263,6 +263,19 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
 
+    // Presence on the system socket: a liveliness token the daemon (the
+    // directly-dialed peer) observes even though this link is a
+    // connect-only peer. Its DELETE — within a millisecond of a crash or a
+    // clean exit — is the daemon's crash-robust departure signal, clearing
+    // any armed state this session had mirrored. Held in `Core` so it lives
+    // exactly as long as the service; the user-socket `user_alive_session`
+    // token never reaches the system peer, so presence rides this one.
+    let alive_system = system
+        .liveliness()
+        .declare_token(keys::session_alive(&options.site))
+        .await
+        .map_err(|e| anyhow!("declare session system liveliness: {e}"))?;
+
     let (event_tx, events) = mpsc::unbounded_channel();
     let (remote_tx, reports) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
@@ -298,6 +311,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         remote_sources: remote::RemoteSources::default(),
         remote_armed: HashSet::new(),
         _alive: alive,
+        _alive_system: alive_system,
     };
     tokio::spawn(async move {
         core.run(
@@ -352,6 +366,10 @@ struct Core {
     /// while-remote gate in `action_for` keys on membership.
     remote_armed: HashSet<Uuid>,
     _alive: zenoh::liveliness::LivelinessToken,
+    /// System-socket presence token. Dropping it (Core drop, on crash or
+    /// clean exit) DELETEs the daemon's departure signal; held here so it
+    /// lives exactly as long as the running service.
+    _alive_system: zenoh::liveliness::LivelinessToken,
 }
 
 impl Core {
@@ -431,14 +449,12 @@ impl Core {
             }
         }
         // Clean exit (a channel closed on logout/restart): publish an empty
-        // fact to the system mirror so the world disarms. The mirror is a
-        // plain put with no daemon-watchable liveliness token — the
-        // session's system link is a connect-only peer and cannot serve one
-        // per the serve-side law — so departure must actively clear it. A
-        // crash that skips this path leaves the last armed set latched until
-        // the session returns and re-puts; covering that would need a
-        // cross-process heartbeat/TTL that does not exist yet (design
-        // pending).
+        // fact to the system mirror so the world disarms immediately. This
+        // put is the instant fast path; the `session_alive` token (dropped
+        // with `Core` just after) also DELETEs here. A crash that skips this
+        // path still departs the token, and the daemon clears the armed set
+        // on that DELETE — the token covers the crash case the explicit put
+        // cannot.
         self.mirror_state(&payload::RemoteSessionState::default())
             .await;
     }

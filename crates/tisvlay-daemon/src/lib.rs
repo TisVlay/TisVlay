@@ -15,12 +15,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tisvlay_core::TvConnector;
 use tisvlay_world::{Command, InEvent, Reactor, SystemEvent, TvRecord, WorldClient};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tracing::info;
 use uuid::Uuid;
 use zenoh::Session;
@@ -115,6 +116,76 @@ pub struct Stack {
     /// Route-monitor requests from the reactor, awaiting the netlink
     /// watcher (`run` hands them to `spawn_link_monitor`).
     routes: mpsc::UnboundedReceiver<tisvlay_world::RouteRequest>,
+    /// Shared boot-`Startup` readiness, written by the remote-session
+    /// subscribers; `run` awaits it before the WoL dispatch.
+    startup_ready: Arc<StartupReadiness>,
+}
+
+/// How long the boot `Startup` wake waits for the armed state to settle
+/// before inferring that no session will arm anything. Sized above the
+/// resilient-link reconnect window (measured ~855 ms) so a live session's
+/// `session_alive` token has propagated by the time absence is inferred;
+/// it also subsumes the fleet-replay-burst grace (transport facts ride one
+/// batch behind each dial spawn).
+const STARTUP_SETTLE: Duration = Duration::from_secs(1);
+
+/// Upper bound on the boot `Startup` wait. Past this the wake fires
+/// regardless — the fallback for a session that connects but never mirrors
+/// (e.g. it died between the daemon going down and coming back up).
+const STARTUP_DEADLINE: Duration = Duration::from_secs(3);
+
+/// Shared readiness state for the boot `Startup` gate, written by the
+/// remote-session subscribers and awaited by the startup task.
+#[derive(Debug, Default)]
+struct StartupReadiness {
+    /// A `session_alive` liveliness token is currently observed.
+    session_present: AtomicBool,
+    /// A remote-session mirror sample has arrived — the armed set is known.
+    mirror_seen: AtomicBool,
+    /// Woken whenever either flag changes, so the startup task re-evaluates.
+    notify: Notify,
+}
+
+/// Whether the boot `Startup` wake can fire: the armed state is
+/// trustworthy. Pure so the gate logic is unit-testable.
+///
+/// - `mirror_seen`: a mirror sample landed, so the armed set is known (the
+///   daemon-restart-mid-session path).
+/// - `settled && !session_present`: the settle window elapsed with no
+///   session token in sight, so nothing will arm (the no-session path).
+fn startup_ready(mirror_seen: bool, session_present: bool, settled: bool) -> bool {
+    mirror_seen || (settled && !session_present)
+}
+
+/// Await boot-`Startup` readiness: proceed on a mirror sample, on the
+/// settle window elapsing with no session present, or on the fallback
+/// deadline.
+async fn await_startup_ready(state: Arc<StartupReadiness>) {
+    let start = tokio::time::Instant::now();
+    let settle_at = start + STARTUP_SETTLE;
+    let deadline_at = start + STARTUP_DEADLINE;
+    loop {
+        let settled = tokio::time::Instant::now() >= settle_at;
+        if startup_ready(
+            state.mirror_seen.load(Ordering::Acquire),
+            state.session_present.load(Ordering::Acquire),
+            settled,
+        ) {
+            return;
+        }
+        // Before the settle: re-check when it elapses. After it: a session
+        // is present but hasn't mirrored, so wait for the mirror (a notify)
+        // or the fallback deadline.
+        let wake_at = if settled { deadline_at } else { settle_at };
+        tokio::select! {
+            _ = state.notify.notified() => {}
+            _ = tokio::time::sleep_until(wake_at) => {
+                if settled {
+                    return; // fallback deadline
+                }
+            }
+        }
+    }
 }
 
 /// One vendor backend's registration: identity + capabilities for the
@@ -296,6 +367,11 @@ pub async fn serve(
             }
         }
     });
+    // Boot-`Startup` readiness: the remote-session subscribers below write
+    // it, and `run` awaits it before the WoL dispatch so the fleet arms (or
+    // is known not to) before it wakes.
+    let startup_ready = Arc::new(StartupReadiness::default());
+
     // The remote-session fact arrives as a plain-put mirror from the
     // session service (the session's system link is a connect-only peer,
     // so the fact rides a put, not a served entity). Forward the computed
@@ -305,6 +381,7 @@ pub async fn serve(
         .await
         .map_err(|e| anyhow!("declare remote session subscriber: {e}"))?;
     let remote_world = world.clone();
+    let remote_ready = Arc::clone(&startup_ready);
     tokio::spawn(async move {
         let sub = remote_sub;
         while let Ok(sample) = sub.recv_async().await {
@@ -313,8 +390,48 @@ pub async fn serve(
             ) else {
                 continue;
             };
+            // The armed set is now known — release the boot gate.
+            remote_ready.mirror_seen.store(true, Ordering::Release);
+            remote_ready.notify.notify_one();
             if !remote_world.send(InEvent::RemoteSession { armed: state.armed }) {
                 return;
+            }
+        }
+    });
+    // The session's `session_alive` liveliness token: a crash-robust
+    // presence signal the daemon (the directly-dialed peer) observes even
+    // though the session's link is a connect-only peer. `history(true)` so
+    // a daemon starting after a live session still sees the standing token.
+    // Its DELETE — a crash or a clean exit — clears any armed state the
+    // session had mirrored; its PUT tells the boot gate to wait for the
+    // mirror rather than concluding no session will arm.
+    let session_alive_sub = session
+        .liveliness()
+        .declare_subscriber(tisvlay_wire::keys::session_alive(site))
+        .history(true)
+        .await
+        .map_err(|e| anyhow!("declare session liveliness subscriber: {e}"))?;
+    let session_world = world.clone();
+    let session_ready = Arc::clone(&startup_ready);
+    tokio::spawn(async move {
+        let sub = session_alive_sub;
+        while let Ok(sample) = sub.recv_async().await {
+            match sample.kind() {
+                zenoh::sample::SampleKind::Put => {
+                    session_ready.session_present.store(true, Ordering::Release);
+                    session_ready.notify.notify_one();
+                }
+                zenoh::sample::SampleKind::Delete => {
+                    session_ready
+                        .session_present
+                        .store(false, Ordering::Release);
+                    session_ready.notify.notify_one();
+                    // Empty armed set disarms every TV via the world's
+                    // `apply_remote_session` — the crash-robust clear.
+                    if !session_world.send(InEvent::RemoteSession { armed: Vec::new() }) {
+                        return;
+                    }
+                }
             }
         }
     });
@@ -330,6 +447,7 @@ pub async fn serve(
         daemon,
         world,
         routes: routes_rx,
+        startup_ready,
     })
 }
 
@@ -474,15 +592,21 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             });
         }
     }
-    // WoL at boot: dispatch `Startup` through the system profiles once
-    // the replayed fleet has its transport facts (facts ride one batch
-    // behind each dial spawn, so a short grace comfortably covers the
-    // replay burst — the profile's stock `on_startup: power_on` then
-    // upgrades the plain boot dial to a wake for every automated TV).
+    // WoL at boot: dispatch `Startup` through the system profiles once the
+    // armed state is trustworthy — a mirror sample arrived (a session
+    // reconnected and re-published its fact), or the settle window passed
+    // with no session to arm anything, or the fallback deadline elapsed.
+    // Awaiting readiness rather than a fixed timer closes the daemon-restart
+    // race where a stale-or-absent armed set let a boot wake fire for a
+    // remote room; it also subsumes the fleet-replay grace (transport facts
+    // ride one batch behind each dial spawn). The profile's stock
+    // `on_startup: power_on` then upgrades the plain boot dial to a wake for
+    // every automated, unarmed TV.
     {
         let world = stack.world.clone();
+        let ready = Arc::clone(&stack.startup_ready);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            await_startup_ready(ready).await;
             world.send(tisvlay_world::InEvent::System {
                 event: SystemEvent::Startup,
                 connector: None,
@@ -494,4 +618,75 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         .context("wait for shutdown signal")?;
     info!("shutting down");
     stack.daemon.close().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_ready_truth_table() {
+        // A known armed set releases the gate regardless of session/settle.
+        assert!(startup_ready(true, true, false));
+        assert!(startup_ready(true, false, false));
+        // No mirror + a session present: gated even past the settle — the
+        // daemon-restart race fix (wait for the reconnected session's
+        // mirror, never wake on a stale-or-absent armed set).
+        assert!(!startup_ready(false, true, false));
+        assert!(!startup_ready(false, true, true));
+        // No mirror + no session: gated until the settle, then ready.
+        assert!(!startup_ready(false, false, false));
+        assert!(startup_ready(false, false, true));
+    }
+
+    /// The daemon-restart gate (`#6`): a present session with no mirror yet
+    /// holds the wake past the settle window and releases only once its
+    /// mirror lands. Paused clock so the settle/deadline pass instantly.
+    #[tokio::test(start_paused = true)]
+    async fn startup_gate_waits_for_a_present_session_to_mirror() {
+        let ready = Arc::new(StartupReadiness::default());
+        ready.session_present.store(true, Ordering::Release);
+        let task = tokio::spawn(await_startup_ready(Arc::clone(&ready)));
+        // Past the settle: still gated (session present, no mirror).
+        tokio::time::sleep(STARTUP_SETTLE + Duration::from_millis(100)).await;
+        assert!(
+            !task.is_finished(),
+            "gate must hold while a session is present but has not mirrored"
+        );
+        // The mirror arrives → the gate releases.
+        ready.mirror_seen.store(true, Ordering::Release);
+        ready.notify.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("gate must release once the mirror lands")
+            .expect("startup task panicked");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_gate_releases_when_no_session_after_settle() {
+        let ready = Arc::new(StartupReadiness::default());
+        let start = tokio::time::Instant::now();
+        await_startup_ready(Arc::clone(&ready)).await;
+        let waited = start.elapsed();
+        assert!(
+            waited >= STARTUP_SETTLE,
+            "must give a live session's token time to appear before inferring absence"
+        );
+        assert!(
+            waited < STARTUP_DEADLINE,
+            "no session → release at the settle, not the fallback deadline"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_gate_releases_at_once_on_a_known_armed_set() {
+        let ready = Arc::new(StartupReadiness::default());
+        ready.mirror_seen.store(true, Ordering::Release);
+        let start = tokio::time::Instant::now();
+        await_startup_ready(Arc::clone(&ready)).await;
+        assert!(
+            start.elapsed() < STARTUP_SETTLE,
+            "a known armed set releases the gate without waiting"
+        );
+    }
 }
