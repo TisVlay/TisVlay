@@ -146,6 +146,12 @@ pub mod payload {
         /// `automate_when` holds against the current input. Consumers
         /// (session service, tray) act only on automated TVs.
         pub automated: bool,
+        /// Whether a remote session currently arms this TV (mirrored
+        /// from the session service). While set, the world honors the
+        /// system profile's while-remote overrides on DPMS-on/resume; a
+        /// read-only projection for clients to surface the state.
+        #[serde(default)]
+        pub remote_armed: bool,
     }
 
     impl Meta {
@@ -158,6 +164,8 @@ pub mod payload {
                 // `should_automate` gives unknown inputs the benefit of
                 // the doubt, so a fresh managed TV starts automated.
                 automated: managed,
+                // No remote session until the mirror says so.
+                remote_armed: false,
             }
         }
     }
@@ -212,6 +220,45 @@ pub mod payload {
             }
         }
     }
+
+    /// A remote-session fact: every live source tagged by kind, plus the
+    /// per-TV `armed` projection the session computes from the sources
+    /// crossed with each TV's resolved user profile. The world (via the
+    /// system mirror) consumes `armed` booleans only, staying
+    /// arming-policy-free.
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct RemoteSessionState {
+        pub sources: Vec<RemoteSource>,
+        pub armed: Vec<uuid::Uuid>,
+    }
+
+    /// One live remote source. `detail` names the specific origin (the
+    /// resolved exe for `Portal`, the source label for `Manual`); it's
+    /// carried for display and attribution, not routing.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct RemoteSource {
+        pub kind: RemoteSourceKind,
+        pub detail: String,
+    }
+
+    /// How a remote source was detected. Attributed kinds always arm;
+    /// the unattributed `Screencast` signal arms only when the resolved
+    /// profile opts in (`remote_screencast_arms`). `Ord` so the source
+    /// set keys deterministically.
+    ///
+    /// `Sunshine` is the continuous `/serverinfo` level poll's own key,
+    /// kept distinct from the `Manual` hook verb so the poll and the
+    /// optional `global_prep_cmd` hook coexist without racing each other's
+    /// arm.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RemoteSourceKind {
+        Manual,
+        Logind,
+        Portal,
+        Screencast,
+        Sunshine,
+    }
 }
 
 pub mod keys {
@@ -223,6 +270,17 @@ pub mod keys {
     /// Liveliness token declared by a running daemon for `site`.
     pub fn daemon_alive(site: &str) -> String {
         format!("tisvlay/{site}/alive/daemon")
+    }
+
+    /// Liveliness token a running session service declares on its system
+    /// link — the daemon's crash-robust presence signal for the session.
+    /// A connect-only peer cannot serve entities to *other* leaves through
+    /// the hub, but the directly-dialed daemon does observe this token, and
+    /// its DELETE fires within a millisecond of the session's departure
+    /// (clean exit or `kill -9`). Distinct from the user-socket
+    /// [`user_alive_session`] token, which never reaches the system peer.
+    pub fn session_alive(site: &str) -> String {
+        format!("tisvlay/{site}/alive/session")
     }
 
     /// A per-TV key: `tisvlay/<site>/tv/<uuid>/<path>` where `path` is a
@@ -309,6 +367,39 @@ pub mod keys {
     /// Liveliness token for a running tray settings service.
     pub fn user_alive_tray(site: &str) -> String {
         format!("tisvlay/{site}/user/alive/tray")
+    }
+
+    /// The per-user remote-session fact (user socket, cached pub owned
+    /// by the session's router).
+    pub fn user_remote_session(site: &str) -> String {
+        format!("tisvlay/{site}/user/remote/session")
+    }
+
+    /// The system-socket mirror of the remote-session fact — a cache-1
+    /// AdvancedPublisher the session serves on its connect-only-peer system
+    /// link. A connect-only peer cannot fan a served entity out to *other*
+    /// leaves, but the directly-dialed daemon does hydrate its `@adv` cache,
+    /// so a daemon (re)start relearns the armed set without any re-put. The
+    /// counter-sequenced cache shape constructs without an HLC, so this
+    /// needs no daemon-side timestamping.
+    pub fn remote_session(site: &str) -> String {
+        format!("tisvlay/{site}/remote/session")
+    }
+
+    /// Remote-session rpcs + the wildcard their queryable declares (own
+    /// family, not folded into the profile rpc queryable).
+    pub fn user_remote_rpc(site: &str, verb: &str) -> String {
+        format!("tisvlay/{site}/user/remote/rpc/{verb}")
+    }
+
+    pub fn user_remote_rpc_wild(site: &str) -> String {
+        format!("tisvlay/{site}/user/remote/rpc/*")
+    }
+
+    pub fn parse_user_remote_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix("tisvlay/")?
+            .strip_prefix(site)?
+            .strip_prefix("/user/remote/rpc/")
     }
 
     /// Everything under the user subtree — must never be visible through
@@ -502,6 +593,14 @@ pub mod keys {
         }
 
         #[test]
+        fn session_alive_key_shape() {
+            // System-namespace presence token (daemon-observable), distinct
+            // from the user-socket session token the daemon cannot see.
+            assert_eq!(session_alive("main"), "tisvlay/main/alive/session");
+            assert_ne!(session_alive("main"), user_alive_session("main"));
+        }
+
+        #[test]
         fn discovery_found_sanitizes_arbitrary_finding_ids() {
             let session = Uuid::nil();
             // CEC's finding id is the device path — the raw form would
@@ -566,6 +665,33 @@ pub mod keys {
             assert_eq!(parse_manager_rpc("main", "tisvlay/main/tv/x/rpc/y"), None);
             assert_eq!(
                 parse_pairing_progress("main", "tisvlay/main/pairing/not-a-uuid/progress"),
+                None
+            );
+        }
+
+        #[test]
+        fn remote_session_key_shapes() {
+            assert_eq!(
+                user_remote_session("main"),
+                "tisvlay/main/user/remote/session"
+            );
+            assert_eq!(remote_session("main"), "tisvlay/main/remote/session");
+            assert_eq!(
+                parse_user_remote_rpc("main", &user_remote_rpc("main", "set")),
+                Some("set")
+            );
+            // The wildcard the queryable declares matches its own keys.
+            let wild = zenoh::key_expr::KeyExpr::try_from(user_remote_rpc_wild("main")).unwrap();
+            let verb =
+                zenoh::key_expr::KeyExpr::try_from(user_remote_rpc("main", "status")).unwrap();
+            assert!(wild.intersects(&verb));
+            // Wrong site is rejected; the tray family is not confused for it.
+            assert_eq!(
+                parse_user_remote_rpc("other", &user_remote_rpc("main", "set")),
+                None
+            );
+            assert_eq!(
+                parse_user_remote_rpc("main", &user_tray_rpc("main", "get")),
                 None
             );
         }

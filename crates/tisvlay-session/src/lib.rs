@@ -9,10 +9,16 @@
 //! queryable, and the service's liveliness token. User-private keys
 //! physically never reach the system peer.
 
+mod detector;
+mod logind;
+mod monitor;
+mod remote;
+mod screencast;
 mod screensaver;
 mod store;
+mod sunshine;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +28,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
+use tisvlay_wire::caller::Caller;
 use tisvlay_wire::error::WireError;
 use tisvlay_wire::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
@@ -36,8 +43,13 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
+pub use logind::spawn as spawn_logind_detector;
+pub use monitor::spawn as spawn_portal_monitor;
+pub use remote::RemoteReport;
+pub use screencast::spawn as spawn_screencast_detector;
 pub use screensaver::watch_screensaver;
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
+pub use sunshine::spawn as spawn_sunshine_detector;
 
 /// Heartbeat period for sample-miss recovery on cached publishers.
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
@@ -53,6 +65,10 @@ pub enum SessionEvent {
     LockWake,
     IdleTimeout,
     IdleResume,
+    /// A remote session began (the first source armed).
+    RemoteConnect,
+    /// The last remote session ended (all sources cleared).
+    RemoteDisconnect,
 }
 
 impl SessionEvent {
@@ -64,7 +80,17 @@ impl SessionEvent {
             Self::LockWake => "lock_wake",
             Self::IdleTimeout => "idle",
             Self::IdleResume => "resume",
+            Self::RemoteConnect => "remote_connect",
+            Self::RemoteDisconnect => "remote_disconnect",
         }
+    }
+
+    /// The connect/disconnect edges. They dispatch at the arming boundary
+    /// itself, so they bypass the while-remote gate (honoring it would
+    /// swallow the very action the edge exists to fire) and stay orthogonal
+    /// to the idle-drift window.
+    fn is_remote_edge(self) -> bool {
+        matches!(self, Self::RemoteConnect | Self::RemoteDisconnect)
     }
 }
 
@@ -81,6 +107,22 @@ impl SessionClient {
     }
 }
 
+/// Handle for injecting remote-source reports — the detector-report
+/// seam. Real detectors (spawned in `main.rs`) and the test Rig both
+/// report through it; the verb rpc served on the user socket feeds the
+/// same channel from inside the core.
+#[derive(Debug, Clone)]
+pub struct RemoteClient {
+    tx: mpsc::UnboundedSender<RemoteReport>,
+}
+
+impl RemoteClient {
+    /// Returns false if the core loop is gone.
+    pub fn report(&self, report: RemoteReport) -> bool {
+        self.tx.send(report).is_ok()
+    }
+}
+
 #[derive(Debug)]
 pub struct SessionOptions {
     pub system_socket: PathBuf,
@@ -94,6 +136,9 @@ pub struct SessionOptions {
 #[derive(Debug)]
 pub struct SessionStack {
     pub client: SessionClient,
+    /// Detector-report seam for remote-session sources — `main.rs`'s
+    /// (future) real detectors and the test Rig both report through it.
+    pub remote: RemoteClient,
     /// Resolved user idle timeouts as `(locked, unlocked)` seconds —
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
@@ -175,8 +220,20 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("declare user rpc queryable: {e}"))?;
 
-    // Liveliness after the rpc queryable: a client that observes the
-    // service alive must find the rpc surface already declared.
+    // Remote-session rpcs on their own queryable family (verb rpc for
+    // manual/hook sources); routed into the same core loop.
+    let (remote_query_tx, remote_queries) = mpsc::unbounded_channel::<Query>();
+    let remote_queryable = user
+        .declare_queryable(keys::user_remote_rpc_wild(&options.site))
+        .complete(true)
+        .callback(move |query| {
+            let _ = remote_query_tx.send(query);
+        })
+        .await
+        .map_err(|e| anyhow!("declare remote rpc queryable: {e}"))?;
+
+    // Liveliness after the rpc queryables: a client that observes the
+    // service alive must find every rpc surface already declared.
     let alive = user
         .liveliness()
         .declare_token(keys::user_alive_session(&options.site))
@@ -198,9 +255,43 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
 
+    // The remote-session mirror the daemon hydrates on restart: a cache-1
+    // AdvancedPublisher on the system link. Declared before the presence
+    // token so the daemon reaches its `@adv` cache the moment it observes
+    // the session alive. Served over a connect-only peer, but the
+    // directly-dialed daemon still hydrates it — the counter-sequenced
+    // cache shape constructs without an HLC, so no timestamping is needed
+    // here.
+    let remote_mirror = system
+        .declare_publisher(keys::remote_session(&options.site))
+        .encoding(Encoding::APPLICATION_JSON)
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(MissDetectionConfig::default().heartbeat(MISS_HEARTBEAT))
+        .publisher_detection()
+        .await
+        .map_err(|e| anyhow!("declare remote mirror publisher: {e}"))?;
+
+    // Presence on the system socket: a liveliness token the daemon (the
+    // directly-dialed peer) observes even though this link is a
+    // connect-only peer. Its DELETE — within a millisecond of a crash or a
+    // clean exit — is the daemon's crash-robust departure signal, clearing
+    // any armed state this session had mirrored. Held in `Core` so it lives
+    // exactly as long as the service; the user-socket `user_alive_session`
+    // token never reaches the system peer, so presence rides this one.
+    let alive_system = system
+        .liveliness()
+        .declare_token(keys::session_alive(&options.site))
+        .await
+        .map_err(|e| anyhow!("declare session system liveliness: {e}"))?;
+
     let (event_tx, events) = mpsc::unbounded_channel();
+    let (remote_tx, reports) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
     let is_locked = Arc::new(AtomicBool::new(false));
+
+    // Matching-gated caller for TV rpcs on the system socket, shared into
+    // every dispatch's spawned task.
+    let caller = Arc::new(Caller::new(system.clone()));
 
     let mut core = Core {
         system,
@@ -229,15 +320,30 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         idle_fired: false,
         screen_on: HashMap::new(),
         drift_at: HashMap::new(),
+        remote_sources: remote::RemoteSources::default(),
+        remote_armed: HashSet::new(),
+        remote_mirror,
+        caller,
         _alive: alive,
+        _alive_system: alive_system,
     };
     tokio::spawn(async move {
-        core.run(events, queries, meta_sub, power_sub).await;
+        core.run(
+            events,
+            reports,
+            queries,
+            remote_queries,
+            meta_sub,
+            power_sub,
+        )
+        .await;
         drop(queryable);
+        drop(remote_queryable);
     });
 
     Ok(SessionStack {
         client: SessionClient { tx: event_tx },
+        remote: RemoteClient { tx: remote_tx },
         idle_timeouts: idle_rx,
         is_locked,
     })
@@ -267,14 +373,32 @@ struct Core {
     /// Armed drift re-asserts: TV → deadline (one idle-timeout of grace
     /// from the drift; a deliberate remote press gets its window).
     drift_at: HashMap<Uuid, tokio::time::Instant>,
+    /// Live remote-session sources (the detector aggregate).
+    remote_sources: remote::RemoteSources,
+    /// TVs the current sources arm, per their resolved profile — the
+    /// while-remote gate in `action_for` keys on membership.
+    remote_armed: HashSet<Uuid>,
+    /// Cache-1 mirror of the remote fact on the system link. The daemon
+    /// hydrates its last sample on restart, so the fact survives a daemon
+    /// bounce without any re-put from the session.
+    remote_mirror: AdvancedPublisher<'static>,
+    /// Matching-gated caller for TV rpcs on the system socket.
+    caller: Arc<Caller>,
     _alive: zenoh::liveliness::LivelinessToken,
+    /// System-socket presence token. Dropping it (Core drop, on crash or
+    /// clean exit) DELETEs the daemon's departure signal; held here so it
+    /// lives exactly as long as the running service.
+    _alive_system: zenoh::liveliness::LivelinessToken,
 }
 
 impl Core {
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &mut self,
         mut events: mpsc::UnboundedReceiver<SessionEvent>,
+        mut reports: mpsc::UnboundedReceiver<RemoteReport>,
         mut queries: mpsc::UnboundedReceiver<Query>,
+        mut remote_queries: mpsc::UnboundedReceiver<Query>,
         meta_sub: zenoh_ext::AdvancedSubscriber<
             zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
         >,
@@ -290,32 +414,56 @@ impl Core {
             self.publish_assignment(&tv, Some(profile)).await;
         }
         self.recompute_idle();
+        // Seed the remote fact (empty sources / empty armed) so late
+        // joiners hydrate a defined state.
+        self.publish_remote().await;
         info!(site = %self.site, "session core running");
-        loop {
+        'run: loop {
             let next_drift = self.drift_at.values().min().copied();
             tokio::select! {
                 event = events.recv() => match event {
-                    None => return,
-                    Some(event) => self.dispatch(event).await,
+                    None => break 'run,
+                    Some(event) => {
+                        // Pre-dispatch: a wake-ish gated event with a live
+                        // Sunshine source refreshes it on a tight budget so
+                        // the gate reads fresh state (a bounded await in this
+                        // single-owner loop — see the method).
+                        self.eager_refresh_sunshine(event).await;
+                        self.dispatch(event).await;
+                    }
+                },
+                report = reports.recv() => match report {
+                    None => break 'run,
+                    Some(report) => self.apply_remote_report(report).await,
                 },
                 query = queries.recv() => match query {
-                    None => return,
+                    None => break 'run,
                     Some(query) => self.handle_query(query).await,
                 },
+                query = remote_queries.recv() => match query {
+                    None => break 'run,
+                    Some(query) => self.handle_remote_query(query).await,
+                },
                 sample = meta_sub.recv_async() => match sample {
-                    Err(_) => return,
-                    Ok(sample) => self.apply_meta(&sample),
+                    Err(_) => break 'run,
+                    Ok(sample) => self.apply_meta(&sample).await,
                 },
                 sample = power_sub.recv_async() => match sample {
-                    Err(_) => return,
+                    Err(_) => break 'run,
                     Ok(sample) => self.apply_power(&sample),
                 },
                 _ = drift_deadline(next_drift) => self.reassert_due(),
             }
         }
+        // Clean exit (a channel closed on logout/restart): the
+        // `_alive_system` token, dropped with `Core` immediately after,
+        // DELETEs on the daemon's `session_alive` subscriber, which clears
+        // the armed set. A crash that skips this path departs the same
+        // token, so the daemon disarms on the DELETE either way — no empty
+        // mirror put is needed.
     }
 
-    fn apply_meta(&mut self, sample: &zenoh::sample::Sample) {
+    async fn apply_meta(&mut self, sample: &zenoh::sample::Sample) {
         let Some((tv, "meta/config")) = keys::parse_tv_path(&self.site, sample.key_expr().as_str())
         else {
             return;
@@ -334,6 +482,14 @@ impl Core {
             }
         }
         self.recompute_idle();
+        // The fleet changed — a new TV (or a profile shift reflected in
+        // its meta) can move the armed set. TV hydration can postdate a
+        // detector report on a cold start (the system link's first connect
+        // may fail and reconnect after a source is already live), so this
+        // is the edge that arms a just-learned TV.
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
     }
 
     fn apply_power(&mut self, sample: &zenoh::sample::Sample) {
@@ -416,7 +572,191 @@ impl Core {
             }
             let action = self.resolve_for(&tv).on_idle_timeout;
             debug!(%tv, ?action, "re-asserting idle action after screen drift");
-            call_tv(&self.system, &self.site, tv, action);
+            self.call_tv(tv, action);
+        }
+    }
+
+    /// Apply a detector report: fold it into the source set, recompute
+    /// the armed projection, publish the fact once, and drive the
+    /// connect/disconnect edge on the armed-set transition.
+    async fn apply_remote_report(&mut self, report: RemoteReport) {
+        if !self.remote_sources.apply(&report) {
+            return;
+        }
+        debug!(?report, "remote source report applied");
+        // Edge on the ARMED-SET transition, not raw source presence: an
+        // unarmed source (a screencast with capture-arming off, OBS or a
+        // browser tab-share) must not fire the connect action and blank
+        // every TV. Any live-set change republishes the fact, but only a
+        // move of the armed set drives the connect/disconnect events.
+        let was_armed = !self.remote_armed.is_empty();
+        self.recompute_remote_armed();
+        self.publish_remote().await;
+        let now_armed = !self.remote_armed.is_empty();
+        match (was_armed, now_armed) {
+            (false, true) => self.dispatch(SessionEvent::RemoteConnect).await,
+            (true, false) => self.dispatch(SessionEvent::RemoteDisconnect).await,
+            _ => {}
+        }
+    }
+
+    /// Recompute the armed set from the live source kinds crossed with each
+    /// known TV's resolved profile. A pure state update: it moves
+    /// `remote_armed` and returns whether the set changed, publishing
+    /// nothing — every caller publishes exactly once on a change. With no
+    /// live source nothing can arm, so the empty-source case clears the set
+    /// and skips resolving any profile (hydration replays this per meta
+    /// sample).
+    fn recompute_remote_armed(&mut self) -> bool {
+        if !self.remote_sources.any() {
+            if self.remote_armed.is_empty() {
+                return false;
+            }
+            self.remote_armed.clear();
+            return true;
+        }
+        let kinds = self.remote_sources.kinds();
+        let armed: HashSet<Uuid> =
+            remote::compute_armed(self.tvs.keys(), &kinds, |tv| self.resolve_for(tv))
+                .into_iter()
+                .collect();
+        if armed != self.remote_armed {
+            self.remote_armed = armed;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Publish the fact both ways: cached pub on the user socket, plain
+    /// mirror on the system socket. The `RemoteSessionState` is built once
+    /// and reused for both puts.
+    async fn publish_remote(&mut self) {
+        let state = self.remote_state();
+        let key = keys::user_remote_session(&self.site);
+        match serde_json::to_value(&state) {
+            Ok(payload) => self.publish(&key, &payload).await,
+            Err(e) => warn!(%e, "remote session serialize failed"),
+        }
+        self.mirror_state(&state).await;
+    }
+
+    /// Publish a fact to the system-socket mirror through the cache-1
+    /// AdvancedPublisher. The directly-dialed daemon hydrates its last
+    /// sample on restart, so the fact survives a daemon bounce without a
+    /// re-put; a live daemon receives it as an ordinary sample.
+    async fn mirror_state(&self, state: &payload::RemoteSessionState) {
+        let bytes = match serde_json::to_vec(state) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                warn!(%e, "remote mirror serialize failed");
+                return;
+            }
+        };
+        if let Err(e) = self.remote_mirror.put(bytes).await {
+            warn!(%e, "remote mirror put failed");
+        }
+    }
+
+    /// The current fact: live sources + the armed projection (sorted).
+    fn remote_state(&self) -> payload::RemoteSessionState {
+        let mut armed: Vec<Uuid> = self.remote_armed.iter().copied().collect();
+        armed.sort();
+        payload::RemoteSessionState {
+            sources: self.remote_sources.snapshot(),
+            armed,
+        }
+    }
+
+    /// Serve the remote verb rpc: `set { source, active }` toggles a
+    /// manual source; `status` returns the current fact.
+    async fn handle_remote_query(&mut self, query: Query) {
+        let key = query.key_expr().as_str().to_string();
+        let Some(verb) = keys::parse_user_remote_rpc(&self.site, &key).map(str::to_string) else {
+            reply_err(
+                &query,
+                &WireError::bad_request(format!("no such rpc: {key}")),
+            )
+            .await;
+            return;
+        };
+        let body: Value = query
+            .payload()
+            .and_then(|bytes| serde_json::from_slice(&bytes.to_bytes()).ok())
+            .unwrap_or(Value::Null);
+        match verb.as_str() {
+            "set" => {
+                // Default source `manual`; `active` required.
+                let source = body
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("manual")
+                    .to_string();
+                let Some(active) = body.get("active").and_then(Value::as_bool) else {
+                    reply_err(&query, &WireError::bad_request("set requires `active`")).await;
+                    return;
+                };
+                self.apply_remote_report(RemoteReport::manual(source, active))
+                    .await;
+                reply_json(
+                    &query,
+                    &serde_json::to_value(self.remote_state()).unwrap_or_default(),
+                )
+                .await;
+            }
+            "status" => {
+                reply_json(
+                    &query,
+                    &serde_json::to_value(self.remote_state()).unwrap_or_default(),
+                )
+                .await;
+            }
+            other => {
+                reply_err(
+                    &query,
+                    &WireError::bad_request(format!("no such rpc: {other}")),
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Eager Sunshine refresh, run before an event whose dispatch the gate
+    /// is currently suppressing. The continuous poll disarms the Sunshine
+    /// source only within its interval, so a user returning inside that
+    /// window could hit a suppressed dispatch for up to one tick. The gate
+    /// and the detector share this process, so a suppressed dispatch pulls
+    /// `/serverinfo` synchronously and decides on fresh state: if the stream
+    /// has ended the source clears here, un-gating the action immediately
+    /// instead of waiting for the poll.
+    ///
+    /// Bounded: awaits up to `EAGER_TIMEOUT` in the single-owner Core loop,
+    /// and only when a live Sunshine source is holding down a real dispatch
+    /// (see `eager_refresh_applies`) — infrequent and tight, which is why the
+    /// budget is small and the trigger narrow. It refreshes the source only;
+    /// the connect/disconnect edge accounting stays with the poll and the
+    /// report path.
+    async fn eager_refresh_sunshine(&mut self, event: SessionEvent) {
+        let has_sunshine = self
+            .remote_sources
+            .has_kind(payload::RemoteSourceKind::Sunshine);
+        let armed_actions: Vec<tisvlay_core::EventAction> = self
+            .remote_armed
+            .iter()
+            .map(|tv| self.raw_action_for(tv, event))
+            .collect();
+        if !eager_refresh_applies(event, has_sunshine, armed_actions.into_iter()) {
+            return;
+        }
+        // The poll owns the single (Sunshine, "serverinfo") key and it is
+        // live here (checked above), so fold the observation against
+        // armed = true: Free/Absent clears the source, Busy/Unknown leaves it.
+        let observation = sunshine::probe_once(sunshine::EAGER_TIMEOUT).await;
+        if let (_, Some(report)) = sunshine::decide(true, observation)
+            && self.remote_sources.apply(&report)
+        {
+            self.recompute_remote_armed();
+            self.publish_remote().await;
         }
     }
 
@@ -429,10 +769,12 @@ impl Core {
         // will re-open it through its own timer).
         match event {
             SessionEvent::IdleTimeout => self.idle_fired = true,
-            SessionEvent::Lock
-            | SessionEvent::Unlock
-            | SessionEvent::LockWake
-            | SessionEvent::IdleResume => {
+            // Remote connect/disconnect are orthogonal to the idle-drift
+            // window — they neither open nor close it.
+            _ if event.is_remote_edge() => {}
+            // Any activity or lock transition closes the drift window (a
+            // fresh idle cycle re-opens it through its own timer).
+            _ => {
                 self.idle_fired = false;
                 self.drift_at.clear();
             }
@@ -456,13 +798,45 @@ impl Core {
                 continue;
             }
             debug!(%tv, ?event, ?action, "user profile action");
-            call_tv(&self.system, &self.site, *tv, action);
+            self.call_tv(*tv, action);
         }
     }
 
-    /// Root chain per field: assignment → profile → editable default
-    /// profile → hard-coded floor.
-    fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
+    /// Fire a TV rpc on the system socket through the shared matching gate;
+    /// failures are logged, not fatal — the daemon's own retry tier owns
+    /// delivery. The resolved restore flag rides the rpc as resolved intent:
+    /// the world honors it without knowing the session's event vocabulary,
+    /// and manual clients (which never set it) stay input-neutral.
+    fn call_tv(&self, tv: Uuid, spec: tisvlay_core::EventAction) {
+        let restore = spec.restore_input();
+        let (verb, body) = match spec.action() {
+            SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
+            SessionAction::ScreenOn => (
+                "set-screen",
+                json!({ "on": true, "restore_input": restore }),
+            ),
+            SessionAction::PowerOff => ("power-off", Value::Null),
+            SessionAction::PowerOn => ("power-on", json!({ "restore_input": restore })),
+            SessionAction::None => return,
+        };
+        let caller = Arc::clone(&self.caller);
+        let key = keys::tv_rpc(&self.site, &tv, verb);
+        // Spawned so the matching gate + rpc timeout never block the core
+        // select; the Caller re-issues nothing on a write and classifies
+        // unavailable-vs-rejected for the log line.
+        tokio::spawn(async move {
+            if let Err(error) = caller.call(&key, body).await {
+                warn!(%key, %error, "tv rpc failed");
+            }
+        });
+    }
+
+    /// The resolved action for this event *before* the remote gate: the
+    /// root chain per field (assignment → profile → editable default
+    /// profile → hard-coded floor). One field per event, no direction bias
+    /// — an event carries no inherent wake/off-going meaning, only the
+    /// profile it resolves through does.
+    fn raw_action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
         let resolved = self.resolve_for(tv);
         match event {
             SessionEvent::Lock => resolved.on_session_lock,
@@ -470,25 +844,44 @@ impl Core {
             SessionEvent::LockWake => resolved.on_lock_wake,
             SessionEvent::IdleTimeout => resolved.on_idle_timeout,
             SessionEvent::IdleResume => resolved.on_idle_resume,
+            SessionEvent::RemoteConnect => resolved.on_remote_connect,
+            SessionEvent::RemoteDisconnect => resolved.on_remote_disconnect,
         }
+    }
+
+    /// The dispatched action: the raw mapping with the remote gate applied.
+    /// While a TV is armed, an action whose `while_remote` gate is `false`
+    /// is suppressed (dispatches nothing) — a pure gate, so an unarmed TV is
+    /// never affected and the gate can never originate an action. The gate
+    /// is ignored on the connect/disconnect events (those fire at the arming
+    /// edge itself, where honoring the gate would swallow the action).
+    fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
+        let action = self.raw_action_for(tv, event);
+        if !event.is_remote_edge() && self.remote_armed.contains(tv) && !action.while_remote() {
+            return SessionAction::None.into();
+        }
+        action
     }
 
     /// Merge an assignment through the editable default profile down to
     /// the hard-coded floor (root resolve chain).
     fn resolve_for(&self, tv: &Uuid) -> ResolvedUserProfile {
+        // Merge off borrowed bodies — `merge_with_base`/`resolve` take refs,
+        // so an absent assignment or default profile falls back to a shared
+        // empty rather than cloning whole config bodies (this runs per TV on
+        // every arming recompute).
+        let empty = UserProfileConfig::default();
         let assigned = self
             .assignments
             .get(tv)
             .filter(|profile| **profile != tisvlay_core::DEFAULT_USER_PROFILE_UUID)
             .and_then(|profile| self.profiles.get(profile))
-            .cloned()
-            .unwrap_or_default();
+            .unwrap_or(&empty);
         let default_body = self
             .profiles
             .get(&tisvlay_core::DEFAULT_USER_PROFILE_UUID)
-            .cloned()
-            .unwrap_or_default();
-        assigned.merge_with_base(&default_body).resolve()
+            .unwrap_or(&empty);
+        assigned.merge_with_base(default_body).resolve()
     }
 
     /// Shortest enabled idle timeouts (locked, unlocked) across
@@ -600,6 +993,9 @@ impl Core {
                 self.publish_profile(&id, &req.body).await;
                 self.persist();
                 self.recompute_idle();
+                if self.recompute_remote_armed() {
+                    self.publish_remote().await;
+                }
                 Ok(json!({ "id": id }))
             }
             "update" => {
@@ -619,6 +1015,9 @@ impl Core {
                 self.publish_profile(&req.id, &req.body).await;
                 self.persist();
                 self.recompute_idle();
+                if self.recompute_remote_armed() {
+                    self.publish_remote().await;
+                }
                 Ok(json!({}))
             }
             "duplicate" => {
@@ -650,6 +1049,9 @@ impl Core {
                     .await;
                 self.persist();
                 self.recompute_idle();
+                if self.recompute_remote_armed() {
+                    self.publish_remote().await;
+                }
                 Ok(json!({}))
             }
             "info" => Ok(json!({
@@ -683,6 +1085,9 @@ impl Core {
                 }
                 self.persist();
                 self.recompute_idle();
+                if self.recompute_remote_armed() {
+                    self.publish_remote().await;
+                }
                 Ok(json!({}))
             }
             other => Err(WireError::bad_request(format!("no such rpc: {other}"))),
@@ -753,8 +1158,27 @@ impl Core {
     }
 }
 
-/// Fire a TV rpc on the system socket; failures are logged, not fatal —
-/// the daemon's own retry tier owns delivery.
+/// Whether a session-side eager `/serverinfo` pull is worthwhile before
+/// this event dispatches. Policy-driven, not an event allow-list: it runs
+/// when a live Sunshine source exists, the event is gate-eligible (not an
+/// arming edge — those fire at the arming boundary itself), and some armed
+/// TV's resolved action is a real dispatch the gate is currently holding
+/// down (non-`none`, `while_remote` false) that a freshly-cleared source
+/// could release. For the stock floor that is exactly the wake-ish events
+/// (unlock, lock-wake, idle-resume) and no others, but a profile that gates
+/// any other event is served the same — the event carries no inherent
+/// direction, only the resolved action does.
+fn eager_refresh_applies(
+    event: SessionEvent,
+    has_sunshine: bool,
+    mut armed_actions: impl Iterator<Item = tisvlay_core::EventAction>,
+) -> bool {
+    if event.is_remote_edge() || !has_sunshine {
+        return false;
+    }
+    armed_actions.any(|a| a.action() != SessionAction::None && !a.while_remote())
+}
+
 /// Pend forever with no drift armed, so the core select stays
 /// event-driven between deadlines.
 async fn drift_deadline(at: Option<tokio::time::Instant>) {
@@ -762,50 +1186,6 @@ async fn drift_deadline(at: Option<tokio::time::Instant>) {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
     }
-}
-
-fn call_tv(system: &Session, site: &str, tv: Uuid, spec: tisvlay_core::EventAction) {
-    // The resolved restore flag rides the rpc as resolved intent: the
-    // world honors it without knowing the session's event vocabulary,
-    // and manual clients (which never set it) stay input-neutral.
-    let restore = spec.restore_input();
-    let (verb, body) = match spec.action() {
-        SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
-        SessionAction::ScreenOn => (
-            "set-screen",
-            json!({ "on": true, "restore_input": restore }),
-        ),
-        SessionAction::PowerOff => ("power-off", Value::Null),
-        SessionAction::PowerOn => ("power-on", json!({ "restore_input": restore })),
-        SessionAction::None => return,
-    };
-    let session = system.clone();
-    let key = keys::tv_rpc(site, &tv, verb);
-    tokio::spawn(async move {
-        let replies = match session
-            .get(key.as_str())
-            .payload(serde_json::to_vec(&body).unwrap_or_default())
-            .encoding(Encoding::APPLICATION_JSON)
-            .timeout(Duration::from_secs(5))
-            .await
-        {
-            Ok(replies) => replies,
-            Err(e) => {
-                warn!(%key, %e, "tv rpc failed to send");
-                return;
-            }
-        };
-        match replies.recv_async().await {
-            Ok(reply) => {
-                if let Err(err) = reply.result() {
-                    let detail: Value =
-                        serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null);
-                    warn!(%key, %detail, "tv rpc rejected");
-                }
-            }
-            Err(_) => warn!(%key, "tv rpc got no reply"),
-        }
-    });
 }
 
 /// The wire projection of a resolved user profile — same field names as
@@ -821,6 +1201,9 @@ fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
         "unlocked_idle_timeout_seconds": resolved.unlocked_idle_timeout_seconds,
         "on_idle_timeout": action(resolved.on_idle_timeout),
         "on_idle_resume": action(resolved.on_idle_resume),
+        "on_remote_connect": action(resolved.on_remote_connect),
+        "on_remote_disconnect": action(resolved.on_remote_disconnect),
+        "remote_screencast_arms": resolved.remote_screencast_arms,
     })
 }
 
@@ -1011,10 +1394,64 @@ fn lock_wake_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, UNLOCKED_IDLE_TAG, idle_dispatch, lock_wake_policy,
+        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, UNLOCKED_IDLE_TAG, eager_refresh_applies, idle_dispatch,
+        lock_wake_policy,
     };
     use crate::SessionEvent;
     use tisvlay_core::wayland::IdleTransition;
+
+    #[test]
+    fn eager_refresh_fires_on_a_gated_suppressible_dispatch_not_an_event_list() {
+        use tisvlay_core::{EventAction, SessionAction};
+        // A non-`none` action the gate holds down (a bare token is gated).
+        let gated_wake = EventAction::from(SessionAction::ScreenOn);
+        // A floor-exempt action that fires while armed — nothing to release.
+        let ungated = EventAction::ungated(SessionAction::ScreenOff);
+        // No dispatch to release either way.
+        let none = EventAction::from(SessionAction::None);
+
+        // Live Sunshine + an armed TV whose action the gate suppresses → pull.
+        assert!(eager_refresh_applies(
+            SessionEvent::Unlock,
+            true,
+            [gated_wake].into_iter()
+        ));
+        // The same policy on any event — no allow-list. A profile that gates
+        // an off-going event as a wake is served identically to unlock; the
+        // event carries no inherent direction.
+        assert!(eager_refresh_applies(
+            SessionEvent::Lock,
+            true,
+            [gated_wake].into_iter()
+        ));
+        // No live Sunshine source → nothing to refresh.
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            false,
+            [gated_wake].into_iter()
+        ));
+        // Ungated (fires while armed) or `none` (no dispatch) → nothing held.
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            true,
+            [ungated].into_iter()
+        ));
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            true,
+            [none].into_iter()
+        ));
+        // No armed TV → nothing to un-gate.
+        assert!(!eager_refresh_applies(
+            SessionEvent::Unlock,
+            true,
+            std::iter::empty::<EventAction>()
+        ));
+        // The arming edges never trigger it, whatever the action.
+        for edge in [SessionEvent::RemoteConnect, SessionEvent::RemoteDisconnect] {
+            assert!(!eager_refresh_applies(edge, true, [gated_wake].into_iter()));
+        }
+    }
 
     #[test]
     fn idle_rules_gate_to_their_lock_state() {

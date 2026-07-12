@@ -32,6 +32,9 @@ pub struct TvView {
     pub has_backlight: bool,
     pub managed: bool,
     pub automated: bool,
+    /// A remote session currently arms this TV (mirrored from the world's
+    /// meta projection) — surfaced as a read-only tray indicator.
+    pub remote_armed: bool,
     pub system_profile: Option<Uuid>,
     pub user_profile: Option<Uuid>,
 }
@@ -137,6 +140,7 @@ impl Mirror {
                 };
                 view.managed = meta.managed;
                 view.automated = meta.automated;
+                view.remote_armed = meta.remote_armed;
                 view.system_profile = meta.system_profile;
             }
             _ => return false,

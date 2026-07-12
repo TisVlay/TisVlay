@@ -148,11 +148,20 @@ ignore = [
     { id = "RUSTSEC-2026-0195", reason = "quick-xml namespace-alloc DoS; fixed >=0.41.0 (semver break); transitive, pending bump" },
 ]
 
-# Code provenance: crates.io only. The workspace has no git or alternate-
-# registry dependencies, so this is a tripwire against one sneaking in.
-# Gated by `just deny`.
+# Code provenance: crates.io only, save for one deliberate git pin. Any
+# other git or alternate-registry dependency fails the gate — a tripwire
+# against an unvetted source sneaking in. Gated by `just deny`.
+#
+# The lone `allow-git` exception is `pipewire-native` (the session's
+# screencast detector): the crates.io 0.1.4 release aborts the process
+# inside an FFI callback on a protocol decode error against PipeWire ≥ 1.4,
+# and the fix is unreleased with upstream tagging rarely. Pinned to a
+# current upstream rev in the root Cargo.toml; revert to a crates.io pin
+# once 0.1.5+ ships (also drop the cargoLock.outputHashes in package.nix).
+# All three sibling crates from this URL are MIT — covered by the global
+# license allow-list, no per-crate exception needed.
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git"]

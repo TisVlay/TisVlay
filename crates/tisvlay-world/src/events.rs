@@ -29,6 +29,12 @@ pub enum InEvent {
         event: SystemEvent,
         connector: Option<String>,
     },
+    /// The mirrored remote-session fact: the set of TVs the session
+    /// service computed as armed (a remote session is active and the
+    /// resolved user profile arms it). Consumed into the `RemoteArmed`
+    /// resource; an empty set disarms every TV. The world sees only the
+    /// armed projection — arming policy stays session-side.
+    RemoteSession { armed: Vec<Uuid> },
     /// NIC carrier transition — parks/unparks connections whose
     /// monitored interface (route-resolved NIC) matches `interface`.
     Carrier { interface: String, up: bool },

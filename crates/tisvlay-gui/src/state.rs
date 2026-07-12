@@ -589,6 +589,7 @@ mod tests {
             connected: false,
             managed: false,
             automated: false,
+            remote_armed: false,
             system_profile: String::new(),
             primary_input: String::new(),
             hardware_id: HardwareId::default(),

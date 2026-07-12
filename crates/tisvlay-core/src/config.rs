@@ -88,6 +88,17 @@ pub enum SessionAction {
 /// Serializes as the bare action string (`"screen_on"`) or as a table
 /// (`{ action = "screen_on", restore_input = true }`) — two shapes of
 /// one grammar, round-tripped in whichever form was written.
+///
+/// The `while_remote` modifier is the remote-session gate: `false`
+/// (the bare-token default) suppresses this event's action while the
+/// TV is armed by a remote session; `true` lets it fire regardless.
+/// The resolved floor splits by event direction: suppression protects
+/// against unwanted wakes, so wake-ish stock events keep the gated
+/// default (an unconfigured profile stays dark for an empty room),
+/// while off-going stock events (blanks and power-offs) carry an
+/// explicit `true` — a blank is always safe to let through. Because it
+/// can only suppress, the gate can never originate an action an unarmed
+/// TV would not take. It is inert on `none` rows (nothing to suppress).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EventAction {
@@ -101,16 +112,46 @@ pub enum EventAction {
         /// backend advertising the INPUT capability; inert otherwise.
         #[serde(default)]
         restore_input: bool,
+        /// Whether this event's action still fires while the TV is
+        /// armed by a remote session. `false` suppresses it. Defaults
+        /// to `false` so the bare-token form (and any table omitting
+        /// the field) is gated — one suppress-by-default rule.
+        #[serde(default = "while_remote_default")]
+        while_remote: bool,
     },
+}
+
+/// The default for [`EventAction`]'s `while_remote` field: gated
+/// (suppressed while armed). A named fn (not an inline closure) so
+/// serde's `default = "…"` attribute can name it. Kept in sync with the
+/// [`Plain`](EventAction::Plain) arm of [`EventAction::while_remote`] so
+/// a bare token and a field-omitting table gate identically.
+fn while_remote_default() -> bool {
+    false
 }
 
 impl EventAction {
     /// Table-form constructor for restore-on mappings (the stock
-    /// session-start defaults).
+    /// session-start defaults). Gate defaults to gated (suppress while
+    /// armed) — the suppress-by-default floor.
     pub fn restoring(action: SessionAction) -> Self {
         Self::With {
             action,
             restore_input: true,
+            while_remote: while_remote_default(),
+        }
+    }
+
+    /// Table-form constructor for a floor-exempt mapping — an action
+    /// that still fires while the TV is armed. Off-going stock events
+    /// (blanks and power-offs) use this: a blank is always safe to let
+    /// through, and the machine going away should turn the TV off
+    /// regardless.
+    pub fn ungated(action: SessionAction) -> Self {
+        Self::With {
+            action,
+            restore_input: false,
+            while_remote: true,
         }
     }
 
@@ -124,6 +165,18 @@ impl EventAction {
         match self {
             Self::Plain(_) => false,
             Self::With { restore_input, .. } => restore_input,
+        }
+    }
+
+    /// Whether this event's action fires while the TV is armed by a
+    /// remote session. The bare (`Plain`) form is always gated
+    /// (`false`), matching [`while_remote_default`] — a bare token is
+    /// suppressed while armed; firing anyway is opt-in through the
+    /// table form.
+    pub fn while_remote(self) -> bool {
+        match self {
+            Self::Plain(_) => while_remote_default(),
+            Self::With { while_remote, .. } => while_remote,
         }
     }
 }
@@ -398,18 +451,27 @@ impl Default for ResolvedSystemProfile {
             // The session-start wakes restore the primary input by
             // default (a CEC or WoL wake can land on another port);
             // every other mapping stays input-neutral.
+            //
+            // Floor gate splits by direction: off-going events fire even
+            // while armed (a blank is always safe to let through, and the
+            // machine going away should still turn the panel off for the
+            // empty room), so the DPMS-off blank and the idle-timeout
+            // blank join sleep/shutdown/reboot as ungated. Wake-ish events
+            // stay gated (startup so a boot while remoted leaves the TV
+            // dark; the wake, DPMS-on, and idle-resume mirrors so a wake
+            // for an empty room is suppressed).
             on_startup: EventAction::restoring(SessionAction::PowerOn),
-            on_shutdown: SessionAction::PowerOff.into(),
-            on_reboot: SessionAction::None.into(),
-            on_sleep: SessionAction::PowerOff.into(),
+            on_shutdown: EventAction::ungated(SessionAction::PowerOff),
+            on_reboot: EventAction::ungated(SessionAction::None),
+            on_sleep: EventAction::ungated(SessionAction::PowerOff),
             on_wake: EventAction::restoring(SessionAction::PowerOn),
-            on_dpms_off: SessionAction::ScreenOff.into(),
+            on_dpms_off: EventAction::ungated(SessionAction::ScreenOff),
             on_dpms_on: SessionAction::ScreenOn.into(),
             // Off by default: the greeter idle timer is opt-in (set a non-zero
             // timeout, e.g. via the NixOS `greeter.enable` option). The DPMS
             // mirror above is the only default-on screen automation.
             idle_timeout_seconds: 0,
-            on_idle_timeout: SessionAction::ScreenOff.into(),
+            on_idle_timeout: EventAction::ungated(SessionAction::ScreenOff),
             on_idle_resume: SessionAction::ScreenOn.into(),
             automate_when: AutomateWhen::Always,
         }
@@ -467,6 +529,21 @@ pub struct UserProfileConfig {
     /// Activity while locked dispatches `on_lock_wake` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_resume: Option<EventAction>,
+
+    /// Action when a remote session connects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_remote_connect: Option<EventAction>,
+
+    /// Action when the last remote session disconnects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_remote_disconnect: Option<EventAction>,
+
+    /// Whether an unattributed screen-capture signal arms the remote
+    /// session. Attributed sources (remote apps, hooks, logind) always
+    /// arm; this decides only the bare screencast case (OBS, browser
+    /// tab-share). Default off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_screencast_arms: Option<bool>,
 }
 
 profile_plumbing! {
@@ -481,6 +558,9 @@ profile_plumbing! {
         unlocked_idle_timeout_seconds,
         on_idle_timeout,
         on_idle_resume,
+        on_remote_connect,
+        on_remote_disconnect,
+        remote_screencast_arms,
     ],
 }
 
@@ -509,20 +589,43 @@ pub struct ResolvedUserProfile {
     pub on_idle_timeout: EventAction,
     /// Action when activity resumes after an unlocked idle timeout.
     pub on_idle_resume: EventAction,
+    /// Action when a remote session connects.
+    pub on_remote_connect: EventAction,
+    /// Action when the last remote session disconnects.
+    pub on_remote_disconnect: EventAction,
+    /// Whether an unattributed screen-capture signal arms.
+    pub remote_screencast_arms: bool,
 }
 
 impl Default for ResolvedUserProfile {
     fn default() -> Self {
         Self {
-            on_session_lock: SessionAction::ScreenOff.into(),
-            // Unlock means a desktop session is incoming — restore the
-            // primary input by default; the other mappings stay neutral.
+            // Floor gate splits by direction: the off-going blanks (lock,
+            // idle-timeout) are ungated — a blank is always safe to let
+            // through even for an armed TV — while the wake-ish events
+            // (unlock, lock-wake, idle-resume) stay gated so a wake for an
+            // empty room is suppressed. Unlock also restores the primary
+            // input (a desktop session is incoming); the other mappings
+            // stay input-neutral.
+            on_session_lock: EventAction::ungated(SessionAction::ScreenOff),
             on_session_unlock: EventAction::restoring(SessionAction::ScreenOn),
             on_lock_wake: SessionAction::ScreenOn.into(),
             locked_idle_timeout_seconds: 0,
             unlocked_idle_timeout_seconds: 0,
-            on_idle_timeout: SessionAction::ScreenOff.into(),
+            on_idle_timeout: EventAction::ungated(SessionAction::ScreenOff),
             on_idle_resume: SessionAction::ScreenOn.into(),
+            // Both remote edges blank the panel at the floor: the room is
+            // empty when a remote session arms, and it stays dark when the
+            // session disarms (a returning person wakes it through the now
+            // un-armed unlock/lock-wake/idle-resume path). Detection, not
+            // policy, is the opt-in — nothing arms until a detector or hook
+            // fires, so the feature stays inert on a stock desktop. Both
+            // events ignore the gate (they fire on the arm/disarm edge
+            // itself), so they carry the plain default; capture arming is
+            // still off until a profile turns it on.
+            on_remote_connect: SessionAction::ScreenOff.into(),
+            on_remote_disconnect: SessionAction::ScreenOff.into(),
+            remote_screencast_arms: false,
         }
     }
 }
@@ -1284,6 +1387,137 @@ mod tests {
     use super::*;
 
     #[test]
+    fn event_action_while_remote_gate_serde_shapes() {
+        // The bare token round-trips as `Plain` and reads `while_remote
+        // = false` (gated) — suppress-by-default, one rule everywhere.
+        let plain: EventAction = serde_json::from_value(serde_json::json!("screen_on")).unwrap();
+        assert_eq!(plain, EventAction::from(SessionAction::ScreenOn));
+        assert!(!plain.while_remote());
+        assert_eq!(
+            serde_json::to_value(EventAction::from(SessionAction::ScreenOn)).unwrap(),
+            serde_json::json!("screen_on")
+        );
+
+        // A table with `while_remote = true` round-trips to a
+        // fire-while-armed action; the gate coexists with `restore_input`.
+        let table = serde_json::json!({
+            "action": "screen_on",
+            "restore_input": true,
+            "while_remote": true,
+        });
+        let ungated: EventAction = serde_json::from_value(table.clone()).unwrap();
+        assert_eq!(
+            ungated,
+            EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: true,
+            }
+        );
+        assert!(ungated.restore_input());
+        assert!(ungated.while_remote());
+        assert_eq!(serde_json::to_value(ungated).unwrap(), table);
+
+        // A table omitting `while_remote` defaults it to `false` (gated)
+        // — absence gates, matching the bare token.
+        let defaulted: EventAction =
+            serde_json::from_value(serde_json::json!({ "action": "power_on" })).unwrap();
+        assert_eq!(defaulted.action(), SessionAction::PowerOn);
+        assert!(!defaulted.while_remote());
+    }
+
+    #[test]
+    fn event_action_gate_toml_round_trips_in_a_profile() {
+        // `while_remote = false` survives a full profile TOML round-trip
+        // and coexists with `restore_input`; capture-arms and the
+        // connect/disconnect actions ride the same body.
+        let toml_str = r#"
+name = "remote"
+on_session_unlock = { action = "screen_on", while_remote = false }
+on_idle_resume = { action = "screen_on", restore_input = true, while_remote = false }
+on_remote_connect = "power_off"
+on_remote_disconnect = "none"
+remote_screencast_arms = true
+"#;
+        let body: UserProfileConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            body.on_session_unlock,
+            Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: false,
+                while_remote: false,
+            })
+        );
+        assert_eq!(
+            body.on_idle_resume,
+            Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: false,
+            })
+        );
+        assert_eq!(body.on_remote_connect, Some(SessionAction::PowerOff.into()));
+        assert_eq!(body.on_remote_disconnect, Some(SessionAction::None.into()));
+        assert_eq!(body.remote_screencast_arms, Some(true));
+        // A bare-token field parses as `Plain` (gate implicitly false).
+        assert!(body.on_lock_wake.is_none());
+
+        // Re-serialize and re-parse: shapes are stable across the trip.
+        let text = toml::to_string(&body).unwrap();
+        let reparsed: UserProfileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(reparsed, body);
+    }
+
+    #[test]
+    fn setting_an_event_replaces_the_whole_table() {
+        // Whole-value merge (the `restore_input` precedent): gating one
+        // event on a custom profile replaces that event's entire table,
+        // so the base action must be restated alongside the gate. A
+        // merge onto a base leaves the base's own action untouched only
+        // because the custom value is the whole table.
+        let base = UserProfileConfig {
+            on_session_unlock: Some(EventAction::restoring(SessionAction::ScreenOn)),
+            ..UserProfileConfig::default()
+        };
+        let custom = UserProfileConfig {
+            on_session_unlock: Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: false,
+            }),
+            ..UserProfileConfig::default()
+        };
+        let merged = custom.merge_with_base(&base);
+        // The custom table wins wholesale — action + both modifiers.
+        assert_eq!(
+            merged.on_session_unlock,
+            Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: true,
+                while_remote: false,
+            })
+        );
+    }
+
+    #[test]
+    fn resolved_user_profile_defaults_blank_the_remote_edges() {
+        let resolved = ResolvedUserProfile::default();
+        // Both remote edges floor to screen_off: blank on arm, stay dark on
+        // disarm. Capture arming stays off — detection is the opt-in.
+        assert_eq!(resolved.on_remote_connect, SessionAction::ScreenOff);
+        assert_eq!(resolved.on_remote_disconnect, SessionAction::ScreenOff);
+        assert!(!resolved.remote_screencast_arms);
+        // Floor splits by direction: the wake-ish user events are gated
+        // (suppressed while armed)…
+        assert!(!resolved.on_session_unlock.while_remote());
+        assert!(!resolved.on_lock_wake.while_remote());
+        assert!(!resolved.on_idle_resume.while_remote());
+        // …while the off-going blanks fire while armed.
+        assert!(resolved.on_session_lock.while_remote());
+        assert!(resolved.on_idle_timeout.while_remote());
+    }
+
+    #[test]
     fn automate_when_display_fromstr_and_serde_agree() {
         for when in [
             AutomateWhen::Always,
@@ -1707,6 +1941,45 @@ ip = "192.168.1.101"
         // DPMS actions mirror the host display by default.
         assert_eq!(resolved.on_dpms_off, SessionAction::ScreenOff);
         assert_eq!(resolved.on_dpms_on, SessionAction::ScreenOn);
+        // Wake-ish stock events are gated while armed, so an unconfigured
+        // profile keeps the panel dark for the empty room.
+        assert!(!resolved.on_dpms_on.while_remote());
+        assert!(!resolved.on_wake.while_remote());
+        assert!(!resolved.on_startup.while_remote());
+        assert!(!resolved.on_idle_resume.while_remote());
+        // Off-going stock events fire while armed: the blanks (DPMS-off,
+        // idle-timeout) alongside the power-offs (sleep/shutdown/reboot).
+        assert!(resolved.on_dpms_off.while_remote());
+        assert!(resolved.on_idle_timeout.while_remote());
+        assert!(resolved.on_sleep.while_remote());
+        assert!(resolved.on_shutdown.while_remote());
+        assert!(resolved.on_reboot.while_remote());
+    }
+
+    #[test]
+    fn system_profile_event_gate_round_trips() {
+        // A system event's `while_remote = false` gate survives a TOML
+        // round-trip and resolves through the chain.
+        let toml_str = r#"
+name = "gated"
+on_dpms_on = { action = "screen_on", while_remote = false }
+on_wake = { action = "power_on", restore_input = true, while_remote = false }
+"#;
+        let body: SystemProfileConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            body.on_dpms_on,
+            Some(EventAction::With {
+                action: SessionAction::ScreenOn,
+                restore_input: false,
+                while_remote: false,
+            })
+        );
+        assert!(!body.resolve().on_dpms_on.while_remote());
+        assert!(!body.resolve().on_wake.while_remote());
+
+        let text = toml::to_string(&body).unwrap();
+        let reparsed: SystemProfileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(reparsed, body);
     }
 
     #[test]
@@ -1912,6 +2185,7 @@ ip = "192.168.1.1"
             unlocked_idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff.into()),
             on_idle_resume: Some(SessionAction::None.into()),
+            ..Default::default()
         };
 
         let merged = full_override.merge_with_base(&base);

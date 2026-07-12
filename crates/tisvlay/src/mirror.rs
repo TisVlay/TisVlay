@@ -90,6 +90,9 @@ impl SystemMirror {
 pub(crate) struct UserMirror {
     pub profiles: BTreeMap<Uuid, tisvlay_core::UserProfileConfig>,
     pub assignments: BTreeMap<Uuid, Uuid>,
+    /// The remote-session fact: live sources plus the armed projection.
+    /// Absent until the session service first publishes it.
+    pub remote_session: Option<payload::RemoteSessionState>,
     pub session_alive: bool,
 }
 
@@ -131,6 +134,15 @@ impl UserMirror {
                 }
             }
             return Some(StateEvent::TvUserProfileChanged);
+        }
+        // The remote-session fact is a single fixed key (a cached pub), so
+        // it matches by equality rather than a parse helper.
+        if key == keys::user_remote_session(site) {
+            self.remote_session = match sample.kind() {
+                SampleKind::Put => serde_json::from_slice(&sample.payload().to_bytes()).ok(),
+                SampleKind::Delete => None,
+            };
+            return Some(StateEvent::RemoteSessionChanged);
         }
         None
     }

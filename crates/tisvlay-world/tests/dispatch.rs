@@ -6,8 +6,49 @@ mod support;
 use std::time::{Duration, Instant};
 
 use support::*;
-use tisvlay_core::PowerState;
-use tisvlay_world::{Command, InEvent, SystemEvent};
+use tisvlay_core::{EventAction, PowerState, SessionAction, SystemProfileConfig};
+use tisvlay_world::{Command, InEvent, ProfileRecord, SystemEvent};
+use uuid::Uuid;
+
+/// A gated version of one action: the stock verb with `while_remote =
+/// false`, so it fires normally while unarmed and is suppressed while
+/// armed.
+fn gated(action: SessionAction) -> EventAction {
+    EventAction::With {
+        action,
+        restore_input: false,
+        while_remote: false,
+    }
+}
+
+/// Add a system profile from a body, assign it to `tv`, return the id.
+async fn assign_remote_profile(
+    effects: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::WireEffect>,
+    client: &tisvlay_world::WorldClient,
+    tv: Uuid,
+    body: SystemProfileConfig,
+) -> Uuid {
+    let profile = Uuid::new_v4();
+    client.command(Command::AddProfile {
+        record: Box::new(ProfileRecord { id: profile, body }),
+        reply: Some(90),
+    });
+    collect_until(effects, |e| reply_to(e, 90)).await;
+    client.command(Command::SetSystemProfile {
+        id: tv,
+        profile: Some(profile),
+        reply: Some(91),
+    });
+    collect_until(effects, |e| reply_to(e, 91)).await;
+    profile
+}
+
+/// Mirror the session service's armed set into the world.
+fn arm(client: &tisvlay_world::WorldClient, armed: &[Uuid]) {
+    client.send(InEvent::RemoteSession {
+        armed: armed.to_vec(),
+    });
+}
 
 fn cec_like_config(address: &str) -> toml::Value {
     let mut table = toml::value::Table::new();
@@ -473,6 +514,254 @@ async fn escalation_reasserts_on_reconnect_then_gives_up() {
         4,
         "send + retry on each side of the reconnect"
     );
+}
+
+/// While a remote session arms the TV, a `while_remote = false` DPMS-on
+/// action is suppressed: the panel, blanked by DPMS-off, stays dark
+/// across the DPMS-on. Disarming lets the next DPMS-on light it normally.
+#[tokio::test]
+async fn while_remote_gate_suppresses_dpms_on() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://supp").await;
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            on_dpms_on: Some(gated(SessionAction::ScreenOn)),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // Blank via DPMS-off (unarmed, the normal screen_off), then arm.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+    arm(&client, &[id]);
+
+    // DPMS-on is suppressed: no power change follows. Prove it by
+    // driving a disarm + second DPMS-on and catching the panel going
+    // active only then — a suppressed first pass would have lit it.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+
+    arm(&client, &[]);
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
+/// The gate reverses the review's never-gate rule for explicit events:
+/// a `while_remote = false` on `on_sleep` suppresses the off-going
+/// power-off while armed, even though the docs recommend leaving
+/// sleep ungated. This proves the exemption list is gone — the world
+/// honors the gate wherever it's set.
+#[tokio::test]
+async fn while_remote_gate_suppresses_a_formerly_exempt_sleep() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://sleep").await;
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            on_sleep: Some(gated(SessionAction::PowerOff)),
+            ..Default::default()
+        },
+    )
+    .await;
+    arm(&client, &[id]);
+
+    // Sleep's gated power-off is suppressed while armed: the link stays
+    // up. Prove it by disarming + re-sleeping and catching the teardown
+    // only then.
+    client.send(InEvent::System {
+        event: SystemEvent::Sleep,
+        connector: None,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, false)
+    })
+    .await;
+
+    arm(&client, &[]);
+    client.send(InEvent::System {
+        event: SystemEvent::Sleep,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+}
+
+/// Suppress-by-default: a stock action gates while armed. A profile
+/// leaving `on_dpms_on` at the stock `screen_on` (gate implicitly
+/// `false`) does NOT light the panel for an armed TV — the empty room
+/// stays dark. Disarming lets the next DPMS-on light it normally.
+#[tokio::test]
+async fn while_remote_default_suppresses_dpms_on_while_armed() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://inh").await;
+    // No profile fields set — every event resolves to its stock action;
+    // the wake-ish stock floor is gated by default.
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+    arm(&client, &[id]);
+
+    // The stock DPMS-on is suppressed while armed: no wake follows.
+    // Prove it by disarming + a second DPMS-on and catching the panel
+    // going active only then.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+
+    arm(&client, &[]);
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
+/// Floor exemption: the off-going stock actions fire while armed even
+/// with no profile fields set — a blank is always safe to let through,
+/// and the machine going away turns the TV off for the empty room.
+/// Contrast `while_remote_default_suppresses_dpms_on_while_armed`, where
+/// the wake-ish stock floor is gated.
+#[tokio::test]
+async fn stock_sleep_and_shutdown_fire_while_armed() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://floor").await;
+    // No profile fields set: the off-going events resolve to their stock
+    // actions with the floor gate `true`.
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            ..Default::default()
+        },
+    )
+    .await;
+    arm(&client, &[id]);
+
+    // The stock DPMS-off blanks the panel even while armed.
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+
+    // Sleep's stock power-off tears the link down even while armed.
+    client.send(InEvent::System {
+        event: SystemEvent::Sleep,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+}
+
+/// The no-session invariant: an empty armed set gates nothing. A TV
+/// whose profile gates DPMS-on off still wakes normally while unarmed —
+/// a headless TV with no user session never has its wakes suppressed.
+#[tokio::test]
+async fn empty_armed_set_gates_nothing() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://none").await;
+    assign_remote_profile(
+        &mut effects,
+        &client,
+        id,
+        SystemProfileConfig {
+            name: "Remote".into(),
+            on_dpms_on: Some(gated(SessionAction::ScreenOn)),
+            ..Default::default()
+        },
+    )
+    .await;
+    // Never armed (an empty set is also the default).
+
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOff,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+    client.send(InEvent::System {
+        event: SystemEvent::DpmsOn,
+        connector: None,
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
+/// The armed projection: the mirrored set flips `meta.remote_armed` on
+/// the published `meta/config` payload, and disarming clears it.
+#[tokio::test]
+async fn remote_armed_projection_tracks_the_set() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://proj").await;
+
+    arm(&client, &[id]);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/meta/config").is_some_and(|p| p["remote_armed"] == true)
+    })
+    .await;
+
+    arm(&client, &[]);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/meta/config").is_some_and(|p| p["remote_armed"] == false)
+    })
+    .await;
 }
 
 /// Primary-input restore: a restore-flagged automation wake lands the

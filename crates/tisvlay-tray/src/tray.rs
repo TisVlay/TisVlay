@@ -229,6 +229,16 @@ impl Tray for TvTray {
                 items.push(self.tv_submenu(*id, tv));
             }
         }
+        // A read-only banner while a remote session arms any TV — the
+        // while-remote overrides are suppressing the usual wake actions.
+        // No quick-toggle; the indicator only reflects the fact.
+        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.remote_armed) {
+            items.push(MenuItem::Separator);
+            items.push(status_line(
+                "Remote session active",
+                "network-connect-symbolic",
+            ));
+        }
         items.push(MenuItem::Separator);
         items.push({
             // Settings coalesces instead of using the plain command

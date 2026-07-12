@@ -210,6 +210,30 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
     })
     .await;
 
+    // A manual remote source arms the TV; the flag rides the meta
+    // projection round-trip (session mirror -> world -> daemon cache) and
+    // drives the tray's read-only "Remote session active" indicator.
+    call(
+        &user,
+        &keys::user_remote_rpc("t", "set"),
+        json!({ "source": "laptop", "active": true }),
+    )
+    .await;
+    converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
+        m.tvs.get(&tv).is_some_and(|view| view.remote_armed)
+    })
+    .await;
+    call(
+        &user,
+        &keys::user_remote_rpc("t", "set"),
+        json!({ "source": "laptop", "active": false }),
+    )
+    .await;
+    converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
+        m.tvs.get(&tv).is_some_and(|view| !view.remote_armed)
+    })
+    .await;
+
     // Removal tombstones every key; the meta delete drops the row.
     call(&system, &keys::tv_rpc("t", &tv, "remove"), Value::Null).await;
     converge(&mut mirror, "t", &system_sub, &user_sub, |m| {

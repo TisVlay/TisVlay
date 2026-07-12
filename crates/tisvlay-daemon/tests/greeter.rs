@@ -2,6 +2,7 @@
 //! puts driving system-profile actions) and the `automate_when` gate
 //! (published `automated` flag + suppressed dispatch).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +14,10 @@ use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::Sample;
-use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig};
+use zenoh_ext::{
+    AdvancedPublisherBuilderExt, AdvancedSubscriber, AdvancedSubscriberBuilderExt, CacheConfig,
+    HistoryConfig, MissDetectionConfig,
+};
 
 type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 
@@ -21,13 +25,16 @@ struct Wire {
     _dir: tempfile::TempDir,
     client: Session,
     site: String,
+    socket: PathBuf,
+    // Held for the test lifetime — dropping the stack tears down the world.
+    _stack: tisvlay_daemon::Stack,
 }
 
 async fn wire() -> Wire {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("g.sock");
     let (connector, discovery, _handle) = new_test_parts();
-    let _stack = tisvlay_daemon::serve(
+    let stack = tisvlay_daemon::serve(
         &socket,
         "t",
         vec![
@@ -45,6 +52,8 @@ async fn wire() -> Wire {
         _dir: dir,
         client,
         site: "t".into(),
+        socket,
+        _stack: stack,
     }
 }
 
@@ -155,6 +164,25 @@ async fn put_greeter_idle(w: &Wire, idle: bool) {
         .put(
             keys::greeter_idle(&w.site),
             serde_json::to_vec(&json!({ "idle": idle })).unwrap(),
+        )
+        .encoding(Encoding::APPLICATION_JSON)
+        .await
+        .unwrap();
+}
+
+/// Publish a live remote-session mirror sample carrying the computed armed
+/// set. A plain put (the daemon's history advanced subscriber still
+/// delivers live plain samples); the dedicated hydration test drives the
+/// real cache-1 advanced-pub path.
+async fn put_remote_session(w: &Wire, armed: &[Uuid]) {
+    let state = tisvlay_wire::payload::RemoteSessionState {
+        sources: Vec::new(),
+        armed: armed.to_vec(),
+    };
+    w.client
+        .put(
+            keys::remote_session(&w.site),
+            serde_json::to_vec(&state).unwrap(),
         )
         .encoding(Encoding::APPLICATION_JSON)
         .await
@@ -296,4 +324,198 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
         v["state"] == "screenoff"
     })
     .await;
+}
+
+/// The remote-session mirror seam: a live armed set on the system socket
+/// flows through the daemon's history subscriber into the world, flipping
+/// the published `remote_armed` projection — and disarming clears it.
+/// (The gate's effect on DPMS-on/resume dispatch is covered by the
+/// world's dispatch tests, which can inject those events directly.)
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_session_mirror_flips_the_armed_projection() {
+    let w = wire().await;
+    let tv = add_tv(&w, "Remote", "mock://remote").await;
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    // Combined drain: link up and remote_armed starts false (the meta's
+    // initial publish), so a sequential wait could miss the sample.
+    let (mut connected, mut unarmed) = (false, false);
+    recv_until(&sub, |s| {
+        if let Some((id, path)) = keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            && id == tv
+        {
+            let value = payload_json(s);
+            connected |= path == "state/link" && value["connected"] == true;
+            unarmed |= path == "meta/config" && value["remote_armed"] == false;
+        }
+        connected && unarmed
+    })
+    .await;
+
+    // Arm via the mirror → the projection flips true.
+    put_remote_session(&w, &[tv]).await;
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == true
+    })
+    .await;
+
+    // An empty set disarms.
+    put_remote_session(&w, &[]).await;
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == false
+    })
+    .await;
+}
+
+/// The session-liveliness clear (`#4-crash`): a `session_alive` token on
+/// the session's system link arms nothing by itself, but its DELETE — the
+/// session departing — clears any armed state the session had mirrored,
+/// even though the mirror is never re-put to empty. A graceful undeclare
+/// exercises the same DELETE path a crash takes; the kill -9 timing
+/// (DELETE observed within ~1 ms) is experiment-proven.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_liveliness_delete_clears_the_armed_projection() {
+    let w = wire().await;
+    let tv = add_tv(&w, "Remote", "mock://alive").await;
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+
+    // Model the session's system link: a connect-only peer that declares
+    // the presence token and mirrors an armed set (exactly what the real
+    // session does on its `client_config_resilient` link). Resilient open
+    // returns before the link is up, so wait for the daemon's liveliness
+    // to appear — the link is live and delivering — before serving on it.
+    let session = zenoh::open(bootstrap::client_config_resilient(&w.socket).unwrap())
+        .await
+        .unwrap();
+    let daemon_alive = session
+        .liveliness()
+        .declare_subscriber(keys::daemon_alive(&w.site))
+        .history(true)
+        .await
+        .unwrap();
+    daemon_alive
+        .recv_async()
+        .await
+        .expect("daemon liveliness on the resilient link");
+    let token = session
+        .liveliness()
+        .declare_token(keys::session_alive(&w.site))
+        .await
+        .unwrap();
+    let state = tisvlay_wire::payload::RemoteSessionState {
+        sources: Vec::new(),
+        armed: vec![tv],
+    };
+    session
+        .put(
+            keys::remote_session(&w.site),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .encoding(Encoding::APPLICATION_JSON)
+        .await
+        .unwrap();
+    // The arm flips the projection true — a live republish, so it does not
+    // depend on catching the world-derived keys in the history replay.
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == true
+    })
+    .await;
+
+    // The session departs: the token DELETEs and the daemon clears the
+    // armed set on the DELETE alone — no empty mirror put ever arrives, so
+    // the disarm is attributable purely to the liveliness signal.
+    token.undeclare().await.unwrap();
+    wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
+        v["remote_armed"] == false
+    })
+    .await;
+    drop(session);
+}
+
+/// The B1 hydration path: a fresh daemon subscriber hydrates the standing
+/// armed set from the session's `@adv` cache. This models a daemon
+/// (re)start under a live session — a connect-only-peer session serves a
+/// cache-1 advanced-pub mirror, and the daemon that binds *afterward*
+/// hydrates the standing armed set with no re-put from the session. The
+/// kill -9 restart timing (hydration within ~1 ms) is experiment-proven;
+/// starting the daemon after the session's cache is populated exercises the
+/// same history query a graceful in-process re-subscribe would.
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("g.sock");
+    let site = "t".to_string();
+    let tv = Uuid::new_v4();
+
+    // A session is already live with a populated cache before any daemon
+    // exists: a connect-only peer that dials the socket forever, holding the
+    // presence token and a cache-1 advanced-pub mirror armed for `tv` — the
+    // exact shape the real session serves.
+    let session = zenoh::open(bootstrap::client_config_resilient(&socket).unwrap())
+        .await
+        .unwrap();
+    let _token = session
+        .liveliness()
+        .declare_token(keys::session_alive(&site))
+        .await
+        .unwrap();
+    let mirror = session
+        .declare_publisher(keys::remote_session(&site))
+        .encoding(Encoding::APPLICATION_JSON)
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
+        .publisher_detection()
+        .await
+        .unwrap();
+    let state = tisvlay_wire::payload::RemoteSessionState {
+        sources: Vec::new(),
+        armed: vec![tv],
+    };
+    mirror
+        .put(serde_json::to_vec(&state).unwrap())
+        .await
+        .unwrap();
+
+    // Now the daemon binds the socket. Its history subscriber hydrates the
+    // standing armed set from the session's cache over the directly-dialed
+    // link — no live re-put is issued after this point.
+    let (connector, discovery, _handle) = new_test_parts();
+    let stack = tisvlay_daemon::serve(
+        &socket,
+        &site,
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+    let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .unwrap();
+
+    // Add the armed TV (explicit id matching the hydrated set). The daemon
+    // stored the armed set on hydration, so the projection arms this TV as
+    // soon as it exists — attributable to hydration, since the session
+    // sends no mirror sample after the daemon booted.
+    let body = serde_json::to_value(rpc::AddTv {
+        id: Some(tv),
+        name: "Remote".into(),
+        vendor: "mock".into(),
+        managed: true,
+        config: json!({ "address": "mock://hydrate" }),
+    })
+    .unwrap();
+    call(&client, &keys::manager_rpc(&site, "add-tv"), body)
+        .await
+        .expect("add-tv ok");
+
+    let sub = history_sub(&client, keys::tv_all(&site)).await;
+    wait_tv_state(&sub, &site, tv, "meta/config", |v| {
+        v["remote_armed"] == true
+    })
+    .await;
+
+    drop(session);
+    drop(stack);
 }

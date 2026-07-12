@@ -15,7 +15,18 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   src = lib.cleanSource ../../.;
 
-  cargoLock.lockFile = ../../Cargo.lock;
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    # importCargoLock hard-requires a hash for every git dependency. The
+    # three pipewire-native sibling crates share one upstream rev, so one
+    # tree hash covers all three. Drop this (and the deny.toml allow-git
+    # entry) when the crates.io pin returns.
+    outputHashes = {
+      "pipewire-native-0.1.4" = "sha256-z0f6KOPGPWqeqI/EUx7BrGBYDfjGNxGZ9V29AH//azo=";
+      "pipewire-native-spa-0.1.4" = "sha256-z0f6KOPGPWqeqI/EUx7BrGBYDfjGNxGZ9V29AH//azo=";
+      "pipewire-native-macros-0.1.4" = "sha256-z0f6KOPGPWqeqI/EUx7BrGBYDfjGNxGZ9V29AH//azo=";
+    };
+  };
 
   # tisvlay-gui dlopens Slint's femtovg + winit runtime libs;
   # tisvlay-session and tisvlay-greeter dlopen libwayland-client.so via

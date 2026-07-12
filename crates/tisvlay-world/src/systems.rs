@@ -17,7 +17,7 @@ use crate::components::{
     AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DirtyStore, DispatchRetry,
     DispatchVerify, Effect, KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox,
     PairVerifying, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
-    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt, Site, SystemProfile,
+    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, Site, SystemProfile,
     TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
@@ -49,6 +49,7 @@ pub(crate) fn build_schedule() -> Schedule {
             handle_carrier_events,
             verify_dispatch,
             reconcile_input,
+            apply_remote_session,
             dispatch_system_events,
             reconcile_connections,
         )
@@ -59,6 +60,7 @@ pub(crate) fn build_schedule() -> Schedule {
         (
             derive_link_state,
             derive_automated,
+            derive_remote_armed,
             publish_greeter_timeout,
             publish_changed::<payload::Power>,
             publish_changed::<payload::Volume>,
@@ -166,6 +168,8 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
             automate_when: "always".into(),
             // derive_automated refines this once input state exists.
             automated: record.managed,
+            // derive_remote_armed sets this once a mirror update lands.
+            remote_armed: false,
         },
         payload::Link {
             connected: false,
@@ -1913,6 +1917,34 @@ fn apply_transport_facts(
     }
 }
 
+/// Fold mirrored remote-session updates into the `RemoteArmed` resource.
+/// Runs ahead of `dispatch_system_events` in the ingest chain so an arm
+/// arriving in the same batch as a DPMS-on gates that dispatch. The
+/// latest update wins outright — the mirror always carries the full
+/// armed set, so a shrinking set (a source disarming) is applied by
+/// replacement, and an empty set disarms every TV.
+fn apply_remote_session(mut reader: MessageReader<InEvent>, mut armed: ResMut<RemoteArmed>) {
+    for msg in reader.read() {
+        let InEvent::RemoteSession { armed: set } = msg else {
+            continue;
+        };
+        let next: std::collections::HashSet<Uuid> = set.iter().copied().collect();
+        armed.set_if_neq(RemoteArmed(next));
+    }
+}
+
+/// Keep the published `remote_armed` flag in step with the `RemoteArmed`
+/// resource — the read-only projection clients read to surface which TVs
+/// a remote session currently arms.
+fn derive_remote_armed(armed: Res<RemoteArmed>, mut q: Query<(&TvId, &mut payload::Meta)>) {
+    for (id, mut meta) in &mut q {
+        let is_armed = armed.0.contains(&id.0);
+        if meta.remote_armed != is_armed {
+            meta.remote_armed = is_armed;
+        }
+    }
+}
+
 /// Map system events (DPMS, sleep, greeter idle) through the profile onto
 /// every automated TV — screen actions ride the reliable tier, and
 /// wake-capable power/screen-on reach even disconnected TVs via the wake
@@ -1945,6 +1977,7 @@ fn dispatch_system_events(
     >,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
+    remote_armed: Res<RemoteArmed>,
 ) {
     for msg in reader.read() {
         let InEvent::System { event, connector } = msg else {
@@ -1962,12 +1995,22 @@ fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
-            let Some((action, restore)) =
+            let Some((action, restore, while_remote)) =
                 resolve_action(event, meta, &profile_index, &bodies, &profile)
             else {
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
             };
+            // While a remote session arms this TV, an action whose
+            // `while_remote` gate is `false` is suppressed — a pure gate,
+            // uniform across every event (the docs recommend leaving
+            // sleep/shutdown ungated, but the schema honors an explicit
+            // gate wherever it's set). Unarmed TVs and gate-`true` actions
+            // pass straight through.
+            if remote_armed.0.contains(&id.0) && !while_remote {
+                tracing::debug!(tv = %id.0, ?event, "while-remote gate suppressed dispatch");
+                continue;
+            }
             tracing::debug!(tv = %id.0, ?event, ?action, restore, "profile action dispatched");
             let restore_to = if restore {
                 meta.and_then(|m| m.primary_input.clone())
@@ -2125,14 +2168,17 @@ fn publish_greeter_timeout(
 }
 
 /// The TV's assigned profile decides the action; unset fields (and TVs
-/// without a profile) fall back to the stock mapping.
+/// without a profile) fall back to the stock mapping. The trailing bool
+/// is the resolved `while_remote` gate — the stock floor carries the
+/// per-event gate honestly (its off-going actions fire while armed, its
+/// wake-ish actions suppress), matching the core resolved defaults.
 fn resolve_action(
     event: &SystemEvent,
     meta: Option<&payload::Meta>,
     profile_index: &ProfileIndex,
     bodies: &Query<&ProfileBody>,
     stock: &SystemProfile,
-) -> Option<(ProfileAction, bool)> {
+) -> Option<(ProfileAction, bool, bool)> {
     // Per-TV profile field wins outright (explicit `none` suppresses).
     if let Some(profile_id) = meta.and_then(|m| m.system_profile)
         && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
@@ -2150,7 +2196,9 @@ fn resolve_action(
     {
         return session_action(action);
     }
-    // …and only then the hard-coded stock floor.
+    // …and only then the hard-coded stock floor, which carries its own
+    // per-event gate (its off-going actions fire while armed, its wake-ish
+    // actions suppress).
     stock.0.get(event).copied()
 }
 
@@ -2184,7 +2232,7 @@ fn profile_event_action(
     }
 }
 
-fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, bool)> {
+fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, bool, bool)> {
     use tisvlay_core::SessionAction as S;
     let action = match spec.action() {
         S::ScreenOff => ProfileAction::ScreenOff,
@@ -2193,7 +2241,7 @@ fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, boo
         S::PowerOn => ProfileAction::PowerOn,
         _ => return None,
     };
-    Some((action, spec.restore_input()))
+    Some((action, spec.restore_input(), spec.while_remote()))
 }
 
 /// Dial TVs with an outstanding connect request, respecting backoff.
@@ -2330,4 +2378,84 @@ fn snapshot_store(
         tv,
         system_profile,
     })));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tisvlay_core::{EventAction, SessionAction};
+
+    /// `session_action` threads the resolved action's `while_remote`
+    /// gate (and `restore_input`) alongside the mapped `ProfileAction`.
+    /// The bare form fires while armed; a gated table suppresses.
+    #[test]
+    fn session_action_carries_the_while_remote_gate() {
+        // A bare action: gated (gate implicitly false, suppress-by-
+        // default), no restore.
+        assert_eq!(
+            session_action(EventAction::from(SessionAction::ScreenOn)),
+            Some((ProfileAction::ScreenOn, false, false))
+        );
+        // A table with `while_remote = true` carries the fire-while-armed
+        // gate through, alongside the restore modifier.
+        assert_eq!(
+            session_action(EventAction::With {
+                action: SessionAction::PowerOn,
+                restore_input: true,
+                while_remote: true,
+            }),
+            Some((ProfileAction::PowerOn, true, true))
+        );
+        // `none` has no dispatchable action regardless of the gate.
+        assert_eq!(session_action(EventAction::from(SessionAction::None)), None);
+    }
+
+    /// The world's stock floor and the root stack's resolved defaults are
+    /// two hand-written tables that must agree event-for-event, including
+    /// the `while_remote` gate — a drift here silently diverges the
+    /// daemon's DPMS gate from what the session and GUI resolve. Derive
+    /// the expected tuple from `ResolvedSystemProfile::default` through the
+    /// same event-to-field map the dispatch path uses, and assert parity.
+    #[test]
+    fn stock_floor_matches_the_resolved_defaults() {
+        let resolved = tisvlay_core::ResolvedSystemProfile::default();
+        let field = |event: &SystemEvent| match event {
+            SystemEvent::Startup => resolved.on_startup,
+            SystemEvent::Sleep => resolved.on_sleep,
+            SystemEvent::Resume => resolved.on_wake,
+            SystemEvent::Shutdown => resolved.on_shutdown,
+            SystemEvent::Reboot => resolved.on_reboot,
+            SystemEvent::DpmsOff => resolved.on_dpms_off,
+            SystemEvent::DpmsOn => resolved.on_dpms_on,
+            SystemEvent::GreeterIdle => resolved.on_idle_timeout,
+            SystemEvent::GreeterResume => resolved.on_idle_resume,
+        };
+        for (event, tuple) in SystemProfile::stock().0 {
+            assert_eq!(
+                session_action(field(&event)),
+                Some(tuple),
+                "stock floor for {event:?} diverged from ResolvedSystemProfile::default"
+            );
+        }
+        // Every event the resolved defaults leave dispatchable must have a
+        // stock entry; a `none` field (e.g. reboot) legitimately has none.
+        let stock = SystemProfile::stock().0;
+        for event in [
+            SystemEvent::Startup,
+            SystemEvent::Sleep,
+            SystemEvent::Resume,
+            SystemEvent::Shutdown,
+            SystemEvent::Reboot,
+            SystemEvent::DpmsOff,
+            SystemEvent::DpmsOn,
+            SystemEvent::GreeterIdle,
+            SystemEvent::GreeterResume,
+        ] {
+            assert_eq!(
+                session_action(field(&event)).is_some(),
+                stock.contains_key(&event),
+                "stock presence for {event:?} disagrees with the resolved default's dispatchability"
+            );
+        }
+    }
 }

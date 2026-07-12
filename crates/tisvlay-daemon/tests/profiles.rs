@@ -311,14 +311,16 @@ async fn defaults_and_effective_expose_field_resolution() {
     // profile is seeded from this at first boot.
     let stock_map = json!({
         "name": "default",
-        "on_startup": { "action": "power_on", "restore_input": true },
-        "on_shutdown": "power_off",
-        "on_reboot": "none",
-        "on_sleep": "power_off",
-        "on_wake": { "action": "power_on", "restore_input": true },
-        "on_dpms_off": "screen_off",
+        "on_startup": { "action": "power_on", "restore_input": true, "while_remote": false },
+        // Floor: off-going events fire while armed (the power-offs plus
+        // the DPMS-off/idle-timeout blanks); wake-ish events stay gated.
+        "on_shutdown": { "action": "power_off", "restore_input": false, "while_remote": true },
+        "on_reboot": { "action": "none", "restore_input": false, "while_remote": true },
+        "on_sleep": { "action": "power_off", "restore_input": false, "while_remote": true },
+        "on_wake": { "action": "power_on", "restore_input": true, "while_remote": false },
+        "on_dpms_off": { "action": "screen_off", "restore_input": false, "while_remote": true },
         "on_dpms_on": "screen_on",
-        "on_idle_timeout": "screen_off",
+        "on_idle_timeout": { "action": "screen_off", "restore_input": false, "while_remote": true },
         "on_idle_resume": "screen_on",
         "idle_timeout_seconds": 0,
         "automate_when": "always",
@@ -376,14 +378,18 @@ async fn defaults_and_effective_expose_field_resolution() {
         effective,
         json!({
             "name": "Quiet",
-            "on_startup": { "action": "power_on", "restore_input": true },
-            "on_shutdown": "power_off",
-            "on_reboot": "none",
+            "on_startup": { "action": "power_on", "restore_input": true, "while_remote": false },
+            "on_shutdown": { "action": "power_off", "restore_input": false, "while_remote": true },
+            "on_reboot": { "action": "none", "restore_input": false, "while_remote": true },
+            // Locally set on this profile — a bare token replaces the
+            // floor's exempted `on_sleep` table wholesale.
             "on_sleep": "screen_off",
-            "on_wake": { "action": "power_on", "restore_input": true },
+            "on_wake": { "action": "power_on", "restore_input": true, "while_remote": false },
             "on_dpms_off": "none",
             "on_dpms_on": "screen_on",
-            "on_idle_timeout": "screen_off",
+            // Inherited from the floor: the off-going idle-timeout blank
+            // is ungated (fires while armed).
+            "on_idle_timeout": { "action": "screen_off", "restore_input": false, "while_remote": true },
             "on_idle_resume": "screen_on",
             "idle_timeout_seconds": 300,
             "automate_when": "always",

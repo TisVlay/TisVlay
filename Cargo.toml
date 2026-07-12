@@ -127,6 +127,12 @@ futures-core = "0.3"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
+# PipeWire graph introspection (the session's screencast detector). Native
+# Rust protocol client — no libpipewire link. Git-pinned; the pin's
+# rationale + revert condition live at the deny.toml allow-git entry.
+pipewire-native = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
+pipewire-native-spa = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
+
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
 # `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
 # `PhysicalAddress` its `a.b.c.d` string (de)serialization for the vendor

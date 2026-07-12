@@ -62,11 +62,14 @@ async fn main() -> anyhow::Result<()> {
     // screensaver watcher writes it (GetActive seed + edges), the idle
     // adapter's lock-wake policy and the core's drift re-assert read it.
     let is_locked = stack.is_locked.clone();
-    // Lock/unlock via the session bus; absent bus = adapter disabled.
+    // Lock/unlock via the session bus; absent bus = adapter disabled. The
+    // same connection backs the portal monitor's out-of-band name→PID
+    // lookups (a monitor connection is receive-only).
     match zbus::Connection::session().await {
         Ok(connection) => {
             let client = stack.client.clone();
             let locked = is_locked.clone();
+            tisvlay_session::spawn_portal_monitor(connection.clone(), stack.remote.clone());
             tokio::spawn(async move {
                 if let Err(e) = tisvlay_session::watch_screensaver(connection, client, locked).await
                 {
@@ -82,6 +85,24 @@ async fn main() -> anyhow::Result<()> {
         stack.client.clone(),
         is_locked,
     ));
+
+    // PipeWire screencast detector on its own supervised OS thread —
+    // reports the `Screencast` remote source through the detector seam.
+    // Absent/unreachable PipeWire is handled inside (retry, quiet).
+    tisvlay_session::spawn_screencast_detector(stack.remote.clone());
+
+    // logind Remote-session detector on the system bus — reports a
+    // `Logind` source for an own-uid `Remote=yes` session (xrdp-class).
+    // Absent/unreachable system bus is handled inside (retry, quiet).
+    tisvlay_session::spawn_logind_detector(stack.remote.clone());
+
+    // Sunshine level poll — a continuous `/serverinfo` detector, gated on
+    // a sunshine process being present, that arms a `Sunshine` source on
+    // BUSY and disarms it on FREE (or when the process is gone). It owns
+    // its own source key, coexisting with the optional `global_prep_cmd`
+    // hook: the hook is the instant arm, the poll owns disarm, self-heal,
+    // and the zero-config fallback. Runs for the session lifetime.
+    tisvlay_session::spawn_sunshine_detector(stack.remote.clone());
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down");

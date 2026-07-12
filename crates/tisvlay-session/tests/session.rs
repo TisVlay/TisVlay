@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
-use tisvlay_session::{SessionEvent, SessionOptions, SessionStack};
+use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -365,13 +365,22 @@ async fn user_profile_overrides_and_guards() {
         defaults,
         json!({
             "name": "default",
-            "on_session_lock": "screen_off",
-            "on_session_unlock": { "action": "screen_on", "restore_input": true },
+            // Floor splits by direction: the off-going blanks (lock,
+            // idle-timeout) project ungated (`while_remote = true`); the
+            // wake-ish events (unlock, lock-wake, idle-resume) stay gated.
+            "on_session_lock": { "action": "screen_off", "restore_input": false, "while_remote": true },
+            "on_session_unlock": { "action": "screen_on", "restore_input": true, "while_remote": false },
             "on_lock_wake": "screen_on",
             "locked_idle_timeout_seconds": 0,
             "unlocked_idle_timeout_seconds": 0,
-            "on_idle_timeout": "screen_off",
+            "on_idle_timeout": { "action": "screen_off", "restore_input": false, "while_remote": true },
             "on_idle_resume": "screen_on",
+            // Both remote edges floor to screen_off (blank on arm, stay dark
+            // on disarm); capture arming ships off. The connect/disconnect
+            // actions ignore the gate, so they project the plain default.
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_off",
+            "remote_screencast_arms": false,
         })
     );
 
@@ -408,7 +417,7 @@ async fn user_profile_overrides_and_guards() {
     assert_eq!(effective["on_session_lock"], "none");
     assert_eq!(
         effective["on_session_unlock"],
-        json!({ "action": "screen_on", "restore_input": true })
+        json!({ "action": "screen_on", "restore_input": true, "while_remote": false })
     );
 
     drive_until(&rig, &sub, SessionEvent::Lock, stock, "screenoff").await;
@@ -657,6 +666,772 @@ async fn user_store_and_idle_watch_round_trip() {
     let assign_sub = history_sub(&revived, keys::user_tv_profile(&rig.site, &tv)).await;
     recv_until(&assign_sub, |s| {
         payload_json(s)["profile"] == profile.to_string()
+    })
+    .await;
+}
+
+/// Create + assign a user profile carrying `body`; returns the profile id.
+async fn create_and_assign(rig: &Rig, tv: Uuid, body: Value) -> Uuid {
+    let ok = call(
+        &rig.user,
+        &keys::user_profile_rpc(&rig.site, "create"),
+        json!({ "body": body }),
+    )
+    .await
+    .expect("create ok");
+    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    call(
+        &rig.user,
+        &keys::user_profile_rpc(&rig.site, "assign"),
+        json!({ "tv": tv, "profile": profile }),
+    )
+    .await
+    .expect("assign ok");
+    profile
+}
+
+/// Toggle a manual source off→on until the TV reaches `want`, absorbing
+/// fleet-mirror hydration lag: each on-edge re-fires the connect
+/// dispatch, which is idempotent.
+async fn arm_until(rig: &Rig, sub: &Sub, source: &str, id: Uuid, want: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            rig.stack.remote.report(RemoteReport::manual(source, false)),
+            "session core gone"
+        );
+        assert!(
+            rig.stack.remote.report(RemoteReport::manual(source, true)),
+            "session core gone"
+        );
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, sub.recv_async()).await {
+            if keys::parse_tv_path(&rig.site, sample.key_expr().as_str())
+                .is_some_and(|(tv, p)| tv == id && p == "state/power")
+                && payload_json(&sample)["state"] == want
+            {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "TV never reached {want} after arming '{source}'"
+        );
+    }
+}
+
+/// While armed, an action whose `while_remote` gate is `false` is
+/// suppressed — the physical TV stays dark for the empty room.
+#[tokio::test(flavor = "multi_thread")]
+async fn armed_remote_suppresses_gated_events() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-suppress").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // Gate the unlock (and idle-resume) wake actions off while armed. The
+    // gate rides the action's table form, replacing the whole mapping.
+    // `on_session_lock` is left at the stock floor, which is ungated for
+    // the off-going blank — the test's setup depends on the lock still
+    // blanking while armed, and the floor provides that without an
+    // explicit `while_remote = true` here.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Remote quiet",
+            "on_session_unlock": { "action": "screen_on", "while_remote": false },
+            "on_idle_resume": { "action": "screen_on", "while_remote": false },
+        }),
+    )
+    .await;
+
+    // Unarmed baseline: unlock wakes the panel (the default action fires).
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // Arm and confirm via the fact (this profile fires no connect
+    // action, so the armed set on the fact is the observable).
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", true)),
+        "core gone"
+    );
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put
+            && payload_json(s)["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    })
+    .await;
+
+    // Blank via lock. With the source live, unlock is suppressed — the
+    // panel must NOT come back.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    assert!(rig.stack.client.send(SessionEvent::Unlock), "core gone");
+    assert_no_sample(&sub, Duration::from_millis(600), |s| {
+        keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+            .is_some_and(|(t, p)| t == tv && p == "state/power")
+            && payload_json(s)["state"] == "active"
+    })
+    .await;
+}
+
+/// A live Sunshine source is refreshed on the wake edge: because the gate
+/// and the `/serverinfo` detector share this process, an unlock probes the
+/// endpoint synchronously and clears the source when the stream has ended,
+/// so the wake fires instead of being suppressed for up to a poll interval.
+/// The probe here observes the endpoint absent (no `sunshine` process under
+/// test), which disarms exactly as a `FREE` reading would.
+#[tokio::test(flavor = "multi_thread")]
+async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let sunshine = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Sunshine,
+        detail: "serverinfo".into(),
+        active,
+        provisional: false,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://eager-sunshine").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // Unlock gated off while armed; the remote edges stay inert (`none`) so
+    // arming itself never moves the panel — the lock/unlock pair drives it.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Sunshine eager",
+            "on_session_unlock": { "action": "screen_on", "while_remote": false },
+            "on_remote_connect": "none",
+            "on_remote_disconnect": "none",
+        }),
+    )
+    .await;
+
+    // Baseline: hydrate the fleet mirror and confirm dispatch reaches the TV.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // A live Sunshine source arms the TV (attributed kinds always arm).
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    assert!(rig.stack.remote.report(sunshine(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put
+            && payload_json(s)["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    })
+    .await;
+
+    // Blank via lock (an off-going event fires even while armed), then wake
+    // via unlock: the eager pull observes the endpoint gone, clears the
+    // stale source, and the unlock's screen_on fires rather than suppressing.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // The source cleared with the eager refresh — the fact shows it gone.
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"] == json!([]) && v["armed"] == json!([])
+        }
+    })
+    .await;
+}
+
+/// The connect/disconnect actions fire on arm and disarm edges.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_connect_disconnect_actions_fire() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-edges").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Remote edges",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_on",
+        }),
+    )
+    .await;
+
+    // The arm edge fires on_remote_connect (screen_off).
+    arm_until(&rig, &sub, "manual", tv, "screenoff").await;
+    // The disarm edge fires on_remote_disconnect (screen_on).
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", false)),
+        "core gone"
+    );
+    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
+        v["state"] == "active"
+    })
+    .await;
+}
+
+/// The fact publishes on the user socket (cached) and mirrors on the
+/// system socket (a cache-1 advanced pub) with the live sources + armed
+/// projection.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_fact_and_mirror_carry_sources_and_armed() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-fact").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // The user-socket fact is a cached pub (history-subscribable); the
+    // system-socket mirror is a cache-1 advanced pub, but this plain
+    // subscriber sees only its live samples (a plain get can't reach `@adv`).
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    let mirror = rig
+        .client
+        .declare_subscriber(keys::remote_session(&rig.site))
+        .await
+        .unwrap();
+
+    // Arm; both surfaces must show the manual source and the armed TV.
+    // Re-drive the arm edge (the mirror's live sample races subscriber
+    // interest).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let armed_ok = |v: &Value| {
+        v["sources"]
+            .as_array()
+            .is_some_and(|s| s.iter().any(|src| src["kind"] == "manual"))
+            && v["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    };
+    // The cached fact hydrates from history — assert it once armed.
+    rig.stack
+        .remote
+        .report(RemoteReport::manual("manual", true));
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && armed_ok(&payload_json(s))
+    })
+    .await;
+    // The mirror's live sample races subscriber interest; re-toggle until
+    // one is caught.
+    'mirror: loop {
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", false));
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", true));
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, mirror.recv_async()).await {
+            if armed_ok(&payload_json(&sample)) {
+                break 'mirror;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "mirror never carried the armed source"
+        );
+    }
+}
+
+/// The exact QA failure shape: a source arms while the session knows no
+/// TVs yet (empty armed set), then a TV hydrates over the fleet mirror —
+/// the arming edge that fires on TV *arrival* (not on a source or profile
+/// change) must carry both the user-socket fact and the system-socket
+/// mirror to the full armed set.
+#[tokio::test(flavor = "multi_thread")]
+async fn armed_converges_when_tv_hydrates_after_arming() {
+    let rig = rig().await;
+
+    // The user-socket fact (cached) and the system-socket mirror (a cache-1
+    // advanced pub), subscribed before any TV exists. This plain subscriber
+    // sees only the mirror's live samples.
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    let mirror = rig
+        .client
+        .declare_subscriber(keys::remote_session(&rig.site))
+        .await
+        .unwrap();
+
+    // Arm with no TV known: the source is live but the armed set is empty.
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", true)),
+        "core gone"
+    );
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"]
+                .as_array()
+                .is_some_and(|src| src.iter().any(|s| s["kind"] == "manual"))
+                && v["armed"] == json!([])
+        }
+    })
+    .await;
+
+    // Now a TV arrives — its meta hydrates into the session over the fleet
+    // mirror, and the arming edge on TV arrival must move the armed set.
+    let tv = add_tv(&rig, "Den", "mock://late-tv").await;
+    let armed_ok = |v: &Value| {
+        v["sources"]
+            .as_array()
+            .is_some_and(|s| s.iter().any(|src| src["kind"] == "manual"))
+            && v["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    };
+    // The cached fact hydrates from history — assert it converges.
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && armed_ok(&payload_json(s))
+    })
+    .await;
+    // The mirror's live sample races subscriber interest; the TV-arrival
+    // recompute re-mirrors the converged set, so a drain catches it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(deadline, mirror.recv_async()).await {
+            Ok(Ok(sample)) if armed_ok(&payload_json(&sample)) => break,
+            Ok(Ok(_)) => {}
+            _ => panic!("mirror never converged to the armed TV"),
+        }
+    }
+}
+
+/// The outage variant: the session starts before its system daemon, so
+/// its first mirror sample (issued while arming with the link down) never
+/// reaches a daemon, but the cache-1 mirror publisher retains it. When the
+/// daemon comes up it hydrates that standing sample from the session's
+/// cache, and the TV-arrival recompute re-mirrors the converged set — so
+/// the system-socket mirror still ends on the full armed set.
+#[tokio::test(flavor = "multi_thread")]
+async fn armed_survives_a_system_link_outage_at_arm_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let system_socket = dir.path().join("sys.sock");
+    let user_socket = dir.path().join("user.sock");
+
+    // The session boots first, dialing a socket no daemon is listening on
+    // yet — the resilient link retries in the background.
+    let stack = tisvlay_session::serve(SessionOptions {
+        system_socket: system_socket.clone(),
+        user_socket: user_socket.clone(),
+        site: "t".into(),
+        store: None,
+    })
+    .await
+    .unwrap();
+
+    // Arm while the link is down: the mirror sample reaches no daemon but
+    // the cache-1 publisher retains it, and no TV is known, so the armed
+    // set is empty at this point.
+    assert!(
+        stack.remote.report(RemoteReport::manual("manual", true)),
+        "core gone"
+    );
+    // Let the mirror put(s) settle into the publisher cache before the
+    // daemon exists.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Bring the daemon up on the socket the session is dialing.
+    let (connector, discovery, _mock) = new_test_parts();
+    let _daemon = tisvlay_daemon::serve(
+        &system_socket,
+        "t",
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+
+    // A system-socket client observes the mirror and adds a TV.
+    let client = zenoh::open(bootstrap::client_config(&system_socket).unwrap())
+        .await
+        .unwrap();
+    let mirror = client
+        .declare_subscriber(keys::remote_session("t"))
+        .await
+        .unwrap();
+    let tv = {
+        let body = serde_json::to_value(rpc::AddTv {
+            id: None,
+            name: "Den".into(),
+            vendor: "mock".into(),
+            managed: true,
+            config: json!({ "address": "mock://outage" }),
+        })
+        .unwrap();
+        let ok = call(&client, &keys::manager_rpc("t", "add-tv"), body)
+            .await
+            .expect("add-tv ok");
+        Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap()
+    };
+
+    // Once the link recovers, the mirror must converge to the armed TV —
+    // the regression this guards is a stale empty-armed snapshot never being
+    // corrected by the TV-arrival edge.
+    let armed_tv = |v: &Value| {
+        v["armed"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(deadline, mirror.recv_async()).await {
+            Ok(Ok(sample)) if armed_tv(&payload_json(&sample)) => break,
+            Ok(Ok(_)) => {}
+            _ => panic!("mirror never converged to the armed TV after link recovery"),
+        }
+    }
+}
+
+/// The verb rpc round-trips through the Caller on the user socket:
+/// `set { source, active }` arms, `status` reflects it.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_verb_rpc_round_trips() {
+    use tisvlay_wire::caller::Caller;
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-rpc").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    let caller = Caller::new(rig.user.clone());
+    // Arm via the rpc — the reply echoes the fact.
+    let reply = caller
+        .call(
+            &keys::user_remote_rpc(&rig.site, "set"),
+            json!({ "source": "cli", "active": true }),
+        )
+        .await
+        .expect("set arms");
+    assert!(
+        reply["sources"].as_array().is_some_and(|s| s
+            .iter()
+            .any(|src| src["kind"] == "manual" && src["detail"] == "cli")),
+        "set reply carries the manual source, got {reply}"
+    );
+
+    // status reflects the armed source.
+    let status = caller
+        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .await
+        .expect("status ok");
+    assert!(
+        status["sources"]
+            .as_array()
+            .is_some_and(|s| s.iter().any(|src| src["detail"] == "cli")),
+        "status carries the armed source, got {status}"
+    );
+
+    // Disarm; status goes empty.
+    caller
+        .call(
+            &keys::user_remote_rpc(&rig.site, "set"),
+            json!({ "source": "cli", "active": false }),
+        )
+        .await
+        .expect("set disarms");
+    let status = caller
+        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .await
+        .expect("status ok");
+    assert_eq!(status["sources"], json!([]), "disarmed status is empty");
+}
+
+/// A `Screencast`-kind report (the shape the PipeWire detector produces)
+/// travels the detector seam into the fact, and its unattributed signal
+/// arms a TV only when the resolved profile opts capture in — the whole
+/// detector→fact→policy→armed contract without a live PipeWire.
+#[tokio::test(flavor = "multi_thread")]
+async fn screencast_source_arms_only_under_capture_policy() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    // The detector emits `Screencast` reports keyed on a summary detail;
+    // reconstruct that shape here (the module's own pure fns are unit
+    // tested — this checks the wire contract through the running stack).
+    let screencast = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Screencast,
+        detail: "1 node (running)".into(),
+        active,
+        provisional: false,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://screencast").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+
+    // Default profile does not arm on capture: the screencast source is
+    // published in `sources`, but the TV is NOT armed.
+    create_and_assign(&rig, tv, json!({ "name": "No capture arm" })).await;
+    assert!(rig.stack.remote.report(screencast(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"]
+                .as_array()
+                .is_some_and(|src| src.iter().any(|s| s["kind"] == "screencast"))
+                && v["armed"] == json!([])
+        }
+    })
+    .await;
+
+    // Opt capture in: the same live source now arms the TV.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({ "name": "Capture arms", "remote_screencast_arms": true }),
+    )
+    .await;
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put
+            && payload_json(s)["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    })
+    .await;
+
+    // Node gone: the source clears and the TV disarms.
+    assert!(rig.stack.remote.report(screencast(false)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"] == json!([]) && v["armed"] == json!([])
+        }
+    })
+    .await;
+}
+
+/// The connect/disconnect edge keys on the ARMED set, not raw source
+/// presence: an unarmed screencast (capture arming off — an OBS record or
+/// a browser tab-share) publishes its source but must not fire the connect
+/// action and blank every TV. Opting capture in makes the same signal arm
+/// and drive the edge.
+#[tokio::test(flavor = "multi_thread")]
+async fn unarmed_screencast_publishes_but_fires_no_connect_action() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let screencast = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Screencast,
+        detail: "1 node (running)".into(),
+        active,
+        provisional: false,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://screencast-edge").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+
+    // A profile whose connect action would blank the panel and whose
+    // disconnect action wakes it — capture arming stays off (default).
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Capture edges",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_on",
+        }),
+    )
+    .await;
+
+    // The unattributed screencast: the fact carries the source but the
+    // armed set stays empty, and — the regression — NO connect action
+    // reaches the TV, so the panel is never blanked for a mere capture.
+    assert!(rig.stack.remote.report(screencast(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"]
+                .as_array()
+                .is_some_and(|src| src.iter().any(|s| s["kind"] == "screencast"))
+                && v["armed"] == json!([])
+        }
+    })
+    .await;
+    assert_no_sample(&sub, Duration::from_millis(500), |s| {
+        keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+            .is_some_and(|(t, p)| t == tv && p == "state/power")
+            && payload_json(s)["state"] == "screenoff"
+    })
+    .await;
+
+    // Opt capture in: the same live signal now arms the TV, so a re-toggled
+    // source drives the arm edge and the connect action (screen_off) fires.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Capture arms edges",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_on",
+            "remote_screencast_arms": true,
+        }),
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(rig.stack.remote.report(screencast(false)), "core gone");
+        assert!(rig.stack.remote.report(screencast(true)), "core gone");
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, sub.recv_async()).await {
+            if keys::parse_tv_path(&rig.site, sample.key_expr().as_str())
+                .is_some_and(|(t, p)| t == tv && p == "state/power")
+                && payload_json(&sample)["state"] == "screenoff"
+            {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "capture-armed screencast never fired the connect action"
+        );
+    }
+}
+
+/// A `Portal`-kind report (the shape the portal monitor produces for an
+/// allow-listed remote app) is attributed, so it arms the TV with no
+/// `remote_screencast_arms` opt-in — unlike the unattributed screencast
+/// signal above. The exe rides in the source `detail`.
+#[tokio::test(flavor = "multi_thread")]
+async fn portal_source_arms_without_capture_policy() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let portal = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Portal,
+        detail: "krdpserver".into(),
+        active,
+        provisional: false,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://portal").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+
+    // A default profile (capture NOT opted in): the attributed portal
+    // source still arms the TV, and the exe is the source detail.
+    create_and_assign(&rig, tv, json!({ "name": "Default" })).await;
+    assert!(rig.stack.remote.report(portal(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"].as_array().is_some_and(|src| {
+                src.iter()
+                    .any(|s| s["kind"] == "portal" && s["detail"] == "krdpserver")
+            }) && v["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+        }
+    })
+    .await;
+
+    // Session closed: the source clears and the TV disarms.
+    assert!(rig.stack.remote.report(portal(false)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"] == json!([]) && v["armed"] == json!([])
+        }
+    })
+    .await;
+}
+
+/// A *provisional* `Portal` report (the monitor's bootstrap guess, owner
+/// resolved but the session type unconfirmed) is held out of the fact
+/// until a `Screencast` source corroborates a live capture — the
+/// tree-walk join, exercised through the running stack.
+#[tokio::test(flavor = "multi_thread")]
+async fn provisional_portal_joins_on_corroborating_screencast() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://join").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    create_and_assign(&rig, tv, json!({ "name": "Default" })).await;
+
+    // The bootstrap guess alone does not appear in the fact and does not
+    // arm — an uncorroborated owner might be holding only an InputCapture
+    // session (the lan-mouse false positive).
+    assert!(
+        rig.stack.remote.report(RemoteReport {
+            kind: RemoteSourceKind::Portal,
+            detail: "rustdesk".into(),
+            active: true,
+            provisional: true,
+        }),
+        "core gone"
+    );
+    // Drive a screencast source in; only then do BOTH the portal and the
+    // screencast appear, and the TV arms (via the now-corroborated,
+    // attributed portal source — capture policy is off).
+    assert!(
+        rig.stack.remote.report(RemoteReport {
+            kind: RemoteSourceKind::Screencast,
+            detail: "1 node (running)".into(),
+            active: true,
+            provisional: false,
+        }),
+        "core gone"
+    );
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            let kinds: Vec<&str> = v["sources"]
+                .as_array()
+                .map(|src| src.iter().filter_map(|s| s["kind"].as_str()).collect())
+                .unwrap_or_default();
+            kinds.contains(&"portal")
+                && kinds.contains(&"screencast")
+                && v["armed"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+        }
     })
     .await;
 }

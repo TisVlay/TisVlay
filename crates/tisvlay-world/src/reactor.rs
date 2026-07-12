@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, ProfileIndex, Site,
+    Clock, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, ProfileIndex, RemoteArmed, Site,
     SystemProfile, TvIndex,
 };
 use crate::events::{
@@ -85,6 +85,7 @@ impl Reactor {
             connectors.keys().cloned().collect::<HashSet<_>>(),
         ));
         world.insert_resource(SystemProfile::stock());
+        world.init_resource::<RemoteArmed>();
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
         world.init_resource::<ProfileIndex>();
