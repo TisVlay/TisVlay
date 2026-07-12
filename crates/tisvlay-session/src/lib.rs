@@ -423,7 +423,14 @@ impl Core {
             tokio::select! {
                 event = events.recv() => match event {
                     None => break 'run,
-                    Some(event) => self.dispatch(event).await,
+                    Some(event) => {
+                        // Pre-dispatch: a wake-ish gated event with a live
+                        // Sunshine source refreshes it on a tight budget so
+                        // the gate reads fresh state (a bounded await in this
+                        // single-owner loop — see the method).
+                        self.eager_refresh_sunshine(event).await;
+                        self.dispatch(event).await;
+                    }
                 },
                 report = reports.recv() => match report {
                     None => break 'run,
@@ -711,6 +718,38 @@ impl Core {
                 )
                 .await;
             }
+        }
+    }
+
+    /// Eager Sunshine refresh, run before a wake-ish gated event dispatches.
+    /// The continuous poll disarms the Sunshine source only within its
+    /// interval, so a user returning inside that window could hit a
+    /// suppressed wake for up to one tick. The gate and the detector share
+    /// this process, so a gated wake pulls `/serverinfo` synchronously and
+    /// decides on fresh state: if the stream has ended the source clears
+    /// here, un-gating the wake immediately instead of waiting for the poll.
+    ///
+    /// Bounded: awaits up to `EAGER_TIMEOUT` in the single-owner Core loop,
+    /// and only on the three wake events while a live Sunshine source exists
+    /// — infrequent and tight, which is why the budget is small and the
+    /// trigger narrow. It refreshes the source only; the connect/disconnect
+    /// edge accounting stays with the poll and the report path.
+    async fn eager_refresh_sunshine(&mut self, event: SessionEvent) {
+        let has_sunshine = self
+            .remote_sources
+            .has_kind(payload::RemoteSourceKind::Sunshine);
+        if !eager_refresh_applies(event, has_sunshine) {
+            return;
+        }
+        // The poll owns the single (Sunshine, "serverinfo") key and it is
+        // live here (checked above), so fold the observation against
+        // armed = true: Free/Absent clears the source, Busy/Unknown leaves it.
+        let observation = sunshine::probe_once(sunshine::EAGER_TIMEOUT).await;
+        if let (_, Some(report)) = sunshine::decide(true, observation)
+            && self.remote_sources.apply(&report)
+        {
+            self.recompute_remote_armed();
+            self.publish_remote().await;
         }
     }
 
@@ -1106,6 +1145,19 @@ impl Core {
     }
 }
 
+/// Whether a session-side eager `/serverinfo` pull should run before this
+/// event dispatches: only the wake-ish gated events (unlock, lock-wake,
+/// idle-resume) while a live Sunshine source exists. The off-going events
+/// (lock, idle-timeout) and the remote edges never trigger it — they carry
+/// no suppressible wake to un-gate, or fire at the arming boundary itself.
+fn eager_refresh_applies(event: SessionEvent, has_sunshine: bool) -> bool {
+    has_sunshine
+        && matches!(
+            event,
+            SessionEvent::Unlock | SessionEvent::LockWake | SessionEvent::IdleResume
+        )
+}
+
 /// Pend forever with no drift armed, so the core select stays
 /// event-driven between deadlines.
 async fn drift_deadline(at: Option<tokio::time::Instant>) {
@@ -1321,10 +1373,36 @@ fn lock_wake_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, UNLOCKED_IDLE_TAG, idle_dispatch, lock_wake_policy,
+        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, UNLOCKED_IDLE_TAG, eager_refresh_applies, idle_dispatch,
+        lock_wake_policy,
     };
     use crate::SessionEvent;
     use tisvlay_core::wayland::IdleTransition;
+
+    #[test]
+    fn eager_refresh_only_on_wake_events_with_a_live_sunshine_source() {
+        // Wake-ish gated events pull /serverinfo — but only with a live
+        // Sunshine source to refresh.
+        for event in [
+            SessionEvent::Unlock,
+            SessionEvent::LockWake,
+            SessionEvent::IdleResume,
+        ] {
+            assert!(eager_refresh_applies(event, true));
+            assert!(!eager_refresh_applies(event, false));
+        }
+        // Off-going events and the remote edges never trigger it, source or
+        // not.
+        for event in [
+            SessionEvent::Lock,
+            SessionEvent::IdleTimeout,
+            SessionEvent::RemoteConnect,
+            SessionEvent::RemoteDisconnect,
+        ] {
+            assert!(!eager_refresh_applies(event, true));
+            assert!(!eager_refresh_applies(event, false));
+        }
+    }
 
     #[test]
     fn idle_rules_gate_to_their_lock_state() {

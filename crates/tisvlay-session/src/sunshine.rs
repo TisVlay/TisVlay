@@ -52,6 +52,12 @@ const SERVERINFO_ADDR: (&str, u16) = ("127.0.0.1", 47989);
 /// a tick.
 const POLL_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Budget for the session-side eager pull on a gated wake. Tight — the
+/// caller awaits it inline in the single-owner Core loop — but enough for a
+/// loopback GET, so a wake feels instant while a wedged endpoint cannot
+/// stall the loop past this.
+pub(crate) const EAGER_TIMEOUT: Duration = Duration::from_millis(400);
+
 /// Poll cadence while a sunshine process is present — short so arm latency
 /// stays low when no hook is configured.
 const PRESENT_INTERVAL: Duration = Duration::from_secs(2);
@@ -159,7 +165,7 @@ pub fn spawn(client: RemoteClient) {
 async fn run(client: RemoteClient) {
     let mut armed = false;
     loop {
-        let observation = observe().await;
+        let observation = probe_once(POLL_TIMEOUT).await;
         let (next, change) = decide(armed, observation);
         armed = next;
         if let Some(report) = change {
@@ -176,14 +182,16 @@ async fn run(client: RemoteClient) {
     }
 }
 
-/// One poll tick's observation: gate on process presence, then classify
-/// `/serverinfo`. An unreachable endpoint while the process is present is
-/// `Unknown` (keep the last level), never `Free`.
-async fn observe() -> Observation {
+/// One bounded observation: gate on process presence, then classify
+/// `/serverinfo` within `timeout`. An unreachable endpoint while the
+/// process is present is `Unknown` (keep the last level), never `Free`. The
+/// poll passes its interval budget; the session-side eager pull passes a
+/// tight one — one implementation for both.
+pub(crate) async fn probe_once(timeout: Duration) -> Observation {
     if !sunshine_present() {
         return Observation::Absent;
     }
-    match query_serverinfo().await {
+    match query_serverinfo(timeout).await {
         Ok(ServerState::Busy) => Observation::Busy,
         Ok(ServerState::Free) => Observation::Free,
         Ok(ServerState::Unknown) => Observation::Unknown,
@@ -223,7 +231,7 @@ fn sunshine_present() -> bool {
 /// unauthenticated localhost request does not justify an HTTP client dep).
 /// `Ok` means the server answered and the body was classified; `Err` is a
 /// connect/read failure or timeout, which the caller folds into `Unknown`.
-async fn query_serverinfo() -> io::Result<ServerState> {
+async fn query_serverinfo(timeout: Duration) -> io::Result<ServerState> {
     let exchange = async {
         let mut stream = TcpStream::connect(SERVERINFO_ADDR).await?;
         stream
@@ -233,7 +241,7 @@ async fn query_serverinfo() -> io::Result<ServerState> {
         stream.read_to_end(&mut buf).await?;
         Ok(parse_serverinfo(&String::from_utf8_lossy(&buf)))
     };
-    tokio::time::timeout(POLL_TIMEOUT, exchange)
+    tokio::time::timeout(timeout, exchange)
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "serverinfo timed out"))?
 }

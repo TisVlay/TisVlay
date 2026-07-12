@@ -30,6 +30,8 @@ Sunshine publishes no D-Bus interface and no push/event API, and its default NvF
 
 The poll gates on process presence (a cheap procfs scan, free when Sunshine is absent) and, while a `sunshine` process is running, issues a `GET http://127.0.0.1:47989/serverinfo` on a short cadence (~2 s; a coarser ~10 s while no process is present). It reports a `sunshine` source keyed by `serverinfo` that it fully owns: `BUSY` arms it, `FREE` or a vanished process disarms it, and a reachable-but-unclassifiable or transiently-unreachable endpoint keeps the last level so a blip does not flap the source. Reporting only on a level change keeps needless traffic off the aggregator. Because it re-derives the level every tick, a session-service restart mid-stream re-arms within one interval — no separate startup step. It needs Sunshine's HTTP port reachable on loopback; a firewall or a non-default port defeats it.
 
+Because the disarm rides that ~2 s cadence, a user who returns within the window after a stream ends could hit a suppressed wake for up to one tick. The gate and the detector share the session process, so a session-side gated wake (unlock, lock-wake, idle-resume) with a live Sunshine source pulls `/serverinfo` once on a tight budget before it dispatches, and decides on fresh state — a stream that just ended un-gates the wake immediately rather than waiting for the next poll. The world-side DPMS-on wake is cross-process and stays covered by the poll cadence; an eager refresh there is a filed follow-up.
+
 The `global_prep_cmd` hook is now **optional**. Its sole remaining value is ordering: it arms the instant the app launches, ahead of the poll's interval latency and ahead of any injected input. Add one only if that sub-interval arm latency matters:
 
 ```json

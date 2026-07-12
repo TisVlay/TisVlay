@@ -782,6 +782,76 @@ async fn armed_remote_suppresses_gated_events() {
     .await;
 }
 
+/// A live Sunshine source is refreshed on the wake edge: because the gate
+/// and the `/serverinfo` detector share this process, an unlock probes the
+/// endpoint synchronously and clears the source when the stream has ended,
+/// so the wake fires instead of being suppressed for up to a poll interval.
+/// The probe here observes the endpoint absent (no `sunshine` process under
+/// test), which disarms exactly as a `FREE` reading would.
+#[tokio::test(flavor = "multi_thread")]
+async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
+    use tisvlay_wire::payload::RemoteSourceKind;
+
+    let sunshine = |active: bool| RemoteReport {
+        kind: RemoteSourceKind::Sunshine,
+        detail: "serverinfo".into(),
+        active,
+        provisional: false,
+    };
+
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://eager-sunshine").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // Unlock gated off while armed; the remote edges stay inert (`none`) so
+    // arming itself never moves the panel — the lock/unlock pair drives it.
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Sunshine eager",
+            "on_session_unlock": { "action": "screen_on", "while_remote": false },
+            "on_remote_connect": "none",
+            "on_remote_disconnect": "none",
+        }),
+    )
+    .await;
+
+    // Baseline: hydrate the fleet mirror and confirm dispatch reaches the TV.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // A live Sunshine source arms the TV (attributed kinds always arm).
+    let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
+    assert!(rig.stack.remote.report(sunshine(true)), "core gone");
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put
+            && payload_json(s)["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    })
+    .await;
+
+    // Blank via lock (an off-going event fires even while armed), then wake
+    // via unlock: the eager pull observes the endpoint gone, clears the
+    // stale source, and the unlock's screen_on fires rather than suppressing.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // The source cleared with the eager refresh — the fact shows it gone.
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put && {
+            let v = payload_json(s);
+            v["sources"] == json!([]) && v["armed"] == json!([])
+        }
+    })
+    .await;
+}
+
 /// The connect/disconnect actions fire on arm and disarm edges.
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_connect_disconnect_actions_fire() {

@@ -163,6 +163,12 @@ impl RemoteSources {
     pub(crate) fn any(&self) -> bool {
         !self.live.is_empty()
     }
+
+    /// Whether a live source of the given kind exists — the cheap gate the
+    /// session's eager Sunshine refresh reads before deciding to probe.
+    pub(crate) fn has_kind(&self, kind: RemoteSourceKind) -> bool {
+        self.live.keys().any(|(k, _)| *k == kind)
+    }
 }
 
 /// Whether a source kind arms unconditionally. Attributed kinds (a named
@@ -280,6 +286,28 @@ mod tests {
         // The same sources, once the TVs hydrate, arm every one of them.
         assert_eq!(compute_armed([a].iter(), &kinds, resolve), vec![a]);
         assert_eq!(compute_armed([a, b].iter(), &kinds, resolve), vec![a, b]);
+    }
+
+    #[test]
+    fn has_kind_reflects_only_the_live_set() {
+        let mut sources = RemoteSources::default();
+        assert!(!sources.has_kind(RemoteSourceKind::Sunshine));
+        sources.apply(&RemoteReport {
+            kind: RemoteSourceKind::Sunshine,
+            detail: "serverinfo".into(),
+            active: true,
+            provisional: false,
+        });
+        assert!(sources.has_kind(RemoteSourceKind::Sunshine));
+        assert!(!sources.has_kind(RemoteSourceKind::Manual));
+        // Clearing the source drops its kind.
+        sources.apply(&RemoteReport {
+            kind: RemoteSourceKind::Sunshine,
+            detail: "serverinfo".into(),
+            active: false,
+            provisional: false,
+        });
+        assert!(!sources.has_kind(RemoteSourceKind::Sunshine));
     }
 
     #[test]
