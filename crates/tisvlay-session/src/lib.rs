@@ -27,6 +27,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
+use tisvlay_wire::caller::Caller;
 use tisvlay_wire::error::WireError;
 use tisvlay_wire::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
@@ -237,17 +238,6 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("declare session liveliness: {e}"))?;
 
-    // The daemon's liveliness (re)appearance is the mirror re-put cue:
-    // the system mirror is a plain put over a connect-only peer, so a
-    // daemon restart mid-session must re-learn the current fact without
-    // waiting for the next detector edge.
-    let daemon_alive_sub = system
-        .liveliness()
-        .declare_subscriber(keys::daemon_alive(&options.site))
-        .history(true)
-        .await
-        .map_err(|e| anyhow!("subscribe daemon liveliness: {e}"))?;
-
     // Fleet mirror: every TV's meta/config, hydrated from history.
     let meta_sub = system
         .declare_subscriber(keys::tv_meta_wild(&options.site))
@@ -262,6 +252,22 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .history(HistoryConfig::default().detect_late_publishers())
         .await
         .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
+
+    // The remote-session mirror the daemon hydrates on restart: a cache-1
+    // AdvancedPublisher on the system link. Declared before the presence
+    // token so the daemon reaches its `@adv` cache the moment it observes
+    // the session alive. Served over a connect-only peer, but the
+    // directly-dialed daemon still hydrates it — the counter-sequenced
+    // cache shape constructs without an HLC, so no timestamping is needed
+    // here.
+    let remote_mirror = system
+        .declare_publisher(keys::remote_session(&options.site))
+        .encoding(Encoding::APPLICATION_JSON)
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(MissDetectionConfig::default().heartbeat(MISS_HEARTBEAT))
+        .publisher_detection()
+        .await
+        .map_err(|e| anyhow!("declare remote mirror publisher: {e}"))?;
 
     // Presence on the system socket: a liveliness token the daemon (the
     // directly-dialed peer) observes even though this link is a
@@ -280,6 +286,10 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let (remote_tx, reports) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
     let is_locked = Arc::new(AtomicBool::new(false));
+
+    // Matching-gated caller for TV rpcs on the system socket, shared into
+    // every dispatch's spawned task.
+    let caller = Arc::new(Caller::new(system.clone()));
 
     let mut core = Core {
         system,
@@ -310,6 +320,8 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         drift_at: HashMap::new(),
         remote_sources: remote::RemoteSources::default(),
         remote_armed: HashSet::new(),
+        remote_mirror,
+        caller,
         _alive: alive,
         _alive_system: alive_system,
     };
@@ -321,7 +333,6 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             remote_queries,
             meta_sub,
             power_sub,
-            daemon_alive_sub,
         )
         .await;
         drop(queryable);
@@ -365,6 +376,12 @@ struct Core {
     /// TVs the current sources arm, per their resolved profile — the
     /// while-remote gate in `action_for` keys on membership.
     remote_armed: HashSet<Uuid>,
+    /// Cache-1 mirror of the remote fact on the system link. The daemon
+    /// hydrates its last sample on restart, so the fact survives a daemon
+    /// bounce without any re-put from the session.
+    remote_mirror: AdvancedPublisher<'static>,
+    /// Matching-gated caller for TV rpcs on the system socket.
+    caller: Arc<Caller>,
     _alive: zenoh::liveliness::LivelinessToken,
     /// System-socket presence token. Dropping it (Core drop, on crash or
     /// clean exit) DELETEs the daemon's departure signal; held here so it
@@ -384,9 +401,6 @@ impl Core {
             zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
         >,
         power_sub: zenoh_ext::AdvancedSubscriber<
-            zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
-        >,
-        daemon_alive_sub: zenoh::pubsub::Subscriber<
             zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
         >,
     ) {
@@ -429,34 +443,15 @@ impl Core {
                     Err(_) => break 'run,
                     Ok(sample) => self.apply_power(&sample),
                 },
-                sample = daemon_alive_sub.recv_async() => match sample {
-                    Err(_) => break 'run,
-                    Ok(sample) => {
-                        // The token's (re)appearance re-learns the current
-                        // fact; its disappearance needs nothing (a re-put
-                        // lands when it returns). Recompute first so the
-                        // re-put folds in any TVs hydrated by now, then
-                        // mirror unconditionally: a put issued while the
-                        // link was down was silently dropped, so re-send it
-                        // even when the armed set did not move.
-                        if sample.kind() == SampleKind::Put {
-                            self.recompute_remote_armed();
-                            self.mirror_remote().await;
-                        }
-                    }
-                },
                 _ = drift_deadline(next_drift) => self.reassert_due(),
             }
         }
-        // Clean exit (a channel closed on logout/restart): publish an empty
-        // fact to the system mirror so the world disarms immediately. This
-        // put is the instant fast path; the `session_alive` token (dropped
-        // with `Core` just after) also DELETEs here. A crash that skips this
-        // path still departs the token, and the daemon clears the armed set
-        // on that DELETE — the token covers the crash case the explicit put
-        // cannot.
-        self.mirror_state(&payload::RemoteSessionState::default())
-            .await;
+        // Clean exit (a channel closed on logout/restart): the
+        // `_alive_system` token, dropped with `Core` immediately after,
+        // DELETEs on the daemon's `session_alive` subscriber, which clears
+        // the armed set. A crash that skips this path departs the same
+        // token, so the daemon disarms on the DELETE either way — no empty
+        // mirror put is needed.
     }
 
     async fn apply_meta(&mut self, sample: &zenoh::sample::Sample) {
@@ -568,7 +563,7 @@ impl Core {
             }
             let action = self.resolve_for(&tv).on_idle_timeout;
             debug!(%tv, ?action, "re-asserting idle action after screen drift");
-            call_tv(&self.system, &self.site, tv, action);
+            self.call_tv(tv, action);
         }
     }
 
@@ -637,18 +632,11 @@ impl Core {
         self.mirror_state(&state).await;
     }
 
-    /// Re-put the current fact on the system-socket mirror (the daemon
-    /// liveliness re-put path). [`publish_remote`] builds the state once
-    /// and mirrors it directly; this rebuilds it for standalone callers.
-    async fn mirror_remote(&self) {
-        self.mirror_state(&self.remote_state()).await;
-    }
-
-    /// Put a fact on the system-socket mirror. A plain put (no cache, no
-    /// token) — the session's system link is a connect-only peer, so a
-    /// cached pub there would not propagate.
+    /// Publish a fact to the system-socket mirror through the cache-1
+    /// AdvancedPublisher. The directly-dialed daemon hydrates its last
+    /// sample on restart, so the fact survives a daemon bounce without a
+    /// re-put; a live daemon receives it as an ordinary sample.
     async fn mirror_state(&self, state: &payload::RemoteSessionState) {
-        let key = keys::remote_session(&self.site);
         let bytes = match serde_json::to_vec(state) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -656,13 +644,8 @@ impl Core {
                 return;
             }
         };
-        if let Err(e) = self
-            .system
-            .put(key.as_str(), bytes)
-            .encoding(Encoding::APPLICATION_JSON)
-            .await
-        {
-            warn!(%key, %e, "remote mirror put failed");
+        if let Err(e) = self.remote_mirror.put(bytes).await {
+            warn!(%e, "remote mirror put failed");
         }
     }
 
@@ -767,8 +750,37 @@ impl Core {
                 continue;
             }
             debug!(%tv, ?event, ?action, "user profile action");
-            call_tv(&self.system, &self.site, *tv, action);
+            self.call_tv(*tv, action);
         }
+    }
+
+    /// Fire a TV rpc on the system socket through the shared matching gate;
+    /// failures are logged, not fatal — the daemon's own retry tier owns
+    /// delivery. The resolved restore flag rides the rpc as resolved intent:
+    /// the world honors it without knowing the session's event vocabulary,
+    /// and manual clients (which never set it) stay input-neutral.
+    fn call_tv(&self, tv: Uuid, spec: tisvlay_core::EventAction) {
+        let restore = spec.restore_input();
+        let (verb, body) = match spec.action() {
+            SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
+            SessionAction::ScreenOn => (
+                "set-screen",
+                json!({ "on": true, "restore_input": restore }),
+            ),
+            SessionAction::PowerOff => ("power-off", Value::Null),
+            SessionAction::PowerOn => ("power-on", json!({ "restore_input": restore })),
+            SessionAction::None => return,
+        };
+        let caller = Arc::clone(&self.caller);
+        let key = keys::tv_rpc(&self.site, &tv, verb);
+        // Spawned so the matching gate + rpc timeout never block the core
+        // select; the Caller re-issues nothing on a write and classifies
+        // unavailable-vs-rejected for the log line.
+        tokio::spawn(async move {
+            if let Err(error) = caller.call(&key, body).await {
+                warn!(%key, %error, "tv rpc failed");
+            }
+        });
     }
 
     /// Root chain per field: assignment → profile → editable default
@@ -1092,8 +1104,6 @@ impl Core {
     }
 }
 
-/// Fire a TV rpc on the system socket; failures are logged, not fatal —
-/// the daemon's own retry tier owns delivery.
 /// Pend forever with no drift armed, so the core select stays
 /// event-driven between deadlines.
 async fn drift_deadline(at: Option<tokio::time::Instant>) {
@@ -1101,50 +1111,6 @@ async fn drift_deadline(at: Option<tokio::time::Instant>) {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
     }
-}
-
-fn call_tv(system: &Session, site: &str, tv: Uuid, spec: tisvlay_core::EventAction) {
-    // The resolved restore flag rides the rpc as resolved intent: the
-    // world honors it without knowing the session's event vocabulary,
-    // and manual clients (which never set it) stay input-neutral.
-    let restore = spec.restore_input();
-    let (verb, body) = match spec.action() {
-        SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
-        SessionAction::ScreenOn => (
-            "set-screen",
-            json!({ "on": true, "restore_input": restore }),
-        ),
-        SessionAction::PowerOff => ("power-off", Value::Null),
-        SessionAction::PowerOn => ("power-on", json!({ "restore_input": restore })),
-        SessionAction::None => return,
-    };
-    let session = system.clone();
-    let key = keys::tv_rpc(site, &tv, verb);
-    tokio::spawn(async move {
-        let replies = match session
-            .get(key.as_str())
-            .payload(serde_json::to_vec(&body).unwrap_or_default())
-            .encoding(Encoding::APPLICATION_JSON)
-            .timeout(Duration::from_secs(5))
-            .await
-        {
-            Ok(replies) => replies,
-            Err(e) => {
-                warn!(%key, %e, "tv rpc failed to send");
-                return;
-            }
-        };
-        match replies.recv_async().await {
-            Ok(reply) => {
-                if let Err(err) = reply.result() {
-                    let detail: Value =
-                        serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null);
-                    warn!(%key, %detail, "tv rpc rejected");
-                }
-            }
-            Err(_) => warn!(%key, "tv rpc got no reply"),
-        }
-    });
 }
 
 /// The wire projection of a resolved user profile — same field names as

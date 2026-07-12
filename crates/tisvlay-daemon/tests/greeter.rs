@@ -14,7 +14,10 @@ use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::Sample;
-use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig};
+use zenoh_ext::{
+    AdvancedPublisherBuilderExt, AdvancedSubscriber, AdvancedSubscriberBuilderExt, CacheConfig,
+    HistoryConfig, MissDetectionConfig,
+};
 
 type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 
@@ -167,9 +170,10 @@ async fn put_greeter_idle(w: &Wire, idle: bool) {
         .unwrap();
 }
 
-/// Publish the remote-session mirror the way the session service does —
-/// a plain put on the system-socket mirror key carrying the computed
-/// armed set.
+/// Publish a live remote-session mirror sample carrying the computed armed
+/// set. A plain put (the daemon's history advanced subscriber still
+/// delivers live plain samples); the dedicated hydration test drives the
+/// real cache-1 advanced-pub path.
 async fn put_remote_session(w: &Wire, armed: &[Uuid]) {
     let state = tisvlay_wire::payload::RemoteSessionState {
         sources: Vec::new(),
@@ -322,8 +326,8 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
     .await;
 }
 
-/// The remote-session mirror seam: a plain-put armed set on the system
-/// socket flows through the daemon's subscriber into the world, flipping
+/// The remote-session mirror seam: a live armed set on the system socket
+/// flows through the daemon's history subscriber into the world, flipping
 /// the published `remote_armed` projection — and disarming clears it.
 /// (The gate's effect on DPMS-on/resume dispatch is covered by the
 /// world's dispatch tests, which can inject those events directly.)
@@ -365,9 +369,9 @@ async fn remote_session_mirror_flips_the_armed_projection() {
 /// The session-liveliness clear (`#4-crash`): a `session_alive` token on
 /// the session's system link arms nothing by itself, but its DELETE — the
 /// session departing — clears any armed state the session had mirrored,
-/// even though the mirror (a plain put) is never re-put to empty. A
-/// graceful undeclare exercises the same DELETE path a crash takes; the
-/// kill -9 timing (DELETE observed within ~1 ms) is experiment-proven.
+/// even though the mirror is never re-put to empty. A graceful undeclare
+/// exercises the same DELETE path a crash takes; the kill -9 timing
+/// (DELETE observed within ~1 ms) is experiment-proven.
 #[tokio::test(flavor = "multi_thread")]
 async fn session_liveliness_delete_clears_the_armed_projection() {
     let w = wire().await;
@@ -425,4 +429,93 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
     })
     .await;
     drop(session);
+}
+
+/// The B1 hydration path: a fresh daemon subscriber hydrates the standing
+/// armed set from the session's `@adv` cache. This models a daemon
+/// (re)start under a live session — a connect-only-peer session serves a
+/// cache-1 advanced-pub mirror, and the daemon that binds *afterward*
+/// hydrates the standing armed set with no re-put from the session. The
+/// kill -9 restart timing (hydration within ~1 ms) is experiment-proven;
+/// starting the daemon after the session's cache is populated exercises the
+/// same history query a graceful in-process re-subscribe would.
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("g.sock");
+    let site = "t".to_string();
+    let tv = Uuid::new_v4();
+
+    // A session is already live with a populated cache before any daemon
+    // exists: a connect-only peer that dials the socket forever, holding the
+    // presence token and a cache-1 advanced-pub mirror armed for `tv` — the
+    // exact shape the real session serves.
+    let session = zenoh::open(bootstrap::client_config_resilient(&socket).unwrap())
+        .await
+        .unwrap();
+    let _token = session
+        .liveliness()
+        .declare_token(keys::session_alive(&site))
+        .await
+        .unwrap();
+    let mirror = session
+        .declare_publisher(keys::remote_session(&site))
+        .encoding(Encoding::APPLICATION_JSON)
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
+        .publisher_detection()
+        .await
+        .unwrap();
+    let state = tisvlay_wire::payload::RemoteSessionState {
+        sources: Vec::new(),
+        armed: vec![tv],
+    };
+    mirror
+        .put(serde_json::to_vec(&state).unwrap())
+        .await
+        .unwrap();
+
+    // Now the daemon binds the socket. Its history subscriber hydrates the
+    // standing armed set from the session's cache over the directly-dialed
+    // link — no live re-put is issued after this point.
+    let (connector, discovery, _handle) = new_test_parts();
+    let stack = tisvlay_daemon::serve(
+        &socket,
+        &site,
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+    let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .unwrap();
+
+    // Add the armed TV (explicit id matching the hydrated set). The daemon
+    // stored the armed set on hydration, so the projection arms this TV as
+    // soon as it exists — attributable to hydration, since the session
+    // sends no mirror sample after the daemon booted.
+    let body = serde_json::to_value(rpc::AddTv {
+        id: Some(tv),
+        name: "Remote".into(),
+        vendor: "mock".into(),
+        managed: true,
+        config: json!({ "address": "mock://hydrate" }),
+    })
+    .unwrap();
+    call(&client, &keys::manager_rpc(&site, "add-tv"), body)
+        .await
+        .expect("add-tv ok");
+
+    let sub = history_sub(&client, keys::tv_all(&site)).await;
+    wait_tv_state(&sub, &site, tv, "meta/config", |v| {
+        v["remote_armed"] == true
+    })
+    .await;
+
+    drop(session);
+    drop(stack);
 }

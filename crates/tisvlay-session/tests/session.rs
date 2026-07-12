@@ -820,7 +820,8 @@ async fn remote_connect_disconnect_actions_fire() {
 }
 
 /// The fact publishes on the user socket (cached) and mirrors on the
-/// system socket (plain put) with the live sources + armed projection.
+/// system socket (a cache-1 advanced pub) with the live sources + armed
+/// projection.
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_fact_and_mirror_carry_sources_and_armed() {
     let rig = rig().await;
@@ -832,7 +833,8 @@ async fn remote_fact_and_mirror_carry_sources_and_armed() {
     .await;
 
     // The user-socket fact is a cached pub (history-subscribable); the
-    // system-socket mirror is a plain put (live only).
+    // system-socket mirror is a cache-1 advanced pub, but this plain
+    // subscriber sees only its live samples (a plain get can't reach `@adv`).
     let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
     let mirror = rig
         .client
@@ -841,7 +843,8 @@ async fn remote_fact_and_mirror_carry_sources_and_armed() {
         .unwrap();
 
     // Arm; both surfaces must show the manual source and the armed TV.
-    // Re-drive the arm edge (mirror interest races the plain put).
+    // Re-drive the arm edge (the mirror's live sample races subscriber
+    // interest).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let armed_ok = |v: &Value| {
         v["sources"]
@@ -859,7 +862,8 @@ async fn remote_fact_and_mirror_carry_sources_and_armed() {
         s.kind() == zenoh::sample::SampleKind::Put && armed_ok(&payload_json(s))
     })
     .await;
-    // The mirror is a plain put; re-toggle until interest catches one.
+    // The mirror's live sample races subscriber interest; re-toggle until
+    // one is caught.
     'mirror: loop {
         rig.stack
             .remote
@@ -889,8 +893,9 @@ async fn remote_fact_and_mirror_carry_sources_and_armed() {
 async fn armed_converges_when_tv_hydrates_after_arming() {
     let rig = rig().await;
 
-    // The user-socket fact (cached) and the system-socket mirror (plain
-    // put), subscribed before any TV exists.
+    // The user-socket fact (cached) and the system-socket mirror (a cache-1
+    // advanced pub), subscribed before any TV exists. This plain subscriber
+    // sees only the mirror's live samples.
     let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
     let mirror = rig
         .client
@@ -932,9 +937,8 @@ async fn armed_converges_when_tv_hydrates_after_arming() {
         s.kind() == zenoh::sample::SampleKind::Put && armed_ok(&payload_json(s))
     })
     .await;
-    // The mirror is a plain put racing subscriber interest; the daemon
-    // liveliness re-put and the meta recompute both re-mirror, so a drain
-    // catches the converged set.
+    // The mirror's live sample races subscriber interest; the TV-arrival
+    // recompute re-mirrors the converged set, so a drain catches it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         match tokio::time::timeout_at(deadline, mirror.recv_async()).await {
@@ -946,11 +950,11 @@ async fn armed_converges_when_tv_hydrates_after_arming() {
 }
 
 /// The outage variant: the session starts before its system daemon, so
-/// its first mirror put (issued while arming with the link down) is
-/// silently dropped. When the daemon comes up and a TV hydrates, the
-/// daemon-liveliness re-put and the TV-arrival recompute must compose so
-/// the system-socket mirror still converges to the full armed set —
-/// regardless of which lands first on link recovery.
+/// its first mirror sample (issued while arming with the link down) never
+/// reaches a daemon, but the cache-1 mirror publisher retains it. When the
+/// daemon comes up it hydrates that standing sample from the session's
+/// cache, and the TV-arrival recompute re-mirrors the converged set — so
+/// the system-socket mirror still ends on the full armed set.
 #[tokio::test(flavor = "multi_thread")]
 async fn armed_survives_a_system_link_outage_at_arm_time() {
     let dir = tempfile::tempdir().unwrap();
@@ -968,13 +972,15 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
     .await
     .unwrap();
 
-    // Arm while the link is down: the mirror put is dropped (no daemon),
-    // and no TV is known, so the armed set is empty at this point.
+    // Arm while the link is down: the mirror sample reaches no daemon but
+    // the cache-1 publisher retains it, and no TV is known, so the armed
+    // set is empty at this point.
     assert!(
         stack.remote.report(RemoteReport::manual("manual", true)),
         "core gone"
     );
-    // Let the dropped put(s) flush before the daemon exists.
+    // Let the mirror put(s) settle into the publisher cache before the
+    // daemon exists.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bring the daemon up on the socket the session is dialing.
@@ -1015,8 +1021,8 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
     };
 
     // Once the link recovers, the mirror must converge to the armed TV —
-    // the regression this guards is the stale-snapshot re-put (empty armed)
-    // never being corrected by the TV-arrival edge.
+    // the regression this guards is a stale empty-armed snapshot never being
+    // corrected by the TV-arrival edge.
     let armed_tv = |v: &Value| {
         v["armed"]
             .as_array()

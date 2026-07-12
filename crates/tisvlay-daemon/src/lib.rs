@@ -26,6 +26,7 @@ use tracing::info;
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
+use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
@@ -130,8 +131,9 @@ pub struct Stack {
 const STARTUP_SETTLE: Duration = Duration::from_secs(1);
 
 /// Upper bound on the boot `Startup` wait. Past this the wake fires
-/// regardless — the fallback for a session that connects but never mirrors
-/// (e.g. it died between the daemon going down and coming back up).
+/// regardless — the fallback for a present session whose cached mirror the
+/// daemon never hydrates (a reconnect that drags past the deadline, or a
+/// cache the fresh subscriber cannot reach).
 const STARTUP_DEADLINE: Duration = Duration::from_secs(3);
 
 /// Shared readiness state for the boot `Startup` gate, written by the
@@ -140,7 +142,8 @@ const STARTUP_DEADLINE: Duration = Duration::from_secs(3);
 struct StartupReadiness {
     /// A `session_alive` liveliness token is currently observed.
     session_present: AtomicBool,
-    /// A remote-session mirror sample has arrived — the armed set is known.
+    /// A remote-session mirror sample has arrived — hydrated from the
+    /// session's `@adv` cache on start, or live — so the armed set is known.
     mirror_seen: AtomicBool,
     /// Woken whenever either flag changes, so the startup task re-evaluates.
     notify: Notify,
@@ -372,12 +375,16 @@ pub async fn serve(
     // is known not to) before it wakes.
     let startup_ready = Arc::new(StartupReadiness::default());
 
-    // The remote-session fact arrives as a plain-put mirror from the
-    // session service (the session's system link is a connect-only peer,
-    // so the fact rides a put, not a served entity). Forward the computed
+    // The remote-session fact is a cache-1 AdvancedPublisher served by the
+    // session over its connect-only-peer system link; the directly-dialed
+    // daemon hydrates its last sample. `history(detect_late_publishers)` so
+    // a daemon starting after (or restarting under) a live session hydrates
+    // the standing armed set straight from the session's `@adv` cache —
+    // this is what retired the session-side re-put. Forward the computed
     // armed set into the world, which gates the wake-ish system events.
     let remote_sub = session
         .declare_subscriber(tisvlay_wire::keys::remote_session(site))
+        .history(HistoryConfig::default().detect_late_publishers())
         .await
         .map_err(|e| anyhow!("declare remote session subscriber: {e}"))?;
     let remote_world = world.clone();
@@ -593,8 +600,8 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         }
     }
     // WoL at boot: dispatch `Startup` through the system profiles once the
-    // armed state is trustworthy — a mirror sample arrived (a session
-    // reconnected and re-published its fact), or the settle window passed
+    // armed state is trustworthy — a mirror sample arrived (hydrated from a
+    // live session's cache, or delivered live), or the settle window passed
     // with no session to arm anything, or the fallback deadline elapsed.
     // Awaiting readiness rather than a fixed timer closes the daemon-restart
     // race where a stale-or-absent armed set let a boot wake fire for a
@@ -641,7 +648,8 @@ mod tests {
 
     /// The daemon-restart gate (`#6`): a present session with no mirror yet
     /// holds the wake past the settle window and releases only once its
-    /// mirror lands. Paused clock so the settle/deadline pass instantly.
+    /// mirror lands — now hydrated from the session's cache rather than a
+    /// re-put. Paused clock so the settle/deadline pass instantly.
     #[tokio::test(start_paused = true)]
     async fn startup_gate_waits_for_a_present_session_to_mirror() {
         let ready = Arc::new(StartupReadiness::default());
