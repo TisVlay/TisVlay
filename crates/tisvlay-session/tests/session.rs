@@ -375,11 +375,11 @@ async fn user_profile_overrides_and_guards() {
             "unlocked_idle_timeout_seconds": 0,
             "on_idle_timeout": { "action": "screen_off", "restore_input": false, "while_remote": true },
             "on_idle_resume": "screen_on",
-            // Remote awareness ships neutral: no connect/disconnect action
-            // and capture arming off. The connect/disconnect actions ignore
-            // the gate, so they project the plain default.
-            "on_remote_connect": "none",
-            "on_remote_disconnect": "none",
+            // Both remote edges floor to screen_off (blank on arm, stay dark
+            // on disarm); capture arming ships off. The connect/disconnect
+            // actions ignore the gate, so they project the plain default.
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_off",
             "remote_screencast_arms": false,
         })
     );

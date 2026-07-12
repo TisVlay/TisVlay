@@ -614,12 +614,17 @@ impl Default for ResolvedUserProfile {
             unlocked_idle_timeout_seconds: 0,
             on_idle_timeout: EventAction::ungated(SessionAction::ScreenOff),
             on_idle_resume: SessionAction::ScreenOn.into(),
-            // Remote awareness is opt-in: no connect/disconnect action
-            // and no capture arming until a profile edits them. The
-            // connect/disconnect actions ignore the gate (they fire on the
-            // arm/disarm edge itself), so they carry the plain default.
-            on_remote_connect: SessionAction::None.into(),
-            on_remote_disconnect: SessionAction::None.into(),
+            // Both remote edges blank the panel at the floor: the room is
+            // empty when a remote session arms, and it stays dark when the
+            // session disarms (a returning person wakes it through the now
+            // un-armed unlock/lock-wake/idle-resume path). Detection, not
+            // policy, is the opt-in — nothing arms until a detector or hook
+            // fires, so the feature stays inert on a stock desktop. Both
+            // events ignore the gate (they fire on the arm/disarm edge
+            // itself), so they carry the plain default; capture arming is
+            // still off until a profile turns it on.
+            on_remote_connect: SessionAction::ScreenOff.into(),
+            on_remote_disconnect: SessionAction::ScreenOff.into(),
             remote_screencast_arms: false,
         }
     }
@@ -1495,10 +1500,12 @@ remote_screencast_arms = true
     }
 
     #[test]
-    fn resolved_user_profile_defaults_are_remote_neutral() {
+    fn resolved_user_profile_defaults_blank_the_remote_edges() {
         let resolved = ResolvedUserProfile::default();
-        assert_eq!(resolved.on_remote_connect, SessionAction::None);
-        assert_eq!(resolved.on_remote_disconnect, SessionAction::None);
+        // Both remote edges floor to screen_off: blank on arm, stay dark on
+        // disarm. Capture arming stays off — detection is the opt-in.
+        assert_eq!(resolved.on_remote_connect, SessionAction::ScreenOff);
+        assert_eq!(resolved.on_remote_disconnect, SessionAction::ScreenOff);
         assert!(!resolved.remote_screencast_arms);
         // Floor splits by direction: the wake-ish user events are gated
         // (suppressed while armed)…

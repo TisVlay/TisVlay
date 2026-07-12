@@ -2126,8 +2126,8 @@ mod tests {
             on_idle_resume: Some(SessionAction::ScreenOn.into()),
             locked_idle_timeout_seconds: Some(0),
             unlocked_idle_timeout_seconds: Some(0),
-            on_remote_connect: Some(SessionAction::None.into()),
-            on_remote_disconnect: Some(SessionAction::None.into()),
+            on_remote_connect: Some(SessionAction::ScreenOff.into()),
+            on_remote_disconnect: Some(SessionAction::ScreenOff.into()),
             remote_screencast_arms: Some(false),
         }
     }
