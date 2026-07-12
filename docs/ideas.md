@@ -19,6 +19,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
 - [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
+- [Eager remote-state refresh on gated events (world-side DPMS path)](ideas/eager-remote-state-refresh.md)
 
 ## Operational
 
