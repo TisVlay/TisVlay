@@ -43,7 +43,9 @@ The CLI verb is fast and fire-and-forget by design, so a slow or stalled hook ca
 
 Sunshine spawns hook commands outside the user's shell environment, so unpackaged setups (a dev checkout, a manually installed CLI) must use an absolute path to the `tisvlay` binary and pass the socket flags explicitly; edits to `global_prep_cmd` take effect on the next Sunshine restart. The hook brackets the app's lifetime, not the client's: a Moonlight reconnect to a still-running app re-runs nothing (the source is already armed), and the source disarms when the app quits, not when a client merely disconnects.
 
-A localhost `/serverinfo` poller (the unauthenticated `SUNSHINE_SERVER_BUSY`/`_FREE` endpoint) is a candidate zero-config fallback that would also re-arm a mid-session restart of the NvFBC path — the hook alone cannot, because there is no portal session or PipeWire node to rediscover. Whether it ships, and at what poll interval, is a pending decision gated on bench measurement of its latency and wakeup cost versus the hook.
+The hook is the live event signal, but it is edge-triggered and fires only once, at launch: a session-service restart mid-stream drops the in-memory source, and there is no portal session or PipeWire node for the scanning detectors to rediscover. A startup re-derive closes that gap. When the session service starts, it checks for a running `sunshine` process (a cheap procfs scan, free when Sunshine is absent) and, if present, issues one `GET http://127.0.0.1:47989/serverinfo` to the unauthenticated HTTP port. A `SUNSHINE_SERVER_BUSY` response re-arms the same `manual/sunshine` source the hook uses, so a restart during an active stream self-heals; a `SUNSHINE_SERVER_FREE`, unreachable, or unclassifiable response arms nothing. The endpoint can lag the process by a moment at startup, so an unreachable port is retried a few times with a short backoff before giving up.
+
+This is startup-only by design. It re-derives the source once, when the session service comes up, and then the task ends — it is not a continuous poller and does not correct staleness that develops mid-session (the hook's `undo` clears the source on app quit). It needs Sunshine's HTTP port reachable on loopback; a firewall or a non-default port defeats it, leaving the hook as the sole signal.
 
 ## False positives and filtering
 
@@ -60,7 +62,7 @@ The fact is hydratable, so a service restart mid-session re-arms without waiting
 - The logind detector lists current sessions and reports any own-uid graphical `Remote=yes` session.
 - A session-service restart therefore re-arms via graph and session enumeration; a daemon restart re-arms via the mirror re-put (the session re-publishes the fact when the daemon's liveliness token reappears, since the system-socket mirror is a plain put over a connect-only peer). The reverse presence signal is a `session_alive` liveliness token the session declares on that same link: the daemon clears the armed set the instant the token DELETEs — a session crash (`kill -9`) as well as a clean exit — so a departed session never leaves a TV latched armed. The daemon also holds its own boot Wake-on-LAN dispatch until that armed state is known (a mirror sample seen, or no session token past a short settle, or a fallback deadline), so a boot while a session is remoted does not wake a TV before the mirror arrives.
 
-Sunshine's NvFBC path is the exception: with no portal session and no PipeWire node to rediscover, only the poller could re-arm it after a restart — the hook fires once, at launch.
+Sunshine's NvFBC path is the exception: with no portal session and no PipeWire node to rediscover, the hook alone cannot re-arm it (it fires once, at launch). The startup re-derive covers it instead — one `/serverinfo` GET on session start re-arms `manual/sunshine` when a stream is already busy (see [Sunshine integration](#sunshine-integration)).
 
 ## Degradation
 

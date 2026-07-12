@@ -16,6 +16,7 @@ mod remote;
 mod screencast;
 mod screensaver;
 mod store;
+mod sunshine;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -48,6 +49,7 @@ pub use remote::RemoteReport;
 pub use screencast::spawn as spawn_screencast_detector;
 pub use screensaver::watch_screensaver;
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
+pub use sunshine::spawn as spawn_sunshine_detector;
 
 /// Heartbeat period for sample-miss recovery on cached publishers.
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
