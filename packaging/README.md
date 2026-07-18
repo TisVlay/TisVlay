@@ -155,6 +155,7 @@ The `tisvlay` CLI ships tab-completion for bash, zsh, and fish, present after in
 - **Install paths** (nfpm `contents`): bash → `/usr/share/bash-completion/completions/tisvlay`, zsh → `/usr/share/zsh/site-functions/_tisvlay`, fish → `/usr/share/fish/vendor_completions.d/tisvlay.fish`.
 - **Zero-config caveats.** Bash needs the `bash-completion` loader present — the `.deb`/`.rpm` `recommends` it (apt installs Recommends by default; Arch/minimal/container images may not, and it is not a hard dep). Zsh needs `compinit` run (normal for interactive zsh). Fish autoloads with nothing extra. On NixOS the shell's own completion must be enabled (`programs.bash.completion.enable`, `programs.zsh.enable`, `programs.fish.enable`).
 - **Manual install** on an unsupported distro: `COMPLETE=bash tisvlay > ~/.local/share/bash-completion/completions/tisvlay` (and the zsh/fish analogs). The `<TAB>` callback resolves a bare `tisvlay` on `$PATH`.
+- **Live-value scope.** Completing TV/profile UUIDs queries the daemon per `<TAB>`, bounded by a short timeout and empty on failure so a downed daemon never hangs the prompt. Because the completer runs before the CLI parses argv, it can't see `--socket`/`--site`/`--user-socket` and always targets the default sockets + the `main` site (see [docs/ideas/completion-followups.md](../docs/ideas/completion-followups.md) for lifting that).
 
 ## Testing the result
 

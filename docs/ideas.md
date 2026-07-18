@@ -31,6 +31,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 - [CLI shorthand for `Tv1.UpdateConfig`](ideas/cli-update-config-shorthand.md)
 - [Support-bundle CLI subcommand (`tisvlay diagnostic`)](ideas/support-bundle-cli.md)
+- [Shell-completion follow-ups: vendor-name completion, no-daemon knob, UUID cache, non-default socket/site](ideas/completion-followups.md)
 
 ## GUI
 
