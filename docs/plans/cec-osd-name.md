@@ -1,6 +1,6 @@
 # Advertise our OSD name: label the TV's HDMI input like a Chromecast
 
-Status: **proposed** (reviewed; not yet implemented).
+Status: **implemented** (`4e1c2cf`; baseline `a538ea4`, review round `ff27c91`). Listed until an on-hardware field test confirms the TV-side relabel — the kernel-side auto-reply assumption is the one thing left to verify.
 
 ## Problem
 
