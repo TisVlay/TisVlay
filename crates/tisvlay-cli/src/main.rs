@@ -49,7 +49,7 @@ enum Command {
     Watch,
     /// Scan for TVs (bounded window; findings stream back as replies).
     Discover {
-        #[arg(long)]
+        #[arg(long, add = vendor_completions())]
         vendor: Option<String>,
         #[arg(long, default_value_t = 3000)]
         timeout_ms: u64,
@@ -57,7 +57,7 @@ enum Command {
     /// Pair a new TV, streaming the pairing progress (ctrl-c cancels).
     Pair {
         name: String,
-        #[arg(long, default_value = "lg")]
+        #[arg(long, default_value = "lg", add = vendor_completions())]
         vendor: String,
         /// Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'.
         #[arg(long)]
@@ -72,7 +72,7 @@ enum Command {
         /// Mock vendor address, e.g. mock://den.
         #[arg(long)]
         address: String,
-        #[arg(long, default_value = "mock")]
+        #[arg(long, default_value = "mock", add = vendor_completions())]
         vendor: String,
         #[arg(long)]
         unmanaged: bool,
@@ -171,10 +171,13 @@ enum Command {
     /// List registered vendor backends with their capabilities.
     Vendors,
     /// Show a vendor's pairing form schema.
-    Schema { vendor: String },
+    Schema {
+        #[arg(add = vendor_completions())]
+        vendor: String,
+    },
     /// Open-ended discovery session: findings stream until ctrl-c.
     DiscoverSession {
-        #[arg(long)]
+        #[arg(long, add = vendor_completions())]
         vendor: Option<String>,
     },
     /// System-profile catalog (daemon-side).
@@ -556,6 +559,12 @@ fn user_profile_completions() -> ArgValueCandidates {
     ArgValueCandidates::new(user_profile_candidates)
 }
 
+/// Vendor ids (daemon vendor catalog) — for the `--vendor` args and
+/// `schema <vendor>`.
+fn vendor_completions() -> ArgValueCandidates {
+    ArgValueCandidates::new(vendor_candidates)
+}
+
 fn tv_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_tv_candidates(
         &tisvlay_wire::bootstrap::default_connect_socket_path(),
@@ -573,6 +582,12 @@ fn user_profile_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_catalog_candidates(
         &tisvlay_wire::bootstrap::default_session_socket_path(),
         "tisvlay/main/user/profile/*",
+    ))
+}
+
+fn vendor_candidates() -> Vec<CompletionCandidate> {
+    blocking_candidates(collect_vendor_candidates(
+        &tisvlay_wire::bootstrap::default_connect_socket_path(),
     ))
 }
 
@@ -681,6 +696,32 @@ async fn collect_catalog_candidates(
                     Some(name) => candidate.help(Some(name.into())),
                     None => candidate,
                 }
+            })
+            .collect(),
+    )
+}
+
+/// Vendor ids from the daemon's vendor catalog, described by display name.
+/// A query (not a cached wildcard like the TV/profile catalogs), so it
+/// rides the `Caller` fetch path. `None` on any transport error.
+async fn collect_vendor_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>> {
+    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+        .await
+        .ok()?;
+    let vendors = Caller::new(session)
+        .fetch(&keys::vendors("main"), Value::Null)
+        .await
+        .ok()?;
+    Some(
+        vendors
+            .as_array()?
+            .iter()
+            .filter_map(|vendor| {
+                let candidate = CompletionCandidate::new(vendor["id"].as_str()?.to_string());
+                Some(match vendor["name"].as_str() {
+                    Some(name) => candidate.help(Some(name.to_owned().into())),
+                    None => candidate,
+                })
             })
             .collect(),
     )

@@ -1,10 +1,6 @@
 # Shell-completion follow-ups
 
-Deferred work parked when the `tisvlay` shell-completion feature merged. The feature ships clap_complete's dynamic engine with live value completion for TV UUIDs (device verbs) and system/user profile UUIDs (the `profile` / `user-profile` subcommands + `assign`), all behind a shared time-bounded, empty-on-failure query. See the [packaging README's "Shell completions"](../../packaging/README.md#shell-completions) section for the as-built reference.
-
-## More value sources
-
-- **Vendor-name completion for `--vendor`.** The `--vendor` flag on `discover`, `discover-session`, `pair`, and `add` takes a free-form vendor id. The vendor catalog is already queryable (`keys::vendors`), so an `ArgValueCandidates` source could offer `lg`/`cec`/`mock`/… described by display name — the same shape as the profile catalogs, minus the per-TV hydrate. Trigger: a user fumbles a vendor id, or the registered vendor set grows.
+Deferred work parked when the `tisvlay` shell-completion feature merged. The feature ships clap_complete's dynamic engine with live value completion for TV UUIDs (device verbs), system/user profile UUIDs (the `profile` / `user-profile` subcommands + `assign`), and vendor ids (the `--vendor` args + `schema`), all behind a shared time-bounded, empty-on-failure query. See the [packaging README's "Shell completions"](../../packaging/README.md#shell-completions) section for the as-built reference.
 
 ## Latency & UX
 
