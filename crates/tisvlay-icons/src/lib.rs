@@ -10,8 +10,9 @@
 //! symbolic-only theme still resolves and color-carrying icons keep
 //! their color where the theme ships it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use tracing::debug;
 
@@ -48,10 +49,37 @@ pub fn resolve_name(names: &[&str], prefer: Variant) -> Option<String> {
 /// explicit fallback name never loses to a synthesized variant of an
 /// earlier name.
 ///
+/// The whole request is memoized — misses included. The resolver's own
+/// cache only remembers *found* paths, so a request whose leading
+/// candidate exists in no theme re-walks every theme directory on every
+/// call (tens of milliseconds against a large icon installation), which
+/// a per-state-sample render loop like the tray's cannot afford. The
+/// theme list is frozen per process, so a memoized result never goes
+/// stale within a run.
+fn find(names: &[&str], prefer: Variant) -> Option<(String, PathBuf)> {
+    type Memo = Mutex<HashMap<(Vec<String>, bool), Option<(String, PathBuf)>>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let key = (
+        names.iter().map(|s| s.to_string()).collect(),
+        matches!(prefer, Variant::Symbolic),
+    );
+    let memo = MEMO.get_or_init(Memo::default);
+    if let Some(hit) = memo.lock().expect("icon memo lock").get(&key) {
+        return hit.clone();
+    }
+    let result = walk(names, prefer);
+    memo.lock()
+        .expect("icon memo lock")
+        .insert(key, result.clone());
+    result
+}
+
+/// One uncached cascade walk for [`find`].
+///
 /// Size 22 is requested because Breeze's "actions" / "devices"
 /// categories ship 16/22/24/32/64 buckets unevenly — 22 is the most
 /// universally populated; scalable themes return their SVG regardless.
-fn find(names: &[&str], prefer: Variant) -> Option<(String, PathBuf)> {
+fn walk(names: &[&str], prefer: Variant) -> Option<(String, PathBuf)> {
     let themes = icon_themes();
     for candidate in icon_candidates(names, prefer) {
         for theme in themes {
