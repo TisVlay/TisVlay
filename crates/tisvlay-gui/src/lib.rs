@@ -55,8 +55,8 @@ use wizard::{
 };
 
 use schema_form::{
-    AutofilledRow, build_config_json_from_schema, compute_schema_valid, parse_field_type,
-    prefill_schema_from_config, validate_value,
+    AutofilledRow, ClearedOptionals, build_config_json_from_schema, compute_schema_valid,
+    parse_field_type, prefill_schema_from_config, validate_value,
 };
 
 use std::collections::HashMap;
@@ -1859,7 +1859,10 @@ fn register_callbacks(
                     return;
                 }
                 let vendor = wizard.get_selected_vendor().to_string();
-                let config_json = build_config_json_from_schema(&wizard.get_schema_fields());
+                let config_json = build_config_json_from_schema(
+                    &wizard.get_schema_fields(),
+                    ClearedOptionals::Omit,
+                );
                 let managed = wizard.get_managed();
 
                 wizard.set_step(3);
@@ -1916,7 +1919,8 @@ fn register_callbacks(
             return;
         }
         let vendor = wizard.get_selected_vendor().to_string();
-        let config_json = build_config_json_from_schema(&wizard.get_schema_fields());
+        let config_json =
+            build_config_json_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
         let managed = wizard.get_managed();
 
         wizard.set_pair_phase(SharedString::default());
@@ -2173,7 +2177,11 @@ fn register_callbacks(
             return;
         }
         let name = edit_pane.get_name().to_string();
-        let vendor_patch = build_config_json_from_schema(&edit_pane.get_fields());
+        // Null mode: a cleared optional field becomes an explicit null in
+        // the patch, which the merge turns into "remove the stored key" —
+        // clearing a field resets it to the schema default.
+        let vendor_patch =
+            build_config_json_from_schema(&edit_pane.get_fields(), ClearedOptionals::Null);
         // Merge name into the vendor-fields patch. `build_config_…`
         // emits a top-level JSON object, so parse + insert + re-serialize.
         let mut patch: serde_json::Value =
