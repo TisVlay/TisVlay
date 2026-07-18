@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::CompleteEnv;
+use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::{Value, json};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::{keys, rpc};
@@ -76,51 +78,95 @@ enum Command {
         unmanaged: bool,
     },
     /// Set a TV's volume.
-    SetVolume { id: Uuid, level: u8 },
+    SetVolume {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+        level: u8,
+    },
     /// Switch a TV's input.
-    Input { id: Uuid, input: String },
+    Input {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+        input: String,
+    },
     /// Set a TV's backlight level.
-    Backlight { id: Uuid, level: u8 },
+    Backlight {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+        level: u8,
+    },
     /// Blank or wake the screen.
     Screen {
+        #[arg(add = tv_completions())]
         id: Uuid,
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
     /// Rename a TV.
-    Rename { id: Uuid, name: String },
+    Rename {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+        name: String,
+    },
     /// Toggle whether the daemon drives this TV.
     Managed {
+        #[arg(add = tv_completions())]
         id: Uuid,
         #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
         managed: bool,
     },
     /// Read a TV's config (vendor secrets redacted).
-    Config { id: Uuid },
+    Config {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+    },
     /// Patch a TV's config with a JSON object (null unsets a vendor key).
-    ConfigSet { id: Uuid, patch: String },
+    ConfigSet {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+        patch: String,
+    },
     /// Re-run the pairing handshake for an existing TV.
-    Repair { id: Uuid },
+    Repair {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+    },
     /// Power a TV on or off.
     Power {
+        #[arg(add = tv_completions())]
         id: Uuid,
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
     /// Ask a downed TV to reconnect.
-    Reconnect { id: Uuid },
+    Reconnect {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+    },
     /// Remove a TV (deletes all its keys).
-    Remove { id: Uuid },
+    Remove {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+    },
     /// Mute or unmute a TV.
     Mute {
+        #[arg(add = tv_completions())]
         id: Uuid,
         #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
         muted: bool,
     },
     /// Set (or with no value clear) the TV's primary input.
-    PrimaryInput { id: Uuid, input: Option<String> },
+    PrimaryInput {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+        input: Option<String>,
+    },
     /// Assign (or with no value clear) the TV's system profile.
-    Assign { id: Uuid, profile: Option<Uuid> },
+    Assign {
+        #[arg(add = tv_completions())]
+        id: Uuid,
+        profile: Option<Uuid>,
+    },
     /// List registered vendor backends with their capabilities.
     Vendors,
     /// Show a vendor's pairing form schema.
@@ -186,6 +232,7 @@ enum ProfileCmd {
     Defaults,
     /// One TV's resolved mapping (assigned profile over stock).
     Effective {
+        #[arg(add = tv_completions())]
         tv: Uuid,
     },
 }
@@ -212,17 +259,32 @@ enum UserProfileCmd {
     },
     Defaults,
     Effective {
+        #[arg(add = tv_completions())]
         tv: Uuid,
     },
     /// Assign (or with no value clear) a TV's user profile.
     Assign {
+        #[arg(add = tv_completions())]
         tv: Uuid,
         profile: Option<Uuid>,
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Answer completion requests before building a runtime. The dynamic
+    // engine shells back into us per <TAB>, and the value completers query
+    // the daemon on their own runtime — which would panic under an ambient
+    // one. A normal run (COMPLETE unset) falls straight through.
+    CompleteEnv::with_factory(Cli::command)
+        .completer("tisvlay")
+        .complete();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     let socket = cli
         .socket
@@ -456,6 +518,86 @@ async fn main() -> Result<()> {
             remote_session_cmd(&Caller::new(user.clone()), site, cmd, json_out).await
         }
     }
+}
+
+/// Hard ceiling on the daemon round-trip a `<TAB>` triggers, so a wedged
+/// daemon can't hang the shell. An absent socket fails fast well under
+/// this; the budget only bites when the daemon is reachable but silent.
+const COMPLETION_BUDGET: Duration = Duration::from_millis(600);
+
+/// Value-candidate source for the TV-referencing `Uuid` args. Wrapped in
+/// one place so a churn in the unstable completion API is a single edit,
+/// not one per call site.
+fn tv_completions() -> ArgValueCandidates {
+    ArgValueCandidates::new(tv_candidates)
+}
+
+/// Live TV UUIDs for completion, each described by its name. Best-effort
+/// and time-bounded: any failure — no daemon, wedged daemon, parse error
+/// — yields no candidates rather than blocking the prompt. Runs before
+/// clap parses argv, so it cannot see `--socket`/`--site` and resolves the
+/// default connect socket and the `main` site only.
+fn tv_candidates() -> Vec<CompletionCandidate> {
+    candidates_for_socket(&tisvlay_wire::bootstrap::default_connect_socket_path())
+}
+
+fn candidates_for_socket(socket: &Path) -> Vec<CompletionCandidate> {
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    else {
+        return Vec::new();
+    };
+    runtime
+        .block_on(async {
+            tokio::time::timeout(COMPLETION_BUDGET, collect_tv_candidates(socket)).await
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Hydrate the TV wildcard from the publisher caches and turn each TV into
+/// a completion candidate. `None` on any transport error.
+async fn collect_tv_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>> {
+    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+        .await
+        .ok()?;
+    let site = "main";
+    let subscriber = session
+        .declare_subscriber(keys::tv_all(site))
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+        .ok()?;
+    let mut names: BTreeMap<Uuid, Option<String>> = BTreeMap::new();
+    while let Ok(Ok(sample)) =
+        tokio::time::timeout(Duration::from_millis(150), subscriber.recv_async()).await
+    {
+        if sample.kind() != SampleKind::Put {
+            continue;
+        }
+        let Some((id, path)) = keys::parse_tv_path(site, sample.key_expr().as_str()) else {
+            continue;
+        };
+        let entry = names.entry(id).or_default();
+        if path == "meta/identity" {
+            let value: Value =
+                serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+            *entry = value["name"].as_str().map(str::to_string);
+        }
+    }
+    Some(
+        names
+            .into_iter()
+            .map(|(id, name)| {
+                let candidate = CompletionCandidate::new(id.to_string());
+                match name {
+                    Some(name) => candidate.help(Some(name.into())),
+                    None => candidate,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Render a flat JSON object as `key = value` lines (nested objects
@@ -1105,12 +1247,29 @@ async fn watch(session: &Session, site: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     /// clap's self-check: catches conflicting arg ids (a global flag
     /// shadowing a subcommand field of the same name panics at access
-    /// time in release, but here at test time).
+    /// time in release, but here at test time). Also exercises the
+    /// `#[arg(add = …)]` value-candidate wiring for well-formedness.
     #[test]
     fn clap_definition_is_consistent() {
         use clap::CommandFactory;
         super::Cli::command().debug_assert();
+    }
+
+    /// A socket that can never connect stands in for "no daemon": the
+    /// client link fails fast, so completion yields nothing without
+    /// approaching the budget — the prompt is never held hostage.
+    #[test]
+    fn tv_candidates_are_empty_and_prompt_without_a_daemon() {
+        let dead = std::path::Path::new("/nonexistent/tisvlay/completion.sock");
+        let start = Instant::now();
+        assert!(super::candidates_for_socket(dead).is_empty());
+        assert!(
+            start.elapsed() < super::COMPLETION_BUDGET + Duration::from_secs(1),
+            "completion should fail fast on an unreachable daemon"
+        );
     }
 }
