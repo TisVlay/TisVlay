@@ -165,6 +165,7 @@ enum Command {
     Assign {
         #[arg(add = tv_completions())]
         id: Uuid,
+        #[arg(add = system_profile_completions())]
         profile: Option<Uuid>,
     },
     /// List registered vendor backends with their capabilities.
@@ -217,15 +218,18 @@ enum ProfileCmd {
     },
     /// Replace a profile's body (full JSON body; name required inside).
     Update {
+        #[arg(add = system_profile_completions())]
         id: Uuid,
         body: String,
     },
     /// Copy a profile under a new name.
     Duplicate {
+        #[arg(add = system_profile_completions())]
         id: Uuid,
         name: String,
     },
     Delete {
+        #[arg(add = system_profile_completions())]
         id: Uuid,
     },
     /// The stock mapping unset fields inherit.
@@ -247,14 +251,17 @@ enum UserProfileCmd {
         body: Option<String>,
     },
     Update {
+        #[arg(add = user_profile_completions())]
         id: Uuid,
         body: String,
     },
     Duplicate {
+        #[arg(add = user_profile_completions())]
         id: Uuid,
         name: String,
     },
     Delete {
+        #[arg(add = user_profile_completions())]
         id: Uuid,
     },
     Defaults,
@@ -266,6 +273,7 @@ enum UserProfileCmd {
     Assign {
         #[arg(add = tv_completions())]
         tv: Uuid,
+        #[arg(add = user_profile_completions())]
         profile: Option<Uuid>,
     },
 }
@@ -525,23 +533,56 @@ async fn run() -> Result<()> {
 /// this; the budget only bites when the daemon is reachable but silent.
 const COMPLETION_BUDGET: Duration = Duration::from_millis(600);
 
-/// Value-candidate source for the TV-referencing `Uuid` args. Wrapped in
-/// one place so a churn in the unstable completion API is a single edit,
-/// not one per call site.
+// Value-candidate sources, one per arg kind. Each is wrapped in its own
+// helper so a churn in the unstable completion API is a single edit, not
+// one per call site. They resolve default sockets and the `main` site
+// because completers run before clap parses argv (no `--socket`/`--site`/
+// `--user-socket` visibility).
+
+/// TV UUIDs (daemon TV cache) — for the device verbs.
 fn tv_completions() -> ArgValueCandidates {
     ArgValueCandidates::new(tv_candidates)
 }
 
-/// Live TV UUIDs for completion, each described by its name. Best-effort
-/// and time-bounded: any failure — no daemon, wedged daemon, parse error
-/// — yields no candidates rather than blocking the prompt. Runs before
-/// clap parses argv, so it cannot see `--socket`/`--site` and resolves the
-/// default connect socket and the `main` site only.
-fn tv_candidates() -> Vec<CompletionCandidate> {
-    candidates_for_socket(&tisvlay_wire::bootstrap::default_connect_socket_path())
+/// System-profile UUIDs (daemon catalog) — for the `profile` subcommand's
+/// ids and `--profile` on `assign`.
+fn system_profile_completions() -> ArgValueCandidates {
+    ArgValueCandidates::new(system_profile_candidates)
 }
 
-fn candidates_for_socket(socket: &Path) -> Vec<CompletionCandidate> {
+/// User-profile UUIDs (session-service catalog on the default user socket)
+/// — for the `user-profile` subcommand's ids and `--profile`.
+fn user_profile_completions() -> ArgValueCandidates {
+    ArgValueCandidates::new(user_profile_candidates)
+}
+
+fn tv_candidates() -> Vec<CompletionCandidate> {
+    blocking_candidates(collect_tv_candidates(
+        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+    ))
+}
+
+fn system_profile_candidates() -> Vec<CompletionCandidate> {
+    blocking_candidates(collect_catalog_candidates(
+        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+        &keys::profile_system_wild("main"),
+    ))
+}
+
+fn user_profile_candidates() -> Vec<CompletionCandidate> {
+    blocking_candidates(collect_catalog_candidates(
+        &tisvlay_wire::bootstrap::default_session_socket_path(),
+        "tisvlay/main/user/profile/*",
+    ))
+}
+
+/// Drive a best-effort, time-bounded candidate query to completion on its
+/// own runtime — completers run before any runtime exists, so each builds
+/// one. Any failure (no daemon, wedged daemon, timeout) yields no
+/// candidates rather than blocking the prompt.
+fn blocking_candidates(
+    query: impl std::future::Future<Output = Option<Vec<CompletionCandidate>>>,
+) -> Vec<CompletionCandidate> {
     let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -549,9 +590,7 @@ fn candidates_for_socket(socket: &Path) -> Vec<CompletionCandidate> {
         return Vec::new();
     };
     runtime
-        .block_on(async {
-            tokio::time::timeout(COMPLETION_BUDGET, collect_tv_candidates(socket)).await
-        })
+        .block_on(async { tokio::time::timeout(COMPLETION_BUDGET, query).await })
         .ok()
         .flatten()
         .unwrap_or_default()
@@ -591,6 +630,53 @@ async fn collect_tv_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>
             .into_iter()
             .map(|(id, name)| {
                 let candidate = CompletionCandidate::new(id.to_string());
+                match name {
+                    Some(name) => candidate.help(Some(name.into())),
+                    None => candidate,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Hydrate a profile catalog wildcard (`…/profile/system/*` or
+/// `…/user/profile/*`) and turn each entry into a completion candidate —
+/// the last key segment is the UUID, the body carries `name`. `None` on
+/// any transport error.
+async fn collect_catalog_candidates(
+    socket: &Path,
+    wildcard: &str,
+) -> Option<Vec<CompletionCandidate>> {
+    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+        .await
+        .ok()?;
+    let subscriber = session
+        .declare_subscriber(wildcard.to_string())
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await
+        .ok()?;
+    let mut rows: BTreeMap<String, Option<String>> = BTreeMap::new();
+    while let Ok(Ok(sample)) =
+        tokio::time::timeout(Duration::from_millis(150), subscriber.recv_async()).await
+    {
+        if sample.kind() != SampleKind::Put {
+            continue;
+        }
+        let id = sample
+            .key_expr()
+            .as_str()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let body: Value =
+            serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+        rows.insert(id, body["name"].as_str().map(str::to_string));
+    }
+    Some(
+        rows.into_iter()
+            .map(|(id, name)| {
+                let candidate = CompletionCandidate::new(id);
                 match name {
                     Some(name) => candidate.help(Some(name.into())),
                     None => candidate,
@@ -1266,7 +1352,7 @@ mod tests {
     fn tv_candidates_are_empty_and_prompt_without_a_daemon() {
         let dead = std::path::Path::new("/nonexistent/tisvlay/completion.sock");
         let start = Instant::now();
-        assert!(super::candidates_for_socket(dead).is_empty());
+        assert!(super::blocking_candidates(super::collect_tv_candidates(dead)).is_empty());
         assert!(
             start.elapsed() < super::COMPLETION_BUDGET + Duration::from_secs(1),
             "completion should fail fast on an unreachable daemon"
