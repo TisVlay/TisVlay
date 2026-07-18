@@ -73,6 +73,19 @@ Record findings as the first entries in the protocol.md CEC Quirks table.
 - **Test seam.** The fake opener records the clamped value production would advertise (not the raw config value), so clamp regressions become visible to the advertise assertions; the config round-trip test asserts `osd_name` explicitly; a GUI test pins the null-on-clear edit payload.
 - **Supersedes:** the "empty string opts out" mechanism everywhere it was documented (config field docs, schema helper text, protocol.md), the `None`-default zero-delta story (already historical), and the review's suggestion to delete `de_physical_address`'s empty arm — unified tolerance (`""` ≡ absent ≡ default) beats a loud parse error for hand-edited configs, and `osd_name` now follows the same rule, which dissolves the per-row divergence by making the rows agree rather than by outlawing the input.
 
+## Round 3: the fleet snapshot reads state, not rpcs (primary + INFO rows become published payloads)
+
+**Trigger.** The round-2 regression fix (`5ce2c6e`) served the primary descriptor on the get-config *rpc reply* and kept a first-row fallback — both compat-shaped, and the investigation exposed deeper vestiges: `TvInfo.vendor_info` was write-never (a served-D-Bus-era remnant of `display_diagnostics`, never wired into the zenoh stack), the GUI's INFO rows came from `flatten_config` (raw alphabetized config *keys*, not the schema-ordered labels `display_config` was designed to provide), and `list_tvs` did a per-TV `get-config` rpc on every snapshot refresh solely to feed those rows (the code apologized: "small fleets").
+
+**The shape.** Connector-derived display projections are *state*, so they ride the mirror like everything else clients render:
+
+- `payload::Identity` gains `primary: Option<String>` — the connector's `primary_descriptor`, living beside name/vendor/brand/connector where it belongs. The get-config reply's `"primary"` key (added hours earlier) is reverted: one wire home.
+- A new `payload::VendorRows { config, diagnostics }` publishes on `meta/vendor`: the connector's `display_config` / `display_diagnostics` rows — schema-ordered, labeled, default-backfilled, Secret-free. **Arrays preserve order on the wire; JSON objects do not** — which is the entire disease this cures. `vendor_info` comes alive for the first time in the zenoh stack (LG's WebSocket-scheme diagnostic row).
+- The reactor computes all three at its existing `TransportFacts` sites (dial spawn + `Effect::Facts` on config change) — the established "config-derived facts the reactor evaluates because it owns the connectors" channel — and `spawn_tv` now also emits `Facts` at enrollment, so a deferred-dial (routeless) or never-dialed TV still publishes rows and primary.
+- The SDK's `list_tvs` becomes a pure mirror projection: the per-TV get-config loop and `flatten_config` are deleted; `TvInfo.primary_descriptor` / `vendor_config` / `vendor_info` fill from the mirror row. The GUI drops the meaningless first-row fallback (an empty primary renders as "—") and its INFO rows switch from raw keys to proper labels for free.
+
+The get-config rpc remains for what it actually serves: the edit-form prefill (raw values by key) and CLI inspection. `TV_PATHS` grows to sweep `meta/vendor` on removal.
+
 ## Non-goals / Open decisions
 
 - **Default source of the name.** Ship `osd_name` defaulting to `None` (opt-in, zero-delta) for v1. Auto-deriving from the system hostname (Chromecast-style zero-config) is attractive but pulls a hostname read + its own ASCII/length messiness into the daemon path; propose it instead as a later GUI-side *prefill* — the pairing wizard suggests the hostname, the user accepts/edits — rather than a daemon default. Flagged for decision.
