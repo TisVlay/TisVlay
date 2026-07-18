@@ -27,10 +27,19 @@ use crate::VENDOR_ID;
 /// fake that yields a scripted link with no hardware.
 #[async_trait]
 pub(crate) trait CecLinkOpener: Send + Sync + std::fmt::Debug {
+    /// Open a tx handle for `device`, claiming the adapter's physical and
+    /// Playback logical addresses.
+    ///
+    /// `osd_name` is the label the adapter advertises for itself — what the
+    /// TV shows for the PC's HDMI input; `None` advertises nothing. Only the
+    /// connection-holding opens pass it: the bare wake and the discovery
+    /// probe pass `None`, since they release the address before a TV would
+    /// poll for a name.
     async fn open(
         &self,
         device: &str,
         physical_address: PhysicalAddress,
+        osd_name: Option<&str>,
     ) -> Result<Box<dyn CecLink>>;
 
     /// Open a *second*, follower-mode handle on the same device for
@@ -93,9 +102,10 @@ impl CecLinkOpener for LinuxCecLinkOpener {
         &self,
         device: &str,
         physical_address: PhysicalAddress,
+        osd_name: Option<&str>,
     ) -> Result<Box<dyn CecLink>> {
         Ok(Box::new(
-            LinuxCecLink::open(device, physical_address).await?,
+            LinuxCecLink::open(device, physical_address, osd_name).await?,
         ))
     }
 
@@ -173,7 +183,11 @@ struct LinuxCecLink {
 }
 
 impl LinuxCecLink {
-    async fn open(device: &str, physical_address: PhysicalAddress) -> Result<Self> {
+    async fn open(
+        device: &str,
+        physical_address: PhysicalAddress,
+        osd_name: Option<&str>,
+    ) -> Result<Self> {
         let dev = AsyncDevice::open(device)
             .await
             .map_err(|e| map_open_err(device, e))?;
@@ -196,6 +210,15 @@ impl LinuxCecLink {
             dev.set_physical_address(physical_address)
                 .await
                 .map_err(map_cec_err)?;
+        }
+        // Advertise our OSD name before claiming the logical address, so the
+        // name rides the same log-address configuration the kernel then
+        // auto-answers <Give OSD Name> from. Clamped to the 14-byte CEC field
+        // (an over-long label would else fail the claim); an all-control label
+        // advertises nothing. Set while still Unregistered, so this only
+        // writes the local config — no frame leaves before we are on the bus.
+        if let Some(name) = osd_name.and_then(crate::identity::clamp_osd_name) {
+            dev.set_osd_name(&name).await.map_err(map_cec_err)?;
         }
         // Claim a Playback logical address so the adapter is allowed to
         // transmit on the bus.
@@ -476,6 +499,10 @@ mod fake {
         /// models the daemon's user lacking access to the node, for the
         /// discovery-badge and connect-failure paths.
         deny_permission: bool,
+        /// Records the `osd_name` passed to each `open` call, in order — lets
+        /// tests assert what the adapter advertised (or that a transient open
+        /// advertised nothing).
+        opened_with: Mutex<Vec<Option<String>>>,
     }
 
     impl FakeCecLinkOpener {
@@ -487,6 +514,7 @@ mod fake {
                 monitor_fails: false,
                 identity: None,
                 deny_permission: false,
+                opened_with: Mutex::new(Vec::new()),
             }
         }
 
@@ -500,6 +528,7 @@ mod fake {
                 monitor_fails: false,
                 identity: None,
                 deny_permission: false,
+                opened_with: Mutex::new(Vec::new()),
             }
         }
 
@@ -525,6 +554,7 @@ mod fake {
                 monitor_fails: false,
                 identity: None,
                 deny_permission: false,
+                opened_with: Mutex::new(Vec::new()),
             }
         }
 
@@ -538,6 +568,7 @@ mod fake {
                 monitor_fails: false,
                 identity: Some((osd_name.to_string(), vendor_id)),
                 deny_permission: false,
+                opened_with: Mutex::new(Vec::new()),
             }
         }
 
@@ -551,6 +582,7 @@ mod fake {
                 monitor_fails: false,
                 identity: None,
                 deny_permission: true,
+                opened_with: Mutex::new(Vec::new()),
             }
         }
 
@@ -565,7 +597,14 @@ mod fake {
                 monitor_fails: true,
                 identity: None,
                 deny_permission: false,
+                opened_with: Mutex::new(Vec::new()),
             }
+        }
+        /// The `osd_name` passed to each `open` call, in order — lets tests
+        /// assert what the adapter advertised (or that a transient open
+        /// advertised nothing).
+        pub fn opened_osd_names(&self) -> Vec<Option<String>> {
+            self.opened_with.lock().clone()
         }
     }
 
@@ -575,7 +614,9 @@ mod fake {
             &self,
             device: &str,
             _physical_address: PhysicalAddress,
+            osd_name: Option<&str>,
         ) -> Result<Box<dyn CecLink>> {
+            self.opened_with.lock().push(osd_name.map(str::to_string));
             if self.deny_permission {
                 return Err(Error::PermissionDenied {
                     path: device.to_string(),

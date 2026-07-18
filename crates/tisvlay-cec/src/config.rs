@@ -46,6 +46,20 @@ pub struct CecVendorConfig {
     /// so the shipped default profiles behave consistently across a fleet.
     #[serde(default = "default_emulate_screen_via_power")]
     pub emulate_screen_via_power: bool,
+
+    /// OSD name this adapter advertises for *itself* on the bus — the label
+    /// the TV shows for the PC's HDMI input, the way a Chromecast names its
+    /// input "Chromecast". Distinct from the TV's own OSD name that
+    /// discovery/identity *reads* (`identity::query`) to fill Make/Model:
+    /// this is the reverse direction, what we answer when the TV asks *us*
+    /// for a name.
+    ///
+    /// `None` (the default) advertises nothing — the kernel stays silent on
+    /// `<Give OSD Name>` and the input keeps its default label. The CEC
+    /// field is 14 bytes of ASCII; a longer or non-ASCII label is clamped
+    /// (see `identity::clamp_osd_name`), never rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osd_name: Option<String>,
 }
 
 fn default_device() -> String {
@@ -92,6 +106,7 @@ impl Default for CecVendorConfig {
             device: default_device(),
             physical_address: default_physical_address(),
             emulate_screen_via_power: default_emulate_screen_via_power(),
+            osd_name: None,
         }
     }
 }
@@ -125,6 +140,7 @@ mod tests {
             device: "/dev/cec1".into(),
             physical_address: PhysicalAddress::from(0x2000),
             emulate_screen_via_power: false,
+            osd_name: None,
         };
         let value = toml::Value::try_from(&cfg).unwrap();
         let back: CecVendorConfig = value.try_into().unwrap();
@@ -160,5 +176,29 @@ mod tests {
         let cfg: CecVendorConfig =
             toml::from_str("device = \"/dev/cec0\"\nphysical_address = 4096").unwrap();
         assert_eq!(cfg.physical_address, PhysicalAddress::from(0x1000));
+    }
+
+    #[test]
+    fn osd_name_defaults_none_and_omits_when_unset() {
+        // Absent in TOML → None (opt-in; today's behavior).
+        let cfg: CecVendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        assert_eq!(cfg.osd_name, None);
+        // `skip_serializing_if` → a None writes no `osd_name` key, so a
+        // default config serializes exactly as it did before the field.
+        let value = toml::Value::try_from(CecVendorConfig::default()).unwrap();
+        assert!(
+            value.get("osd_name").is_none(),
+            "None must not write an osd_name key: {value:?}",
+        );
+    }
+
+    #[test]
+    fn osd_name_round_trips_through_toml() {
+        let cfg = CecVendorConfig {
+            osd_name: Some("HTPC".into()),
+            ..Default::default()
+        };
+        let back: CecVendorConfig = toml::Value::try_from(&cfg).unwrap().try_into().unwrap();
+        assert_eq!(back.osd_name.as_deref(), Some("HTPC"));
     }
 }
