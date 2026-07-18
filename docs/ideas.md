@@ -9,7 +9,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [TV-side power prevention (manage LG auto-off Luna settings)](ideas/tv-side-power-prevention.md)
 - [Richer `DispatchOutcome` return type for screen_on / screen_off](ideas/dispatch-outcome-return-type.md)
 - [Virtual DRM connector for detached TVs](ideas/virtual-drm-connector.md)
-- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label)](ideas/cec-followups.md)
+- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding)](ideas/cec-followups.md)
 - [Probe library extraction (when GUI lands)](ideas/probe-library-extraction.md)
 - [SSDP `NOTIFY` passive listener](ideas/ssdp-notify-passive-listener.md)
 - [Pair-time MAC capture](ideas/pair-time-mac-capture.md)

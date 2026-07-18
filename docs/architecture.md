@@ -33,7 +33,7 @@ The law learned empirically: **a connect-only peer leaf cannot fan out what it s
 
 ```
 tv/<uuid>/state/{power,volume,input,backlight,link}   cached pubs (state fan-out)
-tv/<uuid>/meta/{identity,config}                      cached pubs (name, vendor, managed, profile, …)
+tv/<uuid>/meta/{identity,config,vendor}               cached pubs (name+primary descriptor, managed/profile, display rows)
 tv/<uuid>/rpc/<verb>                                  queryables (set-*, power-*, get/update-config, re-pair, …)
 tv/<uuid>/progress/power                              power-cycle phases (wol_sent → connecting → connected/failed)
 pairing/<uuid>/progress                               pairing phases (awaiting_tv → complete/failed, typed codes)
