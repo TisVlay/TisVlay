@@ -1,6 +1,6 @@
 # Advertise our OSD name: label the TV's HDMI input like a Chromecast
 
-Status: **implemented** (`4e1c2cf`; baseline `a538ea4`, review round `ff27c91`). Listed until an on-hardware field test confirms the TV-side relabel — the kernel-side auto-reply assumption is the one thing left to verify.
+Status: **implemented & field-confirmed** (baseline `a538ea4`, review `ff27c91`, impl `4e1c2cf`, then a debug-advertise log and the default flip below). OSD name verified showing on the LG over CEC (2026-07-18). **Post-field change:** the default advertised name was flipped from `None` to `"TisVlay"` — a CEC TV shows the project name out of the box, an empty `osd_name` opts out. The "default `None` / zero-delta" prose below is the original opt-in decision, kept for history. Listed until the PR merges.
 
 ## Problem
 

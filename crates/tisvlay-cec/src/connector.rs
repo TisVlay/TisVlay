@@ -286,9 +286,10 @@ impl TvConnector for CecConnector {
                 field_type: PairingFieldType::String,
                 required: false,
                 placeholder: "HTPC".into(),
-                // No `default` — an empty default keeps the read-only view
-                // zero-delta (display rows elide empty effective values), so
-                // an unset name shows nothing rather than a phantom row.
+                // Defaults to the project name, so a CEC TV shows "TisVlay"
+                // as its input label out of the box; clear the field to
+                // advertise nothing.
+                default: "TisVlay".into(),
                 ..Default::default()
             },
         ]
@@ -363,10 +364,11 @@ mod tests {
         // "option only visible in edit mode" GUI bug.
         let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
         let rows = connector(PowerStatus::On).display_config(&cfg);
-        // All three `UserInput` fields show even though only `device` is
-        // stored — the other two fall back to their schema defaults. Assert on
-        // the effective value, not the (tweakable) label copy.
-        assert_eq!(rows.len(), 3, "every UserInput field shows: {rows:?}");
+        // All four `UserInput` fields show even though only `device` is
+        // stored — the others fall back to their schema defaults (osd_name to
+        // "TisVlay"). Assert on the effective value, not the (tweakable)
+        // label copy.
+        assert_eq!(rows.len(), 4, "every UserInput field shows: {rows:?}");
         assert!(
             rows.iter().any(|(_, value)| value == "true"),
             "defaulted emulate_screen_via_power shows its effective value: {rows:?}",
@@ -459,10 +461,7 @@ mod tests {
         assert_eq!(schema[3].name, "osd_name");
         assert_eq!(schema[3].field_type, PairingFieldType::String);
         assert!(!schema[3].required, "osd_name is optional");
-        assert_eq!(
-            schema[3].default, "",
-            "empty default keeps the read-only view zero-delta",
-        );
+        assert_eq!(schema[3].default, "TisVlay", "defaults to the project name");
     }
 
     #[tokio::test]
@@ -479,6 +478,20 @@ mod tests {
             opener.opened_osd_names(),
             vec![Some("HTPC".to_string())],
             "connect advertises the configured OSD name",
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_advertises_default_tisvlay_when_unset() {
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
+        let conn = CecConnector::with_opener(opener.clone());
+        // A config that doesn't set osd_name rides the "TisVlay" default.
+        let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        conn.connect(&cfg).await.expect("connect");
+        assert_eq!(
+            opener.opened_osd_names(),
+            vec![Some("TisVlay".to_string())],
+            "an unset osd_name advertises the default project name",
         );
     }
 

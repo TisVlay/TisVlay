@@ -54,11 +54,13 @@ pub struct CecVendorConfig {
     /// this is the reverse direction, what we answer when the TV asks *us*
     /// for a name.
     ///
-    /// `None` (the default) advertises nothing — the kernel stays silent on
-    /// `<Give OSD Name>` and the input keeps its default label. The CEC
-    /// field is 14 bytes of ASCII; a longer or non-ASCII label is clamped
-    /// (see `identity::clamp_osd_name`), never rejected.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Defaults to `"TisVlay"`, so a CEC TV shows the project name as its
+    /// input label out of the box; set an empty string to advertise nothing
+    /// (the kernel then stays silent on `<Give OSD Name>` and the input keeps
+    /// its default label). The CEC field is 14 bytes of ASCII; a longer or
+    /// non-ASCII label is clamped (see `identity::clamp_osd_name`), never
+    /// rejected.
+    #[serde(default = "default_osd_name", skip_serializing_if = "Option::is_none")]
     pub osd_name: Option<String>,
 }
 
@@ -75,6 +77,12 @@ fn default_emulate_screen_via_power() -> bool {
 /// `1.0.0.0` (HDMI 1) — the common single-adapter wiring.
 fn default_physical_address() -> PhysicalAddress {
     PhysicalAddress::from(0x1000)
+}
+
+/// Advertise the project name by default, so a CEC TV shows "TisVlay" as its
+/// input label out of the box (set an empty string to opt out).
+fn default_osd_name() -> Option<String> {
+    Some("TisVlay".to_string())
 }
 
 /// Deserialize a physical address, treating an empty string (e.g. a
@@ -106,7 +114,7 @@ impl Default for CecVendorConfig {
             device: default_device(),
             physical_address: default_physical_address(),
             emulate_screen_via_power: default_emulate_screen_via_power(),
-            osd_name: None,
+            osd_name: default_osd_name(),
         }
     }
 }
@@ -179,17 +187,16 @@ mod tests {
     }
 
     #[test]
-    fn osd_name_defaults_none_and_omits_when_unset() {
-        // Absent in TOML → None (opt-in; today's behavior).
+    fn osd_name_defaults_to_tisvlay() {
+        // Absent in TOML → the project name, so a CEC TV shows "TisVlay" as
+        // its input label out of the box.
         let cfg: CecVendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
-        assert_eq!(cfg.osd_name, None);
-        // `skip_serializing_if` → a None writes no `osd_name` key, so a
-        // default config serializes exactly as it did before the field.
-        let value = toml::Value::try_from(CecVendorConfig::default()).unwrap();
-        assert!(
-            value.get("osd_name").is_none(),
-            "None must not write an osd_name key: {value:?}",
-        );
+        assert_eq!(cfg.osd_name.as_deref(), Some("TisVlay"));
+        // An explicit empty string opts out — clamped to no advertisement
+        // (see identity::clamp_osd_name).
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nosd_name = \"\"").unwrap();
+        assert_eq!(cfg.osd_name.as_deref(), Some(""));
     }
 
     #[test]
