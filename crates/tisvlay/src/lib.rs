@@ -194,11 +194,15 @@ pub struct TvInfo {
     pub primary_input: String,
     pub hardware_id: HardwareId,
     /// The vendor's primary identifying descriptor (LG: IP; CEC: device
-    /// node), served by the daemon from the connector's
-    /// `primary_descriptor`. Authoritative — `vendor_config` rows are
-    /// alphabetized, so their order carries no meaning.
+    /// node) — the connector's `primary_descriptor`, published on the
+    /// TV's identity.
     pub primary_descriptor: String,
+    /// The connector's `display_config` projection: schema-ordered,
+    /// labeled `(label, value)` rows of the user-editable config,
+    /// published as `meta/vendor` state.
     pub vendor_config: Vec<(String, String)>,
+    /// The connector's `display_diagnostics` projection (pair-time
+    /// captures, e.g. LG's WebSocket scheme), from the same payload.
     pub vendor_info: Vec<(String, String)>,
     pub desktop: DesktopMapping,
     pub path: String,
@@ -285,8 +289,10 @@ impl DaemonClient {
         self.mirror.lock().expect("mirror lock").daemon_alive
     }
 
-    /// Assemble the fleet snapshot the GUI renders from. Vendor config
-    /// rows come from a per-TV `get-config` rpc (small fleets).
+    /// Assemble the fleet snapshot the GUI renders from — a pure mirror
+    /// projection, no rpcs: the vendor display rows and the primary
+    /// descriptor arrive as published state (`meta/vendor`,
+    /// `meta/identity`) like everything else.
     pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
         let rows: Vec<(Uuid, mirror_row::Row)> = {
             let mirror = self.mirror.lock().expect("mirror lock");
@@ -296,22 +302,10 @@ impl DaemonClient {
                 .map(|(id, row)| (*id, mirror_row::Row::from(row)))
                 .collect()
         };
-        let mut tvs = Vec::with_capacity(rows.len());
-        for (id, row) in rows {
-            let (vendor_config, primary) = match self.get_tv_config_value(&id.to_string()).await {
-                Ok(config) => (
-                    flatten_config(&config),
-                    config
-                        .get("primary")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                ),
-                Err(_) => (Vec::new(), String::new()),
-            };
-            tvs.push(row.into_tv_info(id, &self.site, vendor_config, primary));
-        }
-        Ok(tvs)
+        Ok(rows
+            .into_iter()
+            .map(|(id, row)| row.into_tv_info(id, &self.site))
+            .collect())
     }
 
     pub async fn version(&self) -> Result<String> {
@@ -1344,26 +1338,6 @@ fn parse_tv(tv: &str) -> Result<Uuid> {
     tv.parse().with_context(|| format!("invalid TV id '{tv}'"))
 }
 
-/// Redacted config JSON → display rows. The reply nests the vendor
-/// table under `config`; top-level TV fields render elsewhere.
-fn flatten_config(config: &Value) -> Vec<(String, String)> {
-    let Some(vendor) = config.get("config").and_then(Value::as_object) else {
-        return Vec::new();
-    };
-    let mut rows: Vec<(String, String)> = vendor
-        .iter()
-        .map(|(key, value)| {
-            let rendered = match value {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            (key.clone(), rendered)
-        })
-        .collect();
-    rows.sort();
-    rows
-}
-
 mod mirror_row {
     //! `TvRow` → `TvInfo` projection, kept next to the type it fills.
 
@@ -1378,6 +1352,7 @@ mod mirror_row {
         backlight: Option<payload::Backlight>,
         identity: Option<payload::Identity>,
         meta: Option<payload::Meta>,
+        vendor: Option<payload::VendorRows>,
     }
 
     impl From<&crate::mirror::TvRow> for Row {
@@ -1390,18 +1365,13 @@ mod mirror_row {
                 backlight: row.backlight.clone(),
                 identity: row.identity.clone(),
                 meta: row.meta.clone(),
+                vendor: row.vendor.clone(),
             }
         }
     }
 
     impl Row {
-        pub(crate) fn into_tv_info(
-            self,
-            id: Uuid,
-            site: &str,
-            vendor_config: Vec<(String, String)>,
-            primary_descriptor: String,
-        ) -> TvInfo {
+        pub(crate) fn into_tv_info(self, id: Uuid, site: &str) -> TvInfo {
             let identity = self
                 .identity
                 .unwrap_or_else(|| payload::Identity::new(String::new(), String::new()));
@@ -1440,9 +1410,17 @@ mod mirror_row {
                     model: identity.model.clone(),
                     serial: identity.serial.clone(),
                 },
-                primary_descriptor,
-                vendor_config,
-                vendor_info: Vec::new(),
+                primary_descriptor: identity.primary.clone().unwrap_or_default(),
+                vendor_config: self
+                    .vendor
+                    .as_ref()
+                    .map(|v| v.config.clone())
+                    .unwrap_or_default(),
+                vendor_info: self
+                    .vendor
+                    .as_ref()
+                    .map(|v| v.diagnostics.clone())
+                    .unwrap_or_default(),
                 desktop: DesktopMapping {
                     connector: identity.connector.clone().unwrap_or_default(),
                 },

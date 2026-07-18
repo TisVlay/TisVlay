@@ -196,6 +196,9 @@ impl Reactor {
                             tv,
                             supports_wake: connector.supports_wake(&config),
                             traits,
+                            primary: connector.primary_descriptor(&config),
+                            config_rows: connector.display_config(&config),
+                            diagnostic_rows: connector.display_diagnostics(&config),
                         });
                         self.request_route_monitor(tv, connector.as_ref(), &config);
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
@@ -276,6 +279,9 @@ impl Reactor {
                             tv,
                             supports_wake: connector.supports_wake(&config),
                             traits: transport_facts(connector.as_ref(), &config),
+                            primary: connector.primary_descriptor(&config),
+                            config_rows: connector.display_config(&config),
+                            diagnostic_rows: connector.display_diagnostics(&config),
                         });
                         self.request_route_monitor(tv, connector.as_ref(), &config);
                     }
@@ -333,20 +339,12 @@ fn transport_facts(
 /// Project a TV record into its wire-safe config reply: top-level fields
 /// plus the vendor table minus `Secret`-visibility fields (per the vendor
 /// schema). Credentials never leave the process.
-///
-/// `primary` carries the connector's [`TvConnector::primary_descriptor`]
-/// (LG: IP; CEC: device node) — the vendor-owned "what identifies this
-/// TV" value. Clients must read it from here rather than inferring it
-/// from the `config` table, whose JSON-object key order is
-/// alphabetical, not schema order.
 fn redacted_config(
     connectors: &HashMap<String, Arc<dyn TvConnector>>,
     record: TvRecord,
 ) -> serde_json::Value {
     let mut config = serde_json::Map::new();
-    let mut primary = None;
     if let Some(connector) = connectors.get(&record.vendor) {
-        primary = connector.primary_descriptor(&record.config);
         let secret: HashSet<String> = connector
             .config_schema()
             .into_iter()
@@ -371,7 +369,6 @@ fn redacted_config(
         "managed": record.managed,
         "system_profile": record.system_profile,
         "primary_input": record.primary_input,
-        "primary": primary,
         "config": config,
     })
 }
@@ -456,9 +453,5 @@ mod tests {
         assert!(json["config"].get("client_key").is_none());
         assert!(!json.to_string().contains("SECRET"));
         assert_eq!(json["name"], "T");
-        // The connector's primary descriptor (first schema field's value)
-        // rides the reply — clients read it here instead of guessing from
-        // the alphabetized `config` object.
-        assert_eq!(json["primary"], "192.0.2.1");
     }
 }

@@ -69,6 +69,7 @@ pub(crate) fn build_schedule() -> Schedule {
             publish_changed::<payload::Backlight>,
             publish_changed::<payload::Identity>,
             publish_changed::<payload::Meta>,
+            publish_changed::<payload::VendorRows>,
             snapshot_store,
         )
             .chain(),
@@ -149,7 +150,17 @@ fn despawn_tv(
 /// Spawn a TV entity from its store row. Every TV dials — managed
 /// gates automation (profile actions), not connectivity, so state
 /// stays live and manual control keeps working on unmanaged TVs.
-fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
+///
+/// Emits `Effect::Facts` so the reactor evaluates the connector-derived
+/// statics (wake support, primary descriptor, display rows) at
+/// enrollment — a deferred-dial (routeless) TV still publishes them
+/// without waiting for its first dial spawn.
+fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, outbox: &mut Outbox, record: &TvRecord) {
+    outbox.0.push(Effect::Facts {
+        tv: record.id,
+        vendor: record.vendor.clone(),
+        config: record.config.clone(),
+    });
     let mut identity = payload::Identity::new(record.name.clone(), record.vendor.clone());
     identity.connector = None;
     let mut entity = commands.spawn((
@@ -176,6 +187,10 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, record: &TvRecord) {
             reconnecting: false,
             supports_wake: false,
         },
+        // Filled by the reactor's enrollment-time facts (Effect::Facts
+        // above); present from spawn so publish_changed has a component
+        // to watch.
+        payload::VendorRows::default(),
     ));
     redial(&mut entity, false);
     if record.managed {
@@ -521,7 +536,7 @@ fn handle_lifecycle_commands(
                     );
                     continue;
                 }
-                spawn_tv(&mut commands, &mut index, record);
+                spawn_tv(&mut commands, &mut index, &mut outbox, record);
                 dirty.0 = true;
                 reply_ok(&mut outbox, *reply);
             }
@@ -1690,7 +1705,7 @@ fn apply_pairing_updates(
                                 primary_input: None,
                                 config: config.clone(),
                             };
-                            spawn_tv(&mut commands, &mut tv_index, &record);
+                            spawn_tv(&mut commands, &mut tv_index, &mut outbox, &record);
                             if let Some(&tv_entity) = tv_index.0.get(id) {
                                 commands
                                     .entity(tv_entity)
@@ -1895,12 +1910,17 @@ fn apply_transport_facts(
     mut commands: Commands,
     index: Res<TvIndex>,
     mut links: Query<&mut payload::Link>,
+    mut identities: Query<&mut payload::Identity>,
+    mut vendor_rows: Query<&mut payload::VendorRows>,
 ) {
     for msg in reader.read() {
         let InEvent::TransportFacts {
             tv,
             supports_wake,
             traits,
+            primary,
+            config_rows,
+            diagnostic_rows,
         } = msg
         else {
             continue;
@@ -1912,6 +1932,20 @@ fn apply_transport_facts(
             && link.supports_wake != *supports_wake
         {
             link.supports_wake = *supports_wake;
+        }
+        // Change-guarded writes: publish_changed republishes on mutation,
+        // so identical facts (e.g. the enrollment emit followed by the
+        // first dial's) must not re-put unchanged payloads.
+        if let Ok(mut identity) = identities.get_mut(entity)
+            && identity.primary != *primary
+        {
+            identity.primary = primary.clone();
+        }
+        if let Ok(mut rows) = vendor_rows.get_mut(entity)
+            && (rows.config != *config_rows || rows.diagnostics != *diagnostic_rows)
+        {
+            rows.config = config_rows.clone();
+            rows.diagnostics = diagnostic_rows.clone();
         }
         commands.entity(entity).insert(TransportTraits(*traits));
     }

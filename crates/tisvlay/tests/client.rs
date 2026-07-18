@@ -109,9 +109,13 @@ async fn sdk_mirrors_rpcs_and_watches() {
     assert!(
         info.vendor_config
             .iter()
-            .any(|(key, value)| key == "address" && value == "mock://sdk"),
-        "vendor config rows come from get-config: {:?}",
+            .any(|(label, value)| label == "Address" && value == "mock://sdk"),
+        "vendor rows are the connector's labeled display projection, via the mirror: {:?}",
         info.vendor_config
+    );
+    assert_eq!(
+        info.primary_descriptor, "mock://sdk",
+        "primary descriptor rides the published identity",
     );
 
     // System + user profile bodies flow through both clients.

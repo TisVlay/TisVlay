@@ -53,6 +53,14 @@ pub enum InEvent {
         tv: Uuid,
         supports_wake: bool,
         traits: TransportInfo,
+        /// The connector's primary identifying descriptor (LG: IP; CEC:
+        /// device node) — published on the TV's identity.
+        primary: Option<String>,
+        /// Schema-ordered, labeled, Secret-free display rows
+        /// (`display_config` / `display_diagnostics`) — published as
+        /// `VendorRows` for the clients' INFO surface.
+        config_rows: Vec<(String, String)>,
+        diagnostic_rows: Vec<(String, String)>,
     },
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.
