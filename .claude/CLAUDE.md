@@ -130,6 +130,7 @@ Deployment model:
 
 - The daemon chmods its socket 0660 after bind (packaged unit runs UMask=0077); `tisvlay` group membership is the authorization boundary (the old D-Bus policy allowed any local user).
 - Connect-side socket defaults fall back to `/run/tisvlay/zenoh.sock` when the dev socket is absent; listen-side defaults never fall back (a dev daemon must not take over the packaged socket).
+- Shell completions for the `tisvlay` CLI (bash/zsh/fish) ship in every package and the nix build. They use clap_complete's dynamic engine, so `<TAB>` completes live TV UUIDs by calling back into the binary; generation and per-distro caveats are in [packaging/README.md](../packaging/README.md).
 
 ## Quick Reference
 

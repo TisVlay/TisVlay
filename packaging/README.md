@@ -7,7 +7,7 @@ High-level overview of every channel we ship through, why the build pipeline is 
 | Channel | Source of truth | Use case |
 |---|---|---|
 | **Nix flake / NixOS module** | [`nix/package.nix`](nix/package.nix), [`nix/module.nix`](nix/module.nix) | NixOS hosts, declarative service config. See [`nix/README.md`](nix/README.md) for the full deep-dive on the Nix derivation, hardening posture, VM test, and module options. |
-| **`.deb` / `.rpm` / `.pkg.tar.zst`** (this directory) | [`crates/tisvlay-daemon/Cargo.toml`](../crates/tisvlay-daemon/Cargo.toml) `[package.metadata.nfpm*]` + [`justfile`](../justfile) `package-*` recipes | Debian/Ubuntu, Fedora/RHEL, Arch Linux. One bundled package per format containing all five binaries plus systemd units and the GUI desktop entry. |
+| **`.deb` / `.rpm` / `.pkg.tar.zst`** (this directory) | [`crates/tisvlay-daemon/Cargo.toml`](../crates/tisvlay-daemon/Cargo.toml) `[package.metadata.nfpm*]` + [`justfile`](../justfile) `package-*` recipes | Debian/Ubuntu, Fedora/RHEL, Arch Linux. One bundled package per format containing all five binaries plus systemd units, the GUI desktop entry, and the CLI's shell completions. |
 | **Test container** | [`docker/Dockerfile`](docker/Dockerfile) | Reproducible Ubuntu environment for verifying the build matrix without touching CI, and for smoke-testing the resulting `.rpm`/`.deb` against a clean glibc target. |
 | **Dev-shell native build** | [`flake.nix`](../flake.nix) `devShells.default` | `cargo run` / `cargo test` / `just check` directly from the Nix dev shell. **Not** what produces shippable binaries — see "Build pipeline" below. |
 
@@ -146,6 +146,15 @@ If `cargo nfpm` ever fails with `No such file or directory (os error 2)` on a Ni
 ```bash
 cargo install --force cargo-nfpm
 ```
+
+## Shell completions
+
+The `tisvlay` CLI ships tab-completion for bash, zsh, and fish, present after install with no user setup. We use clap_complete's *dynamic* engine rather than static generators: the file dropped into each shell's autoload dir is a small bootstrap that calls back into the `tisvlay` binary at `<TAB>`, so completion covers subcommands, flags, and **live TV UUIDs** (queried from the daemon, described by device name) — the same model Docker uses for container-name completion.
+
+- **Generation.** `just completions` (a prerequisite of every `package-*`) runs the freshly built CLI with `COMPLETE=<shell>` set and captures the registration script into `packaging/completions/` (gitignored). It builds the CLI host-native — the zigbuild release artifact targets a foreign glibc and won't run on the NixOS build host, and the registration is a shell-name-only template so the debug build's output is identical to release. The Nix package regenerates the same scripts from `$out/bin/tisvlay` via `installShellCompletion`.
+- **Install paths** (nfpm `contents`): bash → `/usr/share/bash-completion/completions/tisvlay`, zsh → `/usr/share/zsh/site-functions/_tisvlay`, fish → `/usr/share/fish/vendor_completions.d/tisvlay.fish`.
+- **Zero-config caveats.** Bash needs the `bash-completion` loader present — the `.deb`/`.rpm` `recommends` it (apt installs Recommends by default; Arch/minimal/container images may not, and it is not a hard dep). Zsh needs `compinit` run (normal for interactive zsh). Fish autoloads with nothing extra. On NixOS the shell's own completion must be enabled (`programs.bash.completion.enable`, `programs.zsh.enable`, `programs.fish.enable`).
+- **Manual install** on an unsupported distro: `COMPLETE=bash tisvlay > ~/.local/share/bash-completion/completions/tisvlay` (and the zsh/fish analogs). The `<TAB>` callback resolves a bare `tisvlay` on `$PATH`.
 
 ## Testing the result
 

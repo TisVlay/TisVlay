@@ -7,6 +7,7 @@
   dbus,
   makeDesktopItem,
   copyDesktopItems,
+  installShellFiles,
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -49,6 +50,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
     # Setup-hook that copies `desktopItems` into $out/share/applications/.
     # Standard nixpkgs idiom — 622 packages use this pattern.
     copyDesktopItems
+    # Provides installShellCompletion, used in postInstall.
+    installShellFiles
   ];
 
   # GUI desktop entry. Generated via makeDesktopItem (the
@@ -132,6 +135,17 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
     substituteInPlace $out/share/dbus-1/services/org.tisvlay.Gui.service \
       --replace-fail 'Exec=/usr/bin/tisvlay-gui' "Exec=$out/bin/tisvlay-gui"
+
+    # Shell completions. Regenerated here from the just-installed binary
+    # rather than reading the nfpm-side packaging/completions/ (gitignored,
+    # absent in the sandbox). The registration is a shell-name-only
+    # template, so this matches the .deb/.rpm output; installShellCompletion
+    # places each under the shell's autoload dir with the right name. The
+    # pinned bare-`tisvlay` callback resolves on the user's PATH.
+    installShellCompletion --cmd tisvlay \
+      --bash <(COMPLETE=bash $out/bin/tisvlay) \
+      --zsh <(COMPLETE=zsh $out/bin/tisvlay) \
+      --fish <(COMPLETE=fish $out/bin/tisvlay)
   '';
 
   postFixup = ''
