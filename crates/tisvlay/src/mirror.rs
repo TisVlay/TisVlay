@@ -23,6 +23,7 @@ pub(crate) struct TvRow {
     pub backlight: Option<payload::Backlight>,
     pub identity: Option<payload::Identity>,
     pub meta: Option<payload::Meta>,
+    pub vendor: Option<payload::VendorRows>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -55,6 +56,7 @@ impl SystemMirror {
                 p if p == payload::Backlight::PATH => assign(&mut row.backlight, sample),
                 p if p == payload::Identity::PATH => assign(&mut row.identity, sample),
                 p if p == payload::Meta::PATH => assign(&mut row.meta, sample),
+                p if p == payload::VendorRows::PATH => assign(&mut row.vendor, sample),
                 _ => false,
             };
             return applied.then(|| {

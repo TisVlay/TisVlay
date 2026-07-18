@@ -261,7 +261,7 @@ ssdp_port := env("SSDP_PORT", "1901")
 gui_mcp := env("GUI_MCP", "false")
 
 # zenoh is chatty at debug; keep app crates loud and transports quiet.
-_daemon_log := "info,tisvlay_daemon=debug,tisvlay_world=debug,zbus=warn,rustls=warn,tungstenite=warn"
+_daemon_log := "info,tisvlay_daemon=debug,tisvlay_world=debug,tisvlay_cec=debug,zbus=warn,rustls=warn,tungstenite=warn"
 _session_log := "info,tisvlay_session=debug,zbus=warn"
 _greeter_log := "info,tisvlay_greeter=debug"
 _tray_log := "info,tisvlay_tray=debug,zbus=warn,ksni=warn"

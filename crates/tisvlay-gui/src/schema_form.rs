@@ -281,27 +281,54 @@ pub(crate) fn prefill_schema_from_config(
         .collect()
 }
 
+/// What a cleared (empty) optional row becomes in the config payload.
+///
+/// Both variants mean "reset to the schema default" — the difference is
+/// purely which vocabulary the receiving rpc speaks. This is what makes
+/// clearing a field mean the same thing on both form paths; only the
+/// wire encoding differs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClearedOptionals {
+    /// Pairing payload: omit the key. A fresh config parse applies the
+    /// serde default for every absent field, and the pairing params
+    /// become TOML, which cannot carry null anyway.
+    Omit,
+    /// Edit patch: emit an explicit `null`. The daemon's `update-config`
+    /// merge removes the stored key on null, so the serde default
+    /// reapplies on the next parse. Omitting instead would silently keep
+    /// the old stored value — "clear" would mean nothing on edit.
+    Null,
+}
+
 /// Build a config-payload JSON object from the schema-fields model.
-/// Walks each row, drops empty optional fields, and emits
-/// `{ <name>: <value>, ... }` matching the schema's `name` keys.
-/// The daemon then validates each value server-side via the
-/// `pair` rpc (pairing) or the `update-config` rpc (edit).
+/// Walks each row and emits `{ <name>: <value>, ... }` matching the
+/// schema's `name` keys; a cleared optional row is encoded per
+/// [`ClearedOptionals`] (an empty `""` is never sent — typed validators
+/// treat absent and empty differently). The daemon then validates each
+/// value server-side via the `pair` rpc (pairing) or the
+/// `update-config` rpc (edit).
 ///
 /// Bool fields convert to JSON booleans; numeric fields (port /
 /// int) convert to JSON numbers when parseable, falling back to
 /// string. Strings (including ip / mac / password / path) stay
 /// strings.
-pub fn build_config_json_from_schema(model: &ModelRc<PairingFieldRow>) -> String {
+pub fn build_config_json_from_schema(
+    model: &ModelRc<PairingFieldRow>,
+    cleared: ClearedOptionals,
+) -> String {
     let mut obj = serde_json::Map::new();
     for i in 0..model.row_count() {
         let Some(row) = model.row_data(i) else {
             continue;
         };
         let value = row.value.to_string();
-        // Skip empty optional fields so the daemon's schema
-        // validator treats them as absent (not as "" — that's a
-        // typed required-field failure for required fields).
+        // A cleared optional field means "reset to the schema default":
+        // absent on pair, explicit null on edit. (Required fields can't
+        // be empty here — the submit gate blocks them.)
         if value.is_empty() && !row.required {
+            if cleared == ClearedOptionals::Null {
+                obj.insert(row.name.to_string(), serde_json::Value::Null);
+            }
             continue;
         }
         let json_val = match row.field_type.as_str() {
@@ -566,15 +593,38 @@ mod tests {
     // ---------- build_config_json_from_schema ----------
 
     #[test]
-    fn build_config_json_skips_empty_optional_rows() {
+    fn build_config_json_omits_cleared_optionals_for_pair() {
         let m = model(vec![
             row("ip", "ip", true, "10.0.0.1", "valid"),
             row("name", "string", false, "", "pristine"),
         ]);
-        let json = build_config_json_from_schema(&m);
+        let json = build_config_json_from_schema(&m, ClearedOptionals::Omit);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["ip"], "10.0.0.1");
-        assert!(parsed.get("name").is_none(), "empty optional row dropped");
+        assert!(
+            parsed.get("name").is_none(),
+            "pair payload omits a cleared optional (absent → serde default)"
+        );
+    }
+
+    #[test]
+    fn build_config_json_nulls_cleared_optionals_for_edit() {
+        // The edit patch must carry an explicit null for a cleared
+        // optional — the merge removes the stored key on null, so the
+        // serde default reapplies. Omitting would keep the old value
+        // (the "cleared MAC silently persists" bug).
+        let m = model(vec![
+            row("ip", "ip", true, "10.0.0.1", "valid"),
+            row("mac", "mac", false, "", "pristine"),
+        ]);
+        let json = build_config_json_from_schema(&m, ClearedOptionals::Null);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["ip"], "10.0.0.1");
+        assert_eq!(
+            parsed.get("mac"),
+            Some(&serde_json::Value::Null),
+            "edit patch nulls a cleared optional (remove → serde default)"
+        );
     }
 
     #[test]
@@ -586,7 +636,8 @@ mod tests {
             row("ip", "ip", true, "10.0.0.1", "valid"),
         ]);
         let parsed: serde_json::Value =
-            serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
+            serde_json::from_str(&build_config_json_from_schema(&m, ClearedOptionals::Omit))
+                .unwrap();
         assert_eq!(parsed["automated"], serde_json::Value::Bool(true));
         assert_eq!(parsed["port"].as_i64(), Some(3001));
         assert_eq!(parsed["retries"].as_i64(), Some(5));
@@ -597,7 +648,8 @@ mod tests {
     fn build_config_json_falls_back_to_string_for_unparseable_numerics() {
         let m = model(vec![row("port", "port", false, "not-a-number", "invalid")]);
         let parsed: serde_json::Value =
-            serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
+            serde_json::from_str(&build_config_json_from_schema(&m, ClearedOptionals::Omit))
+                .unwrap();
         assert_eq!(
             parsed["port"],
             serde_json::Value::String("not-a-number".into())

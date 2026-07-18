@@ -196,6 +196,9 @@ impl Reactor {
                             tv,
                             supports_wake: connector.supports_wake(&config),
                             traits,
+                            primary: connector.primary_descriptor(&config),
+                            config_rows: connector.display_config(&config),
+                            diagnostic_rows: connector.display_diagnostics(&config),
                         });
                         self.request_route_monitor(tv, connector.as_ref(), &config);
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
@@ -276,6 +279,9 @@ impl Reactor {
                             tv,
                             supports_wake: connector.supports_wake(&config),
                             traits: transport_facts(connector.as_ref(), &config),
+                            primary: connector.primary_descriptor(&config),
+                            config_rows: connector.display_config(&config),
+                            diagnostic_rows: connector.display_diagnostics(&config),
                         });
                         self.request_route_monitor(tv, connector.as_ref(), &config);
                     }

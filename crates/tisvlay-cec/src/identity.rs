@@ -1,9 +1,13 @@
-//! CEC device-identity resolution.
+//! CEC device identity — both directions of the OSD-name exchange.
 //!
-//! Turns the raw identity the bus answers (OSD name, vendor OUI) into a
-//! cross-vendor [`HardwareId`] (OSD name → model, vendor → manufacturer)
-//! plus a canonical vendor id for branding the GUI tile. `linux-cec`
-//! exposes only the raw OUI, so the OUI→name lookup lives here.
+//! Read side: turns the raw identity the bus answers (the TV's OSD name,
+//! vendor OUI) into a cross-vendor [`HardwareId`] (OSD name → model, vendor →
+//! manufacturer) plus a canonical vendor id for branding the GUI tile.
+//! `linux-cec` exposes only the raw OUI, so the OUI→name lookup lives here.
+//!
+//! Write side: [`clamp_osd_name`] prepares the name this adapter advertises
+//! for *itself* — what the TV shows as the PC's HDMI input label — as the
+//! bounded mirror of [`sanitize`].
 
 use linux_cec::VendorId;
 use tisvlay_core::HardwareId;
@@ -69,6 +73,32 @@ pub(crate) fn sanitize(s: &str) -> String {
         .to_string()
 }
 
+/// Clamp a user-supplied label to what the CEC OSD-name field can carry, for
+/// the *advertise* side — the bounded mirror of [`sanitize`]. Strips control
+/// characters (the same NUL/embedded-control hazard `sanitize` guards),
+/// truncates to the 14-byte spec limit on a UTF-8 char boundary (never
+/// splitting a multi-byte character), and yields `None` when nothing
+/// survives — so an all-control label advertises no name rather than an empty
+/// one, matching [`query`]'s own drop-if-empty shape.
+///
+/// **Load-bearing:** `AsyncDevice::set_osd_name` rejects a name over 14 bytes
+/// with an error that would fail the whole connection, so the backend must
+/// clamp before advertising and never pass a raw label down.
+pub(crate) fn clamp_osd_name(name: &str) -> Option<String> {
+    /// The CEC OSD-name operand is 14 bytes of (spec-defined) ASCII.
+    const MAX_OSD_BYTES: usize = 14;
+    let cleaned = sanitize(name);
+    // Largest char-boundary prefix that fits in the limit: walk each char's
+    // end offset and keep the last one still within 14 bytes.
+    let end = cleaned
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .take_while(|&end| end <= MAX_OSD_BYTES)
+        .last()
+        .unwrap_or(0);
+    (end > 0).then(|| cleaned[..end].to_string())
+}
+
 /// Query the TV's identity over the link, best-effort. Each query is bounded
 /// (a silent TV can't stall connect); a field that fails or comes back empty
 /// is simply omitted, and an all-absent result yields `hardware_id: None`.
@@ -128,6 +158,53 @@ mod tests {
         assert_eq!(sanitize("OLED42C3PU\u{0}\u{0}\u{0}"), "OLED42C3PU");
         assert_eq!(sanitize("  Living Room \t"), "Living Room");
         assert_eq!(sanitize("\u{0}\u{0}"), "");
+    }
+
+    #[test]
+    fn clamp_osd_name_keeps_short_ascii() {
+        assert_eq!(clamp_osd_name("HTPC"), Some("HTPC".to_string()));
+        // Exactly 14 bytes is kept whole.
+        assert_eq!(
+            clamp_osd_name("12345678901234"),
+            Some("12345678901234".to_string())
+        );
+    }
+
+    #[test]
+    fn clamp_osd_name_truncates_over_14_bytes() {
+        assert_eq!(
+            clamp_osd_name("123456789012345"), // 15 ASCII bytes
+            Some("12345678901234".to_string()),
+        );
+    }
+
+    #[test]
+    fn clamp_osd_name_strips_control_and_trims_like_sanitize() {
+        assert_eq!(
+            clamp_osd_name("  HTPC\u{0}\u{0} "),
+            Some("HTPC".to_string())
+        );
+    }
+
+    #[test]
+    fn clamp_osd_name_all_control_or_empty_is_none() {
+        assert_eq!(clamp_osd_name(""), None);
+        assert_eq!(clamp_osd_name("\u{0}\u{0}"), None);
+        assert_eq!(clamp_osd_name("   "), None);
+    }
+
+    #[test]
+    fn clamp_osd_name_truncates_on_char_boundary() {
+        // 13 ASCII + "é" (2 bytes) = 15 bytes: 'é' would end at byte 15 > 14,
+        // so it is dropped whole rather than split — result is the 13-byte
+        // prefix, not an invalid partial code unit.
+        let over = "1234567890123é";
+        assert_eq!(over.len(), 15);
+        assert_eq!(clamp_osd_name(over), Some("1234567890123".to_string()));
+        // 12 ASCII + "é" = 14 bytes exactly → kept whole.
+        let fits = "123456789012é";
+        assert_eq!(fits.len(), 14);
+        assert_eq!(clamp_osd_name(fits), Some("123456789012é".to_string()));
     }
 
     #[tokio::test]

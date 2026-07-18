@@ -566,6 +566,37 @@ async fn get_config_reads_and_update_config_moves_the_tv() {
     assert_eq!(config["name"], "Moved");
     assert_eq!(config["config"]["address"], "mock://after");
 
+    // The connector-derived display state tracked the patch: a late
+    // subscriber hydrates an identity whose primary descriptor is the
+    // new address, and meta/vendor rows carrying the schema-ordered,
+    // labeled projection (never the alphabetized config object).
+    let late = zenoh::open(bootstrap::client_config(&w.socket).unwrap())
+        .await
+        .unwrap();
+    let sub = history_sub(&late, keys::tv_all(&w.site)).await;
+    let mut primary_seen = false;
+    let mut rows_seen = false;
+    recv_until(&sub, |sample| {
+        if let Some((tv, path)) = keys::parse_tv_path(&w.site, sample.key_expr().as_str())
+            && tv == id
+        {
+            let value = payload_json(sample);
+            match path {
+                "meta/identity" if value["primary"] == "mock://after" => primary_seen = true,
+                "meta/vendor"
+                    if value["config"]
+                        .as_array()
+                        .is_some_and(|rows| rows.iter().any(|r| r[1] == "mock://after")) =>
+                {
+                    rows_seen = true;
+                }
+                _ => {}
+            }
+        }
+        primary_seen && rows_seen
+    })
+    .await;
+
     // Immutable and malformed patches are typed errors.
     let err = call(
         &w.client,

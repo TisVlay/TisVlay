@@ -18,7 +18,7 @@ use tisvlay_core::{
 };
 use tracing::instrument;
 
-use crate::config::CecVendorConfig;
+use crate::config::{CecVendorConfig, DEFAULT_OSD_NAME};
 use crate::connection::CecConnection;
 use crate::link::{CecLinkOpener, LinuxCecLinkOpener};
 
@@ -79,6 +79,15 @@ fn reachable(status: PowerStatus) -> bool {
     matches!(status, PowerStatus::On | PowerStatus::ToOn)
 }
 
+/// The OSD name a connection-holding open advertises: the configured name
+/// when advertising is on, nothing when it's off. (The bare wake and the
+/// discovery probe never advertise — they pass `None` directly.)
+fn advertised_name(config: &CecVendorConfig) -> Option<&str> {
+    config
+        .advertise_osd_name
+        .then_some(config.osd_name.as_str())
+}
+
 #[async_trait]
 impl TvConnector for CecConnector {
     fn transport(&self) -> Transport {
@@ -106,7 +115,11 @@ impl TvConnector for CecConnector {
         let config = parse_config(vendor_config)?;
         let link = self
             .opener
-            .open(&config.device, config.physical_address)
+            .open(
+                &config.device,
+                config.physical_address,
+                advertised_name(&config),
+            )
             .await?;
         // Probe power to confirm the TV actually answers on the bus — a
         // powered-off-at-the-wall TV (or one on a different HDMI input)
@@ -138,7 +151,7 @@ impl TvConnector for CecConnector {
         let config = parse_config(vendor_config)?;
         let link = self
             .opener
-            .open(&config.device, config.physical_address)
+            .open(&config.device, config.physical_address, None)
             .await?;
         link.power_on().await
     }
@@ -148,7 +161,11 @@ impl TvConnector for CecConnector {
         let config = parse_config(vendor_config)?;
         let mut link = self
             .opener
-            .open(&config.device, config.physical_address)
+            .open(
+                &config.device,
+                config.physical_address,
+                advertised_name(&config),
+            )
             .await?;
         // Image View On is fire-and-forget, a freshly-opened adapter is
         // still claiming its logical address, and a just-standby TV can
@@ -171,7 +188,11 @@ impl TvConnector for CecConnector {
                 Err(_) => {
                     if let Ok(fresh) = self
                         .opener
-                        .open(&config.device, config.physical_address)
+                        .open(
+                            &config.device,
+                            config.physical_address,
+                            advertised_name(&config),
+                        )
                         .await
                     {
                         link = fresh;
@@ -263,6 +284,31 @@ impl TvConnector for CecConnector {
                 default: "true".into(),
                 ..Default::default()
             },
+            PairingField {
+                name: "osd_name".into(),
+                label: "Input name".into(),
+                helper: "Name this PC advertises to the TV — the label the TV shows for its \
+                         HDMI input, the way a Chromecast names its input. Up to 14 \
+                         characters; longer names are trimmed. Clearing the field restores \
+                         the default."
+                    .into(),
+                field_type: PairingFieldType::String,
+                required: false,
+                placeholder: "HTPC".into(),
+                default: DEFAULT_OSD_NAME.into(),
+                ..Default::default()
+            },
+            PairingField {
+                name: "advertise_osd_name".into(),
+                label: "Advertise input name".into(),
+                helper: "Tell the TV what to call this input. Turn off to advertise no name \
+                         and keep the TV's own label for the input."
+                    .into(),
+                field_type: PairingFieldType::Bool,
+                required: false,
+                default: "true".into(),
+                ..Default::default()
+            },
         ]
     }
 }
@@ -335,10 +381,11 @@ mod tests {
         // "option only visible in edit mode" GUI bug.
         let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
         let rows = connector(PowerStatus::On).display_config(&cfg);
-        // All three `UserInput` fields show even though only `device` is
-        // stored — the other two fall back to their schema defaults. Assert on
-        // the effective value, not the (tweakable) label copy.
-        assert_eq!(rows.len(), 3, "every UserInput field shows: {rows:?}");
+        // All five `UserInput` fields show even though only `device` is
+        // stored — the others fall back to their schema defaults (osd_name to
+        // the default project name). Assert on the effective value, not the
+        // (tweakable) label copy.
+        assert_eq!(rows.len(), 5, "every UserInput field shows: {rows:?}");
         assert!(
             rows.iter().any(|(_, value)| value == "true"),
             "defaulted emulate_screen_via_power shows its effective value: {rows:?}",
@@ -417,7 +464,7 @@ mod tests {
     fn config_schema_exposes_device_and_physical_address() {
         use tisvlay_core::PairingFieldType;
         let schema = connector(PowerStatus::On).config_schema();
-        assert_eq!(schema.len(), 3);
+        assert_eq!(schema.len(), 5);
         assert_eq!(schema[0].name, "device");
         assert_eq!(schema[0].field_type, PairingFieldType::Path);
         assert!(schema[0].required);
@@ -428,5 +475,102 @@ mod tests {
         assert_eq!(schema[2].field_type, PairingFieldType::Bool);
         assert!(!schema[2].required, "screen-via-power defaults on");
         assert_eq!(schema[2].default, "true");
+        assert_eq!(schema[3].name, "osd_name");
+        assert_eq!(schema[3].field_type, PairingFieldType::String);
+        assert!(!schema[3].required, "osd_name is optional");
+        assert_eq!(
+            schema[3].default, DEFAULT_OSD_NAME,
+            "schema default rides the same const as the serde default",
+        );
+        assert_eq!(schema[4].name, "advertise_osd_name");
+        assert_eq!(schema[4].field_type, PairingFieldType::Bool);
+        assert!(!schema[4].required, "advertising defaults on");
+        assert_eq!(schema[4].default, "true");
+    }
+
+    #[tokio::test]
+    async fn connect_advertises_configured_osd_name() {
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
+        let conn = CecConnector::with_opener(opener.clone());
+        let cfg = toml::Value::try_from(CecVendorConfig {
+            osd_name: "HTPC".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        conn.connect(&cfg).await.expect("connect");
+        assert_eq!(
+            opener.opened_osd_names(),
+            vec![Some("HTPC".to_string())],
+            "connect advertises the configured OSD name",
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_advertises_nothing_when_toggled_off() {
+        // The off switch is the advertise flag — a first-class bool the
+        // schema form can always transmit — not an emptied name.
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
+        let conn = CecConnector::with_opener(opener.clone());
+        let cfg = toml::Value::try_from(CecVendorConfig {
+            advertise_osd_name: false,
+            ..Default::default()
+        })
+        .unwrap();
+        conn.connect(&cfg).await.expect("connect");
+        assert_eq!(
+            opener.opened_osd_names(),
+            vec![None],
+            "advertise off passes no name to the link",
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_advertises_default_tisvlay_when_unset() {
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
+        let conn = CecConnector::with_opener(opener.clone());
+        // A config that doesn't set osd_name rides the "TisVlay" default.
+        let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        conn.connect(&cfg).await.expect("connect");
+        assert_eq!(
+            opener.opened_osd_names(),
+            vec![Some("TisVlay".to_string())],
+            "an unset osd_name advertises the default project name",
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_advertises_nothing_even_with_a_name_configured() {
+        // The bare wake opens, fires Image View On, and drops — it releases
+        // the logical address before the TV would poll, so it names nothing.
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby));
+        let conn = CecConnector::with_opener(opener.clone());
+        let cfg = toml::Value::try_from(CecVendorConfig {
+            osd_name: "HTPC".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        conn.wake(&cfg).await.expect("wake");
+        assert_eq!(
+            opener.opened_osd_names(),
+            vec![None],
+            "the bare wake advertises no name even when one is configured",
+        );
+    }
+
+    #[test]
+    fn display_config_shows_a_set_osd_name() {
+        // A configured osd_name surfaces as a read-only row (parity with the
+        // emulate_screen_via_power display regression); an unset one elides,
+        // keeping the default view zero-delta.
+        let cfg = toml::Value::try_from(CecVendorConfig {
+            osd_name: "HTPC".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let rows = connector(PowerStatus::On).display_config(&cfg);
+        assert!(
+            rows.iter().any(|(_, value)| value == "HTPC"),
+            "a set osd_name shows in the read-only view: {rows:?}",
+        );
     }
 }
