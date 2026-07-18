@@ -1,6 +1,6 @@
 # Advertise our OSD name: label the TV's HDMI input like a Chromecast
 
-Status: **implemented & field-confirmed** (baseline `a538ea4`, review `ff27c91`, impl `4e1c2cf`, then a debug-advertise log and the default flip below). OSD name verified showing on the LG over CEC (2026-07-18). **Post-field change:** the default advertised name was flipped from `None` to `"TisVlay"` — a CEC TV shows the project name out of the box, an empty `osd_name` opts out. The "default `None` / zero-delta" prose below is the original opt-in decision, kept for history. Listed until the PR merges.
+Status: **round-2 redesign in flight** on PR #114. History: baseline `a538ea4` → review round `ff27c91` → v1 implemented `4e1c2cf` → field-confirmed on the LG (2026-07-18) → default flipped `None` → `"TisVlay"` (`b9c6e647`). QA then found the documented empty-string opt-out unreachable through both GUI forms, and a max-effort review confirmed the config shape itself was wrong — see § Round 2 redesign, which supersedes the "default `None` / zero-delta" prose and the "empty string opts out" mechanism below (kept for history). Listed until the PR merges.
 
 ## Problem
 
@@ -59,6 +59,19 @@ Needs real hardware — the C3/G4 with the Pulse-Eight USB-CEC adapter — and f
 - If the vendor-OUI follow-up is on the table, separately confirm it changes the icon on the C3/G4, and how the set behaves on GPU DisplayPort-CEC vs USB.
 
 Record findings as the first entries in the protocol.md CEC Quirks table.
+
+## Round 2 redesign: clear-means-default + an advertise toggle (post-QA + max review)
+
+**Trigger.** Field QA on the shipped default exposed that the documented opt-out was unreachable: clearing "Input name" in the pairing wizard re-applied the `TisVlay` serde default (the shared form builder drops empty optional fields before they reach any payload), and clearing it in the TV edit pane changed nothing at all (the edit patch omits the key, and `apply_config_patch` only touches keys present in the patch — so the same gesture meant "default" on pair and "keep the old value" on edit). A 27-agent max review (10 verified findings) traced the tangle to one shape — `osd_name: Option<String>` with a `Some("TisVlay")` default and an empty-string-as-off sentinel — plus one genuine bug: the advertise call was fail-closed (`?`), so a cosmetic `set_osd_name` failure could deny all CEC power/screen control.
+
+**The invariant.** Clearing an optional form field means **reset to the schema default** — uniformly, on both form paths, for every vendor. A state that is neither "default" nor "a valid value" (here: "advertise nothing") must be a first-class field, never a magic empty. No empty-string sentinels exist in vendor config; an explicit `""` is tolerated as a synonym for "absent" (the `de_physical_address` precedent), never as a distinct state.
+
+- **Shared form layer (all vendors).** `build_config_json_from_schema` gains a cleared-optionals mode: the pair payload omits cleared fields (absent → serde default; the pairing params become TOML, which cannot carry null anyway), while the edit patch emits an explicit `null` — which the daemon's merge already interprets as "remove the stored key", letting the serde default reapply on the next parse. Zero server change: the patch vocabulary existed, only the form never spoke it. This also fixes a latent all-vendor bug: clearing a stored (wrong) LG MAC in the edit pane silently kept it.
+- **CEC config shape.** `advertise_osd_name: bool` (default `true`) is the off switch — a Bool row always transmits, so it survives both form paths and the merge, mirroring `emulate_screen_via_power`. `osd_name` becomes a plain `String` (default from a single `DEFAULT_OSD_NAME` const shared with the schema default), killing the dead `Option` / `skip_serializing_if` plumbing, the unreachable `None` state, and the duplicated `"TisVlay"` literal.
+- **Normalize at the config boundary.** `osd_name` deserializes through sanitize + 14-byte char-boundary clamp, empty → default — so the stored, displayed, and advertised names agree (the review's truncation-mismatch finding). Known residual: `update-config` merges raw vendor values without a schema parse, so a CLI-patched over-long name displays raw until the next pair-time round-trip; the connect path still advertises the clamped form.
+- **Fail-open advertise.** A `set_osd_name` failure logs at warn and continues — a label must never cost power/screen control. The link-layer clamp stays as idempotent defense and as the single clamp implementation.
+- **Test seam.** The fake opener records the clamped value production would advertise (not the raw config value), so clamp regressions become visible to the advertise assertions; the config round-trip test asserts `osd_name` explicitly; a GUI test pins the null-on-clear edit payload.
+- **Supersedes:** the "empty string opts out" mechanism everywhere it was documented (config field docs, schema helper text, protocol.md), the `None`-default zero-delta story (already historical), and the review's suggestion to delete `de_physical_address`'s empty arm — unified tolerance (`""` ≡ absent ≡ default) beats a loud parse error for hand-edited configs, and `osd_name` now follows the same rule, which dissolves the per-row divergence by making the rows agree rather than by outlawing the input.
 
 ## Non-goals / Open decisions
 
