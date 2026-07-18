@@ -268,16 +268,20 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             .collect();
 
         // Spatial hint shown alongside the name — backend's primary
-        // editable descriptor (LG: IP; future Bluetooth: MAC; etc.).
-        // First vendor-config row by convention. Falls
-        // back to the read-only diagnostic list if a backend has no
-        // `UserInput` schema fields.
-        let primary_descriptor = tv
-            .vendor_config
-            .first()
-            .or_else(|| tv.vendor_info.first())
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
+        // identifying descriptor (LG: IP; CEC: device node), served by
+        // the daemon from the connector's `primary_descriptor`. The row
+        // lists are alphabetized, so their order carries no meaning —
+        // first-row is only the fallback for a TV whose config fetch
+        // yielded no primary (e.g. daemon predating the field).
+        let primary_descriptor = if !tv.primary_descriptor.is_empty() {
+            tv.primary_descriptor.clone()
+        } else {
+            tv.vendor_config
+                .first()
+                .or_else(|| tv.vendor_info.first())
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
 
         models.push(TvViewRaw {
             uuid: SharedString::from(tv.uuid.as_str()),
@@ -593,6 +597,7 @@ mod tests {
             system_profile: String::new(),
             primary_input: String::new(),
             hardware_id: HardwareId::default(),
+            primary_descriptor: String::new(),
             vendor_config: Vec::new(),
             vendor_info: Vec::new(),
             desktop: DesktopMapping::default(),
@@ -758,7 +763,28 @@ mod tests {
     }
 
     #[test]
-    fn primary_descriptor_prefers_vendor_config_first_entry() {
+    fn primary_descriptor_prefers_the_daemon_served_value() {
+        // The daemon serves the connector's primary descriptor; the row
+        // list is alphabetized, so a config field sorting before the
+        // vendor's identity field (CEC's advertise_osd_name vs device)
+        // must not leak into the pane. Regression for the TVs pane
+        // showing "true" instead of /dev/cec0.
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "TV");
+        tv.primary_descriptor = "/dev/cec0".into();
+        tv.vendor_config = vec![
+            ("advertise_osd_name".into(), "true".into()),
+            ("device".into(), "/dev/cec0".into()),
+        ];
+
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        assert_eq!(snap.tvs[0].primary_descriptor.as_str(), "/dev/cec0");
+    }
+
+    #[test]
+    fn primary_descriptor_falls_back_to_vendor_config_first_entry() {
         let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "TV");
         tv.vendor_config = vec![
             ("ip".into(), "192.168.1.10".into()),

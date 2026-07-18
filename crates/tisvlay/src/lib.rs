@@ -193,6 +193,11 @@ pub struct TvInfo {
     pub system_profile: String,
     pub primary_input: String,
     pub hardware_id: HardwareId,
+    /// The vendor's primary identifying descriptor (LG: IP; CEC: device
+    /// node), served by the daemon from the connector's
+    /// `primary_descriptor`. Authoritative — `vendor_config` rows are
+    /// alphabetized, so their order carries no meaning.
+    pub primary_descriptor: String,
     pub vendor_config: Vec<(String, String)>,
     pub vendor_info: Vec<(String, String)>,
     pub desktop: DesktopMapping,
@@ -293,11 +298,18 @@ impl DaemonClient {
         };
         let mut tvs = Vec::with_capacity(rows.len());
         for (id, row) in rows {
-            let vendor_config = match self.get_tv_config_value(&id.to_string()).await {
-                Ok(config) => flatten_config(&config),
-                Err(_) => Vec::new(),
+            let (vendor_config, primary) = match self.get_tv_config_value(&id.to_string()).await {
+                Ok(config) => (
+                    flatten_config(&config),
+                    config
+                        .get("primary")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                Err(_) => (Vec::new(), String::new()),
             };
-            tvs.push(row.into_tv_info(id, &self.site, vendor_config));
+            tvs.push(row.into_tv_info(id, &self.site, vendor_config, primary));
         }
         Ok(tvs)
     }
@@ -1388,6 +1400,7 @@ mod mirror_row {
             id: Uuid,
             site: &str,
             vendor_config: Vec<(String, String)>,
+            primary_descriptor: String,
         ) -> TvInfo {
             let identity = self
                 .identity
@@ -1427,6 +1440,7 @@ mod mirror_row {
                     model: identity.model.clone(),
                     serial: identity.serial.clone(),
                 },
+                primary_descriptor,
                 vendor_config,
                 vendor_info: Vec::new(),
                 desktop: DesktopMapping {

@@ -534,6 +534,9 @@ async fn get_config_reads_and_update_config_moves_the_tv() {
     .expect("get-config ok");
     assert_eq!(config["name"], "Movable");
     assert_eq!(config["config"]["address"], "mock://before");
+    // The connector's primary descriptor rides the reply — the clients'
+    // pane hint reads it here, never from the alphabetized config object.
+    assert_eq!(config["primary"], "mock://before");
 
     call(
         &w.client,
@@ -565,6 +568,10 @@ async fn get_config_reads_and_update_config_moves_the_tv() {
     .expect("get-config ok");
     assert_eq!(config["name"], "Moved");
     assert_eq!(config["config"]["address"], "mock://after");
+    assert_eq!(
+        config["primary"], "mock://after",
+        "primary tracks the patch"
+    );
 
     // Immutable and malformed patches are typed errors.
     let err = call(
