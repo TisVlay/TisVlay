@@ -218,6 +218,7 @@ impl LinuxCecLink {
         // advertises nothing. Set while still Unregistered, so this only
         // writes the local config — no frame leaves before we are on the bus.
         if let Some(name) = osd_name.and_then(crate::identity::clamp_osd_name) {
+            tracing::debug!(device, osd_name = %name, "advertising CEC OSD name");
             dev.set_osd_name(&name).await.map_err(map_cec_err)?;
         }
         // Claim a Playback logical address so the adapter is allowed to
