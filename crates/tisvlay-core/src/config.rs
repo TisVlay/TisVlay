@@ -538,6 +538,12 @@ pub struct UserProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_remote_disconnect: Option<EventAction>,
 
+    /// Action on the first local input after a remote session ends —
+    /// wakes the panel that the disconnect blank left dark for the
+    /// returning person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_local_return: Option<EventAction>,
+
     /// Whether an unattributed screen-capture signal arms the remote
     /// session. Attributed sources (remote apps, hooks, logind) always
     /// arm; this decides only the bare screencast case (OBS, browser
@@ -560,6 +566,7 @@ profile_plumbing! {
         on_idle_resume,
         on_remote_connect,
         on_remote_disconnect,
+        on_local_return,
         remote_screencast_arms,
     ],
 }
@@ -593,6 +600,8 @@ pub struct ResolvedUserProfile {
     pub on_remote_connect: EventAction,
     /// Action when the last remote session disconnects.
     pub on_remote_disconnect: EventAction,
+    /// Action on the first local input after a remote session ends.
+    pub on_local_return: EventAction,
     /// Whether an unattributed screen-capture signal arms.
     pub remote_screencast_arms: bool,
 }
@@ -604,9 +613,11 @@ impl Default for ResolvedUserProfile {
             // idle-timeout) are ungated — a blank is always safe to let
             // through even for an armed TV — while the wake-ish events
             // (unlock, lock-wake, idle-resume) stay gated so a wake for an
-            // empty room is suppressed. Unlock also restores the primary
-            // input (a desktop session is incoming); the other mappings
-            // stay input-neutral.
+            // empty room is suppressed. Unlock and local-return restore the
+            // primary input (a user is arriving at the panel — a fresh
+            // desktop session, or a return from a remote one that may have
+            // left the TV's input elsewhere); the other mappings stay
+            // input-neutral.
             on_session_lock: EventAction::ungated(SessionAction::ScreenOff),
             on_session_unlock: EventAction::restoring(SessionAction::ScreenOn),
             on_lock_wake: SessionAction::ScreenOn.into(),
@@ -616,15 +627,19 @@ impl Default for ResolvedUserProfile {
             on_idle_resume: SessionAction::ScreenOn.into(),
             // Both remote edges blank the panel at the floor: the room is
             // empty when a remote session arms, and it stays dark when the
-            // session disarms (a returning person wakes it through the now
-            // un-armed unlock/lock-wake/idle-resume path). Detection, not
-            // policy, is the opt-in — nothing arms until a detector or hook
-            // fires, so the feature stays inert on a stock desktop. Both
-            // events ignore the gate (they fire on the arm/disarm edge
-            // itself), so they carry the plain default; capture arming is
+            // session disarms. A returning person wakes it through
+            // on_local_return (the first local input after the disconnect);
+            // the unlock/lock-wake/idle-resume paths cover only the locked
+            // or already-idled cases. Detection, not policy, is the opt-in —
+            // nothing arms until a detector or hook fires, so the feature
+            // stays inert on a stock desktop. The two edges ignore the gate
+            // (they fire on the arm/disarm edge itself), so they carry the
+            // plain default; on_local_return stays gated but wakes restoring
+            // (it fires un-armed in the common case); capture arming is
             // still off until a profile turns it on.
             on_remote_connect: SessionAction::ScreenOff.into(),
             on_remote_disconnect: SessionAction::ScreenOff.into(),
+            on_local_return: EventAction::restoring(SessionAction::ScreenOn),
             remote_screencast_arms: false,
         }
     }

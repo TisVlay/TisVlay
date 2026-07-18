@@ -1,6 +1,6 @@
 # Remote-session detection follow-ups
 
-Deferred work parked when the remote-session-awareness feature merged. The feature ships with five detectors (manual/hook, PipeWire, portal, logind, Sunshine poll), the per-event `while_remote` gate, and the `on_remote_connect`/`on_remote_disconnect` events. These are the "later, if asked" extensions. See [remote/detection.md](../remote/detection.md) for the as-built reference.
+Deferred work parked when the remote-session-awareness feature merged. The feature ships with five detectors (manual/hook, PipeWire, portal, logind, Sunshine poll), the per-event `while_remote` gate, and the `on_remote_connect`/`on_remote_disconnect`/`on_local_return` events. These are the "later, if asked" extensions. See [remote/detection.md](../remote/detection.md) for the as-built reference.
 
 Related deferrals filed separately: the world-side eager remote-state refresh ([eager-remote-state-refresh.md](eager-remote-state-refresh.md)), and the on-hardware detector validation plus the two bench-gated knobs — connect/disconnect debounce **delay fields** and **retroactive correction** — in [concerns/remote-session-detector-validation.md](../concerns/remote-session-detector-validation.md).
 

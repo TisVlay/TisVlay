@@ -378,8 +378,11 @@ async fn user_profile_overrides_and_guards() {
             // Both remote edges floor to screen_off (blank on arm, stay dark
             // on disarm); capture arming ships off. The connect/disconnect
             // actions ignore the gate, so they project the plain default.
+            // on_local_return wakes restoring on the first local input after
+            // a disconnect (its table shape mirrors on_session_unlock).
             "on_remote_connect": "screen_off",
             "on_remote_disconnect": "screen_off",
+            "on_local_return": { "action": "screen_on", "restore_input": true, "while_remote": false },
             "remote_screencast_arms": false,
         })
     );
@@ -887,6 +890,75 @@ async fn remote_connect_disconnect_actions_fire() {
         v["state"] == "active"
     })
     .await;
+}
+
+/// After a remote disconnect leaves the panel dark, the first local input
+/// wakes it — the case where nothing locked or idled, so no unlock /
+/// lock-wake / idle-resume edge would otherwise fire. The core arms the
+/// return watch on disconnect; `LocalReturn` (which the idle adapter
+/// synthesizes from a lock-wake resume while unlocked + armed) wakes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn local_return_wakes_after_remote_disconnect() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://local-return").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // Stay-dark on disconnect (the floor); on_local_return inherits the
+    // floor wake (screen_on).
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Stay dark",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_off",
+        }),
+    )
+    .await;
+
+    // Arm → blank. Connect clears the return watch, so it must be unset.
+    arm_until(&rig, &sub, "manual", tv, "screenoff").await;
+    assert!(
+        !rig.stack
+            .local_return_armed
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "connect must not arm the return watch"
+    );
+
+    // Disarm → stays dark, and the return watch arms.
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", false)),
+        "core gone"
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !rig
+        .stack
+        .local_return_armed
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "disconnect never armed the return watch"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // First local input after the disconnect wakes the panel...
+    drive_until(&rig, &sub, SessionEvent::LocalReturn, tv, "active").await;
+    // ...and the dispatch clears the watch (fire-once; the next event
+    // supersedes it).
+    assert!(
+        !rig.stack
+            .local_return_armed
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the return dispatch clears the watch"
+    );
 }
 
 /// The fact publishes on the user socket (cached) and mirrors on the

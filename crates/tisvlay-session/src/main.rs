@@ -84,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
         stack.idle_timeouts.clone(),
         stack.client.clone(),
         is_locked,
+        stack.local_return_armed.clone(),
     ));
 
     // PipeWire screencast detector on its own supervised OS thread —
