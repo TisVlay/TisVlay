@@ -35,6 +35,22 @@ pub enum ScrollTarget {
     Backlight,
 }
 
+impl ScrollTarget {
+    /// Whether `tv`'s backend advertises this scroll capability.
+    fn supported_by(self, tv: &TvView) -> bool {
+        match self {
+            ScrollTarget::Volume => tv.has_volume,
+            ScrollTarget::Backlight => tv.has_backlight,
+        }
+    }
+}
+
+/// A TV the wheel can drive right now: powered on, reachable, and
+/// advertising `target`.
+fn is_live_target(tv: &TvView, target: ScrollTarget) -> bool {
+    tv.connected && tv.is_on && target.supported_by(tv)
+}
+
 #[derive(Debug)]
 pub enum TrayCommand {
     PowerOn(Uuid),
@@ -65,7 +81,10 @@ const SCROLL_NOTCH: i32 = 120;
 pub struct TvTray {
     pub mirror: Mirror,
     pub cmd_tx: mpsc::UnboundedSender<TrayCommand>,
-    pub scroll_target: ScrollTarget,
+    /// The capability the wheel drives, once the user has picked one from
+    /// a device menu. `None` until then — the effective target is derived
+    /// (backlight when any live TV offers it, else volume).
+    pub scroll_target: Option<ScrollTarget>,
     /// TV the wheel adjusts; middle-click cycles it.
     pub scroll_tv: Option<Uuid>,
     /// Coalescer for the Settings menu item — set when an `OpenGui`
@@ -84,27 +103,50 @@ impl TvTray {
         Self {
             mirror: Mirror::default(),
             cmd_tx,
-            scroll_target: ScrollTarget::Volume,
+            scroll_target: None,
             scroll_tv: None,
             open_gui_pending,
         }
     }
 
-    /// The TV the wheel drives: last interacted with, else first
-    /// connected-and-on.
+    /// The capability the wheel drives: the user's explicit menu pick if
+    /// any, else the startup default — backlight when a live TV offers it,
+    /// otherwise volume. `None` only when nothing live is scrollable. An
+    /// explicit pick is honored literally even when no live TV supports it
+    /// (the wheel simply no-ops until a capable TV returns).
+    fn effective_target(&self) -> Option<ScrollTarget> {
+        if let Some(target) = self.scroll_target {
+            return Some(target);
+        }
+        [ScrollTarget::Backlight, ScrollTarget::Volume]
+            .into_iter()
+            .find(|target| self.any_live_supports(*target))
+    }
+
+    /// Whether any powered-on, reachable TV advertises `target`.
+    fn any_live_supports(&self, target: ScrollTarget) -> bool {
+        self.mirror
+            .tvs
+            .values()
+            .any(|tv| is_live_target(tv, target))
+    }
+
+    /// The TV the wheel drives: the last-interacted TV when it's live and
+    /// still advertises the effective target, else the first TV that is.
     fn effective_scroll_tv(&self) -> Option<Uuid> {
+        let target = self.effective_target()?;
         self.scroll_tv
             .filter(|id| {
                 self.mirror
                     .tvs
                     .get(id)
-                    .is_some_and(|tv| tv.connected && tv.is_on)
+                    .is_some_and(|tv| is_live_target(tv, target))
             })
             .or_else(|| {
                 self.mirror
                     .tvs
                     .iter()
-                    .find(|(_, tv)| tv.connected && tv.is_on)
+                    .find(|(_, tv)| is_live_target(tv, target))
                     .map(|(id, _)| *id)
             })
     }
@@ -154,6 +196,7 @@ impl Tray for TvTray {
 
     fn tool_tip(&self) -> ToolTip {
         let scroll_tv = self.effective_scroll_tv();
+        let scroll_target = self.effective_target();
         let description = if !self.mirror.daemon_alive {
             "Daemon not available".into()
         } else {
@@ -161,7 +204,7 @@ impl Tray for TvTray {
                 .tvs
                 .iter()
                 .map(|(id, tv)| {
-                    let active = |t| scroll_tv == Some(*id) && self.scroll_target == t;
+                    let active = |t| scroll_tv == Some(*id) && scroll_target == Some(t);
                     let marker = |t| if active(t) { "►" } else { " " };
                     if !tv.connected {
                         return format!("{}\n  off", tv.name);
@@ -200,23 +243,29 @@ impl Tray for TvTray {
         if orientation != ksni::Orientation::Vertical || delta == 0 {
             return;
         }
+        let Some(target) = self.effective_target() else {
+            return;
+        };
         if let Some(id) = self.effective_scroll_tv() {
             // Normalize raw delta to notch-equivalent steps; sub-notch
             // trackpad events floor to one step so every event registers.
             let steps = (delta.abs() / SCROLL_NOTCH).max(1) * delta.signum();
-            let _ = self
-                .cmd_tx
-                .send(TrayCommand::ScrollBy(id, self.scroll_target, steps));
+            let _ = self.cmd_tx.send(TrayCommand::ScrollBy(id, target, steps));
         }
     }
 
     fn secondary_activate(&mut self, _x: i32, _y: i32) {
-        // Middle-click cycles the scroll target to the next live TV.
+        // Middle-click cycles the wheel to the next live TV that can drive
+        // the effective target — TVs lacking that capability are skipped,
+        // so the wheel keeps pointing at something it can actually adjust.
+        let Some(target) = self.effective_target() else {
+            return;
+        };
         let live: Vec<Uuid> = self
             .mirror
             .tvs
             .iter()
-            .filter(|(_, tv)| tv.connected && tv.is_on)
+            .filter(|(_, tv)| is_live_target(tv, target))
             .map(|(id, _)| *id)
             .collect();
         if live.is_empty() {
@@ -229,7 +278,7 @@ impl Tray for TvTray {
             Some(i) => live[(i + 1) % live.len()],
             None => live[0],
         };
-        debug!(tv = %next, target = ?self.scroll_target, "scroll target switched");
+        debug!(tv = %next, target = ?target, "scroll target switched");
         self.scroll_tv = Some(next);
     }
 
@@ -597,7 +646,7 @@ fn volume_item(
         label: label.into(),
         icon_name: themed(icon, Variant::Symbolic),
         activate: Box::new(move |tray: &mut TvTray| {
-            tray.scroll_target = ScrollTarget::Volume;
+            tray.scroll_target = Some(ScrollTarget::Volume);
             tray.scroll_tv = Some(id);
             let _ = tx.send(command());
         }),
@@ -620,7 +669,7 @@ fn backlight_item(
         label: label.into(),
         icon_name: themed(icon, Variant::Symbolic),
         activate: Box::new(move |tray: &mut TvTray| {
-            tray.scroll_target = ScrollTarget::Backlight;
+            tray.scroll_target = Some(ScrollTarget::Backlight);
             tray.scroll_tv = Some(id);
             let _ = tx.send(command());
         }),
@@ -673,4 +722,95 @@ fn activate(
     Box::new(move |_tray| {
         let _ = tx.send(command());
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connected TV with the given power state and scroll capabilities.
+    fn tv(name: &str, on: bool, has_volume: bool, has_backlight: bool) -> TvView {
+        TvView {
+            name: name.into(),
+            connected: true,
+            is_on: on,
+            has_volume,
+            has_backlight,
+            ..Default::default()
+        }
+    }
+
+    fn tray_with(tvs: &[(Uuid, TvView)]) -> TvTray {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        for (id, view) in tvs {
+            tray.mirror.tvs.insert(*id, view.clone());
+        }
+        tray
+    }
+
+    #[test]
+    fn default_target_prefers_backlight_then_volume() {
+        let id = Uuid::from_u128(1);
+
+        // A backlight-capable TV wins the default.
+        let tray = tray_with(&[(id, tv("C3", true, true, true))]);
+        assert_eq!(tray.effective_target(), Some(ScrollTarget::Backlight));
+
+        // Volume-only fleet falls back to volume.
+        let tray = tray_with(&[(id, tv("Soundbar", true, true, false))]);
+        assert_eq!(tray.effective_target(), Some(ScrollTarget::Volume));
+
+        // Nothing scrollable (a CEC TV) -> no target.
+        let tray = tray_with(&[(id, tv("CEC", true, false, false))]);
+        assert_eq!(tray.effective_target(), None);
+
+        // Empty fleet -> no target.
+        assert_eq!(tray_with(&[]).effective_target(), None);
+    }
+
+    #[test]
+    fn powered_off_tv_is_not_a_default_source() {
+        let id = Uuid::from_u128(1);
+        let tray = tray_with(&[(id, tv("C3", false, true, true))]);
+        assert_eq!(tray.effective_target(), None);
+    }
+
+    #[test]
+    fn explicit_pick_sticks_even_when_no_live_tv_supports_it() {
+        // User chose backlight, but only a volume-only TV is live: the pick
+        // is honored literally, so the wheel has nothing to drive (no-op)
+        // rather than silently retargeting to volume.
+        let id = Uuid::from_u128(1);
+        let mut tray = tray_with(&[(id, tv("Soundbar", true, true, false))]);
+        tray.scroll_target = Some(ScrollTarget::Backlight);
+        assert_eq!(tray.effective_target(), Some(ScrollTarget::Backlight));
+        assert_eq!(tray.effective_scroll_tv(), None);
+    }
+
+    #[test]
+    fn middle_click_cycles_only_capable_tvs() {
+        let (a, b, c) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        // a and c have backlight; b (volume-only) must be skipped.
+        let mut tray = tray_with(&[
+            (a, tv("A", true, true, true)),
+            (b, tv("B", true, true, false)),
+            (c, tv("C", true, true, true)),
+        ]);
+        // Derived default is backlight, so the cycle visits a and c only.
+        tray.secondary_activate(0, 0);
+        assert_eq!(tray.scroll_tv, Some(a));
+        tray.secondary_activate(0, 0);
+        assert_eq!(tray.scroll_tv, Some(c));
+        tray.secondary_activate(0, 0);
+        assert_eq!(tray.scroll_tv, Some(a));
+    }
+
+    #[test]
+    fn middle_click_is_a_noop_when_nothing_is_scrollable() {
+        let id = Uuid::from_u128(1);
+        let mut tray = tray_with(&[(id, tv("CEC", true, false, false))]);
+        tray.secondary_activate(0, 0);
+        assert_eq!(tray.scroll_tv, None);
+    }
 }
