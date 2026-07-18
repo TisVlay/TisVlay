@@ -213,13 +213,23 @@ impl LinuxCecLink {
         }
         // Advertise our OSD name before claiming the logical address, so the
         // name rides the same log-address configuration the kernel then
-        // auto-answers <Give OSD Name> from. Clamped to the 14-byte CEC field
-        // (an over-long label would else fail the claim); an all-control label
-        // advertises nothing. Set while still Unregistered, so this only
-        // writes the local config — no frame leaves before we are on the bus.
+        // auto-answers <Give OSD Name> from. The clamp (14-byte CEC field,
+        // empty → nothing) is idempotent defense — config normalizes at
+        // parse, but this seam takes any &str. Set while still Unregistered,
+        // so this only writes the local config — no frame leaves before we
+        // are on the bus. Best-effort by design: the name is cosmetic, so a
+        // failure here logs and continues rather than costing the caller the
+        // whole connection (and with it all power/screen control).
         if let Some(name) = osd_name.and_then(crate::identity::clamp_osd_name) {
             tracing::debug!(device, osd_name = %name, "advertising CEC OSD name");
-            dev.set_osd_name(&name).await.map_err(map_cec_err)?;
+            if let Err(error) = dev.set_osd_name(&name).await {
+                tracing::warn!(
+                    device,
+                    osd_name = %name,
+                    %error,
+                    "failed to advertise CEC OSD name; continuing without it"
+                );
+            }
         }
         // Claim a Playback logical address so the adapter is allowed to
         // transmit on the bus.
@@ -500,9 +510,10 @@ mod fake {
         /// models the daemon's user lacking access to the node, for the
         /// discovery-badge and connect-failure paths.
         deny_permission: bool,
-        /// Records the `osd_name` passed to each `open` call, in order — lets
-        /// tests assert what the adapter advertised (or that a transient open
-        /// advertised nothing).
+        /// Records, per `open` call in order, the name the production link
+        /// would actually advertise — the *clamped* value, not the raw
+        /// argument — so tests observe the advertised bytes and clamp
+        /// regressions surface in the advertise assertions.
         opened_with: Mutex<Vec<Option<String>>>,
     }
 
@@ -601,9 +612,8 @@ mod fake {
                 opened_with: Mutex::new(Vec::new()),
             }
         }
-        /// The `osd_name` passed to each `open` call, in order — lets tests
-        /// assert what the adapter advertised (or that a transient open
-        /// advertised nothing).
+        /// The OSD name each `open` call would advertise (post-clamp), in
+        /// order — `None` for an open that advertises nothing.
         pub fn opened_osd_names(&self) -> Vec<Option<String>> {
             self.opened_with.lock().clone()
         }
@@ -617,7 +627,11 @@ mod fake {
             _physical_address: PhysicalAddress,
             osd_name: Option<&str>,
         ) -> Result<Box<dyn CecLink>> {
-            self.opened_with.lock().push(osd_name.map(str::to_string));
+            // Record through the same clamp production advertises through,
+            // so the assertions see the on-bus bytes.
+            self.opened_with
+                .lock()
+                .push(osd_name.and_then(crate::identity::clamp_osd_name));
             if self.deny_permission {
                 return Err(Error::PermissionDenied {
                     path: device.to_string(),

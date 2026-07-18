@@ -47,6 +47,14 @@ pub struct CecVendorConfig {
     #[serde(default = "default_emulate_screen_via_power")]
     pub emulate_screen_via_power: bool,
 
+    /// Advertise our OSD name on the bus at all. On (the default), the TV
+    /// labels the PC's HDMI input with [`Self::osd_name`]; off, we configure
+    /// no name, the kernel stays silent on `<Give OSD Name>`, and the input
+    /// keeps the TV's own default label. The off state is a first-class flag
+    /// (not an empty name) so it survives the schema form on every path.
+    #[serde(default = "default_advertise_osd_name")]
+    pub advertise_osd_name: bool,
+
     /// OSD name this adapter advertises for *itself* on the bus — the label
     /// the TV shows for the PC's HDMI input, the way a Chromecast names its
     /// input "Chromecast". Distinct from the TV's own OSD name that
@@ -54,15 +62,20 @@ pub struct CecVendorConfig {
     /// this is the reverse direction, what we answer when the TV asks *us*
     /// for a name.
     ///
-    /// Defaults to `"TisVlay"`, so a CEC TV shows the project name as its
-    /// input label out of the box; set an empty string to advertise nothing
-    /// (the kernel then stays silent on `<Give OSD Name>` and the input keeps
-    /// its default label). The CEC field is 14 bytes of ASCII; a longer or
-    /// non-ASCII label is clamped (see `identity::clamp_osd_name`), never
-    /// rejected.
-    #[serde(default = "default_osd_name", skip_serializing_if = "Option::is_none")]
-    pub osd_name: Option<String>,
+    /// Defaults to [`DEFAULT_OSD_NAME`]; disable advertising via
+    /// [`Self::advertise_osd_name`], not by emptying the name. Normalized at
+    /// parse (`de_osd_name`): control characters stripped, clamped to the
+    /// 14-byte CEC field on a char boundary, and an empty result falls back
+    /// to the default — mirroring how an empty `physical_address` falls back
+    /// to its default, so "empty" uniformly means "absent" across the config.
+    #[serde(default = "default_osd_name", deserialize_with = "de_osd_name")]
+    pub osd_name: String,
 }
+
+/// The OSD name advertised out of the box — the single source for both the
+/// serde default and the pairing-schema default, so the form prefill and the
+/// parsed config can never drift.
+pub(crate) const DEFAULT_OSD_NAME: &str = "TisVlay";
 
 fn default_device() -> String {
     "/dev/cec0".to_string()
@@ -79,10 +92,25 @@ fn default_physical_address() -> PhysicalAddress {
     PhysicalAddress::from(0x1000)
 }
 
-/// Advertise the project name by default, so a CEC TV shows "TisVlay" as its
-/// input label out of the box (set an empty string to opt out).
-fn default_osd_name() -> Option<String> {
-    Some("TisVlay".to_string())
+/// Advertise by default, so a CEC TV labels the PC's input out of the box.
+fn default_advertise_osd_name() -> bool {
+    true
+}
+
+fn default_osd_name() -> String {
+    DEFAULT_OSD_NAME.to_string()
+}
+
+/// Deserialize + normalize the advertised OSD name: strip control
+/// characters, clamp to the 14-byte CEC field on a char boundary, and treat
+/// an empty result as "absent" (fall back to the default). Normalizing at
+/// the boundary keeps the stored, displayed, and advertised names identical.
+fn de_osd_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(crate::identity::clamp_osd_name(&raw).unwrap_or_else(default_osd_name))
 }
 
 /// Deserialize a physical address, treating an empty string (e.g. a
@@ -114,6 +142,7 @@ impl Default for CecVendorConfig {
             device: default_device(),
             physical_address: default_physical_address(),
             emulate_screen_via_power: default_emulate_screen_via_power(),
+            advertise_osd_name: default_advertise_osd_name(),
             osd_name: default_osd_name(),
         }
     }
@@ -148,13 +177,16 @@ mod tests {
             device: "/dev/cec1".into(),
             physical_address: PhysicalAddress::from(0x2000),
             emulate_screen_via_power: false,
-            osd_name: None,
+            advertise_osd_name: false,
+            osd_name: "Den PC".into(),
         };
         let value = toml::Value::try_from(&cfg).unwrap();
         let back: CecVendorConfig = value.try_into().unwrap();
         assert_eq!(back.device, "/dev/cec1");
         assert_eq!(back.physical_address, PhysicalAddress::from(0x2000));
         assert!(!back.emulate_screen_via_power, "flag round-trips");
+        assert!(!back.advertise_osd_name, "advertise flag round-trips");
+        assert_eq!(back.osd_name, "Den PC", "osd_name round-trips");
     }
 
     #[test]
@@ -187,25 +219,33 @@ mod tests {
     }
 
     #[test]
-    fn osd_name_defaults_to_tisvlay() {
-        // Absent in TOML → the project name, so a CEC TV shows "TisVlay" as
-        // its input label out of the box.
+    fn osd_name_defaults_on_and_to_the_project_name() {
+        // Absent in TOML → advertising on, project name — a CEC TV labels
+        // the PC's input out of the box.
         let cfg: CecVendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
-        assert_eq!(cfg.osd_name.as_deref(), Some("TisVlay"));
-        // An explicit empty string opts out — clamped to no advertisement
-        // (see identity::clamp_osd_name).
+        assert!(cfg.advertise_osd_name);
+        assert_eq!(cfg.osd_name, DEFAULT_OSD_NAME);
+        // The off switch is the flag, not an emptied name.
         let cfg: CecVendorConfig =
-            toml::from_str("device = \"/dev/cec0\"\nosd_name = \"\"").unwrap();
-        assert_eq!(cfg.osd_name.as_deref(), Some(""));
+            toml::from_str("device = \"/dev/cec0\"\nadvertise_osd_name = false").unwrap();
+        assert!(!cfg.advertise_osd_name);
     }
 
     #[test]
-    fn osd_name_round_trips_through_toml() {
-        let cfg = CecVendorConfig {
-            osd_name: Some("HTPC".into()),
-            ..Default::default()
-        };
-        let back: CecVendorConfig = toml::Value::try_from(&cfg).unwrap().try_into().unwrap();
-        assert_eq!(back.osd_name.as_deref(), Some("HTPC"));
+    fn osd_name_normalizes_at_parse() {
+        // Empty ≡ absent ≡ default — the same rule an empty
+        // physical_address follows, so "clear a field" is uniform.
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nosd_name = \"\"").unwrap();
+        assert_eq!(cfg.osd_name, DEFAULT_OSD_NAME);
+        // Over-long names clamp at the boundary, so the stored, displayed,
+        // and advertised names agree.
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nosd_name = \"123456789012345\"").unwrap();
+        assert_eq!(cfg.osd_name, "12345678901234");
+        // Control characters strip; surviving text is kept.
+        let cfg: CecVendorConfig =
+            toml::from_str("device = \"/dev/cec0\"\nosd_name = \" HTPC\\u0000 \"").unwrap();
+        assert_eq!(cfg.osd_name, "HTPC");
     }
 }

@@ -1,6 +1,6 @@
 # Advertise our OSD name: label the TV's HDMI input like a Chromecast
 
-Status: **round-2 redesign in flight** on PR #114. History: baseline `a538ea4` → review round `ff27c91` → v1 implemented `4e1c2cf` → field-confirmed on the LG (2026-07-18) → default flipped `None` → `"TisVlay"` (`b9c6e647`). QA then found the documented empty-string opt-out unreachable through both GUI forms, and a max-effort review confirmed the config shape itself was wrong — see § Round 2 redesign, which supersedes the "default `None` / zero-delta" prose and the "empty string opts out" mechanism below (kept for history). Listed until the PR merges.
+Status: **round-2 redesign implemented** on PR #114 (needs a GUI re-QA of the clear/toggle flows). History: baseline `a538ea4` → review round `ff27c91` → v1 implemented `4e1c2cf` → field-confirmed on the LG (2026-07-18) → default flipped `None` → `"TisVlay"` (`b9c6e647`). QA then found the documented empty-string opt-out unreachable through both GUI forms, and a max-effort review confirmed the config shape itself was wrong — see § Round 2 redesign, which supersedes the "default `None` / zero-delta" prose and the "empty string opts out" mechanism below (kept for history). Listed until the PR merges.
 
 ## Problem
 
