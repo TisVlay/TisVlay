@@ -39,6 +39,19 @@ struct Args {
     /// it must match your firewall rule (docs/firewall.md); 0 = ephemeral.
     #[arg(long, default_value_t = 1901)]
     ssdp_port: u16,
+
+    /// Grant the login-screen greeter socket access by applying a POSIX
+    /// ACL for the display manager's greeter group, auto-detected from the
+    /// known set (`gdm`, `Debian-gdm`). The modern GDM greeter is a
+    /// dynamic-userdb account that `/etc/group` membership can't reach.
+    #[arg(long)]
+    greeter_access: bool,
+
+    /// Explicit greeter group for the socket ACL, overriding
+    /// --greeter-access — for a DM whose greeter group isn't auto-detected
+    /// (e.g. a plasma-login greeter).
+    #[arg(long)]
+    greeter_group: Option<String>,
 }
 
 fn default_config_path() -> PathBuf {
@@ -70,6 +83,11 @@ async fn main() -> anyhow::Result<()> {
         seed: args.seed,
         dpms_connector: args.dpms_connector,
         ssdp_port: args.ssdp_port,
+        greeter: match (args.greeter_group, args.greeter_access) {
+            (Some(name), _) => tisvlay_daemon::GreeterAccess::Group(name),
+            (None, true) => tisvlay_daemon::GreeterAccess::Auto,
+            (None, false) => tisvlay_daemon::GreeterAccess::Disabled,
+        },
     })
     .await
 }
