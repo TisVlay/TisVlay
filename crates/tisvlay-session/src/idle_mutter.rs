@@ -157,12 +157,16 @@ mod ffi {
         let connection = zbus::Connection::session().await?;
         let proxy = IdleMonitorProxy::new(&connection).await?;
 
+        // Subscribe to WatchFired *before* arming any watch: a watch whose
+        // timeout is already exceeded (a re-registration while the seat is
+        // idle) fires on the next iteration, and the match rule must be
+        // installed first or that first Idled is lost.
+        let mut fired = proxy.receive_watch_fired().await?;
         let mut idle_tags: HashMap<u32, u32> = HashMap::new();
         for n in &notifications {
             let id = proxy.add_idle_watch(u64::from(n.timeout_ms)).await?;
             idle_tags.insert(id, n.tag);
         }
-        let mut fired = proxy.receive_watch_fired().await?;
         debug!(count = notifications.len(), "Mutter idle watch started");
 
         let task = tokio::spawn(async move {
@@ -180,7 +184,14 @@ mod ffi {
                         }
                         Action::ArmActiveWatch => match proxy.add_user_active_watch().await {
                             Ok(id) => tracker.armed_active(id),
-                            Err(e) => warn!(%e, "Mutter add_user_active_watch failed"),
+                            Err(e) => {
+                                // Without the resume detector this cycle's
+                                // Resumed edges are lost; bail so the idle
+                                // adapter re-registers a fresh transport
+                                // rather than stranding the watch.
+                                warn!(%e, "Mutter add_user_active_watch failed; re-registering");
+                                return;
+                            }
                         },
                     }
                 }
