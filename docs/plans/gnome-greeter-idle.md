@@ -37,7 +37,37 @@ The KDE greeter attaches a `systemd.user` unit to a vendor-shipped, greeter-only
 1. **Move** `idle_mutter.rs` → `tisvlay-core` beside `wayland.rs` under a `mutter-idle` feature (implies `wayland` for the shared `IdleNotification`/`IdleTransition` vocab, adds `zbus`/`futures-util`); the pure `Tracker` tests move with it. `tisvlay-session` uses `tisvlay_core::idle_mutter`; behavior unchanged. **Done** (`refactor(core): share the Mutter idle transport`).
 2. **Greeter fallback** in `connect_idle_watch`: try the wayland socket first, and on `ProtocolNotSupported` (socket up, no `ext-idle-notify`) fall back to `Mutter.IdleMonitor` — distinguished from socket-not-ready (retry) via a typed outcome so a GNOME greeter doesn't burn the retry budget. **Done** (`feat(greeter): fall back to Mutter idle on GNOME greeters`).
 3. **NixOS deployment**: generalize `greeter.enable` to GDM. The GDM greeter runs `gnome-session --session=gnome-login`, so `gnome-session@gnome-login.target` is its greeter-only session target — the analogue of `plasma-login-wayland.target`; the unit hangs off it (`wantedBy`/`partOf`) and starts only at the login screen. GDM's greeter accounts (`gdm-greeter{,-2,-3,-4,-5}`) join the `tisvlay` group for socket access. **Done** (Nix module).
-4. **Debian/rpm greeter unit**: deferred. The `.deb`/`.rpm` ship no greeter unit at all (Nix-only); a packaged GDM greeter unit (a `systemd.user` unit + a `gdm-greeter` group grant in the maintainer scripts — complicated by Ubuntu allocating the `gdm-greeter` uid dynamically) is the remaining follow-up.
+4. **Debian/rpm greeter unit**: the remaining follow-up — see [Packaged greeter (deb/rpm)](#packaged-greeter-debrpm) below for the researched approach.
+
+## Packaged greeter (deb/rpm)
+
+The `.deb`/`.rpm` ship no greeter unit today (the greeter is Nix-only). Packaging one for GDM has two parts: the unit, and — the hard part — giving the greeter socket access. Researched 2026-07-19 on the Ubuntu 26.04 GNOME/GDM VM plus upstream sources.
+
+### The unit (straightforward)
+
+Ship a `systemd` **user** unit `tisvlay-greeter.service` in the package at `/usr/lib/systemd/user/`, `WantedBy=gnome-session@gnome-login.target`, `ExecStart` the greeter. Enable it with `systemctl --global enable tisvlay-greeter.service` in the maintainer scripts (as the postinstall already does for the session/tray). Because `gnome-session@gnome-login.target` is active only in the greeter session, the `--global` enablement starts it only at the login screen, in the greeter user's manager — the packaged analogue of the NixOS `wantedBy` on that target.
+
+### The socket-access problem (the real work)
+
+The daemon socket is `tisvlay:tisvlay 0660`; `tisvlay` group membership is the auth boundary. The greeter isn't (and can't easily be) in that group, and the fix differs by how the distro runs the greeter:
+
+- **NixOS** — static greeter accounts `gdm-greeter{,-2..5}` (nixpkgs `gdm.nix`). `/etc/group` membership works; the module adds them to `tisvlay`. **Solved.**
+- **Fedora/RHEL / traditional GDM** — the greeter runs as the static `gdm` user (uid 42); the DynamicUser greeter ([GNOME gdm #553](https://gitlab.gnome.org/GNOME/gdm/-/work_items/553)) is upstream-in-progress, not shipped there. A postinstall `usermod -aG tisvlay gdm` works.
+- **Ubuntu 26.04** — the greeter is a **systemd `DynamicUser`** (`gdm-greeter`, ephemeral uid in the 60000+ range, *not* in `/etc/passwd`/`/etc/group`; primary group `gdm`). Two dead ends, both confirmed on the VM:
+  - **`/etc/group` grant is impossible** — a DynamicUser gets supplementary groups *only* from its unit's `SupplementaryGroups=` ([systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)), and GDM sets that to `gdm`; `/etc/group` is never consulted (the earlier `usermod` "success" was `sudo`'s `initgroups()`, not the real service path). Our unit is a *user* unit, so it can't add groups either (unprivileged manager).
+  - **POSIX ACLs are not enforced on `/run`** — a `root:root` plain file with `g:gdm:rw` (mask `rw`) is still unwritable by `gdm-greeter` though it is in `gdm`. So `setfacl g:gdm:rw` on the socket does nothing here.
+
+### Recommended approach: a secondary greeter socket
+
+The one handle every greeter shares is the **`gdm` group** (Ubuntu DynamicUser primary group, Fedora static-`gdm` group, and grantable on NixOS). So instead of dragging the greeter into the `tisvlay` group, give the daemon a **secondary listen socket for the greeter, owned `tisvlay:gdm 0660`** (e.g. `/run/tisvlay/greeter.sock`), added next to the existing chmod-after-bind step. The greeter connects there; static-`gdm` and DynamicUser greeters both reach it via their `gdm` group, with no group edits or ACLs. The packaged greeter unit points `--socket` at it; NixOS can adopt it too (retiring the per-user group grant) or keep its working static-user path.
+
+Security note: a `tisvlay:gdm` socket is a full daemon session, so it grants any `gdm`-group process TV control — the same exposure as adding `gdm` to `tisvlay`. `gdm` is the display-manager group (root-run, trusted), so this is a modest, opt-in extension (gate it behind a daemon `--greeter-group`/`--greeter-socket` flag or a NixOS/packaging option, off by default).
+
+### Open questions
+
+- Confirm Fedora/RHEL still runs the greeter as static `gdm` (not DynamicUser) on the target release; if it flips to DynamicUser, it folds into the Ubuntu case (the secondary socket already covers it).
+- Whether to make the secondary greeter socket the *uniform* greeter transport (all distros) or keep NixOS on its static-user + `tisvlay`-group path.
+- The zenoh mechanics of a second unix listen endpoint on the daemon router (config + post-bind chown to `tisvlay:gdm`).
 
 ## Verification (2026-07-19, on the Ubuntu 26.04 GNOME/GDM VM, at the login screen)
 
