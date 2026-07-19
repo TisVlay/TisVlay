@@ -7181,6 +7181,7 @@ dependencies = [
  "directories",
  "edidkit",
  "futures-util",
+ "libc",
  "netlink-packet-core",
  "netlink-packet-route",
  "rtnetlink",
