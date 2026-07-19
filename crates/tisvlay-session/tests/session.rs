@@ -1,6 +1,6 @@
 //! P4 session-service wire tests: gateway isolation (user/** never
 //! transits the system peer), lock/unlock/idle dispatch through user
-//! profiles, the ScreenSaver adapter, persistence, and the idle-timeout
+//! profiles, the logind lock watcher, persistence, and the idle-timeout
 //! watch.
 
 use std::path::{Path, PathBuf};
@@ -455,15 +455,15 @@ async fn user_profile_overrides_and_guards() {
     .expect("delete ok");
 }
 
-/// The consumed-D-Bus adapter: FakeScreenSaver ActiveChanged transitions
-/// drive lock/unlock end to end.
+/// The consumed-D-Bus adapter: logind `LockedHint` transitions drive
+/// lock/unlock end to end.
 #[tokio::test(flavor = "multi_thread")]
-async fn screensaver_adapter_drives_lock_unlock() {
+async fn lock_watcher_drives_lock_unlock() {
     let bus = tisvlay_test::PrivateBus::shared();
     let service_conn = bus.connect().await.expect("private bus service conn");
-    let fake = tisvlay_test::fake_screensaver::FakeScreenSaver::register(&service_conn)
+    let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
-        .expect("fake screensaver");
+        .expect("fake logind");
 
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://saver").await;
@@ -478,21 +478,21 @@ async fn screensaver_adapter_drives_lock_unlock() {
     let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
     tokio::spawn(async move {
-        let _ = tisvlay_session::watch_screensaver(watcher_conn, client, locked).await;
+        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked).await;
     });
-    // Watcher subscription + session fleet mirror settle.
+    // Watcher hydration + LockedHint subscription + fleet mirror settle.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    fake.emit_active_changed(true).await.unwrap();
+    fake.set_locked(true).await.unwrap();
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "screenoff"
     })
     .await;
     assert!(
         is_locked.load(std::sync::atomic::Ordering::SeqCst),
-        "lock flag mirrors ActiveChanged(true) for the lock-wake policy"
+        "lock flag mirrors LockedHint(true) for the lock-wake policy"
     );
-    fake.emit_active_changed(false).await.unwrap();
+    fake.set_locked(false).await.unwrap();
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "active"
     })
@@ -555,19 +555,19 @@ async fn screen_drift_while_idle_reasserts_after_grace() {
     .await;
 }
 
-/// A lock that predates the watcher (KDE's auto-login lock activates
-/// before the session service starts) is seeded from `GetActive` —
-/// without the seed the locked-idle timer stays gated off and never
-/// blanks the TV.
+/// A lock that predates the watcher (an auto-login lock activates before
+/// the session service starts) is seeded from `LockedHint` — without the
+/// seed the locked-idle timer stays gated off and never blanks the TV.
 #[tokio::test(flavor = "multi_thread")]
-async fn screensaver_seed_reads_a_preexisting_lock() {
+async fn lock_watcher_seed_reads_a_preexisting_lock() {
     let bus = tisvlay_test::PrivateBus::shared();
     let service_conn = bus.connect().await.expect("private bus service conn");
-    let fake = tisvlay_test::fake_screensaver::FakeScreenSaver::register(&service_conn)
+    let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
-        .expect("fake screensaver");
-    // The lock lands before anyone subscribes — an edge with no witness.
-    fake.emit_active_changed(true).await.unwrap();
+        .expect("fake logind");
+    // The lock lands before anyone subscribes — an edge with no witness,
+    // caught only by the property seed, not a change signal.
+    fake.set_locked(true).await.unwrap();
 
     let rig = rig().await;
     let watcher_conn = bus.connect().await.expect("watcher conn");
@@ -575,14 +575,14 @@ async fn screensaver_seed_reads_a_preexisting_lock() {
     let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
     tokio::spawn(async move {
-        let _ = tisvlay_session::watch_screensaver(watcher_conn, client, locked).await;
+        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked).await;
     });
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while !is_locked.load(std::sync::atomic::Ordering::SeqCst) {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "GetActive seed never landed"
+            "LockedHint seed never landed"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

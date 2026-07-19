@@ -89,8 +89,9 @@ pub(crate) struct SessionInfo {
 /// Whether a session `Type` is a graphical (remote-desktop) login. Plain
 /// SSH shells also mint `Remote=yes` sessions but are `Type=tty`; the
 /// graphical type is what distinguishes a remote *desktop* from a remote
-/// shell, and only a desktop drives the outputs this arms against.
-fn is_graphical(session_type: &str) -> bool {
+/// shell, and only a desktop drives the outputs this arms against. Shared
+/// with the lock watcher, which wants the graphical seat session too.
+pub(crate) fn is_graphical(session_type: &str) -> bool {
     matches!(session_type, "x11" | "wayland")
 }
 
@@ -287,8 +288,9 @@ fn emit(client: &RemoteClient, report: RemoteReport) -> Result<(), Fault> {
     }
 }
 
-/// The service's own uid — the session-ownership filter.
-fn own_uid() -> u32 {
+/// The service's own uid — the session-ownership filter. Shared with the
+/// lock watcher, which scopes to this user's graphical session.
+pub(crate) fn own_uid() -> u32 {
     // SAFETY: `getuid` is always successful and has no preconditions.
     unsafe { libc::getuid() }
 }

@@ -10,11 +10,12 @@
 //! physically never reach the system peer.
 
 mod detector;
+mod idle_mutter;
+mod lock;
 mod logind;
 mod monitor;
 mod remote;
 mod screencast;
-mod screensaver;
 mod store;
 mod sunshine;
 
@@ -43,11 +44,11 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
+pub use lock::{spawn as spawn_lock_watcher, watch_lock};
 pub use logind::spawn as spawn_logind_detector;
 pub use monitor::spawn as spawn_portal_monitor;
 pub use remote::RemoteReport;
 pub use screencast::spawn as spawn_screencast_detector;
-pub use screensaver::watch_screensaver;
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
 pub use sunshine::spawn as spawn_sunshine_detector;
 
@@ -1325,11 +1326,10 @@ pub async fn idle_adapter(
         push_idle(LOCKED_IDLE_TAG, locked_secs);
         push_idle(UNLOCKED_IDLE_TAG, unlocked_secs);
         let (wl_tx, mut transitions) = mpsc::unbounded_channel();
-        let handle = tisvlay_core::wayland::start_idle_watch(notifications, wl_tx);
-        let _guard = match handle {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!(%e, "wayland idle watch unavailable; retrying");
+        let _guard = match start_idle_watch(notifications, wl_tx).await {
+            Some(guard) => guard,
+            None => {
+                warn!("no idle transport available; retrying");
                 tokio::select! {
                     changed = timeouts.changed() => {
                         if changed.is_err() {
@@ -1361,6 +1361,41 @@ pub async fn idle_adapter(
                     break; // re-register at the new timeouts
                 }
             }
+        }
+    }
+}
+
+/// A live idle watch from whichever transport attached. Held for its
+/// side effect: dropping it stops the watch (the wayland thread exits on
+/// its stop pipe; the Mutter task aborts and closes its bus). The inner
+/// handles are never read — only dropped — so the fields look dead.
+#[allow(dead_code)]
+enum IdleWatch {
+    Wayland(tisvlay_core::wayland::WatchHandle),
+    Mutter(idle_mutter::Handle),
+}
+
+/// Attach an idle watch over the first transport the running desktop
+/// provides: the `ext-idle-notify` Wayland protocol (KWin, wlroots), else
+/// GNOME's `org.gnome.Mutter.IdleMonitor`. Both feed the same
+/// `(tag, transition)` channel, so the dispatch is transport-agnostic.
+/// `None` means neither attached — the caller retries.
+async fn start_idle_watch(
+    notifications: Vec<tisvlay_core::wayland::IdleNotification>,
+    tx: mpsc::UnboundedSender<(u32, tisvlay_core::wayland::IdleTransition)>,
+) -> Option<IdleWatch> {
+    // Wayland first: it needs no bus and is the native path on the KDE
+    // targets. Any failure (protocol absent on Mutter, or no compositor)
+    // falls through to the D-Bus IdleMonitor.
+    match tisvlay_core::wayland::start_idle_watch(notifications.clone(), tx.clone()) {
+        Ok(handle) => return Some(IdleWatch::Wayland(handle)),
+        Err(e) => debug!(%e, "wayland idle unavailable; trying Mutter IdleMonitor"),
+    }
+    match idle_mutter::start_idle_watch(notifications, tx).await {
+        Ok(handle) => Some(IdleWatch::Mutter(handle)),
+        Err(e) => {
+            debug!(%e, "Mutter IdleMonitor unavailable");
+            None
         }
     }
 }

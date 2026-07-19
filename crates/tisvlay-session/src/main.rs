@@ -58,28 +58,22 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
 
-    // Lock state minted by the stack and shared three ways: the
-    // screensaver watcher writes it (GetActive seed + edges), the idle
-    // adapter's lock-wake policy and the core's drift re-assert read it.
+    // Lock state minted by the stack and shared three ways: the lock
+    // watcher writes it (LockedHint seed + edges), the idle adapter's
+    // lock-wake policy and the core's drift re-assert read it.
     let is_locked = stack.is_locked.clone();
-    // Lock/unlock via the session bus; absent bus = adapter disabled. The
-    // same connection backs the portal monitor's out-of-band name→PID
-    // lookups (a monitor connection is receive-only).
+    // Lock/unlock via logind `LockedHint` on the system bus — the one
+    // cross-desktop lock-state signal. Absent/unreachable bus is handled
+    // inside (supervised retry, quiet).
+    tisvlay_session::spawn_lock_watcher(stack.client.clone(), is_locked.clone());
+    // Portal monitor on the session bus (out-of-band name→PID lookups for
+    // the remote screencast attribution). Absent bus = monitor disabled.
     match zbus::Connection::session().await {
-        Ok(connection) => {
-            let client = stack.client.clone();
-            let locked = is_locked.clone();
-            tisvlay_session::spawn_portal_monitor(connection.clone(), stack.remote.clone());
-            tokio::spawn(async move {
-                if let Err(e) = tisvlay_session::watch_screensaver(connection, client, locked).await
-                {
-                    tracing::warn!(%e, "screensaver watcher exited");
-                }
-            });
-        }
-        Err(e) => tracing::warn!(%e, "no session bus, screensaver watcher disabled"),
+        Ok(connection) => tisvlay_session::spawn_portal_monitor(connection, stack.remote.clone()),
+        Err(e) => tracing::warn!(%e, "no session bus, portal monitor disabled"),
     }
-    // User idle via wayland; unavailable compositors are handled inside.
+    // User idle via wayland (ext-idle-notify) or GNOME's Mutter idle
+    // monitor; unavailable transports are handled inside.
     tokio::spawn(tisvlay_session::idle_adapter(
         stack.idle_timeouts.clone(),
         stack.client.clone(),
