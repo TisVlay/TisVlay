@@ -1,6 +1,6 @@
 # GNOME session events: idle and lock over GNOME's own transports
 
-Status: **in progress** on branch `fix/gnome-patch`. Diagnosed and empirically validated on an Ubuntu 26.04 / GNOME Shell 50.1 Wayland VM (2026-07-19); implementation landing as reviewable diffs off this baseline.
+Status: **implemented and field-verified** on branch `fix/gnome-patch` (2026-07-19). Diagnosed on an Ubuntu 26.04 / GNOME Shell 50.1 Wayland VM; all five events confirmed firing on both GNOME (VM, via the transports below) and KDE Plasma Wayland (local, the logind lock path on kscreenlocker). Kept active until the PR merges.
 
 ## Problem
 
@@ -52,7 +52,12 @@ Diagnosis was confirmed live on the VM before writing code (2026-07-19):
 - `gdbus monitor` on `org.gnome.ScreenSaver` — a real lock/unlock emitted `ActiveChanged (true)` then `(false)`.
 - `dbus-monitor` on the system bus — the graphical session (`session/_32`, session 2, `Type=wayland`) emitted `PropertiesChanged {'LockedHint': <true>}` on lock and `<false>` on unlock; `LockedHint` also read `no`→`yes` across a lock via `loginctl`.
 
-Exit check: install the built `.deb`, set low idle timeouts on the default profile, and confirm all five events fire on GNOME (journal + TV reaction). KDE re-verification is required because the lock path moved off `org.freedesktop.ScreenSaver` — `LockedHint` is set by kscreenlocker, so it is expected clean, but it is a behavior change on the working path.
+Results (2026-07-19), read from the `debug!(?event, "session event")` audit seam added at the core dispatch (one observability point across all transports):
+
+- **GNOME** (VM, GNOME Shell 50.1): the patched session logged `Mutter idle watch started` (`count=3`: lock-wake + locked-idle + unlocked-idle) and fired all five — `Lock`/`Unlock` (logind `LockedHint`), `IdleTimeout`/`IdleResume` (Mutter watches), `LockWake` (the 200 ms probe) — each driving the resolved TV action (`ScreenOff`/`ScreenOn`). The built `.deb` installs the same binary (strings confirm the new code).
+- **KDE** (local, Plasma Wayland, KWin `ext_idle_notifier_v1` server v2): `Lock`/`Unlock` fired through the **logind** watcher on kscreenlocker's `LockedHint`, with idle on the unchanged wayland transport — clearing the one flagged regression risk (the lock path moving off `org.freedesktop.ScreenSaver`). `IdleResume` was not exercised there (those cycles were locked → `LockWake`); it rides the unchanged wayland `Resumed` path already confirmed on GNOME.
+
+Two corrections fell out of the live run: zbus yields a property stream's current value when it opens, so the lock watcher emitted a startup `Lock`/`Unlock` reflecting the state at attach (would blank/wake a TV on every restart) — fixed by emitting only on a real change from the seeded state; and the audit-seam `debug!` log was added to make the per-event verification (and the remote events later) legible.
 
 ## Non-goals
 
