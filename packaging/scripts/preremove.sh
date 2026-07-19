@@ -14,6 +14,12 @@ systemctl disable tisvlay-daemon.service 2>/dev/null || true
 # /etc/systemd/user symlinks so new logins don't restart them.
 systemctl --global disable tisvlay-session.service tisvlay-tray.service 2>/dev/null || true
 
+# Undo the GDM greeter enablement and the group grant postinstall added.
+systemctl --global disable tisvlay-greeter-gdm.service 2>/dev/null || true
+if getent group tisvlay >/dev/null 2>&1 && getent passwd gdm >/dev/null 2>&1; then
+    gpasswd -d gdm tisvlay >/dev/null 2>&1 || true
+fi
+
 # Reload systemd
 systemctl daemon-reload || true
 

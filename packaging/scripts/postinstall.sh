@@ -43,6 +43,20 @@ systemctl enable tisvlay-daemon.service 2>/dev/null || true
 # is safe for users not in the tisvlay group.
 systemctl --global enable tisvlay-session.service tisvlay-tray.service 2>/dev/null || true
 
+# GDM greeter idle client (OLED protection at the login screen). Its unit hangs
+# off gnome-session@gnome-login.target, active only inside a GDM greeter
+# session, so the --global symlink is inert under other display managers. The
+# grant adds GDM's greeter user to the tisvlay group so it can reach the 0660
+# socket; `gdm` is the static greeter user on Fedora/RHEL/Arch. It's a no-op
+# where there's no gdm user, and where GDM runs the greeter as a systemd
+# DynamicUser (Ubuntu) — which ignores /etc/group — the client finds the socket
+# unreadable and exits cleanly rather than looping. `gdm` is the root-run,
+# trusted display-manager user, so extending it TV control is a modest grant.
+systemctl --global enable tisvlay-greeter-gdm.service 2>/dev/null || true
+if getent passwd gdm >/dev/null 2>&1; then
+    usermod -aG tisvlay gdm 2>/dev/null || true
+fi
+
 echo "tisvlay installed. Grant yourself socket access and start the daemon:"
 echo "  sudo usermod -aG tisvlay \$USER   # re-login to take effect"
 echo "  sudo systemctl start tisvlay-daemon"

@@ -1,0 +1,26 @@
+[Unit]
+Description=TisVlay greeter idle client (GDM)
+Documentation=https://github.com/ruffsl/tisvlay
+# A systemd *user* unit for GDM's greeter session. GDM launches the greeter via
+# `gnome-session --session=gnome-login`, which reaches
+# `gnome-session@gnome-login.target` — the greeter-only attach point (the GDM
+# analogue of plasma-login-wayland.target). On Fedora/RHEL/Arch the greeter runs
+# as the static `gdm` user, which the postinstall adds to the tisvlay group so
+# this can reach the 0660 socket; where the greeter user can't be granted (GDM's
+# DynamicUser greeter on Ubuntu) the client finds the socket unreadable and
+# exits cleanly instead of looping. The target being up implies Mutter is up, so
+# the idle transport (ext-idle-notify or Mutter.IdleMonitor) is available;
+# WAYLAND_DISPLAY / XDG_RUNTIME_DIR are inherited from the greeter user manager.
+After=gnome-session@gnome-login.target
+PartOf=gnome-session@gnome-login.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tisvlay-greeter --socket /run/tisvlay/zenoh.sock
+# on-failure (not always): a clean exit — compositor disconnect at login, the
+# timeout-disabled early exit, or an unreadable socket — must not restart-loop.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=gnome-session@gnome-login.target

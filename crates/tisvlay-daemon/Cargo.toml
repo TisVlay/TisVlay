@@ -58,10 +58,13 @@ contents = [
     { src = "packaging/systemd/tisvlay-daemon.service", dst = "/usr/lib/systemd/system/tisvlay-daemon.service" },
     # Systemd user services
     { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
-    # Greeter idle client (plasma-login-manager); enablement into the greeter
-    # target is distro-specific — NixOS uses the services.tisvlay.greeter.enable
-    # module option. See docs/design.md "Greeter idle client".
+    # Greeter idle client, one unit per display manager (each hangs off that
+    # DM's greeter-only session target). postinstall.sh enables the GDM variant
+    # and grants its `gdm` user socket access; the plasma-login variant ships
+    # for manual/NixOS use (services.tisvlay.greeter.enable). Only the unit
+    # whose target activates in a given greeter session runs.
     { src = "packaging/systemd/tisvlay-greeter.service", dst = "/usr/lib/systemd/user/tisvlay-greeter.service" },
+    { src = "packaging/systemd/tisvlay-greeter-gdm.service", dst = "/usr/lib/systemd/user/tisvlay-greeter-gdm.service" },
     { src = "packaging/systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
     # D-Bus activation service on the session bus — tisvlay-gui
     # runs as the calling user. Auto-spawns on Activate() from

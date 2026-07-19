@@ -19,4 +19,4 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 ## Packaging & deployment
 
-- [Packaged (deb/rpm) greeter socket access](concerns/greeter-packaged-socket-access.md)
+- [Packaged greeter socket access on GDM's DynamicUser greeter (Ubuntu)](concerns/greeter-packaged-socket-access.md)

@@ -53,6 +53,23 @@ fn next_notify(transition: IdleTransition, last_sent: Option<bool>) -> Option<bo
 /// registers the idle watch and forwards each edge until the compositor
 /// disconnects (greeter session ended), which is a clean exit.
 pub async fn run(socket: &Path, site: &str) -> Result<()> {
+    // Pre-flight the daemon socket: a greeter enabled on a session whose
+    // user isn't in the tisvlay group — GDM's DynamicUser greeter (Ubuntu),
+    // or a grant that hasn't taken effect — can never reach the 0660 socket.
+    // Bow out cleanly so `Restart=on-failure` doesn't loop for the whole
+    // login screen. Other connect errors (daemon still coming up) fall
+    // through to zenoh, whose failure keeps the supervised-restart retry.
+    if let Err(e) = UnixStream::connect(socket)
+        && e.kind() == std::io::ErrorKind::PermissionDenied
+    {
+        info!(
+            socket = %socket.display(),
+            "daemon socket not accessible to this greeter session; idle \
+             protection disabled (grant the greeter user tisvlay-group access)"
+        );
+        return Ok(());
+    }
+
     let session = zenoh::open(
         tisvlay_wire::bootstrap::client_config(socket).context("greeter session config")?,
     )
