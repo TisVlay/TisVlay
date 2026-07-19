@@ -100,6 +100,16 @@ impl SessionEvent {
     fn is_remote_edge(self) -> bool {
         matches!(self, Self::RemoteConnect | Self::RemoteDisconnect)
     }
+
+    /// Seat-local presence events (lock + idle) — the ones subject to
+    /// active-session arbitration, as opposed to the seatless remote
+    /// edges, which are governed by the while-remote gate instead.
+    fn is_seat_local(self) -> bool {
+        matches!(
+            self,
+            Self::Lock | Self::Unlock | Self::LockWake | Self::IdleTimeout | Self::IdleResume
+        )
+    }
 }
 
 /// Handle for injecting session events — adapters and tests alike.
@@ -155,6 +165,11 @@ pub struct SessionStack {
     /// edges), the idle adapter's lock-wake policy and the core's
     /// drift re-assert read it.
     pub is_locked: Arc<AtomicBool>,
+    /// Shared foreground state: the lock watcher writes it (the session's
+    /// `Active` seed + changes), the core's active-session arbitration gate
+    /// reads it. Defaults `true` (assume active until logind says
+    /// otherwise), so a non-logind host never suppresses automation.
+    pub is_active: Arc<AtomicBool>,
     /// Set on a remote disconnect, cleared by the next dispatched event —
     /// handed to the idle adapter so the first local input after a remote
     /// session wakes the panel the disconnect left dark.
@@ -300,6 +315,9 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let (remote_tx, reports) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
     let is_locked = Arc::new(AtomicBool::new(false));
+    // Default true: assume the user is active until the lock watcher seeds
+    // the real `Active` state, so startup and non-logind hosts never suppress.
+    let is_active = Arc::new(AtomicBool::new(true));
     let local_return_armed = Arc::new(AtomicBool::new(false));
 
     // Matching-gated caller for TV rpcs on the system socket, shared into
@@ -330,6 +348,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             .unwrap_or_default(),
         idle_tx,
         is_locked: is_locked.clone(),
+        is_active: is_active.clone(),
         local_return_armed: local_return_armed.clone(),
         idle_fired: false,
         screen_on: HashMap::new(),
@@ -360,6 +379,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         remote: RemoteClient { tx: remote_tx },
         idle_timeouts: idle_rx,
         is_locked,
+        is_active,
         local_return_armed,
     })
 }
@@ -380,6 +400,11 @@ struct Core {
     /// the locked vs unlocked grace (a core-local flag would miss the
     /// `LockedHint`-seeded auto-login lock, which arrives with no edge).
     is_locked: Arc<AtomicBool>,
+    /// The session's foreground (`Active`) state, written by the lock
+    /// watcher. `dispatch` gates seat-local automation on it so a
+    /// backgrounded (fast-switched-away) user does not drive TVs the active
+    /// user is using.
+    is_active: Arc<AtomicBool>,
     /// Set on a remote disconnect, cleared by the next dispatched event.
     /// The idle adapter reads it so the first local input after a remote
     /// session wakes the panel the disconnect left dark (`LocalReturn`).
@@ -814,6 +839,17 @@ impl Core {
             .await
         {
             warn!(%tap, %e, "session tap publish failed");
+        }
+        // Active-session arbitration: while this user's session is not the
+        // seat's foreground, suppress its seat-local automation so a
+        // backgrounded (fast-switched-away) user cannot drive TVs the active
+        // user is using. Absolute — no off-going/on-going exception, since a
+        // backgrounded off would disrupt a shared TV's active user. Remote
+        // edges are a separate, seatless axis and keep their while-remote gate.
+        // The audit tap above still fires; only the automation is suppressed.
+        if event.is_seat_local() && !self.is_active.load(Ordering::SeqCst) {
+            debug!(?event, "automation suppressed (session not active)");
+            return;
         }
         for (tv, meta) in &self.tvs {
             if !meta.automated {

@@ -62,10 +62,14 @@ async fn main() -> anyhow::Result<()> {
     // watcher writes it (LockedHint seed + edges), the idle adapter's
     // lock-wake policy and the core's drift re-assert read it.
     let is_locked = stack.is_locked.clone();
+    // Foreground (`Active`) state minted by the stack: the lock watcher
+    // writes it, the core's active-session arbitration gate reads it.
+    let is_active = stack.is_active.clone();
     // Lock/unlock via logind `LockedHint` on the system bus — the one
-    // cross-desktop lock-state signal. Absent/unreachable bus is handled
-    // inside (supervised retry, quiet).
-    tisvlay_session::spawn_lock_watcher(stack.client.clone(), is_locked.clone());
+    // cross-desktop lock-state signal — plus the session's `Active` state
+    // for arbitration. Absent/unreachable bus is handled inside (supervised
+    // retry, quiet).
+    tisvlay_session::spawn_lock_watcher(stack.client.clone(), is_locked.clone(), is_active);
     // Portal monitor on the session bus (out-of-band name→PID lookups for
     // the remote screencast attribution). Absent bus = monitor disabled.
     match zbus::Connection::session().await {

@@ -477,8 +477,9 @@ async fn lock_watcher_drives_lock_unlock() {
     let client = rig.stack.client.clone();
     let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     tokio::spawn(async move {
-        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked).await;
+        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked, active).await;
     });
     // Watcher hydration + LockedHint subscription + fleet mirror settle.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -497,6 +498,48 @@ async fn lock_watcher_drives_lock_unlock() {
         v["state"] == "active"
     })
     .await;
+}
+
+/// Active-session arbitration: while the user's session is not the seat's
+/// foreground (fast-user-switched away), its seat-local automation is
+/// suppressed — a backgrounded user must not drive a TV the active user is
+/// using. `is_active` is the shared flag the lock watcher writes; here we
+/// drive it directly. Group access is unchanged; only dispatch is gated.
+#[tokio::test(flavor = "multi_thread")]
+async fn active_session_arbitration_suppresses_backgrounded_automation() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Shared", "mock://arbitration").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // Active (the default): a lock drives the TV off, an unlock back on.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // Fast-user-switched away: the session is no longer the foreground, so a
+    // lock must NOT reach the TV the now-active user is using.
+    rig.stack
+        .is_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        rig.stack.client.send(SessionEvent::Lock),
+        "session core gone"
+    );
+    assert_no_sample(&sub, Duration::from_millis(800), |s| {
+        keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+            .is_some_and(|(t, p)| t == tv && p == "state/power")
+            && payload_json(s)["state"] == "screenoff"
+    })
+    .await;
+
+    // Foreground again: dispatch resumes and the lock drives the TV off.
+    rig.stack
+        .is_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
 }
 
 /// The idle drift re-assert: a panel that lights itself while the
@@ -574,8 +617,9 @@ async fn lock_watcher_seed_reads_a_preexisting_lock() {
     let client = rig.stack.client.clone();
     let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     tokio::spawn(async move {
-        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked).await;
+        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked, active).await;
     });
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
