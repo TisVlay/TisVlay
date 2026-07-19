@@ -10,7 +10,7 @@ use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
 use tisvlay_icons::Variant;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::state::{Mirror, TvView};
@@ -158,6 +158,26 @@ impl Tray for TvTray {
 
     fn id(&self) -> String {
         "tisvlay".into()
+    }
+
+    /// The desktop has no StatusNotifier host — vanilla GNOME with no
+    /// AppIndicator extension, or a host that hasn't come up yet. Keep
+    /// running headless: the menu mirror and desktop notifications stay
+    /// live and the GUI still reaches the tray over the user socket; only
+    /// the icon is hidden until a host appears. `true` keeps the service.
+    fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        info!(
+            ?reason,
+            "no StatusNotifier host; tray icon hidden (on GNOME, install and enable \
+             gnome-shell-extension-appindicator) — menu and notifications still active"
+        );
+        true
+    }
+
+    /// A StatusNotifier host appeared (extension enabled, or a desktop like
+    /// KDE that ships one) — the icon registers and becomes visible.
+    fn watcher_online(&self) {
+        info!("StatusNotifier host available; tray icon registered");
     }
 
     fn category(&self) -> ksni::Category {

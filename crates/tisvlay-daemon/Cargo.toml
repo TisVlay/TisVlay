@@ -13,6 +13,7 @@ clap = { workspace = true }
 directories = { workspace = true }
 edidkit = { workspace = true }
 futures-util = { workspace = true }
+libc = { workspace = true }
 netlink-packet-core = { workspace = true }
 netlink-packet-route = { workspace = true }
 rtnetlink = { workspace = true }
@@ -58,10 +59,13 @@ contents = [
     { src = "packaging/systemd/tisvlay-daemon.service", dst = "/usr/lib/systemd/system/tisvlay-daemon.service" },
     # Systemd user services
     { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
-    # Greeter idle client (plasma-login-manager); enablement into the greeter
-    # target is distro-specific — NixOS uses the services.tisvlay.greeter.enable
-    # module option. See docs/design.md "Greeter idle client".
+    # Greeter idle client, one unit per display manager (each hangs off that
+    # DM's greeter-only session target). postinstall.sh enables the GDM variant
+    # and grants its `gdm` user socket access; the plasma-login variant ships
+    # for manual/NixOS use (services.tisvlay.greeter.enable). Only the unit
+    # whose target activates in a given greeter session runs.
     { src = "packaging/systemd/tisvlay-greeter.service", dst = "/usr/lib/systemd/user/tisvlay-greeter.service" },
+    { src = "packaging/systemd/tisvlay-greeter-gdm.service", dst = "/usr/lib/systemd/user/tisvlay-greeter-gdm.service" },
     { src = "packaging/systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
     # D-Bus activation service on the session bus — tisvlay-gui
     # runs as the calling user. Auto-spawns on Activate() from
@@ -119,6 +123,13 @@ depends = [
 # autoloads out of the box (apt installs Recommends by default). Not a
 # hard dep — completions are a passive enhancement (zsh/fish need none).
 recommends = ["bash-completion"]
+# GNOME-only: the tray icon needs a StatusNotifier host, which vanilla
+# GNOME lacks (KDE/Plasma ships one; Ubuntu bundles its own). Suggests,
+# not Recommends — the extension hard-depends on gnome-shell, so a weak
+# Recommends would drag the whole shell onto KDE/other installs. The tray
+# runs headless without it (menu mirror, notifications, GUI link all work)
+# and logs a pointer to it.
+suggests = ["gnome-shell-extension-appindicator"]
 
 [package.metadata.nfpm.overrides.rpm]
 depends = [
@@ -132,3 +143,12 @@ depends = [
 # Weak dependency (RPM Recommends) on the bash-completion loader; not
 # hard, matching the deb side.
 recommends = ["bash-completion"]
+# Optional AppIndicator extension for a visible tray icon on GNOME; see
+# the deb override above for the Suggests-not-Recommends rationale.
+suggests = ["gnome-shell-extension-appindicator"]
+
+# No archlinux override: cargo-nfpm's archlinux packager emits no weak
+# deps (a `suggests` there is silently dropped, and it produces no
+# optdepend), so Arch GNOME users get the AppIndicator pointer from the
+# tray's journal log and packaging/README instead. Arch also ships no
+# runtime `depends` for the same reason.

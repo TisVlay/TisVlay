@@ -7150,6 +7150,7 @@ dependencies = [
  "async-trait",
  "bitflags 2.13.0",
  "directories",
+ "futures-util",
  "insta",
  "parking_lot",
  "proptest",
@@ -7168,6 +7169,7 @@ dependencies = [
  "uuid",
  "wayland-client",
  "wayland-protocols",
+ "zbus",
 ]
 
 [[package]]
@@ -7179,6 +7181,7 @@ dependencies = [
  "directories",
  "edidkit",
  "futures-util",
+ "libc",
  "netlink-packet-core",
  "netlink-packet-route",
  "rtnetlink",

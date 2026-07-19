@@ -46,6 +46,11 @@ wayland-protocols = { workspace = true, optional = true }
 # `poll`) wayland-backend itself uses to read events.
 rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
 
+# Optional: GNOME idle detection (org.gnome.Mutter.IdleMonitor) — the D-Bus
+# fallback where Mutter lacks ext-idle-notify. Shares the wayland idle vocab.
+zbus = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 insta = { workspace = true }
@@ -56,6 +61,9 @@ rstest = { workspace = true }
 default = []
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
 wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]
+# The Mutter D-Bus idle transport shares the wayland idle vocabulary
+# (`IdleNotification`/`IdleTransition`), so it pulls in `wayland`.
+mutter-idle = ["wayland", "dep:zbus", "dep:futures-util"]
 
 [lints]
 workspace = true

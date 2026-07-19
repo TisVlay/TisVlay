@@ -1,6 +1,7 @@
 //! Daemon library: zenoh session lifecycle (M0), and the full stack —
 //! world reactor + zenoh bridge (M2).
 
+mod acl;
 mod arp;
 mod bridge;
 mod discovery;
@@ -23,6 +24,8 @@ use tisvlay_core::TvConnector;
 use tisvlay_world::{Command, InEvent, Reactor, SystemEvent, TvRecord, WorldClient};
 use tokio::sync::{Notify, mpsc};
 use tracing::info;
+
+pub use acl::GreeterAccess;
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
@@ -478,6 +481,9 @@ pub struct DaemonOptions {
     /// are watched automatically).
     pub dpms_connector: Option<String>,
     pub ssdp_port: u16,
+    /// Grant the login greeter's group a socket ACL (its dynamic-userdb
+    /// account can't be reached via `/etc/group`); disabled by default.
+    pub greeter: GreeterAccess,
 }
 
 /// Production-shaped entry: serve with the real vendor backends (plus the
@@ -525,6 +531,10 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         options.store.as_deref(),
     )
     .await?;
+    // The socket is bound and chmod'd 0660 by now; grant the greeter group
+    // its ACL here — after the chmod, never before, since a chmod rewrites
+    // the ACL mask. Strips any prior ACL when disabled.
+    acl::reconcile(&options.socket, &options.greeter);
     // The desktop probe auto-spawns a scoped DPMS watcher per
     // EDID-matched connector; the override flag adds one more whose
     // transitions dispatch globally (the escape hatch when the EDID

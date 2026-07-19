@@ -9,7 +9,9 @@ set -e
 # by it via systemd StateDirectory. The group doubles as the access
 # gate: the daemon's zenoh socket in /run/tisvlay/ is 0660
 # tisvlay:tisvlay, so every account that should control TVs (desktop
-# users, the greeter user) needs tisvlay group membership.
+# users) needs tisvlay group membership. The login greeter reaches the
+# socket via the daemon's --greeter-access group ACL instead, since the
+# modern GDM greeter is a dynamic-userdb account /etc/group can't reach.
 if ! getent group tisvlay >/dev/null 2>&1; then
     groupadd --system tisvlay
 fi
@@ -34,6 +36,12 @@ update-desktop-database /usr/share/applications 2>/dev/null || true
 # Enable (but don't start) the system daemon.
 systemctl enable tisvlay-daemon.service 2>/dev/null || true
 
+# On upgrade, restart the daemon so it runs the new binary — the old
+# package's preremove skips its stop on upgrade, so a running daemon would
+# otherwise keep the old code. try-restart is a no-op when inactive, so a
+# fresh install (daemon enabled but not started) is unaffected.
+systemctl try-restart tisvlay-daemon.service 2>/dev/null || true
+
 # Enable the per-user session + tray for every user's graphical session
 # (mirrors the NixOS module's wantedBy=graphical-session.target). These
 # are user units, so a package script can't touch a live user manager;
@@ -42,6 +50,15 @@ systemctl enable tisvlay-daemon.service 2>/dev/null || true
 # graphical session and no-op without socket access, so enabling globally
 # is safe for users not in the tisvlay group.
 systemctl --global enable tisvlay-session.service tisvlay-tray.service 2>/dev/null || true
+
+# GDM greeter idle client (OLED protection at the login screen). Its unit
+# hangs off gnome-session@gnome-login.target, active only inside a GDM
+# greeter session, so the --global symlink is inert under other display
+# managers. The greeter reaches the socket through the daemon's
+# greeter-group ACL (tisvlay-daemon --greeter-access) — no group edit here,
+# since the modern GDM greeter is a dynamic-userdb account /etc/group can't
+# reach.
+systemctl --global enable tisvlay-greeter-gdm.service 2>/dev/null || true
 
 echo "tisvlay installed. Grant yourself socket access and start the daemon:"
 echo "  sudo usermod -aG tisvlay \$USER   # re-login to take effect"

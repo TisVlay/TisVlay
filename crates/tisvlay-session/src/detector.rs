@@ -12,6 +12,21 @@ use std::time::Duration;
 
 use tracing::{debug, warn};
 
+/// Why a supervised watch session ended. Shared across the detectors so
+/// the supervise cadence and its fault taxonomy live in one place.
+pub(crate) enum Fault {
+    /// The transport could not be reached or faulted — retry under backoff.
+    Bus(zbus::Error),
+    /// The session core dropped the detector's channel — stop supervising.
+    CoreGone,
+}
+
+impl From<zbus::Error> for Fault {
+    fn from(e: zbus::Error) -> Self {
+        Fault::Bus(e)
+    }
+}
+
 /// Backoff bounds for the supervised detector loops.
 const RETRY_MIN: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(60);

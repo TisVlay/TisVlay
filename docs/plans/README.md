@@ -15,6 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
+- [`socket-access-unification.md`](socket-access-unification.md) — move greeter socket-access into the daemon as a `gdm`-group ACL (correct on the modern dynamic-userdb greeter, where `usermod -aG tisvlay gdm` is not), deleting the per-distro grant hacks, and fix the maintainer scripts so upgrades don't stop/disable the running stack.
 - [`routable-dials.md`](routable-dials.md) — the connect budget only spends against a network that exists: dials defer while the TV's route is absent, closing the resume/boot carrier race for any NIC cycle time.
 - [`wake-screen-primary-input.md`](wake-screen-primary-input.md) — **implemented**; reliable screen elevation (pre-flight wake, root parity), the desired-state latch, and primary-input restoration on automation wakes (CEC selects the requesting port; WoL resumes the last input). Listed until the PR #106 soak confirms it in the field.
 - [`gui-state-consistency.md`](gui-state-consistency.md) — **implemented** (matching-gated `caller::Caller`, availability single-sourcing); listed until the PR #106 soak confirms it in the field.

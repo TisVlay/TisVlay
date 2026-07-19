@@ -11,7 +11,7 @@ publish.workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
-tisvlay-core = { workspace = true, features = ["wayland", "logging"] }
+tisvlay-core = { workspace = true, features = ["mutter-idle", "logging"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tisvlay-wire = { workspace = true }
