@@ -532,7 +532,7 @@ async fn screen_drift_while_idle_reasserts_after_grace() {
     .await
     .expect("assign ok");
 
-    // Locked (as the GetActive seed or a Lock edge leaves it), idle
+    // Locked (as the LockedHint seed or a Lock edge leaves it), idle
     // action fired: the TV blanks.
     rig.stack
         .is_locked

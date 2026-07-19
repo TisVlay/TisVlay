@@ -56,7 +56,7 @@ pub use sunshine::spawn as spawn_sunshine_detector;
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
 
 /// A session-scoped desktop event, from whichever adapter saw it
-/// (ScreenSaver D-Bus, wayland idle, or a test driver).
+/// (logind `LockedHint`, wayland/Mutter idle, or a test driver).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEvent {
     Lock,
@@ -152,7 +152,7 @@ pub struct SessionStack {
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
     pub idle_timeouts: watch::Receiver<(u64, u64)>,
-    /// Shared lock state: the screensaver watcher writes it (seed +
+    /// Shared lock state: the lock watcher writes it (`LockedHint` seed +
     /// edges), the idle adapter's lock-wake policy and the core's
     /// drift re-assert read it.
     pub is_locked: Arc<AtomicBool>,
@@ -379,7 +379,7 @@ struct Core {
     idle_tx: watch::Sender<(u64, u64)>,
     /// Shared with the adapters; the drift re-assert reads it to pick
     /// the locked vs unlocked grace (a core-local flag would miss the
-    /// GetActive-seeded auto-login lock, which arrives with no edge).
+    /// `LockedHint`-seeded auto-login lock, which arrives with no edge).
     is_locked: Arc<AtomicBool>,
     /// Set on a remote disconnect, cleared by the next dispatched event.
     /// The idle adapter reads it so the first local input after a remote
