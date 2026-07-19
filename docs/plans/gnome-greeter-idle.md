@@ -34,14 +34,21 @@ The KDE greeter attaches a `systemd.user` unit to a vendor-shipped, greeter-only
 
 ## Implementation sketch
 
-1. **Move** `idle_mutter.rs` → `tisvlay-core` (feature-gated with the existing wayland module if it is; keep the pure `Tracker` tests). Re-export; update `tisvlay-session` to use `tisvlay_core::idle_mutter`. Session behavior unchanged — verify by the existing session tests + a GNOME re-run.
-2. **Extract the selector** (`start_idle_watch` wayland→Mutter) so both consumers share it, or duplicate the ~15-line try-wayland-then-mutter shape in the greeter (it uses `start_idle_watch_on_socket`, a different wayland entry, so a shared selector needs to accept the socket-discovery variant).
-3. **Greeter fallback** in `connect_idle_watch`: on wayland failure, attempt `Mutter.IdleMonitor`.
-4. **Deployment**: a GDM greeter unit (Nix module first; packaging later) once the manager/target questions above are answered on hardware.
+1. **Move** `idle_mutter.rs` → `tisvlay-core` beside `wayland.rs` under a `mutter-idle` feature (implies `wayland` for the shared `IdleNotification`/`IdleTransition` vocab, adds `zbus`/`futures-util`); the pure `Tracker` tests move with it. `tisvlay-session` uses `tisvlay_core::idle_mutter`; behavior unchanged. **Done** (`refactor(core): share the Mutter idle transport`).
+2. **Greeter fallback** in `connect_idle_watch`: try the wayland socket first, and on `ProtocolNotSupported` (socket up, no `ext-idle-notify`) fall back to `Mutter.IdleMonitor` — distinguished from socket-not-ready (retry) via a typed outcome so a GNOME greeter doesn't burn the retry budget. **Done** (`feat(greeter): fall back to Mutter idle on GNOME greeters`).
+3. **NixOS deployment**: generalize `greeter.enable` to GDM. The GDM greeter runs `gnome-session --session=gnome-login`, so `gnome-session@gnome-login.target` is its greeter-only session target — the analogue of `plasma-login-wayland.target`; the unit hangs off it (`wantedBy`/`partOf`) and starts only at the login screen. GDM's greeter accounts (`gdm-greeter{,-2,-3,-4,-5}`) join the `tisvlay` group for socket access. **Done** (Nix module).
+4. **Debian/rpm greeter unit**: deferred. The `.deb`/`.rpm` ship no greeter unit at all (Nix-only); a packaged GDM greeter unit (a `systemd.user` unit + a `gdm-greeter` group grant in the maintainer scripts — complicated by Ubuntu allocating the `gdm-greeter` uid dynamically) is the remaining follow-up.
 
-## Verification
+## Verification (2026-07-19, on the Ubuntu 26.04 GNOME/GDM VM, at the login screen)
 
-Requires being **at the GDM login screen** (the greeter session, `gdm` user, `/run/user/975`) — a logout on the GNOME VM reaches it. Confirm: `Mutter.IdleMonitor` reachable from a process in the greeter session; the greeter publishes `greeter/idle` true/false on idle/resume; a TV blanks at the login screen and wakes on input. The session-service `debug!(?event, "session event")` seam has no greeter analogue — the greeter's own `info!`/publish logs are the audit.
+The critical unknown — a process in the GDM greeter session reaching Mutter — is confirmed:
+
+- The greeter session is a logind `Class=greeter`, `Type=wayland`, seat0 session, run as `gdm-greeter` (Ubuntu allocates its uid dynamically — 60580 this boot; `/run/user/60580`, `wayland-0`, own session bus).
+- `busctl ... org.gnome.Mutter.IdleMonitor GetIdletime` as `gdm-greeter` returned a live idle time — **Mutter's idle monitor is reachable in the greeter session**.
+- The zigbuilt `tisvlay-greeter`, run as `gdm-greeter` (temporarily granted the `tisvlay` group), connected to the daemon socket and published `greeter/idle` presence, then stopped at "nothing to watch" only because `greeter/timeout=0` (no automated TV met the daemon's greeter-timeout gate at that moment — orthogonal to the greeter idle code).
+- `gnome-session@gnome-login.target` is **active** in the greeter's user manager (the deployment attach point), and the daemon socket is `tisvlay:tisvlay 0660`, so the greeter account must join `tisvlay` (it does, and then reaches the socket).
+
+The NixOS module change is eval-checked (a `services.displayManager.gdm.enable` config resolves the greeter unit's `wantedBy gnome-session@gnome-login.target` and adds the `gdm-greeter*` accounts to the group). The remaining end-to-end field check — a TV actually blanking at the GDM login screen — needs a non-zero greeter timeout (an automated TV with `idle_timeout_seconds > 0`) and a deployed unit.
 
 ## Non-goals
 

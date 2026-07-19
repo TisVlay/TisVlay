@@ -17,6 +17,23 @@ let
   # tisvlay group membership is the client access gate (see the
   # `users` option).
   systemSocket = "/run/tisvlay/zenoh.sock";
+
+  # Which greeter the idle client attaches to — a system runs one DM.
+  # Both expose a greeter-only session target the client hangs off of.
+  plasmaLoginGreeter = config.services.displayManager.plasma-login-manager.enable;
+  gdmGreeter = config.services.displayManager.gdm.enable;
+  # GDM's greeter accounts (nixpkgs gdm.nix `greeterUsers`:
+  # `gdm-greeter{,-2,-3,-4,-5}`, one per seat).
+  gdmGreeterUsers = [
+    "gdm-greeter"
+    "gdm-greeter-2"
+    "gdm-greeter-3"
+    "gdm-greeter-4"
+    "gdm-greeter-5"
+  ];
+  # Accounts that run the greeter, granted daemon-group (socket) access.
+  greeterAccounts =
+    lib.optional plasmaLoginGreeter cfg.greeter.user ++ lib.optionals gdmGreeter gdmGreeterUsers;
 in
 {
   options.services.tisvlay = {
@@ -194,19 +211,20 @@ in
 
     greeter.enable = lib.mkOption {
       type = lib.types.bool;
-      default = config.services.displayManager.plasma-login-manager.enable;
-      defaultText = lib.literalExpression "config.services.displayManager.plasma-login-manager.enable";
+      default = plasmaLoginGreeter || gdmGreeter;
+      defaultText = lib.literalExpression "plasma-login-manager or GDM is the active display manager";
       description = ''
         Whether to enable the tisvlay greeter idle client. Runs
-        `tisvlay-greeter` as the plasma-login-manager greeter user inside
-        the greeter Wayland session so managed TVs blank on greeter idle
-        and restore on resume — OLED burn-in protection at an unattended
-        login screen.
+        `tisvlay-greeter` as the greeter user inside the greeter Wayland
+        session so managed TVs blank on greeter idle and restore on
+        resume — OLED burn-in protection at an unattended login screen.
 
-        Defaults to on when `services.displayManager.plasma-login-manager`
-        is the active display manager — the only greeter this client
-        currently supports (the unit attaches to its greeter target);
-        other greeters (greetd + wlroots, GDM) need separate adapters, see
+        Defaults to on when `plasma-login-manager` or `gdm` is the active
+        display manager — the greeters this client supports. It attaches
+        to the greeter's session target: `plasma-login-wayland.target` for
+        plasma-login (KWin, ext-idle-notify), or `gnome-session@gnome-login.target`
+        for GDM (Mutter, via `org.gnome.Mutter.IdleMonitor`). Other
+        greeters (greetd + wlroots) need separate adapters, see
         `docs/ideas/greeter-integration-generalization.md`. Set it
         explicitly to override.
 
@@ -221,9 +239,11 @@ in
       type = lib.types.str;
       default = "plasmalogin";
       description = ''
-        Account the display manager runs its greeter session as. Added
-        to the daemon group when `greeter.enable` is set, so the idle
-        client can reach the zenoh socket.
+        Account the plasma-login-manager greeter session runs as, added to
+        the daemon group when `greeter.enable` is set so the idle client
+        can reach the zenoh socket. GDM's greeter accounts
+        (`gdm-greeter{,-2,-3,-4,-5}`) are handled automatically and are not
+        configured here.
       '';
     };
 
@@ -283,19 +303,17 @@ in
       }
     ];
 
-    # tisvlay-greeter only supports plasma-login-manager today (its units
-    # below attach to that greeter's session target). greeter.enable
-    # auto-defaults to plasma-login being active; warn — rather than assert —
-    # when it is enabled on another DM, so an explicit override degrades
-    # visibly instead of silently producing units that never start. See
+    # tisvlay-greeter attaches to a plasma-login or GDM greeter session
+    # target. greeter.enable auto-defaults to one of those being active;
+    # warn — rather than assert — when it is enabled on another DM, so an
+    # explicit override degrades visibly instead of silently producing a
+    # unit that never starts. See
     # docs/ideas/greeter-integration-generalization.md.
-    warnings =
-      lib.optional (cfg.greeter.enable && !config.services.displayManager.plasma-login-manager.enable)
-        ''
-          services.tisvlay.greeter.enable is set, but plasma-login-manager is not
-          the active display manager. The greeter idle client only supports
-          plasma-login-manager today, so tisvlay-greeter.service will not start.
-        '';
+    warnings = lib.optional (cfg.greeter.enable && !plasmaLoginGreeter && !gdmGreeter) ''
+      services.tisvlay.greeter.enable is set, but neither plasma-login-manager
+      nor gdm is the active display manager. The greeter idle client supports
+      only those two, so tisvlay-greeter.service will not start.
+    '';
 
     # Dedicated system user and group for tisvlay-daemon. uid/gid stay
     # unset by default — NixOS allocates from the system range and
@@ -318,10 +336,10 @@ in
       ]
       # Socket-permission grants: listed accounts join the daemon
       # group so they can connect to the 0660 zenoh socket. The
-      # greeter user gets the same grant when its client is enabled.
+      # greeter account(s) get the same grant when the client is enabled.
       ++ map (name: {
         ${name}.extraGroups = [ cfg.group ];
-      }) (cfg.users ++ lib.optional cfg.greeter.enable cfg.greeter.user)
+      }) (cfg.users ++ lib.optionals cfg.greeter.enable greeterAccounts)
     );
 
     # CEC device access + optional Pulse-Eight adapter bring-up.
@@ -546,39 +564,58 @@ in
       };
     };
 
-    # Greeter idle client. Runs as the plasma-login-manager greeter user
-    # inside the greeter Wayland session — a systemd *user* manager started by
-    # plasma-login on the session bus — so it MUST be a systemd.user unit: a
-    # system service can't be WantedBy= the user-scoped greeter target and
-    # wouldn't inherit the compositor's XDG_RUNTIME_DIR/WAYLAND_DISPLAY. The
-    # greeter user joins the daemon group below so it can reach the socket.
-    systemd.user.services.tisvlay-greeter = lib.mkIf cfg.greeter.enable {
-      description = "tisvlay greeter idle client (plasma-login-manager)";
-      documentation = [ "https://github.com/ruffsl/tisvlay" ];
-      after = [ "plasma-login-kwin_wayland.service" ];
-      requires = [ "plasma-login-kwin_wayland.service" ];
-      # partOf stops us with the greeter session; the target itself bindsTo the
-      # compositor, so a compositor death stops the target and thus us.
-      partOf = [ "plasma-login-wayland.target" ];
-      # Deliberately NOT wantedBy graphical-session.target (that is every real
-      # user session); attached to the greeter target via the drop-in below.
-      environment = {
-        RUST_LOG = cfg.logLevel;
-      };
-      serviceConfig = {
-        ExecStart = lib.escapeShellArgs [
-          (lib.getExe' cfg.package "tisvlay-greeter")
-          "--socket"
-          systemSocket
-        ];
-        Restart = "on-failure";
-        RestartSec = 5;
-      };
-    };
+    # Greeter idle client. Runs as the greeter user inside the greeter
+    # Wayland session — a systemd *user* manager started by the DM on the
+    # session bus — so it MUST be a systemd.user unit: a system service
+    # can't be WantedBy= the user-scoped greeter target and wouldn't inherit
+    # the compositor's XDG_RUNTIME_DIR/WAYLAND_DISPLAY. It attaches to the
+    # DM's greeter-only session target so it never starts in a real user
+    # session; the greeter account(s) join the daemon group below for socket
+    # access.
+    systemd.user.services.tisvlay-greeter = lib.mkIf cfg.greeter.enable (
+      lib.mkMerge [
+        {
+          description = "tisvlay greeter idle client";
+          documentation = [ "https://github.com/ruffsl/tisvlay" ];
+          environment = {
+            RUST_LOG = cfg.logLevel;
+          };
+          serviceConfig = {
+            ExecStart = lib.escapeShellArgs [
+              (lib.getExe' cfg.package "tisvlay-greeter")
+              "--socket"
+              systemSocket
+            ];
+            Restart = "on-failure";
+            RestartSec = 5;
+          };
+        }
+        # plasma-login: attach to its greeter Wayland target (KWin compositor,
+        # ext-idle-notify). partOf stops us with the greeter session; the
+        # target bindsTo the compositor, so a compositor death stops us too.
+        (lib.mkIf plasmaLoginGreeter {
+          after = [ "plasma-login-kwin_wayland.service" ];
+          requires = [ "plasma-login-kwin_wayland.service" ];
+          partOf = [ "plasma-login-wayland.target" ];
+        })
+        # GDM: the greeter runs `gnome-session --session=gnome-login`, so
+        # gnome-session@gnome-login.target is its greeter-only session target
+        # (the analogue of plasma-login-wayland.target). wantedBy it means we
+        # start only at the login screen, in the gdm-greeter user's manager;
+        # the greeter falls back to org.gnome.Mutter.IdleMonitor there.
+        (lib.mkIf gdmGreeter {
+          after = [ "gnome-session@gnome-login.target" ];
+          partOf = [ "gnome-session@gnome-login.target" ];
+          wantedBy = [ "gnome-session@gnome-login.target" ];
+        })
+      ]
+    );
 
-    # Pull the client into the greeter target only. The target is a
-    # vendor-shipped user unit; `asDropin` adds a Wants= without clobbering it.
-    systemd.user.targets."plasma-login-wayland" = lib.mkIf cfg.greeter.enable {
+    # plasma-login attaches via a drop-in Wants= on its greeter target (a
+    # vendor-shipped user unit; `asDropin` adds the Want without clobbering
+    # it). GDM instead uses the unit's own wantedBy above, since
+    # gnome-session@gnome-login.target is a template instance we don't own.
+    systemd.user.targets."plasma-login-wayland" = lib.mkIf (cfg.greeter.enable && plasmaLoginGreeter) {
       overrideStrategy = "asDropin";
       wants = [ "tisvlay-greeter.service" ];
     };
