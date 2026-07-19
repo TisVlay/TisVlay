@@ -790,6 +790,72 @@ fn register_callbacks(
     errors_global.on_profiles_action(|| {});
     errors_global.on_pairing_action(|| {});
 
+    // App-level access banner. When the user isn't in the daemon's
+    // socket group the resilient link never connects (the socket is
+    // 0660, `tisvlay` group), so the window would otherwise sit empty
+    // with no explanation. `has_access` is a synchronous group-
+    // membership read; the enroll blocks on the polkit prompt, so it
+    // runs off the UI thread and posts its outcome back.
+    {
+        use tisvlay_core::access;
+        let socket = endpoints().system_socket.clone();
+        if !access::has_access(&socket) {
+            errors_global.set_access(ErrorState {
+                kind: SharedString::from("no-access"),
+                tone: SharedString::from("warn"),
+                title: SharedString::from(gettext("TV control access needed")),
+                message: SharedString::from(gettext(
+                    "You're not in the group that controls the TVs, so the app can't reach them. Grant access, then log out and back in.",
+                )),
+                action_label: SharedString::from(gettext("Enable TV control")),
+            });
+        }
+        let app_weak = app.as_weak();
+        errors_global.on_access_action(move || {
+            // Progress copy while the polkit dialog is up.
+            if let Some(app) = app_weak.upgrade() {
+                app.global::<Errors>().set_access(ErrorState {
+                    kind: SharedString::from("no-access"),
+                    tone: SharedString::from("info"),
+                    title: SharedString::from(gettext("Requesting access…")),
+                    message: SharedString::from(gettext(
+                        "Authenticate as an administrator in the dialog.",
+                    )),
+                    action_label: SharedString::default(),
+                });
+            }
+            let app_weak = app_weak.clone();
+            let socket = socket.clone();
+            std::thread::spawn(move || {
+                let outcome = access::enable_access(&socket);
+                on_ui(&app_weak, move |app| {
+                    let errors = app.global::<Errors>();
+                    match outcome {
+                        Ok(_) => errors.set_access(ErrorState {
+                            kind: SharedString::default(),
+                            tone: SharedString::from("success"),
+                            title: SharedString::from(gettext("Access granted")),
+                            message: SharedString::from(gettext(
+                                "Log out and back in (or reboot) to finish enabling TV control.",
+                            )),
+                            action_label: SharedString::default(),
+                        }),
+                        Err(e) => errors.set_access(ErrorState {
+                            kind: SharedString::from("no-access"),
+                            tone: SharedString::from("error"),
+                            title: SharedString::from(gettext("Couldn't enable access")),
+                            message: SharedString::from(
+                                gettext("Access wasn't granted: {0}")
+                                    .replace("{0}", &e.to_string()),
+                            ),
+                            action_label: SharedString::from(gettext("Try again")),
+                        }),
+                    }
+                });
+            });
+        });
+    }
+
     // Profiles-pane callback surface. `select` primes the per-kind
     // editor model from the daemon/session-side body cache; the
     // value-edited / reset-field / reset-all / rename-selected

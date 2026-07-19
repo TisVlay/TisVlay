@@ -16,6 +16,7 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
+import { InlineError } from "widgets.slint";
 import { Daemon } from "globals/daemon.slint";
 import { Tray, TrayNotificationSettings } from "globals/tray.slint";
 import { PairingWizard } from "globals/pairing_wizard.slint";
@@ -364,43 +365,69 @@ export component AppWindow inherits Window {
             }
 
             // Content area
-            Rectangle {
-                background: Theme.surface-alt;
+            VerticalLayout {
                 horizontal-stretch: 1;
+
+                // App-level access banner — shown when the user isn't in the
+                // daemon's socket group, so nothing can reach the daemon.
+                // Unlike the per-pane Errors slots, this sits above every
+                // pane; its action enrolls the user via a polkit `usermod`.
+                if Errors.access.title != "" || Errors.access.message != "": VerticalLayout {
+                    padding: Design.gap-stack;
+                    padding-bottom: 0;
+                    InlineError {
+                        tone: Errors.access.tone;
+                        title: Errors.access.title;
+                        message: Errors.access.message;
+                        action-label: Errors.access.action-label;
+                        dismissable: true;
+                        action-clicked => {
+                            Errors.access-action();
+                        }
+                        dismissed => {
+                            Errors.access = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                        }
+                    }
+                }
 
                 // Each pane is positioned absolutely within this Rectangle.
                 // Slint Rectangles don't lay out children, so panes must
                 // bind width / height to the parent explicitly.
-                if root.active-pane == Pane.tvs: TvsPane {
-                    width: 100%;
-                    height: 100%;
-                    tvs: root.tvs;
-                    tvs-connected-count: root.tvs-connected-count;
-                    selected-index <=> root.selected-tv-index;
-                    daemon-available: root.daemon-available;
-                    system-profiles: root.system-profiles;
-                    user-profiles: root.user-profiles;
-                }
-                if root.active-pane == Pane.profiles: ProfilesPane {
-                    width: 100%;
-                    height: 100%;
-                }
-                if root.active-pane == Pane.settings: SettingsPane {
-                    width: 100%;
-                    height: 100%;
-                }
-                if root.active-pane == Pane.about: AboutPane {
-                    width: 100%;
-                    height: 100%;
-                    gui-version: root.gui-version;
-                    components: root.about-components;
-                    logo: root.app-logo;
-                    view-source-clicked => { root.view-source-clicked(); }
-                    view-release-clicked => { root.view-release-clicked(); }
-                    view-notices-clicked => { root.view-notices-clicked(); }
-                    report-issue-clicked => { root.report-issue-clicked(); }
-                    copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
-                    open-config-folder(p) => { root.open-config-folder(p); }
+                Rectangle {
+                    background: Theme.surface-alt;
+                    vertical-stretch: 1;
+
+                    if root.active-pane == Pane.tvs: TvsPane {
+                        width: 100%;
+                        height: 100%;
+                        tvs: root.tvs;
+                        tvs-connected-count: root.tvs-connected-count;
+                        selected-index <=> root.selected-tv-index;
+                        daemon-available: root.daemon-available;
+                        system-profiles: root.system-profiles;
+                        user-profiles: root.user-profiles;
+                    }
+                    if root.active-pane == Pane.profiles: ProfilesPane {
+                        width: 100%;
+                        height: 100%;
+                    }
+                    if root.active-pane == Pane.settings: SettingsPane {
+                        width: 100%;
+                        height: 100%;
+                    }
+                    if root.active-pane == Pane.about: AboutPane {
+                        width: 100%;
+                        height: 100%;
+                        gui-version: root.gui-version;
+                        components: root.about-components;
+                        logo: root.app-logo;
+                        view-source-clicked => { root.view-source-clicked(); }
+                        view-release-clicked => { root.view-release-clicked(); }
+                        view-notices-clicked => { root.view-notices-clicked(); }
+                        report-issue-clicked => { root.report-issue-clicked(); }
+                        copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
+                        open-config-folder(p) => { root.open-config-folder(p); }
+                    }
                 }
             }
         }
