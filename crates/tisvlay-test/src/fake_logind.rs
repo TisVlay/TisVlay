@@ -150,8 +150,36 @@ impl SessionIface {
         self.locked
     }
 
-    /// A graphical session, so the watcher's `is_graphical` filter admits
-    /// it (a `tty` session would be skipped).
+    /// Owned by this (the test) process's uid, so the own-uid filter on
+    /// the `SessionNew` path admits it.
+    #[zbus(property)]
+    async fn user(&self) -> (u32, OwnedObjectPath) {
+        // SAFETY: `getuid` is always successful and has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let path = ObjectPath::try_from(format!("/org/freedesktop/login1/user/_{uid}"))
+            .expect("uid path is valid")
+            .into();
+        (uid, path)
+    }
+
+    /// On a seat, so the watcher's local-session filter admits it (a
+    /// seatless SSH session would be skipped).
+    #[zbus(property)]
+    async fn seat(&self) -> (String, OwnedObjectPath) {
+        let path = ObjectPath::try_from("/org/freedesktop/login1/seat/seat0")
+            .expect("static seat path is valid")
+            .into();
+        ("seat0".into(), path)
+    }
+
+    /// The foreground session, so it wins the active-session preference.
+    #[zbus(property)]
+    async fn active(&self) -> bool {
+        true
+    }
+
+    /// A graphical session `Type`, for realism (the lock watcher keys on
+    /// the seat, not the type).
     #[zbus(property, name = "Type")]
     async fn session_type(&self) -> String {
         "wayland".into()

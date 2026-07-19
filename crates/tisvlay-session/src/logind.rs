@@ -28,7 +28,10 @@ use crate::{RemoteClient, RemoteReport};
     default_service = "org.freedesktop.login1",
     default_path = "/org/freedesktop/login1"
 )]
-trait Login1Manager {
+// Shared with the lock watcher (crate::lock), which reuses this identical
+// Manager surface (ListSessions + SessionNew/Removed) rather than
+// re-declaring it.
+pub(crate) trait Login1Manager {
     /// `(session_id, object_path)` of a session as it appears.
     #[zbus(signal)]
     fn session_new(&self, id: String, path: zbus::zvariant::OwnedObjectPath) -> zbus::Result<()>;
