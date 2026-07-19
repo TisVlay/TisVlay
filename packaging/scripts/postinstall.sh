@@ -34,6 +34,12 @@ update-desktop-database /usr/share/applications 2>/dev/null || true
 # Enable (but don't start) the system daemon.
 systemctl enable tisvlay-daemon.service 2>/dev/null || true
 
+# On upgrade, restart the daemon so it runs the new binary — the old
+# package's preremove skips its stop on upgrade, so a running daemon would
+# otherwise keep the old code. try-restart is a no-op when inactive, so a
+# fresh install (daemon enabled but not started) is unaffected.
+systemctl try-restart tisvlay-daemon.service 2>/dev/null || true
+
 # Enable the per-user session + tray for every user's graphical session
 # (mirrors the NixOS module's wantedBy=graphical-session.target). These
 # are user units, so a package script can't touch a live user manager;
