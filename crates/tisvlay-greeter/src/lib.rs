@@ -21,7 +21,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use serde_json::json;
 use tisvlay_core::wayland::{
-    IdleNotification, IdleTransition, WatchHandle, start_idle_watch_on_socket,
+    IdleNotification, IdleTransition, WatchHandle, WaylandIdleError, start_idle_watch_on_socket,
 };
 use tisvlay_wire::keys;
 use tokio::sync::mpsc;
@@ -142,46 +142,87 @@ async fn read_timeout(session: &zenoh::Session, site: &str) -> u64 {
     }
 }
 
-/// Discover the greeter compositor's wayland socket under
-/// `XDG_RUNTIME_DIR` and start the idle watch, retrying while the socket
-/// appears. Greeter units carry no `WAYLAND_DISPLAY`, and wayland-client's
-/// `connect_to_env` requires it, so the `wayland-<n>` socket is found and
-/// connected explicitly.
+/// A live greeter idle watch over whichever transport the greeter
+/// compositor provides. Held for the process lifetime; dropping it stops
+/// the watch. KWin/wlroots greeters take the wayland path; a GDM greeter
+/// (Mutter, no `ext-idle-notify`) takes the D-Bus `Mutter.IdleMonitor`.
+#[allow(dead_code)] // inner handles are held for their Drop, never read
+enum IdleWatch {
+    Wayland(WatchHandle),
+    Mutter(tisvlay_core::idle_mutter::Handle),
+}
+
+/// Attach the greeter idle watch. Tries the compositor's wayland socket
+/// first (discovered under `XDG_RUNTIME_DIR` — greeter units carry no
+/// `WAYLAND_DISPLAY`), retrying while the socket appears; if the socket is
+/// up but `ext-idle-notify` is unadvertised (Mutter), falls back to
+/// `Mutter.IdleMonitor` on the greeter's session bus.
 async fn connect_idle_watch(
     timeout_ms: u32,
     tx: &mpsc::UnboundedSender<(u32, IdleTransition)>,
-) -> Result<WatchHandle> {
+) -> Result<IdleWatch> {
     const MAX_ATTEMPTS: u32 = 15;
-    let mut last_err = anyhow!("no connection attempt made");
     for attempt in 1..=MAX_ATTEMPTS {
-        match try_connect(timeout_ms, tx.clone()) {
-            Ok(handle) => return Ok(handle),
-            Err(e) => {
+        match try_wayland(timeout_ms, tx.clone()) {
+            Ok(handle) => return Ok(IdleWatch::Wayland(handle)),
+            // Connected, but this compositor doesn't advertise the
+            // protocol (Mutter) — no amount of retrying helps; go D-Bus.
+            Err(TryError::Unsupported(e)) => {
+                debug!(error = %e, "greeter compositor lacks ext-idle-notify; trying Mutter");
+                break;
+            }
+            // Socket not there yet — the compositor is still coming up.
+            Err(TryError::NotReady(e)) => {
                 debug!(attempt, error = %e, "greeter compositor not ready; retrying");
-                last_err = e;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
     }
-    warn!(
-        xdg_runtime_dir = ?std::env::var("XDG_RUNTIME_DIR").ok(),
-        wayland_display = ?std::env::var("WAYLAND_DISPLAY").ok(),
-        sockets = ?wayland_sockets(),
-        "could not connect to the greeter compositor after retries"
-    );
-    Err(last_err.context("connect to greeter compositor"))
+
+    // GNOME greeter (or a wayland path that never came up): the D-Bus
+    // Mutter idle monitor on the greeter session's bus.
+    match tisvlay_core::idle_mutter::start_idle_watch(
+        vec![IdleNotification { tag: 0, timeout_ms }],
+        tx.clone(),
+    )
+    .await
+    {
+        Ok(handle) => Ok(IdleWatch::Mutter(handle)),
+        Err(e) => {
+            warn!(
+                xdg_runtime_dir = ?std::env::var("XDG_RUNTIME_DIR").ok(),
+                wayland_display = ?std::env::var("WAYLAND_DISPLAY").ok(),
+                sockets = ?wayland_sockets(),
+                "could not attach a greeter idle watch (wayland or Mutter)"
+            );
+            Err(anyhow!("Mutter idle monitor: {e}").context("attach greeter idle watch"))
+        }
+    }
 }
 
-fn try_connect(
+/// Why a wayland attach attempt failed: `NotReady` is retry-worthy (the
+/// compositor socket has not appeared yet); `Unsupported` means it is up
+/// but lacks `ext-idle-notify`, so the caller should switch to Mutter.
+enum TryError {
+    NotReady(anyhow::Error),
+    Unsupported(anyhow::Error),
+}
+
+fn try_wayland(
     timeout_ms: u32,
     tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
-) -> Result<WatchHandle> {
-    let path =
-        greeter_socket_path().ok_or_else(|| anyhow!("no wayland socket under XDG_RUNTIME_DIR"))?;
+) -> Result<WatchHandle, TryError> {
+    let path = greeter_socket_path()
+        .ok_or_else(|| TryError::NotReady(anyhow!("no wayland socket under XDG_RUNTIME_DIR")))?;
     let stream = UnixStream::connect(&path)
-        .with_context(|| format!("connect wayland socket {}", path.display()))?;
-    start_idle_watch_on_socket(stream, vec![IdleNotification { tag: 0, timeout_ms }], tx)
-        .map_err(|e| anyhow!("{e}"))
+        .with_context(|| format!("connect wayland socket {}", path.display()))
+        .map_err(TryError::NotReady)?;
+    start_idle_watch_on_socket(stream, vec![IdleNotification { tag: 0, timeout_ms }], tx).map_err(
+        |e| match e {
+            WaylandIdleError::ProtocolNotSupported(_) => TryError::Unsupported(anyhow!("{e}")),
+            other => TryError::NotReady(anyhow!("{other}")),
+        },
+    )
 }
 
 /// Resolve the compositor socket path: `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`

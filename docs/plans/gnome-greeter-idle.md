@@ -1,6 +1,16 @@
 # GNOME greeter idle: Mutter idle for the login screen
 
-Status: **planned**, not started. Follow-up to the session-service GNOME work ([`gnome-session-events.md`](gnome-session-events.md)); depends on that PR's `idle_mutter` transport. Targets the GDM login greeter the way the session service now targets a GNOME desktop.
+Status: **in progress** (roped into the session-events PR). Builds on that PR's `idle_mutter` transport. Targets the GDM login greeter the way the session service now targets a GNOME desktop.
+
+## Approach validation (2026-07-19 research)
+
+Checked upstream before committing, to avoid building on a legacy interface:
+
+- **Mutter still ships no `ext-idle-notify-v1`** (GNOME 51, 2026) — only KWin and wlroots do, and there is no roadmap indication GNOME will. So `Mutter.IdleMonitor` is the only GNOME idle option, for the session and the greeter alike.
+- **`org.gnome.Mutter.IdleMonitor` is current, stable, and not deprecated** — its Mutter API docs are generated for Version 51 with no deprecation notice (a `final class`), and Firefox, Chromium, phosh, and gnome-desktop all depend on it, so GNOME cannot quietly drop it.
+- **The wayland-first ordering is the hedge**: if Mutter ever adopts `ext-idle-notify`, both the session and the greeter automatically prefer it and the D-Bus path goes dormant — no legacy lock-in.
+- **GNOME dropped Mutter's X11 backend (Nov 2025)**, making logind `Type=x11` vestigial — which is why the lock watcher's seat-based (not `Type`-based) session selection is the durable choice.
+- **GDM deployment is feasible**: on the VM, `gdm` gets a systemd user manager (`user@.service` + `gnome-session-manager@` + `graphical-session.target`), and GDM-scoped drop-ins already exist (`70-gdm-skip.conf`), so a `systemd.user` greeter unit gated with `ConditionUser=gdm` is workable.
 
 ## Problem
 
