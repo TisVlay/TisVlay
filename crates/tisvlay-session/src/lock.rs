@@ -53,16 +53,19 @@ trait Login1Session {
 
 /// Spawn the lock watcher. Reports `Lock`/`Unlock` into the session core;
 /// the task supervises its own system-bus connection and never blocks the
-/// caller. `is_locked` mirrors the state for the idle adapter's lock-wake
-/// policy and the core's drift re-assert.
-pub fn spawn(client: SessionClient, is_locked: Arc<AtomicBool>) {
-    tokio::spawn(run(client, is_locked));
+/// caller. `is_locked` mirrors the lock state for the idle adapter's
+/// lock-wake policy and the core's drift re-assert; `is_active` mirrors the
+/// session's foreground (`Active`) state for the core's active-session
+/// arbitration gate.
+pub fn spawn(client: SessionClient, is_locked: Arc<AtomicBool>, is_active: Arc<AtomicBool>) {
+    tokio::spawn(run(client, is_locked, is_active));
 }
 
-/// Supervised watch loop: connect, hydrate + follow `LockedHint`, and run
-/// until the connection or the watched session ends; back off and retry.
-/// Quiet after the first warning so a box without logind does not spam.
-async fn run(client: SessionClient, is_locked: Arc<AtomicBool>) {
+/// Supervised watch loop: connect, hydrate + follow `LockedHint`/`Active`,
+/// and run until the connection or the watched session ends; back off and
+/// retry. Quiet after the first warning so a box without logind does not
+/// spam.
+async fn run(client: SessionClient, is_locked: Arc<AtomicBool>, is_active: Arc<AtomicBool>) {
     let mut backoff = Backoff::default();
     // Cleared once a watch has attached and seeded: the first attach seeds
     // silently, but a reconnect must fire a `LockedHint` change that
@@ -70,7 +73,9 @@ async fn run(client: SessionClient, is_locked: Arc<AtomicBool>) {
     let mut attached = false;
     loop {
         let outcome = match zbus::Connection::system().await {
-            Ok(connection) => watch(&connection, &client, &is_locked, &mut attached).await,
+            Ok(connection) => {
+                watch(&connection, &client, &is_locked, &is_active, &mut attached).await
+            }
             Err(e) => Err(Fault::Bus(e)),
         };
         match outcome {
@@ -93,9 +98,10 @@ pub async fn watch_lock(
     connection: zbus::Connection,
     client: SessionClient,
     is_locked: Arc<AtomicBool>,
+    is_active: Arc<AtomicBool>,
 ) -> zbus::Result<()> {
     let mut attached = false;
-    match watch(&connection, &client, &is_locked, &mut attached).await {
+    match watch(&connection, &client, &is_locked, &is_active, &mut attached).await {
         Ok(()) | Err(Fault::CoreGone) => Ok(()),
         Err(Fault::Bus(e)) => Err(e),
     }
@@ -108,6 +114,7 @@ async fn watch(
     connection: &zbus::Connection,
     client: &SessionClient,
     is_locked: &AtomicBool,
+    is_active: &AtomicBool,
     attached: &mut bool,
 ) -> Result<(), Fault> {
     let own_uid = own_uid();
@@ -137,10 +144,23 @@ async fn watch(
         }
     }
     *attached = true;
+    // Seed the foreground state for active-session arbitration. Unlike the
+    // lock seed this fires no event and always stores the current value —
+    // `Active` gates the core's dispatch, it does not itself dispatch.
+    if let Ok(active) = session.active().await {
+        is_active.store(active, Ordering::SeqCst);
+    }
     let mut locked_changes = session.receive_locked_hint_changed().await;
+    let mut active_changes = session.receive_active_changed().await;
 
     loop {
         tokio::select! {
+            change = active_changes.next() => {
+                // Session gone: reconnect and re-hydrate.
+                let Some(change) = change else { return Ok(()) };
+                let Ok(active) = change.get().await else { continue };
+                is_active.store(active, Ordering::SeqCst);
+            }
             change = locked_changes.next() => {
                 // Property stream ended (session object gone): reconnect and
                 // re-hydrate a fresh session.
