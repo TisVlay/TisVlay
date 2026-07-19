@@ -122,6 +122,13 @@ depends = [
 # autoloads out of the box (apt installs Recommends by default). Not a
 # hard dep — completions are a passive enhancement (zsh/fish need none).
 recommends = ["bash-completion"]
+# GNOME-only: the tray icon needs a StatusNotifier host, which vanilla
+# GNOME lacks (KDE/Plasma ships one; Ubuntu bundles its own). Suggests,
+# not Recommends — the extension hard-depends on gnome-shell, so a weak
+# Recommends would drag the whole shell onto KDE/other installs. The tray
+# runs headless without it (menu mirror, notifications, GUI link all work)
+# and logs a pointer to it.
+suggests = ["gnome-shell-extension-appindicator"]
 
 [package.metadata.nfpm.overrides.rpm]
 depends = [
@@ -135,3 +142,12 @@ depends = [
 # Weak dependency (RPM Recommends) on the bash-completion loader; not
 # hard, matching the deb side.
 recommends = ["bash-completion"]
+# Optional AppIndicator extension for a visible tray icon on GNOME; see
+# the deb override above for the Suggests-not-Recommends rationale.
+suggests = ["gnome-shell-extension-appindicator"]
+
+# No archlinux override: cargo-nfpm's archlinux packager emits no weak
+# deps (a `suggests` there is silently dropped, and it produces no
+# optdepend), so Arch GNOME users get the AppIndicator pointer from the
+# tray's journal log and packaging/README instead. Arch also ships no
+# runtime `depends` for the same reason.

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use ksni::TrayMethods;
 use serde_json::{Value, json};
 use tisvlay_core::{Coalescer, ReconcilerMap};
 use tisvlay_wire::caller::Caller;
@@ -93,10 +94,6 @@ pub async fn run(options: TrayOptions) -> Result<()> {
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let open_gui_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let handle = ksni::TrayMethods::spawn(TvTray::new(cmd_tx, Arc::clone(&open_gui_pending)))
-        .await
-        .context("register StatusNotifierItem")?;
-
     // Notifications: category-gated toasts behind one emit worker; the
     // switches persist to tray.toml and are served on the user socket.
     let notifier =
@@ -104,7 +101,9 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     // The settings service SERVES (queryable + token + cached pub), and
     // leaf peers are consume-only in this topology — so it runs on a
     // supervised client-mode link to the user hub: fail-fast opens in a
-    // retry loop, re-serving after every hub restart.
+    // retry loop, re-serving after every hub restart. It's independent of
+    // the tray icon, so it starts first: the GUI reaches the tray over the
+    // user socket even where the desktop has no StatusNotifier host.
     tokio::spawn({
         let user_socket = options.user_socket.clone();
         let site = options.site.clone();
@@ -137,6 +136,26 @@ pub async fn run(options: TrayOptions) -> Result<()> {
             }
         }
     });
+
+    // Tray icon. `assume_sni_available(true)` keeps a missing StatusNotifier
+    // host — vanilla GNOME with no AppIndicator extension — from failing the
+    // spawn: the handle stays live so the menu mirror and notifications keep
+    // working, and the icon registers if a host appears later (extension
+    // enabled, or a desktop like KDE that ships one). Only a genuine D-Bus
+    // failure errors here; we log and stay up on the settings service above
+    // rather than let `Restart=on-failure` crash-loop the process.
+    let handle = match TvTray::new(cmd_tx, Arc::clone(&open_gui_pending))
+        .assume_sni_available(true)
+        .spawn()
+        .await
+    {
+        Ok(handle) => handle,
+        Err(e) => {
+            warn!(%e, "tray icon unavailable; running headless (settings service only)");
+            tokio::signal::ctrl_c().await.context("wait for shutdown")?;
+            return Ok(());
+        }
+    };
     spawn_pairing_toasts(&system, &options.site, handle.clone(), notifier.clone()).await?;
     spawn_power_cycle_toasts(&system, &options.site, handle.clone(), notifier.clone()).await?;
 
