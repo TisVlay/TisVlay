@@ -1,7 +1,7 @@
 //! GNOME idle transport: `org.gnome.Mutter.IdleMonitor` over D-Bus.
 //!
 //! Mutter does not advertise the `ext-idle-notify-v1` Wayland protocol the
-//! [`tisvlay_core::wayland`] transport uses (only KWin and wlroots do), so
+//! [`crate::wayland`] transport uses (only KWin and wlroots do), so
 //! on GNOME the idle adapter falls back here. This maps Mutter's watch API
 //! onto the same `(tag, IdleTransition)` stream the wayland transport
 //! emits, so the idle adapter's dispatch is transport-agnostic.
@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use tisvlay_core::wayland::{IdleNotification, IdleTransition};
+use crate::wayland::{IdleNotification, IdleTransition};
 use tokio::sync::mpsc;
 
 /// What the [`Tracker`] wants done in response to a fired watch: forward a
@@ -96,7 +96,7 @@ impl Tracker {
 /// forwards `(tag, transition)` edges on `tx` until the session bus drops
 /// or the returned [`Handle`] is dropped. Errors if GNOME's IdleMonitor is
 /// unreachable (not a GNOME session).
-pub(crate) async fn start_idle_watch(
+pub async fn start_idle_watch(
     notifications: Vec<IdleNotification>,
     tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> zbus::Result<Handle> {
@@ -107,7 +107,7 @@ pub(crate) async fn start_idle_watch(
 /// task, which drops its private bus connection — Mutter removes the
 /// watches when the connection closes, so no explicit teardown is needed.
 #[derive(Debug)]
-pub(crate) struct Handle {
+pub struct Handle {
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -121,9 +121,9 @@ impl Drop for Handle {
 /// CI (needs a live GNOME IdleMonitor); the [`Tracker`] carries the logic.
 mod ffi {
     use super::{Action, Handle, Tracker};
+    use crate::wayland::{IdleNotification, IdleTransition};
     use futures_util::StreamExt;
     use std::collections::HashMap;
-    use tisvlay_core::wayland::{IdleNotification, IdleTransition};
     use tokio::sync::mpsc;
     use tracing::{debug, warn};
 

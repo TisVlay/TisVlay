@@ -10,7 +10,6 @@
 //! physically never reach the system peer.
 
 mod detector;
-mod idle_mutter;
 mod lock;
 mod logind;
 mod monitor;
@@ -1375,7 +1374,7 @@ pub async fn idle_adapter(
 #[allow(dead_code)]
 enum IdleWatch {
     Wayland(tisvlay_core::wayland::WatchHandle),
-    Mutter(idle_mutter::Handle),
+    Mutter(tisvlay_core::idle_mutter::Handle),
 }
 
 /// Attach an idle watch over the first transport the running desktop
@@ -1394,7 +1393,7 @@ async fn start_idle_watch(
         Ok(handle) => return Some(IdleWatch::Wayland(handle)),
         Err(e) => debug!(%e, "wayland idle unavailable; trying Mutter IdleMonitor"),
     }
-    match idle_mutter::start_idle_watch(notifications, tx).await {
+    match tisvlay_core::idle_mutter::start_idle_watch(notifications, tx).await {
         Ok(handle) => Some(IdleWatch::Mutter(handle)),
         Err(e) => {
             debug!(%e, "Mutter IdleMonitor unavailable");
