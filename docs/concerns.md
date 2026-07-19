@@ -19,4 +19,4 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 ## Packaging & deployment
 
-- [Packaged greeter socket access — solved via a daemon group ACL (NixOS/Ubuntu verification pending)](concerns/greeter-packaged-socket-access.md)
+- [Packaged greeter socket access — solved via a daemon group ACL (Fedora + Ubuntu validated; NixOS wiring pending)](concerns/greeter-packaged-socket-access.md)

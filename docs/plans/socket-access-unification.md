@@ -40,7 +40,7 @@ Load-bearing details the implementation must get right:
 This lets us **replace** (once the preconditions below hold): the rpm/deb `usermod -aG tisvlay gdm` + `gpasswd -d` lines; the NixOS `users.groups.tisvlay.members` greeter grant; and the concern doc's "secondary `tisvlay:gdm` socket" recommendation (a plain ACL on the main socket suffices on Fedora). Preconditions before each deletion:
 - **Fedora/rpm:** the packaged daemon unit passes `--greeter-group gdm`; then the `usermod`/`gpasswd` lines go, and the stale "static gdm greeter" comment in `postinstall.sh` is corrected.
 - **NixOS:** confirm the static `gdm-greeter` accounts carry group `gdm`; keep a grant for the plasma-login `plasmalogin` greeter (either `--greeter-group` set to its group, or retain the members grant for that account only). Do **not** delete the members grant blindly — validation was on a Fedora dynamic greeter, not the NixOS static accounts or plasma-login.
-- **Ubuntu:** re-test the ACL on Ubuntu (per Findings) before touching the Ubuntu deferral in the concern doc.
+- **Ubuntu:** ~~re-test the ACL on Ubuntu before touching the Ubuntu deferral~~ — **done**: validated on Ubuntu 26.04 (gdm 50, dynamic greeter, `gdm` gid 975 resolved by name); the deferral is closed in the concern doc.
 - **Upgrade hygiene:** hosts that installed a pre-ACL package added `gdm` to the `tisvlay` group; since removal-time `gpasswd -d` is going away, add a one-time `gpasswd -d gdm tisvlay` in `postinstall` so the obsolete standing membership is revoked when moving to the ACL model.
 
 Security: the ACL widens socket reach from the `tisvlay` group to also the greeter group (`gdm`), a root-run, trusted display-manager group. It stays opt-in (unset by default) so a daemon with no greeter deployed grants nothing extra; the reconcile step above is what makes "opt-in" actually revocable.
@@ -73,4 +73,4 @@ With A, greeter access is one mechanism wherever the greeter group is configured
 - ACL crate choice (must use `getgrnam_r` under the hood): `exacl` vs `posix-acl` vs a thin `getgrnam_r` + `nix`/`libc` `acl_*` binding — weigh portability/build weight and whether it lets us set the mask explicitly.
 - The daemon config surface: `--greeter-group <name>` explicit flag (proposed, provisional against Workstream C's grantee-list) vs auto-detecting a present `gdm`/`Debian-gdm` group. Explicit keeps it opt-in and lets plasma-login pass its own group.
 - Confirm the NixOS static `gdm-greeter` accounts carry group `gdm`, and decide how the plasma-login `plasmalogin` greeter (not in `gdm`) is granted, before deleting the module members grant.
-- Whether to re-test on Ubuntu now (to close the deferral) or leave it deferred until the ACL lands on a target we control.
+- ~~Whether to re-test on Ubuntu now~~ — **resolved**: re-tested and validated on Ubuntu 26.04, deferral closed.
