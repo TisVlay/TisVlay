@@ -22,18 +22,19 @@ let
   # Both expose a greeter-only session target the client hangs off of.
   plasmaLoginGreeter = config.services.displayManager.plasma-login-manager.enable;
   gdmGreeter = config.services.displayManager.gdm.enable;
-  # GDM's greeter accounts (nixpkgs gdm.nix `greeterUsers`:
-  # `gdm-greeter{,-2,-3,-4,-5}`, one per seat).
-  gdmGreeterUsers = [
-    "gdm-greeter"
-    "gdm-greeter-2"
-    "gdm-greeter-3"
-    "gdm-greeter-4"
-    "gdm-greeter-5"
-  ];
-  # Accounts that run the greeter, granted daemon-group (socket) access.
-  greeterAccounts =
-    lib.optional plasmaLoginGreeter cfg.greeter.user ++ lib.optionals gdmGreeter gdmGreeterUsers;
+  # The greeter's primary group, which the daemon grants a socket ACL via
+  # --greeter-group so the idle client can reach the zenoh socket. The
+  # modern GDM greeter is a dynamic-userdb account /etc/group can't reach,
+  # so keying on the group is the portable grant; nixpkgs puts its static
+  # `gdm-greeter{,-2..5}` accounts in group `gdm` and the plasma-login
+  # greeter in group `plasmalogin`. A system runs one DM, so unambiguous.
+  greeterGroup =
+    if gdmGreeter then
+      "gdm"
+    else if plasmaLoginGreeter then
+      "plasmalogin"
+    else
+      null;
 in
 {
   options.services.tisvlay = {
@@ -235,18 +236,6 @@ in
       '';
     };
 
-    greeter.user = lib.mkOption {
-      type = lib.types.str;
-      default = "plasmalogin";
-      description = ''
-        Account the plasma-login-manager greeter session runs as, added to
-        the daemon group when `greeter.enable` is set so the idle client
-        can reach the zenoh socket. GDM's greeter accounts
-        (`gdm-greeter{,-2,-3,-4,-5}`) are handled automatically and are not
-        configured here.
-      '';
-    };
-
     cec.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -318,17 +307,9 @@ in
     # Dedicated system user and group for tisvlay-daemon. uid/gid stay
     # unset by default — NixOS allocates from the system range and
     # pins the assignment via /var/lib/nixos/uid-map.
-    users.groups.${cfg.group} = {
-      # Greeter socket access via the group's member list rather than each
-      # account's `extraGroups`: `members` names are added to the group
-      # without asserting they exist, so a nixpkgs whose greeter-account
-      # set differs from `gdmGreeterUsers` (fewer seats, a rename) can't
-      # trip the "isSystemUser/isNormalUser required" assertion on a name
-      # only this module references. `cfg.users` are admin-defined real
-      # accounts, so they stay on `extraGroups` below.
-      members = lib.optionals cfg.greeter.enable greeterAccounts;
-    }
-    // lib.optionalAttrs (cfg.gid != null) {
+    # The greeter reaches the socket via the daemon's --greeter-group ACL
+    # (below), not group membership — so no greeter accounts are added here.
+    users.groups.${cfg.group} = lib.optionalAttrs (cfg.gid != null) {
       gid = cfg.gid;
     };
     users.users = lib.mkMerge (
@@ -434,6 +415,12 @@ in
           ++ lib.optionals (cfg.bindPort != null) [
             "--ssdp-port"
             (toString cfg.bindPort)
+          ]
+          # Grant the active DM's greeter group a socket ACL so the idle
+          # client (dynamic-userdb on modern GDM) can reach the socket.
+          ++ lib.optionals (cfg.greeter.enable && greeterGroup != null) [
+            "--greeter-group"
+            greeterGroup
           ]
           ++ cfg.extraArgs
         );
