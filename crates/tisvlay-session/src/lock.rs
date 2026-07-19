@@ -153,7 +153,13 @@ async fn watch(
                 // re-hydrate a fresh session.
                 let Some(change) = change else { return Ok(()) };
                 let Ok(locked) = change.get().await else { continue };
-                is_locked.store(locked, Ordering::SeqCst);
+                // Emit only on a real edge. zbus yields the current value
+                // when the stream opens; that first item matches the seed
+                // and must not synthesize a Lock/Unlock (which would blank
+                // or wake a TV on every service restart).
+                if locked == is_locked.swap(locked, Ordering::SeqCst) {
+                    continue;
+                }
                 let event = if locked { SessionEvent::Lock } else { SessionEvent::Unlock };
                 if !client.send(event) {
                     return Err(Fault::CoreGone);

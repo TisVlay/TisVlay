@@ -784,6 +784,9 @@ impl Core {
     /// system daemon's rpcs. The tap publish comes first so observers see
     /// the cause before the effects.
     async fn dispatch(&mut self, event: SessionEvent) {
+        // One observability point for every session event (lock, idle,
+        // remote) as it enters the core — the audit seam across transports.
+        debug!(?event, "session event");
         // Idle-drift bookkeeping: an idle action opens the drift window,
         // any activity or lock transition closes it (a fresh idle cycle
         // will re-open it through its own timer).
