@@ -20,7 +20,7 @@ use futures_util::StreamExt;
 use tisvlay_wire::payload::RemoteSourceKind;
 use tracing::debug;
 
-use crate::detector::Backoff;
+use crate::detector::{Backoff, Fault};
 use crate::{RemoteClient, RemoteReport};
 
 #[zbus::proxy(
@@ -155,19 +155,6 @@ async fn run(client: RemoteClient) {
             Err(Fault::Bus(e)) => backoff.note_failure("logind detector: system bus", e),
         }
         tokio::time::sleep(backoff.next_delay()).await;
-    }
-}
-
-/// Why a watch session ended.
-enum Fault {
-    Bus(zbus::Error),
-    /// The session core dropped the report channel — stop supervising.
-    CoreGone,
-}
-
-impl From<zbus::Error> for Fault {
-    fn from(e: zbus::Error) -> Self {
-        Fault::Bus(e)
     }
 }
 

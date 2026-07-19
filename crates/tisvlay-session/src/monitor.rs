@@ -51,7 +51,7 @@ use tracing::debug;
 use zbus::MatchRule;
 use zbus::message::Type as MessageType;
 
-use crate::detector::Backoff;
+use crate::detector::{Backoff, Fault};
 use crate::{RemoteClient, RemoteReport};
 
 /// The portal object namespace the monitor scopes its match rules to —
@@ -264,20 +264,8 @@ async fn run(main_bus: zbus::Connection, client: RemoteClient) {
     }
 }
 
-/// Why a monitor session ended.
-enum Fault {
-    /// The bus could not be reached or the monitor could not be armed.
-    Bus(zbus::Error),
-    /// The session core dropped the report channel — stop supervising.
-    CoreGone,
-}
-
-impl From<zbus::Error> for Fault {
-    fn from(e: zbus::Error) -> Self {
-        Fault::Bus(e)
-    }
-}
-
+// The portal monitor also faults on fdo errors; the shared `Fault` (a
+// crate-local type) can carry the conversion from this module.
 impl From<zbus::fdo::Error> for Fault {
     fn from(e: zbus::fdo::Error) -> Self {
         Fault::Bus(e.into())

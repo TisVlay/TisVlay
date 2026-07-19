@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use futures_util::StreamExt;
 use tracing::debug;
 
-use crate::detector::Backoff;
+use crate::detector::{Backoff, Fault};
 use crate::logind::{Login1ManagerProxy, own_uid};
 use crate::{SessionClient, SessionEvent};
 
@@ -98,19 +98,6 @@ pub async fn watch_lock(
     match watch(&connection, &client, &is_locked, &mut attached).await {
         Ok(()) | Err(Fault::CoreGone) => Ok(()),
         Err(Fault::Bus(e)) => Err(e),
-    }
-}
-
-/// Why a watch session ended.
-enum Fault {
-    Bus(zbus::Error),
-    /// The session core dropped the event channel — stop supervising.
-    CoreGone,
-}
-
-impl From<zbus::Error> for Fault {
-    fn from(e: zbus::Error) -> Self {
-        Fault::Bus(e)
     }
 }
 
