@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::json;
+use tisvlay_core::idle_mutter::IdleWatch;
 use tisvlay_core::wayland::{
     IdleNotification, IdleTransition, WatchHandle, WaylandIdleError, start_idle_watch_on_socket,
 };
@@ -142,16 +143,6 @@ async fn read_timeout(session: &zenoh::Session, site: &str) -> u64 {
     }
 }
 
-/// A live greeter idle watch over whichever transport the greeter
-/// compositor provides. Held for the process lifetime; dropping it stops
-/// the watch. KWin/wlroots greeters take the wayland path; a GDM greeter
-/// (Mutter, no `ext-idle-notify`) takes the D-Bus `Mutter.IdleMonitor`.
-#[allow(dead_code)] // inner handles are held for their Drop, never read
-enum IdleWatch {
-    Wayland(WatchHandle),
-    Mutter(tisvlay_core::idle_mutter::Handle),
-}
-
 /// Attach the greeter idle watch. Tries the compositor's wayland socket
 /// first (discovered under `XDG_RUNTIME_DIR` — greeter units carry no
 /// `WAYLAND_DISPLAY`), retrying while the socket appears; if the socket is
@@ -162,6 +153,10 @@ async fn connect_idle_watch(
     tx: &mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> Result<IdleWatch> {
     const MAX_ATTEMPTS: u32 = 15;
+    // Why the wayland path was abandoned, carried into the final error so a
+    // both-transports-failed report names the real wayland reason (a slow
+    // wlroots socket) instead of looking like a pure Mutter failure.
+    let mut wayland_err = anyhow!("wayland idle watch not attempted");
     for attempt in 1..=MAX_ATTEMPTS {
         match try_wayland(timeout_ms, tx.clone()) {
             Ok(handle) => return Ok(IdleWatch::Wayland(handle)),
@@ -169,11 +164,13 @@ async fn connect_idle_watch(
             // protocol (Mutter) — no amount of retrying helps; go D-Bus.
             Err(TryError::Unsupported(e)) => {
                 debug!(error = %e, "greeter compositor lacks ext-idle-notify; trying Mutter");
+                wayland_err = e;
                 break;
             }
             // Socket not there yet — the compositor is still coming up.
             Err(TryError::NotReady(e)) => {
                 debug!(attempt, error = %e, "greeter compositor not ready; retrying");
+                wayland_err = e;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
@@ -195,7 +192,9 @@ async fn connect_idle_watch(
                 sockets = ?wayland_sockets(),
                 "could not attach a greeter idle watch (wayland or Mutter)"
             );
-            Err(anyhow!("Mutter idle monitor: {e}").context("attach greeter idle watch"))
+            Err(anyhow!("Mutter idle monitor: {e}")
+                .context(format!("wayland idle unavailable: {wayland_err:#}"))
+                .context("attach greeter idle watch"))
         }
     }
 }

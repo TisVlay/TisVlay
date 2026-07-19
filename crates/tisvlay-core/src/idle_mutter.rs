@@ -117,6 +117,17 @@ impl Drop for Handle {
     }
 }
 
+/// A live idle watch over whichever transport attached — held for its
+/// `Drop` (dropping it stops the watch); the inner handles are never read.
+/// Shared by the session adapter and the login greeter, which both select
+/// between the wayland (`ext-idle-notify`) and Mutter (D-Bus) transports.
+#[derive(Debug)]
+#[allow(dead_code)] // inner handles are held for their Drop, never read
+pub enum IdleWatch {
+    Wayland(crate::wayland::WatchHandle),
+    Mutter(Handle),
+}
+
 /// The bus-facing strip: the only code that touches zbus. Not exercised by
 /// CI (needs a live GNOME IdleMonitor); the [`Tracker`] carries the logic.
 mod ffi {

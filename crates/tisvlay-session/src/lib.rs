@@ -1367,15 +1367,7 @@ pub async fn idle_adapter(
     }
 }
 
-/// A live idle watch from whichever transport attached. Held for its
-/// side effect: dropping it stops the watch (the wayland thread exits on
-/// its stop pipe; the Mutter task aborts and closes its bus). The inner
-/// handles are never read — only dropped — so the fields look dead.
-#[allow(dead_code)]
-enum IdleWatch {
-    Wayland(tisvlay_core::wayland::WatchHandle),
-    Mutter(tisvlay_core::idle_mutter::Handle),
-}
+use tisvlay_core::idle_mutter::IdleWatch;
 
 /// Attach an idle watch over the first transport the running desktop
 /// provides: the `ext-idle-notify` Wayland protocol (KWin, wlroots), else

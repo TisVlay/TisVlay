@@ -318,7 +318,17 @@ in
     # Dedicated system user and group for tisvlay-daemon. uid/gid stay
     # unset by default — NixOS allocates from the system range and
     # pins the assignment via /var/lib/nixos/uid-map.
-    users.groups.${cfg.group} = lib.optionalAttrs (cfg.gid != null) {
+    users.groups.${cfg.group} = {
+      # Greeter socket access via the group's member list rather than each
+      # account's `extraGroups`: `members` names are added to the group
+      # without asserting they exist, so a nixpkgs whose greeter-account
+      # set differs from `gdmGreeterUsers` (fewer seats, a rename) can't
+      # trip the "isSystemUser/isNormalUser required" assertion on a name
+      # only this module references. `cfg.users` are admin-defined real
+      # accounts, so they stay on `extraGroups` below.
+      members = lib.optionals cfg.greeter.enable greeterAccounts;
+    }
+    // lib.optionalAttrs (cfg.gid != null) {
       gid = cfg.gid;
     };
     users.users = lib.mkMerge (
@@ -334,12 +344,11 @@ in
           };
         }
       ]
-      # Socket-permission grants: listed accounts join the daemon
-      # group so they can connect to the 0660 zenoh socket. The
-      # greeter account(s) get the same grant when the client is enabled.
+      # Socket-permission grants: listed accounts join the daemon group
+      # so they can connect to the 0660 zenoh socket.
       ++ map (name: {
         ${name}.extraGroups = [ cfg.group ];
-      }) (cfg.users ++ lib.optionals cfg.greeter.enable greeterAccounts)
+      }) cfg.users
     );
 
     # CEC device access + optional Pulse-Eight adapter bring-up.
