@@ -32,6 +32,9 @@ uuid = { workspace = true }
 # Sync mutex without poisoning (Reconciler, ReconcilerMap, Coalescer).
 parking_lot = { workspace = true }
 
+# Optional: one-click socket-group enrollment (pkexec usermod) for the CLI/GUI
+libc = { workspace = true, optional = true }
+
 # Optional: logging init for binaries
 anyhow = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
@@ -59,6 +62,7 @@ rstest = { workspace = true }
 
 [features]
 default = []
+access = ["dep:libc", "dep:anyhow"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
 wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]
 # The Mutter D-Bus idle transport shares the wayland idle vocabulary

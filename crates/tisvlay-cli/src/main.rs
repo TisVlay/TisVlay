@@ -41,6 +41,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Grant the current user TV control by adding it to the daemon's
+    /// socket group (one-click, authenticated via polkit). Log out and
+    /// back in afterward for it to take effect.
+    EnableAccess,
     /// Probe the daemon's liveliness token.
     Status,
     /// List TVs with their current state (hydrates from publisher caches).
@@ -295,16 +299,48 @@ fn main() -> Result<()> {
         .block_on(run())
 }
 
+/// `enable-access`: enroll the current user in the daemon's socket group via
+/// a polkit-authenticated `usermod`, printing the outcome.
+fn enable_access(socket: &Path) -> Result<()> {
+    use tisvlay_core::access::{self, EnrollOutcome};
+    if access::has_access(socket) {
+        println!("You already have TV control access.");
+        return Ok(());
+    }
+    println!("Granting TV control access — authenticate as an administrator when prompted…");
+    match access::enable_access(socket)? {
+        EnrollOutcome::Enrolled { user, group } => {
+            println!("Added '{user}' to the '{group}' group.");
+            println!(
+                "Log out and back in for it to take effect — a reboot is the most reliable, \
+                 since the systemd user manager can outlive a logout and keep the old groups."
+            );
+        }
+        // has_access read false a moment ago; only a race lands here.
+        EnrollOutcome::AlreadyMember { .. } => {
+            println!("You already have TV control access.");
+        }
+    }
+    Ok(())
+}
+
 async fn run() -> Result<()> {
     let cli = Cli::parse();
     let socket = cli
         .socket
         .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path);
+    // `enable-access` needs no daemon connection — it is the fix for not
+    // being able to reach the socket, so it runs before opening the client.
+    if matches!(cli.command, Command::EnableAccess) {
+        return enable_access(&socket);
+    }
     let session = open_client(&socket).await?;
     let caller = Caller::new(session.clone());
     let site = &cli.site;
     let json_out = cli.json;
     match cli.command {
+        // Handled above, before the client opens (needs no connection).
+        Command::EnableAccess => unreachable!(),
         Command::Status => status(&session, site, &socket, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
@@ -1082,7 +1118,20 @@ async fn discover_session(
 async fn open_client(socket: &Path) -> Result<Session> {
     zenoh::open(tisvlay_wire::bootstrap::client_config(socket)?)
         .await
-        .map_err(|e| anyhow!("daemon unreachable at {}: {e}", socket.display()))
+        .map_err(|e| {
+            // A connect failure for a caller who isn't in the socket group
+            // reads as "daemon unreachable", but the real cause is access:
+            // the group-owned runtime dir isn't even searchable, so socket
+            // resolution can't see the live daemon and lands on the dev
+            // path. Point at the fix instead of the misleading path.
+            if !tisvlay_core::access::has_access(socket) {
+                anyhow!(
+                    "You don't have TV control access yet — run `tisvlay enable-access` to grant it."
+                )
+            } else {
+                anyhow!("daemon unreachable at {}: {e}", socket.display())
+            }
+        })
 }
 
 /// One RPC round-trip: JSON in, JSON out, typed daemon errors surfaced as

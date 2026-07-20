@@ -7,13 +7,13 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-17 23:43-0500\n"
+"POT-Creation-Date: 2026-07-19 19:52-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "Language: \n"
 "MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=CHARSET\n"
+"Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
 #: crates/tisvlay-gui/src/wizard.rs:382
@@ -157,114 +157,159 @@ msgstr ""
 msgid "diagnostic info"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:863
+#: crates/tisvlay-gui/src/lib.rs:806
+msgid "TV control access needed"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:808
+msgid ""
+"You're not in the group that controls the TVs, so the app can't reach them. "
+"Grant access, then log out and back in."
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:810
+msgid "Enable TV control"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:820
+msgid "Requesting access…"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:822
+msgid "Authenticate as an administrator in the dialog."
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:837
+msgid "Access granted"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:839
+msgid ""
+"Log out and back in to finish — a reboot is the most reliable, since the "
+"session manager can keep the old groups across a logout."
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:846
+msgid "Couldn't enable access"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:848
+#, rust-format
+msgid "Access wasn't granted: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:851
+msgid "Try again"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:929
 #, rust-format
 msgid "Create profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:918
+#: crates/tisvlay-gui/src/lib.rs:984
 #, rust-format
 msgid "Duplicate profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:977
+#: crates/tisvlay-gui/src/lib.rs:1043
 #, rust-format
 msgid "Delete profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1059 crates/tisvlay-gui/src/lib.rs:1087
-#: crates/tisvlay-gui/src/lib.rs:1059 crates/tisvlay-gui/src/lib.rs:1087 crates/tisvlay-gui/src/lib.rs:1149
-#: crates/tisvlay-gui/src/lib.rs:1059 crates/tisvlay-gui/src/lib.rs:1087 crates/tisvlay-gui/src/lib.rs:1149
+#: crates/tisvlay-gui/src/lib.rs:1125 crates/tisvlay-gui/src/lib.rs:1153
+#: crates/tisvlay-gui/src/lib.rs:1125 crates/tisvlay-gui/src/lib.rs:1153 crates/tisvlay-gui/src/lib.rs:1215
+#: crates/tisvlay-gui/src/lib.rs:1125 crates/tisvlay-gui/src/lib.rs:1153 crates/tisvlay-gui/src/lib.rs:1215
 #, rust-format
 msgid "Save change failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1209
+#: crates/tisvlay-gui/src/lib.rs:1275
 #, rust-format
 msgid "Reset field failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1233
+#: crates/tisvlay-gui/src/lib.rs:1299
 #, rust-format
 msgid "Reset all failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1258
+#: crates/tisvlay-gui/src/lib.rs:1324
 #, rust-format
 msgid "Rename failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1285
+#: crates/tisvlay-gui/src/lib.rs:1351
 msgid "Couldn't change volume"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1303
+#: crates/tisvlay-gui/src/lib.rs:1369
 msgid "Couldn't change backlight"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1323
+#: crates/tisvlay-gui/src/lib.rs:1389
 msgid "Couldn't change mute"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1351
+#: crates/tisvlay-gui/src/lib.rs:1417
 msgid "Couldn't turn screen on"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1353
+#: crates/tisvlay-gui/src/lib.rs:1419
 msgid "Couldn't turn screen off"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1372
+#: crates/tisvlay-gui/src/lib.rs:1438
 msgid "Couldn't switch input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1391
+#: crates/tisvlay-gui/src/lib.rs:1457
 msgid "Power on failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1405
+#: crates/tisvlay-gui/src/lib.rs:1471
 msgid "Power off failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1420
+#: crates/tisvlay-gui/src/lib.rs:1486
 msgid "Couldn't update managed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1447 crates/tisvlay-gui/src/lib.rs:1462
-#: crates/tisvlay-gui/src/lib.rs:1447 crates/tisvlay-gui/src/lib.rs:1462
+#: crates/tisvlay-gui/src/lib.rs:1513 crates/tisvlay-gui/src/lib.rs:1528
+#: crates/tisvlay-gui/src/lib.rs:1513 crates/tisvlay-gui/src/lib.rs:1528
 msgid "Couldn't change system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1463 crates/tisvlay-gui/src/lib.rs:1521
+#: crates/tisvlay-gui/src/lib.rs:1529 crates/tisvlay-gui/src/lib.rs:1587
 msgid "Selected profile is no longer in the catalog."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1492
+#: crates/tisvlay-gui/src/lib.rs:1558
 msgid "Session service unavailable"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1494
+#: crates/tisvlay-gui/src/lib.rs:1560
 msgid "User-profile assignments require the per-user tisvlay-session service."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1505 crates/tisvlay-gui/src/lib.rs:1520
-#: crates/tisvlay-gui/src/lib.rs:1505 crates/tisvlay-gui/src/lib.rs:1520
+#: crates/tisvlay-gui/src/lib.rs:1571 crates/tisvlay-gui/src/lib.rs:1586
+#: crates/tisvlay-gui/src/lib.rs:1571 crates/tisvlay-gui/src/lib.rs:1586
 msgid "Couldn't change user profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1544
+#: crates/tisvlay-gui/src/lib.rs:1610
 msgid "Couldn't change primary input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1558
+#: crates/tisvlay-gui/src/lib.rs:1624
 msgid "Couldn't remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1586
+#: crates/tisvlay-gui/src/lib.rs:1652
 msgid "Reload config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1596
+#: crates/tisvlay-gui/src/lib.rs:1662
 msgid "Reload session config failed"
 msgstr ""
 
@@ -272,53 +317,53 @@ msgstr ""
 msgid "Address"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:232
+#: crates/tisvlay-gui/ui/main.slint:233
 msgctxt "AppWindow"
 msgid "TVs"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:239
+#: crates/tisvlay-gui/ui/main.slint:240
 msgctxt "AppWindow"
 msgid "Profiles"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:246
+#: crates/tisvlay-gui/ui/main.slint:247
 msgctxt "AppWindow"
 msgid "Settings"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:253
+#: crates/tisvlay-gui/ui/main.slint:254
 msgctxt "AppWindow"
 msgid "About"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:276
+#: crates/tisvlay-gui/ui/main.slint:277
 msgctxt "AppWindow"
 msgid "Reload daemon config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:304
+#: crates/tisvlay-gui/ui/main.slint:305
 msgctxt "AppWindow"
 msgid "Reload"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:318
+#: crates/tisvlay-gui/ui/main.slint:319
 msgctxt "AppWindow"
 msgid ""
 "Reload the daemon's config from disk — picks up edits made outside the app."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:344
+#: crates/tisvlay-gui/ui/main.slint:345
 msgctxt "AppWindow"
 msgid "Daemon"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:350
+#: crates/tisvlay-gui/ui/main.slint:351
 msgctxt "AppWindow"
 msgid "Session"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:356
+#: crates/tisvlay-gui/ui/main.slint:357
 msgctxt "AppWindow"
 msgid "Tray"
 msgstr ""
