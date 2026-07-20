@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use futures_util::stream::SelectAll;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use zbus::zvariant::OwnedObjectPath;
 
 use crate::acl::{self, GreeterAccess};
@@ -211,6 +211,8 @@ async fn qualifying_uid(connection: &zbus::Connection, path: &OwnedObjectPath) -
         return None;
     }
     let (uid, _) = session.user().await.ok()?;
-    info!(uid, session = %path.as_str(), "active seat session qualifies for socket access");
+    // Debug, not info: this runs on every recompute (property echoes
+    // included); the applied-set edge is what acl::reconcile logs.
+    debug!(uid, session = %path.as_str(), "active seat session qualifies for socket access");
     Some(uid)
 }
