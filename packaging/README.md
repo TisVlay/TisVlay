@@ -157,6 +157,75 @@ The `tisvlay` CLI ships tab-completion for bash, zsh, and fish, present after in
 - **Manual install** on an unsupported distro: `COMPLETE=bash tisvlay > ~/.local/share/bash-completion/completions/tisvlay` (and the zsh/fish analogs). The `<TAB>` callback resolves a bare `tisvlay` on `$PATH`.
 - **Live-value scope.** Completing TV/profile UUIDs and vendor ids queries the daemon per `<TAB>`, bounded by a short timeout and empty on failure so a downed daemon never hangs the prompt. Because the completer runs before the CLI parses argv, it can't see `--socket`/`--site`/`--user-socket` and always targets the default sockets + the `main` site (see [docs/ideas/completion-followups.md](../docs/ideas/completion-followups.md) for lifting that).
 
+## Socket access & the ACL integration
+
+The daemon's zenoh socket (`/run/tisvlay/zenoh.sock`, `0660 tisvlay:tisvlay`, dir `0750`) is the authorization boundary for everything — any process that can `connect()` has the full RPC surface. Packages integrate a **three-layer access model** (the socket-access-unification work, 2026-07; the full design record lives in the git history of `docs/plans/socket-access-unification.md`):
+
+| Layer | Who it serves | Mechanism | Lifetime |
+|---|---|---|---|
+| **Durable** | SSH, remote, headless, lingering services | `tisvlay` group membership; `tisvlay enable-access` is the one-click enrollment (`pkexec usermod` through the desktop's polkit agent) | permanent — but takes effect only on a fresh login (see Lessons) |
+| **Presence** | the human at the console | daemon-applied `u:<uid>:rw` ACL following logind's per-seat `ActiveSession` (`--seat-access`, default on) | while that session is the seat foreground |
+| **Greeter** | the login screen's idle client (OLED protection) | daemon-applied `g:<greeter-group>:rw` ACL (`--greeter-access` auto-detect, or `--greeter-group <name>`) | while the daemon runs |
+
+### Why the postinstall doesn't `usermod` anyone
+
+Auto-enrolling "the user" at install time is an industry-wide refusal, not an oversight: `$SUDO_USER` is unset under PackageKit / GNOME Software (the scriptlet runs as plain root), headless installs have no human, multi-user machines have no single "the" user, and no distro policy blesses it (wireshark-common creates its group and explicitly adds no one). So the postinstall only creates the `tisvlay` system user/group; enrollment belongs to the *clients* (the CLI verb and the GUI's access banner), and the console needs none at all — the presence layer covers it. The familiar "docker group = root" critique does not transfer: that requires a root daemon, and `tisvlay-daemon` runs as an unprivileged system user, so socket access confers TV control only.
+
+### The two ACL grants (daemon-applied, in-process)
+
+`crates/tisvlay-daemon/src/acl.rs` writes the `system.posix_acl_access` xattr directly — no libacl dependency. A plain access ACL is a small stable blob, and *removing* the xattr reverts a file to its mode bits, which is exactly what keeps grants revocable on a runtime dir that `RuntimeDirectoryPreserve=restart` carries across daemon restarts. Load-bearing semantics, each learned the hard way:
+
+- **Apply after the `0660` chmod, never chmod after.** A chmod recomputes the ACL mask and would clamp every named entry.
+- **ACL evaluation is first-match-by-class** (owner → named users → owning + named groups → other), *not* a union: a named entry decides its principal alone. Every named entry therefore carries the full class permission (`rw` on the socket, `r-x` on the dir) — anything narrower would *subtract* access from a user who is also a group member. The mask carries the same permission so the owning `tisvlay` group keeps effective access.
+- **Mode and ACL are two views of one state**: setting the ACL rewrites the file's mode bits, and the desired blob is derived from a fresh `stat` — never assumed.
+- **Writes are compare-before-write**: reconcile reads the stored xattr and rewrites only on drift, so the seat watch can re-ground on a timer (every 5 minutes, wall-clock — property events can't reset it) to repair a failed or externally-clobbered write without churn or log spam.
+
+**The greeter grant** exists because the modern GDM greeter (GNOME 49+: Fedora 43/44, Ubuntu 25.10+) is a systemd-userdb *dynamic* user whose primary group is `gdm` — `/etc/group` supplementary membership can't reach it, so `usermod -aG tisvlay gdm` targets the wrong account entirely. The group ACL keys on the one handle stable across static (NixOS) and dynamic (Fedora/Ubuntu) greeters, matching how GDM's own polkit policies gate the greeter. `--greeter-access` auto-detects `gdm`/`Debian-gdm`; a plasma-login greeter needs an explicit `--greeter-group plasmalogin` (today only the NixOS module wires that — plasma-login packaging on other distros would need its own value). Full war story and validation record: [docs/concerns/greeter-packaged-socket-access.md](../docs/concerns/greeter-packaged-socket-access.md).
+
+**The presence grant** is `uaccess` semantics applied to our socket — logind's own mechanism for granting the active-seat user device access, which we must implement in-daemon because `uaccess` itself is udev/device-node-only. The watch (`crates/tisvlay-daemon/src/seat.rs`) keys off each seat's `ActiveSession` property — never a scan of sessions with `Active=yes`, because seatless sessions self-report active (a plain SSH shell reads `Remote=yes Type=tty Active=yes`) — and the active session qualifies only as a human desktop login: `Class=user` (excludes the greeter session) ∧ `Type∈{x11,wayland}` (excludes a bare VT) ∧ `¬Remote`. Transience is the point, not a defect: switching away removes the entry, so new connects are denied exactly while active-session arbitration suppresses that user's automation; connections that already exist persist, because the kernel checks permission at `connect()` — the same property `uaccess` accepts for device fds.
+
+### Per-channel wiring
+
+| Knob | `.deb` / `.rpm` / `.pkg.tar.zst` | NixOS module |
+|---|---|---|
+| Durable group | postinstall creates the `tisvlay` system user + group | `services.tisvlay.users` (declarative membership) |
+| Greeter ACL | packaged unit's `ExecStart` passes `--greeter-access` (auto-detect) | module passes `--greeter-group` per active DM (`gdm` / `plasmalogin`), gated on `greeter.enable` |
+| Presence ACL | binary defaults on — no flag in the unit; disable via a drop-in adding `--seat-access=false` | `services.tisvlay.seatAccess` (default `true`; `false` emits the opt-out flag) |
+
+### Maintainer-script lifecycle
+
+One shared script pair (nfpm embeds [`scripts/postinstall.sh`](scripts/postinstall.sh) / [`scripts/preremove.sh`](scripts/preremove.sh) into all three formats), but the managers pass **three different `$1` conventions**:
+
+| Manager | remove-time script | upgrade indicator |
+|---|---|---|
+| rpm | `%preun` gets an instance count: `0` = final removal, `≥1` = upgrade/reinstall; `%post` gets `1` = fresh, `≥2` = upgrade | numeric |
+| dpkg | `prerm` gets `remove`/`upgrade`/…; `postinst` gets `configure` with the old version in `$2` (empty on fresh install) | strings |
+| pacman | `pre_remove` runs **only** on real removal and gets a version string; `post_install` has an empty `$2` | version strings |
+
+Two rules follow, both burned in by field failures:
+
+- **Teardown guards by *excluding upgrades*** (`1 | upgrade | failed-upgrade | deconfigure` → skip), never by allow-listing removal values — pacman's version-string `$1` would never match an allow-list and Arch would silently skip cleanup, leaving the daemon running after `pacman -R`. On upgrade, the *old* package's preremove is what runs — so a host upgrading from a pre-guard package will still see one final stop/disable (the new postinstall re-enables and, on upgrade, `try-restart`s; a one-time hiccup that can't be fixed retroactively).
+- **Start only on genuinely fresh installs.** `enable` + `try-restart` run always (the restart swaps a *running* daemon onto the new binary; its no-op on an inactive unit is what respects an admin's deliberate stop across upgrades). The follow-up `start` fires only for deb `configure` with an empty `$2` — through `deb-systemd-invoke` when present, so `policy-rc.d` is honored in chroots and image builds — or rpm `$1 = 1`. pacman is deliberately excluded: Arch scriptlets never start services, so Arch users get one `systemctl start` (or a reboot) after first install.
+
+One known benign leftover: packages older than the ACL model added the static `gdm` user to the `tisvlay` group; nothing revokes that on upgrade, so `getent group tisvlay` may still list `gdm` on long-lived hosts. Harmless — the static `gdm` user is not the greeter on modern GDM, and the trusted-DM posture is the same one the greeter ACL grants deliberately.
+
+### Verifying on a live host
+
+```bash
+sudo getfacl -p /run/tisvlay/zenoh.sock   # user:<name>:rw- while seated; group:gdm:rw-; mask::rw-
+journalctl -u tisvlay-daemon | grep "socket ACL"   # "socket ACL applied" on real transitions only
+tisvlay status            # from the console: works with no group membership
+tisvlay enable-access     # grants the durable group (gates on membership, not reachability)
+```
+
+Field-validated on Fedora 44 and Ubuntu 26.04 (both GNOME/GDM 50 with dynamic userdb greeters): console login mints the `user:` entry beside `group:gdm`; at the greeter there is no user entry (the `Class` gate); seatless SSH without the group gets the CLI's `enable-access` hint; full `remove` → `install` cycles are clean in both directions.
+
+### Lessons
+
+- **A group grant does not take effect on logout/login.** The systemd per-user manager (`user@<uid>.service`) outlives a logout and keeps its supplementary-group set frozen at first login, so the re-login re-attaches to the stale manager. A reboot (or `loginctl terminate-user`) is the reliable path — the enroll-success copy in the CLI and GUI says exactly that. The presence ACL is immune: it attaches to the *socket*, not to any process's credentials, so it works the moment it lands.
+- **A printed instruction in a scriptlet reaches no one under an app-store install.** Twice bitten: the old "now run `usermod`" hint (replaced by `enable-access` + the presence layer) and the old "now start the daemon" hint (replaced by the fresh-install start above).
+- **EACCES poisons path resolution before it ever reaches `connect()`.** A user locked out of `/run/tisvlay/` can't even `stat` the socket, so `Path::exists()` reads EACCES as absent and the CLI's connect-side resolution falls back to the (absent) dev socket — producing a misleading "daemon unreachable at `/run/user/…`" error for what is really an access problem. The CLI's no-access hint and the clients' nonblocking connect-probe classification (`EACCES` ⇒ no access; `ECONNREFUSED` ⇒ daemon down) exist because of this.
+
 ## Testing the result
 
 The build host produces the package, but only the target distro proves it installs and runs.

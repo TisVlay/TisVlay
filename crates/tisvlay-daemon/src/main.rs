@@ -52,6 +52,13 @@ struct Args {
     /// (e.g. a plasma-login greeter).
     #[arg(long)]
     greeter_group: Option<String>,
+
+    /// Grant each seat's active graphical user socket access via a POSIX
+    /// ACL while their session is the seat foreground (uaccess-style
+    /// presence grant; the tisvlay group remains the durable grant).
+    /// `--seat-access=false` restricts the socket to the group + greeter.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    seat_access: bool,
 }
 
 fn default_config_path() -> PathBuf {
@@ -88,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
             (None, true) => tisvlay_daemon::GreeterAccess::Auto,
             (None, false) => tisvlay_daemon::GreeterAccess::Disabled,
         },
+        seat_access: args.seat_access,
     })
     .await
 }

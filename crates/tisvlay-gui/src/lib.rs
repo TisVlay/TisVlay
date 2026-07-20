@@ -790,12 +790,14 @@ fn register_callbacks(
     errors_global.on_profiles_action(|| {});
     errors_global.on_pairing_action(|| {});
 
-    // App-level access banner. When the user isn't in the daemon's
-    // socket group the resilient link never connects (the socket is
-    // 0660, `tisvlay` group), so the window would otherwise sit empty
-    // with no explanation. `has_access` is a synchronous group-
-    // membership read; the enroll blocks on the polkit prompt, so it
-    // runs off the UI thread and posts its outcome back.
+    // App-level access banner. When the user can't reach the daemon
+    // socket the resilient link never connects (the socket is 0660,
+    // `tisvlay` group + daemon-applied ACLs), so the window would
+    // otherwise sit empty with no explanation. `has_access` is a cheap
+    // nonblocking connect probe — a seat-granted console user reads as
+    // having access, so the banner never nags a working setup; the
+    // enroll blocks on the polkit prompt, so it runs off the UI thread
+    // and posts its outcome back.
     {
         use tisvlay_core::access;
         let socket = endpoints().system_socket.clone();
