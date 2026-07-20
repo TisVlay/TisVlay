@@ -1,6 +1,6 @@
 # Remote-session detection follow-ups
 
-Deferred work parked when the remote-session-awareness feature merged. The feature ships with five detectors (manual/hook, PipeWire, portal, logind, Sunshine poll), the per-event `while_remote` gate, and the `on_remote_connect`/`on_remote_disconnect` events. These are the "later, if asked" extensions. See [remote/detection.md](../remote/detection.md) for the as-built reference.
+Deferred work parked when the remote-session-awareness feature merged. The feature ships with five detectors (manual/hook, PipeWire, portal, logind, Sunshine poll), the per-event `while_remote` gate, and the `on_remote_connect`/`on_remote_disconnect`/`on_local_return` events. These are the "later, if asked" extensions. See [remote/detection.md](../remote/detection.md) for the as-built reference.
 
 Related deferrals filed separately: the world-side eager remote-state refresh ([eager-remote-state-refresh.md](eager-remote-state-refresh.md)), and the on-hardware detector validation plus the two bench-gated knobs — connect/disconnect debounce **delay fields** and **retroactive correction** — in [concerns/remote-session-detector-validation.md](../concerns/remote-session-detector-validation.md).
 
@@ -22,5 +22,6 @@ Related deferrals filed separately: the world-side eager remote-state refresh ([
 
 ## Testing & internals
 
+- **`on_local_return` arm-debounce.** The return watch wakes on the first seat resume after a disconnect, which is seat activity, not proven human presence — a teardown input blip from the remote stack could in principle wake an empty room (the wake is idempotent, so the cost is one stray `screen_on`). A short debounce — ignore the resume for ~1–2 s after arming, since a real return lands seconds later while a teardown blip lands immediately — is the mitigation. Deferred: the first field QA (2026-07-18, Sunshine) saw none, a single return-wake ~1.7 s after the disconnect with no spurious fire. Trigger: a spurious post-disconnect wake observed in the field.
 - **PipeWire fake for integration tests.** The PipeWire detector's glue is the one CI-untestable strip (the pure node predicate is unit-tested; the ThreadLoop/Registry wiring is verified live). A fake PipeWire graph seam would close the integration gap. Trigger: a regression in the glue that the pure test could not catch.
 - **Greeter-session remote interplay.** Greeter events fire before any user session, so the armed set is empty and the gate is naturally inert at the login screen. If a remote session is ever established at the greeter (a remote login manager), the interaction with `greeter/idle` would need its own thought. No current use case.

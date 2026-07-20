@@ -1,88 +1,38 @@
-//! Freedesktop icon-theme resolution. KDE's chosen theme via
-//! `~/.config/kdeglobals` first, then Breeze / Adwaita / hicolor as
-//! fallbacks — covers KDE Plasma + GNOME without linking dconf.
+//! Slint glue over the shared [`tisvlay_icons`] resolver: resolve a
+//! freedesktop icon name (active-desktop theme + symbolic/color cascade)
+//! to a file path, then load it as a Slint `Image`.
 
-use tracing::{debug, warn};
+use tisvlay_icons::Variant;
+use tracing::warn;
 
-/// Detect the user's freedesktop icon theme name. KDE writes its
-/// choice to `~/.config/kdeglobals` `[Icons] Theme=...`; GNOME / etc.
-/// keep theirs in dconf which we don't link. Returns `None` if the
-/// file isn't present or the key isn't found — caller falls back
-/// through the hardcoded theme list.
-fn detect_icon_theme() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let path = std::path::PathBuf::from(home).join(".config/kdeglobals");
-    let content = std::fs::read_to_string(&path).ok()?;
-    let mut in_icons_section = false;
-    for line in content.lines() {
-        let line = line.trim();
-        if line == "[Icons]" {
-            in_icons_section = true;
-        } else if line.starts_with('[') {
-            in_icons_section = false;
-        } else if in_icons_section && let Some(value) = line.strip_prefix("Theme=") {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
+/// Load an action/chrome glyph, preferring the monochrome `-symbolic`
+/// form (see [`tisvlay_icons`]). Use [`load_color_icon`] for the handful
+/// of icons whose color carries meaning (app identity).
+pub(crate) fn load_symbolic_icon(names: &[&str]) -> slint::Image {
+    load(names, Variant::Symbolic)
 }
 
-/// Resolve a freedesktop icon name (with fallbacks) and load it as a
-/// Slint `Image`. The crate's default theme is `hicolor`, which on
-/// NixOS / minimal distros ships zero icons — so we explicitly try
-/// the user's chosen theme (read from `~/.config/kdeglobals` on
-/// KDE), then `breeze` / `Adwaita` / `hicolor` in turn.
-///
-/// Size 22 because Breeze's "actions" / "devices" categories ship
-/// 16/22/24/32/64 buckets unevenly — 22 is the most universally
-/// populated and Slint downscales cleanly to the rendered 16×16.
-///
-/// Returns the default empty image on total miss; Slint draws
-/// nothing for an empty source so the SidebarItem layout degrades
-/// gracefully to label-only.
-pub(crate) fn load_themed_icon(names: &[&str]) -> slint::Image {
-    let user_theme = detect_icon_theme();
-    let themes: Vec<&str> = user_theme
-        .as_deref()
-        .into_iter()
-        .chain(["breeze", "Adwaita", "hicolor"])
-        .collect();
+/// Load an icon preferring its plain colored form, falling back to
+/// `-symbolic` only when no theme ships the color one. For icons whose
+/// color is the point — the app-identity logo — where a monochrome
+/// fallback would flatten meaning.
+pub(crate) fn load_color_icon(names: &[&str]) -> slint::Image {
+    load(names, Variant::Color)
+}
 
-    for name in names {
-        for theme in &themes {
-            let Some(path) = freedesktop_icons::lookup(name)
-                .with_size(22)
-                .with_theme(theme)
-                .with_cache()
-                .find()
-            else {
-                continue;
-            };
-            match slint::Image::load_from_path(&path) {
-                Ok(img) => {
-                    debug!(
-                        icon = name,
-                        theme = theme,
-                        path = %path.display(),
-                        "icon loaded",
-                    );
-                    return img;
-                }
-                Err(e) => {
-                    warn!(
-                        icon = name,
-                        theme = theme,
-                        path = %path.display(),
-                        error = ?e,
-                        "found path but Slint couldn't load",
-                    );
-                }
-            }
+/// Resolve then load. Returns the default empty image on total miss or a
+/// Slint decode failure; Slint draws nothing for an empty source so the
+/// layout degrades gracefully to label-only.
+fn load(names: &[&str], prefer: Variant) -> slint::Image {
+    let Some(path) = tisvlay_icons::resolve(names, prefer) else {
+        warn!(?names, ?prefer, "no icon resolved across theme cascade");
+        return slint::Image::default();
+    };
+    match slint::Image::load_from_path(&path) {
+        Ok(img) => img,
+        Err(e) => {
+            warn!(?names, path = %path.display(), error = ?e, "Slint couldn't load icon");
+            slint::Image::default()
         }
     }
-    warn!(
-        ?names,
-        "no fallback resolved across user / breeze / Adwaita / hicolor"
-    );
-    slint::Image::default()
 }

@@ -1,6 +1,7 @@
 **Command Overview:**
 
 * [`tisvlay`↴](#tisvlay)
+* [`tisvlay enable-access`↴](#tisvlay-enable-access)
 * [`tisvlay status`↴](#tisvlay-status)
 * [`tisvlay list`↴](#tisvlay-list)
 * [`tisvlay watch`↴](#tisvlay-watch)
@@ -55,6 +56,7 @@ TisVlay TV control
 
 ###### **Subcommands:**
 
+* `enable-access` — Grant the current user TV control by adding it to the daemon's socket group (one-click, authenticated via polkit). Log out and back in afterward for it to take effect
 * `status` — Probe the daemon's liveliness token
 * `list` — List TVs with their current state (hydrates from publisher caches)
 * `watch` — Stream every data key: history first, then live samples
@@ -91,6 +93,14 @@ TisVlay TV control
 
   Default value: `main`
 * `--json` — Machine-readable JSON output on read verbs
+
+
+
+## `tisvlay enable-access`
+
+Grant the current user TV control by adding it to the daemon's socket group (one-click, authenticated via polkit). Log out and back in afterward for it to take effect
+
+**Usage:** `tisvlay enable-access`
 
 
 
@@ -420,7 +430,7 @@ System-profile catalog (daemon-side)
 * `create` — Create a profile: `--body` is a SystemProfileConfig body
 * `update` — Replace a profile's body (full JSON body; name required inside)
 * `duplicate` — Copy a profile under a new name
-* `delete` —
+* `delete` — 
 * `defaults` — The stock mapping unset fields inherit
 * `effective` — One TV's resolved mapping (assigned profile over stock)
 
@@ -514,13 +524,13 @@ User-profile catalog (session-service side, via --user-socket)
 
 ###### **Subcommands:**
 
-* `list` —
+* `list` — 
 * `create` — Create a profile: `--body` is a UserProfileConfig body
-* `update` —
-* `duplicate` —
-* `delete` —
-* `defaults` —
-* `effective` —
+* `update` — 
+* `duplicate` — 
+* `delete` — 
+* `defaults` — 
+* `effective` — 
 * `assign` — Assign (or with no value clear) a TV's user profile
 
 

@@ -296,7 +296,7 @@ ssdp_port := env("SSDP_PORT", "1901")
 gui_mcp := env("GUI_MCP", "false")
 
 # zenoh is chatty at debug; keep app crates loud and transports quiet.
-_daemon_log := "info,tisvlay_daemon=debug,tisvlay_world=debug,zbus=warn,rustls=warn,tungstenite=warn"
+_daemon_log := "info,tisvlay_daemon=debug,tisvlay_world=debug,tisvlay_cec=debug,zbus=warn,rustls=warn,tungstenite=warn"
 _session_log := "info,tisvlay_session=debug,zbus=warn"
 _greeter_log := "info,tisvlay_greeter=debug"
 _tray_log := "info,tisvlay_tray=debug,zbus=warn,ksni=warn"
@@ -395,19 +395,33 @@ package-build:
     cargo zigbuild --release \
         --target x86_64-unknown-linux-gnu.{{ glibc_baseline }}
 
+# Generate the CLI's shell-completion bootstraps (one per shell) into
+# packaging/completions/ for nfpm to ship. Built host-native on purpose:
+# the zigbuild release artifact targets a foreign glibc/interpreter and
+# won't run on the NixOS build host, while the registration script is a
+# shell-name-only template, so the debug build's output is identical to
+# release. (Nix regenerates these itself via installShellCompletion.)
+[group('package')]
+completions:
+    cargo build -p tisvlay-cli
+    mkdir -p packaging/completions
+    COMPLETE=bash target/debug/tisvlay > packaging/completions/tisvlay.bash
+    COMPLETE=zsh  target/debug/tisvlay > packaging/completions/tisvlay.zsh
+    COMPLETE=fish target/debug/tisvlay > packaging/completions/tisvlay.fish
+
 # Build .deb package
 [group('package')]
-package-deb: licenses-html package-build
+package-deb: licenses-html completions package-build
     cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f deb
 
 # Build .rpm package
 [group('package')]
-package-rpm: licenses-html package-build
+package-rpm: licenses-html completions package-build
     cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f rpm
 
 # Build Arch Linux package
 [group('package')]
-package-archlinux: licenses-html package-build
+package-archlinux: licenses-html completions package-build
     cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f archlinux
 
 # Build all package formats

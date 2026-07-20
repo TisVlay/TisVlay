@@ -109,6 +109,12 @@ pub mod payload {
         /// DRM connector this TV mirrors, once the desktop probe matches it.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub connector: Option<String>,
+        /// The vendor's primary identifying descriptor (LG: IP; CEC:
+        /// device node) — the connector's `primary_descriptor`, evaluated
+        /// by the reactor from the vendor config. Clients render it as
+        /// the TV's spatial hint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub primary: Option<String>,
     }
 
     impl Identity {
@@ -123,12 +129,29 @@ pub mod payload {
                 serial: None,
                 capabilities: Vec::new(),
                 connector: None,
+                primary: None,
             }
         }
     }
 
     impl StatePayload for Identity {
         const PATH: &'static str = "meta/identity";
+    }
+
+    /// Vendor-projected display rows for the TV's read-only INFO surface:
+    /// the connector's `display_config` (editable fields) and
+    /// `display_diagnostics` (pair-time captures) as schema-ordered,
+    /// labeled `(label, value)` pairs, Secret-free. Arrays preserve order
+    /// on the wire — JSON objects re-sort alphabetically — so this is the
+    /// only shape row order survives in.
+    #[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct VendorRows {
+        pub config: Vec<(String, String)>,
+        pub diagnostics: Vec<(String, String)>,
+    }
+
+    impl StatePayload for VendorRows {
+        const PATH: &'static str = "meta/vendor";
     }
 
     #[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -175,7 +198,7 @@ pub mod payload {
     }
 
     /// Every per-TV cached-state key tail — the DELETE sweep on TV removal.
-    pub const TV_PATHS: [&str; 7] = [
+    pub const TV_PATHS: [&str; 8] = [
         Power::PATH,
         Volume::PATH,
         Link::PATH,
@@ -183,6 +206,7 @@ pub mod payload {
         Backlight::PATH,
         Identity::PATH,
         Meta::PATH,
+        VendorRows::PATH,
     ];
 
     /// Non-payload per-TV keys included in the removal sweep.

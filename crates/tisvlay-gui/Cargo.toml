@@ -14,9 +14,10 @@ path = "src/main.rs"
 [dependencies]
 # Transport-free core types (profiles, schema, capabilities, helpers);
 # the D-Bus client surface is replaced by tisvlay.
-tisvlay-core = { workspace = true, features = ["logging"] }
+tisvlay-core = { workspace = true, features = ["logging", "access"] }
 tisvlay = { workspace = true }
 tisvlay-wire = { workspace = true }
+tisvlay-icons = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 futures-util = { workspace = true }
@@ -32,7 +33,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 parking_lot = "0.12"
-freedesktop-icons = "0.4"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 wl-clipboard-rs = "0.9"
 gettext-rs = "0.7"

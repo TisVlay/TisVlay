@@ -9,8 +9,11 @@ Type=simple
 # The zenoh listener lives in RuntimeDirectory; clients connect with
 # membership in the tisvlay group (the daemon chmods the socket 0660
 # after bind). State (TV table, pairing credentials) persists in
-# StateDirectory.
-ExecStart=/usr/bin/tisvlay-daemon --socket /run/tisvlay/zenoh.sock --config /var/lib/tisvlay/daemon.toml
+# StateDirectory. --greeter-access adds a POSIX ACL for the display
+# manager's greeter group (auto-detected: gdm / Debian-gdm) so the
+# login-screen greeter client can reach the socket; it is a quiet no-op
+# on non-GDM desktops where no such group exists.
+ExecStart=/usr/bin/tisvlay-daemon --socket /run/tisvlay/zenoh.sock --config /var/lib/tisvlay/daemon.toml --greeter-access
 User=tisvlay
 Group=tisvlay
 Restart=on-failure

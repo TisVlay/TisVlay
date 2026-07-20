@@ -9,6 +9,7 @@ members = [
     "crates/tisvlay-test",
     "crates/tisvlay-wire",
     "crates/tisvlay-world",
+    "crates/tisvlay-icons",
     "crates/tisvlay",
     "crates/tisvlay-cli",
     "crates/tisvlay-daemon",
@@ -88,6 +89,10 @@ tracing-log = "0.2"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+# Minor-anchored like zenoh: the `unstable-dynamic` completion engine
+# churns across minor releases, so don't let a bare "4" pull a changed
+# surface on `cargo update`.
+clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 
 # D-Bus (tokio feature ensures zbus uses tokio runtime instead of async-io)
 zbus = { version = "5", default-features = false, features = ["tokio"] }
@@ -166,6 +171,10 @@ edidkit = "0.1"
 # System tray (StatusNotifierItem)
 ksni = "0.3"
 
+# Freedesktop icon-theme lookup (name → file path), shared by the GUI
+# and tray via tisvlay-icons.
+freedesktop-icons = "0.4"
+
 # Desktop notifications (z-with-tokio keeps zbus/tokio, drops the
 # default async-io stack)
 notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
@@ -190,6 +199,7 @@ tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-wire = { path = "crates/tisvlay-wire" }
 tisvlay-world = { path = "crates/tisvlay-world" }
+tisvlay-icons = { path = "crates/tisvlay-icons" }
 tisvlay = { path = "crates/tisvlay" }
 # Binary crates exposed as libs for cross-crate integration tests.
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }

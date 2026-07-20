@@ -10,11 +10,11 @@
 //! physically never reach the system peer.
 
 mod detector;
+mod lock;
 mod logind;
 mod monitor;
 mod remote;
 mod screencast;
-mod screensaver;
 mod store;
 mod sunshine;
 
@@ -43,11 +43,11 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
+pub use lock::{spawn as spawn_lock_watcher, watch_lock};
 pub use logind::spawn as spawn_logind_detector;
 pub use monitor::spawn as spawn_portal_monitor;
 pub use remote::RemoteReport;
 pub use screencast::spawn as spawn_screencast_detector;
-pub use screensaver::watch_screensaver;
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
 pub use sunshine::spawn as spawn_sunshine_detector;
 
@@ -55,7 +55,7 @@ pub use sunshine::spawn as spawn_sunshine_detector;
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
 
 /// A session-scoped desktop event, from whichever adapter saw it
-/// (ScreenSaver D-Bus, wayland idle, or a test driver).
+/// (logind `LockedHint`, wayland/Mutter idle, or a test driver).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEvent {
     Lock,
@@ -69,6 +69,13 @@ pub enum SessionEvent {
     RemoteConnect,
     /// The last remote session ended (all sources cleared).
     RemoteDisconnect,
+    /// First genuine local input after a remote session ended — the panel
+    /// the disconnect blank left dark comes back for the returning person.
+    /// Deliberately not an arming edge: it flows through the while-remote
+    /// gate, which stays load-bearing because a TV can re-arm via a
+    /// profile/meta recompute (no `RemoteConnect` edge) while the return
+    /// watch is still set.
+    LocalReturn,
 }
 
 impl SessionEvent {
@@ -82,6 +89,7 @@ impl SessionEvent {
             Self::IdleResume => "resume",
             Self::RemoteConnect => "remote_connect",
             Self::RemoteDisconnect => "remote_disconnect",
+            Self::LocalReturn => "local_return",
         }
     }
 
@@ -91,6 +99,16 @@ impl SessionEvent {
     /// to the idle-drift window.
     fn is_remote_edge(self) -> bool {
         matches!(self, Self::RemoteConnect | Self::RemoteDisconnect)
+    }
+
+    /// Seat-local presence events (lock + idle) — the ones subject to
+    /// active-session arbitration, as opposed to the seatless remote
+    /// edges, which are governed by the while-remote gate instead.
+    fn is_seat_local(self) -> bool {
+        matches!(
+            self,
+            Self::Lock | Self::Unlock | Self::LockWake | Self::IdleTimeout | Self::IdleResume
+        )
     }
 }
 
@@ -143,10 +161,19 @@ pub struct SessionStack {
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
     pub idle_timeouts: watch::Receiver<(u64, u64)>,
-    /// Shared lock state: the screensaver watcher writes it (seed +
+    /// Shared lock state: the lock watcher writes it (`LockedHint` seed +
     /// edges), the idle adapter's lock-wake policy and the core's
     /// drift re-assert read it.
     pub is_locked: Arc<AtomicBool>,
+    /// Shared foreground state: the lock watcher writes it (the session's
+    /// `Active` seed + changes), the core's active-session arbitration gate
+    /// reads it. Defaults `true` (assume active until logind says
+    /// otherwise), so a non-logind host never suppresses automation.
+    pub is_active: Arc<AtomicBool>,
+    /// Set on a remote disconnect, cleared by the next dispatched event —
+    /// handed to the idle adapter so the first local input after a remote
+    /// session wakes the panel the disconnect left dark.
+    pub local_return_armed: Arc<AtomicBool>,
 }
 
 /// Boot the session service: open both sessions, replay the store, and
@@ -288,6 +315,10 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let (remote_tx, reports) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
     let is_locked = Arc::new(AtomicBool::new(false));
+    // Default true: assume the user is active until the lock watcher seeds
+    // the real `Active` state, so startup and non-logind hosts never suppress.
+    let is_active = Arc::new(AtomicBool::new(true));
+    let local_return_armed = Arc::new(AtomicBool::new(false));
 
     // Matching-gated caller for TV rpcs on the system socket, shared into
     // every dispatch's spawned task.
@@ -317,6 +348,8 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             .unwrap_or_default(),
         idle_tx,
         is_locked: is_locked.clone(),
+        is_active: is_active.clone(),
+        local_return_armed: local_return_armed.clone(),
         idle_fired: false,
         screen_on: HashMap::new(),
         drift_at: HashMap::new(),
@@ -346,6 +379,8 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         remote: RemoteClient { tx: remote_tx },
         idle_timeouts: idle_rx,
         is_locked,
+        is_active,
+        local_return_armed,
     })
 }
 
@@ -363,8 +398,17 @@ struct Core {
     idle_tx: watch::Sender<(u64, u64)>,
     /// Shared with the adapters; the drift re-assert reads it to pick
     /// the locked vs unlocked grace (a core-local flag would miss the
-    /// GetActive-seeded auto-login lock, which arrives with no edge).
+    /// `LockedHint`-seeded auto-login lock, which arrives with no edge).
     is_locked: Arc<AtomicBool>,
+    /// The session's foreground (`Active`) state, written by the lock
+    /// watcher. `dispatch` gates seat-local automation on it so a
+    /// backgrounded (fast-switched-away) user does not drive TVs the active
+    /// user is using.
+    is_active: Arc<AtomicBool>,
+    /// Set on a remote disconnect, cleared by the next dispatched event.
+    /// The idle adapter reads it so the first local input after a remote
+    /// session wakes the panel the disconnect left dark (`LocalReturn`).
+    local_return_armed: Arc<AtomicBool>,
     /// An idle action fired and no activity has resumed since — the
     /// window in which a self-lighting panel counts as drift.
     idle_fired: bool,
@@ -764,6 +808,9 @@ impl Core {
     /// system daemon's rpcs. The tap publish comes first so observers see
     /// the cause before the effects.
     async fn dispatch(&mut self, event: SessionEvent) {
+        // One observability point for every session event (lock, idle,
+        // remote) as it enters the core — the audit seam across transports.
+        debug!(?event, "session event");
         // Idle-drift bookkeeping: an idle action opens the drift window,
         // any activity or lock transition closes it (a fresh idle cycle
         // will re-open it through its own timer).
@@ -779,6 +826,11 @@ impl Core {
                 self.drift_at.clear();
             }
         }
+        // Post-remote return watch: a disconnect arms it (the next local
+        // presence pulse wakes the panel the disconnect left dark); every
+        // other event supersedes and disarms it. The idle adapter reads it.
+        self.local_return_armed
+            .store(event == SessionEvent::RemoteDisconnect, Ordering::SeqCst);
         let tap = keys::session_event(&self.site, event.tap_name());
         if let Err(e) = self
             .system
@@ -787,6 +839,17 @@ impl Core {
             .await
         {
             warn!(%tap, %e, "session tap publish failed");
+        }
+        // Active-session arbitration: while this user's session is not the
+        // seat's foreground, suppress its seat-local automation so a
+        // backgrounded (fast-switched-away) user cannot drive TVs the active
+        // user is using. Absolute — no off-going/on-going exception, since a
+        // backgrounded off would disrupt a shared TV's active user. Remote
+        // edges are a separate, seatless axis and keep their while-remote gate.
+        // The audit tap above still fires; only the automation is suppressed.
+        if event.is_seat_local() && !self.is_active.load(Ordering::SeqCst) {
+            debug!(?event, "automation suppressed (session not active)");
+            return;
         }
         for (tv, meta) in &self.tvs {
             if !meta.automated {
@@ -846,6 +909,7 @@ impl Core {
             SessionEvent::IdleResume => resolved.on_idle_resume,
             SessionEvent::RemoteConnect => resolved.on_remote_connect,
             SessionEvent::RemoteDisconnect => resolved.on_remote_disconnect,
+            SessionEvent::LocalReturn => resolved.on_local_return,
         }
     }
 
@@ -1203,6 +1267,7 @@ fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
         "on_idle_resume": action(resolved.on_idle_resume),
         "on_remote_connect": action(resolved.on_remote_connect),
         "on_remote_disconnect": action(resolved.on_remote_disconnect),
+        "on_local_return": action(resolved.on_local_return),
         "remote_screencast_arms": resolved.remote_screencast_arms,
     })
 }
@@ -1262,7 +1327,10 @@ const WATCH_RETRY: Duration = Duration::from_secs(5);
 ///
 /// - **Lock-wake** (always registered, 200 ms): fires `LockWake` on the
 ///   first activity of an idle cycle while locked — the lock-screen
-///   panel comes back to show the password prompt.
+///   panel comes back to show the password prompt. While unlocked the
+///   same probe is inert, except after a remote disconnect: with
+///   `local_return_armed` set, its first `Resumed` fires `LocalReturn`
+///   to wake the panel the disconnect blank left dark.
 /// - **Locked idle** (the resolved locked timeout): its `Idled` edge
 ///   while locked fires `IdleTimeout` — a bumped-but-never-unlocked
 ///   lock screen re-blanks. Its `Resumed` edge is ignored: waking while
@@ -1277,6 +1345,7 @@ pub async fn idle_adapter(
     mut timeouts: watch::Receiver<(u64, u64)>,
     client: SessionClient,
     is_locked: Arc<AtomicBool>,
+    local_return_armed: Arc<AtomicBool>,
 ) {
     loop {
         let (locked_secs, unlocked_secs) = *timeouts.borrow_and_update();
@@ -1295,11 +1364,10 @@ pub async fn idle_adapter(
         push_idle(LOCKED_IDLE_TAG, locked_secs);
         push_idle(UNLOCKED_IDLE_TAG, unlocked_secs);
         let (wl_tx, mut transitions) = mpsc::unbounded_channel();
-        let handle = tisvlay_core::wayland::start_idle_watch(notifications, wl_tx);
-        let _guard = match handle {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!(%e, "wayland idle watch unavailable; retrying");
+        let _guard = match start_idle_watch(notifications, wl_tx).await {
+            Some(guard) => guard,
+            None => {
+                warn!("no idle transport available; retrying");
                 tokio::select! {
                     changed = timeouts.changed() => {
                         if changed.is_err() {
@@ -1317,7 +1385,10 @@ pub async fn idle_adapter(
                 transition = transitions.recv() => {
                     let Some((tag, transition)) = transition else { break };
                     let locked = is_locked.load(Ordering::SeqCst);
-                    if let Some(event) = idle_dispatch(tag, transition, locked, &mut lock_wake_sent) {
+                    let return_armed = local_return_armed.load(Ordering::SeqCst);
+                    if let Some(event) =
+                        idle_dispatch(tag, transition, locked, return_armed, &mut lock_wake_sent)
+                    {
                         client.send(event);
                     }
                 },
@@ -1332,6 +1403,33 @@ pub async fn idle_adapter(
     }
 }
 
+use tisvlay_core::idle_mutter::IdleWatch;
+
+/// Attach an idle watch over the first transport the running desktop
+/// provides: the `ext-idle-notify` Wayland protocol (KWin, wlroots), else
+/// GNOME's `org.gnome.Mutter.IdleMonitor`. Both feed the same
+/// `(tag, transition)` channel, so the dispatch is transport-agnostic.
+/// `None` means neither attached — the caller retries.
+async fn start_idle_watch(
+    notifications: Vec<tisvlay_core::wayland::IdleNotification>,
+    tx: mpsc::UnboundedSender<(u32, tisvlay_core::wayland::IdleTransition)>,
+) -> Option<IdleWatch> {
+    // Wayland first: it needs no bus and is the native path on the KDE
+    // targets. Any failure (protocol absent on Mutter, or no compositor)
+    // falls through to the D-Bus IdleMonitor.
+    match tisvlay_core::wayland::start_idle_watch(notifications.clone(), tx.clone()) {
+        Ok(handle) => return Some(IdleWatch::Wayland(handle)),
+        Err(e) => debug!(%e, "wayland idle unavailable; trying Mutter IdleMonitor"),
+    }
+    match tisvlay_core::idle_mutter::start_idle_watch(notifications, tx).await {
+        Ok(handle) => Some(IdleWatch::Mutter(handle)),
+        Err(e) => {
+            debug!(%e, "Mutter IdleMonitor unavailable");
+            None
+        }
+    }
+}
+
 /// Route one tagged idle transition to its session event, honoring the
 /// lock state each rule is scoped to. `lock_wake_sent` is the lock-wake
 /// latch, threaded through [`lock_wake_policy`].
@@ -1339,6 +1437,7 @@ fn idle_dispatch(
     tag: u32,
     transition: tisvlay_core::wayland::IdleTransition,
     is_locked: bool,
+    return_armed: bool,
     lock_wake_sent: &mut bool,
 ) -> Option<SessionEvent> {
     use tisvlay_core::wayland::IdleTransition;
@@ -1346,10 +1445,18 @@ fn idle_dispatch(
         (LOCK_WAKE_TAG, transition) => {
             let (next_sent, fire) = lock_wake_policy(transition, is_locked, *lock_wake_sent);
             *lock_wake_sent = next_sent;
-            fire.then(|| {
+            if fire {
                 debug!("user activity while locked, sending lock wake");
-                SessionEvent::LockWake
-            })
+                return Some(SessionEvent::LockWake);
+            }
+            // While unlocked the same 200 ms probe is the post-remote
+            // return watch: the first activity after a disconnect (armed
+            // by the core) wakes the panel the disconnect left dark.
+            if !is_locked && return_armed && transition == IdleTransition::Resumed {
+                debug!("local activity after remote disconnect, sending local return");
+                return Some(SessionEvent::LocalReturn);
+            }
+            None
         }
         (LOCKED_IDLE_TAG, IdleTransition::Idled) if is_locked => Some(SessionEvent::IdleTimeout),
         (UNLOCKED_IDLE_TAG, IdleTransition::Idled) if !is_locked => Some(SessionEvent::IdleTimeout),
@@ -1459,20 +1566,44 @@ mod tests {
         // Locked idle re-blanks only while locked; its resume edge is
         // silent — waking while locked belongs to lock-wake.
         assert_eq!(
-            idle_dispatch(LOCKED_IDLE_TAG, IdleTransition::Idled, true, &mut latch),
+            idle_dispatch(
+                LOCKED_IDLE_TAG,
+                IdleTransition::Idled,
+                true,
+                false,
+                &mut latch
+            ),
             Some(SessionEvent::IdleTimeout)
         );
         assert_eq!(
-            idle_dispatch(LOCKED_IDLE_TAG, IdleTransition::Idled, false, &mut latch),
+            idle_dispatch(
+                LOCKED_IDLE_TAG,
+                IdleTransition::Idled,
+                false,
+                false,
+                &mut latch
+            ),
             None
         );
         assert_eq!(
-            idle_dispatch(LOCKED_IDLE_TAG, IdleTransition::Resumed, true, &mut latch),
+            idle_dispatch(
+                LOCKED_IDLE_TAG,
+                IdleTransition::Resumed,
+                true,
+                false,
+                &mut latch
+            ),
             None
         );
         // Unlocked idle fires both edges, but only while unlocked.
         assert_eq!(
-            idle_dispatch(UNLOCKED_IDLE_TAG, IdleTransition::Idled, false, &mut latch),
+            idle_dispatch(
+                UNLOCKED_IDLE_TAG,
+                IdleTransition::Idled,
+                false,
+                false,
+                &mut latch
+            ),
             Some(SessionEvent::IdleTimeout)
         );
         assert_eq!(
@@ -1480,16 +1611,29 @@ mod tests {
                 UNLOCKED_IDLE_TAG,
                 IdleTransition::Resumed,
                 false,
+                false,
                 &mut latch
             ),
             Some(SessionEvent::IdleResume)
         );
         assert_eq!(
-            idle_dispatch(UNLOCKED_IDLE_TAG, IdleTransition::Idled, true, &mut latch),
+            idle_dispatch(
+                UNLOCKED_IDLE_TAG,
+                IdleTransition::Idled,
+                true,
+                false,
+                &mut latch
+            ),
             None
         );
         assert_eq!(
-            idle_dispatch(UNLOCKED_IDLE_TAG, IdleTransition::Resumed, true, &mut latch),
+            idle_dispatch(
+                UNLOCKED_IDLE_TAG,
+                IdleTransition::Resumed,
+                true,
+                false,
+                &mut latch
+            ),
             None
         );
         assert!(!latch, "idle rules never touch the lock-wake latch");
@@ -1499,20 +1643,90 @@ mod tests {
     fn lock_wake_tag_threads_the_latch() {
         let mut latch = false;
         assert_eq!(
-            idle_dispatch(LOCK_WAKE_TAG, IdleTransition::Resumed, true, &mut latch),
+            idle_dispatch(
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                true,
+                false,
+                &mut latch
+            ),
             Some(SessionEvent::LockWake)
         );
         assert!(latch, "first locked resume latches");
         assert_eq!(
-            idle_dispatch(LOCK_WAKE_TAG, IdleTransition::Resumed, true, &mut latch),
+            idle_dispatch(
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                true,
+                false,
+                &mut latch
+            ),
             None,
             "burst of resumes fires once per idle cycle"
         );
         assert_eq!(
-            idle_dispatch(LOCK_WAKE_TAG, IdleTransition::Idled, true, &mut latch),
+            idle_dispatch(
+                LOCK_WAKE_TAG,
+                IdleTransition::Idled,
+                true,
+                false,
+                &mut latch
+            ),
             None
         );
         assert!(!latch, "a fresh idle cycle clears the latch");
+    }
+
+    #[test]
+    fn local_return_fires_on_unlocked_resume_when_armed() {
+        let mut latch = false;
+        // Armed + unlocked: the first resume on the always-on probe is the
+        // post-remote return pulse, waking the disconnect-blanked panel.
+        assert_eq!(
+            idle_dispatch(
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                false,
+                true,
+                &mut latch
+            ),
+            Some(SessionEvent::LocalReturn)
+        );
+        // Idle itself is not a return.
+        assert_eq!(
+            idle_dispatch(
+                LOCK_WAKE_TAG,
+                IdleTransition::Idled,
+                false,
+                true,
+                &mut latch
+            ),
+            None
+        );
+        // Unarmed: the unlocked probe stays inert.
+        assert_eq!(
+            idle_dispatch(
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                false,
+                false,
+                &mut latch
+            ),
+            None
+        );
+        // Locked wins even with the return watch armed — a lock-screen
+        // wake, not a return — and still latches lock-wake.
+        assert_eq!(
+            idle_dispatch(
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                true,
+                true,
+                &mut latch
+            ),
+            Some(SessionEvent::LockWake)
+        );
+        assert!(latch, "the locked resume latches lock-wake");
     }
 
     #[test]

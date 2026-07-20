@@ -9,7 +9,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [TV-side power prevention (manage LG auto-off Luna settings)](ideas/tv-side-power-prevention.md)
 - [Richer `DispatchOutcome` return type for screen_on / screen_off](ideas/dispatch-outcome-return-type.md)
 - [Virtual DRM connector for detached TVs](ideas/virtual-drm-connector.md)
-- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label)](ideas/cec-followups.md)
+- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding)](ideas/cec-followups.md)
 - [Probe library extraction (when GUI lands)](ideas/probe-library-extraction.md)
 - [SSDP `NOTIFY` passive listener](ideas/ssdp-notify-passive-listener.md)
 - [Pair-time MAC capture](ideas/pair-time-mac-capture.md)
@@ -31,6 +31,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 - [CLI shorthand for `Tv1.UpdateConfig`](ideas/cli-update-config-shorthand.md)
 - [Support-bundle CLI subcommand (`tisvlay diagnostic`)](ideas/support-bundle-cli.md)
+- [Shell-completion follow-ups: no-daemon knob, UUID cache, non-default socket/site](ideas/completion-followups.md)
 
 ## GUI
 
@@ -49,6 +50,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
 - [MSRV verification job (keep the `rust-version` floor honest under the pinned channel)](ideas/msrv-verification-job.md)
 - [Replace hardcoded sleeps in dispatch integration tests with poll-with-deadline](ideas/dispatch-test-event-driven-waits.md)
+- [Seat-watch regression coverage over a fake logind Seat surface](ideas/seat-watch-fake-logind-coverage.md)
 
 ## Diagnostics & telemetry
 

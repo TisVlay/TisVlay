@@ -1,6 +1,6 @@
 //! P4 session-service wire tests: gateway isolation (user/** never
 //! transits the system peer), lock/unlock/idle dispatch through user
-//! profiles, the ScreenSaver adapter, persistence, and the idle-timeout
+//! profiles, the logind lock watcher, persistence, and the idle-timeout
 //! watch.
 
 use std::path::{Path, PathBuf};
@@ -378,8 +378,11 @@ async fn user_profile_overrides_and_guards() {
             // Both remote edges floor to screen_off (blank on arm, stay dark
             // on disarm); capture arming ships off. The connect/disconnect
             // actions ignore the gate, so they project the plain default.
+            // on_local_return wakes restoring on the first local input after
+            // a disconnect (its table shape mirrors on_session_unlock).
             "on_remote_connect": "screen_off",
             "on_remote_disconnect": "screen_off",
+            "on_local_return": { "action": "screen_on", "restore_input": true, "while_remote": false },
             "remote_screencast_arms": false,
         })
     );
@@ -452,15 +455,15 @@ async fn user_profile_overrides_and_guards() {
     .expect("delete ok");
 }
 
-/// The consumed-D-Bus adapter: FakeScreenSaver ActiveChanged transitions
-/// drive lock/unlock end to end.
+/// The consumed-D-Bus adapter: logind `LockedHint` transitions drive
+/// lock/unlock end to end.
 #[tokio::test(flavor = "multi_thread")]
-async fn screensaver_adapter_drives_lock_unlock() {
+async fn lock_watcher_drives_lock_unlock() {
     let bus = tisvlay_test::PrivateBus::shared();
     let service_conn = bus.connect().await.expect("private bus service conn");
-    let fake = tisvlay_test::fake_screensaver::FakeScreenSaver::register(&service_conn)
+    let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
-        .expect("fake screensaver");
+        .expect("fake logind");
 
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://saver").await;
@@ -474,26 +477,69 @@ async fn screensaver_adapter_drives_lock_unlock() {
     let client = rig.stack.client.clone();
     let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     tokio::spawn(async move {
-        let _ = tisvlay_session::watch_screensaver(watcher_conn, client, locked).await;
+        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked, active).await;
     });
-    // Watcher subscription + session fleet mirror settle.
+    // Watcher hydration + LockedHint subscription + fleet mirror settle.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    fake.emit_active_changed(true).await.unwrap();
+    fake.set_locked(true).await.unwrap();
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "screenoff"
     })
     .await;
     assert!(
         is_locked.load(std::sync::atomic::Ordering::SeqCst),
-        "lock flag mirrors ActiveChanged(true) for the lock-wake policy"
+        "lock flag mirrors LockedHint(true) for the lock-wake policy"
     );
-    fake.emit_active_changed(false).await.unwrap();
+    fake.set_locked(false).await.unwrap();
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "active"
     })
     .await;
+}
+
+/// Active-session arbitration: while the user's session is not the seat's
+/// foreground (fast-user-switched away), its seat-local automation is
+/// suppressed — a backgrounded user must not drive a TV the active user is
+/// using. `is_active` is the shared flag the lock watcher writes; here we
+/// drive it directly. Group access is unchanged; only dispatch is gated.
+#[tokio::test(flavor = "multi_thread")]
+async fn active_session_arbitration_suppresses_backgrounded_automation() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Shared", "mock://arbitration").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // Active (the default): a lock drives the TV off, an unlock back on.
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
+
+    // Fast-user-switched away: the session is no longer the foreground, so a
+    // lock must NOT reach the TV the now-active user is using.
+    rig.stack
+        .is_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        rig.stack.client.send(SessionEvent::Lock),
+        "session core gone"
+    );
+    assert_no_sample(&sub, Duration::from_millis(800), |s| {
+        keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+            .is_some_and(|(t, p)| t == tv && p == "state/power")
+            && payload_json(s)["state"] == "screenoff"
+    })
+    .await;
+
+    // Foreground again: dispatch resumes and the lock drives the TV off.
+    rig.stack
+        .is_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
 }
 
 /// The idle drift re-assert: a panel that lights itself while the
@@ -529,7 +575,7 @@ async fn screen_drift_while_idle_reasserts_after_grace() {
     .await
     .expect("assign ok");
 
-    // Locked (as the GetActive seed or a Lock edge leaves it), idle
+    // Locked (as the LockedHint seed or a Lock edge leaves it), idle
     // action fired: the TV blanks.
     rig.stack
         .is_locked
@@ -552,34 +598,35 @@ async fn screen_drift_while_idle_reasserts_after_grace() {
     .await;
 }
 
-/// A lock that predates the watcher (KDE's auto-login lock activates
-/// before the session service starts) is seeded from `GetActive` —
-/// without the seed the locked-idle timer stays gated off and never
-/// blanks the TV.
+/// A lock that predates the watcher (an auto-login lock activates before
+/// the session service starts) is seeded from `LockedHint` — without the
+/// seed the locked-idle timer stays gated off and never blanks the TV.
 #[tokio::test(flavor = "multi_thread")]
-async fn screensaver_seed_reads_a_preexisting_lock() {
+async fn lock_watcher_seed_reads_a_preexisting_lock() {
     let bus = tisvlay_test::PrivateBus::shared();
     let service_conn = bus.connect().await.expect("private bus service conn");
-    let fake = tisvlay_test::fake_screensaver::FakeScreenSaver::register(&service_conn)
+    let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
-        .expect("fake screensaver");
-    // The lock lands before anyone subscribes — an edge with no witness.
-    fake.emit_active_changed(true).await.unwrap();
+        .expect("fake logind");
+    // The lock lands before anyone subscribes — an edge with no witness,
+    // caught only by the property seed, not a change signal.
+    fake.set_locked(true).await.unwrap();
 
     let rig = rig().await;
     let watcher_conn = bus.connect().await.expect("watcher conn");
     let client = rig.stack.client.clone();
     let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     tokio::spawn(async move {
-        let _ = tisvlay_session::watch_screensaver(watcher_conn, client, locked).await;
+        let _ = tisvlay_session::watch_lock(watcher_conn, client, locked, active).await;
     });
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while !is_locked.load(std::sync::atomic::Ordering::SeqCst) {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "GetActive seed never landed"
+            "LockedHint seed never landed"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -887,6 +934,75 @@ async fn remote_connect_disconnect_actions_fire() {
         v["state"] == "active"
     })
     .await;
+}
+
+/// After a remote disconnect leaves the panel dark, the first local input
+/// wakes it — the case where nothing locked or idled, so no unlock /
+/// lock-wake / idle-resume edge would otherwise fire. The core arms the
+/// return watch on disconnect; `LocalReturn` (which the idle adapter
+/// synthesizes from a lock-wake resume while unlocked + armed) wakes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn local_return_wakes_after_remote_disconnect() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://local-return").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+
+    // Stay-dark on disconnect (the floor); on_local_return inherits the
+    // floor wake (screen_on).
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Stay dark",
+            "on_remote_connect": "screen_off",
+            "on_remote_disconnect": "screen_off",
+        }),
+    )
+    .await;
+
+    // Arm → blank. Connect clears the return watch, so it must be unset.
+    arm_until(&rig, &sub, "manual", tv, "screenoff").await;
+    assert!(
+        !rig.stack
+            .local_return_armed
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "connect must not arm the return watch"
+    );
+
+    // Disarm → stays dark, and the return watch arms.
+    assert!(
+        rig.stack
+            .remote
+            .report(RemoteReport::manual("manual", false)),
+        "core gone"
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !rig
+        .stack
+        .local_return_armed
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "disconnect never armed the return watch"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // First local input after the disconnect wakes the panel...
+    drive_until(&rig, &sub, SessionEvent::LocalReturn, tv, "active").await;
+    // ...and the dispatch clears the watch (fire-once; the next event
+    // supersedes it).
+    assert!(
+        !rig.stack
+            .local_return_armed
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the return dispatch clears the watch"
+    );
 }
 
 /// The fact publishes on the user socket (cached) and mirrors on the

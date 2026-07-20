@@ -45,6 +45,11 @@ export global Errors {
     /// surface; field-level errors land inline via
     /// `PairingFieldRow.error`). Empty by default.
     in-out property <ErrorState> pairing;
+    /// App-level access banner — unlike the per-pane slots above,
+    /// this renders above every pane. Set by Rust when the user
+    /// isn't in the daemon's socket group (so nothing can reach the
+    /// daemon); the action enrolls them via a polkit `usermod`.
+    in-out property <ErrorState> access;
 
     /// Action callback for `tvs.kind` (e.g. "Retry"). Rust binds
     /// this and routes per-kind. Empty action-label hides the
@@ -52,4 +57,5 @@ export global Errors {
     callback tvs-action();
     callback profiles-action();
     callback pairing-action();
+    callback access-action();
 }

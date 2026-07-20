@@ -61,7 +61,7 @@ User-facing docs live at the [user documentation](https://tisvlay.readthedocs.io
 
 - LG WebOS TV (tested with C3, G4 models) or an HDMI-CEC adapter exposing `/dev/cecN`
 - "TV On via Wi-Fi" enabled in TV settings (LG network control)
-- Wayland compositor with `ext-idle-notify-v1` support (for lock wake detection)
+- KDE Plasma or GNOME on Wayland for the desktop session-event automation (lock via logind `LockedHint`; idle via `ext-idle-notify-v1` on KWin/wlroots, or `org.gnome.Mutter.IdleMonitor` on GNOME)
 
 ## License
 

@@ -6,9 +6,7 @@
 //! receives.
 
 use std::time::Duration;
-use tisvlay_test::{
-    PrivateBus, fake_logind::FakeLogind, fake_screensaver::FakeScreenSaver, traced_test,
-};
+use tisvlay_test::{PrivateBus, fake_logind::FakeLogind, traced_test};
 use zbus::MatchRule;
 
 #[tokio::test]
@@ -107,17 +105,19 @@ async fn traced_test_captures_instrumented_calls() {
 }
 
 #[tokio::test]
-async fn fake_screensaver_emits_active_changed() {
+async fn fake_logind_emits_locked_hint_change() {
     let bus = PrivateBus::shared();
 
-    // Subscriber
+    // Subscriber: the `PropertiesChanged` the lock watcher follows.
     let sub_conn = bus.connect().await.expect("sub conn");
     let rule = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
-        .interface("org.freedesktop.ScreenSaver")
+        .interface("org.freedesktop.DBus.Properties")
         .expect("iface")
-        .member("ActiveChanged")
+        .member("PropertiesChanged")
         .expect("member")
+        .path("/org/freedesktop/login1/session/test")
+        .expect("path")
         .build();
     let mut stream = zbus::MessageStream::for_match_rule(rule, &sub_conn, None)
         .await
@@ -125,12 +125,12 @@ async fn fake_screensaver_emits_active_changed() {
 
     // Publisher
     let pub_conn = bus.connect().await.expect("pub conn");
-    let ss = FakeScreenSaver::register(&pub_conn)
-        .await
-        .expect("register");
-    ss.emit_active_changed(true).await.expect("emit locked");
+    let logind = FakeLogind::register(&pub_conn).await.expect("register");
+    logind.set_locked(true).await.expect("set locked");
 
     use futures_util::StreamExt;
+    use std::collections::HashMap;
+    use zbus::zvariant::OwnedValue;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
         let msg = tokio::time::timeout_at(deadline, stream.next())
@@ -139,8 +139,12 @@ async fn fake_screensaver_emits_active_changed() {
             .expect("stream ended")
             .expect("message");
 
-        let body: bool = msg.body().deserialize().expect("deserialize body");
-        if body {
+        let (iface, changed, _invalidated): (String, HashMap<String, OwnedValue>, Vec<String>) =
+            msg.body().deserialize().expect("deserialize body");
+        if iface == "org.freedesktop.login1.Session"
+            && let Some(value) = changed.get("LockedHint")
+            && bool::try_from(value).expect("LockedHint is a bool")
+        {
             break;
         }
     }

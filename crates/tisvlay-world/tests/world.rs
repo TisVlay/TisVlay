@@ -101,7 +101,7 @@ async fn remove_tv_is_boring() {
             _ => None,
         })
         .collect();
-    assert_eq!(deletes.len(), 8, "one DELETE per per-TV key: {deletes:?}");
+    assert_eq!(deletes.len(), 9, "one DELETE per per-TV key: {deletes:?}");
     assert!(deletes.iter().all(|k| k.contains(&id.to_string())));
 
     // A command against the dead uuid gets a typed error, not a hang.

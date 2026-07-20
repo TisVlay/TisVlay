@@ -20,7 +20,7 @@ use futures_util::StreamExt;
 use tisvlay_wire::payload::RemoteSourceKind;
 use tracing::debug;
 
-use crate::detector::Backoff;
+use crate::detector::{Backoff, Fault};
 use crate::{RemoteClient, RemoteReport};
 
 #[zbus::proxy(
@@ -28,7 +28,10 @@ use crate::{RemoteClient, RemoteReport};
     default_service = "org.freedesktop.login1",
     default_path = "/org/freedesktop/login1"
 )]
-trait Login1Manager {
+// Shared with the lock watcher (crate::lock), which reuses this identical
+// Manager surface (ListSessions + SessionNew/Removed) rather than
+// re-declaring it.
+pub(crate) trait Login1Manager {
     /// `(session_id, object_path)` of a session as it appears.
     #[zbus(signal)]
     fn session_new(&self, id: String, path: zbus::zvariant::OwnedObjectPath) -> zbus::Result<()>;
@@ -89,8 +92,9 @@ pub(crate) struct SessionInfo {
 /// Whether a session `Type` is a graphical (remote-desktop) login. Plain
 /// SSH shells also mint `Remote=yes` sessions but are `Type=tty`; the
 /// graphical type is what distinguishes a remote *desktop* from a remote
-/// shell, and only a desktop drives the outputs this arms against.
-fn is_graphical(session_type: &str) -> bool {
+/// shell, and only a desktop drives the outputs this arms against. Shared
+/// with the lock watcher, which wants the graphical seat session too.
+pub(crate) fn is_graphical(session_type: &str) -> bool {
     matches!(session_type, "x11" | "wayland")
 }
 
@@ -151,19 +155,6 @@ async fn run(client: RemoteClient) {
             Err(Fault::Bus(e)) => backoff.note_failure("logind detector: system bus", e),
         }
         tokio::time::sleep(backoff.next_delay()).await;
-    }
-}
-
-/// Why a watch session ended.
-enum Fault {
-    Bus(zbus::Error),
-    /// The session core dropped the report channel — stop supervising.
-    CoreGone,
-}
-
-impl From<zbus::Error> for Fault {
-    fn from(e: zbus::Error) -> Self {
-        Fault::Bus(e)
     }
 }
 
@@ -287,8 +278,9 @@ fn emit(client: &RemoteClient, report: RemoteReport) -> Result<(), Fault> {
     }
 }
 
-/// The service's own uid — the session-ownership filter.
-fn own_uid() -> u32 {
+/// The service's own uid — the session-ownership filter. Shared with the
+/// lock watcher, which scopes to this user's graphical session.
+pub(crate) fn own_uid() -> u32 {
     // SAFETY: `getuid` is always successful and has no preconditions.
     unsafe { libc::getuid() }
 }

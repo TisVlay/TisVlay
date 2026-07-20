@@ -260,6 +260,13 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
             class: EnumClass::SessionAction,
         },
     },
+    FieldSpec {
+        wire: "on_local_return",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
 ];
 
 /// User-profile remote-card fields — the REMOTE SESSION card, rendered
@@ -329,6 +336,7 @@ fn field_label(wire: &str) -> String {
         "unlocked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (unlocked)"),
         "on_remote_connect" => pgettext("profile field", "On remote connect"),
         "on_remote_disconnect" => pgettext("profile field", "On remote disconnect"),
+        "on_local_return" => pgettext("profile field", "On local return"),
         "remote_screencast_arms" => pgettext("profile field", "Screen capture arms"),
         // Unknown wire keys flow through verbatim â should never
         // happen with the table-driven build path, but matches the
@@ -516,6 +524,7 @@ fn read_user_action(body: &UserProfileBody, wire: &str) -> Option<tisvlay_core::
         "on_idle_resume" => body.on_idle_resume,
         "on_remote_connect" => body.on_remote_connect,
         "on_remote_disconnect" => body.on_remote_disconnect,
+        "on_local_return" => body.on_local_return,
         _ => None,
     }
 }
@@ -621,6 +630,9 @@ fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
             .map(|a| session_action_token(a.action())),
         "on_remote_disconnect" => body
             .on_remote_disconnect
+            .map(|a| session_action_token(a.action())),
+        "on_local_return" => body
+            .on_local_return
             .map(|a| session_action_token(a.action())),
         "remote_screencast_arms" => body.remote_screencast_arms.map(|v| v.to_string()),
         _ => None,
@@ -1161,12 +1173,18 @@ fn restore_is_enabled(resolved: &ResolvedValue) -> bool {
 }
 
 /// The remote-session gate is interactive when there is an action to
-/// suppress (verb is not `none`) and the row is not a connect/disconnect
-/// event — those fire at the arming edge where their own gate would
-/// swallow them. Elsewhere the toggle renders inert + dimmed.
+/// suppress (verb is not `none`) and the row is one the gate can act on.
+/// The connect/disconnect rows fire at the arming edge, where the backend
+/// bypasses the gate outright; the local-return row keeps its backend gate
+/// but hides the toggle here because it only ever fires after a disconnect,
+/// when the TV is normally un-armed, so a `while_remote` toggle would be a
+/// no-op. Elsewhere the toggle renders inert + dimmed.
 fn remote_gate_is_enabled(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
     resolved.current() != "none"
-        && !matches!(field.wire, "on_remote_connect" | "on_remote_disconnect")
+        && !matches!(
+            field.wire,
+            "on_remote_connect" | "on_remote_disconnect" | "on_local_return"
+        )
 }
 
 /// Convert a `(FieldSpec, ResolvedValue)` pair into a [`ProfileFieldRaw`].
@@ -1560,6 +1578,7 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
         "on_remote_disconnect" => {
             body.on_remote_disconnect = action_field_patch(patch, "on_remote_disconnect")?
         }
+        "on_local_return" => body.on_local_return = action_field_patch(patch, "on_local_return")?,
         "remote_screencast_arms" => {
             body.remote_screencast_arms = bool_patch(patch, "remote_screencast_arms")?
         }
@@ -2111,6 +2130,7 @@ mod tests {
             unlocked_idle_timeout_seconds: Some(0),
             on_remote_connect: Some(SessionAction::ScreenOff.into()),
             on_remote_disconnect: Some(SessionAction::ScreenOff.into()),
+            on_local_return: Some(SessionAction::ScreenOn.into()),
             remote_screencast_arms: Some(false),
         }
     }

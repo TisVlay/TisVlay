@@ -242,7 +242,48 @@ mod ffi {
 
     /// One-time global init of the PipeWire support libraries.
     pub(super) fn init() {
+        point_at_host_spa_plugins();
         pipewire_native::init();
+    }
+
+    /// `pipewire-native` bakes a single SPA plugin directory at build time
+    /// (from `pkg-config` in whatever sandbox produced the binary) and
+    /// panics on init if `support/libspa-support` isn't there. A packaged
+    /// build rarely matches the host: our `.deb` bakes the pkg-config
+    /// fallback `/usr/lib64/spa-0.2`, but Debian/Ubuntu ship the plugins
+    /// under the multiarch `/usr/lib/<triple>/spa-0.2`. Point the loader at
+    /// the host's real dirs unless the operator already pinned one. The
+    /// loader searches a colon-separated list in order and skips dirs that
+    /// don't load, so we hand it every layout that exists and let it pick.
+    fn point_at_host_spa_plugins() {
+        if std::env::var_os("SPA_PLUGIN_DIR").is_some() {
+            return;
+        }
+        let mut dirs: Vec<String> = Vec::new();
+        // Debian/Ubuntu multiarch: /usr/lib/<triple>/spa-0.2.
+        if let Ok(entries) = std::fs::read_dir("/usr/lib") {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("spa-0.2");
+                if candidate.is_dir() {
+                    dirs.push(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+        // Non-multiarch layouts: /usr/lib/spa-0.2 (Arch and others) and
+        // /usr/lib64/spa-0.2 (Fedora/RHEL/openSUSE, and the pkg-config
+        // fallback our own build bakes in).
+        for fixed in ["/usr/lib/spa-0.2", "/usr/lib64/spa-0.2"] {
+            if std::path::Path::new(fixed).is_dir() {
+                dirs.push(fixed.to_string());
+            }
+        }
+        if dirs.is_empty() {
+            return;
+        }
+        // SAFETY: runs once at detector-thread startup before
+        // `pipewire_native::init()` — the only reader of SPA_PLUGIN_DIR —
+        // and we never mutate it again.
+        unsafe { std::env::set_var("SPA_PLUGIN_DIR", dirs.join(":")) };
     }
 
     /// Shared flags the callbacks flip: `done` on a broken pipe (server

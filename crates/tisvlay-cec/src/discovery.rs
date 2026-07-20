@@ -76,7 +76,9 @@ impl TvDiscovery for CecDiscovery {
             // or a TV that answers nothing leaves the bare entry intact.
             let link = match self
                 .opener
-                .open(&tv.address, probe_physical_address())
+                // A scan must not momentarily claim a name on every node it
+                // probes — it releases the address before a TV would poll.
+                .open(&tv.address, probe_physical_address(), None)
                 .await
             {
                 Ok(link) => link,
@@ -258,6 +260,24 @@ mod tests {
         assert_eq!(
             tv.vendor_data.get("device").map(String::as_str),
             Some(tv.address.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_probe_advertises_no_name() {
+        // The scan opens each node to read identity, but must never claim a
+        // name for itself on a node it is only probing.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::File::create(tmp.path().join("cec0")).expect("create fixture");
+        let opener = Arc::new(FakeCecLinkOpener::with_identity("OLED42C3PU", None));
+        CecDiscovery::with_dir_and_opener(tmp.path(), opener.clone())
+            .discover(Duration::ZERO)
+            .await
+            .expect("discover");
+        assert_eq!(
+            opener.opened_osd_names(),
+            vec![None],
+            "the discovery probe advertises nothing",
         );
     }
 

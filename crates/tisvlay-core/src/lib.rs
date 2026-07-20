@@ -44,6 +44,10 @@ mod traits;
 pub mod wol;
 
 // Optional modules
+#[cfg(feature = "access")]
+pub mod access;
+#[cfg(feature = "mutter-idle")]
+pub mod idle_mutter;
 #[cfg(feature = "logging")]
 pub mod logging;
 #[cfg(feature = "wayland")]
