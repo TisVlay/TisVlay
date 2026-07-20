@@ -128,7 +128,7 @@ Zenoh stack findings (load-bearing, learned empirically):
 
 Deployment model:
 
-- The daemon chmods its socket 0660 after bind (packaged unit runs UMask=0077). Access is layered: `tisvlay` group membership is the durable grant (`tisvlay enable-access` enrolls one-click via polkit), plus daemon-applied presence ACLs — the greeter group (`--greeter-access`) and each seat's active graphical user (`--seat-access`, default on; keyed off logind `Seat.ActiveSession`, gated Class=user ∧ Type∈{x11,wayland} ∧ ¬Remote).
+- The daemon chmods its socket 0660 after bind (packaged unit runs UMask=0077). Access is layered: `tisvlay` group membership is the durable grant (`tisvlay enable-access` enrolls one-click via polkit), plus daemon-applied ACLs — the greeter group (`--greeter-access`, static while the daemon runs) and, presence-scoped, each seat's active graphical user (`--seat-access`, default on; keyed off logind `Seat.ActiveSession`, gated Class=user ∧ Type∈{x11,wayland} ∧ ¬Remote).
 - Connect-side socket defaults fall back to `/run/tisvlay/zenoh.sock` when the dev socket is absent; listen-side defaults never fall back (a dev daemon must not take over the packaged socket).
 - Shell completions for the `tisvlay` CLI (bash/zsh/fish) ship in every package and the nix build. They use clap_complete's dynamic engine, so `<TAB>` completes live TV UUIDs by calling back into the binary; generation and per-distro caveats are in [packaging/README.md](../packaging/README.md).
 

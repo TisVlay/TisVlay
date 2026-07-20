@@ -36,17 +36,31 @@ systemctl daemon-reload || true
 # minimal distros without those triggers configured.
 update-desktop-database /usr/share/applications 2>/dev/null || true
 
-# Enable the system daemon, then bring it up on the new binary. Two
-# steps cover both install shapes: try-restart handles an upgrade (the
-# old package's preremove skips its stop on upgrade, so a running daemon
-# would otherwise keep the old code) but is a no-op when inactive; the
-# follow-up start handles a fresh install (where nothing is running and
-# a printed "now start it" instruction reaches no one under an app-store
-# install) but is a no-op when already running. Guarded so image builds
-# without a live systemd stay quiet.
+# Enable the system daemon, and on upgrade restart it onto the new
+# binary: the old package's preremove skips its stop on upgrade, so a
+# running daemon would otherwise keep the old code — while try-restart's
+# no-op on an inactive unit is what respects an admin's deliberate stop
+# across upgrades. Guarded so image builds without a live systemd stay
+# quiet.
 systemctl enable tisvlay-daemon.service 2>/dev/null || true
 systemctl try-restart tisvlay-daemon.service 2>/dev/null || true
-systemctl start tisvlay-daemon.service 2>/dev/null || true
+
+# Start only on FIRST install — an upgrade must never override an
+# admin's runtime stop, and a printed "now start it" hint reaches no one
+# under an app-store install. Fresh install is $1=configure with no old
+# version in $2 (deb) or $1=1 (rpm); pacman passes a version string and
+# is deliberately excluded — Arch scriptlets never start services.
+# Debian goes through deb-systemd-invoke when present so policy-rc.d is
+# honored in chroots and image builds.
+if [ "$1" = "configure" ] && [ -z "$2" ]; then
+    if command -v deb-systemd-invoke >/dev/null 2>&1; then
+        deb-systemd-invoke start tisvlay-daemon.service >/dev/null 2>&1 || true
+    else
+        systemctl start tisvlay-daemon.service 2>/dev/null || true
+    fi
+elif [ "$1" = "1" ]; then
+    systemctl start tisvlay-daemon.service 2>/dev/null || true
+fi
 
 # Enable the per-user session + tray for every user's graphical session
 # (mirrors the NixOS module's wantedBy=graphical-session.target). These
@@ -66,7 +80,9 @@ systemctl --global enable tisvlay-session.service tisvlay-tray.service 2>/dev/nu
 # reach.
 systemctl --global enable tisvlay-greeter-gdm.service 2>/dev/null || true
 
-echo "tisvlay installed; the daemon is enabled and started."
+echo "tisvlay installed; the daemon is enabled and starts on fresh installs"
+echo "(upgrades keep its running state; on Arch, start it once with"
+echo "  sudo systemctl start tisvlay-daemon)."
 echo "The user at the console has TV control automatically; grant an account"
 echo "durable access (SSH, remote, headless) with: tisvlay enable-access"
 echo "The session + tray start automatically on your next graphical login;"

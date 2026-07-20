@@ -85,6 +85,44 @@ async fn fail_fast_client_denied_then_granted() {
     }
 }
 
+/// The revocation half of the transience contract: narrowing the socket
+/// denies NEW connects while an already-established connection persists,
+/// because the kernel checks permission at `connect()`, not per message —
+/// exactly what lets a switched-away user's GUI keep its mirror while
+/// their fresh connects are refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn narrowing_denies_new_connects_but_keeps_established() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (socket, _stack) = boot(&dir).await;
+
+    let established = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .expect("connect while granted");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !daemon_visible(&established).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "daemon never became visible before the revocation"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    chmod(&socket, 0o000);
+    assert!(
+        daemon_visible(&established).await,
+        "an established connection must survive revocation"
+    );
+    assert!(
+        zenoh::open(bootstrap::client_config(&socket).unwrap())
+            .await
+            .is_err(),
+        "a new connect must be denied after revocation"
+    );
+}
+
 /// A resilient link (the GUI / session-service shape) opened while denied
 /// keeps retrying in the background and comes up on its own once the
 /// grant lands — the recovery the seat ACL relies on when a user returns

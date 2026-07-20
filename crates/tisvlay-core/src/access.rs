@@ -33,24 +33,56 @@ pub enum EnrollOutcome {
 }
 
 /// Whether the current login session can reach the daemon socket. Drives
-/// whether a surface offers the enroll affordance at all.
+/// whether a surface offers the "you can't connect" affordance at all.
 ///
 /// A live probe, not a group check: the daemon also grants presence-scoped
 /// access (the active-seat ACL), which confers access without membership —
-/// a group check alone would nag a console user whose access works.
-/// `EACCES` on connect is a definitive no. Any other failure (absent
-/// socket, refused) is ambiguous — the daemon may simply be down, or a
-/// non-traversable runtime dir may have hidden the live socket from the
-/// caller's path resolution entirely — so it falls back to the durable
-/// criterion: membership in the socket's owning group. A member whose
-/// daemon is down reads as having access (their problem is the daemon); a
-/// non-member who can't even see the socket reads as not.
+/// a group check alone would nag a console user whose access works. The
+/// probe is a *nonblocking* connect, so a wedged daemon whose accept
+/// backlog is full cannot hang a UI thread. Classification:
+/// - connected, connect-in-flight, or backlog-full ⇒ access — the kernel
+///   checks the socket's permissions before any of those states;
+/// - `EACCES`/`EPERM` ⇒ definitively no access;
+/// - `ECONNREFUSED` ⇒ access — reaching "no listener" requires traverse
+///   and write permission on the inode first, so the caller's problem is
+///   a down daemon, not access;
+/// - anything else (typically `ENOENT`: the daemon never ran, or a
+///   non-traversable runtime dir hid the live socket from the caller's
+///   path resolution entirely) is ambiguous ⇒ fall back to the durable
+///   criterion, membership in the socket's owning group.
 pub fn has_access(socket: &Path) -> bool {
-    match std::os::unix::net::UnixStream::connect(socket) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => false,
+    use std::io::ErrorKind;
+    match probe(socket) {
+        Ok(()) => true,
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => false,
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::ConnectionRefused | ErrorKind::WouldBlock
+            ) =>
+        {
+            true
+        }
+        Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => true,
         Err(_) => member_of(&socket_group_or_default(socket)),
     }
+}
+
+/// Whether the current login session holds the *durable* grant —
+/// membership in the socket's owning group. The enroll verb gates on
+/// this, never on [`has_access`]: a console user's presence grant makes
+/// the socket reachable, yet they are exactly who still needs enrollment
+/// for SSH/remote use.
+pub fn has_durable_access(socket: &Path) -> bool {
+    member_of(&socket_group_or_default(socket))
+}
+
+/// One nonblocking connect attempt against `socket`.
+fn probe(socket: &Path) -> std::io::Result<()> {
+    use socket2::{Domain, SockAddr, Socket, Type};
+    let sock = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    sock.set_nonblocking(true)?;
+    sock.connect(&SockAddr::unix(socket)?)
 }
 
 /// Add the current user to the socket's owning group via `pkexec usermod`
@@ -253,6 +285,22 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("probe.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(has_access(&path));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn refused_socket_reads_as_access_daemon_down() {
+        // A socket file with no listener (daemon crashed; the preserved
+        // runtime dir keeps the inode) refuses the connect — which proves
+        // the caller passed the permission check, so this must read as
+        // "access OK, daemon down", never as "no access": a seat-granted
+        // console user is not in the group, and misreading this state
+        // would send them chasing enrollment instead of the dead daemon.
+        let dir = std::env::temp_dir().join(format!("tisvlay-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("probe.sock");
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         assert!(has_access(&path));
         std::fs::remove_dir_all(&dir).ok();
     }

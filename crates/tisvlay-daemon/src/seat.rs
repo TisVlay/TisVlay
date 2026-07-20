@@ -88,15 +88,22 @@ const RESYNC_PERIOD: Duration = Duration::from_secs(300);
 /// Supervised entry: run the seat watch over its own system-bus
 /// connection, reconnecting with a fixed delay — a dead watch would leave
 /// a stale user grant standing, so it must not stay dead on a bus blip.
-/// Quiet after the first warning so a box without logind does not spam.
+/// Quiet after the first warning so a box without logind does not spam —
+/// but a watch session that ran for a while was a *working* watch, so its
+/// loss resets the latch: a fresh fault months into uptime warns again
+/// instead of dying silently behind a warning spent at boot.
 pub(crate) fn spawn(socket: PathBuf, greeter: GreeterAccess) {
     tokio::spawn(async move {
         let mut warned = false;
         loop {
+            let started = tokio::time::Instant::now();
             let outcome = match zbus::Connection::system().await {
                 Ok(connection) => watch_seats(connection, &socket, &greeter).await,
                 Err(e) => Err(e),
             };
+            if started.elapsed() > Duration::from_secs(60) {
+                warned = false;
+            }
             if let Err(e) = outcome
                 && !std::mem::replace(&mut warned, true)
             {
@@ -109,7 +116,10 @@ pub(crate) fn spawn(socket: PathBuf, greeter: GreeterAccess) {
 
 /// One watch session: enumerate seats, reconcile, then follow every
 /// seat's `ActiveSession` property (plus seat add/remove and a periodic
-/// resync) and reconcile on change. Returns only on a bus fault.
+/// resync) and reconcile on change. Returns only on a bus fault — a seat
+/// proxy that can't be built is one (not an empty seat), surfaced so the
+/// supervised retry re-grounds rather than reconciling with a seat
+/// silently missing.
 async fn watch_seats(
     connection: zbus::Connection,
     socket: &std::path::Path,
@@ -118,27 +128,25 @@ async fn watch_seats(
     let manager = SeatManagerProxy::new(&connection).await?;
     let mut seat_new = manager.receive_seat_new().await?;
     let mut seat_removed = manager.receive_seat_removed().await?;
-    // Last uid set applied, for edge-detection: property streams echo on
-    // attach, and re-enumeration always recomputes, so dedupe here keeps
-    // the reconcile (and its info log) to real transitions. `None` forces
-    // the first pass through so startup always grounds the ACL.
-    let mut last: Option<BTreeSet<u32>> = None;
     loop {
         let seats = manager.list_seats().await?;
         let mut proxies = Vec::with_capacity(seats.len());
         let mut changes: SelectAll<_> = SelectAll::new();
         for (_id, path) in seats {
-            let Ok(builder) = Login1SeatProxy::builder(&connection).path(path) else {
-                continue;
-            };
-            let Ok(seat) = builder.build().await else {
-                continue;
-            };
+            let seat = Login1SeatProxy::builder(&connection)
+                .path(path)?
+                .build()
+                .await?;
             changes.push(seat.receive_active_session_changed().await);
             proxies.push(seat);
         }
-        reconcile_seats(&connection, &proxies, socket, greeter, &mut last).await;
-        // Follow this seat set until it changes shape, then re-enumerate.
+        reconcile_seats(&connection, &proxies, socket, greeter).await;
+        // Follow this seat set until it changes shape or the resync
+        // deadline arrives. The deadline is pinned *outside* the select so
+        // property events can't reset it — it fires on wall-clock cadence,
+        // which is what makes the stale-grant bound real on a busy host.
+        let resync = tokio::time::sleep(RESYNC_PERIOD);
+        tokio::pin!(resync);
         loop {
             tokio::select! {
                 signal = seat_new.next() => {
@@ -154,27 +162,36 @@ async fn watch_seats(
                     break;
                 }
                 Some(_) = changes.next(), if !changes.is_empty() => {
-                    reconcile_seats(&connection, &proxies, socket, greeter, &mut last).await;
+                    reconcile_seats(&connection, &proxies, socket, greeter).await;
                 }
-                _ = tokio::time::sleep(RESYNC_PERIOD) => break,
+                () = &mut resync => break,
             }
         }
     }
 }
 
 /// Recompute the qualifying uid set across `seats` and reconcile the
-/// socket ACL when it changed.
+/// socket ACL. No edge-detection here: `acl::reconcile` compares the
+/// stored xattr against desired state and writes only on drift, so
+/// property-stream echoes are no-ops while a failed or clobbered write
+/// gets repaired at the resync cadence. A failed *seat* read aborts the
+/// pass with state held — a transient bus fault must not read as "seat
+/// empty" and strip a seated user's grant; the next event or resync
+/// retries.
 async fn reconcile_seats(
     connection: &zbus::Connection,
     seats: &[Login1SeatProxy<'_>],
     socket: &std::path::Path,
     greeter: &GreeterAccess,
-    last: &mut Option<BTreeSet<u32>>,
 ) {
     let mut uids = BTreeSet::new();
     for seat in seats {
-        let Ok((_id, path)) = seat.active_session().await else {
-            continue;
+        let (_id, path) = match seat.active_session().await {
+            Ok(active) => active,
+            Err(e) => {
+                debug!(%e, "seat read failed; holding the current socket ACL");
+                return;
+            }
         };
         if path.as_str() == "/" {
             continue;
@@ -183,12 +200,7 @@ async fn reconcile_seats(
             uids.insert(uid);
         }
     }
-    if last.as_ref() == Some(&uids) {
-        return;
-    }
-    debug!(?uids, "active-seat set changed");
     acl::reconcile(socket, greeter, &uids);
-    *last = Some(uids);
 }
 
 /// The session's uid iff it is a local human desktop login: `Class=user`,

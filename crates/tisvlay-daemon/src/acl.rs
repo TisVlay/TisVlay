@@ -26,6 +26,7 @@ use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{debug, info, warn};
 
@@ -66,7 +67,10 @@ const ACL_UNDEFINED_ID: u32 = 0xffff_ffff;
 /// the daemon, so problems are logged rather than propagated. Rebuilding
 /// the whole ACL from desired state on every call (and stripping it when
 /// nothing is granted) is what keeps grants revocable even though the
-/// runtime directory is preserved across restarts.
+/// runtime directory is preserved across restarts. Writes only on drift
+/// — the current xattr is read back and compared first — so callers can
+/// reconcile on a timer to repair failed or externally-clobbered writes
+/// without log spam or churn.
 pub(crate) fn reconcile(socket: &Path, greeter: &GreeterAccess, seat_uids: &BTreeSet<u32>) {
     let Some(dir) = socket.parent() else {
         warn!("socket has no parent directory; skipping socket ACL");
@@ -76,21 +80,31 @@ pub(crate) fn reconcile(socket: &Path, greeter: &GreeterAccess, seat_uids: &BTre
     if gid.is_none() && seat_uids.is_empty() {
         // Nothing granted: strip any prior ACL so the (preserved) runtime
         // directory reverts to its mode bits.
-        clear(socket);
-        clear(dir);
+        let socket_stripped = clear(socket);
+        let dir_stripped = clear(dir);
+        if socket_stripped || dir_stripped {
+            info!(socket = %socket.display(), "socket ACL cleared");
+        }
         return;
     }
-    apply(socket, gid, seat_uids);
-    apply(dir, gid, seat_uids);
-    info!(?gid, ?seat_uids, socket = %socket.display(), "socket ACL applied");
+    let socket_changed = apply(socket, gid, seat_uids);
+    let dir_changed = apply(dir, gid, seat_uids);
+    if socket_changed || dir_changed {
+        info!(?gid, ?seat_uids, socket = %socket.display(), "socket ACL applied");
+    }
 }
+
+/// One warn per process for a configured-but-absent greeter group: the
+/// seat watch reconciles on every seat event, and re-warning the same
+/// static misconfiguration at each login/logout would bury real warns.
+static MISSING_GROUP_WARNED: AtomicBool = AtomicBool::new(false);
 
 fn resolve_gid(access: &GreeterAccess) -> Option<u32> {
     match access {
         GreeterAccess::Disabled => None,
         GreeterAccess::Group(name) => {
             let gid = gid_of(name);
-            if gid.is_none() {
+            if gid.is_none() && !MISSING_GROUP_WARNED.swap(true, Ordering::Relaxed) {
                 warn!(name, "greeter group not found; no greeter socket ACL");
             }
             gid
@@ -150,16 +164,29 @@ fn gid_of(name: &str) -> Option<u32> {
 /// first-match-by-class, so a narrower named-user entry would *subtract*
 /// access from a user who is also a group member. The mask matches, so the
 /// owning `tisvlay` group keeps its effective access too.
-fn apply(path: &Path, gid: Option<u32>, uids: &BTreeSet<u32>) {
+///
+/// Returns whether anything was written: the current xattr is compared
+/// first, so an in-sync file is left untouched (and unlogged), while a
+/// failed or externally-clobbered previous write reads as drift and is
+/// repaired on the next call.
+fn apply(path: &Path, gid: Option<u32>, uids: &BTreeSet<u32>) -> bool {
     let mode = match std::fs::metadata(path) {
         Ok(m) => m.mode(),
         Err(e) => {
             warn!(path = %path.display(), %e, "stat for socket ACL failed");
-            return;
+            return false;
         }
     };
-    if let Err(e) = setxattr(path, &blob(mode, gid, uids)) {
-        warn!(path = %path.display(), %e, "set socket ACL xattr failed");
+    let desired = blob(mode, gid, uids);
+    if getxattr(path).ok().flatten().as_deref() == Some(desired.as_slice()) {
+        return false;
+    }
+    match setxattr(path, &desired) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(path = %path.display(), %e, "set socket ACL xattr failed");
+            false
+        }
     }
 }
 
@@ -192,11 +219,15 @@ fn blob(mode: u32, gid: Option<u32>, uids: &BTreeSet<u32>) -> Vec<u8> {
 
 /// Strip the access ACL, reverting the file to its mode bits. A file that
 /// never had one yields `ENODATA`, which is success for our purposes.
-fn clear(path: &Path) {
-    if let Err(e) = removexattr(path)
-        && e.raw_os_error() != Some(libc::ENODATA)
-    {
-        warn!(path = %path.display(), %e, "clear socket ACL xattr failed");
+/// Returns whether an ACL was actually removed.
+fn clear(path: &Path) -> bool {
+    match removexattr(path) {
+        Ok(()) => true,
+        Err(e) if e.raw_os_error() == Some(libc::ENODATA) => false,
+        Err(e) => {
+            warn!(path = %path.display(), %e, "clear socket ACL xattr failed");
+            false
+        }
     }
 }
 
@@ -229,6 +260,37 @@ fn removexattr(path: &Path) -> std::io::Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Read the current ACL xattr; `None` when the file has none.
+fn getxattr(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    let cpath = cpath(path)?;
+    let mut buf = vec![0u8; 256];
+    loop {
+        // SAFETY: the pointers/len describe `cpath`, the static xattr
+        // name, and `buf`, all valid for the call.
+        let n = unsafe {
+            libc::getxattr(
+                cpath.as_ptr(),
+                ACL_XATTR.as_ptr() as *const libc::c_char,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
+        };
+        if n >= 0 {
+            buf.truncate(n as usize);
+            return Ok(Some(buf));
+        }
+        let e = std::io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::ENODATA) => return Ok(None),
+            Some(libc::ERANGE) => {
+                buf = vec![0u8; buf.len() * 2];
+                continue;
+            }
+            _ => return Err(e),
+        }
     }
 }
 
@@ -333,7 +395,9 @@ mod tests {
 
     /// Round-trip through the kernel: set the blob on a real file, read it
     /// back, and confirm the kernel accepted the layout (an invalid entry
-    /// order fails at `setxattr` with `EINVAL`).
+    /// order fails at `setxattr` with `EINVAL`). Also proves the
+    /// drift-repair contract: a differing stored ACL reads as a write, an
+    /// in-sync one as a no-op.
     #[test]
     fn kernel_accepts_and_round_trips_the_blob() {
         let dir = std::env::temp_dir().join(format!("tisvlay-acl-{}", std::process::id()));
@@ -342,20 +406,24 @@ mod tests {
         std::fs::write(&path, b"").unwrap();
         let uids = BTreeSet::from([12, 34]);
         let value = blob(0o660, Some(7), &uids);
-        setxattr(&path, &value).expect("kernel rejected the ACL blob");
-        let mut back = vec![0u8; value.len() + 64];
-        let cpath = cpath(&path).unwrap();
-        // SAFETY: pointers/len describe live buffers for the call.
-        let n = unsafe {
-            libc::getxattr(
-                cpath.as_ptr(),
-                ACL_XATTR.as_ptr() as *const libc::c_char,
-                back.as_mut_ptr() as *mut libc::c_void,
-                back.len(),
-            )
-        };
-        assert!(n > 0, "getxattr failed");
-        assert_eq!(&back[..n as usize], &value[..]);
+        match setxattr(&path, &value) {
+            Ok(()) => {}
+            // The Nix build sandbox seccomp-filters the setxattr family
+            // (ENOTSUP) to keep xattrs out of store paths — nothing to
+            // verify there; the layout stays covered by the blob tests.
+            Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => return,
+            Err(e) => panic!("kernel rejected the ACL blob: {e}"),
+        }
+        assert_eq!(getxattr(&path).unwrap().as_deref(), Some(value.as_slice()));
+        // Setting the ACL also rewrote the file's mode to match its
+        // object entries (mode and ACL are two views of one state), so
+        // the file is now fully in sync: apply() must read no drift.
+        assert!(!apply(&path, Some(7), &uids));
+        // Clobber the ACL (as an external strip would) and apply() must
+        // detect the drift, repair it, and then go quiet again.
+        assert!(clear(&path));
+        assert!(apply(&path, Some(7), &uids));
+        assert!(!apply(&path, Some(7), &uids));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

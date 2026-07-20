@@ -303,8 +303,11 @@ fn main() -> Result<()> {
 /// a polkit-authenticated `usermod`, printing the outcome.
 fn enable_access(socket: &Path) -> Result<()> {
     use tisvlay_core::access::{self, EnrollOutcome};
-    if access::has_access(socket) {
-        println!("You already have TV control access.");
+    // Gate on the durable grant (group membership), never on reachability:
+    // a console user's presence grant makes the socket connectable, yet
+    // they are exactly who runs this verb to gain SSH/remote access.
+    if access::has_durable_access(socket) {
+        println!("You already have durable TV control access (group member).");
         return Ok(());
     }
     println!("Granting TV control access — authenticate as an administrator when prompted…");
@@ -316,9 +319,9 @@ fn enable_access(socket: &Path) -> Result<()> {
                  since the systemd user manager can outlive a logout and keep the old groups."
             );
         }
-        // has_access read false a moment ago; only a race lands here.
+        // The durable gate read false a moment ago; only a race lands here.
         EnrollOutcome::AlreadyMember { .. } => {
-            println!("You already have TV control access.");
+            println!("You already have durable TV control access.");
         }
     }
     Ok(())

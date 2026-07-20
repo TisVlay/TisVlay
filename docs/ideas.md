@@ -50,6 +50,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
 - [MSRV verification job (keep the `rust-version` floor honest under the pinned channel)](ideas/msrv-verification-job.md)
 - [Replace hardcoded sleeps in dispatch integration tests with poll-with-deadline](ideas/dispatch-test-event-driven-waits.md)
+- [Seat-watch regression coverage over a fake logind Seat surface](ideas/seat-watch-fake-logind-coverage.md)
 
 ## Diagnostics & telemetry
 
