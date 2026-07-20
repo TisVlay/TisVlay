@@ -311,7 +311,10 @@ fn enable_access(socket: &Path) -> Result<()> {
     match access::enable_access(socket)? {
         EnrollOutcome::Enrolled { user, group } => {
             println!("Added '{user}' to the '{group}' group.");
-            println!("Log out and back in (or reboot) for it to take effect.");
+            println!(
+                "Log out and back in for it to take effect — a reboot is the most reliable, \
+                 since the systemd user manager can outlive a logout and keep the old groups."
+            );
         }
         // has_access read false a moment ago; only a race lands here.
         EnrollOutcome::AlreadyMember { .. } => {
@@ -1115,7 +1118,20 @@ async fn discover_session(
 async fn open_client(socket: &Path) -> Result<Session> {
     zenoh::open(tisvlay_wire::bootstrap::client_config(socket)?)
         .await
-        .map_err(|e| anyhow!("daemon unreachable at {}: {e}", socket.display()))
+        .map_err(|e| {
+            // A connect failure for a caller who isn't in the socket group
+            // reads as "daemon unreachable", but the real cause is access:
+            // the group-owned runtime dir isn't even searchable, so socket
+            // resolution can't see the live daemon and lands on the dev
+            // path. Point at the fix instead of the misleading path.
+            if !tisvlay_core::access::has_access(socket) {
+                anyhow!(
+                    "You don't have TV control access yet — run `tisvlay enable-access` to grant it."
+                )
+            } else {
+                anyhow!("daemon unreachable at {}: {e}", socket.display())
+            }
+        })
 }
 
 /// One RPC round-trip: JSON in, JSON out, typed daemon errors surfaced as

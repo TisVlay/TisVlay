@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-19 18:43-0500\n"
+"POT-Creation-Date: 2026-07-19 19:52-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -184,7 +184,9 @@ msgid "Access granted"
 msgstr ""
 
 #: crates/tisvlay-gui/src/lib.rs:839
-msgid "Log out and back in (or reboot) to finish enabling TV control."
+msgid ""
+"Log out and back in to finish — a reboot is the most reliable, since the "
+"session manager can keep the old groups across a logout."
 msgstr ""
 
 #: crates/tisvlay-gui/src/lib.rs:846

@@ -836,7 +836,7 @@ fn register_callbacks(
                             tone: SharedString::from("success"),
                             title: SharedString::from(gettext("Access granted")),
                             message: SharedString::from(gettext(
-                                "Log out and back in (or reboot) to finish enabling TV control.",
+                                "Log out and back in to finish — a reboot is the most reliable, since the session manager can keep the old groups across a logout.",
                             )),
                             action_label: SharedString::default(),
                         }),
