@@ -32,11 +32,25 @@ pub enum EnrollOutcome {
     Enrolled { user: String, group: String },
 }
 
-/// Whether the current login session can already reach the group-gated
-/// socket — i.e. is a member of `socket`'s owning group. Drives whether a
-/// surface offers the enroll affordance at all.
+/// Whether the current login session can reach the daemon socket. Drives
+/// whether a surface offers the enroll affordance at all.
+///
+/// A live probe, not a group check: the daemon also grants presence-scoped
+/// access (the active-seat ACL), which confers access without membership —
+/// a group check alone would nag a console user whose access works.
+/// `EACCES` on connect is a definitive no. Any other failure (absent
+/// socket, refused) is ambiguous — the daemon may simply be down, or a
+/// non-traversable runtime dir may have hidden the live socket from the
+/// caller's path resolution entirely — so it falls back to the durable
+/// criterion: membership in the socket's owning group. A member whose
+/// daemon is down reads as having access (their problem is the daemon); a
+/// non-member who can't even see the socket reads as not.
 pub fn has_access(socket: &Path) -> bool {
-    member_of(&socket_group_or_default(socket))
+    match std::os::unix::net::UnixStream::connect(socket) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(_) => member_of(&socket_group_or_default(socket)),
+    }
 }
 
 /// Add the current user to the socket's owning group via `pkexec usermod`
@@ -225,8 +239,39 @@ mod tests {
     fn absent_socket_falls_back_to_default_group() {
         let missing = Path::new("/nonexistent/tisvlay/zenoh.sock");
         assert_eq!(socket_group_or_default(missing), DEFAULT_GROUP);
-        // And `has_access` over an absent socket doesn't panic — it just
-        // checks membership of the default group.
+        // And `has_access` over an absent socket doesn't panic — the
+        // connect probe fails without a permission error, so it falls back
+        // to checking membership of the default group.
         let _ = has_access(missing);
+    }
+
+    #[test]
+    fn connectable_socket_grants_access_regardless_of_group() {
+        // A live, connectable socket is access — the presence-grant case,
+        // where the caller is in no relevant group at all.
+        let dir = std::env::temp_dir().join(format!("tisvlay-access-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("probe.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(has_access(&path));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn permission_denied_socket_reads_as_no_access() {
+        // SAFETY: geteuid is always safe and takes no arguments.
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root bypasses DAC; the probe can't be denied
+        }
+        let dir = std::env::temp_dir().join(format!("tisvlay-noaccess-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("probe.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // Connecting requires write on the socket inode; a 0 mode denies
+        // even the owner, which is the deterministic EACCES this needs.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(!has_access(&path));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

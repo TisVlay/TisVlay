@@ -236,6 +236,20 @@ in
       '';
     };
 
+    seatAccess = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Grant the active seat's graphical user socket access via a
+        daemon-applied POSIX ACL while their session is the seat
+        foreground (uaccess-style presence grant). Lets the person at
+        the console use TisVlay with no group enrollment; the `users`
+        list (the `tisvlay` group) remains the durable grant for SSH,
+        remote, and headless use. Disable to restrict the socket to
+        the group and greeter only.
+      '';
+    };
+
     cec.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -422,6 +436,9 @@ in
             "--greeter-group"
             greeterGroup
           ]
+          # The active-seat presence grant is the daemon's default; only
+          # the opt-out is passed through.
+          ++ lib.optionals (!cfg.seatAccess) [ "--seat-access=false" ]
           ++ cfg.extraArgs
         );
         User = cfg.user;

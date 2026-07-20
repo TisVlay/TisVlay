@@ -9,6 +9,7 @@ mod dpms;
 mod logind;
 mod netlink;
 mod probe;
+mod seat;
 mod seed;
 mod store;
 
@@ -484,6 +485,10 @@ pub struct DaemonOptions {
     /// Grant the login greeter's group a socket ACL (its dynamic-userdb
     /// account can't be reached via `/etc/group`); disabled by default.
     pub greeter: GreeterAccess,
+    /// Grant each seat's active graphical user a socket ACL while their
+    /// session is the seat foreground (presence-scoped, `uaccess`-style);
+    /// the `tisvlay` group remains the durable grant.
+    pub seat_access: bool,
 }
 
 /// Production-shaped entry: serve with the real vendor backends (plus the
@@ -531,10 +536,16 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         options.store.as_deref(),
     )
     .await?;
-    // The socket is bound and chmod'd 0660 by now; grant the greeter group
-    // its ACL here — after the chmod, never before, since a chmod rewrites
-    // the ACL mask. Strips any prior ACL when disabled.
-    acl::reconcile(&options.socket, &options.greeter);
+    // The socket is bound and chmod'd 0660 by now; ground the socket ACL
+    // here — after the chmod, never before, since a chmod rewrites the ACL
+    // mask. The seat set starts empty (the seat watch below fills it in),
+    // so this pass grants the greeter group and strips anything stale —
+    // including a seat-user entry left by a previous run when seat access
+    // is now disabled.
+    acl::reconcile(&options.socket, &options.greeter, &Default::default());
+    if options.seat_access {
+        seat::spawn(options.socket.clone(), options.greeter.clone());
+    }
     // The desktop probe auto-spawns a scoped DPMS watcher per
     // EDID-matched connector; the override flag adds one more whose
     // transitions dispatch globally (the escape hatch when the EDID
