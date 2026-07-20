@@ -1,6 +1,6 @@
 # Quick Start
 
-This walks through pairing your first TV and controlling it from the command line. It assumes `tisvlay-daemon` is installed and running, and that your user is in the `tisvlay` group (see [Installation](./installation.md)).
+This walks through pairing your first TV and controlling it from the command line. It assumes `tisvlay-daemon` is installed and running — automatic after a package install — and that you're at the machine (console access needs no setup; for SSH or scripts, see [Installation](./installation.md#installation) for the one-click `tisvlay enable-access` grant).
 
 ## 1. Pair the TV
 

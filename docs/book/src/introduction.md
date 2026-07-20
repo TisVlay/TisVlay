@@ -30,7 +30,7 @@ tisvlay is a small set of cooperating programs:
 | `tisvlay-gui` | Settings window (pair TVs, edit profiles) |
 | `tisvlay-greeter` | Optional login-screen client that drives the TV before anyone logs in |
 
-The CLI and the desktop services all reach `tisvlay-daemon` over a local IPC socket; the daemon holds the persistent configuration and the live TV connections. Access to that socket is granted by membership in the **`tisvlay` group** (see [Installation](./getting-started/installation.md)).
+The CLI and the desktop services all reach `tisvlay-daemon` over a local IPC socket; the daemon holds the persistent configuration and the live TV connections. The user at the console can reach that socket **automatically** (the daemon grants the active seat's user access while they're at the machine); for SSH, remote, or headless use, membership in the **`tisvlay` group** is the durable grant — `tisvlay enable-access` sets it up with one click (see [Installation](./getting-started/installation.md)).
 
 ```mermaid
 graph LR

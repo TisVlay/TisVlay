@@ -39,13 +39,21 @@ tisvlay list
 tisvlay watch
 ```
 
-`tisvlay watch` is the event-stream view — it replaces the old bus-monitor workflow. If even `tisvlay status` fails, the daemon isn't reachable: check that it's running (`systemctl status tisvlay-daemon`) and that **your user is in the `tisvlay` group** (the group guards the daemon's control socket; re-login after adding yourself).
+`tisvlay watch` is the event-stream view — it replaces the old bus-monitor workflow. If even `tisvlay status` fails, the CLI tells you which of the two failure modes you're in:
+
+- **"You don't have TV control access yet"** — an access problem, and the fix is in the message: run `tisvlay enable-access` (one polkit authentication, then log out and back in — a reboot is the most reliable, since the systemd user manager can keep the old groups across a plain logout). You'll typically only see this over SSH or from a service account: the user at the console has access automatically.
+- **"daemon unreachable"** — the daemon itself is down or the socket path is wrong: check `systemctl status tisvlay-daemon` and `journalctl -u tisvlay-daemon`.
+
+## No tray icon on GNOME
+
+Vanilla GNOME ships no system-tray host, so `tisvlay-tray` runs but has nowhere to draw its icon. Install the AppIndicator extension (`gnome-shell-extension-appindicator`; Ubuntu bundles its own) and the icon appears. Until then the tray still delivers notifications and serves the GUI's settings — only the icon and its menu are missing. See [GUI & Tray](../guide/gui-tray.md#tray-applet-tisvlay-tray).
 
 ## Automation does nothing
 
 - The TV must be managed: `tisvlay managed <id> true`.
 - Check the resolved policy with `tisvlay profile effective <id>` — with `automate_when = on_primary`, automation only fires when the TV is showing the PC (its `primary_input`).
 - If you streamed in remotely, wake actions are suppressed on purpose while the TV is armed — see [Remote-Session Awareness](../guide/remote-sessions.md).
+- If another account is the active session (fast user switching), your backgrounded session's lock/idle automation is suppressed on purpose until you're foreground again.
 - The per-user `tisvlay-session` service must be running for lock/idle events: `systemctl --user status tisvlay-session`.
 
 ## Isolating tisvlay from the TV (mock backend)

@@ -47,11 +47,15 @@ vendor = "cec"
 device = "/dev/cec0"            # the kernel CEC node the TV is reachable on
 physical_address = "1.0.0.0"    # the adapter's HDMI port (USB adapters only; ignored on GPU DP-CEC)
 emulate_screen_via_power = true # honor screen_off/screen_on by powering the TV (CEC can't blank a live panel)
+advertise_osd_name = true       # answer the TV's name poll, so it labels this PC's HDMI input
+osd_name = "TisVlay"            # the label the TV shows for the input (14 characters max)
 ```
 
 In a **seed file** the vendor block can also be written inline: `config = { ip = "192.168.1.170", mac = "84:90:0a:63:a9:94" }`.
 
 CEC has no discrete screen-blank, so with `emulate_screen_via_power` (default `true`) the daemon fulfills the stock `screen_off`/`screen_on` actions by powering the TV off/on; set it `false` to have the TV ignore screen actions instead.
+
+With `advertise_osd_name` (default `true`), tisvlay answers the TV's name poll on the CEC bus, so the TV labels the PC's HDMI input `osd_name` in its input picker — the way a Chromecast names its own input. Set it `false` to stay silent and keep the TV's generic input label.
 
 ## Discovery
 
@@ -68,7 +72,7 @@ The source port can also be set with the daemon flag `tisvlay-daemon --ssdp-port
 Profiles map **events** to **actions**. There are two kinds:
 
 - **System profiles** (daemon-wide lifecycle): boot, shutdown, reboot, suspend/resume, host-display DPMS blank/wake, and the login-screen (greeter) idle timer.
-- **User profiles** (per desktop session): lock, unlock, lock-screen wake, idle timeout/resume, and remote-session connect/disconnect.
+- **User profiles** (per desktop session): lock, unlock, lock-screen wake, idle timeout/resume, remote-session connect/disconnect, and the local return after a remote session.
 
 Manage them with `tisvlay profile …` (system) and `tisvlay user-profile …` (user), or the GUI's profile editor. A deeper walkthrough of how profiles resolve lives in [Profiles](./profiles.md).
 
@@ -123,6 +127,7 @@ on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"
 on_remote_connect = "screen_off"        # a remote session armed the TV
 on_remote_disconnect = "screen_off"     # the remote session ended
+on_local_return = { action = "screen_on", restore_input = true }  # first local input after a remote disconnect
 remote_screencast_arms = false          # let an unattributed screen capture arm the TV
 ```
 

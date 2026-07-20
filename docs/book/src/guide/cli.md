@@ -11,6 +11,8 @@ A few global flags apply to any verb:
 
 `tisvlay watch` streams every state key (history first, then live) — the go-to for scripting and for watching automation happen.
 
+**Tab completion** ships for bash, zsh, and fish (installed by the packages; see [Installation](../getting-started/installation.md)). It's live: `<TAB>` completes not just verbs and flags but TV UUIDs, profile UUIDs, and vendor ids, queried from the running daemon and annotated with their names — so you never type a UUID by hand.
+
 The full command tree below is generated from the `tisvlay` source, so it always matches `--help`.
 
 <!-- The reference below is generated from the `tisvlay` clap definitions

@@ -2,7 +2,7 @@
 
 When you remote into this machine — Sunshine/Moonlight game streaming, RustDesk, or krdp/RDP — the remote session unlocks the desktop and feeds it virtual keyboard and mouse input. To your desktop that looks exactly like someone sitting down: the idle timer resets, the outputs un-blank, and tisvlay's normal automation would **power the physical TV on for an empty room**. Remote-session awareness stops that.
 
-While a remote session is active, tisvlay marks the affected TVs as **armed** and suppresses the wake actions, while still letting blanks and power-offs through. When you physically walk back to the TV, it wakes normally through the usual unlock/idle path.
+While a remote session is active, tisvlay marks the affected TVs as **armed** and suppresses the wake actions, while still letting blanks and power-offs through. When you physically walk back to the TV, it wakes on your **first local input** (`on_local_return`) — with the usual unlock/lock-wake/idle paths covering the locked and idled cases as before.
 
 The feature is **inert on a stock desktop** — nothing arms until a detector or hook fires — so it costs you nothing until you actually stream in.
 
@@ -10,7 +10,8 @@ The feature is **inert on a stock desktop** — nothing arms until a detector or
 
 - **Wake events are suppressed** — `on_session_unlock`, `on_lock_wake`, `on_idle_resume`, and the daemon's `on_dpms_on`/`on_wake` don't fire while the TV is armed. This is the suppress-by-default rule: a plain action is quiet while armed.
 - **Off-going events still fire** — blanks and power-offs (`on_session_lock`, idle blank, `on_sleep`, `on_dpms_off`, …) are exempt, so a TV that's on still darkens for the empty room.
-- **The arm and disarm edges act** — `on_remote_connect` fires when the session arms the TV (default `screen_off`, so the panel blanks) and `on_remote_disconnect` when it ends (also `screen_off` — the room is still empty; you wake it when you return).
+- **The arm and disarm edges act** — `on_remote_connect` fires when the session arms the TV (default `screen_off`, so the panel blanks) and `on_remote_disconnect` when it ends (also `screen_off` — the room is still empty).
+- **Your return wakes it** — after a disconnect, the first genuine local input fires `on_local_return` (default `screen_on`, restoring your PC's input). This closes the stranded-dark gap: if the desktop never locked and never idled while you were away, no unlock or idle-resume edge exists to relight the panel — the return event is what catches you walking back in.
 
 Every one of these is a per-event choice: each action row carries a **while-remote** toggle (in the GUI, or `while_remote = true` on the action in TOML) that opts the event back into firing while armed. See [Configuration](./configuration.md#action-vocabulary) and [Profiles](./profiles.md#the-remote-session-gate).
 

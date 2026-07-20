@@ -239,6 +239,7 @@ pub enum ProfileCmd {
         id: Uuid,
         name: String,
     },
+    /// Delete a profile (assignments referring to it fall back to default).
     Delete {
         #[arg(add = system_profile_completions())]
         id: Uuid,
@@ -254,6 +255,7 @@ pub enum ProfileCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum UserProfileCmd {
+    /// List profile bodies from the catalog caches.
     List,
     /// Create a profile: `--body` is a UserProfileConfig body.
     Create {
@@ -261,21 +263,26 @@ pub enum UserProfileCmd {
         #[arg(long)]
         body: Option<String>,
     },
+    /// Replace a profile's body (full JSON body; name required inside).
     Update {
         #[arg(add = user_profile_completions())]
         id: Uuid,
         body: String,
     },
+    /// Copy a profile under a new name.
     Duplicate {
         #[arg(add = user_profile_completions())]
         id: Uuid,
         name: String,
     },
+    /// Delete a profile (assignments referring to it fall back to default).
     Delete {
         #[arg(add = user_profile_completions())]
         id: Uuid,
     },
+    /// The stock mapping unset fields inherit.
     Defaults,
+    /// One TV's resolved mapping (assigned profile over stock).
     Effective {
         #[arg(add = tv_completions())]
         tv: Uuid,

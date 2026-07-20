@@ -8,6 +8,10 @@ Both ship today. **LG WebOS over the network** needs no extra hardware, reaches 
 
 LG webOS TVs over the network, and any TV reachable over **HDMI-CEC** (power and screen-blank) with a CEC adapter — see [Requirements & Compatibility](./requirements.md). There's also a built-in [mock vendor](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend) for testing. The core is vendor- and transport-agnostic by design, so additional brands can land as backends.
 
+### Who can control the TVs?
+
+Whoever is **at the machine** — the daemon grants the active seat's logged-in user socket access automatically, the same presence model Linux uses for sound cards and cameras, so a fresh install works with zero account setup. Anyone else (SSH, scripts, a second account controlling TVs while not at the console) needs the durable grant: membership in the `tisvlay` group, added one-click by `tisvlay enable-access` (or declaratively via `services.tisvlay.users` on NixOS). The login screen's greeter client has its own scoped grant. And with fast user switching, only the *active* session's automation drives the TVs — a backgrounded account can't blank the panel out from under the person at the machine.
+
 ### Do I need all the services?
 
 No. The daemon plus the CLI is a complete remote control. Add `tisvlay-session` for lock/unlock/idle automation, the tray for menu-bar control, and the GUI for point-and-click setup — each is independent and optional. See [Session Automation](../guide/session-automation.md) for what each service contributes.

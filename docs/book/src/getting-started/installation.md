@@ -2,24 +2,26 @@
 
 tisvlay ships as pre-built distro packages, a NixOS module, and as source via Cargo. Pick the path that matches your system.
 
-After installing, enable the services:
+A distro-package install is zero-setup: the post-install hook enables and starts the system daemon (on Arch, start it once with `sudo systemctl start tisvlay-daemon` — pacman convention is that packages never start services), and the per-user services start automatically at your next graphical login. To start them right away without re-logging in:
 
 ```sh
-# System daemon
-sudo systemctl enable --now tisvlay-daemon
-# Per-user desktop services (run as your normal user, not root)
-systemctl --user enable --now tisvlay-session tisvlay-tray
+systemctl --user start tisvlay-session tisvlay-tray
 ```
 
-The daemon runs as a dedicated `tisvlay` system user and stores its state under `/var/lib/tisvlay/`. Access to the daemon is gated by the **`tisvlay` group** (it owns the daemon's control socket), so add your desktop user to it and re-login:
+The daemon runs as a dedicated `tisvlay` system user and stores its state under `/var/lib/tisvlay/`. Access to its control socket is layered:
+
+- **At the console you already have access** — the daemon grants the active seat's logged-in user access automatically, the same way Linux grants the console user its sound card and camera. Nothing to configure.
+- **For SSH, remote, scripts, or headless use**, join the **`tisvlay` group** — the durable grant. One click:
 
 ```sh
-sudo usermod -aG tisvlay $USER   # re-login for the group to take effect
+tisvlay enable-access   # authenticates via polkit, adds you to the tisvlay group
 ```
+
+A group change only takes effect on a *fresh* login — and on most desktops the systemd user manager survives a plain logout with the old groups, so a **reboot** is the reliable way to pick it up. (Console access needs none of this.)
 
 ## Distro packages (.deb / .rpm / .pkg.tar.zst)
 
-Pre-built packages are published on the [releases page](https://github.com/ruffsl/tisvlay/releases) for each tagged version. They are statically linked, so they work across glibc versions and on immutable-root distros.
+Pre-built packages are published on the [releases page](https://github.com/ruffsl/tisvlay/releases) for each tagged version. They are built against a conservative glibc baseline (2.34), so one package runs on every in-support desktop and enterprise distro, immutable-root variants included.
 
 ```sh
 export VERSION=0.3.0
@@ -53,7 +55,9 @@ wget ${BASE}/tisvlay-${VERSION}-1-x86_64.pkg.tar.zst
 sudo pacman -U ./tisvlay-${VERSION}-1-x86_64.pkg.tar.zst
 ```
 
-The post-install hook reloads systemd, refreshes the desktop database, creates the `tisvlay` system user and group, and enables `tisvlay-daemon`. It does **not** add you to the `tisvlay` group — do that yourself (above) so the CLI and desktop services can reach the daemon.
+The post-install hook creates the `tisvlay` system user and group, enables and starts `tisvlay-daemon` (fresh installs only — an upgrade never overrides a daemon you deliberately stopped; on Arch you start it once yourself), and enables the per-user services for everyone's next graphical login. It deliberately adds no one to the `tisvlay` group — the console user doesn't need it, and `tisvlay enable-access` (above) covers everyone else.
+
+The packages also install shell **tab completion** for the `tisvlay` CLI (bash, zsh, fish) — `<TAB>` completes verbs, flags, and even live values like TV and profile ids, queried from the running daemon and described by name. Bash needs the `bash-completion` loader package (the `.deb`/`.rpm` recommend it); zsh and fish work out of the box.
 
 ## NixOS (flake module)
 
@@ -78,12 +82,13 @@ The repository's flake provides a NixOS module that wires up the daemon, user se
 }
 ```
 
-`services.tisvlay.enable` runs `tisvlay-daemon` (as the `tisvlay` user), the `tisvlay-session` and `tisvlay-tray` user services, and the `tisvlay` CLI in `$PATH`. **`services.tisvlay.users` is required** — a desktop user not listed there can't reach the daemon socket, so the session, tray, and GUI won't connect.
+`services.tisvlay.enable` runs `tisvlay-daemon` (as the `tisvlay` user), the `tisvlay-session` and `tisvlay-tray` user services, and the `tisvlay` CLI in `$PATH`. **`services.tisvlay.users` is the durable grant** (`tisvlay` group membership) — list every account that should control TVs from SSH, scripts, or while not at the console. The user at the console gets access automatically either way (the presence grant below), so a single-user desktop works with just `enable = true`; listing your user is still recommended so access never depends on being the active seat.
 
 Other useful options:
 
+- `services.tisvlay.seatAccess` — the presence grant: the active seat's graphical user can reach the daemon while at the console, with no group membership (default `true`; set `false` to restrict the socket to the `users` list and the greeter).
 - `services.tisvlay.cec.enable` — device access for the HDMI-CEC backend (see below); `services.tisvlay.cec.pulse8.enable` additionally builds the in-tree Pulse-Eight USB-CEC driver.
-- `services.tisvlay.greeter.enable` — the optional login-screen idle client (defaults on when `plasma-login-manager` is the display manager).
+- `services.tisvlay.greeter.enable` — the optional login-screen idle client (defaults on when `plasma-login-manager` **or GDM/GNOME** is the display manager).
 - `services.tisvlay.openFirewall` / `services.tisvlay.bindPort` — open the pinned SSDP discovery source port (default `1901`); see [Firewall & Discovery](../operations/firewall-discovery.md).
 
 ## Cargo (from source)

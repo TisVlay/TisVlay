@@ -430,7 +430,7 @@ System-profile catalog (daemon-side)
 * `create` — Create a profile: `--body` is a SystemProfileConfig body
 * `update` — Replace a profile's body (full JSON body; name required inside)
 * `duplicate` — Copy a profile under a new name
-* `delete` — 
+* `delete` — Delete a profile (assignments referring to it fall back to default)
 * `defaults` — The stock mapping unset fields inherit
 * `effective` — One TV's resolved mapping (assigned profile over stock)
 
@@ -488,6 +488,8 @@ Copy a profile under a new name
 
 ## `tisvlay profile delete`
 
+Delete a profile (assignments referring to it fall back to default)
+
 **Usage:** `tisvlay profile delete <ID>`
 
 ###### **Arguments:**
@@ -524,18 +526,20 @@ User-profile catalog (session-service side, via --user-socket)
 
 ###### **Subcommands:**
 
-* `list` — 
+* `list` — List profile bodies from the catalog caches
 * `create` — Create a profile: `--body` is a UserProfileConfig body
-* `update` — 
-* `duplicate` — 
-* `delete` — 
-* `defaults` — 
-* `effective` — 
+* `update` — Replace a profile's body (full JSON body; name required inside)
+* `duplicate` — Copy a profile under a new name
+* `delete` — Delete a profile (assignments referring to it fall back to default)
+* `defaults` — The stock mapping unset fields inherit
+* `effective` — One TV's resolved mapping (assigned profile over stock)
 * `assign` — Assign (or with no value clear) a TV's user profile
 
 
 
 ## `tisvlay user-profile list`
+
+List profile bodies from the catalog caches
 
 **Usage:** `tisvlay user-profile list`
 
@@ -559,6 +563,8 @@ Create a profile: `--body` is a UserProfileConfig body
 
 ## `tisvlay user-profile update`
 
+Replace a profile's body (full JSON body; name required inside)
+
 **Usage:** `tisvlay user-profile update <ID> <BODY>`
 
 ###### **Arguments:**
@@ -569,6 +575,8 @@ Create a profile: `--body` is a UserProfileConfig body
 
 
 ## `tisvlay user-profile duplicate`
+
+Copy a profile under a new name
 
 **Usage:** `tisvlay user-profile duplicate <ID> <NAME>`
 
@@ -581,6 +589,8 @@ Create a profile: `--body` is a UserProfileConfig body
 
 ## `tisvlay user-profile delete`
 
+Delete a profile (assignments referring to it fall back to default)
+
 **Usage:** `tisvlay user-profile delete <ID>`
 
 ###### **Arguments:**
@@ -591,11 +601,15 @@ Create a profile: `--body` is a UserProfileConfig body
 
 ## `tisvlay user-profile defaults`
 
+The stock mapping unset fields inherit
+
 **Usage:** `tisvlay user-profile defaults`
 
 
 
 ## `tisvlay user-profile effective`
+
+One TV's resolved mapping (assigned profile over stock)
 
 **Usage:** `tisvlay user-profile effective <TV>`
 

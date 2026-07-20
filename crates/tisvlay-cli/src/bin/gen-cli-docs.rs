@@ -20,6 +20,10 @@ fn main() {
     );
     // Drop the leading title / blank / preamble lines so the partial begins
     // at the "Command Overview" that the page's own heading introduces.
+    // Per-line trim: clap-markdown leaves a trailing space after the em
+    // dash of an undocumented subcommand, which the repo's whitespace hook
+    // would strip right back — emit hook-clean output so the committed
+    // partial and a fresh regeneration always agree.
     let body: String = markdown
         .lines()
         .skip_while(|line| {
@@ -27,6 +31,7 @@ fn main() {
                 || line.starts_with("# ")
                 || line.starts_with("This document contains the help content")
         })
+        .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n");
     println!("{}", body.trim_end());
