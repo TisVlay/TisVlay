@@ -52,10 +52,10 @@ fn breeze_dark_light_hexes() {
     // Derived (no Breeze role): border/border-strong (frame shade),
     //   text-faint (inactive→bg).
     let ternary: &[(&str, &str, &str)] = &[
-        ("surface", "141618", "ffffff"),          // View
+        ("surface", "202326", "eff0f1"),          // Window (card text/UI bg)
         ("surface2", "292c30", "fcfcfc"),         // Button
-        ("surface-alt", "202326", "eff0f1"),      // Window
-        ("sidebar", "141618", "eff0f1"),          // View / Window
+        ("surface-alt", "141618", "ffffff"),      // View (app bg / list panels)
+        ("sidebar", "141618", "ffffff"),          // View (list panel)
         ("sidebar-text", "fcfcfc", "232629"),     // FgNormal
         ("sidebar-text-dim", "a1a9b1", "707d8a"), // FgInactive
         ("sidebar-hover", "292c30", "e3e5e7"),    // Window BgAlt
@@ -129,7 +129,7 @@ fn status_variants_derive_from_base() {
     );
     assert_eq!(
         t.get("row-selected-text").map(String::as_str),
-        Some("accent"),
-        "`row-selected-text` should be the accent color"
+        Some("text"),
+        "`row-selected-text` should be the normal text color (unchanged on selection)"
     );
 }

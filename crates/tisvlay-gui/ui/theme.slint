@@ -37,18 +37,23 @@ export global Theme {
 
     // -- Surfaces --
     //
-    // Breeze layers three background levels; TisVlay maps its card / input
-    // / pane surfaces onto them. Note Breeze (like TisVlay) renders the
-    // content surface *darker* than the window in dark mode.
+    // Breeze's three background levels, assigned so the panels read as
+    // list views and the cards as the text/UI surface:
+    //   View   — the list-view / panel extreme (black in dark, white in light)
+    //   Window — the primary text-and-controls background (a mid tone)
+    //   Button — a raised control fill
     //
-    // surface = card / dialog / toast body → Breeze View:BackgroundNormal.
-    out property <brush> surface: dark-mode ? #141618 : #ffffff;
+    // surface = card / dialog / toast body → Breeze Window:BackgroundNormal
+    // (the mid-tone surface text and controls sit on — not the black/white
+    // extreme).
+    out property <brush> surface: dark-mode ? #202326 : #eff0f1;
     // surface2 = input / control field (ThemedSelect, ThemedSpinBox,
     // LineEditField) → Breeze Button:BackgroundNormal.
     out property <brush> surface2: dark-mode ? #292c30 : #fcfcfc;
-    // surface-alt = pane / window background behind the cards, and the
-    // master-list column → Breeze Window:BackgroundNormal.
-    out property <brush> surface-alt: dark-mode ? #202326 : #eff0f1;
+    // surface-alt = the app background behind the cards, and the master-list
+    // panel → Breeze View:BackgroundNormal (the list-view surface; black in
+    // dark, white in light).
+    out property <brush> surface-alt: dark-mode ? #141618 : #ffffff;
     // Functional overlays — not Breeze palette colors. Same alpha in both
     // schemes: a 50%-black modal scrim, and a lighter elevation-shadow
     // tint fed to Slint's `drop-shadow-color`.
@@ -57,10 +62,10 @@ export global Theme {
 
     // -- Sidebar --
     //
-    // The deepest chrome band: Breeze View (dark → near-black nav frame) /
-    // Window (light → grey panel), matching how KDE renders a sidebar in
-    // each scheme. Selected items render with the live `accent`.
-    out property <brush> sidebar: dark-mode ? #141618 : #eff0f1;
+    // Left nav panel → Breeze View:BackgroundNormal (black / white), the
+    // same list-view surface as the master-list panel. Selected items
+    // render with the live `accent`.
+    out property <brush> sidebar: dark-mode ? #141618 : #ffffff;
     out property <brush> sidebar-text: dark-mode ? #fcfcfc : #232629;      // *:ForegroundNormal
     out property <brush> sidebar-text-dim: dark-mode ? #a1a9b1 : #707d8a;  // *:ForegroundInactive
     out property <color> sidebar-selected: accent;
@@ -75,7 +80,7 @@ export global Theme {
     out property <brush> border-strong: dark-mode ? #45494f : #9fa4aa;
 
     // -- Text --
-    out property <brush> text: dark-mode ? #fcfcfc : #232629;        // *:ForegroundNormal
+    out property <color> text: dark-mode ? #fcfcfc : #232629;        // *:ForegroundNormal
     out property <brush> text-dim: dark-mode ? #a1a9b1 : #707d8a;    // *:ForegroundInactive
     // Fainter than dim (Breeze has a single inactive level):
     // ForegroundInactive shaded toward the background.
@@ -133,11 +138,12 @@ export global Theme {
 
     // -- List rows --
     out property <brush> row-hover: dark-mode ? #292c30 : #e3e5e7;   // Window:BackgroundAlternate
-    // Breeze's Selection role IS the accent color, so a selected row is a
-    // soft accent wash + accent text — it tracks the DE accent and stays
-    // consistent with focus rings.
+    // Breeze's Selection role is the accent, so a selected row is a soft
+    // accent wash (tracking the DE accent + focus ring) — but the label
+    // keeps the normal text color rather than being tinted to the accent,
+    // so it stays legible against the wash.
     out property <color> row-selected: dark-mode ? accent.with-alpha(0.24) : accent.with-alpha(0.16);
-    out property <color> row-selected-text: accent;
+    out property <color> row-selected-text: text;
 
     // -- Vendor brand swatches --
     // Background colors for `VendorTile`. Brand identity is mode-invariant
