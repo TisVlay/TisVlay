@@ -928,6 +928,194 @@ export component OptimisticSlider {
 }
 
 // =============================================================================
+// ThemedSpinBox — themed integer entry with up/down steppers.
+// =============================================================================
+//
+// The `ThemedSelect` equivalent for integer fields (profile idle
+// timeouts). Replaces the std Fluent `SpinBox`, which exposes no
+// `Theme.*` binding path and dims its chrome on unfocused windows —
+// so it can't be retinted, only replaced. Chrome mirrors `ThemedSelect`
+// (surface2 fill, accent focus ring, `size-input` height); width
+// behavior mirrors the old SpinBox (`min-width: 0` + stretch), so the
+// swap is width-neutral.
+//
+// Value model (mirrors `OptimisticSlider` above):
+//   - `value` is the gated authoritative value pushed by Rust (bound to
+//     the row's `number-value`). The daemon echoes an edit back as an
+//     in-place `set_row_data` on the SAME row, so committing per
+//     keystroke would rewrite `value` under the cursor and tear focus.
+//     This widget therefore commits ONLY on blur / Enter / stepper —
+//     there is DELIBERATELY no `TextInput.edited` (per-keystroke)
+//     handler; do not add one.
+//   - `display` is the local optimistic mirror. The imperative writes
+//     to it and to `field.text` drop their initial bindings, so the
+//     `changed value` handler re-syncs both — required, not decorative.
+//   - Steppers step from `display` (last committed), not half-typed
+//     text: a `TouchArea` never takes focus, so a stepper click while
+//     the field is focused does not blur-commit stale input.
+//   - Empty / non-numeric input reverts to `display` and writes nothing
+//     (`"".to-float()` is 0, which would otherwise commit the minimum).
+// The clamp here is belt-and-suspenders; Rust clamps authoritatively.
+component SpinStepper inherits Rectangle {
+    in property <bool> up;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    // Subtle translucent veil on PRESS only (not hover), matching the
+    // native Fluent SpinBoxButton's `subtle` fill (~6% of the text color,
+    // not a solid surface). No animation — native snaps on press.
+    background: touch.pressed && root.enabled ? Theme.text.with-alpha(0.08) : transparent;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+
+    Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        // 12px chevron matching the native Fluent SpinBox glyph weight.
+        // A stroked polyline (uniform, miter apex) rather than a
+        // hand-filled band, which rendered with uneven arm thickness.
+        width: 12px;
+        height: 7px;
+        stroke: root.enabled ? Theme.text-dim : Theme.text-faint;
+        stroke-width: 1.6px;
+        viewbox-width: 12;
+        viewbox-height: 7;
+        commands: root.up
+            ? "M 0.9 6 L 6 1 L 11.1 6"
+            : "M 0.9 1 L 6 6 L 11.1 1";
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ThemedSpinBox inherits Rectangle {
+    /// Gated authoritative value (bound to the row's `number-value`).
+    in property <int> value;
+    in property <int> minimum;
+    in property <int> maximum;
+    in property <int> step: 1;
+    in property <bool> enabled: true;
+    /// Fired ONLY on commit (blur / Enter / stepper), rounded to int —
+    /// never per keystroke. Named `committed` (not `edited`) to match
+    /// `OptimisticSlider`; in this codebase `edited` means per-keystroke.
+    callback committed(int);
+
+    // Local optimistic mirror. Re-synced from `value` on the daemon
+    // echo; the imperative writes below drop the initial bindings.
+    property <int> display: root.value;
+    changed value => {
+        root.display = root.value;
+        if (!field.has-focus) {
+            field.text = root.display;
+        }
+    }
+
+    function commit(v: int) {
+        root.display = v.clamp(root.minimum.max(0), root.maximum);
+        field.text = root.display;
+        root.committed(root.display);
+    }
+    // Parse-and-commit a typed string; empty/invalid reverts (no write).
+    function commit-text(t: string) {
+        if (t == "") {
+            field.text = root.display;
+            return;
+        }
+        root.commit(round(t.to-float()));
+    }
+
+    // Same minimum as ThemedSelect (shared token) so a SpinBox and a
+    // ComboBox in the same value column render one width — now that the
+    // trailing modifier region is reserved on every row kind, the two
+    // columns are equal, so an equal minimum makes the controls equal.
+    min-width: Design.width-input-min;
+    horizontal-stretch: 1;
+    height: Design.size-input;
+    background: Theme.surface2;
+    border-color: field.has-focus ? Theme.accent : Theme.border;
+    border-width: field.has-focus ? 2px : Design.border-thin;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+    forward-focus: field;
+
+    accessible-role: spinbox;
+    accessible-value: root.display;
+    accessible-enabled: root.enabled;
+    accessible-action-increment => { root.commit(root.display + root.step); }
+    accessible-action-decrement => { root.commit(root.display - root.step); }
+
+    // Scroll-wheel stepping (native SpinBox parity). Behind the layout so
+    // the field/steppers keep their clicks; a discrete wheel notch is a
+    // deliberate change, so committing immediately is safe (unlike typing).
+    TouchArea {
+        enabled: root.enabled;
+        scroll-event(event) => {
+            if (event.delta-y > 0) { root.commit(root.display + root.step); return accept; }
+            if (event.delta-y < 0) { root.commit(root.display - root.step); return accept; }
+            reject
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 4px;
+        // Top/bottom inset (like the native SpinBox layout) so a pressed
+        // stepper's fill reads as an inset rounded button, not a bar that
+        // touches the control's top and bottom borders.
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 4px;
+
+        field := TextInput {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            color: Theme.text;
+            font-size: Design.font-meta;
+            input-type: number;
+            single-line: true;
+            // TextInput has no `enabled`; `read-only` blocks typing.
+            read-only: !root.enabled;
+            selection-background-color: Theme.accent-soft;
+            text: root.display;
+            accepted => { root.commit-text(self.text); }
+            changed has-focus => {
+                if (!self.has-focus) {
+                    root.commit-text(self.text);
+                }
+            }
+        }
+
+        // Up / down steppers, side by side at the right edge — the
+        // native Fluent SpinBox arrangement (chevron-up then chevron-down),
+        // grouped with no gap between the two arrows.
+        HorizontalLayout {
+            spacing: 0;
+            SpinStepper {
+                up: true;
+                width: 22px;
+                enabled: root.enabled && root.display < root.maximum;
+                accessible-label: @tr("Increase");
+                clicked => { root.commit(root.display + root.step); }
+            }
+            SpinStepper {
+                up: false;
+                width: 22px;
+                enabled: root.enabled && root.display > root.minimum;
+                accessible-label: @tr("Decrease");
+                clicked => { root.commit(root.display - root.step); }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Group — uppercase 11px title above a card.
 // =============================================================================
 //

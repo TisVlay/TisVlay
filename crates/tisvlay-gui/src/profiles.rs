@@ -168,7 +168,7 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
-            step: 15,
+            step: 5,
             unit: "seconds",
         },
     },
@@ -226,7 +226,7 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
-            step: 15,
+            step: 5,
             unit: "seconds",
         },
     },
@@ -235,7 +235,7 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
-            step: 15,
+            step: 5,
             unit: "seconds",
         },
     },
