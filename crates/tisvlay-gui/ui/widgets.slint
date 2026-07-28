@@ -965,11 +965,11 @@ component SpinStepper inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
-    // Subtle fill on PRESS only (not hover), matching the native Fluent
-    // SpinBoxButton.
-    background: touch.pressed && root.enabled ? Theme.surface-alt : transparent;
+    // Subtle translucent veil on PRESS only (not hover), matching the
+    // native Fluent SpinBoxButton's `subtle` fill (~6% of the text color,
+    // not a solid surface). No animation — native snaps on press.
+    background: touch.pressed && root.enabled ? Theme.text.with-alpha(0.08) : transparent;
     border-radius: Design.radius-control;
-    animate background { duration: 150ms; }
     opacity: root.enabled ? 1.0 : Design.opacity-disabled;
 
     Path {
@@ -1066,6 +1066,11 @@ export component ThemedSpinBox inherits Rectangle {
     HorizontalLayout {
         padding-left: 11px;
         padding-right: 4px;
+        // Top/bottom inset (like the native SpinBox layout) so a pressed
+        // stepper's fill reads as an inset rounded button, not a bar that
+        // touches the control's top and bottom borders.
+        padding-top: 4px;
+        padding-bottom: 4px;
         spacing: 4px;
 
         field := TextInput {
