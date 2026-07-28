@@ -239,6 +239,14 @@ component ProfileList inherits Rectangle {
     width: Design.width-master;
     background: Theme.surface-alt;
 
+    // Left separator — divides the column (and its header band) from
+    // the sidebar, which shares the same View background.
+    Rectangle {
+        x: 0;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+
     // Right separator.
     Rectangle {
         x: parent.width - 1px;
