@@ -133,11 +133,12 @@ export global Theme {
 
     // -- List rows --
     out property <brush> row-hover: dark-mode ? #292c30 : #e3e5e7;   // Window:BackgroundAlternate
-    // Breeze's Selection role IS the accent color, so a selected row is a
-    // soft accent wash + accent text — it tracks the DE accent and stays
-    // consistent with focus rings.
+    // Breeze's Selection role is the accent, so a selected row is a soft
+    // accent wash (tracking the DE accent + focus ring) — but the label
+    // keeps the normal text color rather than being tinted to the accent,
+    // so it stays legible against the wash.
     out property <color> row-selected: dark-mode ? accent.with-alpha(0.24) : accent.with-alpha(0.16);
-    out property <color> row-selected-text: accent;
+    out property <color> row-selected-text: text;
 
     // -- Vendor brand swatches --
     // Background colors for `VendorTile`. Brand identity is mode-invariant

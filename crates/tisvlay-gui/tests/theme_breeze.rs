@@ -129,7 +129,7 @@ fn status_variants_derive_from_base() {
     );
     assert_eq!(
         t.get("row-selected-text").map(String::as_str),
-        Some("accent"),
-        "`row-selected-text` should be the accent color"
+        Some("text"),
+        "`row-selected-text` should be the normal text color (unchanged on selection)"
     );
 }

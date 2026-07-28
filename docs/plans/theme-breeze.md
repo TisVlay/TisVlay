@@ -52,7 +52,7 @@ From `colors/BreezeDark.colors` / `colors/BreezeLight.colors` (RGB → hex), dar
 - **`text-faint`** — Breeze has a single inactive-foreground level; this is `ForegroundInactive` shaded toward the background: `#6e757e` / `#9096a0`.
 - **`*-soft` / `*-text`** (status) — Breeze gives only the base hue. `-soft` = the base at low alpha (a tint wash for badges/banners); `-text` = the base brightened in dark / darkened in light so it stays legible on the wash. Single source per status, so re-basing the hue cascades.
 - **`accent-pressed` / `accent-soft`** — derived from `accent` (brighter/darker, low-alpha) as before, so they track the DE accent.
-- **`row-selected` / `row-selected-text`** — Breeze's Selection role *is* the accent, so a selected row is a soft `accent` wash + accent text, tracking the DE accent and the focus ring.
+- **`row-selected`** — Breeze's Selection role *is* the accent, so a selected row is a soft `accent` wash, tracking the DE accent and the focus ring. **`row-selected-text`** keeps the normal `text` color (the label is not tinted to the accent), so selected rows stay legible against the wash.
 
 ## Intentionally not Breeze-derived
 
