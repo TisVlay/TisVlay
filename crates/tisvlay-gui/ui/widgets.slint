@@ -973,15 +973,19 @@ component SpinStepper inherits Rectangle {
     Path {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 9px;
-        height: 5px;
-        stroke: !root.enabled
+        // Filled chevron sized + weighted to match the native Fluent
+        // SpinBox's 12px chevron-up/down glyph (a solid thin caret),
+        // rather than a light hairline stroke.
+        width: 12px;
+        height: 7px;
+        fill: !root.enabled
             ? Theme.text-faint
             : (touch.has-hover ? Theme.text : Theme.text-dim);
-        stroke-width: 1.25px;
         viewbox-width: 12;
         viewbox-height: 7;
-        commands: root.up ? "M 1 6 L 6 1 L 11 6" : "M 1 1 L 6 6 L 11 1";
+        commands: root.up
+            ? "M 6 1.2 L 11 6.2 L 9.8 6.2 L 6 2.7 L 2.2 6.2 L 1 6.2 Z"
+            : "M 6 5.8 L 11 0.8 L 9.8 0.8 L 6 4.3 L 2.2 0.8 L 1 0.8 Z";
     }
 
     touch := TouchArea {
