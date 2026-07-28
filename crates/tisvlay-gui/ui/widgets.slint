@@ -928,6 +928,167 @@ export component OptimisticSlider {
 }
 
 // =============================================================================
+// ThemedSpinBox — themed integer entry with up/down steppers.
+// =============================================================================
+//
+// The `ThemedSelect` equivalent for integer fields (profile idle
+// timeouts). Replaces the std Fluent `SpinBox`, which exposes no
+// `Theme.*` binding path and dims its chrome on unfocused windows —
+// so it can't be retinted, only replaced. Chrome mirrors `ThemedSelect`
+// (surface2 fill, accent focus ring, `size-input` height); width
+// behavior mirrors the old SpinBox (`min-width: 0` + stretch), so the
+// swap is width-neutral.
+//
+// Value model (mirrors `OptimisticSlider` above):
+//   - `value` is the gated authoritative value pushed by Rust (bound to
+//     the row's `number-value`). The daemon echoes an edit back as an
+//     in-place `set_row_data` on the SAME row, so committing per
+//     keystroke would rewrite `value` under the cursor and tear focus.
+//     This widget therefore commits ONLY on blur / Enter / stepper —
+//     there is DELIBERATELY no `TextInput.edited` (per-keystroke)
+//     handler; do not add one.
+//   - `display` is the local optimistic mirror. The imperative writes
+//     to it and to `field.text` drop their initial bindings, so the
+//     `changed value` handler re-syncs both — required, not decorative.
+//   - Steppers step from `display` (last committed), not half-typed
+//     text: a `TouchArea` never takes focus, so a stepper click while
+//     the field is focused does not blur-commit stale input.
+//   - Empty / non-numeric input reverts to `display` and writes nothing
+//     (`"".to-float()` is 0, which would otherwise commit the minimum).
+// The clamp here is belt-and-suspenders; Rust clamps authoritatively.
+component SpinStepper inherits Rectangle {
+    in property <bool> up;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    background: touch.has-hover && root.enabled ? Theme.row-hover : transparent;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+
+    Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 9px;
+        height: 5px;
+        stroke: !root.enabled
+            ? Theme.text-faint
+            : (touch.has-hover ? Theme.text : Theme.text-dim);
+        stroke-width: 1.25px;
+        viewbox-width: 12;
+        viewbox-height: 7;
+        commands: root.up ? "M 1 6 L 6 1 L 11 6" : "M 1 1 L 6 6 L 11 1";
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ThemedSpinBox inherits Rectangle {
+    /// Gated authoritative value (bound to the row's `number-value`).
+    in property <int> value;
+    in property <int> minimum;
+    in property <int> maximum;
+    in property <int> step: 1;
+    in property <bool> enabled: true;
+    /// Fired ONLY on commit (blur / Enter / stepper), rounded to int —
+    /// never per keystroke. Named `committed` (not `edited`) to match
+    /// `OptimisticSlider`; in this codebase `edited` means per-keystroke.
+    callback committed(int);
+
+    // Local optimistic mirror. Re-synced from `value` on the daemon
+    // echo; the imperative writes below drop the initial bindings.
+    property <int> display: root.value;
+    changed value => {
+        root.display = root.value;
+        if (!field.has-focus) {
+            field.text = root.display;
+        }
+    }
+
+    function commit(v: int) {
+        root.display = v.clamp(root.minimum.max(0), root.maximum);
+        field.text = root.display;
+        root.committed(root.display);
+    }
+    // Parse-and-commit a typed string; empty/invalid reverts (no write).
+    function commit-text(t: string) {
+        if (t == "") {
+            field.text = root.display;
+            return;
+        }
+        root.commit(round(t.to-float()));
+    }
+
+    // Same minimum as ThemedSelect (shared token) so a SpinBox and a
+    // ComboBox in the same value column render one width — now that the
+    // trailing modifier region is reserved on every row kind, the two
+    // columns are equal, so an equal minimum makes the controls equal.
+    min-width: Design.width-input-min;
+    horizontal-stretch: 1;
+    height: Design.size-input;
+    background: Theme.surface2;
+    border-color: field.has-focus ? Theme.accent : Theme.border;
+    border-width: field.has-focus ? 2px : Design.border-thin;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+    forward-focus: field;
+
+    accessible-role: spinbox;
+    accessible-value: root.display;
+    accessible-enabled: root.enabled;
+    accessible-action-increment => { root.commit(root.display + root.step); }
+    accessible-action-decrement => { root.commit(root.display - root.step); }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 4px;
+        spacing: 4px;
+
+        field := TextInput {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            color: Theme.text;
+            font-size: Design.font-meta;
+            input-type: number;
+            single-line: true;
+            // TextInput has no `enabled`; `read-only` blocks typing.
+            read-only: !root.enabled;
+            selection-background-color: Theme.accent-soft;
+            text: root.display;
+            accepted => { root.commit-text(self.text); }
+            changed has-focus => {
+                if (!self.has-focus) {
+                    root.commit-text(self.text);
+                }
+            }
+        }
+
+        VerticalLayout {
+            width: 20px;
+            SpinStepper {
+                up: true;
+                enabled: root.enabled && root.display < root.maximum;
+                accessible-label: @tr("Increase");
+                clicked => { root.commit(root.display + root.step); }
+            }
+            SpinStepper {
+                up: false;
+                enabled: root.enabled && root.display > root.minimum;
+                accessible-label: @tr("Decrease");
+                clicked => { root.commit(root.display - root.step); }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Group — uppercase 11px title above a card.
 // =============================================================================
 //

@@ -18,14 +18,14 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { ScrollView, SpinBox, Switch } from "std-widgets.slint";
+import { ScrollView, Switch } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
+import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
@@ -369,11 +369,13 @@ component ProfileList inherits Rectangle {
 // buttons, tying the two toolbars to the same rhythm.
 //
 // The reset slot is the last fixed-width column on every row, so it lands
-// at the same right edge whether or not the toggles precede it (the
-// `alignment: end` right-anchors the block). The two toggle slots render
-// only on action rows (`has-toggles`) — non-action rows (number, bool)
-// carry the reset slot alone, so a SpinBox is not squeezed by empty
-// toggle spacers.
+// at the same right edge (the `alignment: end` right-anchors the block).
+// Before it sits a fixed-width modifier region, reserved on EVERY row
+// kind (not just action rows): it holds the two action toggles, a number
+// field's unit label, or nothing. Reserving it unconditionally is what
+// makes every field row's value column resolve to the same width — so the
+// ThemedSpinBox and the ComboBox render one width — instead of the number
+// rows borrowing the toggle-slot space and matching only by coincidence.
 //
 // Each slot is a fixed 24×24 box: the explicit height gives the
 // `if`-gated `IconBtn` (bound `height: 100%`) a nonzero hit area — a
@@ -389,46 +391,74 @@ component ProfileRowTrailing inherits HorizontalLayout {
     spacing: Design.gap-form;
     alignment: end;
 
-    // Restore-input toggle slot — action rows only.
-    if root.entry.has-toggles: Rectangle {
-        width: 24px;
-        height: 24px;
-        IconBtn {
-            width: 100%;
-            height: 100%;
-            source: Icons.restore-input;
-            enabled: root.entry.restore-enabled;
-            active: root.entry.restore-differs;
-            accessible-label: @tr("Land on primary input");
-            tip: @tr("Land on primary input");
-            clicked => {
-                Profiles.restore-edited(root.entry.field-name, !root.entry.restore-value);
+    // Modifier region — a FIXED-WIDTH column (two 24 px slots + the gap
+    // between them) reserved on every row kind, so the reset glyph lands
+    // at one x throughout and, crucially, every field row's value column
+    // resolves to the same width. That is what makes the number rows'
+    // ThemedSpinBox and the enum rows' ComboBox render one width for real
+    // — not by the old coincidence of the unit label's width happening to
+    // cancel the toggle-slot delta. It holds the two action toggles
+    // (action rows), the number field's unit label (number rows), or
+    // nothing (bool rows / unitless numbers).
+    HorizontalLayout {
+        width: 2 * 24px + Design.gap-form;
+        spacing: Design.gap-form;
+        alignment: end;
+
+        // Restore-input toggle slot — action rows only.
+        if root.entry.has-toggles: Rectangle {
+            width: 24px;
+            height: 24px;
+            IconBtn {
+                width: 100%;
+                height: 100%;
+                source: Icons.restore-input;
+                enabled: root.entry.restore-enabled;
+                active: root.entry.restore-differs;
+                accessible-label: @tr("Land on primary input");
+                tip: @tr("Land on primary input");
+                clicked => {
+                    Profiles.restore-edited(root.entry.field-name, !root.entry.restore-value);
+                }
             }
         }
-    }
 
-    // Remote-session gate slot — action rows only. The glyph swaps by
-    // value (gated = network-off); the accent tracks differs-from-floor.
-    if root.entry.has-toggles: Rectangle {
-        width: 24px;
-        height: 24px;
-        IconBtn {
-            width: 100%;
-            height: 100%;
-            source: root.entry.remote-gate-value
-                ? Icons.remote-gate-on
-                : Icons.remote-gate-off;
-            enabled: root.entry.remote-gate-enabled;
-            active: root.entry.remote-gate-differs;
-            accessible-label: root.entry.remote-gate-value
-                ? @tr("Fires during remote session")
-                : @tr("Suppressed during remote session");
-            tip: root.entry.remote-gate-value
-                ? @tr("Fires during remote session")
-                : @tr("Suppressed during remote session");
-            clicked => {
-                Profiles.remote-gated(root.entry.field-name, !root.entry.remote-gate-value);
+        // Remote-session gate slot — action rows only. The glyph swaps by
+        // value (gated = network-off); the accent tracks differs-from-floor.
+        if root.entry.has-toggles: Rectangle {
+            width: 24px;
+            height: 24px;
+            IconBtn {
+                width: 100%;
+                height: 100%;
+                source: root.entry.remote-gate-value
+                    ? Icons.remote-gate-on
+                    : Icons.remote-gate-off;
+                enabled: root.entry.remote-gate-enabled;
+                active: root.entry.remote-gate-differs;
+                accessible-label: root.entry.remote-gate-value
+                    ? @tr("Fires during remote session")
+                    : @tr("Suppressed during remote session");
+                tip: root.entry.remote-gate-value
+                    ? @tr("Fires during remote session")
+                    : @tr("Suppressed during remote session");
+                clicked => {
+                    Profiles.remote-gated(root.entry.field-name, !root.entry.remote-gate-value);
+                }
             }
+        }
+
+        // Unit label — non-action number rows. Left-aligned against the
+        // value column so it reads as the ThemedSpinBox's suffix, occupying the
+        // same region the toggles do on action rows.
+        if !root.entry.has-toggles && root.entry.unit != "": Text {
+            horizontal-stretch: 1;
+            text: root.entry.unit;
+            color: Theme.text-dim;
+            font-size: Design.font-meta;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            overflow: elide;
         }
     }
 
@@ -488,7 +518,7 @@ component ProfileFieldRowEnum inherits Rectangle {
                     // Wrap rather than clip when a label exceeds the
                     // column width (long fields, localization
                     // expansion). The fixed column still keeps every
-                    // ComboBox / SpinBox aligned at the same x; only
+                    // ComboBox / ThemedSpinBox aligned at the same x; only
                     // the affected row grows taller.
                     wrap: word-wrap;
                 }
@@ -551,68 +581,37 @@ component ProfileFieldRowNumber inherits Rectangle {
                     // Wrap rather than clip when a label exceeds the
                     // column width (long fields, localization
                     // expansion). The fixed column still keeps every
-                    // ComboBox / SpinBox aligned at the same x; only
+                    // ComboBox / ThemedSpinBox aligned at the same x; only
                     // the affected row grows taller.
                     wrap: word-wrap;
                 }
             }
 
-            // Value column. SpinBox + optional unit Text in a
-            // stretching HorizontalLayout. SpinBox's std-widget
-            // definition sets `min-width: max(128px, …)`; that floor
-            // would push the row-layout 4 px past its parent and shift
-            // the reset glyph right of the ComboBox rows' glyphs, so we
-            // override it with `min-width: 0px` and let the built-in
-            // `horizontal-stretch: 1` shrink to absorb whatever space
-            // the unit Text leaves — keeping the reset column at the
-            // same x across enum + number rows.
-            //
-            // Commit is deferred off the per-keystroke path: dispatching
-            // every keystroke round-trips to the daemon, whose echoed
-            // `*ProfileChanged` rebuilds this row's model and tears the
-            // focused SpinBox out from under the cursor — so multi-digit
-            // entry is impossible. Instead we route on focus state:
-            //   - `edited` while the text input is UNFOCUSED → a stepper
-            //     / scroll change → commit immediately.
-            //   - `edited` while FOCUSED → typing → defer.
-            //   - `changed has-focus` → false → commit the typed value on
-            //     blur (Tab / click away). The native SpinBox doesn't
-            //     forward `accepted`, so Enter alone does not commit.
-            HorizontalLayout {
+            // Value column — the ThemedSpinBox alone, mirroring the enum
+            // row's ComboBox column, so the two render one width. The unit
+            // label is NOT here: it lives in the trailing modifier region
+            // (ProfileRowTrailing), sized to the same width as the action
+            // rows' toggle slots, which is what makes this value column
+            // equal the enum row's (rather than the old coincidence where
+            // the unit's width happened to cancel the toggle-slot delta).
+            // The deferred-commit-on-blur logic now lives inside
+            // ThemedSpinBox (see widgets.slint).
+            VerticalLayout {
                 horizontal-stretch: 1;
-                spacing: Design.gap-stack;
-                alignment: stretch;
-                spin := SpinBox {
-                    min-width: 0px;
+                alignment: center;
+                ThemedSpinBox {
                     value: root.entry.number-value;
                     minimum: root.entry.min-value;
                     maximum: root.entry.max-value;
-                    step-size: root.entry.step;
-                    edited(v) => {
-                        if !self.has-focus {
-                            Profiles.value-edited-number(root.entry.field-name, v);
-                        }
-                    }
-                    changed has-focus => {
-                        if !self.has-focus && self.value != root.entry.number-value {
-                            Profiles.value-edited-number(root.entry.field-name, self.value);
-                        }
-                    }
-                }
-                if root.entry.unit != "": VerticalLayout {
-                    alignment: center;
-                    Text {
-                        text: root.entry.unit;
-                        color: Theme.text-dim;
-                        font-size: Design.font-meta;
-                    }
+                    step: root.entry.step;
+                    committed(v) => { Profiles.value-edited-number(root.entry.field-name, v); }
                 }
             }
 
-            // Same trailing block as the enum row; on a number row it
-            // resolves to the reset slot alone (no action modifiers), so
-            // its reset glyph shares the enum rows' right-edge column
-            // without stealing width from the SpinBox.
+            // Same trailing block as the enum row. On a number row its
+            // modifier region carries the unit label (where action rows
+            // carry their toggles), so the reset glyph shares the enum
+            // rows' right-edge column.
             VerticalLayout {
                 alignment: center;
                 ProfileRowTrailing {
