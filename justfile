@@ -258,7 +258,13 @@ ssdp_port := env("SSDP_PORT", "1901")
 
 # GUI only. "true" → build with `--features slint/mcp` and start the
 # Slint MCP server on http://127.0.0.1:9315/mcp. See `.claude/slint.md`.
-gui_mcp := env("GUI_MCP", "false")
+gui_mcp := env("GUI_MCP", "true")
+
+# GUI only. "true" → build with `--features slint/live-preview` so the
+# running binary reloads ui/*.slint from disk on every save (no cargo
+# rebuild), preserving properties/models/callbacks. Combine with
+# GUI_MCP=true to inspect the live-reloaded UI over MCP.
+gui_live := env("GUI_LIVE", "true")
 
 # zenoh is chatty at debug; keep app crates loud and transports quiet.
 _daemon_log := "info,tisvlay_daemon=debug,tisvlay_world=debug,tisvlay_cec=debug,zbus=warn,rustls=warn,tungstenite=warn"
@@ -306,13 +312,36 @@ tray-start:
             --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}"
 
-# Start the GUI (paired with `daemon-start`).
+# Start the GUI (paired with `daemon-start`). GUI_MCP / GUI_LIVE toggle
+# the Slint MCP server and in-app .slint hot reload; both are slint
+# dependency features passed on the command line, so a plain build never
+# drags them in. Rebuild once with a feature on, then (GUI_LIVE) edit
+# ui/*.slint and the running window reloads without touching cargo.
 [group('dev')]
 gui-start:
-    {{ if gui_mcp == "true" { "SLINT_MCP_PORT=9315" } else { "" } }} \
-        RUST_LOG="{{ _gui_log }}" \
-        cargo run {{ if gui_mcp == "true" { "--features slint/mcp" } else { "" } }} \
-        --release --bin tisvlay-gui -- \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env_prefix=(RUST_LOG="{{ _gui_log }}")
+    features=()
+    # SLINT_EMIT_DEBUG_INFO (needed for the MCP element tree) is set
+    # globally in .cargo/config.toml, so only the port + feature here.
+    if [ "{{ gui_mcp }}" = "true" ]; then
+        env_prefix+=(SLINT_MCP_PORT=9315)
+        features+=("slint/mcp")
+    fi
+    if [ "{{ gui_live }}" = "true" ]; then
+        env_prefix+=(SLINT_LIVE_PREVIEW=1)
+        features+=("slint/live-preview")
+    fi
+    feature_arg=()
+    if [ "${#features[@]}" -gt 0 ]; then
+        feature_arg=(--features "$(IFS=,; echo "${features[*]}")")
+    fi
+    # `env` (not a bare prefix): assignment-looking words from an array
+    # expansion aren't treated as env assignments by bash — env applies
+    # them explicitly.
+    env "${env_prefix[@]}" \
+        cargo run "${feature_arg[@]}" --release --bin tisvlay-gui -- \
             --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}"
 
