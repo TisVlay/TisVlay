@@ -965,7 +965,9 @@ component SpinStepper inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
-    background: touch.has-hover && root.enabled ? Theme.row-hover : transparent;
+    // Subtle fill on PRESS only (not hover), matching the native Fluent
+    // SpinBoxButton.
+    background: touch.pressed && root.enabled ? Theme.surface-alt : transparent;
     border-radius: Design.radius-control;
     animate background { duration: 150ms; }
     opacity: root.enabled ? 1.0 : Design.opacity-disabled;
@@ -973,19 +975,18 @@ component SpinStepper inherits Rectangle {
     Path {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        // Filled chevron sized + weighted to match the native Fluent
-        // SpinBox's 12px chevron-up/down glyph (a solid thin caret),
-        // rather than a light hairline stroke.
+        // 12px chevron matching the native Fluent SpinBox glyph weight.
+        // A stroked polyline (uniform, miter apex) rather than a
+        // hand-filled band, which rendered with uneven arm thickness.
         width: 12px;
         height: 7px;
-        fill: !root.enabled
-            ? Theme.text-faint
-            : (touch.has-hover ? Theme.text : Theme.text-dim);
+        stroke: root.enabled ? Theme.text-dim : Theme.text-faint;
+        stroke-width: 1.6px;
         viewbox-width: 12;
         viewbox-height: 7;
         commands: root.up
-            ? "M 6 1.2 L 11 6.2 L 9.8 6.2 L 6 2.7 L 2.2 6.2 L 1 6.2 Z"
-            : "M 6 5.8 L 11 0.8 L 9.8 0.8 L 6 4.3 L 2.2 0.8 L 1 0.8 Z";
+            ? "M 0.9 6 L 6 1 L 11.1 6"
+            : "M 0.9 1 L 6 6 L 11.1 1";
     }
 
     touch := TouchArea {
@@ -1049,6 +1050,18 @@ export component ThemedSpinBox inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-increment => { root.commit(root.display + root.step); }
     accessible-action-decrement => { root.commit(root.display - root.step); }
+
+    // Scroll-wheel stepping (native SpinBox parity). Behind the layout so
+    // the field/steppers keep their clicks; a discrete wheel notch is a
+    // deliberate change, so committing immediately is safe (unlike typing).
+    TouchArea {
+        enabled: root.enabled;
+        scroll-event(event) => {
+            if (event.delta-y > 0) { root.commit(root.display + root.step); return accept; }
+            if (event.delta-y < 0) { root.commit(root.display - root.step); return accept; }
+            reject
+        }
+    }
 
     HorizontalLayout {
         padding-left: 11px;
