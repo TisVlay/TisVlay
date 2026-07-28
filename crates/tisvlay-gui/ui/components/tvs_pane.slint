@@ -309,13 +309,27 @@ component TvList inherits Rectangle {
         Rectangle {
             height: 40px;
             // Flush with the master-list panel (View), matching the
-            // sidebar background; the bottom separator delineates it.
+            // sidebar background; the separators delineate it.
             background: Theme.surface-alt;
 
             // Bottom separator.
             Rectangle {
                 y: parent.height - 1px;
                 height: Design.border-thin;
+                background: Theme.border;
+            }
+
+            // Left / right separators. The header's flush fill covers the
+            // master column's edge borders, so re-draw them here to keep
+            // the frame continuous across the band.
+            Rectangle {
+                x: 0;
+                width: Design.border-thin;
+                background: Theme.border;
+            }
+            Rectangle {
+                x: parent.width - 1px;
+                width: Design.border-thin;
                 background: Theme.border;
             }
 
