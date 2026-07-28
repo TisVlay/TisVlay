@@ -1070,16 +1070,21 @@ export component ThemedSpinBox inherits Rectangle {
             }
         }
 
-        VerticalLayout {
-            width: 20px;
+        // Up / down steppers, side by side at the right edge — the
+        // native Fluent SpinBox arrangement (chevron-up then chevron-down),
+        // grouped with no gap between the two arrows.
+        HorizontalLayout {
+            spacing: 0;
             SpinStepper {
                 up: true;
+                width: 22px;
                 enabled: root.enabled && root.display < root.maximum;
                 accessible-label: @tr("Increase");
                 clicked => { root.commit(root.display + root.step); }
             }
             SpinStepper {
                 up: false;
+                width: 22px;
                 enabled: root.enabled && root.display > root.minimum;
                 accessible-label: @tr("Decrease");
                 clicked => { root.commit(root.display - root.step); }
