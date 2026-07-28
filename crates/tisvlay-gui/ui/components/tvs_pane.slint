@@ -300,7 +300,9 @@ component TvList inherits Rectangle {
         // -- Header band --
         Rectangle {
             height: 40px;
-            background: Theme.surface;
+            // Flush with the master-list panel (View), matching the
+            // sidebar background; the bottom separator delineates it.
+            background: Theme.surface-alt;
 
             // Bottom separator.
             Rectangle {

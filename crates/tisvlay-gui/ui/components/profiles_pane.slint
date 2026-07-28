@@ -148,7 +148,9 @@ component ProfileSectionHeader inherits Rectangle {
     callback add-clicked();
 
     height: 40px;
-    background: Theme.surface;
+    // Flush with the master-list panel (View), matching the sidebar
+    // background; the bottom separator delineates it.
+    background: Theme.surface-alt;
 
     // Bottom separator.
     Rectangle {
