@@ -31,7 +31,7 @@ From `colors/BreezeDark.colors` / `colors/BreezeLight.colors` (RGB → hex), dar
 | `surface` (card/dialog) | Window bg | `#202326` | `#eff0f1` |
 | `surface2` (input/control) | Button bg | `#292c30` | `#fcfcfc` |
 | `surface-alt` (app bg / list panels) | View bg | `#141618` | `#ffffff` |
-| `sidebar` | View bg | `#141618` | `#ffffff` |
+| `sidebar` | Window bg | `#202326` | `#eff0f1` |
 | `sidebar-text` | FgNormal | `#fcfcfc` | `#232629` |
 | `sidebar-text-dim` | FgInactive | `#a1a9b1` | `#707d8a` |
 | `sidebar-hover` | Window BgAlt | `#292c30` | `#e3e5e7` |

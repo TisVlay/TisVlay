@@ -265,13 +265,6 @@ component TvListRow inherits Rectangle {
         }
     }
 
-    // Bottom 1px separator.
-    Rectangle {
-        y: parent.height - 1px;
-        height: Design.border-thin;
-        background: Theme.border;
-    }
-
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
@@ -287,7 +280,7 @@ component TvList inherits Rectangle {
     background: Theme.surface-alt;
 
     // Left separator — divides the column (and its header band) from
-    // the sidebar, which shares the same View background.
+    // the sidebar.
     Rectangle {
         x: 0;
         width: Design.border-thin;
@@ -308,18 +301,12 @@ component TvList inherits Rectangle {
         // -- Header band --
         Rectangle {
             height: 40px;
-            // Flush with the master-list panel (View), matching the
-            // sidebar background; the separators delineate it.
-            background: Theme.surface-alt;
+            // Header band — a distinct surface from the surface-alt
+            // master panel below, so the fill contrast sets the band
+            // off (no bottom rule).
+            background: Theme.surface;
 
-            // Bottom separator.
-            Rectangle {
-                y: parent.height - 1px;
-                height: Design.border-thin;
-                background: Theme.border;
-            }
-
-            // Left / right separators. The header's flush fill covers the
+            // Left / right separators. The header's fill covers the
             // master column's edge borders, so re-draw them here to keep
             // the frame continuous across the band.
             Rectangle {
@@ -505,7 +492,7 @@ component TvDetailHeader inherits Rectangle {
     callback request-remove();
 
     height: header-layout.preferred-height;
-    background: Theme.surface-alt;
+    background: Theme.surface;
 
     // Bottom separator.
     Rectangle {

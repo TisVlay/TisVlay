@@ -75,7 +75,7 @@ component Stepper inherits Rectangle {
     in property <int> current;
 
     height: 56px;
-    background: Theme.surface2;
+    background: Theme.surface;
 
     Rectangle {
         y: parent.height - 1px;
@@ -963,7 +963,7 @@ export component PairingWizardPane inherits Rectangle {
     /// an in-property rather than hosted on the global.
     in property <[string]> system-profiles;
 
-    background: Theme.surface;
+    background: Theme.surface-alt;
 
     // Currently-selected discovered TV (or empty struct).
     property <WizardDiscoveredTv> selected-tv:
@@ -1050,7 +1050,7 @@ export component PairingWizardPane inherits Rectangle {
         // Footer
         Rectangle {
             height: 56px;
-            background: Theme.surface2;
+            background: Theme.surface;
 
             Rectangle {
                 y: 0;
