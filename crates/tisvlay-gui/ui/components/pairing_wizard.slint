@@ -361,10 +361,13 @@ component StepDiscover {
         // outer scroll caps StepDiscover at its preferred height, so
         // stretch is a no-op.
         if root.error-message == "": Rectangle {
-            background: root.discovered.length > 0 ? Theme.surface : Theme.surface2;
+            background: root.discovered.length > 0 ? Theme.surface : Theme.surface;
             border-color: root.discovered.length > 0 ? Theme.border : Theme.border-strong;
             border-width: Design.border-thin;
             border-radius: Design.radius-card;
+            // Clip the rows so they don't square the card's corners
+            // or paint over its border.
+            clip: true;
             // 2.5 × DiscoveryRow.height (56px) = 140px. The half-row
             // peek at the bottom telegraphs "scroll me" the moment a
             // 3rd TV is found — without that, the list would look
