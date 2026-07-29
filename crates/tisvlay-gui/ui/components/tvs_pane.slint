@@ -895,20 +895,23 @@ component TvDetail inherits Rectangle {
                 // `UserInput` rows to editable inputs (LG: IP,
                 // MAC); ✓/✗ replace the pencil while editing.
                 //
-                // Inlines the `Group` widget's title-row + card
+                // Inlines the `Group` widget's title-band + card
                 // structure rather than wrapping `Group` so the
                 // action icons can sit on the title row itself
                 // (Slint v1 has no multi-`@children` slot, so a
                 // generic `Group { actions: ... }` API isn't
-                // available).
+                // available). Mirrors `Group`'s band exactly —
+                // `size-card-header` min-height + `gap-stack` layout
+                // spacing — so the action IconBtns fit the reserved
+                // band without dropping the card below the Group cards.
                 VerticalLayout {
-                    spacing: 0;
+                    spacing: Design.gap-stack;
 
-                    // Title row — same styling as `Group`'s title,
+                    // Title band — same structure as `Group`'s title,
                     // plus right-aligned action icons.
                     HorizontalLayout {
+                        min-height: Design.size-card-header;
                         padding-left: 2px;
-                        padding-bottom: Design.gap-stack;
                         spacing: Design.gap-form;
 
                         VerticalLayout {

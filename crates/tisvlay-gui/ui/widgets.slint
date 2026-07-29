@@ -1134,18 +1134,30 @@ export component Group {
 
     VerticalLayout {
         width: 100%;
-        spacing: 0;
+        // gap-stack (title → card) as layout spacing, so the title band's
+        // min-height governs the band alone (see below).
+        spacing: Design.gap-stack;
 
-        // Title
+        // Title band. `min-height: size-card-header` reserves room for an
+        // action IconBtn, so a title with actions and one without are the
+        // same height — the card body never shifts when actions are added,
+        // and cards stay box-aligned across panes. Cards that need actions
+        // (e.g. the TVs pane CONFIG header) mirror this band structure.
         HorizontalLayout {
+            min-height: Design.size-card-header;
             padding-left: 2px;
-            padding-bottom: Design.gap-stack;
-            Text {
-                text: root.title;
-                color: Theme.text-dim;
-                font-size: Design.font-mini;
-                font-weight: 600;
-                letter-spacing: 0.6px;
+            // Center the title in the reserved band (matching cards whose
+            // header carries action icons), so the label sits at the same
+            // height whether or not the header has actions.
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.title;
+                    color: Theme.text-dim;
+                    font-size: Design.font-mini;
+                    font-weight: 600;
+                    letter-spacing: 0.6px;
+                }
             }
         }
 
