@@ -128,13 +128,6 @@ component ProfileListRow inherits Rectangle {
         }
     }
 
-    // Bottom 1px separator.
-    Rectangle {
-        y: parent.height - 1px;
-        height: Design.border-thin;
-        background: Theme.border;
-    }
-
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
