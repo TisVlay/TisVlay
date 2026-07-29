@@ -1092,4 +1092,14 @@ export component PairingWizardPane inherits Rectangle {
             }
         }
     }
+
+    // Left separator — borders the wizard against the sidebar. The
+    // header and footer share the sidebar's surface fill, so without
+    // this they'd blend into it.
+    Rectangle {
+        x: 0;
+        width: Design.border-thin;
+        height: 100%;
+        background: Theme.border;
+    }
 }
