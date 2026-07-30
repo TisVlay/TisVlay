@@ -128,13 +128,6 @@ component ProfileListRow inherits Rectangle {
         }
     }
 
-    // Bottom 1px separator.
-    Rectangle {
-        y: parent.height - 1px;
-        height: Design.border-thin;
-        background: Theme.border;
-    }
-
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
@@ -148,12 +141,22 @@ component ProfileSectionHeader inherits Rectangle {
     callback add-clicked();
 
     height: 40px;
+    // Header band — a distinct surface from the surface-alt master
+    // panel below, so the fill contrast sets the band off (no bottom
+    // rule).
     background: Theme.surface;
 
-    // Bottom separator.
+    // Left / right separators. The header's fill covers the master
+    // column's edge borders, so re-draw them here to keep the frame
+    // continuous across the band.
     Rectangle {
-        y: parent.height - 1px;
-        height: Design.border-thin;
+        x: 0;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
         background: Theme.border;
     }
 
@@ -236,6 +239,14 @@ component ProfileList inherits Rectangle {
 
     width: Design.width-master;
     background: Theme.surface-alt;
+
+    // Left separator — divides the column (and its header band) from
+    // the sidebar.
+    Rectangle {
+        x: 0;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
 
     // Right separator.
     Rectangle {

@@ -75,7 +75,7 @@ component Stepper inherits Rectangle {
     in property <int> current;
 
     height: 56px;
-    background: Theme.surface2;
+    background: Theme.surface;
 
     Rectangle {
         y: parent.height - 1px;
@@ -361,10 +361,13 @@ component StepDiscover {
         // outer scroll caps StepDiscover at its preferred height, so
         // stretch is a no-op.
         if root.error-message == "": Rectangle {
-            background: root.discovered.length > 0 ? Theme.surface : Theme.surface2;
+            background: Theme.surface;
             border-color: root.discovered.length > 0 ? Theme.border : Theme.border-strong;
             border-width: Design.border-thin;
             border-radius: Design.radius-card;
+            // Clip the rows so they don't square the card's corners
+            // or paint over its border.
+            clip: true;
             // 2.5 × DiscoveryRow.height (56px) = 140px. The half-row
             // peek at the bottom telegraphs "scroll me" the moment a
             // 3rd TV is found — without that, the list would look
@@ -374,11 +377,6 @@ component StepDiscover {
             min-height: 140px;
             vertical-stretch: 1;
 
-            // Stack [content, ScanLine] so the ScanLine sits at the
-            // bottom of the region in both empty and populated states —
-            // a stable scan indicator across the empty → found
-            // transition rather than two separate ScanLines with
-            // different sizes and positions.
             VerticalLayout {
                 width: 100%;
 
@@ -414,14 +412,15 @@ component StepDiscover {
                         }
                     }
                 }
+            }
 
-                if root.streaming: HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    padding-top: 6px;
-                    padding-bottom: 8px;
-                    ScanLine {}
-                }
+            // Scan pulse, overlaid on the card's bottom edge rather than
+            // taking a layout row — so it never eats into the half-row
+            // peek. Its translucent track means only the accent pulse
+            // sweeps along the bottom divider.
+            if root.streaming: ScanLine {
+                y: parent.height - self.height;
+                width: 100%;
             }
         }
 
@@ -963,7 +962,7 @@ export component PairingWizardPane inherits Rectangle {
     /// an in-property rather than hosted on the global.
     in property <[string]> system-profiles;
 
-    background: Theme.surface;
+    background: Theme.surface-alt;
 
     // Currently-selected discovered TV (or empty struct).
     property <WizardDiscoveredTv> selected-tv:
@@ -1050,7 +1049,7 @@ export component PairingWizardPane inherits Rectangle {
         // Footer
         Rectangle {
             height: 56px;
-            background: Theme.surface2;
+            background: Theme.surface;
 
             Rectangle {
                 y: 0;
@@ -1088,5 +1087,15 @@ export component PairingWizardPane inherits Rectangle {
                 }
             }
         }
+    }
+
+    // Left separator — borders the wizard against the sidebar. The
+    // header and footer share the sidebar's surface fill, so without
+    // this they'd blend into it.
+    Rectangle {
+        x: 0;
+        width: Design.border-thin;
+        height: 100%;
+        background: Theme.border;
     }
 }

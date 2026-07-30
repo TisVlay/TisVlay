@@ -1291,7 +1291,9 @@ export component PulseDot inherits Rectangle {
 
 export component ScanLine inherits Rectangle {
     height: 2px;
-    background: Theme.surface2;
+    // Translucent track — only the accent pulse reads, so the line can
+    // overlay content without occluding it.
+    background: transparent;
     border-radius: 1px;
     clip: true;
 
