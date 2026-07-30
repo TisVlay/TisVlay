@@ -377,11 +377,6 @@ component StepDiscover {
             min-height: 140px;
             vertical-stretch: 1;
 
-            // Stack [content, ScanLine] so the ScanLine sits at the
-            // bottom of the region in both empty and populated states —
-            // a stable scan indicator across the empty → found
-            // transition rather than two separate ScanLines with
-            // different sizes and positions.
             VerticalLayout {
                 width: 100%;
 
@@ -417,14 +412,15 @@ component StepDiscover {
                         }
                     }
                 }
+            }
 
-                if root.streaming: HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    padding-top: 6px;
-                    padding-bottom: 8px;
-                    ScanLine {}
-                }
+            // Scan pulse, overlaid on the card's bottom edge rather than
+            // taking a layout row — so it never eats into the half-row
+            // peek. Its translucent track means only the accent pulse
+            // sweeps along the bottom divider.
+            if root.streaming: ScanLine {
+                y: parent.height - self.height;
+                width: 100%;
             }
         }
 
