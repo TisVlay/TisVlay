@@ -62,4 +62,4 @@ From `colors/BreezeDark.colors` / `colors/BreezeLight.colors` (RGB → hex), dar
 ## Verification
 
 - `cargo test -p tisvlay-gui --test theme_breeze` — the drift guard.
-- Visual: run the GUI in both schemes (`org.freedesktop.appearance color-scheme`). Dark = deep View sidebar/cards on the lighter Window pane, Button-grey inputs, accent-wash selection; Light = white View cards on the grey Window pane, near-white Button inputs, legible status pills.
+- Visual: run the GUI in both schemes (`org.freedesktop.appearance color-scheme`). Sidebar, master-list header bands, and cards render on `Window`; the app background and list panels on `View`; inputs on `Button`. Selection is an accent wash, and status pills stay legible in both schemes.
