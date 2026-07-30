@@ -5,7 +5,7 @@
 // source instead and asserts each fixed-hex token still equals the value
 // its Breeze color-scheme role resolves to. If someone re-values a token
 // or a future Breeze bump changes a role, this fails and points at the
-// exact token. The provenance table lives in docs/plans/theme-breeze.md.
+// exact token. The provenance table lives in docs/gui/theme-breeze.md.
 //
 // Only the *fixed-hex* tokens are pinned here. Accent-derived and status
 // `-soft`/`-text` tokens are formulas (checked structurally at the bottom),
@@ -116,9 +116,19 @@ fn status_variants_derive_from_base() {
             "`{base}-soft` should be `{base}.with-alpha(…)`, got: {soft}"
         );
         let text = t.get(&format!("{base}-text")).unwrap();
+        // Direction matters: brighten in the dark branch (before `:`) and
+        // darken in the light branch (after). A swap would darken on the
+        // dark soft-wash (illegible), so assert the order, not just that
+        // both appear.
+        let br = text
+            .find(&format!("{base}.brighter"))
+            .unwrap_or_else(|| panic!("`{base}-text` should brighten `{base}`, got: {text}"));
+        let dk = text
+            .find(&format!("{base}.darker"))
+            .unwrap_or_else(|| panic!("`{base}-text` should darken `{base}`, got: {text}"));
         assert!(
-            text.contains(&format!("{base}.brighter")) && text.contains(&format!("{base}.darker")),
-            "`{base}-text` should brighten (dark) / darken (light) `{base}`, got: {text}"
+            br < dk,
+            "`{base}-text` must brighten in dark / darken in light `{base}`, got: {text}"
         );
     }
     // Selection tracks the accent (Breeze's Selection role IS the accent).
