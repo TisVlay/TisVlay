@@ -638,7 +638,8 @@ async fn lock_watcher_seed_reads_a_preexisting_lock() {
 /// locked-idle `ext-idle-notify` transition arrives ~one timeout later and is
 /// silently dropped if `is_locked` is still at its `false` default (and the
 /// later unlocked-idle transition is dropped too, since the two tags gate on
-/// opposite lock states). See docs/concerns/tisvlay-login-issue.md.
+/// opposite lock states). See the Session-side watcher note in
+/// docs/architecture.md.
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_seed_reads_a_preexisting_lock_synchronously() {
     let bus = tisvlay_test::PrivateBus::shared();
