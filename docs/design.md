@@ -1,6 +1,6 @@
 # tisvlay Design Document (retired D-Bus architecture)
 
-> **Historical document.** This describes the served-D-Bus architecture that shipped through v0.2.0 and was removed in v0.3.0. The current architecture — bevy_ecs world + zenoh IPC — is documented in [plans/parity-zenoh-ecs.md](plans/parity-zenoh-ecs.md) (topology, key space, persistence, phase history). A fresh consolidated design doc is a P7 follow-up. Vendor-level material referenced from here (LG SSAP behavior, CEC model, discovery, network watching) still applies and lives in its own docs.
+> **Historical document.** This describes the served-D-Bus architecture that shipped through v0.2.0 and was removed in v0.3.0. The current architecture — bevy_ecs world + zenoh IPC — is documented in [architecture.md](architecture.md) (topology, key space, persistence, world/reactor model). Vendor-level material referenced from here (LG SSAP behavior, CEC model, discovery, network watching) still applies and lives in its own docs.
 
 ## Overview
 

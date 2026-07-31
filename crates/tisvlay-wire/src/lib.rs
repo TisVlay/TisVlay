@@ -2,8 +2,8 @@
 //!
 //! Everything both sides of the wire must agree on lives here: the key space,
 //! the payload structs, and the session bootstrap (transport endpoint +
-//! scouting discipline). Key-space reference: `docs/plans/spike-zenoh-ecs.md`
-//! at the repo root.
+//! scouting discipline). Key-space reference: the "Key space" section of
+//! `docs/architecture.md`.
 
 pub mod payload {
     //! Wire payload structs — the load-bearing design decision:

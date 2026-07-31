@@ -8,7 +8,8 @@
 //! every consumer agrees on what "referenced by" means without a
 //! round-trip per call site.
 //!
-//! See `docs/plans/profile-crud-v3.md` for the wire-shape rationale.
+//! See the git history of `docs/plans/profile-crud-v3.md` for the wire-shape
+//! rationale.
 
 use crate::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
 use uuid::Uuid;

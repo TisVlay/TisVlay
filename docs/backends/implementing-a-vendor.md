@@ -137,7 +137,7 @@ A second worked example — **CEC's screen-via-power** — emulates `SCREEN` wit
 
 ## Related docs
 
-- [docs/plans/parity-zenoh-ecs.md](../plans/parity-zenoh-ecs.md) — the current architecture reference (zenoh key space, world/reactor model, topology).
+- [docs/architecture.md](../architecture.md) — the current architecture reference (zenoh key space, world/reactor model, topology).
 - [docs/discovery.md](../discovery.md) — the discovery trait boundary and transport-family bits.
 - [docs/testing.md](../testing.md) — the workspace testing framework and layers.
 - [docs/lg/](../lg) — the worked real-world vendor: `webos.md` (protocol), `firmware-quirks.md` (bug inventory), `testing.md` (`FakeSsapServer`).

@@ -1,6 +1,6 @@
 # Testing
 
-This is the single source of truth for how testing works in tisvlay. For quick-reference commands, see the `Tasks & Commands` section in [CLAUDE.md](../.claude/CLAUDE.md). For the architecture (two-socket topology, key space, persistence), see [plans/parity-zenoh-ecs.md](plans/parity-zenoh-ecs.md).
+This is the single source of truth for how testing works in tisvlay. For quick-reference commands, see the `Tasks & Commands` section in [CLAUDE.md](../.claude/CLAUDE.md). For the architecture (two-socket topology, key space, persistence), see [architecture.md](architecture.md).
 
 ## Overview
 

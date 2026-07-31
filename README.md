@@ -50,7 +50,7 @@ Desktop events (lock/unlock, sleep/wake, idle, DPMS) map to configurable per-TV 
 ## Documentation
 
 - [.claude/CLAUDE.md](.claude/CLAUDE.md) - Detailed architecture and implementation notes
-- [docs/plans/parity-zenoh-ecs.md](docs/plans/parity-zenoh-ecs.md) - Current architecture: key space, topology, phase history
+- [docs/architecture.md](docs/architecture.md) - Current architecture: key space, topology, world/reactor model
 - [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
 
 ## Requirements
