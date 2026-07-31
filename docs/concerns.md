@@ -21,3 +21,7 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 ## Packaging & deployment
 
 - [Packaged greeter socket access — solved via a daemon group ACL (Fedora + Ubuntu validated; NixOS wiring pending)](concerns/greeter-packaged-socket-access.md)
+
+## Runtime & desktop integration
+
+- [Session that boots already-locked never triggers the idle screen-off](concerns/tisvlay-login-issue.md)
