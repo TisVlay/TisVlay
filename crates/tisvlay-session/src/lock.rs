@@ -204,22 +204,9 @@ async fn acquire_session(
     // A `ListSessions` fault must reconnect, not be swallowed into an empty
     // list — that would fall through to the `SessionNew` wait, which never
     // fires when the session already exists (a permanent silent hang).
-    let mut fallback: Option<(String, Login1SessionProxy<'static>)> = None;
-    for (id, uid, _user, seat, path) in manager.list_sessions().await? {
-        if uid != own_uid || seat.is_empty() {
-            continue;
-        }
-        let Some(session) = build_session(connection, &path).await else {
-            continue;
-        };
-        // Prefer the seat's foreground session; keep the first seated one as
-        // a fallback for a login whose active flag is transiently unset.
-        if session.active().await.unwrap_or(false) {
-            return Ok((id, session));
-        }
-        fallback.get_or_insert((id, session));
-    }
-    if let Some(found) = fallback {
+    if let Some(found) =
+        scan_sessions_for_own_seat(connection, manager.list_sessions().await?, own_uid).await
+    {
         return Ok(found);
     }
     // None yet — this user's session may start after the service.
@@ -232,6 +219,78 @@ async fn acquire_session(
         if let Some(session) = own_seat_session(connection, args.path(), own_uid).await {
             return Ok((args.id().to_string(), session));
         }
+    }
+}
+
+/// Scan a `ListSessions` result for this user's seat session, preferring the
+/// seat's foreground (`Active`) one and keeping the first seated match as a
+/// fallback for a login whose active flag is transiently unset. Shared by
+/// [`acquire_session`] (which waits for one to appear if none is listed) and
+/// the startup [`seed_lock_state`] (which does not).
+async fn scan_sessions_for_own_seat(
+    connection: &zbus::Connection,
+    sessions: Vec<(String, u32, String, String, zbus::zvariant::OwnedObjectPath)>,
+    own_uid: u32,
+) -> Option<(String, Login1SessionProxy<'static>)> {
+    let mut fallback: Option<(String, Login1SessionProxy<'static>)> = None;
+    for (id, uid, _user, seat, path) in sessions {
+        if uid != own_uid || seat.is_empty() {
+            continue;
+        }
+        let Some(session) = build_session(connection, &path).await else {
+            continue;
+        };
+        if session.active().await.unwrap_or(false) {
+            return Some((id, session));
+        }
+        fallback.get_or_insert((id, session));
+    }
+    fallback
+}
+
+/// Best-effort one-shot seed of `is_locked`/`is_active` from logind at
+/// startup, to be awaited before the idle adapter is spawned.
+///
+/// A session that boots already locked must be observed as locked *here*: the
+/// locked-idle `ext-idle-notify` transition fires once, one timeout in, and is
+/// silently dropped if `is_locked` is still at its `false` default when it
+/// arrives (and the later unlocked-idle transition is then dropped too, since
+/// the two tags gate on opposite lock states). Unlike the supervised watcher
+/// this never waits for a session to appear — if none is listed yet, the flags
+/// keep their defaults and [`spawn`]'s watcher seeds them once one shows up.
+/// Any bus/logind error leaves the defaults in place, silently: a host
+/// without logind is a supported configuration.
+pub async fn seed_lock_state(is_locked: &AtomicBool, is_active: &AtomicBool) {
+    let Ok(connection) = zbus::Connection::system().await else {
+        return;
+    };
+    seed_lock_state_on(&connection, is_locked, is_active).await;
+}
+
+/// One seed pass over an injected `connection` — the entry integration tests
+/// drive against a private bus; production goes through [`seed_lock_state`].
+/// Best-effort throughout: any missing session or bus/logind error leaves the
+/// flags at their defaults.
+pub async fn seed_lock_state_on(
+    connection: &zbus::Connection,
+    is_locked: &AtomicBool,
+    is_active: &AtomicBool,
+) {
+    let Ok(manager) = Login1ManagerProxy::new(connection).await else {
+        return;
+    };
+    let Ok(sessions) = manager.list_sessions().await else {
+        return;
+    };
+    let Some((_id, session)) = scan_sessions_for_own_seat(connection, sessions, own_uid()).await
+    else {
+        return;
+    };
+    if let Ok(locked) = session.locked_hint().await {
+        is_locked.store(locked, Ordering::SeqCst);
+    }
+    if let Ok(active) = session.active().await {
+        is_active.store(active, Ordering::SeqCst);
     }
 }
 

@@ -632,6 +632,40 @@ async fn lock_watcher_seed_reads_a_preexisting_lock() {
     }
 }
 
+/// The startup seed observes a pre-existing lock *synchronously*: `is_locked`
+/// is set by the time the await returns, before `main` spawns the idle
+/// adapter. This is what closes the boot-already-locked race — the once-only
+/// locked-idle `ext-idle-notify` transition arrives ~one timeout later and is
+/// silently dropped if `is_locked` is still at its `false` default (and the
+/// later unlocked-idle transition is dropped too, since the two tags gate on
+/// opposite lock states). See docs/concerns/tisvlay-login-issue.md.
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_seed_reads_a_preexisting_lock_synchronously() {
+    let bus = tisvlay_test::PrivateBus::shared();
+    let service_conn = bus.connect().await.expect("private bus service conn");
+    let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
+        .await
+        .expect("fake logind");
+    // Locked before the service starts — a property to seed, not an edge.
+    fake.set_locked(true).await.unwrap();
+
+    let seed_conn = bus.connect().await.expect("seed conn");
+    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let is_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+    tisvlay_session::seed_lock_state_on(&seed_conn, &is_locked, &is_active).await;
+
+    // No spawn, no polling: the seed is complete when the await returns.
+    assert!(
+        is_locked.load(std::sync::atomic::Ordering::SeqCst),
+        "startup seed did not observe the pre-existing LockedHint(true)"
+    );
+    assert!(
+        is_active.load(std::sync::atomic::Ordering::SeqCst),
+        "startup seed should read Active=true for the foreground session"
+    );
+}
+
 /// Profiles and assignments survive a session-service restart, and the
 /// idle-timeout watch tracks the resolved minimum.
 #[tokio::test(flavor = "multi_thread")]
