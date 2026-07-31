@@ -43,7 +43,7 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
-pub use lock::{spawn as spawn_lock_watcher, watch_lock};
+pub use lock::{seed_lock_state, seed_lock_state_on, spawn as spawn_lock_watcher, watch_lock};
 pub use logind::spawn as spawn_logind_detector;
 pub use monitor::spawn as spawn_portal_monitor;
 pub use remote::RemoteReport;
