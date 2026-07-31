@@ -2,13 +2,13 @@
 
 **Priority**: medium
 **Found by**: field report on the C3 (LG OLED42C3PUA), NixOS + KDE Plasma 6 Wayland
-**Status**: compositor ruled out by a live `swayidle` probe; root cause localized to tisvlay-session (a seat-local dispatch gate), pending a DEBUG boot to pinpoint the exact gate
+**Status**: compositor ruled out by a live `swayidle` probe; root cause identified as an `is_locked` startup seed race in tisvlay-session; fix is a synchronous seed before the idle adapter starts
 
 ## Summary
 
 On a desktop that boots straight into a locked session (KDE `LockOnStart=true`, greeter-to-locked handoff, autologin-then-lock), idling on the boot lock screen never fires the configured **locked** idle timeout. The TV stays on until some *other* event (the compositor eventually dropping the connector to DPMS off) turns it off on a much longer schedule. A manual unlock→lock cycle drives the TV correctly, so the lock/unlock *transition* path is healthy.
 
-> Note: the original field report inferred that TisVlay "treats the session as unlocked because there was no lock edge, so the locked-idle path is never armed." **Inspecting the archived boot journald refutes that** — the locked-idle watch *was* armed at boot. A live `swayidle` probe then **ruled out the compositor** (KWin delivers idle while locked), localizing the defect to a seat-local dispatch gate inside tisvlay-session. See [Root cause](#root-cause-localized-to-tisvlay-session) below.
+> Note: the original field report inferred that TisVlay "treats the session as unlocked because there was no lock edge, so the locked-idle path is never armed." **Inspecting the archived boot journald refutes that** — the locked-idle watch *was* armed at boot. A live `swayidle` probe then **ruled out the compositor** (KWin delivers idle while locked), and the defect is an **`is_locked` startup seed race** inside tisvlay-session. See [Root cause](#root-cause-localized-to-tisvlay-session) below.
 
 ## Environment
 
@@ -79,12 +79,27 @@ Two hypotheses were open after reading the archived logs:
 - **(A) KWin does not deliver `ext-idle-notify` idle while the session is locked.**
 - **(B) TisVlay receives the transition but drops it before dispatch** (a seat-local gate or a seed race).
 
-A live probe settled it (see [Probe: KWin delivers idle while locked](#probe-kwin-delivers-idle-while-locked)): a plain `ext-idle-notify` client got its `Idled` transition ~5 s into the locked period, so **(A) is refuted**. Since tisvlay-session had the identical 5 s watch armed at boot (evidence #2), the compositor was delivering transitions it failed to act on. **(B) is confirmed as the family**; the specific gate remains to be pinned:
+A live probe settled it (see [Probe: KWin delivers idle while locked](#probe-kwin-delivers-idle-while-locked)): a plain `ext-idle-notify` client got its `Idled` transition ~5 s into the locked period, so **(A) is refuted**. Since tisvlay-session had the identical 5 s watch armed at boot (evidence #2), the compositor was delivering transitions the session failed to act on. **(B) is confirmed** — specifically an **`is_locked` startup seed race**.
 
-- **The active-session gate (prime suspect).** [`dispatch`](../../crates/tisvlay-session/src/lib.rs) suppresses *every* seat-local event — `IdleTimeout` included — when `is_active` is false: `if event.is_seat_local() && !self.is_active.load() { return }`. If `is_active` was not seeded true at boot (the lock watcher seeds it after acquiring the session), *both* the locked and unlocked idle paths are silently suppressed. This is the only single cause that explains **no idle action at all, ever** — the observed symptom.
-- **The `is_locked` seed.** `(LOCKED_IDLE_TAG, Idled) if is_locked` drops the locked transition if the flag was not seeded true. But this *alone* is insufficient: with `is_locked == false`, the 300 s unlocked watch would have fired `IdleTimeout` at ~10:54 — which never happened. So a bad `is_locked` seed can only be a contributing factor, not the whole story.
+The two initial atomics are asymmetric ([`serve`](../../crates/tisvlay-session/src/lib.rs)): `is_active` defaults to **`true`** and `is_locked` defaults to **`false`**. The active-session gate is therefore *not* at fault — `is_active` starts true, and logind reports `Active=yes` even while locked (verified with `loginctl show-session`), so a seat-local event is never suppressed for inactivity here. Only `is_locked` starts wrong-for-a-locked-boot and depends on the lock watcher seeding it from `LockedHint`.
 
-The original "isolation test" (`loginctl unlock-session && lock-session`) only exercised lock/unlock *transitions*; it never tested idle-*while*-locked, so it never touched the gate at fault. Evidence #6 (INFO-only logging) is why the archived logs cannot name the exact gate: the `debug!("session event")` dispatch line — which logs `automation suppressed (session not active)` — and the `trace!("Wayland idle transition")` seam were never written.
+The idle adapter arms two tags that gate on **opposite** lock states ([`idle_dispatch`](../../crates/tisvlay-session/src/lib.rs)):
+
+```
+(LOCKED_IDLE_TAG,   Idled) if  is_locked  => IdleTimeout   // 5s
+(UNLOCKED_IDLE_TAG, Idled) if !is_locked  => IdleTimeout   // 300s
+```
+
+`ext-idle-notify` fires `Idled` **once per idle period** (confirmed by the probe: the `IDLE locked=yes` line produced no repeat over 24 s). On an untouched boot lock screen there is no input, so each tag fires exactly once, and a seed landing between the two firings poisons both:
+
+1. Boot into a locked session; `is_locked` starts `false`; the lock watcher has not seeded yet.
+2. **t+5 s:** `LOCKED_IDLE` fires `Idled`. `is_locked == false` → guard fails → **dropped.**
+3. The lock watcher seeds `is_locked = true` (reads `LockedHint=yes`), sometime after t+5 s.
+4. **t+300 s:** `UNLOCKED_IDLE` fires `Idled`. `is_locked == true` now → `if !is_locked` fails → **dropped.**
+
+A single seed landing anywhere in `(5 s, 300 s)` drops **both** transitions — the exact "no idle action at all, ever" symptom. This corrects an earlier note here that argued the 300 s path should have fired: it does not, because the seed flips the flag *between* the two once-only firings. It also matches why a **warm** dev-stack start cannot reproduce it (the seed lands in <1 s when the system bus is already up) — the bug lives only in the cold-boot window where the `LockedHint` seed lands after the 5 s idle.
+
+The original "isolation test" (`loginctl unlock-session && lock-session`) only exercised lock/unlock *transitions*; it never sat idle while locked, so it never hit the race. Evidence #6 (INFO-only logging) is why the archived logs cannot show the dropped transition directly: the `debug!("session event")` dispatch line and the `trace!("Wayland idle transition")` seam were never written.
 
 ## Probe: KWin delivers idle while locked
 
@@ -114,11 +129,11 @@ Any boot-into-locked configuration (a very common KDE/greeter setup) leaves an O
 
 ## Mitigation options
 
-The compositor is ruled out, so the fix is session-side. Do **not** implement the original "synthetic lock event at startup" — the watch is already armed; that changes nothing.
+The compositor is ruled out and the cause is a startup ordering race, so the fix is a session-side seeding change. Do **not** implement the original "synthetic lock event at startup" — the watch is already armed; that changes nothing.
 
-- **Active-session gate (prime suspect):** ensure `is_active` is seeded true before the first seat-local event can dispatch, or re-read `Active` when a seat-local event arrives with `is_active == false` rather than trusting a possibly-unseeded flag. A boot-locked session *is* the seat's foreground (`Active=yes`, `LockedHint=yes`), so the gate should not suppress it.
-- **`is_locked` seed:** harden the ordering so the seed is observed before the first idle can dispatch, or re-check `LockedHint` on the first `Idled` rather than trusting the cached flag.
-- Both share a root shape — a seat-local idle transition can be delivered before the logind seeds land. The durable fix is to make the first delivered transition tolerant of an un-seeded gate (lazy re-read) rather than racing the seeds into place.
+- **Recommended — synchronous seed before the idle adapter starts.** Do a one-shot logind `LockedHint` read up front and store it into `is_locked` *before* `idle_adapter` is spawned, then let the supervised lock watcher continue for live edges. No idle transition can then dispatch against an un-seeded flag. This is structurally the same startup-robustness pattern the greeter uses (assert initial state before watching), applied as a seed rather than a synthetic event.
+- **Alternative — lazy re-read on first idle.** When a `LOCKED_IDLE`/`UNLOCKED_IDLE` `Idled` arrives and the seed may not have landed, re-read `LockedHint` at that instant instead of trusting the cached atomic. Couples the idle adapter to logind, so less clean than the synchronous seed.
+- Whichever is chosen, keep the supervised watcher for reconnect/live edges — the fix is only about the *initial* value being correct before the first dispatch.
 
 ## Workarounds (config-side, no code change)
 
@@ -127,19 +142,13 @@ The compositor is ruled out, so the fix is session-side. Do **not** implement th
 
 ## Reproducers
 
-Two, at different tiers:
-
-1. **Compositor discriminator (done).** The `swayidle` probe above — settled A vs B, no reboot, no tisvlay changes. Kept for regression: if a future desktop *does* withhold idle while locked, this probe re-detects it.
-2. **DEBUG boot (pinpoints the gate).** Boot into the locked session with the session unit at `RUST_LOG=tisvlay_session=debug,tisvlay_core=trace`, sit idle past 5 s, then grep the journal:
-   - `automation suppressed (session not active)` present → the active-session gate (`is_active` unseeded) is the cause.
-   - `session event` with `IdleTimeout` present but no TV rpc → look downstream (automation gate / rpc).
-   - `Wayland idle transition` present but no `session event` → the `is_locked` guard dropped it.
-3. **Automated regression test (the fix's guard).** In [`crates/tisvlay-session/tests/`](../../crates/tisvlay-session/tests/): boot the session stack on a temp socket with fake logind reporting `LockedHint=yes` **and** `Active=yes` before the session starts, hydrate a TV with `locked_idle_timeout_seconds`, inject an `Idled` on the locked tag through the test driver, and assert a screen-off rpc fires. A second case with `Active=no` asserts the gate suppresses — locking down both directions.
+1. **Compositor discriminator (done).** The `swayidle` probe above — ruled out the compositor, no reboot, no tisvlay changes. Kept for regression: if a future desktop *does* withhold idle while locked, this probe re-detects it.
+2. **Automated regression test (the fix's guard).** In [`crates/tisvlay-session/tests/`](../../crates/tisvlay-session/tests/): boot the session stack on a temp socket with fake logind reporting `LockedHint=yes` **before** the session starts (so the seed must be observed at startup, not via an edge), hydrate a TV with `locked_idle_timeout_seconds`, sit idle past the locked timeout, and assert a screen-off rpc fires. Pre-fix this fails (the locked-idle transition is dropped against `is_locked == false`); post-fix it passes because the synchronous seed set `is_locked` before the idle could dispatch. Note a *warm* start does not reproduce the field race — the test must assert the seed is in place before the first idle, not rely on timing.
+3. **DEBUG boot (optional field confirmation).** Boot into the locked session with the session unit at `RUST_LOG=tisvlay_session=debug,tisvlay_core=trace`, sit idle past 5 s: `Wayland idle transition` present but no `session event` confirms the `is_locked` guard dropped it in the field.
 
 ## Re-evaluation triggers
 
-- The DEBUG boot is captured (names the exact gate).
-- The automated regression test lands (closes the concern).
+- The fix (synchronous seed) + automated regression test land (closes the concern).
 - Any change to the KWin / `ext-idle-notify` idle-while-locked behavior lands upstream (re-run the probe).
 - The idle adapter or lock watcher is refactored for another reason.
 
