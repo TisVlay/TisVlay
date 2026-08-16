@@ -14,9 +14,13 @@ The v0.2 daemon gated the mock vendor behind a `mock` cargo feature that packagi
 
 `cov_baseline_lines` in the justfile still carries the pre-switchover baseline. The measured population changed completely (old D-Bus crates deleted, wire tests added), so the ratchet number is stale in an unknown direction. Run `just cov`, set the baseline to the measured value, and let the ratchet resume from there.
 
+## IPC performance harness
+
+The switchover carried no numbers — the enqueue-ack volume-lag bug on the C3 *felt* like transport latency until it was traced to daemon-side queue depth, and eyeballs can't tell transport QoS from a daemon flaw. A small harness can. The original "zenoh vs the old D-Bus stack" framing is now unrunnable (that stack is deleted), so the value is intra-zenoh: settings-rpc round-trip latency under scroll bursts (the coalescer's pacing), state-fanout latency (daemon publish → client mirror), and cold-start hydration time (open → caches drained). Trigger: a perceived-latency report, or a change to the coalescer / cache config that wants a before/after.
+
 ## Fresh consolidated design doc
 
-docs/design.md is banner-marked as the retired D-Bus architecture. The parity plan (docs/plans/parity-zenoh-ecs.md) is the accurate architecture reference but is written as a plan, not a design doc. Fold the plan's topology/key-space/persistence sections plus the stock-profile and pairing flows into a fresh docs/design.md once the stack has survived its duty week.
+docs/design.md is banner-marked as the retired D-Bus architecture. The topology/key-space/persistence consolidation this item originally asked for now lives in [docs/architecture.md](../architecture.md), which is the durable architecture reference. What remains open is folding the **stock-profile and pairing flows** (still only in code + the retired design.md) into a durable home — either a section in architecture.md or a fresh design.md — if a reader ever needs them narrated.
 
 ## Idea-file name sweep
 
