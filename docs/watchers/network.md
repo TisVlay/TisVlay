@@ -121,7 +121,7 @@ The kernel routing table is the source of truth — same approach as WireGuard a
 
 ### Sleep/wake
 
-Carrier/route parking only acts on live connections (`ConnectionHandle`); an in-flight dial (`Reconnecting`) fails and retries on its own schedule, so WoL retry loops during system resume are never fought. Route resolution also gates dial *spawning*, not just parking: a `MonitoredInterface` reading `Some(None)` defers any pending dial (attempt budget reset, `AwaitingRoute` marker, `awaiting_network` phase for wakes) until a route returns — the resume/boot wake can no longer spend its budget into a NIC that has not come up yet. Component absence never defers: monitoring is requested by the dial spawn itself, so first dials and non-IP transports dial as always.
+Carrier/route parking only acts on live connections (`ConnectionHandle`); an in-flight dial (`Reconnecting`) fails and retries on its own schedule, so WoL retry loops during system resume are never fought. Route resolution also gates dial *spawning*, not just parking: a `MonitoredInterface` reading `Some(None)` defers any pending dial (attempt budget reset, `AwaitingRoute` marker, `awaiting_network` phase for wakes) until a route returns — the resume/boot wake can no longer spend its budget into a NIC that has not come up yet. The gate keys on route *absence* (`Some(None)`), not route *quality*: a present-but-non-carrying route (a captive-portal roam, say) still dials, burns budget, and fails loudly — deferral is only for "no path exists yet", not "the path may be bad". Component absence never defers: monitoring is requested by the dial spawn itself, so first dials and non-IP transports dial as always.
 
 ## Crates
 

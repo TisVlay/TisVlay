@@ -207,6 +207,10 @@ Future engineers tempted to "shorten the slow path" should reproduce on V2 hardw
 
 The autonomous reproducer used for the spike measurements is at [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py). It opens an out-of-band SSAP WebSocket via the daemon's existing `client_key`, sends `ssap://system/turnOff` to put the TV in `screen_off`, then dispatches reliable `screen_on` and times `t0 → PowerState == "active"`. Useful for repeat measurement of cold-start dispatch latency from a known TV state without driving the actual desktop lock/unlock flow.
 
+## Post-WoL input-switch timing (unmeasured)
+
+The primary-input restore (`DesiredInput`) fires a `switch-input` in the `Connected` arm after a WoL wake, then verifies with the same bounded retry as `screen_on`. How soon after `Connected` SSAP actually *accepts* an input switch is unmeasured — the 1–5 s WoL-settle window means a switch fired at `Connected` can be silently dropped, exactly like an early `screen_on`. The shipped verify-retry already absorbs this, so this bounds the retry *budget*, not the design. Measure with the same technique as the dispatch-latency spikes (out-of-band SSAP over the daemon's `client_key`): after a WoL wake, time `Connected → first accepted input switch`. Trigger: a report of the input not landing on primary after a wake, or a retry-budget tune.
+
 ## Reference probe data
 
 The `processing` / `onOff` discriminator behavior was characterized by [`scripts/probe_power_state_timing.py`](../../scripts/probe_power_state_timing.py), which subscribes to a broad set of power/screen endpoints over a single WebSocket and then fires SSAP `turnOff` to measure response timing. Captured wire payloads from the OLED65G4SUB:

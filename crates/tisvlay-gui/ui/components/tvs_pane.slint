@@ -265,13 +265,6 @@ component TvListRow inherits Rectangle {
         }
     }
 
-    // Bottom 1px separator.
-    Rectangle {
-        y: parent.height - 1px;
-        height: Design.border-thin;
-        background: Theme.border;
-    }
-
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
@@ -285,6 +278,14 @@ component TvList inherits Rectangle {
 
     width: Design.width-master;
     background: Theme.surface-alt;
+
+    // Left separator — divides the column (and its header band) from
+    // the sidebar.
+    Rectangle {
+        x: 0;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
 
     // Right separator.
     Rectangle {
@@ -300,12 +301,22 @@ component TvList inherits Rectangle {
         // -- Header band --
         Rectangle {
             height: 40px;
+            // Header band — a distinct surface from the surface-alt
+            // master panel below, so the fill contrast sets the band
+            // off (no bottom rule).
             background: Theme.surface;
 
-            // Bottom separator.
+            // Left / right separators. The header's fill covers the
+            // master column's edge borders, so re-draw them here to keep
+            // the frame continuous across the band.
             Rectangle {
-                y: parent.height - 1px;
-                height: Design.border-thin;
+                x: 0;
+                width: Design.border-thin;
+                background: Theme.border;
+            }
+            Rectangle {
+                x: parent.width - 1px;
+                width: Design.border-thin;
                 background: Theme.border;
             }
 
@@ -871,20 +882,23 @@ component TvDetail inherits Rectangle {
                 // `UserInput` rows to editable inputs (LG: IP,
                 // MAC); ✓/✗ replace the pencil while editing.
                 //
-                // Inlines the `Group` widget's title-row + card
+                // Inlines the `Group` widget's title-band + card
                 // structure rather than wrapping `Group` so the
                 // action icons can sit on the title row itself
                 // (Slint v1 has no multi-`@children` slot, so a
                 // generic `Group { actions: ... }` API isn't
-                // available).
+                // available). Mirrors `Group`'s band exactly —
+                // `size-card-header` min-height + `gap-stack` layout
+                // spacing — so the action IconBtns fit the reserved
+                // band without dropping the card below the Group cards.
                 VerticalLayout {
-                    spacing: 0;
+                    spacing: Design.gap-stack;
 
-                    // Title row — same styling as `Group`'s title,
+                    // Title band — same structure as `Group`'s title,
                     // plus right-aligned action icons.
                     HorizontalLayout {
+                        min-height: Design.size-card-header;
                         padding-left: 2px;
-                        padding-bottom: Design.gap-stack;
                         spacing: Design.gap-form;
 
                         VerticalLayout {

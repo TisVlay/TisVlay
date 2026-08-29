@@ -65,6 +65,21 @@ async fn main() -> anyhow::Result<()> {
     // Foreground (`Active`) state minted by the stack: the lock watcher
     // writes it, the core's active-session arbitration gate reads it.
     let is_active = stack.is_active.clone();
+    // Seed the lock/active state from logind synchronously, before the idle
+    // adapter spawns: a session that boots already locked must be observed as
+    // locked before the first (once-only) locked-idle transition arrives one
+    // timeout later, or it is silently dropped against the `false` default.
+    // Bounded so a slow or absent system bus can't stall startup — the
+    // supervised watcher below re-seeds and follows live edges regardless.
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tisvlay_session::seed_lock_state(&is_locked, &is_active),
+    )
+    .await
+    .is_err()
+    {
+        tracing::debug!("lock-state seed timed out; watcher will seed");
+    }
     // Lock/unlock via logind `LockedHint` on the system bus — the one
     // cross-desktop lock-state signal — plus the session's `Active` state
     // for arbitration. Absent/unreachable bus is handled inside (supervised

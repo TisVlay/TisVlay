@@ -35,12 +35,14 @@ export global Design {
     out property <length> size-tile-md: 40px;      // vendor tile in detail header
     out property <length> size-status-dot: 6px;
     out property <length> size-glyph: 14px;         // action-icon glyph in buttons
+    out property <length> size-card-header: 24px;   // card title-band height — reserves room for an action IconBtn so headers with and without actions stay the same height (cards never shift when actions are added)
 
     // -- Layout widths --
     out property <length> width-sidebar: 110px;
     out property <length> width-master: 160px;     // TVs master list
     out property <length> width-label-col: 75px;            // TVs-pane FormRow label column (short labels)
     out property <length> width-label-col-profile: 140px;   // Profiles-pane field-row label column (longer labels)
+    out property <length> width-input-min: 120px;           // Minimum width shared by themed inputs (ThemedSelect, ThemedSpinBox) so a ComboBox and a SpinBox in the same column render one width
     out property <length> width-readout-col: 36px; // slider value readout
 
     // -- Borders / radii --

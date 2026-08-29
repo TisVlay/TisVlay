@@ -1,3 +1,5 @@
+![Banner](docs/artwork/banner.png)
+
 # tisvlay
 
 TV Display control for Linux
