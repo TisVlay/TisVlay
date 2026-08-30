@@ -1,62 +1,77 @@
-# tisvlay
+![Banner](docs/artwork/banner.png)
 
-**TV display control for Linux.**
+**TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for mixed multi-display setups, mitigating energy usage and display burn-in.
 
-tisvlay controls smart TVs from a Linux desktop — power, screen blanking, HDMI input, volume, and backlight — and ties that control to your desktop session (lock/unlock, suspend/resume, idle, and display blanking). It reaches a TV two ways: over the **network** (LG WebOS — no extra hardware, and it works even where the GPU exposes no HDMI-CEC, as on Nvidia) or over **HDMI-CEC** (the Linux CEC subsystem, through a USB CEC adapter or an amdgpu/i915 DisplayPort→HDMI adapter).
+[![CI Pipeline](https://github.com/ruffsl/tisvlay/actions/workflows/ci.yml/badge.svg)](https://github.com/ruffsl/tisvlay/actions/workflows/ci.yml)
+[![Crates.io Version](https://img.shields.io/crates/v/tisvlay)](https://crates.io/crates/tisvlay)
+[![Crates.io Dependencies](https://img.shields.io/deps-rs/tisvlay/latest)](https://crates.io/crates/tisvlay/dependencies)
+![Crates.io MSRV](https://img.shields.io/crates/msrv/tisvlay)
+![Crates.io Total Downloads](https://img.shields.io/crates/d/tisvlay)
+[![Crates.io License](https://img.shields.io/crates/l/tisvlay)](https://choosealicense.com/licenses/apache-2.0)
 
-Today tisvlay supports **LG WebOS** TVs over the network, plus any TV that speaks **HDMI-CEC** (power and screen-blanking) through a CEC adapter. The architecture is vendor- and transport-agnostic, so other backends (Samsung, Sony, …) can be added later.
+## ✨ Features
+- 📺 Control multiple TVs & projectors just like conventional displays
+  - Power on/off with PC, Screen on/off with lock screen
+  - Easily adjust backlight, volume, ative input, and more
+- 🤖 Event driven automation driven via system and user events
+  - System boot, reboot, shutdown, suspend, wake, DPMS
+  - User lock/unlock, idle, remote session connect/disconnect
+- 🧰 Flexible profile customization and switching
+  - System-wide and per-user profiles for per-device behavior
+  - Unified API and CLI for further scripting and integrations
+- 🧩 Vendor agnostic & modular architecture
+  - Supports HDMI CEC, Network IP Control (LG WebOS SSAP)
+  - Generalized for further interfaces, protocols, and transports
+- 🩺 Self-healing connectivity
+  - Interface status monitoring for automatic reconnect and retry
+  - Per-NIC kernel carrier detection with route-aware failover
+- 📡 Input-aware automation gating
+  - Suppress automation when TV already in use via another input
+  - Prevent PC from interrupting movie sessions or console gaming
+- 🖱️ Graphical User Interfaces
+  - GUI app for device pairing, profile editing, and user setting
+  - System tray for quick access controls and device status
 
-## Features
+## 🏛️ Architecture
 
-- **Power** — turn the TV on (Wake-on-LAN, or a CEC bus wake) and off (standby).
-- **Screen blanking** — OLED-safe screen on/off for burn-in protection, distinct from a full power-off.
-- **HDMI input switching** — change inputs programmatically, and restore your PC's input automatically on a wake.
-- **Volume & backlight** — adjust volume, mute, and OLED pixel brightness.
-- **Desktop automation** — react to session lock/unlock, suspend/resume, idle timeout, and host-display DPMS blank/wake.
-- **Remote-session aware** — when you stream in remotely (Sunshine/Moonlight, RustDesk, RDP), tisvlay keeps the physical TV asleep instead of waking it for an empty room.
-- **Reliable & network-aware** — screen commands are verified and retried, and a wake is held until the network route to the TV actually exists.
-- **Multi-TV** — manage several TVs, each matched to its host display connector by EDID.
-
-## Components
-
-tisvlay is a small set of cooperating programs:
-
-| Component | What it is |
-|-----------|------------|
-| `tisvlay` | Command-line tool for direct control and configuration |
-| `tisvlay-daemon` | System daemon that owns the TV connections and the persistent configuration |
-| `tisvlay-session` | Per-user service that maps desktop events (lock, idle, remote sessions, …) to TV actions |
-| `tisvlay-tray` | System-tray applet for quick control and status |
-| `tisvlay-gui` | Settings window (pair TVs, edit profiles) |
-| `tisvlay-greeter` | Optional login-screen client that drives the TV before anyone logs in |
-
-The CLI and the desktop services all reach `tisvlay-daemon` over a local IPC socket; the daemon holds the persistent configuration and the live TV connections. The user at the console can reach that socket **automatically** (the daemon grants the active seat's user access while they're at the machine); for SSH, remote, or headless use, membership in the **`tisvlay` group** is the durable grant — `tisvlay enable-access` sets it up with one click (see [Installation](./getting-started/installation.md)).
+TisVlay is comprised of a collection of cooperating components:
 
 ```mermaid
 graph LR
-    subgraph User session
-        Session["tisvlay-session<br/><i>desktop events</i>"]
-        Tray["tisvlay-tray<br/><i>system tray</i>"]
-        Gui["tisvlay-gui<br/><i>settings</i>"]
-        Cli["tisvlay<br/><i>CLI</i>"]
-    end
 
-    subgraph System
-        Daemon["tisvlay-daemon<br/><i>system daemon</i>"]
-    end
+subgraph User
+    Gui["tisvlay-gui<br/><i>user settings</i>"]
+    Cli["tisvlay<br/><i>CLI</i>"]
+    Session["tisvlay-session<br/><i>desktop events</i>"]
+    Tray["tisvlay-tray<br/><i>system tray</i>"]
+end
 
-    subgraph TVs
-        TV1["LG TV"]
-        TV2["CEC TV"]
-    end
+subgraph System
+    Daemon["tisvlay-daemon<br/><i>system daemon</i>"]
+    Greeter["tisvlay-greeter<br/><i>login greeter</i>"]
+end
 
-    Session -->|socket| Daemon
-    Tray -->|socket| Daemon
-    Gui -->|socket| Daemon
-    Cli -->|socket| Daemon
-    Daemon -.->|WebSocket / WoL| TV1
-    Daemon -.->|HDMI-CEC| TV2
+subgraph Devices
+    TV1["CEC TV"]
+    TV2["LG TV"]
+end
+
+Session -->|socket| Daemon
+Tray -->|socket| Daemon
+Gui -->|socket| Daemon
+Cli -->|socket| Daemon
+Daemon -.->|HDMI-CEC| TV1
+Daemon -.->|WebSocket / WoL| TV2
 ```
+
+| Component | Description |
+|-----------|-------------|
+| `tisvlay` | CLI for direct TisVlay control and configuration |
+| `tisvlay-daemon` | System profile actor and device interface driver |
+| `tisvlay-session` | User profile actor and session event integration |
+| `tisvlay-tray` | System tray for quick access and desktop notifications |
+| `tisvlay-gui` | Device management, profile editor, settings panel |
+| `tisvlay-greeter` |  Login greeter idle detection absent of active session |
 
 ## Where to go next
 

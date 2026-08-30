@@ -8,6 +8,8 @@ A distro-package install is zero-setup: the post-install hook enables and starts
 systemctl --user start tisvlay-session tisvlay-tray
 ```
 
+<!-- TisVlay components use [Zenoh](https://zenoh.io/) over Unix sockets for IPC, where the daemon owns the system socket, and the session service owns a per-user socket. Socket permission is the access model, with default access scoped to the user of the active desktop session or users in the `tisvlay` group. -->
+
 The daemon runs as a dedicated `tisvlay` system user and stores its state under `/var/lib/tisvlay/`. Access to its control socket is layered:
 
 - **At the console you already have access** — the daemon grants the active seat's logged-in user access automatically, the same way Linux grants the console user its sound card and camera. Nothing to configure.
