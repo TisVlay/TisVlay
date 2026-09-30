@@ -2396,6 +2396,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gettext-rs"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df5e3fa8c077b15fdfa8ce130e2bc73d663b8aaa6d51b71421b8659980b1d80"
+dependencies = [
+ "gettext-sys",
+ "locale_config",
+]
+
+[[package]]
 name = "gettext-sys"
 version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2867,7 +2877,7 @@ dependencies = [
  "const-field-offset",
  "derive_more",
  "euclid",
- "gettext-rs",
+ "gettext-rs 0.7.7",
  "i-slint-common",
  "i-slint-core-macros",
  "icu_normalizer",
@@ -7512,7 +7522,7 @@ dependencies = [
  "ashpd",
  "clap",
  "futures-util",
- "gettext-rs",
+ "gettext-rs 0.8.0",
  "i-slint-backend-testing",
  "libc",
  "os_info",
