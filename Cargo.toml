@@ -162,8 +162,8 @@ bevy_ecs = "0.19"
 # Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
 # API (caches, history, recovery) is behind `unstable` — an accepted
 # risk, tracked in the parity plan's watch items.
-zenoh = "1.9"
-zenoh-ext = { version = "1.9", features = ["unstable"] }
+zenoh = "1.10"
+zenoh-ext = { version = "1.10", features = ["unstable"] }
 
 # EDID parsing for the DRM connector ↔ TV matcher
 edidkit = "0.1"

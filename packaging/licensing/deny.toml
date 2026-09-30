@@ -121,8 +121,6 @@ skip = [
     { crate = "foldhash", reason = "transitive churn; low compile cost" },
     { crate = "pastey", reason = "transitive churn; low compile cost" },
     { crate = "smol_str", reason = "transitive churn; low compile cost" },
-    { crate = "zune-core", reason = "image decoder ecosystem churn" },
-    { crate = "zune-jpeg", reason = "image decoder ecosystem churn" },
 ]
 
 # RustSec advisory + yanked-crate gate. Run by the weekly audit workflow
@@ -142,10 +140,7 @@ ignore = [
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; no safe upgrade; transitive" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via Slint resvg" },
     # Fix available upstream — deferred to a dependency bump:
-    { id = "RUSTSEC-2026-0204", reason = "crossbeam-epoch invalid pointer deref; fixed >=0.9.20; transitive, pending bump" },
     { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic-attribute DoS; fixed >=0.41.0 (semver break); transitive, pending bump" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml namespace-alloc DoS; fixed >=0.41.0 (semver break); transitive, pending bump" },
 ]
 
 # Code provenance: crates.io only, save for one deliberate git pin. Any
