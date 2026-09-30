@@ -51,7 +51,7 @@
           # services.tisvlay.cec.pulse8.enable.
           pulse8-cec = pkgs.linuxPackages.callPackage ./packaging/nix/pulse8-cec.nix { };
 
-          # slint-viewer pinned to the workspace's slint version (1.17.0);
+          # slint-viewer pinned to the workspace's slint version (1.18.1);
           # nixpkgs' is 1.16.1, which predates `--check` / `--screenshot`.
           # Exposed so the devShell and CI can share one definition.
           slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
@@ -135,7 +135,7 @@
                 # instead of failing to find a bundled binary.
                 # Tracks slint-ui/slint#2577 (NixOS LSP discovery).
                 slint-lsp
-                # slint-viewer pinned to 1.17.0 (packaging/nix/slint-viewer.nix)
+                # slint-viewer pinned to 1.18.1 (packaging/nix/slint-viewer.nix)
                 # for headless `--check` / `--screenshot` during GUI work.
                 slintViewer
                 socat

@@ -1,5 +1,5 @@
 # `slint-viewer` pinned to the same version as the workspace's `slint`
-# dependency (crates/tisvlay-gui/Cargo.toml → =1.17.0). nixpkgs ships
+# dependency (crates/tisvlay-gui/Cargo.toml → =1.18.1). nixpkgs ships
 # slint-viewer 1.16.1 (behind slint-lsp's 1.17.0), and 1.17 is the first
 # release with `--check` / `--screenshot`, which the GUI QA workflow uses
 # for headless render + compile checks. Mirrors the nixpkgs recipe
@@ -16,14 +16,14 @@
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "slint-viewer";
-  version = "1.17.0";
+  version = "1.18.1";
 
   src = fetchCrate {
     inherit (finalAttrs) pname version;
-    hash = "sha256-2Zjt7kt9tCxDyixa7Az0cPXh3noR2BN7Nxrq2bdxkSs=";
+    hash = "sha256-MlYBkJl8MupzpTfyjmlLlfpYqFWHg3lll7x87leB5iY=";
   };
 
-  cargoHash = "sha256-KaVPQ14QQpabaJVsyhsQ3j546j63Lp16AzQtuz49niY=";
+  cargoHash = "sha256-qEXy0uaQFY5fu5Gtpsk+7oW6jtFTK4N/y4aK8ruplI8=";
 
   buildInputs = [
     qt6.qtbase
@@ -41,7 +41,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   doCheck = false;
 
   meta = {
-    description = "Viewer for .slint files (pinned to 1.17.0 to match the workspace slint)";
+    description = "Viewer for .slint files (pinned to 1.18.1 to match the workspace slint)";
     mainProgram = "slint-viewer";
     homepage = "https://crates.io/crates/slint-viewer";
     license = lib.licenses.gpl3Only;

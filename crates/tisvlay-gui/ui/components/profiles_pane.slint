@@ -276,7 +276,7 @@ component ProfileList inherits Rectangle {
                 add-clicked => { root.request-create(ProfileKind.system); }
             }
             ScrollView {
-                viewport-width: self.visible-width;
+                content-width: self.visible-width;
                 VerticalLayout {
                     spacing: 0;
                     alignment: start;
@@ -332,7 +332,7 @@ component ProfileList inherits Rectangle {
                 }
             }
             ScrollView {
-                viewport-width: self.visible-width;
+                content-width: self.visible-width;
                 VerticalLayout {
                     spacing: 0;
                     alignment: start;
@@ -944,7 +944,7 @@ component ProfileDetailHeader inherits Rectangle {
             // status-badges column.
             Flickable {
                 height: usedby-row.preferred-height;
-                viewport-width: usedby-row.preferred-width;
+                content-width: usedby-row.preferred-width;
                 usedby-row := HorizontalLayout {
                     spacing: Design.gap-meta;
                     alignment: start;
@@ -1047,7 +1047,7 @@ component ProfileDetail inherits Rectangle {
         // ("SYSTEM PROFILE" / "USER PROFILE") so a user who arrived
         // via the TVs-pane pencil pane-hop sees the context without
         // relying on the col-1 tile glyph alone.
-        // HelpScrollView pins viewport-width and confines help bubbles to
+        // HelpScrollView pins content-width and confines help bubbles to
         // this viewport on scroll/resize — bubbles anchored outside it (the
         // header rename/delete tips) are left to the window. See
         // globals/help.slint.

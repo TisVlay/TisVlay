@@ -97,16 +97,13 @@ skip = [
     # changes the dep graph but isn't obviously a win.
     { crate = "getrandom", reason = "rustls/ring keeps getrandom 0.2" },
 
-    # `smithay-clipboard 0.7.3` pins both SCTK 0.19 and SCTK 0.20
-    # internally; pulled transitively via Slint's `copypasta`. The
-    # SCTK 0.19 path cascades these duplicates. Re-audit on Slint /
-    # smithay-clipboard upgrade.
-    { crate = "smithay-client-toolkit", reason = "smithay-clipboard pins both 0.19 + 0.20" },
-    { crate = "calloop", reason = "smithay-clipboard SCTK 0.19/0.20 split" },
-    { crate = "calloop-wayland-source", reason = "smithay-clipboard SCTK 0.19/0.20 split" },
-    { crate = "rustix", reason = "smithay-clipboard SCTK 0.19 path keeps rustix 0.38" },
-    { crate = "linux-raw-sys", reason = "smithay-clipboard SCTK 0.19 path" },
-    { crate = "thiserror", reason = "smithay-clipboard SCTK 0.19 path keeps thiserror 1" },
+    # winit 0.30 (Slint's `unstable-winit-030` backend) pins SCTK
+    # 0.19 → `calloop 0.13`, which keeps rustix 0.38 and thiserror 1
+    # alongside the rest of the tree's rustix 1 / thiserror 2.
+    # Re-audit on Slint / winit upgrade.
+    { crate = "rustix", reason = "winit's SCTK 0.19 path keeps rustix 0.38" },
+    { crate = "linux-raw-sys", reason = "rustix 0.38 counterpart" },
+    { crate = "thiserror", reason = "winit's SCTK 0.19 path (and freedesktop-icons) keep thiserror 1" },
     { crate = "thiserror-impl", reason = "thiserror's proc-macro counterpart" },
 
     # Slint's `resvg` pins `tiny-skia 0.12`; `sctk-adwaita` (via
@@ -119,7 +116,6 @@ skip = [
     # negligible. Re-audit if any of these become hot.
     { crate = "dirs-sys", reason = "transitive churn; low compile cost" },
     { crate = "foldhash", reason = "transitive churn; low compile cost" },
-    { crate = "pastey", reason = "transitive churn; low compile cost" },
     { crate = "smol_str", reason = "transitive churn; low compile cost" },
 ]
 
@@ -138,7 +134,7 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; no safe upgrade; transitive" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; no safe upgrade; transitive" },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via Slint resvg" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via winit sctk-adwaita" },
     # Fix available upstream — deferred to a dependency bump:
     { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
 ]

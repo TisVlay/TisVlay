@@ -205,8 +205,8 @@ export component SelectOverlay inherits Rectangle {
         // focus hand-back. The ScrollView keeps a list longer than
         // `max-visible` inside the flyout and follows the keyboard cursor.
         ScrollView {
-            viewport-width: self.visible-width;
-            viewport-y: -max(0px, (Select.highlight - root.vis + 1) * root.row-h);
+            content-width: self.visible-width;
+            content-y: -max(0px, (Select.highlight - root.vis + 1) * root.row-h);
             VerticalLayout {
                 padding: root.pad;
                 for opt[i] in Select.options: SelectRow {
