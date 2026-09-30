@@ -100,7 +100,7 @@ test-snapshot-accept:
 # fails the build; output is informational.
 [group('check')]
 deny:
-    cargo deny check --config packaging/licensing/deny.toml licenses bans sources
+    cargo deny --config packaging/licensing/deny.toml check licenses bans sources
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes). Doubles as the cargo-about
