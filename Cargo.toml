@@ -180,9 +180,9 @@ freedesktop-icons = "0.4"
 notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
 
 # Kernel netlink: route resolution + carrier/route monitoring
-netlink-packet-core = "0.8"
-netlink-packet-route = "0.30"
-rtnetlink = "0.21"
+netlink-packet-core = "0.9"
+netlink-packet-route = "0.33"
+rtnetlink = "0.23"
 
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
