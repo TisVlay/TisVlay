@@ -4,13 +4,14 @@ default_install_hook_types = ["pre-commit", "commit-msg"]
 
 [[repos]]
 repo = "builtin"
+# docs/artwork/ holds LFS-tracked exports; the text fixers would rewrite their bytes.
 hooks = [
   { id = "check-added-large-files", priority = 0 },
   { id = "check-merge-conflict", priority = 0 },
   { id = "check-toml", priority = 0 },
   { id = "check-yaml", priority = 0 },
-  { id = "end-of-file-fixer", priority = 0 },
-  { id = "trailing-whitespace", priority = 0 },
+  { id = "end-of-file-fixer", exclude = '^docs/artwork/', priority = 0 },
+  { id = "trailing-whitespace", exclude = '^docs/artwork/', priority = 0 },
 ]
 
 [[repos]]
