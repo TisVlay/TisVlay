@@ -35,7 +35,7 @@
         # LLVM bintools for cargo-llvm-cov (llvm-cov / llvm-profdata), pinned
         # once here to the major matching this toolchain's rustc; keep in step
         # on a channel bump.
-        llvmPkgs = pkgs.llvmPackages_22;
+        llvmPkgs = pkgs.llvmPackages_23;
       in
       {
         packages = {
