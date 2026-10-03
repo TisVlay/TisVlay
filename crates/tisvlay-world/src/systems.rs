@@ -443,6 +443,7 @@ fn handle_lifecycle_commands(
         match cmd {
             Command::Pair {
                 id,
+                attempt,
                 name,
                 vendor,
                 config,
@@ -463,6 +464,7 @@ fn handle_lifecycle_commands(
                 }
                 let entity = commands
                     .spawn(PairingRef {
+                        attempt: *attempt,
                         vendor: vendor.clone(),
                         params: config.clone(),
                         enroll: Some(PairingEnroll {
@@ -481,7 +483,7 @@ fn handle_lifecycle_commands(
                 });
                 reply_ok(&mut outbox, *reply);
             }
-            Command::RePair { id, reply } => {
+            Command::RePair { id, attempt, reply } => {
                 let Some(&entity) = index.0.get(id) else {
                     reply_err(&mut outbox, *reply, WireError::tv_not_found(*id));
                     continue;
@@ -496,6 +498,7 @@ fn handle_lifecycle_commands(
                 };
                 let session = commands
                     .spawn(PairingRef {
+                        attempt: *attempt,
                         vendor: vendor_ref.vendor.clone(),
                         params: vendor_ref.config.clone(),
                         enroll: None,
@@ -1426,13 +1429,14 @@ fn apply_backend_events(
                 // terminal is gated on the first real connection, so
                 // `complete` never precedes a usable TV, and only a
                 // verified TV reaches the store.
-                if verifying.get(entity).is_ok() {
+                if let Ok(pair) = verifying.get(entity) {
                     commands.entity(entity).remove::<PairVerifying>();
                     publish_pairing_progress(
                         &mut outbox,
                         &site,
                         tv,
                         &payload::PairingProgress {
+                            attempt: pair.attempt,
                             phase: "complete".into(),
                             message: "Paired and connected".into(),
                             code: None,
@@ -1487,6 +1491,7 @@ fn apply_backend_events(
                         &site,
                         tv,
                         &payload::PairingProgress {
+                            attempt: pair.attempt,
                             phase: "failed".into(),
                             message: reason.message.clone(),
                             code: Some(
@@ -1662,12 +1667,14 @@ fn apply_pairing_updates(
                 // first dial succeeds (root parity — the terminal
                 // never precedes a usable TV). Intermediate phases and
                 // handshake failures publish as they happen.
-                if !matches!(&**state, PairingState::Complete { .. }) {
+                if !matches!(&**state, PairingState::Complete { .. })
+                    && let Ok(session) = pairing.refs.get(entity)
+                {
                     publish_pairing_progress(
                         &mut outbox,
                         &site,
                         id,
-                        &payload::PairingProgress::from(&**state),
+                        &payload::PairingProgress::from_state(session.attempt, state),
                     );
                 }
                 match &**state {
@@ -1707,9 +1714,10 @@ fn apply_pairing_updates(
                             };
                             spawn_tv(&mut commands, &mut tv_index, &mut outbox, &record);
                             if let Some(&tv_entity) = tv_index.0.get(id) {
-                                commands
-                                    .entity(tv_entity)
-                                    .insert(PairVerifying { rollback: true });
+                                commands.entity(tv_entity).insert(PairVerifying {
+                                    rollback: true,
+                                    attempt: session.attempt,
+                                });
                             }
                         }
                         // Re-pair: refresh credentials and reconnect. The
@@ -1721,7 +1729,10 @@ fn apply_pairing_updates(
                             }
                             let mut e = commands.entity(tv_entity);
                             e.remove::<(ConnectionHandle, RetryAt)>()
-                                .insert(PairVerifying { rollback: false });
+                                .insert(PairVerifying {
+                                    rollback: false,
+                                    attempt: session.attempt,
+                                });
                             redial(&mut e, false);
                             dirty.0 = true;
                         }
@@ -1732,17 +1743,20 @@ fn apply_pairing_updates(
                 pairing.index.0.remove(id);
             }
             PairingUpdate::ConfigFailed(error) => {
-                publish_pairing_progress(
-                    &mut outbox,
-                    &site,
-                    id,
-                    &payload::PairingProgress {
-                        phase: "failed".into(),
-                        message: error.clone(),
-                        code: Some("pairing.unknown".into()),
-                        path: None,
-                    },
-                );
+                if let Ok(session) = pairing.refs.get(entity) {
+                    publish_pairing_progress(
+                        &mut outbox,
+                        &site,
+                        id,
+                        &payload::PairingProgress {
+                            attempt: session.attempt,
+                            phase: "failed".into(),
+                            message: error.clone(),
+                            code: Some("pairing.unknown".into()),
+                            path: None,
+                        },
+                    );
+                }
                 commands.entity(entity).despawn();
                 pairing.index.0.remove(id);
             }

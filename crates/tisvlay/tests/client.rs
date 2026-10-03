@@ -68,7 +68,8 @@ async fn sdk_mirrors_rpcs_and_watches() {
             true,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .tv_id;
     wait_for(&daemon, |tvs| {
         tvs.iter()
             .any(|info| info.uuid == tv && info.connected && info.volume == 30)
@@ -224,7 +225,8 @@ async fn sdk_remote_session_arms_and_mirrors() {
             true,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .tv_id;
     let tv_id = Uuid::parse_str(&tv).unwrap();
     wait_for(&daemon, |tvs| {
         tvs.iter().any(|info| info.uuid == tv && info.connected)

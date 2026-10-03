@@ -583,18 +583,20 @@ impl Bridge {
                 "pair" => {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
+                    let attempt = Uuid::new_v4();
                     let config = enrich_config_mac(req.config).await;
                     self.validate_vendor_fields(&req.vendor, &config, false)?;
                     Ok((
                         Command::Pair {
                             id,
+                            attempt,
                             name: req.name,
                             vendor: req.vendor,
                             config: json_to_toml(&config)?,
                             managed: req.managed,
                             reply: Some(reply),
                         },
-                        Some(json!({ "id": id })),
+                        Some(json!({ "id": id, "attempt": attempt })),
                     ))
                 }
                 "cancel-pair" => {
@@ -763,10 +765,17 @@ impl Bridge {
                         reply: Some(reply),
                     }
                 }
-                "re-pair" => Command::RePair {
-                    id,
-                    reply: Some(reply),
-                },
+                "re-pair" => {
+                    let attempt = Uuid::new_v4();
+                    return Ok((
+                        Command::RePair {
+                            id,
+                            attempt,
+                            reply: Some(reply),
+                        },
+                        Some(json!({ "attempt": attempt })),
+                    ));
+                }
                 "power-on" => {
                     // An empty body is a plain manual power-on (the CLI
                     // and SDK send none).

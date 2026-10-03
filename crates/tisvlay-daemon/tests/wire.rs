@@ -632,21 +632,22 @@ async fn re_pair_refreshes_credentials_in_place() {
     .await;
 
     let progress = history_sub(&w.client, keys::pairing_progress(&w.site, &id)).await;
-    call(
+    let started = call(
         &w.client,
         &keys::tv_rpc(&w.site, &id, "re-pair"),
         Value::Null,
     )
     .await
     .expect("re-pair ok");
-    // The progress cache replays the original session's `complete` too —
-    // the re-pair's is the second one.
-    let mut completes = 0;
+    let attempt = started["attempt"].clone();
+    assert!(attempt.is_string(), "re-pair reply carries its attempt");
+    assert_ne!(attempt, ok["attempt"], "each session mints its own attempt");
+    // The progress cache may replay the original session's `complete`
+    // ahead of (or, once the re-pair's live samples win the race, never
+    // alongside) the re-pair's — only the re-pair's attempt ends the wait.
     recv_until(&progress, |s| {
-        if payload_json(s)["phase"] == "complete" {
-            completes += 1;
-        }
-        completes >= 2
+        let v = payload_json(s);
+        v["phase"] == "complete" && v["attempt"] == attempt
     })
     .await;
     // Credentials refreshed in place: same uuid, reconnected.

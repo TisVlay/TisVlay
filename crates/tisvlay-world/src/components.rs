@@ -98,6 +98,8 @@ pub(crate) struct TransportTraits(pub TransportInfo);
 #[derive(Component, Debug)]
 pub(crate) struct PairVerifying {
     pub rollback: bool,
+    /// The pairing attempt whose terminal this dial publishes.
+    pub attempt: Uuid,
 }
 
 /// Per-backend verify-retry tuning, delivered with the connection.
@@ -128,6 +130,8 @@ pub(crate) struct DispatchVerify {
 /// existing TV's credentials. Despawned on any terminal outcome.
 #[derive(Component, Debug)]
 pub(crate) struct PairingRef {
+    /// The attempt id stamped on every progress sample of this session.
+    pub attempt: Uuid,
     pub vendor: String,
     /// The pairing-form params — fed to `build_config_from_pairing` on
     /// success.

@@ -36,7 +36,7 @@ tv/<uuid>/state/{power,volume,input,backlight,link}   cached pubs (state fan-out
 tv/<uuid>/meta/{identity,config,vendor}               cached pubs (name+primary descriptor, managed/profile, display rows)
 tv/<uuid>/rpc/<verb>                                  queryables (set-*, power-*, get/update-config, re-pair, …)
 tv/<uuid>/progress/power                              power-cycle phases (wol_sent → connecting → connected/failed)
-pairing/<uuid>/progress                               pairing phases (awaiting_tv → complete/failed, typed codes)
+pairing/<uuid>/progress                               pairing phases per attempt (awaiting_tv → complete/failed, typed codes)
 profile/system/<uuid>                                 cached pubs, PUT/DELETE lifecycle
 profile/rpc/<verb>                                    create, update, duplicate, delete, defaults, effective
 manager/vendors[, /<id>/schema]                       vendor catalog + pairing-form schema queryables
@@ -104,6 +104,7 @@ Learned the hard way; violating any of these produces silent wrong behavior, not
 - Multi-reply queries (discovery streaming) need `ConsolidationMode::None` querier-side, or consolidation eats same-key replies.
 - `timestamping/enabled` must be on daemon-side for cache ordering. Two-sided: a *bare* `.cache()` AdvancedPublisher hard-fails at construction without an HLC (timestamping is per-role — router on, peer/client off), but the project's standard `.cache(…).sample_miss_detection(…)` shape re-sequences by a plain counter *after* `.cache()` set the timestamp mode, so it constructs regardless of timestamping. So no timestamping requirement attaches to a connect-only-peer cached publisher (e.g. the session's `remote/session` mirror the daemon hydrates over its dialed link).
 - Publishers guarantee no cross-key sample ordering — tests wait on combined predicates in one drain, never two sequential waits on one subscriber.
+- A history subscriber's replayed cache and the live samples racing it have no guaranteed relative order, and per-publisher sequencing never delivers an older sample after a newer one: when a live sample wins, the replayed history behind it is dropped. A key that outlives sessions (pairing progress) therefore can't let watchers infer "theirs" from position — each sample carries its session's `attempt`, returned by the starting rpc, and watchers drain only that attempt.
 - A `get` matching zero queryables completes instantly with no reply — and token arrival races queryable-route propagation, so liveliness cannot gate rpcs. Clients therefore gate every rpc on **querier matching status** (`tisvlay-wire`'s `caller::Caller`: matching ⇒ routable, absent-past-deadline ⇒ `rpc.unavailable`) — the pin is `crates/tisvlay-wire/tests/querier_matching.rs`, and every client (SDK, CLI, tray) rides the shared module.
 - **Availability is liveliness, only; rpc outcomes are content.** Presence displays key on liveliness flags (the GUI writes every Slint copy through one `publish_availability` function); a failed or slow rpc renders as missing content, never as offline.
 - Declare liveliness **after** rpc queryables: serve-side hygiene so a token never precedes the surface at the origin. (Client-side, the matching gate above covers the propagation window this ordering cannot.)

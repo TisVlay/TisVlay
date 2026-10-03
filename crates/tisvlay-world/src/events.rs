@@ -119,6 +119,8 @@ pub enum Command {
     /// TV's keys appear once the handshake completes.
     Pair {
         id: Uuid,
+        /// The attempt id stamped on this session's progress samples.
+        attempt: Uuid,
         name: String,
         vendor: String,
         config: toml::Value,
@@ -129,6 +131,7 @@ pub enum Command {
     /// credentials); progress streams on the TV's pairing key.
     RePair {
         id: Uuid,
+        attempt: Uuid,
         reply: Option<ReplyTo>,
     },
     CancelPair {
