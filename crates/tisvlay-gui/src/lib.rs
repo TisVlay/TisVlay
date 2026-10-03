@@ -2000,6 +2000,46 @@ fn register_callbacks(
         });
     });
 
+    // Done step: adopt the MAC the TV reported. An ordinary config write —
+    // the daemon redials on a vendor-field change, so the link blips once.
+    let ctx = wizard_ctx.clone();
+    let app_weak = app.as_weak();
+    wizard.on_use_reported_mac(move || {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let wizard = app.global::<PairingWizard>();
+        let tv_id = wizard.get_pair_tv_id().to_string();
+        let reported = wizard.get_mac_reported().to_string();
+        if tv_id.is_empty() || reported.is_empty() {
+            return;
+        }
+        wizard.set_mac_error(SharedString::default());
+        let patch = serde_json::json!({ tisvlay_core::MAC_CONFIG_KEY: reported }).to_string();
+        let d = ctx.daemon.clone();
+        let app_weak = app.as_weak();
+        tokio::spawn(async move {
+            let result = d.update_tv_config(&tv_id, &patch).await;
+            on_ui(&app_weak, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                match result {
+                    Ok(()) => wizard.set_mac_notice("saved".into()),
+                    Err(e) => wizard.set_mac_error(SharedString::from(
+                        gettext("Couldn't update the MAC: {0}").replace("{0}", &e.to_string()),
+                    )),
+                }
+            });
+        });
+    });
+
+    let app_weak = app.as_weak();
+    wizard.on_keep_configured_mac(move || {
+        if let Some(app) = app_weak.upgrade() {
+            app.global::<PairingWizard>()
+                .set_mac_notice(SharedString::default());
+        }
+    });
+
     let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
     wizard.on_finish(move || {

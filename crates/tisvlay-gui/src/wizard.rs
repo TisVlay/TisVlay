@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::compat::{DaemonClient, PairStarted, PairTerminal, PairingProgressDetail};
+use crate::compat::{
+    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgressDetail,
+};
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -202,6 +204,10 @@ pub(crate) fn reset_wizard(
     wizard.set_selected_index(-1);
     wizard.set_tv_name(SharedString::default());
     wizard.set_tv_name_autofilled(SharedString::default());
+    wizard.set_mac_notice(SharedString::default());
+    wizard.set_mac_reported(SharedString::default());
+    wizard.set_mac_configured(SharedString::default());
+    wizard.set_mac_error(SharedString::default());
     wizard.set_system_profile(SharedString::default());
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
@@ -499,7 +505,7 @@ pub(crate) async fn run_wizard_pair(
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
     let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
 
-    let result = terminal_to_result(outcome, tv_id);
+    let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
 
@@ -600,7 +606,7 @@ pub(crate) async fn run_wizard_re_pair(
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
     let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
 
-    let result = terminal_to_result(outcome, tv_id);
+    let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
 
@@ -672,16 +678,38 @@ fn localize_pair_failure(detail: &PairingProgressDetail) -> String {
 }
 
 /// Translate `drain_pair_to_terminal`'s `Result<PairTerminal>` into the
-/// shape [`publish_pair_outcome`] expects: a terminal `Failed` keeps its
-/// typed detail; a stream error stays `anyhow`.
+/// shape [`publish_pair_outcome`] expects: a `Complete` keeps its link-MAC
+/// report for the done step, a terminal `Failed` keeps its typed detail,
+/// and a stream error stays `anyhow`.
 fn terminal_to_result(
     outcome: anyhow::Result<PairTerminal>,
-    tv_id: String,
-) -> Result<String, PairError> {
+) -> Result<Option<LinkMacReport>, PairError> {
     match outcome {
-        Ok(PairTerminal::Complete { .. }) => Ok(tv_id),
+        Ok(PairTerminal::Complete { link_mac, .. }) => Ok(link_mac),
         Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(Box::new(detail))),
         Err(e) => Err(PairError::Rpc(e)),
+    }
+}
+
+/// The done step's notice for the MAC the TV reported at pairing, as
+/// (`mac-notice`, reported, configured): "filled" when the daemon stored
+/// it, "differs" when an entered MAC was kept, and no notice for a match
+/// or no report.
+fn mac_notice(report: Option<&LinkMacReport>) -> (&'static str, String, String) {
+    match report {
+        Some(LinkMacReport {
+            reported,
+            outcome: LinkMacOutcome::Filled,
+        }) => ("filled", reported.clone(), String::new()),
+        Some(LinkMacReport {
+            reported,
+            outcome: LinkMacOutcome::Differs { configured },
+        }) => ("differs", reported.clone(), configured.clone()),
+        Some(LinkMacReport {
+            outcome: LinkMacOutcome::Matches,
+            ..
+        })
+        | None => ("", String::new(), String::new()),
     }
 }
 
@@ -700,7 +728,7 @@ fn publish_pair_outcome(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: &WizardGen,
     captured_gen: u64,
-    result: Result<String, PairError>,
+    result: Result<Option<LinkMacReport>, PairError>,
     had_progress_stream: bool,
 ) {
     let wizard_gen = wizard_gen.clone();
@@ -710,7 +738,12 @@ fn publish_pair_outcome(
         }
         let wizard = app.global::<PairingWizard>();
         match result {
-            Ok(_) => {
+            Ok(report) => {
+                let (notice, reported, configured) = mac_notice(report.as_ref());
+                wizard.set_mac_notice(notice.into());
+                wizard.set_mac_reported(SharedString::from(reported));
+                wizard.set_mac_configured(SharedString::from(configured));
+                wizard.set_mac_error(SharedString::default());
                 wizard.set_pair_phase("complete".into());
                 if wizard.get_pair_message().is_empty() {
                     let msg = if had_progress_stream {
@@ -775,6 +808,36 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::{AutofilledRow, apply_manual_entry_helper_overrides, picked_tv_name};
+
+    /// The done step speaks only when there's something to act on or know:
+    /// a filled MAC, or an entered one that differs from the TV's.
+    #[test]
+    fn mac_notice_per_outcome() {
+        use super::{LinkMacOutcome, LinkMacReport, mac_notice};
+        let report = |outcome| LinkMacReport {
+            reported: "84:90:0A:63:A9:94".into(),
+            outcome,
+        };
+        assert_eq!(
+            mac_notice(Some(&report(LinkMacOutcome::Filled))),
+            ("filled", "84:90:0A:63:A9:94".into(), String::new())
+        );
+        assert_eq!(
+            mac_notice(Some(&report(LinkMacOutcome::Differs {
+                configured: "64:E4:A5:6C:AB:B4".into()
+            }))),
+            (
+                "differs",
+                "84:90:0A:63:A9:94".into(),
+                "64:E4:A5:6C:AB:B4".into()
+            )
+        );
+        assert_eq!(
+            mac_notice(Some(&report(LinkMacOutcome::Matches))),
+            ("", String::new(), String::new())
+        );
+        assert_eq!(mac_notice(None), ("", String::new(), String::new()));
+    }
 
     /// A missed MAC lookup prefixes the vendor's own helper rather than
     /// replacing it, so the vendor's note about a blank MAC survives.

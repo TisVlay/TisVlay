@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-03 17:49-0500\n"
+"POT-Creation-Date: 2026-10-03 18:00-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -16,18 +16,18 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: crates/tisvlay-gui/src/wizard.rs:406
+#: crates/tisvlay-gui/src/wizard.rs:412
 #, rust-format
 msgid "MAC not detected. {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/wizard.rs:531 crates/tisvlay-gui/src/wizard.rs:574
+#: crates/tisvlay-gui/src/wizard.rs:537 crates/tisvlay-gui/src/wizard.rs:580
 msgid ""
 "Pairing started but progress signal is unavailable. Check the TV list and "
 "retry the wizard to confirm."
 msgstr ""
 
-#: crates/tisvlay-gui/src/wizard.rs:665
+#: crates/tisvlay-gui/src/wizard.rs:671
 #, rust-format
 msgid ""
 "The TisVlay daemon doesn't have permission to use {0}. Add its user to the "
@@ -35,11 +35,11 @@ msgid ""
 "install the udev rule granting access."
 msgstr ""
 
-#: crates/tisvlay-gui/src/wizard.rs:717
+#: crates/tisvlay-gui/src/wizard.rs:750
 msgid "Client key stored."
 msgstr ""
 
-#: crates/tisvlay-gui/src/wizard.rs:719
+#: crates/tisvlay-gui/src/wizard.rs:752
 msgid "Paired successfully."
 msgstr ""
 
@@ -310,6 +310,11 @@ msgstr ""
 
 #: crates/tisvlay-gui/src/lib.rs:1664
 msgid "Reload session config failed"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:2028
+#, rust-format
+msgid "Couldn't update the MAC: {0}"
 msgstr ""
 
 #: crates/tisvlay-gui/src/state_watch.rs:202
@@ -1072,60 +1077,85 @@ msgctxt "StepPair"
 msgid "Back to discovery"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:881
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:888
 msgctxt "StepDone"
 msgid "{} is ready."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:881
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:888
 msgctxt "StepDone"
 msgid "TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:890
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:897
 msgctxt "StepDone"
 msgid ""
 "The new TV will appear selected in the TVs pane. Boot, sleep, and session "
 "events follow the default profile until you change it."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:903
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:913
+msgctxt "StepDone"
+msgid "MAC detected from the TV: {}"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:915
+msgctxt "StepDone"
+msgid "MAC updated to {}."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:916
+msgctxt "StepDone"
+msgid "The TV reports {} for its active connection, but {} was entered."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:927
+msgctxt "StepDone"
+msgid "Use reported"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:932
+msgctxt "StepDone"
+msgid "Keep mine"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:952
 msgctxt "StepDone"
 msgid "Vendor: "
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:937
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:986
 msgctxt "StepDone"
 msgid "Managed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:937
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:986
 msgctxt "StepDone"
 msgid "Unmanaged"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:982
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1031
 msgctxt "PairingWizardPane"
 msgid "Pair"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:983
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:983
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1032
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1032
 msgctxt "PairingWizardPane"
 msgid "Next"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:984
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1033
 msgctxt "PairingWizardPane"
 msgid "Close"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1068
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1123
 msgctxt "PairingWizardPane"
 msgid "Cancel"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1073
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1128
 msgctxt "PairingWizardPane"
 msgid "Back"
 msgstr ""

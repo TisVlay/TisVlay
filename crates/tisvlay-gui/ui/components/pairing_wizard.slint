@@ -836,13 +836,20 @@ component StepDone {
     in property <string> tv-vendor-name;
     in property <string> tv-address;
     in property <bool> managed;
+    // The MAC the TV reported at pairing — see `PairingWizard.mac-notice`.
+    in property <string> mac-notice;
+    in property <string> mac-reported;
+    in property <string> mac-configured;
+    in property <string> mac-error;
+    callback use-reported-mac();
+    callback keep-configured-mac();
 
     Rectangle {
         background: Theme.surface2;
         border-color: Theme.border;
         border-width: Design.border-thin;
         border-radius: Design.radius-card;
-        height: 320px;
+        min-height: 320px;
 
         VerticalLayout {
             width: 100%;
@@ -890,6 +897,48 @@ component StepDone {
                         text: @tr("The new TV will appear selected in the TVs pane. Boot, sleep, and session events follow the default profile until you change it.");
                         color: Theme.text-dim;
                         font-size: Design.font-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // The MAC the TV reported for its active connection.
+            if root.mac-notice != "": VerticalLayout {
+                spacing: Design.gap-tight;
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.mac-notice == "filled"
+                            ? @tr("MAC detected from the TV: {}", root.mac-reported)
+                            : root.mac-notice == "saved"
+                                ? @tr("MAC updated to {}.", root.mac-reported)
+                                : @tr("The TV reports {} for its active connection, but {} was entered.", root.mac-reported, root.mac-configured);
+                        color: Theme.text-dim;
+                        font-size: Design.font-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.mac-notice == "differs": HorizontalLayout {
+                    alignment: center;
+                    spacing: Design.gap-row;
+                    Button {
+                        text: @tr("Use reported");
+                        primary: true;
+                        clicked => { root.use-reported-mac(); }
+                    }
+                    Button {
+                        text: @tr("Keep mine");
+                        clicked => { root.keep-configured-mac(); }
+                    }
+                }
+                if root.mac-error != "": HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.mac-error;
+                        color: Theme.danger-text;
+                        font-size: Design.font-caption;
                         horizontal-alignment: center;
                         wrap: word-wrap;
                     }
@@ -1042,6 +1091,12 @@ export component PairingWizardPane inherits Rectangle {
                     tv-vendor-name: PairingWizard.selected-vendor-name;
                     tv-address: PairingWizard.selected-address;
                     managed: PairingWizard.managed;
+                    mac-notice: PairingWizard.mac-notice;
+                    mac-reported: PairingWizard.mac-reported;
+                    mac-configured: PairingWizard.mac-configured;
+                    mac-error: PairingWizard.mac-error;
+                    use-reported-mac => { PairingWizard.use-reported-mac(); }
+                    keep-configured-mac => { PairingWizard.keep-configured-mac(); }
                 }
             }
         }
