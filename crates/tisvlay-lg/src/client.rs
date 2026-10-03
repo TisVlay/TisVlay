@@ -1,14 +1,17 @@
 //! High-level WebOS TV client.
 
-use crate::endpoints::{audio, input, luna, notification, picture, power, system, timeouts};
+use crate::endpoints::{
+    audio, input, luna, network, notification, picture, power, system, timeouts,
+};
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
 use crate::transport::Connection;
 use serde_json::{Value, json};
+use std::net::IpAddr;
 use std::time::Duration;
-use tisvlay_core::{Error, HardwareId, InputInfo, PowerState, Result, TvState};
+use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, TvState};
 use tokio::sync::mpsc;
 
 /// Client for controlling an LG WebOS TV.
@@ -602,6 +605,50 @@ impl WebOsClient {
     // System info
     // -------------------------------------------------------------------------
 
+    /// MAC of the NIC carrying `dialed`, as the TV reports it.
+    ///
+    /// Joins `connectionmanager/getstatus` (which interface is connected,
+    /// and its address) with `connectionmanager/getinfo` (each interface's
+    /// MAC). Best-effort: `None` on any failed read, a connected interface
+    /// whose address isn't `dialed`, or a missing block. Never the Wi-Fi
+    /// Direct (`p2p`) interface — it's no WoL target.
+    pub async fn get_link_mac(&mut self, dialed: IpAddr) -> Option<MacAddress> {
+        let status = self.network_read(network::GET_STATUS).await?;
+        let Some(iface) = ["wired", "wifi"].into_iter().find(|name| {
+            let block = &status[*name];
+            block["state"] == "connected"
+                && block["ipAddress"]
+                    .as_str()
+                    .and_then(|ip| ip.parse::<IpAddr>().ok())
+                    == Some(dialed)
+        }) else {
+            tracing::debug!(%dialed, "no connected interface carries the dialed address");
+            return None;
+        };
+        let info = self.network_read(network::GET_INFO).await?;
+        let mac = info[format!("{iface}Info")]["macAddress"].as_str()?;
+        MacAddress::parse(mac)
+            .inspect_err(|e| tracing::debug!(iface, mac, error = %e, "unparseable link MAC"))
+            .ok()
+    }
+
+    /// One network-state read: the payload, or `None` (logged) when the
+    /// request failed or the TV answered `returnValue: false` — Luna-side
+    /// failures can arrive as a normal response rather than an error.
+    async fn network_read(&mut self, uri: &str) -> Option<Value> {
+        match self.command(uri, json!({})).await {
+            Ok(response) if response.payload["returnValue"] == true => Some(response.payload),
+            Ok(response) => {
+                tracing::debug!(uri, payload = %response.payload, "network read refused");
+                None
+            }
+            Err(e) => {
+                tracing::debug!(uri, error = %e, "network read failed");
+                None
+            }
+        }
+    }
+
     /// Fetch hardware identity from `ssap://system/getSystemInfo`.
     ///
     /// LG's `getSystemInfo` returns `modelName`, `serialNumber`, and
@@ -1006,13 +1053,9 @@ mod field_probe {
 
     /// Endpoints under evaluation, printed with their raw responses.
     const ENDPOINTS: &[&str] = &[
-        // Per-interface NIC MACs (wired / wifi / p2p) — the
-        // device-reported MAC source for routed TVs.
-        "ssap://com.webos.service.connectionmanager/getinfo",
-        // Per-interface link state + IP (lowercase `getstatus`; the
-        // camel-case `getStatus` 404s) — joins the IP to its NIC.
-        "ssap://com.webos.service.connectionmanager/getstatus",
-        "ssap://system/getSystemInfo",
+        network::GET_INFO,
+        network::GET_STATUS,
+        system::GET_SYSTEM_INFO,
     ];
 
     #[tokio::test]

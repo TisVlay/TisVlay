@@ -355,10 +355,9 @@ fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: impl std::fmt::
 /// schema fetch was triggered by the wizard's manual-add path
 /// (rather than picking from the SSDP-discovered list). When set,
 /// fields whose autofill missed get a context-specific helper —
-/// today, the `mac` field's "Required for Wake-on-LAN" line is
-/// replaced with a clearer "we tried, didn't find it" message so
-/// the user understands what happened rather than seeing a silent
-/// empty field.
+/// today, the `mac` field's helper is prefixed with "we tried,
+/// didn't find it", so the user understands what happened rather
+/// than seeing a silent empty field.
 pub(crate) async fn fetch_and_publish_schema(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
@@ -395,20 +394,16 @@ pub(crate) async fn fetch_and_publish_schema(
     }
 }
 
-/// Swap the schema's generic field-level helper text for context-
-/// specific guidance when the manual-entry MAC enrichment didn't
-/// resolve a value. Lives wizard-side rather than as a schema
-/// extension because the override is purely about *which UX path*
-/// the user is on — the schema itself stays vendor-owned. Today
-/// only the `mac` field gets an override; structure makes it easy
-/// to add others as the manual-entry story grows.
+/// Prefix the schema's field-level helper with context for the
+/// manual-entry path when the MAC enrichment didn't resolve a value.
+/// The prefix composes with the vendor's own helper rather than
+/// replacing it: the wizard knows *which UX path* the user is on, but
+/// only the vendor knows what it can do about a blank MAC (LG reads it
+/// from the TV after pairing; a vendor that can't says so itself).
 fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
     for row in rows.iter_mut() {
         if row.name == tisvlay_core::MAC_CONFIG_KEY && row.value.is_empty() {
-            row.helper = gettext(
-                "MAC not detected. Enter it manually to enable Wake-on-LAN \
-                 (otherwise the TV won't power on from full-off).",
-            );
+            row.helper = gettext("MAC not detected. {0}").replace("{0}", &row.helper);
         }
     }
 }
@@ -779,7 +774,41 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::picked_tv_name;
+    use super::{AutofilledRow, apply_manual_entry_helper_overrides, picked_tv_name};
+
+    /// A missed MAC lookup prefixes the vendor's own helper rather than
+    /// replacing it, so the vendor's note about a blank MAC survives.
+    #[test]
+    fn missed_mac_prefixes_the_vendor_helper() {
+        let vendor_helper =
+            "Required for Wake-on-LAN. Leave blank to read it from the TV after pairing.";
+        let mut rows = vec![
+            AutofilledRow {
+                name: "mac".into(),
+                helper: vendor_helper.into(),
+                ..Default::default()
+            },
+            AutofilledRow {
+                name: "ip".into(),
+                helper: "TV address.".into(),
+                value: String::new(),
+                ..Default::default()
+            },
+        ];
+        apply_manual_entry_helper_overrides(&mut rows);
+        assert_eq!(rows[0].helper, format!("MAC not detected. {vendor_helper}"));
+        assert_eq!(rows[1].helper, "TV address.");
+
+        // A MAC that did resolve keeps the plain vendor helper.
+        let mut found = vec![AutofilledRow {
+            name: "mac".into(),
+            helper: vendor_helper.into(),
+            value: "84:90:0A:63:A9:94".into(),
+            ..Default::default()
+        }];
+        apply_manual_entry_helper_overrides(&mut found);
+        assert_eq!(found[0].helper, vendor_helper);
+    }
 
     #[test]
     fn pick_fills_an_empty_name() {
