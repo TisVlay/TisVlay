@@ -273,9 +273,11 @@ The router announces the full IGD service catalog (`InternetGatewayDevice`, `WAN
 - A future vendor that does join `ff02::c` (e.g., a hypothetical Sony/Samsung backend that follows the UPnP spec more literally) is what would justify lifting `Ipv6BindUnsupported` and threading v6 through `tisvlay-ssdp`. Until then, the v4-only stance is correct.
 - Toggling other TV settings that *sound* related — DLNA, "TV On via Mobile", LG ConnectApp — does not flip this behavior on G4 firmware as of 2026-05. Could change with future firmware; rerun the capture protocol if a new revision claims UPnP-over-v6.
 
-## `connectionmanager/getinfo` reports NIC MACs, but not which link is up
+## `connectionmanager` reports each NIC's MAC and which one carries the TV's IP
 
-**Finding.** `ssap://com.webos.service.connectionmanager/getinfo` answers on the OLED42C3PUA (verified over the production client and manifest, which requests `READ_NETWORK_STATE`; the OLED55G3PUA shares the firmware family and is expected equivalent). It returns one MAC per interface and nothing else:
+**Finding.** Two SSAP calls together identify the TV's attached interface and its MAC. Verified on the OLED42C3PUA over the production client and manifest (which requests `READ_NETWORK_STATE`); the OLED55G3PUA shares the firmware family and is expected equivalent.
+
+`ssap://com.webos.service.connectionmanager/getinfo` returns one MAC per interface and nothing else:
 
 ```json
 {"returnValue":true,"subscribed":false,
@@ -284,8 +286,22 @@ The router announces the full IGD service catalog (`InternetGatewayDevice`, `WAN
  "p2pInfo":{"macAddress":"86:90:0A:63:A9:94"}}
 ```
 
-No per-interface state, IP or "connected" flag, and the neighboring status endpoints don't exist (`connectionmanager/getStatus` and `connectionmanager/wifi/getstatus` return 404; `update/getCurrentSWInformation` returns 401). `p2pInfo` is Wi-Fi Direct and is never a WoL target.
+`ssap://com.webos.service.connectionmanager/getstatus` (lowercase; the camel-case `getStatus` returns 404) returns per-interface link state and addressing (abridged):
 
-**Implication.** It's the one MAC source that works for a TV off the daemon's link (a routed IoT VLAN, where ARP only ever sees the gateway), but it can't say whether the TV is attached by wire or Wi-Fi. A consumer either wakes both MACs (harmless: each NIC ignores the other's magic packet) or picks one from another signal, such as an on-link ARP match against one of the two.
+```json
+{"returnValue":true,"isInternetConnectionAvailable":true,
+ "wifi":{"state":"connected","interfaceName":"wlan0","ipAddress":"192.168.4.170",
+         "netmask":"255.255.255.0","gateway":"192.168.4.1","method":"dhcp",
+         "ssid":"<ssid>","isWakeOnWifiEnabled":false},
+ "wired":{"plugged":false,"state":"disconnected"},
+ "wifiDirect":{"state":"disconnected"}}
+```
 
-**Reproduce.** The ignored `field_probe` test in `crates/tisvlay-lg/src/client.rs` queries this endpoint with a paired TV's stored address and client key; the run command is in its doc comment.
+The attached NIC is the interface whose `state` is `connected` and whose `ipAddress` matches the address the daemon dials; its MAC comes from the matching `getinfo` block (`wired` → `wiredInfo`, `wifi` → `wifiInfo`). `p2pInfo` is Wi-Fi Direct and never a WoL target. Probed siblings that don't exist on this firmware: `getStatus`, `wired/getstatus`, `wifi/getstatus`, `getNetworkInfo`, `getinterfaceinfo`, `getIpInfo` (all 404).
+
+**Implications.**
+
+- It works for a TV off the daemon's link (a routed IoT VLAN, where ARP only ever sees the gateway), with no guessing between NICs.
+- `wifi.isWakeOnWifiEnabled` is the TV's own "turn on via Wi-Fi" setting. When it's `false`, a Wi-Fi-attached TV ignores magic packets, so WoL can't work whatever MAC is configured. The OLED42C3PUA above is in exactly that state. A Wi-Fi TV with this off can't be woken from full standby.
+
+**Reproduce.** The ignored `field_probe` test in `crates/tisvlay-lg/src/client.rs` queries both endpoints with a paired TV's stored address and client key; the run command is in its doc comment, and `TISVLAY_PROBE_URIS` overrides the endpoint list.

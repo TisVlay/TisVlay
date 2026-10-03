@@ -996,7 +996,7 @@ mod tests {
 /// its stored address and client key (`daemon.toml`):
 ///
 /// ```text
-/// TISVLAY_PROBE_HOST=<ip> TISVLAY_PROBE_KEY=<client_key> \
+/// TISVLAY_PROBE_HOST=<ip> TISVLAY_PROBE_KEY=<client_key> [TISVLAY_PROBE_URIS=<uri,…>] \
 ///     cargo nextest run -p tisvlay-lg --run-ignored only \
 ///         -E 'test(field_probe)' --no-capture
 /// ```
@@ -1009,6 +1009,9 @@ mod field_probe {
         // Per-interface NIC MACs (wired / wifi / p2p) — the
         // device-reported MAC source for routed TVs.
         "ssap://com.webos.service.connectionmanager/getinfo",
+        // Per-interface link state + IP (lowercase `getstatus`; the
+        // camel-case `getStatus` 404s) — joins the IP to its NIC.
+        "ssap://com.webos.service.connectionmanager/getstatus",
         "ssap://system/getSystemInfo",
     ];
 
@@ -1017,8 +1020,14 @@ mod field_probe {
     async fn field_probe() {
         let host = std::env::var("TISVLAY_PROBE_HOST").expect("TISVLAY_PROBE_HOST");
         let key = std::env::var("TISVLAY_PROBE_KEY").expect("TISVLAY_PROBE_KEY");
+        // `TISVLAY_PROBE_URIS` (comma-separated) overrides the list.
+        let custom = std::env::var("TISVLAY_PROBE_URIS").ok();
+        let uris: Vec<&str> = match &custom {
+            Some(list) => list.split(',').map(str::trim).collect(),
+            None => ENDPOINTS.to_vec(),
+        };
         let mut client = WebOsClient::connect(&host, Some(key)).await.unwrap();
-        for uri in ENDPOINTS {
+        for uri in uris {
             match client.command(uri, json!({})).await {
                 Ok(response) => println!("{uri}\n  {}", response.payload),
                 Err(error) => println!("{uri}\n  error: {error}"),
