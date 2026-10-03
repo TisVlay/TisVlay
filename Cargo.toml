@@ -38,7 +38,10 @@ default-members = [
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.92"
+# MSRV = the pinned channel in rust-toolchain.toml (bump the two together),
+# so the floor is exactly what CI builds and the MSRV-aware resolver never
+# holds a dependency back below the compiler we actually ship with.
+rust-version = "1.99"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/ruffsl/tisvlay"

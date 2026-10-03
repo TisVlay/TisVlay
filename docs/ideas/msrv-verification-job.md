@@ -1,6 +1,6 @@
 # MSRV verification job
 
-`rust-toolchain.toml` pins the dev/CI channel to an exact stable release for reproducibility, while `Cargo.toml` declares `rust-version = "1.92"` as the MSRV floor. Nothing verifies the workspace actually compiles on that floor, so the declared MSRV can drift silently: a contributor uses an API stabilized after the floor, CI on the pinned channel stays green, and the `rust-version` claim is quietly false.
+`rust-toolchain.toml` pins the dev/CI channel to an exact stable release for reproducibility, and `Cargo.toml` declares `rust-version` as the MSRV floor. The floor currently equals the pinned channel (the two are bumped together), so CI on the pinned channel already proves it — this job only matters once the floor is deliberately set below the channel. Should that happen, nothing verifies the workspace actually compiles on that floor, so the declared MSRV can drift silently: a contributor uses an API stabilized after the floor, CI on the pinned channel stays green, and the `rust-version` claim is quietly false.
 
 Deferred while the workspace is unpublished — every crate is `publish = false` except the few marked publish-ready, so no downstream consumer builds against the floor yet. The claim only becomes load-bearing when a crate ships to crates.io.
 
