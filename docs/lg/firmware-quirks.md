@@ -302,6 +302,6 @@ The attached NIC is the interface whose `state` is `connected` and whose `ipAddr
 **Implications.**
 
 - It works for a TV off the daemon's link (a routed IoT VLAN, where ARP only ever sees the gateway), with no guessing between NICs.
-- `wifi.isWakeOnWifiEnabled` is the TV's own "turn on via Wi-Fi" setting. When it's `false`, a Wi-Fi-attached TV ignores magic packets, so WoL can't work whatever MAC is configured. The OLED42C3PUA above is in exactly that state. A Wi-Fi TV with this off can't be woken from full standby.
+- `wifi.isWakeOnWifiEnabled` does **not** predict whether WoL works. The OLED42C3PUA reports `false`, unchanged by toggling the hidden IP Control menu's "Network IP Control" on and off, yet it woke reliably over Wi-Fi from standby: magic packets to the `wifiInfo` MAC, reflected across a routed VLAN. In two daemon wake dials, about 2.5 min and about 1 min after a power-off, the TV answered on the seventh connect attempt, about 4 s in, versus the first attempt when it was already on. The flag may track a different wake feature, but it's no basis for a "WoL won't work" warning.
 
 **Reproduce.** The ignored `field_probe` test in `crates/tisvlay-lg/src/client.rs` queries both endpoints with a paired TV's stored address and client key; the run command is in its doc comment, and `TISVLAY_PROBE_URIS` overrides the endpoint list.
