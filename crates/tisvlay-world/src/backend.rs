@@ -11,8 +11,10 @@ use uuid::Uuid;
 
 use crate::events::{BackendCmd, BackendEvent, InEvent, PairingUpdate};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_flow(
     tv: Uuid,
+    dial: u64,
     connector: Arc<dyn TvConnector>,
     config: toml::Value,
     wake: bool,
@@ -21,25 +23,28 @@ pub(crate) async fn connect_flow(
     inbox: mpsc::UnboundedSender<InEvent>,
 ) {
     debug!(%tv, wake, "connect_flow started");
-    let dial = if wake {
+    let dialed = if wake {
         let _ = inbox.send(InEvent::Backend {
             tv,
+            dial,
             event: BackendEvent::PowerPhase("wol_sent"),
         });
         let _ = inbox.send(InEvent::Backend {
             tv,
+            dial,
             event: BackendEvent::PowerPhase("connecting"),
         });
         connector.wake_and_connect(&config).await
     } else {
         connector.connect(&config).await
     };
-    debug!(%tv, dialed = dial.is_ok(), "dial finished");
-    let mut connection = match dial {
+    debug!(%tv, dialed = dialed.is_ok(), "dial finished");
+    let mut connection = match dialed {
         Ok(connection) => connection,
         Err(error) => {
             let _ = inbox.send(InEvent::Backend {
                 tv,
+                dial,
                 event: BackendEvent::ConnectFailed {
                     reason: crate::events::DialFailure::from_error(&error),
                 },
@@ -54,6 +59,7 @@ pub(crate) async fn connect_flow(
             reason.message = format!("initial state read failed: {}", reason.message);
             let _ = inbox.send(InEvent::Backend {
                 tv,
+                dial,
                 event: BackendEvent::ConnectFailed { reason },
             });
             return;
@@ -73,6 +79,7 @@ pub(crate) async fn connect_flow(
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
     let _ = inbox.send(InEvent::Backend {
         tv,
+        dial,
         event: BackendEvent::Connected {
             cmd_tx,
             state: Box::new(state),
@@ -123,6 +130,7 @@ pub(crate) async fn connect_flow(
                     if let Some(reply) = reply {
                         let _ = inbox.send(InEvent::Backend {
                             tv,
+                            dial,
                             event: BackendEvent::CommandDone {
                                 reply,
                                 result: result.map_err(|error| error.to_string()),
@@ -144,6 +152,7 @@ pub(crate) async fn connect_flow(
                     {
                         let _ = inbox.send(InEvent::Backend {
                             tv,
+                            dial,
                             event: BackendEvent::State(Box::new(state)),
                         });
                     }
@@ -156,21 +165,22 @@ pub(crate) async fn connect_flow(
                             while let Ok(state) = rx.try_recv() {
                                 let _ = inbox.send(InEvent::Backend {
                                     tv,
+                                    dial,
                                     event: BackendEvent::State(Box::new(state)),
                                 });
                             }
                         }
-                        let _ = inbox.send(InEvent::Backend { tv, event: BackendEvent::Disconnected });
+                        let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected });
                         return;
                     }
                 }
             },
             update = recv_update(&mut subscription) => match update {
                 Some(state) => {
-                    let _ = inbox.send(InEvent::Backend { tv, event: BackendEvent::State(Box::new(state)) });
+                    let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::State(Box::new(state)) });
                 }
                 None => {
-                    let _ = inbox.send(InEvent::Backend { tv, event: BackendEvent::Disconnected });
+                    let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected });
                     return;
                 }
             },

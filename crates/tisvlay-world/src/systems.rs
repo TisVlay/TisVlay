@@ -14,11 +14,11 @@ use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DirtyStore, DispatchRetry,
-    DispatchVerify, Effect, KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox,
-    PairVerifying, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
-    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, Site, SystemProfile,
-    TransportTraits, TvId, TvIndex, VendorRef,
+    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DialSeq, DirtyStore,
+    DispatchRetry, DispatchVerify, Effect, KnownVendors, LatestDial, Managed, MirrorsConnector,
+    MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingIndex, PairingRef,
+    PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed,
+    RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
     BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
@@ -1371,10 +1371,11 @@ fn apply_backend_events(
     mut outbox: ResMut<Outbox>,
     mut dirty: ResMut<DirtyStore>,
     verifying: Query<&PairVerifying>,
+    latest: Query<&LatestDial>,
     mut writes: StateWrites,
 ) {
     for msg in reader.read() {
-        let InEvent::Backend { tv, event } = msg else {
+        let InEvent::Backend { tv, dial, event } = msg else {
             continue;
         };
         let Some(&entity) = index.0.get(tv) else {
@@ -1383,6 +1384,16 @@ fn apply_backend_events(
             tracing::debug!(%tv, ?event, "backend event for unknown TV dropped");
             continue;
         };
+        // A superseded dial (one a re-pair overtook) has no say: its
+        // outcome can't settle a verification, and its task's trailing
+        // pushes can't touch the live link. Rpc replies are exempt — they
+        // route by reply id, and dropping one would hang its caller.
+        if !matches!(event, BackendEvent::CommandDone { .. })
+            && latest.get(entity).map(|l| l.0) != Ok(*dial)
+        {
+            tracing::debug!(%tv, dial, ?event, "event from a superseded dial dropped");
+            continue;
+        }
         match event {
             BackendEvent::Connected {
                 cmd_tx,
@@ -1722,13 +1733,17 @@ fn apply_pairing_updates(
                         }
                         // Re-pair: refresh credentials and reconnect. The
                         // terminal is likewise gated on the reconnect, but
-                        // a failure keeps the (pre-existing) TV.
+                        // a failure keeps the (pre-existing) TV. Clearing
+                        // `Reconnecting` supersedes a dial still in flight
+                        // on the old credentials: the verification dial
+                        // spawns now and becomes the TV's `LatestDial`, so
+                        // the old one's outcome is dropped on arrival.
                         (None, Some(tv_entity)) => {
                             if let Ok(mut vendor) = writes.vendor.get_mut(tv_entity) {
                                 vendor.config = config.clone();
                             }
                             let mut e = commands.entity(tv_entity);
-                            e.remove::<(ConnectionHandle, RetryAt)>()
+                            e.remove::<(ConnectionHandle, RetryAt, Reconnecting)>()
                                 .insert(PairVerifying {
                                     rollback: false,
                                     attempt: session.attempt,
@@ -2299,6 +2314,7 @@ fn reconcile_connections(
     clock: Res<Clock>,
     site: Res<Site>,
     mut outbox: ResMut<Outbox>,
+    mut seq: ResMut<DialSeq>,
     mut q: Query<
         (
             Entity,
@@ -2339,13 +2355,16 @@ fn reconcile_connections(
             continue;
         }
         pending.attempts += 1;
-        tracing::debug!(tv = %id.0, attempt = pending.attempts, wake = pending.wake, "dialing");
+        seq.0 += 1;
+        let dial = seq.0;
+        tracing::debug!(tv = %id.0, attempt = pending.attempts, wake = pending.wake, dial, "dialing");
         commands
             .entity(entity)
-            .insert(Reconnecting)
+            .insert((Reconnecting, LatestDial(dial)))
             .remove::<(RetryAt, AwaitingRoute)>();
         outbox.0.push(Effect::SpawnConnect {
             tv: id.0,
+            dial,
             vendor: vendor.vendor.clone(),
             config: vendor.config.clone(),
             wake: pending.wake,

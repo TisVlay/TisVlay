@@ -367,3 +367,55 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
     // The facts came from the patch, not from a fresh dial.
     assert_eq!(handle.connect_call_count("mock://wakeless"), dials_before);
 }
+
+/// A re-pair supersedes a dial already in flight on the old credentials:
+/// the stale dial's outcome is dropped, the verification dial spawns, and
+/// only its connect settles the pairing. Without the supersede the stale
+/// dial would publish `complete` — having verified the old credentials —
+/// and the verification dial would never run.
+#[tokio::test]
+async fn re_pair_supersedes_an_in_flight_dial() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+
+    // Enrollment's dial stalls in connect: it's in flight when the
+    // re-pair lands.
+    handle.set_connect_delay(Duration::from_millis(600));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(
+            id,
+            "Den",
+            pairing_config("mock://superseded", "accept"),
+        )),
+        reply: Some(1),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 1)).await;
+    client.command(Command::RePair {
+        id,
+        attempt,
+        reply: Some(2),
+    });
+
+    let seen = collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "complete").is_some()
+    })
+    .await;
+    assert_eq!(
+        seen.iter()
+            .find_map(|e| progress_on(e, &progress_key, "complete"))
+            .map(|p| p["attempt"].clone()),
+        Some(serde_json::json!(attempt.to_string())),
+    );
+    assert_eq!(
+        handle.connect_call_count("mock://superseded"),
+        2,
+        "the stale dial and the verification dial both connected"
+    );
+    // The stale dial's late outcome, if still in flight, settles nothing.
+    assert_quiet(&mut effects, Duration::from_millis(800), |e| {
+        progress_on(e, &progress_key, "complete").is_some()
+    })
+    .await;
+}
