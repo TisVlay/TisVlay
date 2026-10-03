@@ -987,3 +987,42 @@ mod tests {
         assert!(!muted); // canned response from fake server
     }
 }
+
+/// On-demand field probe against a real TV, using the production client
+/// and pairing manifest (a TV binds a client key to the permissions
+/// requested at pairing, so a hand-rolled manifest can re-prompt or see a
+/// different permission set). Read-only: queries endpoints and prints
+/// the raw payloads. Ignored by default; run against a paired TV with
+/// its stored address and client key (`daemon.toml`):
+///
+/// ```text
+/// TISVLAY_PROBE_HOST=<ip> TISVLAY_PROBE_KEY=<client_key> \
+///     cargo nextest run -p tisvlay-lg --run-ignored only \
+///         -E 'test(field_probe)' --no-capture
+/// ```
+#[cfg(test)]
+mod field_probe {
+    use super::*;
+
+    /// Endpoints under evaluation, printed with their raw responses.
+    const ENDPOINTS: &[&str] = &[
+        // Per-interface NIC MACs (wired / wifi / p2p) — the
+        // device-reported MAC source for routed TVs.
+        "ssap://com.webos.service.connectionmanager/getinfo",
+        "ssap://system/getSystemInfo",
+    ];
+
+    #[tokio::test]
+    #[ignore = "needs a real paired TV (TISVLAY_PROBE_HOST / TISVLAY_PROBE_KEY)"]
+    async fn field_probe() {
+        let host = std::env::var("TISVLAY_PROBE_HOST").expect("TISVLAY_PROBE_HOST");
+        let key = std::env::var("TISVLAY_PROBE_KEY").expect("TISVLAY_PROBE_KEY");
+        let mut client = WebOsClient::connect(&host, Some(key)).await.unwrap();
+        for uri in ENDPOINTS {
+            match client.command(uri, json!({})).await {
+                Ok(response) => println!("{uri}\n  {}", response.payload),
+                Err(error) => println!("{uri}\n  error: {error}"),
+            }
+        }
+    }
+}

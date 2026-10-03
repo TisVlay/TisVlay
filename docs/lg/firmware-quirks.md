@@ -272,3 +272,20 @@ The router announces the full IGD service catalog (`InternetGatewayDevice`, `WAN
 - The `Capabilities::IPV6` bit on the LG backend means *control* over v6, not *discovery*. The two are independent and have to be evaluated separately for every vendor backend.
 - A future vendor that does join `ff02::c` (e.g., a hypothetical Sony/Samsung backend that follows the UPnP spec more literally) is what would justify lifting `Ipv6BindUnsupported` and threading v6 through `tisvlay-ssdp`. Until then, the v4-only stance is correct.
 - Toggling other TV settings that *sound* related — DLNA, "TV On via Mobile", LG ConnectApp — does not flip this behavior on G4 firmware as of 2026-05. Could change with future firmware; rerun the capture protocol if a new revision claims UPnP-over-v6.
+
+## `connectionmanager/getinfo` reports NIC MACs, but not which link is up
+
+**Finding.** `ssap://com.webos.service.connectionmanager/getinfo` answers on the OLED42C3PUA (verified over the production client and manifest, which requests `READ_NETWORK_STATE`; the OLED55G3PUA shares the firmware family and is expected equivalent). It returns one MAC per interface and nothing else:
+
+```json
+{"returnValue":true,"subscribed":false,
+ "wiredInfo":{"macAddress":"64:E4:A5:6C:AB:B4"},
+ "wifiInfo":{"macAddress":"84:90:0A:63:A9:94"},
+ "p2pInfo":{"macAddress":"86:90:0A:63:A9:94"}}
+```
+
+No per-interface state, IP or "connected" flag, and the neighboring status endpoints don't exist (`connectionmanager/getStatus` and `connectionmanager/wifi/getstatus` return 404; `update/getCurrentSWInformation` returns 401). `p2pInfo` is Wi-Fi Direct and is never a WoL target.
+
+**Implication.** It's the one MAC source that works for a TV off the daemon's link (a routed IoT VLAN, where ARP only ever sees the gateway), but it can't say whether the TV is attached by wire or Wi-Fi. A consumer either wakes both MACs (harmless: each NIC ignores the other's magic packet) or picks one from another signal, such as an on-link ARP match against one of the two.
+
+**Reproduce.** The ignored `field_probe` test in `crates/tisvlay-lg/src/client.rs` queries this endpoint with a paired TV's stored address and client key; the run command is in its doc comment.
