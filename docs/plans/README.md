@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None currently._
+- [`device-reported-mac.md`](device-reported-mac.md) — fill a paired TV's WoL MAC from the TV itself at pair time (routed/VLAN TVs) and flag a submitted MAC that disagrees.
 
 When a plan is in flight, list it here with
 a one-line summary of the work it covers:
