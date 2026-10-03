@@ -459,14 +459,23 @@ async fn pair_fills_an_unset_mac_from_the_device() {
         managed: true,
         reply: Some(1),
     });
-    let mut complete = false;
+    let mut report = None;
     let mut filled = false;
     collect_until(&mut effects, |e| {
-        complete |= progress_on(e, &progress_key, "complete").is_some();
+        if let Some(complete) = progress_on(e, &progress_key, "complete") {
+            report = Some(complete["link_mac"].clone());
+        }
         filled |= vendor_row(e, "MAC").as_deref() == Some("84:90:0A:63:A9:94");
-        complete && filled
+        report.is_some() && filled
     })
     .await;
+    assert_eq!(
+        report,
+        Some(serde_json::json!({
+            "reported": "84:90:0A:63:A9:94",
+            "outcome": { "kind": "filled" },
+        }))
+    );
     assert_eq!(handle.link_mac_call_count("mock://routed"), 1);
 }
 
@@ -499,6 +508,15 @@ async fn pair_keeps_a_configured_mac() {
         progress_on(e, &progress_key, "complete").is_some()
     })
     .await;
+    assert_eq!(
+        seen.iter()
+            .find_map(|e| progress_on(e, &progress_key, "complete"))
+            .map(|p| p["link_mac"].clone()),
+        Some(serde_json::json!({
+            "reported": "84:90:0A:63:A9:94",
+            "outcome": { "kind": "differs", "configured": "64:E4:A5:6C:AB:B4" },
+        }))
+    );
     assert!(
         seen.iter()
             .all(|e| vendor_row(e, "MAC").as_deref() != Some("84:90:0A:63:A9:94")),

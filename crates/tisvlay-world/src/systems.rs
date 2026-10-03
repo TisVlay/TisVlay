@@ -865,30 +865,43 @@ fn push_config_facts(outbox: &mut Outbox, tv: Uuid, vendor: &VendorRef) {
     });
 }
 
-/// Fill the vendor config's MAC from the device-reported one when it's
-/// unset (absent, or blank after trimming); never overwrite a set value.
-/// `wake_id`, the generic alias the CLI may have written for the same
-/// field, counts as set — a second spelling would collide on parse.
-/// Returns whether it filled.
-fn fill_unset_mac(config: &mut toml::Value, mac: tisvlay_core::MacAddress) -> bool {
-    let Some(table) = config.as_table_mut() else {
-        return false;
+/// Reconcile the device-reported link MAC with the vendor config: fill
+/// `mac` when it's unset (absent, or blank after trimming), and otherwise
+/// compare — never overwrite a configured value. `wake_id`, the generic
+/// alias the CLI may have written for the same field, is the configured
+/// value when present, and a fill never adds `mac` beside it (a second
+/// spelling would collide on parse). `None` when there's nothing to say:
+/// a non-table config, or a blank alias left alone.
+fn reconcile_link_mac(
+    config: &mut toml::Value,
+    reported: tisvlay_core::MacAddress,
+) -> Option<payload::LinkMacOutcome> {
+    let table = config.as_table_mut()?;
+    let alias = table.contains_key("wake_id");
+    let configured = match table
+        .get(tisvlay_core::MAC_CONFIG_KEY)
+        .or_else(|| table.get("wake_id"))
+    {
+        None => None,
+        Some(toml::Value::String(value)) => {
+            Some(value.trim().to_string()).filter(|v| !v.is_empty())
+        }
+        Some(other) => Some(other.to_string()),
     };
-    if table.contains_key("wake_id") {
-        return false;
+    match configured {
+        None if alias => None,
+        None => {
+            table.insert(
+                tisvlay_core::MAC_CONFIG_KEY.into(),
+                toml::Value::String(reported.to_string()),
+            );
+            Some(payload::LinkMacOutcome::Filled)
+        }
+        Some(configured) if tisvlay_core::MacAddress::parse(&configured).ok() == Some(reported) => {
+            Some(payload::LinkMacOutcome::Matches)
+        }
+        Some(configured) => Some(payload::LinkMacOutcome::Differs { configured }),
     }
-    let unset = match table.get(tisvlay_core::MAC_CONFIG_KEY) {
-        None => true,
-        Some(toml::Value::String(current)) => current.trim().is_empty(),
-        Some(_) => false,
-    };
-    if unset {
-        table.insert(
-            tisvlay_core::MAC_CONFIG_KEY.into(),
-            toml::Value::String(mac.to_string()),
-        );
-    }
-    unset
 }
 
 /// Two-pass config patch: validate every key, then apply. Top-level keys
@@ -1477,15 +1490,22 @@ fn apply_backend_events(
                 // verified TV reaches the store.
                 if let Ok(pair) = verifying.get(entity) {
                     commands.entity(entity).remove::<PairVerifying>();
-                    // The device-reported link MAC fills a missing one; the
-                    // facts refresh makes the TV wakeable right away.
-                    if let Some(mac) = *link_mac
-                        && let Ok(mut vendor) = vendors.get_mut(entity)
-                        && fill_unset_mac(&mut vendor.config, mac)
-                    {
-                        tracing::info!(%tv, %mac, "MAC filled from the device");
-                        push_config_facts(&mut outbox, *tv, &vendor);
-                    }
+                    // The device-reported link MAC fills a missing one (the
+                    // facts refresh makes the TV wakeable right away) or is
+                    // compared against the configured one; the terminal
+                    // carries the outcome for clients to render.
+                    let report = (*link_mac).and_then(|mac| {
+                        let mut vendor = vendors.get_mut(entity).ok()?;
+                        let outcome = reconcile_link_mac(&mut vendor.config, mac)?;
+                        if outcome == payload::LinkMacOutcome::Filled {
+                            tracing::info!(%tv, %mac, "MAC filled from the device");
+                            push_config_facts(&mut outbox, *tv, &vendor);
+                        }
+                        Some(payload::LinkMacReport {
+                            reported: mac.to_string(),
+                            outcome,
+                        })
+                    });
                     publish_pairing_progress(
                         &mut outbox,
                         &site,
@@ -1496,6 +1516,7 @@ fn apply_backend_events(
                             message: "Paired and connected".into(),
                             code: None,
                             path: None,
+                            link_mac: report,
                         },
                     );
                     dirty.0 = true;
@@ -1556,6 +1577,7 @@ fn apply_backend_events(
                                     .unwrap_or_else(|| "pairing.connection-failed".into()),
                             ),
                             path: reason.path.clone(),
+                            link_mac: None,
                         },
                     );
                     if pair.rollback {
@@ -1813,6 +1835,7 @@ fn apply_pairing_updates(
                             message: error.clone(),
                             code: Some("pairing.unknown".into()),
                             path: None,
+                            link_mac: None,
                         },
                     );
                 }
@@ -2514,7 +2537,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_unset_mac_fills_absent_and_blank_in_canonical_form() {
+    fn reconcile_link_mac_fills_absent_and_blank_in_canonical_form() {
         let reported = tisvlay_core::MacAddress::parse("84-90-0a-63-a9-94").unwrap();
         for unset in [
             config(&[]),
@@ -2522,24 +2545,37 @@ mod tests {
             config(&[("mac", toml::Value::String("  ".into()))]),
         ] {
             let mut cfg = unset;
-            assert!(fill_unset_mac(&mut cfg, reported));
+            assert_eq!(
+                reconcile_link_mac(&mut cfg, reported),
+                Some(payload::LinkMacOutcome::Filled)
+            );
             assert_eq!(mac_of(&cfg), Some("84:90:0A:63:A9:94"));
         }
     }
 
     #[test]
-    fn fill_unset_mac_never_overwrites() {
+    fn reconcile_link_mac_compares_and_never_overwrites() {
+        use payload::LinkMacOutcome::{Differs, Matches};
         let reported = tisvlay_core::MacAddress::parse("84:90:0A:63:A9:94").unwrap();
         let mut typed = config(&[("mac", toml::Value::String("64:E4:A5:6C:AB:B4".into()))]);
-        assert!(!fill_unset_mac(&mut typed, reported));
+        assert_eq!(
+            reconcile_link_mac(&mut typed, reported),
+            Some(Differs {
+                configured: "64:E4:A5:6C:AB:B4".into()
+            })
+        );
         assert_eq!(mac_of(&typed), Some("64:E4:A5:6C:AB:B4"));
-        // The CLI's generic alias for the same field counts as set; a second
-        // spelling would collide when the vendor parses its config.
-        let mut alias = config(&[("wake_id", toml::Value::String("64:E4:A5:6C:AB:B4".into()))]);
-        assert!(!fill_unset_mac(&mut alias, reported));
+        // Same MAC, different spelling: a match, not a mismatch.
+        let mut same = config(&[("mac", toml::Value::String("84-90-0a-63-a9-94".into()))]);
+        assert_eq!(reconcile_link_mac(&mut same, reported), Some(Matches));
+        // The CLI's generic alias is the configured value; a fill never adds
+        // `mac` beside it (the vendor's parse would see a duplicate).
+        let mut alias = config(&[("wake_id", toml::Value::String("84:90:0a:63:a9:94".into()))]);
+        assert_eq!(reconcile_link_mac(&mut alias, reported), Some(Matches));
         assert_eq!(mac_of(&alias), None);
-        let mut odd = config(&[("mac", toml::Value::Integer(1))]);
-        assert!(!fill_unset_mac(&mut odd, reported));
+        let mut blank_alias = config(&[("wake_id", toml::Value::String(String::new()))]);
+        assert_eq!(reconcile_link_mac(&mut blank_alias, reported), None);
+        assert_eq!(mac_of(&blank_alias), None);
     }
 
     /// `session_action` threads the resolved action's `while_remote`

@@ -25,7 +25,9 @@ use tisvlay_wire::caller::Caller;
 use tisvlay_wire::{bootstrap, keys, rpc};
 
 pub use tisvlay_wire::caller::RpcError;
-pub use tisvlay_wire::payload::{RemoteSessionState, RemoteSource, RemoteSourceKind};
+pub use tisvlay_wire::payload::{
+    LinkMacOutcome, LinkMacReport, RemoteSessionState, RemoteSource, RemoteSourceKind,
+};
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 use uuid::Uuid;
@@ -48,6 +50,8 @@ pub struct PairingProgressDetail {
     pub message: String,
     pub code: Option<String>,
     pub path: Option<String>,
+    /// `complete` only: the device-reported link MAC and its outcome.
+    pub link_mac: Option<LinkMacReport>,
 }
 
 /// A started pairing session: the TV it enrolls and the attempt id its
@@ -64,6 +68,7 @@ pub enum PairTerminal {
     Complete {
         tv_id: String,
         message: String,
+        link_mac: Option<LinkMacReport>,
     },
     Failed {
         tv_id: String,
@@ -441,6 +446,7 @@ impl DaemonClient {
                         message: progress["message"].as_str().unwrap_or_default().to_string(),
                         code: progress["code"].as_str().map(str::to_string),
                         path: progress["path"].as_str().map(str::to_string),
+                        link_mac: serde_json::from_value(progress["link_mac"].clone()).ok(),
                     },
                 );
                 if tx.send(item).is_err() {
@@ -491,6 +497,7 @@ impl DaemonClient {
                     return Ok(PairTerminal::Complete {
                         tv_id,
                         message: detail.message,
+                        link_mac: detail.link_mac,
                     });
                 }
                 "failed" => return Ok(PairTerminal::Failed { tv_id, detail }),
@@ -1510,9 +1517,30 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            matches!(&terminal, PairTerminal::Complete { tv_id, message } if tv_id == "tv" && message == "complete (new)"),
+            matches!(&terminal, PairTerminal::Complete { tv_id, message, .. } if tv_id == "tv" && message == "complete (new)"),
             "{terminal:?}"
         );
         assert_eq!(phases, ["awaiting_tv"]);
+    }
+
+    /// The terminal's link-MAC report reaches the caller.
+    #[tokio::test]
+    async fn drain_carries_the_link_mac_report() {
+        let report = LinkMacReport {
+            reported: "84:90:0A:63:A9:94".into(),
+            outcome: LinkMacOutcome::Differs {
+                configured: "64:E4:A5:6C:AB:B4".into(),
+            },
+        };
+        let (tv, phase, mut detail) = sample("tv", "complete", "a");
+        detail.link_mac = Some(report.clone());
+        let stream = futures_util::stream::iter([(tv, phase, detail)]);
+        let terminal = DaemonClient::drain_pair_to_terminal(stream, "tv", "a", |_, _| {})
+            .await
+            .unwrap();
+        assert!(
+            matches!(&terminal, PairTerminal::Complete { link_mac: Some(r), .. } if *r == report),
+            "{terminal:?}"
+        );
     }
 }

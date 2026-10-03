@@ -647,7 +647,7 @@ fn make_progress_callback(
 /// `extract_invalid_vendor_config`'s per-field routing.
 enum PairError {
     /// Terminal `failed` phase from the daemon — localize by its `code`.
-    Handshake(PairingProgressDetail),
+    Handshake(Box<PairingProgressDetail>),
     /// A sync-RPC / stream error (unknown vendor, ConfigInvalidVendorConfig,
     /// no-progress fallback) — field-routed, else shown verbatim.
     Rpc(anyhow::Error),
@@ -680,7 +680,7 @@ fn terminal_to_result(
 ) -> Result<String, PairError> {
     match outcome {
         Ok(PairTerminal::Complete { .. }) => Ok(tv_id),
-        Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(detail)),
+        Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(Box::new(detail))),
         Err(e) => Err(PairError::Rpc(e)),
     }
 }
