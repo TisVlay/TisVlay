@@ -33,10 +33,12 @@ fn progress_on<'a>(
 async fn pair_accept_creates_tv_with_redacted_progress() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
     let progress_key = format!("tisvlay/test/pairing/{id}/progress");
 
     client.command(Command::Pair {
         id,
+        attempt,
         name: "Paired".into(),
         vendor: "mock".into(),
         config: pairing_config("mock://pair1", "accept"),
@@ -66,6 +68,11 @@ async fn pair_accept_creates_tv_with_redacted_progress() {
         complete.get("credentials").is_none() && !complete.to_string().contains("mock-key"),
         "credentials must never reach the wire: {complete}"
     );
+    assert_eq!(
+        complete["attempt"],
+        attempt.to_string(),
+        "terminal carries the attempt"
+    );
     assert!(
         seen.iter()
             .any(|e| is_publish_on(e, "/meta/identity").is_some_and(|p| p["name"] == "Paired")),
@@ -90,6 +97,7 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
         .insert("refuse_connect".into(), toml::Value::Boolean(true));
     client.command(Command::Pair {
         id,
+        attempt: Uuid::new_v4(),
         name: "Dead".into(),
         vendor: "mock".into(),
         config,
@@ -169,6 +177,7 @@ async fn pair_reject_publishes_typed_failure_and_no_tv() {
 
     client.command(Command::Pair {
         id,
+        attempt: Uuid::new_v4(),
         name: "Rejected".into(),
         vendor: "mock".into(),
         config: pairing_config("mock://pair2", "reject"),
@@ -209,6 +218,7 @@ async fn cancel_pair_terminates_manual_session() {
     // way out.
     client.command(Command::Pair {
         id,
+        attempt: Uuid::new_v4(),
         name: "Cancelled".into(),
         vendor: "mock".into(),
         config: pairing_config("mock://pair3", "manual"),

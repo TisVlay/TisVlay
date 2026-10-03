@@ -217,6 +217,13 @@ pub mod payload {
     /// reach the wire, clients branch on `phase` and localize by `code`.
     #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
     pub struct PairingProgress {
+        /// The pairing attempt this sample belongs to, minted per pair /
+        /// re-pair and returned by that rpc. A TV's progress key outlives
+        /// its sessions — a history subscriber sees earlier attempts'
+        /// samples replayed from the cache, in an order relative to the
+        /// live ones that isn't guaranteed — so a watcher drains only its
+        /// own attempt.
+        pub attempt: uuid::Uuid,
         /// `awaiting_tv` | `awaiting_input` | `complete` | `failed`.
         pub phase: String,
         pub message: String,
@@ -231,9 +238,11 @@ pub mod payload {
         pub path: Option<String>,
     }
 
-    impl From<&tisvlay_core::PairingState> for PairingProgress {
-        fn from(state: &tisvlay_core::PairingState) -> Self {
+    impl PairingProgress {
+        /// Project a core pairing state onto `attempt`'s progress sample.
+        pub fn from_state(attempt: uuid::Uuid, state: &tisvlay_core::PairingState) -> Self {
             Self {
+                attempt,
                 phase: state.to_dbus_state().into(),
                 message: state.message().into(),
                 code: state.error().map(|e| e.code.as_str().into()),

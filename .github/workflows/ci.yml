@@ -38,7 +38,7 @@ jobs:
         with:
           tool: |
             cargo-about@0.9.1
-            cargo-deny@0.19.9
+            cargo-deny@0.20.2
             cargo-llvm-cov
             cargo-nextest
             cargo-sbom@0.10.0

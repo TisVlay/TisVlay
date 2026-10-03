@@ -443,9 +443,9 @@ async fn run() -> Result<()> {
             ack(&caller, &keys::tv_rpc(site, &id, "update-config"), patch).await
         }
         Command::Repair { id } => {
-            call(&caller, &keys::tv_rpc(site, &id, "re-pair"), Value::Null).await?;
+            let started = call(&caller, &keys::tv_rpc(site, &id, "re-pair"), Value::Null).await?;
             println!("re-pairing session {id} started");
-            watch_pairing(&session, &caller, site, id).await
+            watch_pairing(&session, &caller, site, id, &reply_attempt(&started)?).await
         }
         Command::Power { id, state } => {
             let verb = if state == "on" {
@@ -1240,12 +1240,27 @@ async fn pair(
     let id = Uuid::parse_str(started["id"].as_str().unwrap_or_default())
         .map_err(|_| anyhow!("daemon reply carried no pairing id"))?;
     println!("pairing session {id} started");
-    watch_pairing(session, caller, site, id).await
+    watch_pairing(session, caller, site, id, &reply_attempt(&started)?).await
 }
 
-/// Stream a pairing session's progress phases to stdout until a terminal
-/// one; ctrl-c sends cancel-pair.
-async fn watch_pairing(session: &Session, caller: &Caller, site: &str, id: Uuid) -> Result<()> {
+/// The attempt id a pair / re-pair reply carries — the progress filter.
+fn reply_attempt(started: &Value) -> Result<String> {
+    started["attempt"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("daemon reply carried no pairing attempt"))
+}
+
+/// Stream a pairing attempt's progress phases to stdout until a terminal
+/// one; ctrl-c sends cancel-pair. Samples from other attempts (earlier
+/// sessions replayed from the cache) are skipped.
+async fn watch_pairing(
+    session: &Session,
+    caller: &Caller,
+    site: &str,
+    id: Uuid,
+    attempt: &str,
+) -> Result<()> {
     let subscriber = session
         .declare_subscriber(keys::pairing_progress(site, &id))
         .history(HistoryConfig::default().detect_late_publishers())
@@ -1257,6 +1272,9 @@ async fn watch_pairing(session: &Session, caller: &Caller, site: &str, id: Uuid)
                 let Ok(sample) = sample else { bail!("progress stream closed") };
                 let value: Value =
                     serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                if value["attempt"] != attempt {
+                    continue;
+                }
                 let phase = value["phase"].as_str().unwrap_or("?");
                 println!("[{phase}] {}", value["message"].as_str().unwrap_or(""));
                 match phase {

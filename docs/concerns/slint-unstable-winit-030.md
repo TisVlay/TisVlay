@@ -14,7 +14,7 @@ Slint marks the `winit_030` module as "may be removed or changed in future minor
 
 ### Pin
 
-`slint = "=1.17.0"` — exact-version pin in `crates/tisvlay-gui/Cargo.toml`. The matching test dependency `i-slint-backend-testing` and `slint-build` are similarly exact-pinned to `=1.17.0` (the latter so the `.slint` compiler can't desync from the runtime under `cargo update`).
+`slint = "=1.18.1"` — exact-version pin in `crates/tisvlay-gui/Cargo.toml`. The matching test dependency `i-slint-backend-testing` and `slint-build` are similarly exact-pinned to `=1.18.1` (the latter so the `.slint` compiler can't desync from the runtime under `cargo update`).
 
 ### Risk
 
@@ -47,6 +47,8 @@ API surface (`WinitWindowAccessor::with_winit_window`,
 `with_winit_window_attributes_hook`, the `activation-token` plumbing) is intact.
 Behavioral checks (taskbar pulse on re-activation, startup-notify activation
 token) are manual KDE QA.
+
+**1.17.0 → 1.18.1 audit (done).** The `winit_030` module still wraps winit 0.30 and the three call sites compile unchanged (`just check` green). 1.18 deprecates the `ScrollView` / `Flickable` `viewport-*` properties as aliases of `content-*`; the UI now uses `content-width` / `content-y`. Behavioral changes worth a manual pass: `Slider` no longer emits `changed` when already at min/max (the volume/backlight `OptimisticSlider` at 0 and 100), focus clears when the focused item turns invisible, and the winit/Wayland first-frame-size and fractional-scaling fixes.
 
 ### Audit checklist on upgrade
 

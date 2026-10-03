@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::compat::{DaemonClient, PairTerminal, PairingProgressDetail};
+use crate::compat::{DaemonClient, PairStarted, PairTerminal, PairingProgressDetail};
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -146,6 +146,32 @@ pub(crate) fn cancel_wizard_manual_lookup(cancel: &WizardManualLookupCancel) {
     }
 }
 
+/// The name a discovery pick should leave in the wizard's name field:
+/// `default` (the picked entry's name) when the field is empty or still
+/// holds what the previous pick auto-filled, `None` when the user typed
+/// it — so Back + a different pick doesn't keep the earlier TV's name,
+/// and a hand-typed name is never overwritten.
+pub(crate) fn picked_tv_name(
+    current: &str,
+    last_autofilled: &str,
+    default: &str,
+) -> Option<String> {
+    (current.is_empty() || current == last_autofilled).then(|| default.to_string())
+}
+
+/// Fill the wizard's name field from a pick per [`picked_tv_name`],
+/// remembering the fill so the next pick can replace it.
+pub(crate) fn fill_picked_tv_name(wizard: &PairingWizard<'_>, default: &str) {
+    if let Some(name) = picked_tv_name(
+        &wizard.get_tv_name(),
+        &wizard.get_tv_name_autofilled(),
+        default,
+    ) {
+        wizard.set_tv_name(SharedString::from(name.as_str()));
+        wizard.set_tv_name_autofilled(SharedString::from(name));
+    }
+}
+
 /// Push `entries` into the wizard's `discovered` Slint model.
 /// Caller has already locked + mutated `entries`; this just rebuilds
 /// the visible view from the updated source-of-truth.
@@ -175,6 +201,7 @@ pub(crate) fn reset_wizard(
     wizard.set_step(1);
     wizard.set_selected_index(-1);
     wizard.set_tv_name(SharedString::default());
+    wizard.set_tv_name_autofilled(SharedString::default());
     wizard.set_system_profile(SharedString::default());
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
@@ -441,19 +468,20 @@ pub(crate) async fn run_wizard_pair(
     // tv_id immediately. Errors here are unknown-vendor /
     // ConfigInvalidVendorConfig / etc. — route via the field-mapper
     // so per-field problems bounce back to step 2.
-    let tv_id = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
-        Ok(id) => id,
-        Err(e) => {
-            publish_pair_outcome(
-                app_weak,
-                &wizard_gen,
-                captured_gen,
-                Err(PairError::Rpc(e)),
-                true,
-            );
-            return;
-        }
-    };
+    let PairStarted { tv_id, attempt } =
+        match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
+            Ok(started) => started,
+            Err(e) => {
+                publish_pair_outcome(
+                    app_weak,
+                    &wizard_gen,
+                    captured_gen,
+                    Err(PairError::Rpc(e)),
+                    true,
+                );
+                return;
+            }
+        };
 
     // Set tv_id on the wizard so the Cancel button can route the
     // `cancel-pair` rpc. The same pair_tv_id is consumed
@@ -474,7 +502,7 @@ pub(crate) async fn run_wizard_pair(
     // Drain to terminal, dispatching non-terminal phases into the
     // wizard's phase/message fields with the gen-guarded callback.
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, on_progress).await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
 
     let result = terminal_to_result(outcome, tv_id);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
@@ -521,9 +549,10 @@ async fn run_pair_no_progress(
 ///   the existing TV's credentials in place. The wizard's
 ///   StepPair UI was pre-filled with display-only labels by the
 ///   `on_request_re_pair` handler.
-/// - tv_id is the caller-provided argument (we already know it),
-///   so the drain filter is straightforward — no "first signal
-///   wins" heuristic needed.
+/// - tv_id is the caller-provided argument (we already know it), and
+///   the re-pair rpc returns the session's attempt — the drain filters
+///   on both, so the previous session's replayed `complete` can't end
+///   it.
 /// - Errors route through the same `publish_pair_outcome` path,
 ///   so re-pair surfaces failures with the same UI as the pair flow.
 pub(crate) async fn run_wizard_re_pair(
@@ -545,7 +574,7 @@ pub(crate) async fn run_wizard_re_pair(
             // explicit failure instead of an optimistic `complete`.
             let result = match daemon.re_pair(&tv_id).await {
                 Err(e) => Err(PairError::Rpc(e)),
-                Ok(()) => {
+                Ok(_) => {
                     let msg = gettext(
                         "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
                     );
@@ -559,19 +588,22 @@ pub(crate) async fn run_wizard_re_pair(
 
     // Re-pair's sync RPC errors are TvNotFound / AlreadyPairing —
     // route them through the same outcome publisher.
-    if let Err(e) = daemon.re_pair(&tv_id).await {
-        publish_pair_outcome(
-            app_weak,
-            &wizard_gen,
-            captured_gen,
-            Err(PairError::Rpc(e)),
-            true,
-        );
-        return;
-    }
+    let attempt = match daemon.re_pair(&tv_id).await {
+        Ok(attempt) => attempt,
+        Err(e) => {
+            publish_pair_outcome(
+                app_weak,
+                &wizard_gen,
+                captured_gen,
+                Err(PairError::Rpc(e)),
+                true,
+            );
+            return;
+        }
+    };
 
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, on_progress).await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
 
     let result = terminal_to_result(outcome, tv_id);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
@@ -743,4 +775,28 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::picked_tv_name;
+
+    #[test]
+    fn pick_fills_an_empty_name() {
+        assert_eq!(picked_tv_name("", "", "Den TV"), Some("Den TV".into()));
+    }
+
+    #[test]
+    fn repick_replaces_the_previous_autofill() {
+        // Picked the 55", went Back, picked the 42": the 55"'s name goes.
+        assert_eq!(
+            picked_tv_name("OLED55G3PUA", "OLED55G3PUA", "OLED42C3PUA"),
+            Some("OLED42C3PUA".into())
+        );
+    }
+
+    #[test]
+    fn repick_keeps_a_hand_typed_name() {
+        assert_eq!(picked_tv_name("Office", "OLED55G3PUA", "OLED42C3PUA"), None);
+    }
 }

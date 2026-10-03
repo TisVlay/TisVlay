@@ -10,8 +10,9 @@
 use std::net::IpAddr;
 
 use futures_util::TryStreamExt;
+use netlink_packet_route::AddressFamily;
 use netlink_packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourState};
-use rtnetlink::{IpVersion, new_connection};
+use rtnetlink::new_connection;
 use tracing::warn;
 
 /// Look up the MAC address for `ip` from the kernel neighbour table
@@ -35,11 +36,15 @@ pub(crate) async fn lookup_mac(ip: &str) -> Option<String> {
 }
 
 async fn neighbour_lookup(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String> {
-    let ip_version = match ip {
-        IpAddr::V4(_) => IpVersion::V4,
-        IpAddr::V6(_) => IpVersion::V6,
+    let family = match ip {
+        IpAddr::V4(_) => AddressFamily::Inet,
+        IpAddr::V6(_) => AddressFamily::Inet6,
     };
-    let mut neighbours = handle.neighbours().get().set_family(ip_version).execute();
+    let mut neighbours = handle
+        .neighbours()
+        .get()
+        .set_address_family(family)
+        .execute();
     while let Ok(Some(msg)) = neighbours.try_next().await {
         // Skip entries with no resolved link-layer address.
         match msg.header.state {

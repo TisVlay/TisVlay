@@ -40,12 +40,22 @@ use mirror::{SystemMirror, UserMirror};
 pub type SystemProfileBody = SystemProfileConfig;
 pub type UserProfileBody = UserProfileConfig;
 
-/// Pairing progress detail — field-compatible with the root core type.
+/// Pairing progress detail — field-compatible with the root core type,
+/// plus the attempt the sample belongs to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PairingProgressDetail {
+    pub attempt: String,
     pub message: String,
     pub code: Option<String>,
     pub path: Option<String>,
+}
+
+/// A started pairing session: the TV it enrolls and the attempt id its
+/// progress samples carry (the drain filter).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairStarted {
+    pub tv_id: String,
+    pub attempt: String,
 }
 
 /// Terminal pairing outcome, drained from the progress key.
@@ -361,7 +371,7 @@ impl DaemonClient {
         vendor: &str,
         config_json: &str,
         managed: bool,
-    ) -> Result<String> {
+    ) -> Result<PairStarted> {
         let config: Value = serde_json::from_str(config_json).context("pairing config JSON")?;
         let body = serde_json::to_value(rpc::AddTv {
             id: None,
@@ -373,17 +383,19 @@ impl DaemonClient {
         let ok = self
             .call(&keys::manager_rpc(&self.site, "pair"), body)
             .await?;
-        ok["id"]
-            .as_str()
-            .map(str::to_string)
-            .context("pair reply carries the id")
+        Ok(PairStarted {
+            tv_id: reply_str(&ok, "id")?,
+            attempt: reply_str(&ok, "attempt")?,
+        })
     }
 
-    pub async fn re_pair(&self, tv: &str) -> Result<()> {
+    /// Start a re-pair; returns the attempt id its progress samples carry.
+    pub async fn re_pair(&self, tv: &str) -> Result<String> {
         let id = parse_tv(tv)?;
-        self.call(&keys::tv_rpc(&self.site, &id, "re-pair"), Value::Null)
-            .await
-            .map(|_| ())
+        let ok = self
+            .call(&keys::tv_rpc(&self.site, &id, "re-pair"), Value::Null)
+            .await?;
+        reply_str(&ok, "attempt")
     }
 
     pub async fn cancel_pair(&self, tv: &str) -> Result<()> {
@@ -425,6 +437,7 @@ impl DaemonClient {
                     tv.to_string(),
                     progress["phase"].as_str().unwrap_or_default().to_string(),
                     PairingProgressDetail {
+                        attempt: progress["attempt"].as_str().unwrap_or_default().to_string(),
                         message: progress["message"].as_str().unwrap_or_default().to_string(),
                         code: progress["code"].as_str().map(str::to_string),
                         path: progress["path"].as_str().map(str::to_string),
@@ -438,19 +451,22 @@ impl DaemonClient {
         Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }
 
-    /// Drain a pairing-progress stream to `tv_id`'s terminal phase,
-    /// reporting non-terminal phases through `on_progress` — root
-    /// semantics verbatim.
+    /// Drain a pairing-progress stream to `attempt`'s terminal phase on
+    /// `tv_id`, reporting its non-terminal phases through `on_progress`.
+    /// Other attempts' samples — earlier sessions replayed from the deep
+    /// cache — are skipped, so a stale terminal can't end the drain.
     pub async fn drain_pair_to_terminal<S>(
         stream: S,
         target_tv_id: &str,
+        attempt: &str,
         on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
         S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
     {
         let mut stream = std::pin::pin!(stream);
-        Self::drain_pair_to_terminal_pinned(stream.as_mut(), target_tv_id, on_progress).await
+        Self::drain_pair_to_terminal_pinned(stream.as_mut(), target_tv_id, attempt, on_progress)
+            .await
     }
 
     /// Pinned-borrow workhorse for [`Self::drain_pair_to_terminal`] —
@@ -459,6 +475,7 @@ impl DaemonClient {
     pub async fn drain_pair_to_terminal_pinned<S>(
         mut stream: std::pin::Pin<&mut S>,
         target_tv_id: &str,
+        attempt: &str,
         mut on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
@@ -466,7 +483,7 @@ impl DaemonClient {
     {
         use futures_util::StreamExt;
         while let Some((tv_id, phase, detail)) = stream.as_mut().next().await {
-            if tv_id != target_tv_id {
+            if tv_id != target_tv_id || detail.attempt != attempt {
                 continue;
             }
             match phase.as_str() {
@@ -1338,6 +1355,14 @@ fn parse_tv(tv: &str) -> Result<Uuid> {
     tv.parse().with_context(|| format!("invalid TV id '{tv}'"))
 }
 
+/// A required string field of an rpc reply.
+fn reply_str(reply: &Value, field: &str) -> Result<String> {
+    reply[field]
+        .as_str()
+        .map(str::to_string)
+        .with_context(|| format!("reply carries no `{field}`"))
+}
+
 mod mirror_row {
     //! `TvRow` → `TvInfo` projection, kept next to the type it fills.
 
@@ -1448,5 +1473,46 @@ mod mirror_row {
                     .unwrap_or_default(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(tv: &str, phase: &str, attempt: &str) -> (String, String, PairingProgressDetail) {
+        (
+            tv.into(),
+            phase.into(),
+            PairingProgressDetail {
+                attempt: attempt.into(),
+                message: format!("{phase} ({attempt})"),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// A re-pair's history subscriber replays the previous session's
+    /// terminal; the drain must not mistake it for the current attempt's.
+    #[tokio::test]
+    async fn drain_skips_terminals_from_other_attempts() {
+        let stream = futures_util::stream::iter([
+            sample("tv", "complete", "old"),
+            sample("other", "complete", "new"),
+            sample("tv", "awaiting_tv", "new"),
+            sample("tv", "failed", "old"),
+            sample("tv", "complete", "new"),
+        ]);
+        let mut phases = Vec::new();
+        let terminal = DaemonClient::drain_pair_to_terminal(stream, "tv", "new", |phase, _| {
+            phases.push(phase.to_string());
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(&terminal, PairTerminal::Complete { tv_id, message } if tv_id == "tv" && message == "complete (new)"),
+            "{terminal:?}"
+        );
+        assert_eq!(phases, ["awaiting_tv"]);
     }
 }

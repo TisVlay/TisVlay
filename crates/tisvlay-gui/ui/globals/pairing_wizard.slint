@@ -164,6 +164,11 @@ export global PairingWizard {
     // -- Two-way: Rust seeds, the wizard's controls write back --
     in-out property <int> selected-index: -1;
     in-out property <string> tv-name;
+    // The name the wizard last auto-filled from a picked entry. A pick
+    // replaces `tv-name` while it still equals this (the user hasn't
+    // typed over it), so going Back and picking another TV doesn't keep
+    // the previous TV's name.
+    in-out property <string> tv-name-autofilled;
     in-out property <string> system-profile;
     in-out property <bool> managed: true;
     // Index into `supported-vendors` for the vendor the user picked

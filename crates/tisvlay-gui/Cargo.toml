@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 # x11rb off the cold-build path). `unstable-winit-030` is pinned
 # exactly with slint — see the root crate's comment block for the
 # audit checklist.
-slint = { version = "=1.17.0", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -35,7 +35,7 @@ clap = { workspace = true }
 parking_lot = "0.12"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 wl-clipboard-rs = "0.9"
-gettext-rs = "0.7"
+gettext-rs = "0.8"
 webbrowser = "1"
 tempfile = { workspace = true }
 os_info = { version = "3", default-features = false }
@@ -46,10 +46,10 @@ zbus = { workspace = true }
 [dev-dependencies]
 # Headless Slint backend for element-tree tests; preliminary API, so
 # pinned exactly with slint.
-i-slint-backend-testing = "=1.17.0"
+i-slint-backend-testing = "=1.18.1"
 
 [build-dependencies]
-slint-build = "=1.17.0"
+slint-build = "=1.18.1"
 
 [lints]
 workspace = true

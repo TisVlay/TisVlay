@@ -121,6 +121,7 @@ Zenoh stack findings (load-bearing, learned empirically):
 - Multi-reply queries (discovery streaming) need `ConsolidationMode::None` querier-side or consolidation eats same-key replies.
 - `timestamping/enabled` must be on daemon-side for cache ordering.
 - Zenoh publishers guarantee no cross-key sample ordering — tests wait on combined predicates in a single drain (never two sequential waits on one subscriber).
+- History replay vs live samples has no guaranteed order, and per-publisher sequencing drops replayed history once a newer live sample is delivered — so pairing progress carries a per-session `attempt` (returned by pair / re-pair) and watchers drain only theirs.
 - A zenoh `get` matching zero queryables completes instantly with no reply — first-rpc-after-serve paths retry the no-reply case.
 - Zenoh rejects tokio's current-thread scheduler — zenoh-touching tests need `#[tokio::test(flavor = "multi_thread")]`.
 - Stale Unix socket files are fine: zenoh's `.lock` protocol takes over an unclean listener path on the next bind.
