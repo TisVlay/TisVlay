@@ -33,20 +33,9 @@ Touchpoints in the daemon's pair flow:
 - **Pair-time vs cache-stale.** A TV that gets a new NIC (or factory reset on certain firmwares) keeps the old MAC in the saved config. Pair-time re-capture *should* update on each re-pair so a user who re-pairs after a TV repair gets the fresh MAC. Re-pair already implies the user is making a deliberate update, so overwriting is fine in that path. AddTv is the always-write path; RePair could be the overwrite-anyway path.
 - **Multiple TVs sharing one IP** (none in practice) — not a concern for v1.
 
-## Device-reported MAC (routed and VLAN-isolated TVs)
+## Device-reported MAC — shipped
 
-Every ARP/NDP path above — wizard-time enrichment and this pair-time snoop alike — only sees on-link hosts. A TV on a separate L3 segment never gets a neighbour entry on the daemon host; only the gateway does. That's a deliberate, common layout: IoT devices on their own VLAN with internet access restricted, discovery reflected across by a multicast reflector (mDNS/SSDP), and Wake-on-LAN re-emitted onto the IoT segment by the same reflector. Discovery and WoL both work there, but the MAC can never be auto-filled, and pair-time capture as specced finds nothing either.
-
-Field case: OLED42C3PUA on `192.168.4.0/24` behind the gateway, the desktop on `192.168.1.0/24`, a reflector bridging SSDP + WoL between the two. The wizard auto-filled the IP from SSDP and left the MAC blank; the daemon's neighbour lookup was verified correct against `ip neigh` for every on-link host.
-
-Fix shape: ask the device. Once paired, the TV can report its own NIC MACs over the vendor control channel — a fact that doesn't depend on L2 adjacency. For LG, the candidate is SSAP `ssap://com.webos.service.connectionmanager/getinfo`, which on webOS firmwares that expose it returns `wiredInfo` / `wifiInfo` blocks carrying `macAddress`. Our pairing manifest already requests `READ_NETWORK_STATE`, the permission it gates on.
-
-- **Verified on the C3.** `connectionmanager/getinfo` returns per-interface MACs (`wiredInfo` / `wifiInfo` / `p2pInfo`), and `connectionmanager/getstatus` (lowercase) returns per-interface `state` and `ipAddress` — see `docs/lg/firmware-quirks.md`; the ignored `field_probe` test in `tisvlay-lg` reproduces both. The G3 shares the firmware family; the G4 is unprobed.
-- **Which MAC.** Join the two calls: the interface whose `state` is `connected` and whose `ipAddress` equals the configured address is the attached NIC, and its `getinfo` MAC is the wake target. That's one MAC, with no guessing, so the single-homed `mac` field stays as is. Never `p2pInfo` (Wi-Fi Direct).
-- **Don't gate on `isWakeOnWifiEnabled`.** `getstatus` also reports `wifi.isWakeOnWifiEnabled`, but on the C3 it reads `false` while Wi-Fi WoL demonstrably works (see `docs/lg/firmware-quirks.md`). Store the MAC regardless; at most log the flag.
-- **Where it lands.** The backend reads it after the connect snapshot and reports it alongside the hardware identity it already enriches on connect. The world fills the TV's `mac` config field only when it's empty, never overwriting a user-typed value, matching the idempotence rule above. The config publish and the store write follow the existing dirty-store path.
-- **Vendor-agnostic seam.** Expose it as an optional device fact ("reported link MACs"), not an LG special case, so a future backend with an equivalent query (or CEC, which has none) slots in or opts out.
-- **Ordering with ARP.** On-link ARP and device-reported values should agree. When both exist, the device-reported MAC for the attached interface is the stronger fact, while the ARP result stays the wizard-time preview.
+For vendors that implement `TvConnection::get_link_mac`, the daemon reads the MAC from the device itself on the pairing-verification dial: it fills a blank `mac` and flags a configured one that disagrees. That covers the case every ARP/NDP path here misses, a TV on a routed or VLAN-isolated segment where the kernel neighbor table only sees the gateway. See [architecture.md](../architecture.md) (the `PairVerifying` invariant) and, for LG's `connectionmanager` join, [lg/firmware-quirks.md](../lg/firmware-quirks.md). What remains in this idea is the ARP snoop for vendors that can't report their own MAC.
 
 ## Trade-offs vs the wizard-time enrichment
 
