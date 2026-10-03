@@ -349,6 +349,8 @@ pub enum BackendEvent {
         hardware: Option<tisvlay_core::HardwareId>,
         capabilities: Vec<String>,
         retry: tisvlay_core::RetryConfig,
+        /// The device-reported link MAC — read only on a pairing dial.
+        link_mac: Option<tisvlay_core::MacAddress>,
     },
     /// Dial failed before a connection existed.
     ConnectFailed { reason: DialFailure },

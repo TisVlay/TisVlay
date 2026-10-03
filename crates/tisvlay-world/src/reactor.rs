@@ -185,6 +185,7 @@ impl Reactor {
                 Effect::SpawnConnect {
                     tv,
                     dial,
+                    pairing,
                     vendor,
                     config,
                     wake,
@@ -207,6 +208,7 @@ impl Reactor {
                         tokio::spawn(backend::connect_flow(
                             tv,
                             dial,
+                            pairing,
                             Arc::clone(connector),
                             config,
                             wake,

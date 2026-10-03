@@ -339,6 +339,17 @@ impl MockHandle {
             .unwrap_or(0)
     }
 
+    /// How many times the daemon asked connections to the TV at `address`
+    /// for their link MAC, cumulative across reconnects. 0 if never.
+    pub fn link_mac_call_count(&self, address: &str) -> usize {
+        self.state
+            .lock()
+            .link_mac_calls
+            .get(address)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------

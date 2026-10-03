@@ -404,7 +404,7 @@ pub(crate) async fn fetch_and_publish_schema(
 /// to add others as the manual-entry story grows.
 fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
     for row in rows.iter_mut() {
-        if row.name == "mac" && row.value.is_empty() {
+        if row.name == tisvlay_core::MAC_CONFIG_KEY && row.value.is_empty() {
             row.helper = gettext(
                 "MAC not detected. Enter it manually to enable Wake-on-LAN \
                  (otherwise the TV won't power on from full-off).",

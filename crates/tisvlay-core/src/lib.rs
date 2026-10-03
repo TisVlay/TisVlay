@@ -98,7 +98,7 @@ pub use state::{
 pub use error::{Error, Result};
 
 // Wake-on-LAN
-pub use wol::{MacAddress, WakeOptions, wake, wake_with_options};
+pub use wol::{MAC_CONFIG_KEY, MacAddress, WakeOptions, wake, wake_with_options};
 
 // Concurrency helpers (async tokio utilities)
 pub use coalescer::Coalescer;

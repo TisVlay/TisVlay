@@ -854,6 +854,43 @@ fn build_record(entity: Entity, id: Uuid, writes: &SettingsWrites) -> Option<TvR
     })
 }
 
+/// Re-derive a TV's config-derived facts (wake support, transport traits,
+/// display rows) after its vendor config changed, without waiting for a
+/// dial: a MAC that just arrived is exactly what lights the wake path up.
+fn push_config_facts(outbox: &mut Outbox, tv: Uuid, vendor: &VendorRef) {
+    outbox.0.push(Effect::Facts {
+        tv,
+        vendor: vendor.vendor.clone(),
+        config: vendor.config.clone(),
+    });
+}
+
+/// Fill the vendor config's MAC from the device-reported one when it's
+/// unset (absent, or blank after trimming); never overwrite a set value.
+/// `wake_id`, the generic alias the CLI may have written for the same
+/// field, counts as set — a second spelling would collide on parse.
+/// Returns whether it filled.
+fn fill_unset_mac(config: &mut toml::Value, mac: tisvlay_core::MacAddress) -> bool {
+    let Some(table) = config.as_table_mut() else {
+        return false;
+    };
+    if table.contains_key("wake_id") {
+        return false;
+    }
+    let unset = match table.get(tisvlay_core::MAC_CONFIG_KEY) {
+        None => true,
+        Some(toml::Value::String(current)) => current.trim().is_empty(),
+        Some(_) => false,
+    };
+    if unset {
+        table.insert(
+            tisvlay_core::MAC_CONFIG_KEY.into(),
+            toml::Value::String(mac.to_string()),
+        );
+    }
+    unset
+}
+
 /// Two-pass config patch: validate every key, then apply. Top-level keys
 /// map onto settings; everything else merges into the vendor table (a JSON
 /// `null` unsets the key), which forces a reconnect.
@@ -963,11 +1000,7 @@ fn apply_config_patch(
         // and waiting for the next successful dial would leave
         // `supports_wake` stale until then.
         if let Ok(vendor) = writes.vendor.get(entity) {
-            outbox.0.push(Effect::Facts {
-                tv: id,
-                vendor: vendor.vendor.clone(),
-                config: vendor.config.clone(),
-            });
+            push_config_facts(outbox, id, vendor);
         }
         // Transport parameters may have changed — reconnect with the new
         // config if this TV is being driven at all.
@@ -1372,6 +1405,7 @@ fn apply_backend_events(
     mut dirty: ResMut<DirtyStore>,
     verifying: Query<&PairVerifying>,
     latest: Query<&LatestDial>,
+    mut vendors: Query<&mut VendorRef>,
     mut writes: StateWrites,
 ) {
     for msg in reader.read() {
@@ -1402,6 +1436,7 @@ fn apply_backend_events(
                 hardware,
                 capabilities,
                 retry,
+                link_mac,
             } => {
                 tracing::debug!(%tv, "connected event applying");
                 let wake_dial = writes.pending.get(entity).is_ok_and(|p| p.wake);
@@ -1442,6 +1477,15 @@ fn apply_backend_events(
                 // verified TV reaches the store.
                 if let Ok(pair) = verifying.get(entity) {
                     commands.entity(entity).remove::<PairVerifying>();
+                    // The device-reported link MAC fills a missing one; the
+                    // facts refresh makes the TV wakeable right away.
+                    if let Some(mac) = *link_mac
+                        && let Ok(mut vendor) = vendors.get_mut(entity)
+                        && fill_unset_mac(&mut vendor.config, mac)
+                    {
+                        tracing::info!(%tv, %mac, "MAC filled from the device");
+                        push_config_facts(&mut outbox, *tv, &vendor);
+                    }
                     publish_pairing_progress(
                         &mut outbox,
                         &site,
@@ -2324,11 +2368,12 @@ fn reconcile_connections(
             Option<&RetryAt>,
             Option<&MonitoredInterface>,
             Has<AwaitingRoute>,
+            Has<PairVerifying>,
         ),
         (Without<ConnectionHandle>, Without<Reconnecting>),
     >,
 ) {
-    for (entity, id, vendor, mut pending, retry, monitored, awaiting) in &mut q {
+    for (entity, id, vendor, mut pending, retry, monitored, awaiting, pairing) in &mut q {
         // The dial gate, in one place: no live handle, no in-flight
         // dial (the query filters), backoff elapsed, and a route
         // present — or route monitoring absent entirely (CEC, and any
@@ -2365,6 +2410,7 @@ fn reconcile_connections(
         outbox.0.push(Effect::SpawnConnect {
             tv: id.0,
             dial,
+            pairing,
             vendor: vendor.vendor.clone(),
             config: vendor.config.clone(),
             wake: pending.wake,
@@ -2451,6 +2497,50 @@ fn snapshot_store(
 mod tests {
     use super::*;
     use tisvlay_core::{EventAction, SessionAction};
+
+    fn config(entries: &[(&str, toml::Value)]) -> toml::Value {
+        toml::Value::Table(
+            entries
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    fn mac_of(config: &toml::Value) -> Option<&str> {
+        config
+            .get(tisvlay_core::MAC_CONFIG_KEY)
+            .and_then(toml::Value::as_str)
+    }
+
+    #[test]
+    fn fill_unset_mac_fills_absent_and_blank_in_canonical_form() {
+        let reported = tisvlay_core::MacAddress::parse("84-90-0a-63-a9-94").unwrap();
+        for unset in [
+            config(&[]),
+            config(&[("mac", toml::Value::String(String::new()))]),
+            config(&[("mac", toml::Value::String("  ".into()))]),
+        ] {
+            let mut cfg = unset;
+            assert!(fill_unset_mac(&mut cfg, reported));
+            assert_eq!(mac_of(&cfg), Some("84:90:0A:63:A9:94"));
+        }
+    }
+
+    #[test]
+    fn fill_unset_mac_never_overwrites() {
+        let reported = tisvlay_core::MacAddress::parse("84:90:0A:63:A9:94").unwrap();
+        let mut typed = config(&[("mac", toml::Value::String("64:E4:A5:6C:AB:B4".into()))]);
+        assert!(!fill_unset_mac(&mut typed, reported));
+        assert_eq!(mac_of(&typed), Some("64:E4:A5:6C:AB:B4"));
+        // The CLI's generic alias for the same field counts as set; a second
+        // spelling would collide when the vendor parses its config.
+        let mut alias = config(&[("wake_id", toml::Value::String("64:E4:A5:6C:AB:B4".into()))]);
+        assert!(!fill_unset_mac(&mut alias, reported));
+        assert_eq!(mac_of(&alias), None);
+        let mut odd = config(&[("mac", toml::Value::Integer(1))]);
+        assert!(!fill_unset_mac(&mut odd, reported));
+    }
 
     /// `session_action` threads the resolved action's `while_remote`
     /// gate (and `restore_input`) alongside the mapped `ProfileAction`.

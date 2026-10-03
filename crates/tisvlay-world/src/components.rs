@@ -298,6 +298,9 @@ pub(crate) enum Effect {
         tv: Uuid,
         /// This dial's number; echoed on every event its task sends.
         dial: u64,
+        /// A pairing-verification dial: the connect flow also does the
+        /// pair-time reads (the device-reported link MAC).
+        pairing: bool,
         vendor: String,
         config: toml::Value,
         wake: bool,

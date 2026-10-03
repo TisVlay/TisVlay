@@ -11,10 +11,15 @@ use uuid::Uuid;
 
 use crate::events::{BackendCmd, BackendEvent, InEvent, PairingUpdate};
 
+/// Ceiling on the pair-time link-MAC read, which sits between a pairing
+/// dial's connect and the pairing's `complete`.
+const LINK_MAC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_flow(
     tv: Uuid,
     dial: u64,
+    pairing: bool,
     connector: Arc<dyn TvConnector>,
     config: toml::Value,
     wake: bool,
@@ -67,6 +72,18 @@ pub(crate) async fn connect_flow(
     };
     let brand = connection.brand();
     let hardware = connection.hardware_id();
+    // Pair-time read, bounded: a slow or silent device costs at most the
+    // timeout before the pairing completes, never its request budget.
+    let link_mac = if pairing {
+        tokio::time::timeout(LINK_MAC_TIMEOUT, connection.get_link_mac())
+            .await
+            .unwrap_or_else(|_| {
+                debug!(%tv, "link MAC read timed out");
+                None
+            })
+    } else {
+        None
+    };
     let capabilities: Vec<String> = connection
         .capabilities()
         .iter_names()
@@ -87,6 +104,7 @@ pub(crate) async fn connect_flow(
             hardware,
             capabilities,
             retry,
+            link_mac,
         },
     });
 

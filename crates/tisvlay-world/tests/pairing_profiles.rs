@@ -419,3 +419,111 @@ async fn re_pair_supersedes_an_in_flight_dial() {
     })
     .await;
 }
+
+fn with(mut config: toml::Value, key: &str, value: &str) -> toml::Value {
+    config
+        .as_table_mut()
+        .expect("config is a table")
+        .insert(key.into(), toml::Value::String(value.into()));
+    config
+}
+
+/// The published display row for `label`, if this effect is a vendor-rows
+/// publish carrying one.
+fn vendor_row(effect: &WireEffect, label: &str) -> Option<String> {
+    is_publish_on(effect, "/meta/vendor")?["config"]
+        .as_array()?
+        .iter()
+        .find(|row| row[0] == label)
+        .and_then(|row| row[1].as_str().map(str::to_string))
+}
+
+/// A pairing dial reads the device's link MAC and fills an unset `mac`,
+/// canonicalized — and the config-derived facts refresh at once (the
+/// display rows republish), not at the next dial.
+#[tokio::test]
+async fn pair_fills_an_unset_mac_from_the_device() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    client.command(Command::Pair {
+        id,
+        attempt: Uuid::new_v4(),
+        name: "Office".into(),
+        vendor: "mock".into(),
+        config: with(
+            pairing_config("mock://routed", "accept"),
+            "link_mac",
+            "84-90-0a-63-a9-94",
+        ),
+        managed: true,
+        reply: Some(1),
+    });
+    let mut complete = false;
+    let mut filled = false;
+    collect_until(&mut effects, |e| {
+        complete |= progress_on(e, &progress_key, "complete").is_some();
+        filled |= vendor_row(e, "MAC").as_deref() == Some("84:90:0A:63:A9:94");
+        complete && filled
+    })
+    .await;
+    assert_eq!(handle.link_mac_call_count("mock://routed"), 1);
+}
+
+/// A configured MAC — typed, or auto-filled by ARP — is never overwritten
+/// by the device's report.
+#[tokio::test]
+async fn pair_keeps_a_configured_mac() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    let config = with(
+        with(
+            pairing_config("mock://typed", "accept"),
+            "mac",
+            "64:E4:A5:6C:AB:B4",
+        ),
+        "link_mac",
+        "84:90:0A:63:A9:94",
+    );
+    client.command(Command::Pair {
+        id,
+        attempt: Uuid::new_v4(),
+        name: "Office".into(),
+        vendor: "mock".into(),
+        config,
+        managed: true,
+        reply: Some(1),
+    });
+    let seen = collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "complete").is_some()
+    })
+    .await;
+    assert!(
+        seen.iter()
+            .all(|e| vendor_row(e, "MAC").as_deref() != Some("84:90:0A:63:A9:94")),
+        "the device's MAC must not replace the configured one"
+    );
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        vendor_row(e, "MAC").as_deref() == Some("84:90:0A:63:A9:94")
+    })
+    .await;
+}
+
+/// Only pairing dials read the link MAC: an ordinary enrollment dial
+/// never asks.
+#[tokio::test]
+async fn plain_dial_never_reads_the_link_mac() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(
+            id,
+            "Den",
+            with(mock_config("mock://plain"), "link_mac", "84:90:0A:63:A9:94"),
+        )),
+        reply: Some(1),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    assert_eq!(handle.link_mac_call_count("mock://plain"), 0);
+}
