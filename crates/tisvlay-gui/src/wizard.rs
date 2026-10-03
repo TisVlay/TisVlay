@@ -146,6 +146,32 @@ pub(crate) fn cancel_wizard_manual_lookup(cancel: &WizardManualLookupCancel) {
     }
 }
 
+/// The name a discovery pick should leave in the wizard's name field:
+/// `default` (the picked entry's name) when the field is empty or still
+/// holds what the previous pick auto-filled, `None` when the user typed
+/// it — so Back + a different pick doesn't keep the earlier TV's name,
+/// and a hand-typed name is never overwritten.
+pub(crate) fn picked_tv_name(
+    current: &str,
+    last_autofilled: &str,
+    default: &str,
+) -> Option<String> {
+    (current.is_empty() || current == last_autofilled).then(|| default.to_string())
+}
+
+/// Fill the wizard's name field from a pick per [`picked_tv_name`],
+/// remembering the fill so the next pick can replace it.
+pub(crate) fn fill_picked_tv_name(wizard: &PairingWizard<'_>, default: &str) {
+    if let Some(name) = picked_tv_name(
+        &wizard.get_tv_name(),
+        &wizard.get_tv_name_autofilled(),
+        default,
+    ) {
+        wizard.set_tv_name(SharedString::from(name.as_str()));
+        wizard.set_tv_name_autofilled(SharedString::from(name));
+    }
+}
+
 /// Push `entries` into the wizard's `discovered` Slint model.
 /// Caller has already locked + mutated `entries`; this just rebuilds
 /// the visible view from the updated source-of-truth.
@@ -175,6 +201,7 @@ pub(crate) fn reset_wizard(
     wizard.set_step(1);
     wizard.set_selected_index(-1);
     wizard.set_tv_name(SharedString::default());
+    wizard.set_tv_name_autofilled(SharedString::default());
     wizard.set_system_profile(SharedString::default());
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
@@ -748,4 +775,28 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::picked_tv_name;
+
+    #[test]
+    fn pick_fills_an_empty_name() {
+        assert_eq!(picked_tv_name("", "", "Den TV"), Some("Den TV".into()));
+    }
+
+    #[test]
+    fn repick_replaces_the_previous_autofill() {
+        // Picked the 55", went Back, picked the 42": the 55"'s name goes.
+        assert_eq!(
+            picked_tv_name("OLED55G3PUA", "OLED55G3PUA", "OLED42C3PUA"),
+            Some("OLED42C3PUA".into())
+        );
+    }
+
+    #[test]
+    fn repick_keeps_a_hand_typed_name() {
+        assert_eq!(picked_tv_name("Office", "OLED55G3PUA", "OLED42C3PUA"), None);
+    }
 }

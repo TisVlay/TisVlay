@@ -50,8 +50,8 @@ use toast::show_toast;
 use wizard::{
     WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
     WizardManualLookupCancel, cancel_wizard_discovery, cancel_wizard_manual_lookup,
-    fetch_and_publish_schema, publish_wizard_entries, reset_wizard, run_wizard_discovery,
-    run_wizard_pair, run_wizard_re_pair,
+    fetch_and_publish_schema, fill_picked_tv_name, publish_wizard_entries, reset_wizard,
+    run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
 };
 
 use schema_form::{
@@ -1863,14 +1863,12 @@ fn register_callbacks(
                     return;
                 };
 
-                if wizard.get_tv_name().is_empty() {
-                    let default = if entry.name.is_empty() {
-                        entry.address.clone()
-                    } else {
-                        entry.name.clone()
-                    };
-                    wizard.set_tv_name(SharedString::from(default));
-                }
+                let default = if entry.name.is_empty() {
+                    &entry.address
+                } else {
+                    &entry.name
+                };
+                fill_picked_tv_name(&wizard, default);
                 let vendor_id = SharedString::from(entry.vendor.as_str());
                 let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
                 wizard.set_selected_vendor(vendor_id);
@@ -2406,9 +2404,7 @@ fn register_callbacks(
                 wizard.set_selected_vendor_name(SharedString::from(vendor_display.as_str()));
                 wizard.set_selected_address(SharedString::from(ip_for_ui.as_str()));
                 wizard.set_selected_hw_model(SharedString::default());
-                if wizard.get_tv_name().is_empty() {
-                    wizard.set_tv_name(SharedString::from(ip_for_ui.as_str()));
-                }
+                fill_picked_tv_name(&wizard, &ip_for_ui);
                 if wizard.get_system_profile().is_empty() {
                     wizard.set_system_profile("default".into());
                 }
