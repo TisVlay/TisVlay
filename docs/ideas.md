@@ -13,7 +13,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding)](ideas/cec-followups.md)
 - [Probe library extraction (when GUI lands)](ideas/probe-library-extraction.md)
 - [SSDP `NOTIFY` passive listener](ideas/ssdp-notify-passive-listener.md)
-- [Pair-time MAC capture](ideas/pair-time-mac-capture.md)
+- [Pair-time MAC capture (incl. device-reported MACs for routed/VLAN-isolated TVs)](ideas/pair-time-mac-capture.md)
 - [WoL via raw socket (CAP_NET_RAW)](ideas/wol-raw-socket.md)
 - [Polkit gating for multi-user shared workstations](ideas/polkit-multi-user.md)
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
