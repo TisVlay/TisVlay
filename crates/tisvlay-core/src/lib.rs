@@ -19,11 +19,6 @@
 //! tisvlay-lg (separate crate)
 //! └── LG WebOS implementation of traits
 //! ```
-//!
-//! # Features
-//!
-//! - `logging` - Shared logging init with journald support for binaries
-//! - `wayland` - ext-idle-notify-v1 idle-detection transport
 
 // Core modules (always available)
 mod action;
@@ -42,16 +37,6 @@ mod refresh_trigger;
 mod state;
 mod traits;
 pub mod wol;
-
-// Optional modules
-#[cfg(feature = "access")]
-pub mod access;
-#[cfg(feature = "mutter-idle")]
-pub mod idle_mutter;
-#[cfg(feature = "logging")]
-pub mod logging;
-#[cfg(feature = "wayland")]
-pub mod wayland;
 
 // =============================================================================
 // Public re-exports: Core abstractions

@@ -61,7 +61,7 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
-    tisvlay_core::logging::init(&["tisvlay_session=info", "zbus=warn"], &[])?;
+    tisvlay_runtime::logging::init(&["tisvlay_session=info", "zbus=warn"], &[])?;
     let args = Args::parse();
     let store = if args.ephemeral {
         None

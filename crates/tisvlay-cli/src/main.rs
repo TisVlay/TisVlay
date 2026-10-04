@@ -311,7 +311,7 @@ fn main() -> Result<()> {
 /// `enable-access`: enroll the current user in the daemon's socket group via
 /// a polkit-authenticated `usermod`, printing the outcome.
 fn enable_access(socket: &Path) -> Result<()> {
-    use tisvlay_core::access::{self, EnrollOutcome};
+    use tisvlay_runtime::access::{self, EnrollOutcome};
     // Gate on the durable grant (group membership), never on reachability:
     // a console user's presence grant makes the socket connectable, yet
     // they are exactly who runs this verb to gain SSH/remote access.
@@ -1136,7 +1136,7 @@ async fn open_client(socket: &Path) -> Result<Session> {
             // the group-owned runtime dir isn't even searchable, so socket
             // resolution can't see the live daemon and lands on the dev
             // path. Point at the fix instead of the misleading path.
-            if !tisvlay_core::access::has_access(socket) {
+            if !tisvlay_runtime::access::has_access(socket) {
                 anyhow!(
                     "You don't have TV control access yet — run `tisvlay enable-access` to grant it."
                 )

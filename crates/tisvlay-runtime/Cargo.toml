@@ -1,0 +1,53 @@
+[package]
+name = "tisvlay-runtime"
+description = "TisVlay's process glue for its binaries: logging init, socket-group access, desktop idle transports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Glue the binaries share, kept out of the published tisvlay-core so that
+# crate stays the vendor-agnostic types and traits the backends build on,
+# with no anyhow in its API and no desktop dependencies. Every module is
+# behind a feature, so each binary pulls only what it uses.
+[dependencies]
+tracing = { workspace = true }
+
+# `access`: one-click socket-group enrollment (pkexec usermod) for the CLI/GUI
+libc = { workspace = true, optional = true }
+socket2 = { workspace = true, optional = true }
+
+# `access` and `logging` return anyhow errors to their binary callers
+anyhow = { workspace = true, optional = true }
+
+# `logging`: shared tracing init with journald support
+tracing-subscriber = { workspace = true, optional = true }
+tracing-journald = { workspace = true, optional = true }
+tracing-log = { workspace = true, optional = true }
+
+# `wayland`: ext-idle-notify-v1 idle detection for the session and greeter
+tokio = { workspace = true, optional = true }
+wayland-client = { workspace = true, optional = true }
+wayland-protocols = { workspace = true, optional = true }
+# Interruptible poll over the wayland fd + a stop pipe, so the idle watch can be
+# torn down and re-registered on a timeout change. The same crate (and the same
+# `poll`) wayland-backend itself uses to read events.
+rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
+
+# `mutter-idle`: GNOME idle detection (org.gnome.Mutter.IdleMonitor), the
+# D-Bus fallback where Mutter lacks ext-idle-notify
+zbus = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
+[features]
+default = []
+access = ["dep:libc", "dep:socket2", "dep:anyhow"]
+logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
+wayland = ["dep:tokio", "dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]
+# The Mutter D-Bus idle transport shares the wayland idle vocabulary
+# (`IdleNotification`/`IdleTransition`), so it pulls in `wayland`.
+mutter-idle = ["wayland", "dep:zbus", "dep:futures-util"]
+
+[lints]
+workspace = true

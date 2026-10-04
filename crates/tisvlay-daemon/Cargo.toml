@@ -133,7 +133,8 @@ zbus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tisvlay-cec = { workspace = true }
-tisvlay-core = { workspace = true, features = ["logging"] }
+tisvlay-core = { workspace = true }
+tisvlay-runtime = { workspace = true, features = ["logging"] }
 tisvlay-lg = { workspace = true, features = ["discovery"] }
 tisvlay-mock = { workspace = true }
 tokio = { workspace = true }

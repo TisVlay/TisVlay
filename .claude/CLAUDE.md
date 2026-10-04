@@ -25,8 +25,9 @@ tisvlay/
 ├── crates/
 │   ├── tisvlay-core/              # Core library (vendor-agnostic traits & types)
 │   │   └── src/                  # traits, capabilities, pairing, config (profiles),
-│   │                             # state, wol, wayland (feature), logging (feature),
-│   │                             # Coalescer/ReconcilerMap/RefreshTrigger
+│   │                             # state, wol, Coalescer/ReconcilerMap/RefreshTrigger
+│   ├── tisvlay-runtime/           # Binaries' process glue (unpublished): logging init,
+│   │                             # socket-group access, wayland + Mutter idle transports
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation (SSAP over wss)
 │   ├── tisvlay-cec/               # HDMI-CEC vendor implementation (linux-cec)
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)

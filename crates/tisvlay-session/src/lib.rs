@@ -1354,13 +1354,13 @@ pub async fn idle_adapter(
 ) {
     loop {
         let (locked_secs, unlocked_secs) = *timeouts.borrow_and_update();
-        let mut notifications = vec![tisvlay_core::wayland::IdleNotification {
+        let mut notifications = vec![tisvlay_runtime::wayland::IdleNotification {
             tag: LOCK_WAKE_TAG,
             timeout_ms: LOCK_WAKE_TIMEOUT_MS,
         }];
         let mut push_idle = |tag: u32, seconds: u64| {
             if seconds > 0 {
-                notifications.push(tisvlay_core::wayland::IdleNotification {
+                notifications.push(tisvlay_runtime::wayland::IdleNotification {
                     tag,
                     timeout_ms: u32::try_from(seconds.saturating_mul(1000)).unwrap_or(u32::MAX),
                 });
@@ -1408,7 +1408,7 @@ pub async fn idle_adapter(
     }
 }
 
-use tisvlay_core::idle_mutter::IdleWatch;
+use tisvlay_runtime::idle_mutter::IdleWatch;
 
 /// Attach an idle watch over the first transport the running desktop
 /// provides: the `ext-idle-notify` Wayland protocol (KWin, wlroots), else
@@ -1416,17 +1416,17 @@ use tisvlay_core::idle_mutter::IdleWatch;
 /// `(tag, transition)` channel, so the dispatch is transport-agnostic.
 /// `None` means neither attached — the caller retries.
 async fn start_idle_watch(
-    notifications: Vec<tisvlay_core::wayland::IdleNotification>,
-    tx: mpsc::UnboundedSender<(u32, tisvlay_core::wayland::IdleTransition)>,
+    notifications: Vec<tisvlay_runtime::wayland::IdleNotification>,
+    tx: mpsc::UnboundedSender<(u32, tisvlay_runtime::wayland::IdleTransition)>,
 ) -> Option<IdleWatch> {
     // Wayland first: it needs no bus and is the native path on the KDE
     // targets. Any failure (protocol absent on Mutter, or no compositor)
     // falls through to the D-Bus IdleMonitor.
-    match tisvlay_core::wayland::start_idle_watch(notifications.clone(), tx.clone()) {
+    match tisvlay_runtime::wayland::start_idle_watch(notifications.clone(), tx.clone()) {
         Ok(handle) => return Some(IdleWatch::Wayland(handle)),
         Err(e) => debug!(%e, "wayland idle unavailable; trying Mutter IdleMonitor"),
     }
-    match tisvlay_core::idle_mutter::start_idle_watch(notifications, tx).await {
+    match tisvlay_runtime::idle_mutter::start_idle_watch(notifications, tx).await {
         Ok(handle) => Some(IdleWatch::Mutter(handle)),
         Err(e) => {
             debug!(%e, "Mutter IdleMonitor unavailable");
@@ -1440,12 +1440,12 @@ async fn start_idle_watch(
 /// latch, threaded through [`lock_wake_policy`].
 fn idle_dispatch(
     tag: u32,
-    transition: tisvlay_core::wayland::IdleTransition,
+    transition: tisvlay_runtime::wayland::IdleTransition,
     is_locked: bool,
     return_armed: bool,
     lock_wake_sent: &mut bool,
 ) -> Option<SessionEvent> {
-    use tisvlay_core::wayland::IdleTransition;
+    use tisvlay_runtime::wayland::IdleTransition;
     match (tag, transition) {
         (LOCK_WAKE_TAG, transition) => {
             let (next_sent, fire) = lock_wake_policy(transition, is_locked, *lock_wake_sent);
@@ -1484,7 +1484,7 @@ fn idle_dispatch(
 /// cycle (not per lock session), a watch re-registration mid-session
 /// can't strand or duplicate a wake.
 fn lock_wake_policy(
-    transition: tisvlay_core::wayland::IdleTransition,
+    transition: tisvlay_runtime::wayland::IdleTransition,
     is_locked: bool,
     lock_wake_sent: bool,
 ) -> (bool, bool) {
@@ -1492,8 +1492,8 @@ fn lock_wake_policy(
         // A fresh idle cycle clears the latch so the next resume can
         // wake, independent of any "unlocked" edge. Idle itself never
         // fires a wake.
-        tisvlay_core::wayland::IdleTransition::Idled => (false, false),
-        tisvlay_core::wayland::IdleTransition::Resumed => {
+        tisvlay_runtime::wayland::IdleTransition::Idled => (false, false),
+        tisvlay_runtime::wayland::IdleTransition::Resumed => {
             let fire = is_locked && !lock_wake_sent;
             // Stay latched (meaningful only while locked) until the next
             // Idled, so a burst of resume events doesn't spam LockWake.
@@ -1510,7 +1510,7 @@ mod tests {
         lock_wake_policy,
     };
     use crate::SessionEvent;
-    use tisvlay_core::wayland::IdleTransition;
+    use tisvlay_runtime::wayland::IdleTransition;
 
     #[test]
     fn eager_refresh_fires_on_a_gated_suppressible_dispatch_not_an_event_list() {

@@ -28,7 +28,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
-    tisvlay_core::logging::init(&["tisvlay_tray=info", "zbus=warn", "ksni=warn"], &[])?;
+    tisvlay_runtime::logging::init(&["tisvlay_tray=info", "zbus=warn", "ksni=warn"], &[])?;
     let args = Args::parse();
     tisvlay_tray::run(tisvlay_tray::TrayOptions {
         system_socket: args
