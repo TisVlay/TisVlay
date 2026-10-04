@@ -30,7 +30,7 @@ use crate::PairingFieldRow;
 /// list off the Slint thread. The conversion to `PairingFieldRow`
 /// happens inside an `on_ui` closure once we're back on the event-loop
 /// thread.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct AutofilledRow {
     pub name: String,
     pub label: String,

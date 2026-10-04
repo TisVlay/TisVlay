@@ -6,6 +6,12 @@ use crate::error::{Error, Result};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
+/// The cross-vendor config key carrying a TV's Wake-on-LAN MAC. Vendors
+/// whose wake path needs a MAC store it under this key, which lets the
+/// daemon fill it generically (manual-entry ARP enrichment, the
+/// device-reported link MAC at pair time).
+pub const MAC_CONFIG_KEY: &str = "mac";
+
 /// MAC address representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacAddress([u8; 6]);
@@ -20,10 +26,11 @@ impl MacAddress {
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.replace(['-', ':'], "");
 
-        if s.len() != 12 {
+        // Check the digits before slicing: the byte-indexed slices below
+        // would panic on a multi-byte character.
+        if s.len() != 12 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::InvalidMacAddress(format!(
-                "Expected 12 hex digits, got {}",
-                s.len()
+                "Expected 12 hex digits, got {s:?}"
             )));
         }
 
@@ -185,6 +192,15 @@ pub fn wake_best_effort(mac: &MacAddress) {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn parse_rejects_non_ascii_without_panicking() {
+        // Six two-byte characters: 12 bytes, so it passes a length check,
+        // but the byte-indexed slicing would split a character.
+        assert!(MacAddress::parse("éééééé").is_err());
+        assert!(MacAddress::parse("éé:éé:éé:éé:éé:éé").is_err());
+        assert!(MacAddress::parse("GG:BB:CC:DD:EE:FF").is_err());
+    }
 
     #[test]
     fn test_parse_mac_colon() {

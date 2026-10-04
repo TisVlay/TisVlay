@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, ProfileIndex, RemoteArmed, Site,
-    SystemProfile, TvIndex,
+    Clock, DialSeq, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, ProfileIndex,
+    RemoteArmed, Site, SystemProfile, TvIndex,
 };
 use crate::events::{
     BackendEvent, Command, InEvent, PairingUpdate, RouteRequest, StoreSnapshot, TvRecord,
@@ -90,6 +90,7 @@ impl Reactor {
         world.init_resource::<PairingIndex>();
         world.init_resource::<ProfileIndex>();
         world.init_resource::<DirtyStore>();
+        world.init_resource::<DialSeq>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
 
@@ -183,6 +184,8 @@ impl Reactor {
                 }
                 Effect::SpawnConnect {
                     tv,
+                    dial,
+                    pairing,
                     vendor,
                     config,
                     wake,
@@ -204,6 +207,8 @@ impl Reactor {
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
                         tokio::spawn(backend::connect_flow(
                             tv,
+                            dial,
+                            pairing,
                             Arc::clone(connector),
                             config,
                             wake,
@@ -217,6 +222,7 @@ impl Reactor {
                         // practice — surface it as a dial failure if it happens.
                         let _ = self.inbox_tx.send(InEvent::Backend {
                             tv,
+                            dial,
                             event: BackendEvent::ConnectFailed {
                                 reason: crate::events::DialFailure::message(format!(
                                     "no connector for vendor '{vendor}'"

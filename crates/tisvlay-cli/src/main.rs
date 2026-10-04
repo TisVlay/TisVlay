@@ -1243,6 +1243,20 @@ async fn pair(
     watch_pairing(session, caller, site, id, &reply_attempt(&started)?).await
 }
 
+/// One line on what the pairing did with the device-reported link MAC.
+fn link_mac_line(id: Uuid, report: &tisvlay_wire::payload::LinkMacReport) -> String {
+    use tisvlay_wire::payload::LinkMacOutcome;
+    let reported = &report.reported;
+    match &report.outcome {
+        LinkMacOutcome::Filled => format!("mac: detected {reported} (saved)"),
+        LinkMacOutcome::Matches => format!("mac: {reported} (matches the TV)"),
+        LinkMacOutcome::Differs { configured } => format!(
+            "mac: TV reports {reported}, configured {configured}; to use it: \
+             tisvlay config-set {id} '{{\"mac\":\"{reported}\"}}'"
+        ),
+    }
+}
+
 /// The attempt id a pair / re-pair reply carries — the progress filter.
 fn reply_attempt(started: &Value) -> Result<String> {
     started["attempt"]
@@ -1280,6 +1294,9 @@ async fn watch_pairing(
                 match phase {
                     "complete" => {
                         println!("paired: {id}");
+                        if let Ok(report) = serde_json::from_value(value["link_mac"].clone()) {
+                            println!("{}", link_mac_line(id, &report));
+                        }
                         return Ok(());
                     }
                     "failed" => bail!(
@@ -1445,6 +1462,36 @@ async fn watch(session: &Session, site: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn link_mac_line_names_each_outcome() {
+        use tisvlay_wire::payload::{LinkMacOutcome, LinkMacReport};
+        let id = uuid::Uuid::nil();
+        let report = |outcome| LinkMacReport {
+            reported: "84:90:0A:63:A9:94".into(),
+            outcome,
+        };
+        assert_eq!(
+            super::link_mac_line(id, &report(LinkMacOutcome::Filled)),
+            "mac: detected 84:90:0A:63:A9:94 (saved)"
+        );
+        assert_eq!(
+            super::link_mac_line(id, &report(LinkMacOutcome::Matches)),
+            "mac: 84:90:0A:63:A9:94 (matches the TV)"
+        );
+        assert_eq!(
+            super::link_mac_line(
+                id,
+                &report(LinkMacOutcome::Differs {
+                    configured: "64:E4:A5:6C:AB:B4".into()
+                })
+            ),
+            format!(
+                "mac: TV reports 84:90:0A:63:A9:94, configured 64:E4:A5:6C:AB:B4; \
+                 to use it: tisvlay config-set {id} '{{\"mac\":\"84:90:0A:63:A9:94\"}}'"
+            )
+        );
+    }
 
     /// clap's self-check: catches conflicting arg ids (a global flag
     /// shadowing a subcommand field of the same name panics at access

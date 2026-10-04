@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tisvlay_core::{
-    Capabilities, Error, HardwareId, InputInfo, PowerState, Result, TvConnection, TvState,
+    Capabilities, Error, HardwareId, InputInfo, MacAddress, PowerState, Result, TvConnection,
+    TvState,
 };
 use tokio::sync::mpsc;
 
@@ -56,6 +57,9 @@ pub struct MockConnection {
     /// CEC-style bus that stays reachable in standby (Power ≠ Connected).
     /// Sourced from [`MockVendorConfig::reachable_in_standby`].
     reachable_in_standby: bool,
+    /// What [`TvConnection::get_link_mac`] reports. Sourced from
+    /// [`MockVendorConfig::link_mac`].
+    link_mac: Option<String>,
 }
 
 impl MockConnection {
@@ -120,6 +124,7 @@ impl MockConnection {
             ),
             disable_subscription: config.disable_subscription,
             reachable_in_standby: config.reachable_in_standby,
+            link_mac: config.link_mac.clone(),
         }
     }
 
@@ -194,6 +199,18 @@ impl TvConnection for MockConnection {
 
     fn hardware_id(&self) -> Option<HardwareId> {
         self.hardware_id.clone()
+    }
+
+    async fn get_link_mac(&mut self) -> Option<MacAddress> {
+        self.shared
+            .lock()
+            .link_mac_calls
+            .entry(self.address.clone())
+            .or_default()
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.link_mac
+            .as_deref()
+            .and_then(|mac| MacAddress::parse(mac).ok())
     }
 
     // ------------------------------------------------------------------

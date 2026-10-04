@@ -169,6 +169,18 @@ impl TvConnection for LgConnection {
         self.hardware_id.read().ok().and_then(|g| g.clone())
     }
 
+    /// The TV reports interface addresses as IPv4, so only an IPv4 dial
+    /// can be matched; a hostname or IPv6 dial reports nothing. Uses the
+    /// live client as is — a best-effort read, not a command worth a
+    /// reconnect.
+    async fn get_link_mac(&mut self) -> Option<tisvlay_core::MacAddress> {
+        let Ok(dialed) = self.config.ip.parse::<std::net::Ipv4Addr>() else {
+            tracing::debug!(ip = %self.config.ip, "link MAC needs an IPv4 dial address");
+            return None;
+        };
+        self.client.as_mut()?.get_link_mac(dialed.into()).await
+    }
+
     // =========================================================================
     // Feature methods (overriding TvConnection defaults)
     // =========================================================================
@@ -763,6 +775,89 @@ mod tests {
             &json!({"volume": 200}),
         );
         assert_eq!(state.volume, Some(100));
+    }
+
+    // -----------------------------------------------------------------------
+    // Device-reported link MAC
+    // -----------------------------------------------------------------------
+
+    const WIRED_MAC: &str = "64:E4:A5:6C:AB:B4";
+    const WIFI_MAC: &str = "84:90:0A:63:A9:94";
+
+    /// Script the TV's network-state replies: which interface is connected
+    /// at which address, plus the per-interface MACs (a Wi-Fi Direct block
+    /// included — it must never be picked).
+    fn script_network(server: &crate::test_server::FakeSsapHandle, iface: &str, ip: &str) {
+        use crate::endpoints::network;
+        let mut status = json!({
+            "returnValue": true,
+            "wired": { "plugged": false, "state": "disconnected" },
+            "wifi": { "state": "disconnected" },
+            "wifiDirect": { "state": "disconnected" },
+        });
+        status[iface] = json!({ "state": "connected", "ipAddress": ip });
+        server.set_command_payload(network::GET_STATUS, status);
+        server.set_command_payload(
+            network::GET_INFO,
+            json!({
+                "returnValue": true,
+                "wiredInfo": { "macAddress": WIRED_MAC.to_lowercase() },
+                "wifiInfo": { "macAddress": WIFI_MAC },
+                "p2pInfo": { "macAddress": "86:90:0A:63:A9:94" },
+            }),
+        );
+    }
+
+    async fn link_mac_with(
+        server: &crate::test_server::FakeSsapHandle,
+        dial: &str,
+    ) -> Option<String> {
+        let client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+        let mut conn = LgConnection::new(client, LgVendorConfig::new(dial), None);
+        conn.get_link_mac().await.map(|mac| mac.to_string())
+    }
+
+    #[tokio::test]
+    async fn link_mac_is_the_connected_interface_carrying_the_dialed_address() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        script_network(&server, "wired", "127.0.0.1");
+        assert_eq!(
+            link_mac_with(&server, "127.0.0.1").await.as_deref(),
+            Some(WIRED_MAC)
+        );
+        script_network(&server, "wifi", "127.0.0.1");
+        assert_eq!(
+            link_mac_with(&server, "127.0.0.1").await.as_deref(),
+            Some(WIFI_MAC)
+        );
+    }
+
+    #[tokio::test]
+    async fn link_mac_is_none_when_no_interface_matches_the_dial() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        script_network(&server, "wifi", "10.0.0.9");
+        assert_eq!(link_mac_with(&server, "127.0.0.1").await, None);
+    }
+
+    #[tokio::test]
+    async fn link_mac_is_none_when_the_tv_refuses() {
+        use crate::endpoints::network;
+        let server = crate::test_server::FakeSsapServer::start().await;
+        script_network(&server, "wired", "127.0.0.1");
+        server.set_command_payload(network::GET_INFO, json!({ "returnValue": false }));
+        assert_eq!(link_mac_with(&server, "127.0.0.1").await, None);
+        server.set_command_error(network::GET_STATUS, "404 no such service or method");
+        assert_eq!(link_mac_with(&server, "127.0.0.1").await, None);
+    }
+
+    #[tokio::test]
+    async fn link_mac_needs_an_ipv4_dial_address() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        script_network(&server, "wired", "127.0.0.1");
+        assert_eq!(link_mac_with(&server, "tv.local").await, None);
+        assert_eq!(link_mac_with(&server, "::1").await, None);
     }
 
     // -----------------------------------------------------------------------

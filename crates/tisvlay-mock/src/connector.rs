@@ -267,6 +267,15 @@ impl TvConnector for MockConnector {
                 ..Default::default()
             },
             PairingField {
+                name: tisvlay_core::MAC_CONFIG_KEY.into(),
+                label: "MAC".into(),
+                helper: "Wake-on-LAN MAC (the mock's wake is a no-op).".into(),
+                field_type: PairingFieldType::Mac,
+                required: false,
+                placeholder: "AA:BB:CC:DD:EE:FF".into(),
+                ..Default::default()
+            },
+            PairingField {
                 name: "pairing".into(),
                 label: "Pairing behavior (mock only)".into(),
                 helper: "How the mock resolves a pairing prompt. \

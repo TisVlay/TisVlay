@@ -14,11 +14,11 @@ use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DirtyStore, DispatchRetry,
-    DispatchVerify, Effect, KnownVendors, Managed, MirrorsConnector, MonitoredInterface, Outbox,
-    PairVerifying, PairingEnroll, PairingIndex, PairingRef, PendingConnect, ProfileAction,
-    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, Site, SystemProfile,
-    TransportTraits, TvId, TvIndex, VendorRef,
+    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DialSeq, DirtyStore,
+    DispatchRetry, DispatchVerify, Effect, KnownVendors, LatestDial, Managed, MirrorsConnector,
+    MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingIndex, PairingRef,
+    PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed,
+    RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
     BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
@@ -854,6 +854,56 @@ fn build_record(entity: Entity, id: Uuid, writes: &SettingsWrites) -> Option<TvR
     })
 }
 
+/// Re-derive a TV's config-derived facts (wake support, transport traits,
+/// display rows) after its vendor config changed, without waiting for a
+/// dial: a MAC that just arrived is exactly what lights the wake path up.
+fn push_config_facts(outbox: &mut Outbox, tv: Uuid, vendor: &VendorRef) {
+    outbox.0.push(Effect::Facts {
+        tv,
+        vendor: vendor.vendor.clone(),
+        config: vendor.config.clone(),
+    });
+}
+
+/// Reconcile the device-reported link MAC with the vendor config: fill
+/// `mac` when it's unset (absent, or blank after trimming), and otherwise
+/// compare — never overwrite a configured value. `wake_id`, the generic
+/// alias the CLI may have written for the same field, is the configured
+/// value when present, and a fill never adds `mac` beside it (a second
+/// spelling would collide on parse). `None` when there's nothing to say:
+/// a non-table config, or a blank alias left alone.
+fn reconcile_link_mac(
+    config: &mut toml::Value,
+    reported: tisvlay_core::MacAddress,
+) -> Option<payload::LinkMacOutcome> {
+    let table = config.as_table_mut()?;
+    let alias = table.contains_key("wake_id");
+    let configured = match table
+        .get(tisvlay_core::MAC_CONFIG_KEY)
+        .or_else(|| table.get("wake_id"))
+    {
+        None => None,
+        Some(toml::Value::String(value)) => {
+            Some(value.trim().to_string()).filter(|v| !v.is_empty())
+        }
+        Some(other) => Some(other.to_string()),
+    };
+    match configured {
+        None if alias => None,
+        None => {
+            table.insert(
+                tisvlay_core::MAC_CONFIG_KEY.into(),
+                toml::Value::String(reported.to_string()),
+            );
+            Some(payload::LinkMacOutcome::Filled)
+        }
+        Some(configured) if tisvlay_core::MacAddress::parse(&configured).ok() == Some(reported) => {
+            Some(payload::LinkMacOutcome::Matches)
+        }
+        Some(configured) => Some(payload::LinkMacOutcome::Differs { configured }),
+    }
+}
+
 /// Two-pass config patch: validate every key, then apply. Top-level keys
 /// map onto settings; everything else merges into the vendor table (a JSON
 /// `null` unsets the key), which forces a reconnect.
@@ -963,11 +1013,7 @@ fn apply_config_patch(
         // and waiting for the next successful dial would leave
         // `supports_wake` stale until then.
         if let Ok(vendor) = writes.vendor.get(entity) {
-            outbox.0.push(Effect::Facts {
-                tv: id,
-                vendor: vendor.vendor.clone(),
-                config: vendor.config.clone(),
-            });
+            push_config_facts(outbox, id, vendor);
         }
         // Transport parameters may have changed — reconnect with the new
         // config if this TV is being driven at all.
@@ -1371,10 +1417,12 @@ fn apply_backend_events(
     mut outbox: ResMut<Outbox>,
     mut dirty: ResMut<DirtyStore>,
     verifying: Query<&PairVerifying>,
+    latest: Query<&LatestDial>,
+    mut vendors: Query<&mut VendorRef>,
     mut writes: StateWrites,
 ) {
     for msg in reader.read() {
-        let InEvent::Backend { tv, event } = msg else {
+        let InEvent::Backend { tv, dial, event } = msg else {
             continue;
         };
         let Some(&entity) = index.0.get(tv) else {
@@ -1383,6 +1431,16 @@ fn apply_backend_events(
             tracing::debug!(%tv, ?event, "backend event for unknown TV dropped");
             continue;
         };
+        // A superseded dial (one a re-pair overtook) has no say: its
+        // outcome can't settle a verification, and its task's trailing
+        // pushes can't touch the live link. Rpc replies are exempt — they
+        // route by reply id, and dropping one would hang its caller.
+        if !matches!(event, BackendEvent::CommandDone { .. })
+            && latest.get(entity).map(|l| l.0) != Ok(*dial)
+        {
+            tracing::debug!(%tv, dial, ?event, "event from a superseded dial dropped");
+            continue;
+        }
         match event {
             BackendEvent::Connected {
                 cmd_tx,
@@ -1391,6 +1449,7 @@ fn apply_backend_events(
                 hardware,
                 capabilities,
                 retry,
+                link_mac,
             } => {
                 tracing::debug!(%tv, "connected event applying");
                 let wake_dial = writes.pending.get(entity).is_ok_and(|p| p.wake);
@@ -1431,6 +1490,22 @@ fn apply_backend_events(
                 // verified TV reaches the store.
                 if let Ok(pair) = verifying.get(entity) {
                     commands.entity(entity).remove::<PairVerifying>();
+                    // The device-reported link MAC fills a missing one (the
+                    // facts refresh makes the TV wakeable right away) or is
+                    // compared against the configured one; the terminal
+                    // carries the outcome for clients to render.
+                    let report = (*link_mac).and_then(|mac| {
+                        let mut vendor = vendors.get_mut(entity).ok()?;
+                        let outcome = reconcile_link_mac(&mut vendor.config, mac)?;
+                        if outcome == payload::LinkMacOutcome::Filled {
+                            tracing::info!(%tv, %mac, "MAC filled from the device");
+                            push_config_facts(&mut outbox, *tv, &vendor);
+                        }
+                        Some(payload::LinkMacReport {
+                            reported: mac.to_string(),
+                            outcome,
+                        })
+                    });
                     publish_pairing_progress(
                         &mut outbox,
                         &site,
@@ -1441,6 +1516,7 @@ fn apply_backend_events(
                             message: "Paired and connected".into(),
                             code: None,
                             path: None,
+                            link_mac: report,
                         },
                     );
                     dirty.0 = true;
@@ -1501,6 +1577,7 @@ fn apply_backend_events(
                                     .unwrap_or_else(|| "pairing.connection-failed".into()),
                             ),
                             path: reason.path.clone(),
+                            link_mac: None,
                         },
                     );
                     if pair.rollback {
@@ -1722,13 +1799,17 @@ fn apply_pairing_updates(
                         }
                         // Re-pair: refresh credentials and reconnect. The
                         // terminal is likewise gated on the reconnect, but
-                        // a failure keeps the (pre-existing) TV.
+                        // a failure keeps the (pre-existing) TV. Clearing
+                        // `Reconnecting` supersedes a dial still in flight
+                        // on the old credentials: the verification dial
+                        // spawns now and becomes the TV's `LatestDial`, so
+                        // the old one's outcome is dropped on arrival.
                         (None, Some(tv_entity)) => {
                             if let Ok(mut vendor) = writes.vendor.get_mut(tv_entity) {
                                 vendor.config = config.clone();
                             }
                             let mut e = commands.entity(tv_entity);
-                            e.remove::<(ConnectionHandle, RetryAt)>()
+                            e.remove::<(ConnectionHandle, RetryAt, Reconnecting)>()
                                 .insert(PairVerifying {
                                     rollback: false,
                                     attempt: session.attempt,
@@ -1754,6 +1835,7 @@ fn apply_pairing_updates(
                             message: error.clone(),
                             code: Some("pairing.unknown".into()),
                             path: None,
+                            link_mac: None,
                         },
                     );
                 }
@@ -2299,6 +2381,7 @@ fn reconcile_connections(
     clock: Res<Clock>,
     site: Res<Site>,
     mut outbox: ResMut<Outbox>,
+    mut seq: ResMut<DialSeq>,
     mut q: Query<
         (
             Entity,
@@ -2308,11 +2391,12 @@ fn reconcile_connections(
             Option<&RetryAt>,
             Option<&MonitoredInterface>,
             Has<AwaitingRoute>,
+            Has<PairVerifying>,
         ),
         (Without<ConnectionHandle>, Without<Reconnecting>),
     >,
 ) {
-    for (entity, id, vendor, mut pending, retry, monitored, awaiting) in &mut q {
+    for (entity, id, vendor, mut pending, retry, monitored, awaiting, pairing) in &mut q {
         // The dial gate, in one place: no live handle, no in-flight
         // dial (the query filters), backoff elapsed, and a route
         // present — or route monitoring absent entirely (CEC, and any
@@ -2339,13 +2423,17 @@ fn reconcile_connections(
             continue;
         }
         pending.attempts += 1;
-        tracing::debug!(tv = %id.0, attempt = pending.attempts, wake = pending.wake, "dialing");
+        seq.0 += 1;
+        let dial = seq.0;
+        tracing::debug!(tv = %id.0, attempt = pending.attempts, wake = pending.wake, dial, "dialing");
         commands
             .entity(entity)
-            .insert(Reconnecting)
+            .insert((Reconnecting, LatestDial(dial)))
             .remove::<(RetryAt, AwaitingRoute)>();
         outbox.0.push(Effect::SpawnConnect {
             tv: id.0,
+            dial,
+            pairing,
             vendor: vendor.vendor.clone(),
             config: vendor.config.clone(),
             wake: pending.wake,
@@ -2432,6 +2520,63 @@ fn snapshot_store(
 mod tests {
     use super::*;
     use tisvlay_core::{EventAction, SessionAction};
+
+    fn config(entries: &[(&str, toml::Value)]) -> toml::Value {
+        toml::Value::Table(
+            entries
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    fn mac_of(config: &toml::Value) -> Option<&str> {
+        config
+            .get(tisvlay_core::MAC_CONFIG_KEY)
+            .and_then(toml::Value::as_str)
+    }
+
+    #[test]
+    fn reconcile_link_mac_fills_absent_and_blank_in_canonical_form() {
+        let reported = tisvlay_core::MacAddress::parse("84-90-0a-63-a9-94").unwrap();
+        for unset in [
+            config(&[]),
+            config(&[("mac", toml::Value::String(String::new()))]),
+            config(&[("mac", toml::Value::String("  ".into()))]),
+        ] {
+            let mut cfg = unset;
+            assert_eq!(
+                reconcile_link_mac(&mut cfg, reported),
+                Some(payload::LinkMacOutcome::Filled)
+            );
+            assert_eq!(mac_of(&cfg), Some("84:90:0A:63:A9:94"));
+        }
+    }
+
+    #[test]
+    fn reconcile_link_mac_compares_and_never_overwrites() {
+        use payload::LinkMacOutcome::{Differs, Matches};
+        let reported = tisvlay_core::MacAddress::parse("84:90:0A:63:A9:94").unwrap();
+        let mut typed = config(&[("mac", toml::Value::String("64:E4:A5:6C:AB:B4".into()))]);
+        assert_eq!(
+            reconcile_link_mac(&mut typed, reported),
+            Some(Differs {
+                configured: "64:E4:A5:6C:AB:B4".into()
+            })
+        );
+        assert_eq!(mac_of(&typed), Some("64:E4:A5:6C:AB:B4"));
+        // Same MAC, different spelling: a match, not a mismatch.
+        let mut same = config(&[("mac", toml::Value::String("84-90-0a-63-a9-94".into()))]);
+        assert_eq!(reconcile_link_mac(&mut same, reported), Some(Matches));
+        // The CLI's generic alias is the configured value; a fill never adds
+        // `mac` beside it (the vendor's parse would see a duplicate).
+        let mut alias = config(&[("wake_id", toml::Value::String("84:90:0a:63:a9:94".into()))]);
+        assert_eq!(reconcile_link_mac(&mut alias, reported), Some(Matches));
+        assert_eq!(mac_of(&alias), None);
+        let mut blank_alias = config(&[("wake_id", toml::Value::String(String::new()))]);
+        assert_eq!(reconcile_link_mac(&mut blank_alias, reported), None);
+        assert_eq!(mac_of(&blank_alias), None);
+    }
 
     /// `session_action` threads the resolved action's `while_remote`
     /// gate (and `restore_input`) alongside the mapped `ProfileAction`.

@@ -65,6 +65,7 @@ struct ServerState {
     /// that exercise the client's error-handling paths — notably the
     /// screen_on `-102 not in screen-off substate` discrimination.
     command_errors: std::collections::HashMap<String, String>,
+    command_payloads: std::collections::HashMap<String, Value>,
 }
 
 /// Test control surface for the fake SSAP server.
@@ -106,6 +107,15 @@ impl FakeSsapHandle {
             .insert(uri.into(), error.into());
     }
 
+    /// Answer commands to `uri` with `payload` instead of the canned
+    /// response, so a test can model a specific device reply.
+    pub(crate) fn set_command_payload(&self, uri: impl Into<String>, payload: Value) {
+        self.state
+            .lock()
+            .command_payloads
+            .insert(uri.into(), payload);
+    }
+
     /// Push a subscription update into the active connection.
     ///
     /// The `request_id` must match the ID the client sent when subscribing.
@@ -142,6 +152,7 @@ impl FakeSsapServer {
         let state = Arc::new(Mutex::new(ServerState {
             registration: RegistrationOutcome::default(),
             command_errors: std::collections::HashMap::new(),
+            command_payloads: std::collections::HashMap::new(),
         }));
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -308,8 +319,11 @@ impl FakeSsapServer {
                         "payload": {},
                     })];
                 }
-                // Generic command — echo success with returnValue: true.
-                let payload = Self::command_response_payload(uri, &request.payload);
+                // Generic command — echo success with returnValue: true,
+                // unless the test scripted this endpoint's reply.
+                let scripted = state.lock().command_payloads.get(uri).cloned();
+                let payload = scripted
+                    .unwrap_or_else(|| Self::command_response_payload(uri, &request.payload));
                 vec![json!({
                     "id": id,
                     "type": "response",

@@ -160,7 +160,7 @@ tisvlay list                         # hydrate from publisher caches
 tisvlay watch                        # stream every data key: history, then live
 tisvlay set-volume <uuid> 40
 tisvlay get-config <uuid>
-tisvlay update-config <uuid> '{"name":"Renamed"}'
+tisvlay config-set <uuid> '{"name":"Renamed"}'
 tisvlay profile list                 # system profiles (editable default included)
 tisvlay user-profile list --user-socket …
 ```

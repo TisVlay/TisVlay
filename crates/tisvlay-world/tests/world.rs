@@ -120,6 +120,7 @@ async fn remove_tv_is_boring() {
     // publish, no panic, reactor keeps serving.
     client.send(InEvent::Backend {
         tv: id,
+        dial: 0,
         event: BackendEvent::State(Box::new(tisvlay_core::TvState::new())),
     });
     client.command(Command::SetVolume {

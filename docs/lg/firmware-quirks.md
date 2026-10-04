@@ -272,3 +272,37 @@ The router announces the full IGD service catalog (`InternetGatewayDevice`, `WAN
 - The `Capabilities::IPV6` bit on the LG backend means *control* over v6, not *discovery*. The two are independent and have to be evaluated separately for every vendor backend.
 - A future vendor that does join `ff02::c` (e.g., a hypothetical Sony/Samsung backend that follows the UPnP spec more literally) is what would justify lifting `Ipv6BindUnsupported` and threading v6 through `tisvlay-ssdp`. Until then, the v4-only stance is correct.
 - Toggling other TV settings that *sound* related — DLNA, "TV On via Mobile", LG ConnectApp — does not flip this behavior on G4 firmware as of 2026-05. Could change with future firmware; rerun the capture protocol if a new revision claims UPnP-over-v6.
+
+## `connectionmanager` reports each NIC's MAC and which one carries the TV's IP
+
+**Finding.** Two SSAP calls together identify the TV's attached interface and its MAC. Verified on the OLED42C3PUA over the production client and manifest (which requests `READ_NETWORK_STATE`); the OLED55G3PUA shares the firmware family and is expected equivalent.
+
+`ssap://com.webos.service.connectionmanager/getinfo` returns one MAC per interface and nothing else:
+
+```json
+{"returnValue":true,"subscribed":false,
+ "wiredInfo":{"macAddress":"64:E4:A5:6C:AB:B4"},
+ "wifiInfo":{"macAddress":"84:90:0A:63:A9:94"},
+ "p2pInfo":{"macAddress":"86:90:0A:63:A9:94"}}
+```
+
+`ssap://com.webos.service.connectionmanager/getstatus` (lowercase; the camel-case `getStatus` returns 404) returns per-interface link state and addressing (abridged):
+
+```json
+{"returnValue":true,"isInternetConnectionAvailable":true,
+ "wifi":{"state":"connected","interfaceName":"wlan0","ipAddress":"192.168.4.170",
+         "netmask":"255.255.255.0","gateway":"192.168.4.1","method":"dhcp",
+         "ssid":"<ssid>","isWakeOnWifiEnabled":false},
+ "wired":{"plugged":false,"state":"disconnected"},
+ "wifiDirect":{"state":"disconnected"}}
+```
+
+The attached NIC is the interface whose `state` is `connected` and whose `ipAddress` matches the address the daemon dials; its MAC comes from the matching `getinfo` block (`wired` → `wiredInfo`, `wifi` → `wifiInfo`). `p2pInfo` is Wi-Fi Direct and never a WoL target. Probed siblings that don't exist on this firmware: `getStatus`, `wired/getstatus`, `wifi/getstatus`, `getNetworkInfo`, `getinterfaceinfo`, `getIpInfo` (all 404).
+
+**Implications.**
+
+- It works for a TV off the daemon's link (a routed IoT VLAN, where ARP only ever sees the gateway), with no guessing between NICs.
+- `wifi.isWakeOnWifiEnabled` does **not** predict whether WoL works. The OLED42C3PUA reports `false`, unchanged by toggling the hidden IP Control menu's "Network IP Control" on and off, yet it woke reliably over Wi-Fi from standby: magic packets to the `wifiInfo` MAC, reflected across a routed VLAN. In two daemon wake dials, about 2.5 min and about 1 min after a power-off, the TV answered on the seventh connect attempt, about 4 s in, versus the first attempt when it was already on. The flag may track a different wake feature, but it's no basis for a "WoL won't work" warning.
+- **Standby keeps the network up but refuses SSAP.** Probed about 1.5 min after a power-off, the C3 answered every ping and accepted TCP on `:3001`, but closed the WebSocket during registration (`ConnectionClosed`). Reachability (ping or an open port) therefore doesn't mean the TV is on; only a successful SSAP registration does. It's also why each wake dial's first six attempts fail: they're registrations refused until the magic packet brings the TV up, about 4 s in. A third run, about 3.5 min after power-off, showed the same 7 attempts and 4 s.
+
+**Reproduce.** The ignored `field_probe` test in `crates/tisvlay-lg/src/client.rs` queries both endpoints with a paired TV's stored address and client key; the run command is in its doc comment, and `TISVLAY_PROBE_URIS` overrides the endpoint list.

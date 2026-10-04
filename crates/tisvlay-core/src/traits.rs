@@ -29,8 +29,8 @@
 //! interpret. The daemon and CLI never see transport-specific types.
 
 use crate::{
-    Capabilities, DiscoveredTv, Error, HardwareId, InputInfo, PairingSession, PowerState, Result,
-    TvState,
+    Capabilities, DiscoveredTv, Error, HardwareId, InputInfo, MacAddress, PairingSession,
+    PowerState, Result, TvState,
 };
 use async_trait::async_trait;
 use std::net::IpAddr;
@@ -228,6 +228,20 @@ pub trait TvConnection: Send + Sync {
     /// time, like [`Self::hardware_id`]), so the daemon can read it under the
     /// connection lock without awaiting.
     fn brand(&self) -> Option<String> {
+        None
+    }
+
+    /// The MAC of the interface this connection reached the TV through, as
+    /// the device itself reports it. Read once when a pairing completes, to
+    /// fill a missing Wake-on-LAN MAC: it works for a TV off the daemon's
+    /// link (a routed or VLAN-isolated segment), where the kernel neighbor
+    /// table only ever sees the gateway.
+    ///
+    /// Best-effort: `None` when the device can't say, the query fails, or
+    /// the reported interfaces don't match the dialed address. Implement
+    /// it only if the backend's [`MAC_CONFIG_KEY`](crate::MAC_CONFIG_KEY)
+    /// config field drives wake.
+    async fn get_link_mac(&mut self) -> Option<MacAddress> {
         None
     }
 

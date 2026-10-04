@@ -236,6 +236,33 @@ pub mod payload {
         /// the fix hint. Absent for reasons that carry none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub path: Option<String>,
+        /// `complete` only: what the device reported as its link MAC and
+        /// what the daemon did with it. Absent when the vendor can't
+        /// report one or the read failed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub link_mac: Option<LinkMacReport>,
+    }
+
+    /// The device-reported link MAC at pairing time, compared against the
+    /// TV's configured `mac` by the daemon so clients only render it. A
+    /// snapshot of the moment the pairing completed — accepting the
+    /// reported MAC afterwards doesn't rewrite this sample.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct LinkMacReport {
+        /// The device-reported MAC, canonical form.
+        pub reported: String,
+        pub outcome: LinkMacOutcome,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum LinkMacOutcome {
+        /// `mac` was unset; the daemon stored `reported`.
+        Filled,
+        /// The configured `mac` already equals `reported`.
+        Matches,
+        /// The configured `mac` differs and was kept.
+        Differs { configured: String },
     }
 
     impl PairingProgress {
@@ -250,6 +277,7 @@ pub mod payload {
                 // failures (which do) are composed by the world from
                 // the typed dial reason, not through this projection.
                 path: None,
+                link_mac: None,
             }
         }
     }

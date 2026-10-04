@@ -1,14 +1,17 @@
 //! High-level WebOS TV client.
 
-use crate::endpoints::{audio, input, luna, notification, picture, power, system, timeouts};
+use crate::endpoints::{
+    audio, input, luna, network, notification, picture, power, system, timeouts,
+};
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
 use crate::transport::Connection;
 use serde_json::{Value, json};
+use std::net::IpAddr;
 use std::time::Duration;
-use tisvlay_core::{Error, HardwareId, InputInfo, PowerState, Result, TvState};
+use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, TvState};
 use tokio::sync::mpsc;
 
 /// Client for controlling an LG WebOS TV.
@@ -602,6 +605,50 @@ impl WebOsClient {
     // System info
     // -------------------------------------------------------------------------
 
+    /// MAC of the NIC carrying `dialed`, as the TV reports it.
+    ///
+    /// Joins `connectionmanager/getstatus` (which interface is connected,
+    /// and its address) with `connectionmanager/getinfo` (each interface's
+    /// MAC). Best-effort: `None` on any failed read, a connected interface
+    /// whose address isn't `dialed`, or a missing block. Never the Wi-Fi
+    /// Direct (`p2p`) interface — it's no WoL target.
+    pub async fn get_link_mac(&mut self, dialed: IpAddr) -> Option<MacAddress> {
+        let status = self.network_read(network::GET_STATUS).await?;
+        let Some(iface) = ["wired", "wifi"].into_iter().find(|name| {
+            let block = &status[*name];
+            block["state"] == "connected"
+                && block["ipAddress"]
+                    .as_str()
+                    .and_then(|ip| ip.parse::<IpAddr>().ok())
+                    == Some(dialed)
+        }) else {
+            tracing::debug!(%dialed, "no connected interface carries the dialed address");
+            return None;
+        };
+        let info = self.network_read(network::GET_INFO).await?;
+        let mac = info[format!("{iface}Info")]["macAddress"].as_str()?;
+        MacAddress::parse(mac)
+            .inspect_err(|e| tracing::debug!(iface, mac, error = %e, "unparseable link MAC"))
+            .ok()
+    }
+
+    /// One network-state read: the payload, or `None` (logged) when the
+    /// request failed or the TV answered `returnValue: false` — Luna-side
+    /// failures can arrive as a normal response rather than an error.
+    async fn network_read(&mut self, uri: &str) -> Option<Value> {
+        match self.command(uri, json!({})).await {
+            Ok(response) if response.payload["returnValue"] == true => Some(response.payload),
+            Ok(response) => {
+                tracing::debug!(uri, payload = %response.payload, "network read refused");
+                None
+            }
+            Err(e) => {
+                tracing::debug!(uri, error = %e, "network read failed");
+                None
+            }
+        }
+    }
+
     /// Fetch hardware identity from `ssap://system/getSystemInfo`.
     ///
     /// LG's `getSystemInfo` returns `modelName`, `serialNumber`, and
@@ -985,5 +1032,49 @@ mod tests {
         client.set_mute(true).await.unwrap();
         let muted = client.get_mute().await.unwrap();
         assert!(!muted); // canned response from fake server
+    }
+}
+
+/// On-demand field probe against a real TV, using the production client
+/// and pairing manifest (a TV binds a client key to the permissions
+/// requested at pairing, so a hand-rolled manifest can re-prompt or see a
+/// different permission set). Read-only: queries endpoints and prints
+/// the raw payloads. Ignored by default; run against a paired TV with
+/// its stored address and client key (`daemon.toml`):
+///
+/// ```text
+/// TISVLAY_PROBE_HOST=<ip> TISVLAY_PROBE_KEY=<client_key> [TISVLAY_PROBE_URIS=<uri,…>] \
+///     cargo nextest run -p tisvlay-lg --run-ignored only \
+///         -E 'test(field_probe)' --no-capture
+/// ```
+#[cfg(test)]
+mod field_probe {
+    use super::*;
+
+    /// Endpoints under evaluation, printed with their raw responses.
+    const ENDPOINTS: &[&str] = &[
+        network::GET_INFO,
+        network::GET_STATUS,
+        system::GET_SYSTEM_INFO,
+    ];
+
+    #[tokio::test]
+    #[ignore = "needs a real paired TV (TISVLAY_PROBE_HOST / TISVLAY_PROBE_KEY)"]
+    async fn field_probe() {
+        let host = std::env::var("TISVLAY_PROBE_HOST").expect("TISVLAY_PROBE_HOST");
+        let key = std::env::var("TISVLAY_PROBE_KEY").expect("TISVLAY_PROBE_KEY");
+        // `TISVLAY_PROBE_URIS` (comma-separated) overrides the list.
+        let custom = std::env::var("TISVLAY_PROBE_URIS").ok();
+        let uris: Vec<&str> = match &custom {
+            Some(list) => list.split(',').map(str::trim).collect(),
+            None => ENDPOINTS.to_vec(),
+        };
+        let mut client = WebOsClient::connect(&host, Some(key)).await.unwrap();
+        for uri in uris {
+            match client.command(uri, json!({})).await {
+                Ok(response) => println!("{uri}\n  {}", response.payload),
+                Err(error) => println!("{uri}\n  error: {error}"),
+            }
+        }
     }
 }

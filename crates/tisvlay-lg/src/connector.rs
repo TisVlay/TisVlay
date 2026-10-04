@@ -261,8 +261,8 @@ impl TvConnector for LgConnector {
             PairingField {
                 name: "mac".into(),
                 label: "MAC".into(),
-                helper: "Required for Wake-on-LAN — without it the daemon \
-                         can't power this TV on from deep standby."
+                helper: "Required for Wake-on-LAN. Leave blank to read it \
+                         from the TV after pairing."
                     .into(),
                 field_type: PairingFieldType::Mac,
                 // Optional at the schema level; the wizard surfaces

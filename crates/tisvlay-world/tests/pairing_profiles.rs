@@ -367,3 +367,181 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
     // The facts came from the patch, not from a fresh dial.
     assert_eq!(handle.connect_call_count("mock://wakeless"), dials_before);
 }
+
+/// A re-pair supersedes a dial already in flight on the old credentials:
+/// the stale dial's outcome is dropped, the verification dial spawns, and
+/// only its connect settles the pairing. Without the supersede the stale
+/// dial would publish `complete` — having verified the old credentials —
+/// and the verification dial would never run.
+#[tokio::test]
+async fn re_pair_supersedes_an_in_flight_dial() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+
+    // Enrollment's dial stalls in connect: it's in flight when the
+    // re-pair lands.
+    handle.set_connect_delay(Duration::from_millis(600));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(
+            id,
+            "Den",
+            pairing_config("mock://superseded", "accept"),
+        )),
+        reply: Some(1),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 1)).await;
+    client.command(Command::RePair {
+        id,
+        attempt,
+        reply: Some(2),
+    });
+
+    let seen = collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "complete").is_some()
+    })
+    .await;
+    assert_eq!(
+        seen.iter()
+            .find_map(|e| progress_on(e, &progress_key, "complete"))
+            .map(|p| p["attempt"].clone()),
+        Some(serde_json::json!(attempt.to_string())),
+    );
+    assert_eq!(
+        handle.connect_call_count("mock://superseded"),
+        2,
+        "the stale dial and the verification dial both connected"
+    );
+    // The stale dial's late outcome, if still in flight, settles nothing.
+    assert_quiet(&mut effects, Duration::from_millis(800), |e| {
+        progress_on(e, &progress_key, "complete").is_some()
+    })
+    .await;
+}
+
+fn with(mut config: toml::Value, key: &str, value: &str) -> toml::Value {
+    config
+        .as_table_mut()
+        .expect("config is a table")
+        .insert(key.into(), toml::Value::String(value.into()));
+    config
+}
+
+/// The published display row for `label`, if this effect is a vendor-rows
+/// publish carrying one.
+fn vendor_row(effect: &WireEffect, label: &str) -> Option<String> {
+    is_publish_on(effect, "/meta/vendor")?["config"]
+        .as_array()?
+        .iter()
+        .find(|row| row[0] == label)
+        .and_then(|row| row[1].as_str().map(str::to_string))
+}
+
+/// A pairing dial reads the device's link MAC and fills an unset `mac`,
+/// canonicalized — and the config-derived facts refresh at once (the
+/// display rows republish), not at the next dial.
+#[tokio::test]
+async fn pair_fills_an_unset_mac_from_the_device() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    client.command(Command::Pair {
+        id,
+        attempt: Uuid::new_v4(),
+        name: "Office".into(),
+        vendor: "mock".into(),
+        config: with(
+            pairing_config("mock://routed", "accept"),
+            "link_mac",
+            "84-90-0a-63-a9-94",
+        ),
+        managed: true,
+        reply: Some(1),
+    });
+    let mut report = None;
+    let mut filled = false;
+    collect_until(&mut effects, |e| {
+        if let Some(complete) = progress_on(e, &progress_key, "complete") {
+            report = Some(complete["link_mac"].clone());
+        }
+        filled |= vendor_row(e, "MAC").as_deref() == Some("84:90:0A:63:A9:94");
+        report.is_some() && filled
+    })
+    .await;
+    assert_eq!(
+        report,
+        Some(serde_json::json!({
+            "reported": "84:90:0A:63:A9:94",
+            "outcome": { "kind": "filled" },
+        }))
+    );
+    assert_eq!(handle.link_mac_call_count("mock://routed"), 1);
+}
+
+/// A configured MAC — typed, or auto-filled by ARP — is never overwritten
+/// by the device's report.
+#[tokio::test]
+async fn pair_keeps_a_configured_mac() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    let config = with(
+        with(
+            pairing_config("mock://typed", "accept"),
+            "mac",
+            "64:E4:A5:6C:AB:B4",
+        ),
+        "link_mac",
+        "84:90:0A:63:A9:94",
+    );
+    client.command(Command::Pair {
+        id,
+        attempt: Uuid::new_v4(),
+        name: "Office".into(),
+        vendor: "mock".into(),
+        config,
+        managed: true,
+        reply: Some(1),
+    });
+    let seen = collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "complete").is_some()
+    })
+    .await;
+    assert_eq!(
+        seen.iter()
+            .find_map(|e| progress_on(e, &progress_key, "complete"))
+            .map(|p| p["link_mac"].clone()),
+        Some(serde_json::json!({
+            "reported": "84:90:0A:63:A9:94",
+            "outcome": { "kind": "differs", "configured": "64:E4:A5:6C:AB:B4" },
+        }))
+    );
+    assert!(
+        seen.iter()
+            .all(|e| vendor_row(e, "MAC").as_deref() != Some("84:90:0A:63:A9:94")),
+        "the device's MAC must not replace the configured one"
+    );
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        vendor_row(e, "MAC").as_deref() == Some("84:90:0A:63:A9:94")
+    })
+    .await;
+}
+
+/// Only pairing dials read the link MAC: an ordinary enrollment dial
+/// never asks.
+#[tokio::test]
+async fn plain_dial_never_reads_the_link_mac() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(
+            id,
+            "Den",
+            with(mock_config("mock://plain"), "link_mac", "84:90:0A:63:A9:94"),
+        )),
+        reply: Some(1),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    assert_eq!(handle.link_mac_call_count("mock://plain"), 0);
+}
