@@ -1,6 +1,6 @@
 # Code quality: lints, tools and dependency hygiene
 
-**Status:** draft, revised after a design, a mechanics and a maintainability review (2026-10-04). Nothing in here is adopted yet. The open questions in §7 decide the final shape; each PR stands alone and can be dropped without breaking the others. §8 says where every rule lives once this file retires.
+**Status:** decided, 2026-10-04. The plan was revised after a design, a mechanics and a maintainability review, and the owner then ruled on every open question (§7). Nothing is implemented yet. Each PR stands alone and can be dropped without breaking the others. §8 says where every rule lives once this file retires.
 
 ## 1. Goal
 
@@ -189,7 +189,7 @@ Each PR passes `just check` and `prek run -a`, lists its before → after counts
 2. **typos.**
    - `just typos` joins `just check`, with a local prek hook dispatching to it, so the version comes from the flake.
    - `_typos.toml` sets `locale = "en-us"`, adds `extend-words` for the protocol tokens (`Pn`, `DELET`, `wrapp`, `EIS`), and excludes `.pot`/`.po`, `Cargo.lock` and `target/`.
-   - Fix the real typos, misspelled identifiers included (§7.7).
+   - Fix the real typos, misspelled public identifiers included, since nothing is published yet (§7).
 3. **Duplicate versions become blocking.**
    - Align `gettext-rs` to Slint's `0.7`.
    - Give each of the other 18 duplicates an exact `name@version` skip, on the *older* version, with a reason naming the upstream gate. The skip then goes stale, and fails, once upstream catches up.
@@ -198,11 +198,20 @@ Each PR passes `just check` and `prek run -a`, lists its before → after counts
    - Collapse the winit → SCTK 0.19 entries into one `skip-tree` only if it reads better; it removes none of the 18.
    - **The bump routine** goes in `docs/build.md`. A dependency update that adds a duplicate fails `just deny`, so: skip the old version with its reason, or wait. The emergency escape is a one-off `cargo deny check bans -W multiple-versions`, never a config flip.
    - Update `docs/build.md` § Dep-graph posture, the `deny` recipe comment, the `deny.toml` header and `docs/licensing.md`. All of them say bans never fail.
-4. **Advisories:** a `just audit` recipe running `cargo deny check advisories`, plus where it runs (§7.8). It needs the network, so it stays out of the offline `just check`.
+4. **Advisories:** a `just audit` recipe running `cargo deny check advisories`. It needs the network, so it stays out of the offline `just check`.
 5. **Feature combinations:** a `just hack` recipe running `cargo hack check --each-feature --no-dev-deps --workspace`. Update `docs/build.md` § CI feature scope, which argues for a single configuration and already omits core's `access`.
 6. **The MSRV floor:** a `just msrv` recipe running `cargo check --workspace --all-targets --all-features --target-dir target/msrv` with rust-overlay's stable `1.95` toolchain on `PATH` inside the devShell.
    - No `--ignore-rust-version`: the toolchain *is* the floor, so leaving the flag off keeps transitive MSRV creep visible.
-   - `docs/ideas/msrv-verification-job.md` keeps only its CI-job options, with the local recipe now real.
+   - `docs/ideas/msrv-verification-job.md` retires: the local recipe and the CI job below cover both of its options.
+7. **CI runs the slow checks, as is customary.**
+   - GitHub Actions is re-enabled.
+   - `msrv` and `hack` become pull-request jobs, run in parallel so their minutes don't matter. CI provisions toolchains with rustup, so the MSRV job installs `1.95` directly; the rustup traps are specific to the NixOS devShell.
+   - `audit` runs weekly (the existing `audit.yml`) and on `Cargo.lock` changes.
+   - The `just` recipes exist to reproduce a CI failure locally.
+   - `just check` stays fast and offline.
+8. **A Tombi trial.** Run `tombi format` once on a throwaway branch and judge the diff, especially the comment-heavy `deny.toml`, `prek.toml` and `Cargo.toml`. If it reads well, add a `just` recipe and a prek hook in this PR. If not, record why in the never-adopt list.
+   - Taplo's author stepped away in December 2024 (taplo#715). Its last release was in May 2025, and it has about 240 open issues.
+   - Tombi releases weekly. wgpu (June 2026) and prettier-plugin-toml (September 2026) have switched to it.
 
 ### Q1b — The free denies and the unsafe policy
 
@@ -216,11 +225,29 @@ Each PR passes `just check` and `prek run -a`, lists its before → after counts
 3. **The generated-code allow** of §4.5 replaces `tisvlay-gui`'s current list.
 4. **`unsafe_code = "deny"`** in the table. Each of the eight files gets a module- or file-level `#![expect(unsafe_code, reason = "…")]`, so an exception whose `unsafe` disappears fires `unfulfilled_lint_expectations`. `deny`, not `forbid`, because `forbid` would reject those exceptions. `multiple_unsafe_ops_per_block` (2 sites) rides along.
 5. **`clippy.toml`:** `allow-unwrap-in-tests`, `allow-expect-in-tests`, `allow-panic-in-tests`, `allow-indexing-slicing-in-tests`, `allow-dbg-in-tests` and `allow-print-in-tests`.
-6. **Dropped from the first draft:**
+6. **The conventions section in `CLAUDE.md`** starts here and grows with each later PR. It's a short list that steers new code before clippy has to:
+   - `expect("… because …")` states an invariant;
+   - thiserror errors in libraries, anyhow only in binaries;
+   - tracing fields rather than format arguments;
+   - no prints outside the CLI;
+   - secrets redacted in `Debug`;
+   - reasoned `#[expect]` over `#[allow]`.
+7. **Dropped from the first draft:**
    - `unsafe_op_in_unsafe_fn` already warns in edition 2024.
    - `rc_buffer` and `rc_mutex` have zero sites in an Arc/tokio codebase.
    - `trivial_numeric_casts` overlaps the default `unnecessary_cast`.
-   - A `disallowed-methods` entry for `process::exit` would duplicate `clippy::exit`.
+   - No `disallowed-methods` list until a real incident motivates an entry (§7). An entry for `process::exit` would duplicate `clippy::exit` anyway.
+
+### QT — One integration-test binary per crate, and the flaky-test policy
+
+Clippy treats `#[test]` fns and `#[cfg(test)]` modules as tests, but not helper fns under `tests/`. So Q3's `unwrap_used` and `panic` would flag the 291 unwraps and 25 diagnostic panics in those helpers. Restructuring the tests fixes that and pays for itself.
+
+1. **Consolidate.** Each crate's `tests/*.rs` binaries become one `tests/it/main.rs` with modules. That's 25 binaries today: daemon 7, world 4, `tisvlay-test` 3, tray and gui-app 2 each, the rest 1.
+   - Shared helpers become ordinary modules, which retires world's `#![allow(dead_code)]` on `tests/support`.
+   - Measured before: a daemon edit relinks seven test binaries (2.4 s on 32 cores, linked in parallel), and those seven take 791 MB on disk. The PR measures the after.
+   - Test names gain a module prefix (`it::wire::…`), so update recipes and docs that filter by test binary name. nextest still runs every test in its own process, and the hermetic-test work already made plain `cargo test` safe with many tests in one binary.
+2. **One allow per crate.** Each `tests/it/main.rs` root carries a reasoned `#![allow(clippy::unwrap_used, clippy::panic, reason = "integration tests fail loudly by design")]`. That's about ten lines in all, deleted when rust-clippy#17520's `allow-in-tests` lands.
+3. **Flaky tests are quarantined, never retried.** The nextest `ci` profile's retries go from 1 to 0. A flaky test gets an issue and `#[ignore = "flaky: #N"]` until fixed. The policy goes into `docs/testing.md`.
 
 ### Q3 — Malformed input and panics
 
@@ -228,9 +255,9 @@ The first draft split this into a panic PR and an external-input PR. It's one re
 
 1. **`unwrap_used` in the table.**
    - The 8 production sites become `expect("… because …")` stating the invariant, or real error handling where the input can actually be malformed. `screencast.rs`' five and `protocol.rs:322` need the careful read.
-   - Integration-test files follow §7.2.
+   - Integration tests are covered by QT's per-crate allow.
    - `expect_used` stays out: an `expect` with a reason is the stated-invariant idiom.
-2. **`panic` in the table.** The three `tisvlay-test` sites and the integration-test helpers are handled per §7.2.
+2. **`panic` in the table.** The three `tisvlay-test` sites get reasoned `#[expect]`s, since `tisvlay-test` is test infrastructure. The integration-test helpers are covered by QT.
 3. **The external-input profile.** A module-root `#![warn]` of `indexing_slicing`, `arithmetic_side_effects`, `string_slice` and `cast_possible_truncation` where bytes arrive from outside:
    - the SSDP reply parser;
    - the SSAP message decoding in lg;
@@ -242,20 +269,26 @@ The first draft split this into a panic PR and an external-input PR. It's one re
 4. **A "never panics on arbitrary input" property test per parser**, with the `proptest` already in the tree, on stable. Running the code on adversarial input proves more than the lint does.
 5. **Credentials get a redacting `Debug`**, hand-written for `Credentials` and anything else holding the LG client key, with a test that the key never appears in the `Debug` output.
 
-### Q6 — Docs on the published crates, and the first-publish checklist
+### Q6 — The published crates: core's glue moves out, docs, and the first-publish checklist
 
-1. **`missing_docs` on the five `publish = true` crates** (core, lg, cec, ssdp, mock), 54 items, through a crate-root `#![warn(missing_docs)]` in each.
+1. **Binary glue leaves the published `tisvlay-core`.**
+   - A new unpublished crate (working name `tisvlay-runtime`) takes the `logging` module (journald/stderr tracing setup) and the `access` module (pkexec socket-group enrollment), with their features and dependencies: `tracing-subscriber`, `tracing-journald`, `tracing-log`, `libc` and `anyhow`.
+   - The binaries that call them (CLI, daemon, session, tray, greeter, GUI app) switch to it.
+   - The published `core` then keeps only what vendor backends need, and anyhow leaves its API (C-GOOD-ERR).
+   - Evaluate the `wayland` and `mutter-idle` idle transports for the same move. They're desktop glue too, but typed, so they move only if that reads cleaner.
+   - This lands before `missing_docs`, so the new crate isn't documented to published-crate standard for nothing.
+2. **`missing_docs` on the five `publish = true` crates** (core, lg, cec, ssdp, mock), through a crate-root `#![warn(missing_docs)]` in each. That's 54 items today, fewer once core's glue moves.
    - Every doc says something a reader needs; filler (`/// The client.`) is rejected in review.
-   - The unpublished crates stay out, unless §7.5 says otherwise.
-2. **A first-publish checklist in `docs/build.md`**, run once per crate before its hand-done first publish:
+   - The unpublished crates stay out.
+3. **A first-publish checklist in `docs/build.md`**, run once per crate before its hand-done first publish:
    - `cargo package` (catches path-only deps, a missing readme or license, a bloated `include`);
    - `[package.metadata.docs.rs] all-features = true` where features gate items;
    - the crate-root `missing_docs` added when `publish = true` flips;
-   - the anyhow-in-public-API decision (§7.9).
+   - no `anyhow` or other binary-glue type in the public API.
 
 ### Q4 — The pedantic and style picks
 
-These go last: they matter least and conflict most with open branches (§6). Hand-picked lints, in line with Bevy, rustls and the kernel:
+These go last because they matter least. Hand-picked lints, in line with Bevy, rustls and the kernel:
 
 | Lint | Group | Sites |
 |---|---|---|
@@ -271,7 +304,7 @@ These go last: they matter least and conflict most with open branches (§6). Han
 
 That's about 140 sites, mostly `cargo clippy --fix`.
 - **Named task: `#[must_use]` by hand** on the handles whose drop cancels something (zenoh tokens, subscribers, the liveliness guards). There are zero `#[must_use]`s today. `return_self_not_must_use` covers the builders.
-- **The Astral model** (pedantic at warn minus an allow list) is the alternative, at about 450 sites, 206 of them `doc_markdown`, plus a sweep on every toolchain bump (§7.3).
+- **A yearly pedantic probe replaces the Astral model.** Once or twice a year, rerun the §2 probe with `pedantic` at warn and consider new picks; it goes in `docs/build.md` § Review triggers. The rejected alternative, `pedantic` at warn minus an allow list, would cost about 450 sites now (206 of them `doc_markdown`) and a sweep on every toolchain bump.
 - **Never in this PR:**
   - `needless_pass_by_value` (60; it fights `move`-into-task signatures);
   - `missing_const_for_fn` (nursery; its suggestions can be wrong);
@@ -285,7 +318,6 @@ Each becomes a `docs/ideas/*.md` entry when the plan retires (§8).
 - **cargo-mutants**, scoped to pure-logic crates (core, wire, the world's reducers, the parsers), run manually or on a label, never a gate.
 - **Fuzzing the parsers with bolero**, extending Q3's property tests into fuzz targets on nightly.
 - **turmoil** for the LG reconnect/backoff logic. Zenoh won't run under it, so it covers the vendor layer only.
-- **Tombi** for TOML formatting, only if its reformat of the comment-heavy manifests reads well (§7.10).
 - **crates.io trusted publishing** for the release-plz job, after each crate's first hand publish.
 - **`clippy.toml` `allow-in-tests`** when rust-clippy#17520 merges, replacing the per-lint keys and most test-file allows.
 
@@ -299,37 +331,33 @@ Each becomes a `docs/ideas/*.md` entry when the plan retires (§8).
 
 ## 6. Order and size
 
-**Order:** Q1a → Q2 → Q1b → Q3 → Q6 → Q4, each its own branch and PR.
+**Order:** Q1a → Q2 → Q1b → QT → Q3 → Q6 → Q4, each its own branch and PR.
 
 - **Q1a and Q2** are mechanical gate and tool work. They come first because they make every later PR's gates real.
 - **Q1b** is lint additions with small site counts.
+- **QT** restructures the tests so Q3's lints land on code that should obey them.
 - **Q3** changes behavior on malformed input and wants the careful review.
-- **Q6** is writing.
+- **Q6** is a crate split plus writing.
 - **Q4** is cosmetic churn and goes last.
 
-**Sequencing rule:** workspace-wide auto-fix sweeps conflict with every open feature branch. That's `unused_qualifications` in Q1b and the `clippy --fix` passes in Q4. They land after the open feature PRs merge, or immediately before a quiet stretch (§7.11).
+**Sequencing:** no open feature PR conflicts with the workspace-wide sweeps. The feature branches merged as #115, #116, #118 and #121, and the only open PR (#81, the mdBook docs) touches four crate files. So the PRs land in plan order and #81 rebases.
 
-## 7. Open questions
+## 7. Decisions (ruled 2026-10-04)
 
-1. **`build.warnings`: gates only (draft), or also local builds?** The draft keeps it to the gate recipes. `.cargo/config.toml` is ruled out either way (§4.7).
-2. **Integration-test files under `unwrap_used` and `panic`:** what applies to their 291 unwraps and 25 diagnostic panics?
-   - One `#![allow(clippy::unwrap_used, clippy::panic, reason = "integration test")]` per `tests/*.rs` file (25 files) until rust-clippy#17520 lands?
-   - Or keep both lints out of the table and apply them only to the daemon and library `src/`?
-3. **Pedantic: hand-picked (draft, about 140 sites) or Astral-style (about 450 sites, plus a sweep on every toolchain bump)?** All three reviews recommend hand-picked for a single maintainer.
-4. **Zero per PR (draft) or crate-root ratchets?** At about 3,000 sites, mostly lints we wouldn't adopt anyway, zero per PR looks feasible for Q1–Q4. This is a confirmation question.
-5. **`missing_docs` scope:** the five published crates only (draft), or also the SDK and `tisvlay-wire`, whose types are the IPC contract other tools might code against?
-6. **`disallowed-methods`:** skip until a real incident motivates an entry (draft, following the design review), or curate a list now?
-7. **Misspelled identifiers:** fix them now (draft)? None of the five crates has been published, and the project has no backwards-compatibility rule.
-8. **Where do `just hack`, `just msrv` and `just audit` run?** No release checklist exists, and a manual recipe with no trigger never runs. The options:
-   - in `just check` (minutes per run, network for `audit`);
-   - a written pre-release checklist in `docs/build.md`;
-   - re-enabling the CI workflows that would schedule them.
-9. **anyhow in `tisvlay-core`'s public API** (`logging::init`, the `access` feature): give those typed `thiserror` errors before first publish, or document them as this repo's binary helpers?
-10. **Tombi:** try it on a throwaway branch to judge the diff, or skip TOML formatting entirely?
-11. **Sequencing:** hold the workspace-wide sweeps until the open feature branches merge (seat access, CLI completions, the GNOME greeter patch, tray smart scroll, mdBook docs), or land them now and rebase those?
-12. **Flaky tests:** adopt "a flaky test gets an issue and `#[ignore = "flaky: #N"]`, never a retry", and set the nextest `ci` profile's retries to 0?
-13. **A short conventions section in `CLAUDE.md`?** Much of the code here is written by an agent, which reads `CLAUDE.md` rather than clippy's reasoning. The section would list `expect("… because …")`, the thiserror/anyhow split, tracing fields over format args, no prints outside the CLI, and redacted secrets in `Debug`.
-14. **The `just check` time budget:** add `doc`, `shear` and `typos` to `just check` and to prek (draft), at the measured cost in Q1a?
+1. **`build.warnings` only in the gate recipes** (clippy, test-ci, doc), never in `.cargo/config.toml`, so NixOS rebuilds can't break when a newer compiler adds a warning (§4.7).
+2. **Integration tests: one test binary per crate** with one reasoned allow per crate root (QT), rather than an allow in each of the 25 files or lints on `src/` only.
+3. **Pedantic: hand-picked lints, plus a pedantic probe once or twice a year** to consider new picks (Q4). The Astral group model was rejected.
+4. **Each PR takes its lints to zero.** A site that must stay carries a reasoned `#[expect]`; no crate-level ratchet markers.
+5. **`missing_docs` on the published crates only**, and on any crate when it flips to `publish = true`.
+6. **No `disallowed-methods` list** until a real incident motivates an entry.
+7. **Misspelled identifiers are fixed now**, public ones included, while nothing is published.
+8. **The slow checks run in CI, as is customary.** GitHub Actions is re-enabled: `msrv` and `hack` as pull-request jobs, `audit` weekly and on `Cargo.lock` changes. The `just` recipes reproduce them locally (Q2.7).
+9. **`tisvlay-core`'s binary glue (`logging`, `access`) moves to a new unpublished crate**, so the published core carries no anyhow and fewer dependencies (Q6.1).
+10. **Tombi: a throwaway trial first**, adopted in Q2 only if the reformat reads well (Q2.8).
+11. **Sequencing: plan order.** The feature branches the draft worried about have merged.
+12. **Flaky tests are quarantined, never retried**, and the nextest `ci` profile's retries go to 0 (QT.3).
+13. **A conventions section in `CLAUDE.md`**, started in Q1b and grown with each PR.
+14. **`doc`, `shear` and `typos` join `just check`**, each with a matching prek hook: `doc` filtered on `\.rs$|Cargo\.toml`, `shear` on `Cargo\.toml$`.
 
 ## 8. Where this lands
 
@@ -337,9 +365,13 @@ Per `docs/plans/README.md`, this file is deleted when its last PR merges. Each P
 
 - **`docs/build.md` gains a "Lint policy" section**, holding the rules of §4, the never-adopt list, and a short survey summary under a dated "Lessons" heading.
   - The bump routine for duplicates goes into § Dep-graph posture.
-  - The first-publish checklist and the `hack`/`msrv`/`audit` triggers get their own section.
-  - The time-bound items go under § Review triggers, phrased as triggers rather than dates: shear vs `[lints.cargo]` when the pin reaches that release, the per-lint keys when rust-clippy#17520 merges, the pedantic decision on a major clippy change.
-- **`CLAUDE.md` § Linting & CI** gets a three-line summary of the rules and the conventions section if §7.13 says yes. The "Dead Code Detection" note stays, since shear finds unused dependencies, not unused `pub` items.
+  - The first-publish checklist gets its own section, and so do the CI jobs with their local recipes.
+  - The time-bound items go under § Review triggers, phrased as triggers rather than dates:
+    - shear vs `[lints.cargo]` when the pin reaches that release;
+    - the per-lint keys and the QT test allows when rust-clippy#17520 merges;
+    - the yearly pedantic probe.
+- **`docs/testing.md`** gets the one-binary-per-crate layout and the flaky-test quarantine policy, and loses the stale snapshot layer.
+- **`CLAUDE.md` § Linting & CI** gets a three-line summary of the rules plus the conventions section (§7.13). The "Dead Code Detection" note stays, since shear finds unused dependencies, not unused `pub` items. The crate tree gains the new runtime crate.
 - **`Cargo.toml`** gets a comment above `[workspace.lints]` pointing to the lint policy. That's where someone adding a lint will look.
-- **`docs/ideas/`** gets one entry per "Later" item, with index lines in `docs/ideas.md`. `msrv-verification-job.md` is trimmed to its CI options.
+- **`docs/ideas/`** gets one entry per "Later" item, with index lines in `docs/ideas.md`. `msrv-verification-job.md` and its index line retire, since Q2's recipe and CI job cover both of its options.
 - **Version-anchored facts stay in this plan and in git history**, not in the durable docs: tool versions, release numbers, dates, the probe's counts.
