@@ -14,6 +14,11 @@
 //! matching flips true receives a reply — matching ⇒ routable, no
 //! retry loop needed.
 
+#![expect(
+    clippy::panic,
+    reason = "integration tests fail loudly by design; clippy's allow-*-in-tests keys don't reach helper fns under tests/"
+)]
+
 use std::time::Duration;
 
 use tisvlay_wire::bootstrap;

@@ -92,6 +92,10 @@ impl PrivateBus {
     /// # Panics
     ///
     /// Same as [`shared`](Self::shared).
+    #[expect(
+        clippy::panic,
+        reason = "test infrastructure: a missing or failing dbus-daemon fails the test with a clear message"
+    )]
     pub fn isolated() -> PrivateBus {
         match PrivateBus::spawn() {
             Ok(bus) => bus,

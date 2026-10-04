@@ -51,7 +51,7 @@ Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` 
 5. **Prove it red.** Before review, a deliberate violation must fail `just clippy`.
 6. **Generated code** (Slint's `include_modules!` in `tisvlay-gui`) sits in a module that allows `warnings` plus the clippy groups, so no lint added later has to revisit it. Deny-level lints such as `unsafe_code` still apply.
 7. **`unsafe` is confined.** `unsafe_code` is `deny`, not `forbid`, so the few files that need FFI can opt out with a reasoned file-level `#![expect(unsafe_code)]`. Every block gets a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and does one unsafe operation (`multiple_unsafe_ops_per_block`).
-8. **Test code may print and use `dbg!`.** `clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
+8. **Test code may unwrap, panic, index and print.** `clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
 
 ### Never adopted
 

@@ -139,7 +139,7 @@ async fn watch_network(
                     _ => {}
                 }
             }
-            _ = async { tokio::time::sleep_until(settle_at.unwrap()).await },
+            _ = async { tokio::time::sleep_until(settle_at.expect("the branch is enabled only while settle_at is Some")).await },
                 if settle_at.is_some() =>
             {
                 settle_at = None;

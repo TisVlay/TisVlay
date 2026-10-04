@@ -3,5 +3,6 @@
 //! `lang/` catalogs' `.mo` files.
 
 fn main() {
-    slint_build::compile("ui/main.slint").unwrap();
+    slint_build::compile("ui/main.slint")
+        .expect("the Slint UI failed to compile; slint-build printed the errors above");
 }

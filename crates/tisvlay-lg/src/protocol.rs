@@ -319,7 +319,9 @@ impl Request {
             id: id.into(),
             msg_type: RequestType::Register,
             uri: None,
-            payload: Some(serde_json::to_value(payload).unwrap()),
+            payload: Some(serde_json::to_value(payload).expect(
+                "RegisterPayload is a plain string-keyed struct, so serializing it cannot fail",
+            )),
         }
     }
 
