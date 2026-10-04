@@ -58,7 +58,7 @@ Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` 
 Recorded so nobody re-scouts:
 
 - **Groups:** `nursery` and `restriction` as groups. `clippy::cargo`, whose `multiple_crate_versions` walks the whole graph per crate; cargo-deny's `bans` covers duplicates.
-- **Restriction lints workspace-wide:** `expect_used` (an `expect` stating its invariant is the idiom here), `indexing_slicing`, `arithmetic_side_effects` and `as_conversions`. Too noisy for an I/O-bound daemon.
+- **Restriction lints workspace-wide:** `expect_used` (an `expect` stating its invariant is the idiom here), `indexing_slicing`, `arithmetic_side_effects` and `as_conversions`. Too noisy for an I/O-bound daemon; the parsers of outside input opt in per module instead.
 - **`allow_attributes`:** it flags reasoned `#[allow]`s too, which rule 3 relies on.
 - **`redundant_pub_crate`:** it contradicts the `unreachable_pub` lint already in the table.
 - **`missing_docs_in_private_items`.**

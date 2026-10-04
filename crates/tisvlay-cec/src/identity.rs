@@ -9,6 +9,16 @@
 //! for *itself* — what the TV shows as the PC's HDMI input label — as the
 //! bounded mirror of [`sanitize`].
 
+// External-input profile: this module handles CEC identity replies from
+// the TV, so indexing, arithmetic, string slicing and narrowing casts must
+// be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use linux_cec::VendorId;
 use tisvlay_core::HardwareId;
 
@@ -92,11 +102,14 @@ pub(crate) fn clamp_osd_name(name: &str) -> Option<String> {
     // end offset and keep the last one still within 14 bytes.
     let end = cleaned
         .char_indices()
-        .map(|(i, c)| i + c.len_utf8())
+        .map(|(i, c)| i.saturating_add(c.len_utf8()))
         .take_while(|&end| end <= MAX_OSD_BYTES)
         .last()
         .unwrap_or(0);
-    (end > 0).then(|| cleaned[..end].to_string())
+    cleaned
+        .get(..end)
+        .filter(|prefix| !prefix.is_empty())
+        .map(str::to_string)
 }
 
 /// Query the TV's identity over the link, best-effort. Each query is bounded

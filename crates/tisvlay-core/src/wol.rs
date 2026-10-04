@@ -2,6 +2,16 @@
 //!
 //! Sends "magic packets" to wake devices from standby mode.
 
+// External-input profile: this module handles MAC strings from config and
+// from the TV, so indexing, arithmetic, string slicing and narrowing casts
+// must be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use crate::error::{Error, Result};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -34,14 +44,13 @@ impl MacAddress {
             )));
         }
 
-        let bytes: std::result::Result<Vec<u8>, _> = (0..6)
-            .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16))
-            .collect();
-
-        let bytes = bytes.map_err(|e| Error::InvalidMacAddress(e.to_string()))?;
-
         let mut mac = [0u8; 6];
-        mac.copy_from_slice(&bytes);
+        for (byte, pair) in mac.iter_mut().zip(s.as_bytes().as_chunks::<2>().0) {
+            let pair =
+                std::str::from_utf8(pair).map_err(|e| Error::InvalidMacAddress(e.to_string()))?;
+            *byte = u8::from_str_radix(pair, 16)
+                .map_err(|e| Error::InvalidMacAddress(e.to_string()))?;
+        }
         Ok(Self(mac))
     }
 
@@ -73,9 +82,8 @@ fn build_magic_packet(mac: &MacAddress) -> [u8; 102] {
     packet[..6].fill(0xFF);
 
     // 16 repetitions of MAC address
-    for i in 0..16 {
-        let offset = 6 + i * 6;
-        packet[offset..offset + 6].copy_from_slice(mac.bytes());
+    for repetition in packet[6..].as_chunks_mut::<6>().0 {
+        repetition.copy_from_slice(mac.bytes());
     }
 
     packet

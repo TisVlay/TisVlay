@@ -7,6 +7,16 @@
 //! `/proc/net`, while `AF_NETLINK` is already open for the carrier
 //! monitor.
 
+// External-input profile: this module handles netlink neighbor messages
+// from the kernel, so indexing, arithmetic, string slicing and narrowing
+// casts must be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::net::IpAddr;
 
 use futures_util::TryStreamExt;

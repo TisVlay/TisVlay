@@ -3,6 +3,16 @@
 //! The SSAP (Simple Service Access Protocol) is a JSON-based protocol
 //! used by LG WebOS TVs over WebSocket connections.
 
+// External-input profile: this module handles SSAP messages from the TV,
+// so indexing, arithmetic, string slicing and narrowing casts must be
+// checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

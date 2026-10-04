@@ -3,6 +3,16 @@
 //! See the crate-level [README](https://crates.io/crates/tisvlay-ssdp) for
 //! usage, scope, and firewall-bind rationale.
 
+// External-input profile: this module handles SSDP replies from the
+// network, so indexing, arithmetic, string slicing and narrowing casts
+// must be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -153,6 +163,10 @@ pub async fn search(
 
     Ok(async_stream::stream! {
         let mut buf = [0u8; RECV_BUFFER_SIZE];
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Instant plus a search timeout; overflow would need a timeout of billions of years"
+        )]
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -162,7 +176,7 @@ pub async fn search(
             match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
                 Err(_) => break,
                 Ok(Err(e)) => yield Err(Error::from(e)),
-                Ok(Ok((n, _src))) => yield decode_datagram(&buf[..n]),
+                Ok(Ok((n, _src))) => yield decode_datagram(buf.get(..n).unwrap_or_default()),
             }
         }
     })
@@ -278,6 +292,10 @@ impl SharedSearcher {
         send_m_search_burst(&inner.socket, &self.targets, DEFAULT_MX, self.destination).await?;
 
         Ok(async_stream::stream! {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "Instant plus a search timeout; overflow would need a timeout of billions of years"
+            )]
             let deadline = tokio::time::Instant::now() + timeout;
             loop {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -325,7 +343,7 @@ async fn recv_loop(socket: Arc<UdpSocket>, tx: broadcast::Sender<SsdpResponse>) 
     let mut buf = [0u8; RECV_BUFFER_SIZE];
     loop {
         match socket.recv_from(&mut buf).await {
-            Ok((n, _src)) => match decode_datagram(&buf[..n]) {
+            Ok((n, _src)) => match decode_datagram(buf.get(..n).unwrap_or_default()) {
                 // Ignore send errors: no subscribers is the normal idle
                 // state between searches.
                 Ok(resp) => {

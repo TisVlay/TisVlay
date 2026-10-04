@@ -6,6 +6,16 @@
 //! Connector names use the full sysfs directory name (`card1-HDMI-A-1`),
 //! matching what the DPMS watcher is configured with.
 
+// External-input profile: this module handles EDID and sysfs data from the
+// kernel, so indexing, arithmetic, string slicing and narrowing casts must
+// be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -95,16 +105,16 @@ fn identity_matches(tv: &HardwareId, edid: &HardwareId) -> bool {
 }
 
 fn match_score(tv: &HardwareId, edid: &HardwareId) -> u32 {
-    let mut score = 0;
+    let mut score: u32 = 0;
     if let (Some(a), Some(b)) = (&tv.model, &edid.model)
         && a == b
     {
-        score += 1;
+        score = score.saturating_add(1);
     }
     if let (Some(a), Some(b)) = (&tv.serial, &edid.serial)
         && a == b
     {
-        score += 2;
+        score = score.saturating_add(2);
     }
     score
 }
@@ -198,9 +208,9 @@ pub(crate) async fn probe_task(
                             serde_json::from_slice(&sample.payload().to_bytes())
                                 .unwrap_or(Value::Null);
                         let hw = HardwareId {
-                            manufacturer: value["make"].as_str().map(str::to_string),
-                            model: value["model"].as_str().map(str::to_string),
-                            serial: value["serial"].as_str().map(str::to_string),
+                            manufacturer: value.get("make").and_then(Value::as_str).map(str::to_string),
+                            model: value.get("model").and_then(Value::as_str).map(str::to_string),
+                            serial: value.get("serial").and_then(Value::as_str).map(str::to_string),
                         };
                         if hw.manufacturer.is_some() {
                             tvs.insert(tv, hw);
