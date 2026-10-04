@@ -25,12 +25,13 @@
 //!
 //! # Parallelism
 //!
-//! Tests within a single binary share one bus. That's fine for tests
-//! that use unique object paths, but tests that both want to own the
-//! same well-known name (e.g. `org.freedesktop.login1` for a
-//! [`fake_logind::FakeLogind`]) cannot run in parallel on one bus —
-//! name ownership is bus-global. For such tests, use nextest's
-//! `test-groups` to serialize them within the binary.
+//! [`PrivateBus::shared`] is one bus per test process. That's fine for
+//! tests that only connect or use unique object paths, but tests that
+//! own a well-known name (e.g. `org.freedesktop.login1` for a
+//! [`fake_logind::FakeLogind`]) can't share a bus with each other — name
+//! ownership is bus-global, and plain `cargo test` runs a binary's tests
+//! concurrently in one process. Such tests take a
+//! [`PrivateBus::isolated`] bus of their own instead.
 
 pub mod dbus;
 pub mod fake_logind;

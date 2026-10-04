@@ -466,7 +466,7 @@ async fn user_profile_overrides_and_guards() {
 /// lock/unlock end to end.
 #[tokio::test(flavor = "multi_thread")]
 async fn lock_watcher_drives_lock_unlock() {
-    let bus = tisvlay_test::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
@@ -610,7 +610,7 @@ async fn screen_drift_while_idle_reasserts_after_grace() {
 /// seed the locked-idle timer stays gated off and never blanks the TV.
 #[tokio::test(flavor = "multi_thread")]
 async fn lock_watcher_seed_reads_a_preexisting_lock() {
-    let bus = tisvlay_test::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
@@ -649,7 +649,7 @@ async fn lock_watcher_seed_reads_a_preexisting_lock() {
 /// docs/architecture.md.
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_seed_reads_a_preexisting_lock_synchronously() {
-    let bus = tisvlay_test::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await

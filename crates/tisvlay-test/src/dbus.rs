@@ -46,6 +46,9 @@ pub struct PrivateBus {
     /// Kept alive so the child stays reachable for explicit kill if needed.
     /// pdeathsig is the primary cleanup path.
     _child: Mutex<std::process::Child>,
+    /// Holds the spawner thread open; dropping it lets the thread return,
+    /// and the kernel's pdeathsig then ends the daemon.
+    _release: std::sync::mpsc::Sender<()>,
 }
 
 impl PrivateBus {
@@ -58,15 +61,29 @@ impl PrivateBus {
     /// that need this harness are expected to run in an environment where
     /// `dbus-daemon` is available (nix dev shell, CI image, etc.).
     pub fn shared() -> &'static PrivateBus {
-        static BUS: LazyLock<PrivateBus> = LazyLock::new(|| match PrivateBus::spawn() {
+        static BUS: LazyLock<PrivateBus> = LazyLock::new(PrivateBus::isolated);
+        &BUS
+    }
+
+    /// A private bus of the caller's own, for tests that own well-known
+    /// names (a [`FakeLogind`](crate::fake_logind::FakeLogind), a fake
+    /// ScreenSaver). Name ownership is bus-wide, so such tests sharing one
+    /// bus in a process — plain `cargo test` runs a binary's tests
+    /// concurrently in one process — would claim each other's names.
+    /// Dropping it ends the daemon.
+    ///
+    /// # Panics
+    ///
+    /// Same as [`shared`](Self::shared).
+    pub fn isolated() -> PrivateBus {
+        match PrivateBus::spawn() {
             Ok(bus) => bus,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => panic!(
                 "dbus-daemon not found on PATH: the tisvlay-test D-Bus fakes need it \
                  (the Nix dev shell provides it; elsewhere install the dbus package)"
             ),
             Err(e) => panic!("failed to spawn private dbus-daemon: {e}"),
-        });
-        &BUS
+        }
     }
 
     /// The bus address as a `unix:path=...` string, suitable for
@@ -138,16 +155,18 @@ impl PrivateBus {
             });
         }
 
-        // Fork from a thread that never exits, so the pdeathsig fires with
-        // the process rather than with the calling test's thread.
+        // Fork from a thread that lives as long as the bus handle, so the
+        // pdeathsig fires when the bus is dropped (never, for the shared
+        // one) or the process dies — not when the calling test's thread
+        // ends.
         let (spawned_tx, spawned_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         std::thread::Builder::new()
             .name("tisvlay-test-bus".into())
             .spawn(move || {
                 let _ = spawned_tx.send(cmd.spawn());
-                loop {
-                    std::thread::park();
-                }
+                // Returns once the bus handle drops its sender.
+                let _ = release_rx.recv();
             })?;
         let mut child = spawned_rx
             .recv()
@@ -187,6 +206,7 @@ impl PrivateBus {
             address,
             _workdir: workdir,
             _child: Mutex::new(child),
+            _release: release_tx,
         })
     }
 }

@@ -12,7 +12,7 @@
 //! # async fn run() -> zbus::Result<()> {
 //! use tisvlay_test::{fake_logind::FakeLogind, PrivateBus};
 //!
-//! let bus = PrivateBus::shared();
+//! let bus = PrivateBus::isolated(); // owns a well-known name: a bus of its own
 //! let conn = bus.connect().await?;
 //! let logind = FakeLogind::register(&conn).await?;
 //!
