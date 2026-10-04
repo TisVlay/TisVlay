@@ -270,7 +270,7 @@ impl TvConnector for LgConnector {
                 // since some setups manage power externally.
                 required: false,
                 placeholder: "AA:BB:CC:DD:EE:FF".into(),
-                // Daemon ARP-resolves this from the kernel's neighbour
+                // Daemon ARP-resolves this from the kernel's neighbor
                 // table after SSDP yields the IP and stuffs it into
                 // `vendor_data["mac"]`.
                 autofill: "discovery.mac".into(),

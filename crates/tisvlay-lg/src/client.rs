@@ -628,7 +628,7 @@ impl WebOsClient {
         let info = self.network_read(network::GET_INFO).await?;
         let mac = info[format!("{iface}Info")]["macAddress"].as_str()?;
         MacAddress::parse(mac)
-            .inspect_err(|e| tracing::debug!(iface, mac, error = %e, "unparseable link MAC"))
+            .inspect_err(|e| tracing::debug!(iface, mac, error = %e, "unparsable link MAC"))
             .ok()
     }
 

@@ -1337,7 +1337,7 @@ impl UserConfig {
             }
             (None, Some(default)) => {
                 // Profile UUID not found in user config — fall through to user's default
-                // before reaching the system default, so user-level overrides are honoured.
+                // before reaching the system default, so user-level overrides are honored.
                 default.merge_with_base(system_default)
             }
             (None, None) => {

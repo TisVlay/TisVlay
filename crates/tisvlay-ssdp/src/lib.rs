@@ -331,7 +331,7 @@ async fn recv_loop(socket: Arc<UdpSocket>, tx: broadcast::Sender<SsdpResponse>) 
                 Ok(resp) => {
                     let _ = tx.send(resp);
                 }
-                Err(e) => tracing::debug!(error = %e, "Dropping unparseable SSDP datagram"),
+                Err(e) => tracing::debug!(error = %e, "Dropping unparsable SSDP datagram"),
             },
             Err(e) => {
                 // A bound UDP socket rarely errors; surface it at warn (a

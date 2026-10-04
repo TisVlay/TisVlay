@@ -36,7 +36,6 @@ serde_json = { workspace = true }
 slint = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 parking_lot = "0.12"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
@@ -56,9 +55,3 @@ i-slint-backend-testing = "=1.18.1"
 
 [lints]
 workspace = true
-
-# `cargo machete` flags `gettext-rs` as unused because the Rust source
-# imports it as `gettextrs::gettext` (Cargo names use `-`, the Rust crate
-# alias drops it; machete doesn't reconcile).
-[package.metadata.cargo-machete]
-ignored = ["gettext-rs"]

@@ -99,7 +99,7 @@ impl TvConnector for MockConnector {
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
 
-        // Honour any test-injected connect delay (simulates slow/unreachable TV),
+        // Honor any test-injected connect delay (simulates slow/unreachable TV),
         // pick up any test-seeded hardware identity keyed by address, and bump
         // the per-address connect counter so tests can assert an idempotent
         // `power_on` skipped the teardown/reconnect.

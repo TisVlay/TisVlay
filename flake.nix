@@ -105,9 +105,14 @@
                 # docs/licensing.md. Pinned to 0.9.1 via cargoAbout (above).
                 cargoAbout
                 cargo-deny
-                cargo-insta
+                # cargo-hack checks each feature in isolation (`just hack`);
+                # every other gate builds with --all-features.
+                cargo-hack
                 cargo-llvm-cov
                 cargo-nextest
+                # cargo-shear finds unused and misplaced dependencies
+                # (`just shear`) by parsing sources; no build needed.
+                cargo-shear
                 # cargo-sbom emits a whole-workspace SBOM (SPDX) for `just sbom`.
                 cargo-sbom
                 # cargo-zigbuild + zig drive the release build: zig serves
@@ -140,6 +145,9 @@
                 slintViewer
                 socat
                 tcpdump
+                # Spell checker for code, docs and identifiers (`just typos`;
+                # config in _typos.toml).
+                typos
                 wakeonlan
                 rust
                 # i18n tooling. `gettext` provides xgettext / msgfmt /

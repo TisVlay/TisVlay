@@ -1,6 +1,6 @@
 //! Client-side profile-reference computation.
 //!
-//! v3 drops the server-side `ReferencedBy` property in favour of a
+//! v3 drops the server-side `ReferencedBy` property in favor of a
 //! shared helper both daemon and clients call. The TV list every
 //! client maintains in memory is the source of truth; the helper just
 //! encodes the fan-out rule (a TV whose profile-assignment field is

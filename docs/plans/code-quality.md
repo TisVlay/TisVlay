@@ -70,7 +70,7 @@ No macro expansion (Slint, zbus, tokio) trips `unsafe_code`. No `unsafe_code` po
 
 **Other.**
 
-- **`typos`:** 42 hits, nearly all false positives (`Pn` in UPnP prose, `DELET` in a key example, the truncated `.sunshine-wrapp` process name). The real ones are a handful: `mis` in `help.slint`, `inh` in a test, the `unparseable` spelling.
+- **`typos`:** 42 hits without a locale, nearly all false positives: UPnP split at its lowercase letters, a pluralized all-caps zenoh verb, the truncated Sunshine process name. The real ones were a handful (a hyphenated "misattribute", a test fixture address, one spelling of "unparsable"). With `locale = "en-us"` it adds about 60 British spellings, most of them in the ARP neighbor-table code.
 - **Feature combinations are never checked.** Every gate builds with `--all-features`, so a crate that no longer builds with a feature off goes unnoticed. The affected features are core's `access`, `wayland` and `logging`, and cec's `test-link`. `docs/build.md` § CI feature scope argues for exactly one feature configuration.
 - **The MSRV floor is manual.** `rust-version = "1.95"` is verified by hand only, following `docs/ideas/msrv-verification-job.md`.
 - **The nextest `ci` profile retries once**, which hides flaky tests.
@@ -189,7 +189,7 @@ Each tool joins the flake devShell in this PR, together with its first use: carg
    - Only cargo-shear's `ignored` list depends on review to stay honest; record whether shear warns on stale entries.
 2. **typos.**
    - `just typos` joins `just check`, with a local prek hook dispatching to it, so the version comes from the flake.
-   - `_typos.toml` sets `locale = "en-us"`, adds `extend-words` for the protocol tokens (`Pn`, `DELET`, `wrapp`, `EIS`), and excludes `.pot`/`.po`, `Cargo.lock` and `target/`.
+   - `_typos.toml` sets `locale = "en-us"` and allow-lists only names this repo can't rename: netlink-packet-route's British-spelled neighbor types (`NeighbourState` and friends), `oif`, the portal's EIS, the truncated Sunshine comm, and UPnP-derived product names. It excludes `.pot`/`.po`, `Cargo.lock` and `target/`.
    - Fix the real typos, misspelled public identifiers included, since nothing is published yet (§7).
 3. **Duplicate versions become blocking.**
    - Align `gettext-rs` to Slint's `0.7`.

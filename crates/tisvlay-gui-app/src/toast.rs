@@ -1,4 +1,4 @@
-//! Top-centre toast banner. Auto-clears after a short timeout;
+//! Top-center toast banner. Auto-clears after a short timeout;
 //! coalesces across rapid calls so only the most recent message
 //! stays visible.
 
@@ -20,7 +20,7 @@ const TOAST_DURATION_MS: u64 = 2500;
 /// without the first's clear-task wiping out the second prematurely.
 static TOAST_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// Display a top-centre toast for `TOAST_DURATION_MS` and auto-clear.
+/// Display a top-center toast for `TOAST_DURATION_MS` and auto-clear.
 /// Safe to call from any thread; marshals through the Slint event
 /// loop. Multiple rapid calls coalesce — only the most recent
 /// message stays visible, no toast queue.

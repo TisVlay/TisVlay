@@ -6,7 +6,7 @@ After the manual-entry MAC autofill work ([docs/discovery.md](../discovery.md)),
 
 A daemon-side hook in the pair flow:
 
-- On `Manager1.AddTv` / `Tv1.RePair` reaching the terminal `complete` phase, look up the just-paired TV's IP in the kernel neighbour table (existing `netlink::arp_lookup`).
+- On `Manager1.AddTv` / `Tv1.RePair` reaching the terminal `complete` phase, look up the just-paired TV's IP in the kernel neighbor table (existing `netlink::arp_lookup`).
 - If a MAC came back AND the saved config's `vendor_data["mac"]` is empty, update the config in-place (atomic write via the existing `apply_reload_diff` machinery or a narrower `update_tv_vendor_data` path).
 - Emit a `PropertiesChanged` so the GUI's TVs-pane refreshes the MAC display without a reload.
 

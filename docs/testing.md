@@ -57,7 +57,6 @@ flowchart LR
 | Doc | `///` examples in `pub` items | `cargo test --doc` | every change |
 | Parameterized | unit/integration | `rstest` | every change |
 | Property | unit/integration | `proptest` | every change |
-| Snapshot | `crates/*/tests/snapshots/` | `insta` | every change |
 | Mock backend | `tisvlay-world/tests/`, `tisvlay-daemon/tests/`, other binary crates' `tests/` | mock crate | every change |
 
 ### Parameterized tests (rstest)
@@ -94,17 +93,6 @@ proptest! {
 ```
 
 When a proptest fails, it writes a `.proptest-regressions` file. **Commit these files** — they replay the failing seed on future runs.
-
-### Snapshot tests (insta)
-
-Compare generated output against saved reference files. Workflow:
-
-1. Write test: `insta::assert_json_snapshot!(value)`
-2. `just test` — new/changed snapshots fail, write `.snap.new`
-3. `just test-snapshot-review` — interactive diff TUI
-4. Commit updated `.snap` files
-
-Snapshots live in `crates/*/tests/snapshots/`.
 
 ## LG backend testing
 
@@ -416,7 +404,7 @@ async fn wire() -> Wire {
 
 ## GUI testing (i-slint-backend-testing)
 
-`tisvlay-gui/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+`tisvlay-gui-app/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
 
 ```rust
 use slint::{ModelRc, SharedString, VecModel};

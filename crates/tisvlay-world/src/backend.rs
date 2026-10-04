@@ -144,7 +144,7 @@ pub(crate) async fn connect_flow(
                     }
                     // Deferred rpc release: the caller hears back at device
                     // speed — the backpressure that keeps rapid absolute
-                    // writes (volume scroll) from queueing stale values.
+                    // writes (volume scroll) from queuing stale values.
                     if let Some(reply) = reply {
                         let _ = inbox.send(InEvent::Backend {
                             tv,

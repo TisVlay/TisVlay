@@ -420,9 +420,9 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
     })
     .await;
 
-    // The session departs: the token DELETEs and the daemon clears the
-    // armed set on the DELETE alone — no empty mirror put ever arrives, so
-    // the disarm is attributable purely to the liveliness signal.
+    // The session departs: the token sends its DELETE and the daemon
+    // clears the armed set on that DELETE alone — no empty mirror put ever
+    // arrives, so the disarm is attributable purely to the liveliness signal.
     token.undeclare().await.unwrap();
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
         v["remote_armed"] == false

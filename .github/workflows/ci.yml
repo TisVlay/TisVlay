@@ -42,7 +42,9 @@ jobs:
             cargo-llvm-cov
             cargo-nextest
             cargo-sbom@0.10.0
+            cargo-shear
             just
+            typos
 
       - name: Cache
         uses: Swatinem/rust-cache@v2

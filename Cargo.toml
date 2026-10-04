@@ -121,9 +121,6 @@ parking_lot = "0.12"
 # XDG directories
 directories = "6"
 
-# Ordered map (preserves insertion order for TV list stability)
-indexmap = "2"
-
 # UUID v4 for stable per-TV identifiers (decoupled from user-facing
 # display name so renames don't churn cross-references). Matches
 # NetworkManager's connection-uuid pattern.
@@ -144,7 +141,6 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # Rust protocol client — no libpipewire link. Git-pinned; the pin's
 # rationale + revert condition live at the deny.toml allow-git entry.
 pipewire-native = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
-pipewire-native-spa = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
 # `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
@@ -228,8 +224,6 @@ tisvlay-daemon = { path = "crates/tisvlay-daemon" }
 tisvlay-session = { path = "crates/tisvlay-session" }
 
 # Testing
-insta = { version = "1", features = ["json", "yaml", "filters"] }
-insta-cmd = "0.7"
 proptest = "1"
 rstest = "0.27"
 tempfile = "3"

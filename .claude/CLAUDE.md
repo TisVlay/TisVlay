@@ -236,7 +236,6 @@ See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
 ```bash
 just test                   # cargo nextest run + doc tests
 just cov / cov-html / cov-ratchet
-just test-snapshot-review   # insta
 ```
 
 ## Reference Documentation

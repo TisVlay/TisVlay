@@ -2,7 +2,7 @@
 //!
 //! Reads state from the daemon over the system zenoh socket and from
 //! `tisvlay-session` over the user socket. M2
-//! adds writeable controls (volume, backlight, mute, screen toggle,
+//! adds writable controls (volume, backlight, mute, screen toggle,
 //! input switcher, profile dropdowns, managed checkbox, remove,
 //! reload-config) plus staged power-on feedback via the per-TV
 //! `progress/power` key.
@@ -507,7 +507,7 @@ pub fn run() -> Result<()> {
         });
     }
 
-    // Toast.show is the public Slint-side trigger for the top-centre
+    // Toast.show is the public Slint-side trigger for the top-center
     // notification surface. Rust handlers can either invoke this
     // callback (e.g., from `Daemon.on_*` paths via the AppWindow
     // global) or call `show_toast` directly — both feed the same

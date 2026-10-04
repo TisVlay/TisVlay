@@ -47,6 +47,19 @@ clippy:
 doc:
     {{ deny_warnings }} cargo doc --profile test --workspace --no-deps --all-features
 
+# Find unused or misplaced dependencies. cargo-shear parses the sources
+# (no build), so it runs in seconds; false positives go under a crate's
+# `[package.metadata.cargo-shear] ignored`, with a comment saying why.
+[group('check')]
+shear:
+    cargo shear --deny-warnings
+
+# Spell-check code, docs and identifiers, enforcing American English
+# (config: `_typos.toml`).
+[group('check')]
+typos:
+    typos
+
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
 test:
@@ -99,17 +112,7 @@ test-ci:
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
-check: deny licenses-html fmt build clippy doc test
-
-# Review pending snapshot changes (insta)
-[group('check')]
-test-snapshot-review:
-    cargo insta review
-
-# Accept all pending snapshot changes (insta)
-[group('check')]
-test-snapshot-accept:
-    cargo insta accept
+check: deny shear typos licenses-html fmt build clippy doc test
 
 # --- License attribution / policy --------------------------------------
 #
