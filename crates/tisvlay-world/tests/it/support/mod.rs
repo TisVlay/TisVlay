@@ -4,18 +4,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_world::{Command, Reactor, Reply, TvRecord, WireEffect, WorldClient};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
-pub(crate) fn mock_config(address: &str) -> toml::Value {
-    let mut table = toml::value::Table::new();
-    table.insert("address".into(), toml::Value::String(address.into()));
-    toml::Value::Table(table)
+pub(crate) fn mock_config(address: &str) -> VendorConfig {
+    let mut config = VendorConfig::new();
+    config.insert("address", address);
+    config
 }
 
-pub(crate) fn tv_record(id: Uuid, name: &str, config: toml::Value) -> TvRecord {
+pub(crate) fn tv_record(id: Uuid, name: &str, config: VendorConfig) -> TvRecord {
     TvRecord {
         id,
         name: name.into(),

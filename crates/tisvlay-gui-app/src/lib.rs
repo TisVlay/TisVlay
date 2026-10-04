@@ -2028,7 +2028,7 @@ fn register_callbacks(
         let d = ctx.daemon.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            let result = with_id(&tv_id, |tv| d.update_tv_config(tv, &patch)).await;
+            let result = with_id(&tv_id, |tv| d.update_tv_config(tv, patch)).await;
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
                 match result {
@@ -2306,7 +2306,7 @@ fn register_callbacks(
         let app_weak = app.as_weak();
         let d = d.clone();
         tokio::spawn(async move {
-            let result = d.update_tv_config(tv, &patch).await;
+            let result = d.update_tv_config(tv, patch).await;
             on_ui(&app_weak, move |app| {
                 let edit_pane = app.global::<EditPane>();
                 edit_pane.set_saving(false);

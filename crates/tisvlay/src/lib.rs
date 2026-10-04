@@ -686,8 +686,14 @@ impl DaemonClient {
 
     /// Patch the TV's config: known top-level keys apply to its settings,
     /// everything else merges into the vendor table.
-    pub async fn update_tv_config(&self, tv: Uuid, patch: &rpc::UpdateConfig) -> Result<()> {
-        self.call::<tv::UpdateConfig>(&tv, patch).await.map(|_| ())
+    pub async fn update_tv_config(
+        &self,
+        tv: Uuid,
+        patch: serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        self.call::<tv::UpdateConfig>(&tv, &rpc::UpdateConfig(patch))
+            .await
+            .map(|_| ())
     }
 
     /// A system profile's body, from the mirror.

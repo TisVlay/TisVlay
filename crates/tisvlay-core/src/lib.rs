@@ -15,6 +15,7 @@
 //! ├── state: TV state types
 //! ├── error: Vendor-agnostic errors
 //! ├── secret: Debug-redacted credential values
+//! ├── vendor_config: the vendor-specific config table
 //! └── wol: Wake-on-LAN (generic)
 //!
 //! tisvlay-lg (separate crate)
@@ -41,6 +42,7 @@ mod refresh_trigger;
 mod secret;
 mod state;
 mod traits;
+mod vendor_config;
 pub mod wol;
 
 // =============================================================================
@@ -68,11 +70,10 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
-    AutomateWhen, DEFAULT_BIND_PORT, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID,
-    DEFAULT_USER_PROFILE_UUID, DiscoveryConfig, EventAction, ResolvedSystemProfile,
-    ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction, SystemConfig, SystemProfileConfig,
-    SystemSection, TvConfig, TvProfileAssignment, USER_PROFILE_FIELDS, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
+    AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
+    EventAction, ResolvedSystemProfile, ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction,
+    SystemProfileConfig, USER_PROFILE_FIELDS, UserConfig, UserProfileConfig, UserSection,
+    UserTvConfig, UserTvProfileAssignment, absolutize,
 };
 
 // Profile-reference computation (used by daemon + clients)
@@ -88,6 +89,9 @@ pub use error::{Error, Result};
 
 // Secret values (credentials)
 pub use secret::Secret;
+
+// Vendor-specific config tables
+pub use vendor_config::VendorConfig;
 
 // Wake-on-LAN
 pub use wol::{MAC_CONFIG_KEY, MacAddress, WakeOptions, wake, wake_with_options};

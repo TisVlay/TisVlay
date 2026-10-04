@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use linux_cec::operand::PowerStatus;
 use tisvlay_core::{
     Credentials, Error, PairingSession, PairingState, Result, Transport, TvConnection, TvConnector,
+    VendorConfig,
 };
 use tracing::instrument;
 
@@ -65,11 +66,10 @@ impl Default for CecConnector {
     }
 }
 
-/// Parse a `toml::Value` into a [`CecVendorConfig`], with a helpful error.
-fn parse_config(value: &toml::Value) -> Result<CecVendorConfig> {
+/// Parse the vendor config into a [`CecVendorConfig`], with a helpful error.
+fn parse_config(value: &VendorConfig) -> Result<CecVendorConfig> {
     value
-        .clone()
-        .try_into::<CecVendorConfig>()
+        .parse::<CecVendorConfig>()
         .map_err(|e| Error::backend(crate::VENDOR_ID, format!("invalid CEC config: {e}")))
 }
 
@@ -94,14 +94,14 @@ impl TvConnector for CecConnector {
         Transport::Cec
     }
 
-    fn reachable_in_standby(&self, _vendor_config: &toml::Value) -> bool {
+    fn reachable_in_standby(&self, _vendor_config: &VendorConfig) -> bool {
         // The CEC bus stays live in standby, so a standby TV is still
         // connected (Power ≠ Connected). `power_on` wakes it by power state,
         // not by connect success.
         true
     }
 
-    fn emulate_screen_via_power(&self, vendor_config: &toml::Value) -> bool {
+    fn emulate_screen_via_power(&self, vendor_config: &VendorConfig) -> bool {
         // HDMI-CEC has no discrete screen-blank, so honor screen actions by
         // powering the TV (default on). The daemon reads this to advertise
         // SCREEN and dispatch screen_off/screen_on as power_off/power_on.
@@ -111,7 +111,7 @@ impl TvConnector for CecConnector {
     }
 
     #[instrument(skip(self, vendor_config))]
-    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+    async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
         let link = self
             .opener
@@ -139,7 +139,7 @@ impl TvConnector for CecConnector {
         )))
     }
 
-    fn supports_wake(&self, _vendor_config: &toml::Value) -> bool {
+    fn supports_wake(&self, _vendor_config: &VendorConfig) -> bool {
         // The adapter is on the bus even when the TV sleeps, so we can
         // always send Image View On — wake is supported for any
         // configured device.
@@ -147,7 +147,7 @@ impl TvConnector for CecConnector {
     }
 
     #[instrument(skip(self, vendor_config))]
-    async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
+    async fn wake(&self, vendor_config: &VendorConfig) -> Result<()> {
         let config = parse_config(vendor_config)?;
         let link = self
             .opener
@@ -157,7 +157,10 @@ impl TvConnector for CecConnector {
     }
 
     #[instrument(skip(self, vendor_config))]
-    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+    async fn wake_and_connect(
+        &self,
+        vendor_config: &VendorConfig,
+    ) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
         let mut link = self
             .opener
@@ -219,7 +222,7 @@ impl TvConnector for CecConnector {
     }
 
     #[instrument(skip(self, vendor_config))]
-    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
+    fn start_pairing(&self, vendor_config: &VendorConfig) -> Result<PairingSession> {
         // CEC has no authentication — any device on the bus is reachable.
         // Validate the config parses, then complete immediately with empty
         // credentials (the trivial end of the pairing state machine).
@@ -233,13 +236,13 @@ impl TvConnector for CecConnector {
 
     fn build_config_from_pairing(
         &self,
-        pairing_params: &toml::Value,
+        pairing_params: &VendorConfig,
         _credentials: &Credentials,
-    ) -> Result<toml::Value> {
+    ) -> Result<VendorConfig> {
         // No credentials to merge — echo the validated config back so the
         // daemon persists a well-formed `[tv.cec]` entry.
         let config = parse_config(pairing_params)?;
-        toml::Value::try_from(&config)
+        VendorConfig::from_typed(&config)
             .map_err(|e| Error::backend(crate::VENDOR_ID, format!("serialize config: {e}")))
     }
 
@@ -318,8 +321,8 @@ mod tests {
     use super::*;
     use crate::link::FakeCecLinkOpener;
 
-    fn cfg() -> toml::Value {
-        toml::Value::try_from(CecVendorConfig::default()).unwrap()
+    fn cfg() -> VendorConfig {
+        VendorConfig::from_typed(&CecVendorConfig::default()).unwrap()
     }
 
     fn connector(initial: PowerStatus) -> CecConnector {
@@ -379,7 +382,7 @@ mod tests {
         // the field in the read-only view — falling back to the schema
         // default, matching what the edit form prefills. Regression for the
         // "option only visible in edit mode" GUI bug.
-        let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        let cfg: VendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
         let rows = connector(PowerStatus::On).display_config(&cfg);
         // All five `UserInput` fields show even though only `device` is
         // stored — the others fall back to their schema defaults (osd_name to
@@ -397,7 +400,7 @@ mod tests {
         // Default config → emulate on (stock screen profiles power the TV).
         assert!(connector(PowerStatus::On).emulate_screen_via_power(&cfg()));
         // Opt-out config → off (device ignores screen actions).
-        let off = toml::Value::try_from(CecVendorConfig {
+        let off = VendorConfig::from_typed(&CecVendorConfig {
             emulate_screen_via_power: false,
             ..Default::default()
         })
@@ -460,7 +463,8 @@ mod tests {
 
     #[test]
     fn invalid_config_is_rejected() {
-        let bad = toml::Value::String("not a table".into());
+        let mut bad = VendorConfig::new();
+        bad.insert("device", 7);
         assert!(parse_config(&bad).is_err());
     }
 
@@ -496,7 +500,7 @@ mod tests {
     async fn connect_advertises_configured_osd_name() {
         let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
         let conn = CecConnector::with_opener(opener.clone());
-        let cfg = toml::Value::try_from(CecVendorConfig {
+        let cfg = VendorConfig::from_typed(&CecVendorConfig {
             osd_name: "HTPC".into(),
             ..Default::default()
         })
@@ -515,7 +519,7 @@ mod tests {
         // schema form can always transmit — not an emptied name.
         let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
         let conn = CecConnector::with_opener(opener.clone());
-        let cfg = toml::Value::try_from(CecVendorConfig {
+        let cfg = VendorConfig::from_typed(&CecVendorConfig {
             advertise_osd_name: false,
             ..Default::default()
         })
@@ -533,7 +537,7 @@ mod tests {
         let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
         let conn = CecConnector::with_opener(opener.clone());
         // A config that doesn't set osd_name rides the "TisVlay" default.
-        let cfg: toml::Value = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        let cfg: VendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
         conn.connect(&cfg).await.expect("connect");
         assert_eq!(
             opener.opened_osd_names(),
@@ -548,7 +552,7 @@ mod tests {
         // the logical address before the TV would poll, so it names nothing.
         let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby));
         let conn = CecConnector::with_opener(opener.clone());
-        let cfg = toml::Value::try_from(CecVendorConfig {
+        let cfg = VendorConfig::from_typed(&CecVendorConfig {
             osd_name: "HTPC".into(),
             ..Default::default()
         })
@@ -566,7 +570,7 @@ mod tests {
         // A configured osd_name surfaces as a read-only row (parity with the
         // emulate_screen_via_power display regression); an unset one elides,
         // keeping the default view zero-delta.
-        let cfg = toml::Value::try_from(CecVendorConfig {
+        let cfg = VendorConfig::from_typed(&CecVendorConfig {
             osd_name: "HTPC".into(),
             ..Default::default()
         })

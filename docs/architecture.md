@@ -54,7 +54,7 @@ user/tray/settings, user/tray/rpc/<verb>              tray notification switches
 user/alive/{session,tray}                             per-user service liveliness
 ```
 
-Secrets never reach the wire: `get-config` redacts through the vendor `config_schema` visibility tags (`Secret` fields dropped daemon-side).
+Secrets never reach the wire: `get-config` redacts through the vendor `config_schema` visibility tags (`Secret` fields dropped daemon-side). Nor do they reach `Debug`: typed credentials are `tisvlay_core::Secret`, and the vendor config and the requests carrying it print key names only.
 
 ### Typed rpc endpoints
 
@@ -100,7 +100,7 @@ Reply-side backpressure is load-bearing: backend commands ack on TV completion (
 
 ## Backends
 
-Vendor backends implement four `tisvlay-core` traits and register as one `VendorReg` entry in the daemon — see [backends/implementing-a-vendor.md](backends/implementing-a-vendor.md). The vendor config travels as an opaque `toml::Value`; the schema's first field is the **primary descriptor** (LG: IP, CEC: device path), used by log lines, the CLI list, the wizard's manual entry, and route monitoring.
+Vendor backends implement four `tisvlay-core` traits and register as one `VendorReg` entry in the daemon — see [backends/implementing-a-vendor.md](backends/implementing-a-vendor.md). The vendor config travels as an opaque `VendorConfig` (a TOML table whose `Debug` prints key names only); the schema's first field is the **primary descriptor** (LG: IP, CEC: device path), used by log lines, the CLI list, the wizard's manual entry, and route monitoring.
 
 ## Persistence
 

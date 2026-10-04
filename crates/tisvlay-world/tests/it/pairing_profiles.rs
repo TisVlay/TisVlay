@@ -6,14 +6,15 @@ use crate::support;
 use std::time::Duration;
 
 use support::*;
+use tisvlay_core::VendorConfig;
 use tisvlay_world::{Command, InEvent, Reply, SystemEvent, WireEffect};
 use uuid::Uuid;
 
-fn pairing_config(address: &str, mode: &str) -> toml::Value {
-    let mut table = toml::value::Table::new();
-    table.insert("address".into(), toml::Value::String(address.into()));
-    table.insert("pairing".into(), toml::Value::String(mode.into()));
-    toml::Value::Table(table)
+fn pairing_config(address: &str, mode: &str) -> VendorConfig {
+    let mut config = VendorConfig::new();
+    config.insert("address", address);
+    config.insert("pairing", mode);
+    config
 }
 
 fn progress_on<'a>(
@@ -91,10 +92,7 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
     let progress_key = format!("tisvlay/test/pairing/{id}/progress");
 
     let mut config = pairing_config("mock://pair-dead", "accept");
-    config
-        .as_table_mut()
-        .unwrap()
-        .insert("refuse_connect".into(), toml::Value::Boolean(true));
+    config.insert("refuse_connect", true);
     client.command(Command::Pair {
         id,
         attempt: Uuid::new_v4(),
@@ -151,10 +149,7 @@ async fn transport_facts_reach_the_link_without_a_dial() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = Uuid::new_v4();
     let mut config = pairing_config("mock://idle", "manual");
-    config
-        .as_table_mut()
-        .unwrap()
-        .insert("refuse_connect".into(), toml::Value::Boolean(true));
+    config.insert("refuse_connect", true);
     let mut record = tv_record(id, "Idle", config);
     record.managed = false;
 
@@ -334,9 +329,8 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
     let base = std::time::Instant::now();
     let id = Uuid::new_v4();
     let mut config = pairing_config("mock://wakeless", "manual");
-    let table = config.as_table_mut().unwrap();
-    table.insert("refuse_connect".into(), toml::Value::Boolean(true));
-    table.insert("wake".into(), toml::Value::Boolean(false));
+    config.insert("refuse_connect", true);
+    config.insert("wake", false);
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Wakeless", config)),
         reply: None,
@@ -357,7 +351,7 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
 
     client.command(Command::UpdateConfig {
         id,
-        patch: serde_json::json!({ "wake": true }),
+        patch: serde_json::from_value(serde_json::json!({ "wake": true })).unwrap(),
         reply: Some(Reply::new(31)),
     });
     collect_until(&mut effects, |e| {
@@ -420,11 +414,8 @@ async fn re_pair_supersedes_an_in_flight_dial() {
     .await;
 }
 
-fn with(mut config: toml::Value, key: &str, value: &str) -> toml::Value {
-    config
-        .as_table_mut()
-        .expect("config is a table")
-        .insert(key.into(), toml::Value::String(value.into()));
+fn with(mut config: VendorConfig, key: &str, value: &str) -> VendorConfig {
+    config.insert(key, value);
     config
 }
 

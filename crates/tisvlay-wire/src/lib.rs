@@ -1015,10 +1015,21 @@ pub mod rpc {
         true
     }
 
+    /// `Debug` for a JSON object that can hold vendor config: its key names
+    /// only, since a vendor field can be a credential.
+    struct KeyNames<'a>(&'a serde_json::Map<String, serde_json::Value>);
+
+    impl std::fmt::Debug for KeyNames<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_set().entries(self.0.keys()).finish()
+        }
+    }
+
     /// Body for `manager/rpc/add-tv` and `manager/rpc/pair`. The `config`
-    /// is the vendor config (JSON on the wire, TOML at the backend seam).
-    /// Omitted `id` means "daemon generates one"; the reply carries it.
-    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    /// is the vendor config (JSON on the wire, a `VendorConfig` at the
+    /// backend seam), so `Debug` shows its key names only. Omitted `id`
+    /// means "daemon generates one"; the reply carries it.
+    #[derive(Serialize, Deserialize, Clone, PartialEq)]
     pub struct AddTv {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub id: Option<Uuid>,
@@ -1027,6 +1038,22 @@ pub mod rpc {
         #[serde(default = "default_true")]
         pub managed: bool,
         pub config: serde_json::Value,
+    }
+
+    impl std::fmt::Debug for AddTv {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let mut debug = f.debug_struct("AddTv");
+            debug
+                .field("id", &self.id)
+                .field("name", &self.name)
+                .field("vendor", &self.vendor)
+                .field("managed", &self.managed);
+            match &self.config {
+                serde_json::Value::Object(config) => debug.field("config", &KeyNames(config)),
+                _ => debug.field("config", &"<not an object>"),
+            };
+            debug.finish()
+        }
     }
 
     /// Body for RPCs that only reference a TV / pairing session by id.
@@ -1177,8 +1204,20 @@ pub mod rpc {
     }
 
     /// Body for `tv/<id>/rpc/update-config`: known top-level keys apply
-    /// to the TV's settings, everything else merges into the vendor table.
-    pub type UpdateConfig = serde_json::Map<String, serde_json::Value>;
+    /// to the TV's settings, everything else merges into the vendor table
+    /// (a `null` unsets the key). A vendor field can be a credential, so
+    /// `Debug` shows the key names only.
+    #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+    #[serde(transparent)]
+    pub struct UpdateConfig(pub serde_json::Map<String, serde_json::Value>);
+
+    impl std::fmt::Debug for UpdateConfig {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_tuple("UpdateConfig")
+                .field(&KeyNames(&self.0))
+                .finish()
+        }
+    }
 
     /// Body for `user/remote/rpc/set`: toggle a manual remote-session
     /// source (`manual` when omitted).
@@ -1302,6 +1341,39 @@ pub mod rpc {
         pub system_profile: Option<Uuid>,
         pub primary_input: Option<String>,
         pub config: serde_json::Map<String, serde_json::Value>,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A request can carry the client key to the daemon; `Debug` (which
+        /// can reach logs) shows the vendor config's key names only.
+        #[test]
+        fn vendor_config_requests_debug_key_names_only() {
+            let config = serde_json::json!({ "ip": "192.0.2.1", "client_key": "hunter2-key" });
+            let add = AddTv {
+                id: None,
+                name: "Den".into(),
+                vendor: "lg".into(),
+                managed: true,
+                config: config.clone(),
+            };
+            let patch: UpdateConfig = serde_json::from_value(config).unwrap();
+            for shown in [
+                format!("{add:?}"),
+                format!("{add:#?}"),
+                format!("{patch:?}"),
+            ] {
+                assert!(shown.contains("client_key"), "{shown}");
+                assert!(!shown.contains("hunter2"), "{shown}");
+                assert!(!shown.contains("192.0.2.1"), "{shown}");
+            }
+            assert!(
+                format!("{add:?}").contains("Den"),
+                "non-vendor fields stay visible"
+            );
+        }
     }
 }
 

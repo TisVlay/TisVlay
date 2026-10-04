@@ -57,9 +57,9 @@ impl FromStr for WebOsScheme {
 
 /// LG WebOS vendor-specific configuration.
 ///
-/// This contains all settings specific to LG WebOS TVs, stored in the
-/// `[tv.lg]` section of the config file. Use `TvConfig::get_vendor_config()`
-/// to deserialize this from the generic vendor config map.
+/// This contains all settings specific to LG WebOS TVs: the typed form of
+/// an LG TV's [`VendorConfig`](tisvlay_core::VendorConfig), read through
+/// its `parse`.
 ///
 /// # Example
 ///

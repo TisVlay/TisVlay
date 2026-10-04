@@ -9,7 +9,7 @@ use bevy_ecs::system::{EntityCommands, SystemParam};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
-use tisvlay_core::{PairingCommand, PairingState, TvState};
+use tisvlay_core::{PairingCommand, PairingState, TvState, VendorConfig};
 use tisvlay_wire::endpoint::Rpc;
 use tisvlay_wire::rpc::{Created, PairStarted, RePairStarted};
 use tisvlay_wire::{keys, payload};
@@ -901,16 +901,15 @@ fn push_config_facts(outbox: &mut Outbox, tv: Uuid, vendor: &VendorRef) {
 /// alias the CLI may have written for the same field, is the configured
 /// value when present, and a fill never adds `mac` beside it (a second
 /// spelling would collide on parse). `None` when there's nothing to say:
-/// a non-table config, or a blank alias left alone.
+/// a blank alias left alone.
 fn reconcile_link_mac(
-    config: &mut toml::Value,
+    config: &mut VendorConfig,
     reported: tisvlay_core::MacAddress,
 ) -> Option<payload::LinkMacOutcome> {
-    let table = config.as_table_mut()?;
-    let alias = table.contains_key("wake_id");
-    let configured = match table
+    let alias = config.get("wake_id").is_some();
+    let configured = match config
         .get(tisvlay_core::MAC_CONFIG_KEY)
-        .or_else(|| table.get("wake_id"))
+        .or_else(|| config.get("wake_id"))
     {
         None => None,
         Some(toml::Value::String(value)) => {
@@ -921,10 +920,7 @@ fn reconcile_link_mac(
     match configured {
         None if alias => None,
         None => {
-            table.insert(
-                tisvlay_core::MAC_CONFIG_KEY.into(),
-                toml::Value::String(reported.to_string()),
-            );
+            config.insert(tisvlay_core::MAC_CONFIG_KEY, reported.to_string());
             Some(payload::LinkMacOutcome::Filled)
         }
         Some(configured) if tisvlay_core::MacAddress::parse(&configured).ok() == Some(reported) => {
@@ -944,11 +940,9 @@ fn apply_config_patch(
     q: &Query<LinkQuery>,
     writes: &mut SettingsWrites,
     outbox: &mut Outbox,
-    patch: &serde_json::Value,
+    patch: &tisvlay_wire::rpc::UpdateConfig,
 ) -> Result<(), WireError> {
-    let Some(object) = patch.as_object() else {
-        return Err(WireError::bad_request("config patch must be a JSON object"));
-    };
+    let object = &patch.0;
     // Validate.
     for (key, value) in object {
         match key.as_str() {
@@ -1023,13 +1017,11 @@ fn apply_config_patch(
                 }
             }
             _ => {
-                if let Ok(mut vendor) = writes.vendor.get_mut(entity)
-                    && let Some(table) = vendor.config.as_table_mut()
-                {
+                if let Ok(mut vendor) = writes.vendor.get_mut(entity) {
                     if value.is_null() {
-                        table.remove(key);
+                        vendor.config.remove(key);
                     } else if let Ok(toml_value) = toml::Value::try_from(value) {
-                        table.insert(key.clone(), toml_value);
+                        vendor.config.insert(key.clone(), toml_value);
                     }
                     vendor_changed = true;
                 }
@@ -2566,16 +2558,15 @@ mod tests {
     use super::*;
     use tisvlay_core::{EventAction, SessionAction};
 
-    fn config(entries: &[(&str, toml::Value)]) -> toml::Value {
-        toml::Value::Table(
-            entries
-                .iter()
-                .map(|(k, v)| ((*k).to_string(), v.clone()))
-                .collect(),
-        )
+    fn config(entries: &[(&str, toml::Value)]) -> VendorConfig {
+        let mut config = VendorConfig::new();
+        for (key, value) in entries {
+            config.insert(*key, value.clone());
+        }
+        config
     }
 
-    fn mac_of(config: &toml::Value) -> Option<&str> {
+    fn mac_of(config: &VendorConfig) -> Option<&str> {
         config
             .get(tisvlay_core::MAC_CONFIG_KEY)
             .and_then(toml::Value::as_str)

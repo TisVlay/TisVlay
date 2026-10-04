@@ -187,11 +187,7 @@ async fn connect_failure_backs_off_and_gives_up() {
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::Integer(42));
     client.command(Command::AddTv {
-        record: Box::new(tv_record(
-            Uuid::new_v4(),
-            "Broken",
-            toml::Value::Table(table),
-        )),
+        record: Box::new(tv_record(Uuid::new_v4(), "Broken", table.into())),
         reply: None,
     });
 

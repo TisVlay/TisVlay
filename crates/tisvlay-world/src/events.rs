@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::marker::PhantomData;
 use std::time::Instant;
-use tisvlay_core::TvState;
+use tisvlay_core::{TvState, VendorConfig};
 use tisvlay_wire::endpoint::{Rpc, manager, profile, tv};
 use tisvlay_wire::rpc::Ack;
 use tokio::sync::mpsc;
@@ -212,7 +212,7 @@ pub enum PairingUpdate {
     State(Box<tisvlay_core::PairingState>),
     /// The reactor built the final vendor config from credentials — spawn
     /// the TV (or update it, for a re-pair).
-    ConfigReady(toml::Value),
+    ConfigReady(VendorConfig),
     /// Config build failed after successful pairing.
     ConfigFailed(String),
 }
@@ -228,7 +228,7 @@ pub enum Command {
         attempt: Uuid,
         name: String,
         vendor: String,
-        config: toml::Value,
+        config: VendorConfig,
         managed: bool,
         reply: Option<Reply<manager::Pair>>,
     },
@@ -331,7 +331,7 @@ pub enum Command {
     /// reconnect, since transport parameters may have changed).
     UpdateConfig {
         id: Uuid,
-        patch: serde_json::Value,
+        patch: tisvlay_wire::rpc::UpdateConfig,
         reply: Option<Reply<tv::UpdateConfig>>,
     },
     /// Create (or boot-replay) a system profile.
@@ -501,7 +501,7 @@ pub struct TvRecord {
     pub primary_input: Option<String>,
     /// Vendor config verbatim, credentials included — disk only, never
     /// the wire.
-    pub config: toml::Value,
+    pub config: VendorConfig,
 }
 
 /// One system profile's persistable row.

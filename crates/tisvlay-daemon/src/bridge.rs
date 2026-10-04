@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
+use tisvlay_core::VendorConfig;
 use tisvlay_wire::endpoint::{manager, profile, tv, vendors};
 use tisvlay_wire::{keys, rpc, serve};
 use tisvlay_world::{Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
@@ -335,7 +336,9 @@ impl Bridge {
     async fn add_tv(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
         let id = request.id.unwrap_or_else(Uuid::new_v4);
         let config = enrich_config_mac(request.config).await;
-        self.validate_vendor_fields(&request.vendor, &config, false)?;
+        if let Some(object) = config.as_object() {
+            self.validate_vendor_fields(&request.vendor, object, false)?;
+        }
         Ok(Command::AddTv {
             record: Box::new(tisvlay_world::TvRecord {
                 id,
@@ -344,7 +347,7 @@ impl Bridge {
                 managed: request.managed,
                 system_profile: None,
                 primary_input: None,
-                config: json_to_toml(&config)?,
+                config: vendor_config_from_json(&config)?,
             }),
             reply: Some(Reply::new(reply)),
         })
@@ -353,13 +356,15 @@ impl Bridge {
     /// Start pairing a new TV.
     async fn pair(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
         let config = enrich_config_mac(request.config).await;
-        self.validate_vendor_fields(&request.vendor, &config, false)?;
+        if let Some(object) = config.as_object() {
+            self.validate_vendor_fields(&request.vendor, object, false)?;
+        }
         Ok(Command::Pair {
             id: request.id.unwrap_or_else(Uuid::new_v4),
             attempt: Uuid::new_v4(),
             name: request.name,
             vendor: request.vendor,
-            config: json_to_toml(&config)?,
+            config: vendor_config_from_json(&config)?,
             managed: request.managed,
             reply: Some(Reply::new(reply)),
         })
@@ -436,9 +441,8 @@ impl Bridge {
                 reply: Some(Reply::new(reply)),
             },
             tv::Call::UpdateConfig(patch) => {
-                let patch = Value::Object(patch);
                 if let Some(vendor) = self.vendors_by_tv.get(&id) {
-                    self.validate_vendor_fields(vendor, &patch, true)?;
+                    self.validate_vendor_fields(vendor, &patch.0, true)?;
                 }
                 Command::UpdateConfig {
                     id,
@@ -607,13 +611,10 @@ impl Bridge {
     fn validate_vendor_fields(
         &self,
         vendor: &str,
-        config: &Value,
+        object: &serde_json::Map<String, Value>,
         partial: bool,
     ) -> Result<(), WireError> {
         let Some(meta) = self.catalog.iter().find(|m| m.id == vendor) else {
-            return Ok(());
-        };
-        let Some(object) = config.as_object() else {
             return Ok(());
         };
         for field in meta.connector.pairing_schema() {
@@ -670,10 +671,12 @@ fn profile_command(call: profile::Call, reply: ReplyTo) -> Command {
     }
 }
 
-/// Vendor configs are JSON on the wire and `toml::Value` at the backend
-/// seam — a pure serde transcode (JSON `null` has no TOML form and errors).
-fn json_to_toml(value: &Value) -> Result<toml::Value, WireError> {
-    toml::Value::try_from(value).map_err(|e| WireError::bad_request(format!("vendor config: {e}")))
+/// Vendor configs are JSON on the wire and a [`VendorConfig`] at the backend
+/// seam — a pure serde transcode (a non-object, or a JSON `null` inside,
+/// has no TOML table form and errors).
+fn vendor_config_from_json(value: &Value) -> Result<VendorConfig, WireError> {
+    VendorConfig::from_typed(value)
+        .map_err(|e| WireError::bad_request(format!("vendor config: {e}")))
 }
 
 /// An IP-addressed vendor config without a `mac` can't Wake-on-LAN. The
