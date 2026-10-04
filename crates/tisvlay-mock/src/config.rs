@@ -47,6 +47,17 @@ pub struct MockVendorConfig {
     #[serde(default = "default_wake")]
     pub wake: bool,
 
+    /// Wake-on-LAN MAC, mirroring a real vendor's field so the daemon's
+    /// generic MAC handling (pair-time fill, display rows) has something
+    /// to act on. The mock's wake stays a no-op either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+
+    /// Test knob: the link MAC `get_link_mac` reports, as if the device
+    /// said so. `None` reports nothing, like a backend that can't tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_mac: Option<String>,
+
     /// Pairing behavior shorthand.
     ///
     /// - `"manual"` (default): pairing waits for an explicit
@@ -151,6 +162,8 @@ impl Default for MockVendorConfig {
             inputs: default_inputs(),
             refuse_connect: false,
             wake: true,
+            mac: None,
+            link_mac: None,
             pairing: PairingShorthand::default(),
             backlight_ramp_intermediates: Vec::new(),
             backlight_ramp_step_delay_ms: 0,

@@ -31,6 +31,17 @@ pub(crate) struct Managed;
 #[derive(Component, Debug)]
 pub(crate) struct Reconnecting;
 
+/// The most recently spawned dial for this TV, numbered from [`DialSeq`].
+/// Every backend event carries the dial its task was spawned for; events
+/// from any other (superseded) dial are dropped, so a dial a re-pair
+/// overtook can't settle the verification or touch the live link.
+#[derive(Component, Debug)]
+pub(crate) struct LatestDial(pub u64);
+
+/// Monotonic dial numbering for [`LatestDial`].
+#[derive(Resource, Debug, Default)]
+pub(crate) struct DialSeq(pub u64);
+
 /// A connect request is outstanding: reconcile dials until it succeeds or
 /// the attempt budget is spent. Inserted by AddTv / Reconnect / a wake-path
 /// PowerOn — never by a disconnect (a TV that goes down stays down until
@@ -98,6 +109,8 @@ pub(crate) struct TransportTraits(pub TransportInfo);
 #[derive(Component, Debug)]
 pub(crate) struct PairVerifying {
     pub rollback: bool,
+    /// The pairing attempt whose terminal this dial publishes.
+    pub attempt: Uuid,
 }
 
 /// Per-backend verify-retry tuning, delivered with the connection.
@@ -128,6 +141,8 @@ pub(crate) struct DispatchVerify {
 /// existing TV's credentials. Despawned on any terminal outcome.
 #[derive(Component, Debug)]
 pub(crate) struct PairingRef {
+    /// The attempt id stamped on every progress sample of this session.
+    pub attempt: Uuid,
     pub vendor: String,
     /// The pairing-form params — fed to `build_config_from_pairing` on
     /// success.
@@ -281,6 +296,11 @@ pub(crate) enum Effect {
     /// Spawn a dial task for this TV.
     SpawnConnect {
         tv: Uuid,
+        /// This dial's number; echoed on every event its task sends.
+        dial: u64,
+        /// A pairing-verification dial: the connect flow also does the
+        /// pair-time reads (the device-reported link MAC).
+        pairing: bool,
         vendor: String,
         config: toml::Value,
         wake: bool,

@@ -6,6 +6,7 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 - [Session event tests use real-time sleeps](concerns/session-event-tests-real-time-sleeps.md)
 - [`TestDaemon` / `TestSession` name ownership is bus-global](concerns/test-name-ownership-bus-global.md)
+- [Sunshine eager-probe tests read the host (fail locally with Sunshine/Moonshine running)](concerns/sunshine-probe-reads-host.md)
 
 ## Build & CI
 

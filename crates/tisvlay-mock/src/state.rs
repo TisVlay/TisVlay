@@ -131,6 +131,10 @@ pub(crate) struct MockState {
     /// tests can assert an idempotent `power_on` did NOT tear down and
     /// rebuild a live connection. Shared across reconnects via shared state.
     pub(crate) connect_calls: HashMap<String, Arc<AtomicUsize>>,
+
+    /// Per-address counter of `get_link_mac` reads, so tests can assert
+    /// the daemon asks only on pairing dials.
+    pub(crate) link_mac_calls: HashMap<String, Arc<AtomicUsize>>,
 }
 
 impl MockState {

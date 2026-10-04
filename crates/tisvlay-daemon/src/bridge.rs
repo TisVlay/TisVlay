@@ -371,10 +371,11 @@ impl Bridge {
                     match discovery.discover(Duration::from_secs(3)).await {
                         Ok(found) => {
                             for mut tv in found {
-                                if !tv.vendor_data.contains_key("mac")
+                                if !tv.vendor_data.contains_key(tisvlay_core::MAC_CONFIG_KEY)
                                     && let Some(mac) = crate::arp::lookup_mac(&tv.address).await
                                 {
-                                    tv.vendor_data.insert("mac".into(), mac);
+                                    tv.vendor_data
+                                        .insert(tisvlay_core::MAC_CONFIG_KEY.into(), mac);
                                 }
                                 let Ok(bytes) = serde_json::to_vec(&tv) else {
                                     continue;
@@ -447,7 +448,7 @@ impl Bridge {
             }
             let mut map = serde_json::Map::new();
             if let Some(mac) = crate::arp::lookup_mac(&ip).await {
-                map.insert("mac".into(), Value::String(mac));
+                map.insert(tisvlay_core::MAC_CONFIG_KEY.into(), Value::String(mac));
             }
             reply_json(&query, &Value::Object(map)).await;
         });
@@ -485,10 +486,11 @@ impl Bridge {
                             // The scan itself primed the ARP cache — attach
                             // the MAC so pairing configs built from this
                             // finding are WoL-capable.
-                            if !tv.vendor_data.contains_key("mac")
+                            if !tv.vendor_data.contains_key(tisvlay_core::MAC_CONFIG_KEY)
                                 && let Some(mac) = crate::arp::lookup_mac(&tv.address).await
                             {
-                                tv.vendor_data.insert("mac".into(), mac);
+                                tv.vendor_data
+                                    .insert(tisvlay_core::MAC_CONFIG_KEY.into(), mac);
                             }
                             let Ok(bytes) = serde_json::to_vec(&tv) else {
                                 continue;
@@ -583,18 +585,20 @@ impl Bridge {
                 "pair" => {
                     let req: rpc::AddTv = parse(body)?;
                     let id = req.id.unwrap_or_else(Uuid::new_v4);
+                    let attempt = Uuid::new_v4();
                     let config = enrich_config_mac(req.config).await;
                     self.validate_vendor_fields(&req.vendor, &config, false)?;
                     Ok((
                         Command::Pair {
                             id,
+                            attempt,
                             name: req.name,
                             vendor: req.vendor,
                             config: json_to_toml(&config)?,
                             managed: req.managed,
                             reply: Some(reply),
                         },
-                        Some(json!({ "id": id })),
+                        Some(json!({ "id": id, "attempt": attempt })),
                     ))
                 }
                 "cancel-pair" => {
@@ -763,10 +767,17 @@ impl Bridge {
                         reply: Some(reply),
                     }
                 }
-                "re-pair" => Command::RePair {
-                    id,
-                    reply: Some(reply),
-                },
+                "re-pair" => {
+                    let attempt = Uuid::new_v4();
+                    return Ok((
+                        Command::RePair {
+                            id,
+                            attempt,
+                            reply: Some(reply),
+                        },
+                        Some(json!({ "attempt": attempt })),
+                    ));
+                }
                 "power-on" => {
                     // An empty body is a plain manual power-on (the CLI
                     // and SDK send none).
@@ -853,11 +864,11 @@ fn json_to_toml(value: &Value) -> Result<toml::Value, WireError> {
 /// explicit `mac` from the caller always wins.
 async fn enrich_config_mac(mut config: Value) -> Value {
     if let Some(object) = config.as_object_mut()
-        && !object.contains_key("mac")
+        && !object.contains_key(tisvlay_core::MAC_CONFIG_KEY)
         && let Some(ip) = object.get("ip").and_then(Value::as_str)
         && let Some(mac) = crate::arp::lookup_mac(ip).await
     {
-        object.insert("mac".into(), Value::String(mac));
+        object.insert(tisvlay_core::MAC_CONFIG_KEY.into(), Value::String(mac));
     }
     config
 }

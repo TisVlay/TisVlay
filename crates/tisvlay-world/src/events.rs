@@ -17,8 +17,14 @@ pub type ReplyTo = u64;
 pub enum InEvent {
     /// A control-plane command (RPC via the bridge, or a test driver).
     Command(Command),
-    /// A fact reported by a backend connection task.
-    Backend { tv: Uuid, event: BackendEvent },
+    /// A fact reported by a backend connection task, tagged with the
+    /// dial that task was spawned for — events from a superseded dial
+    /// are dropped.
+    Backend {
+        tv: Uuid,
+        dial: u64,
+        event: BackendEvent,
+    },
     /// A fact reported by a pairing task (or the reactor's pairing glue).
     PairingUpdate { id: Uuid, update: PairingUpdate },
     /// A desktop/power event from an adapter (logind, DPMS, lock),
@@ -119,6 +125,8 @@ pub enum Command {
     /// TV's keys appear once the handshake completes.
     Pair {
         id: Uuid,
+        /// The attempt id stamped on this session's progress samples.
+        attempt: Uuid,
         name: String,
         vendor: String,
         config: toml::Value,
@@ -129,6 +137,7 @@ pub enum Command {
     /// credentials); progress streams on the TV's pairing key.
     RePair {
         id: Uuid,
+        attempt: Uuid,
         reply: Option<ReplyTo>,
     },
     CancelPair {
@@ -340,6 +349,8 @@ pub enum BackendEvent {
         hardware: Option<tisvlay_core::HardwareId>,
         capabilities: Vec<String>,
         retry: tisvlay_core::RetryConfig,
+        /// The device-reported link MAC — read only on a pairing dial.
+        link_mac: Option<tisvlay_core::MacAddress>,
     },
     /// Dial failed before a connection existed.
     ConnectFailed { reason: DialFailure },

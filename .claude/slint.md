@@ -225,11 +225,11 @@ briefly but that's tolerable.
   the stretch algorithm.
 
 - **`ScrollView` allows horizontal overflow by default.** Its
-  `viewport-width` auto-sizes to children's preferred width; if a
+  `content-width` auto-sizes to children's preferred width; if a
   child's preferred exceeds visible-width, content scrolls
   horizontally and clips at the window edge instead of wrapping
   inside the card. For vertical-only scroll (the typical case), pin
-  it: `ScrollView { viewport-width: self.visible-width; ... }`.
+  it: `ScrollView { content-width: self.visible-width; ... }`.
 
 - **Per-side borders don't exist.** No `border-bottom-width` etc. Use
   a thin Rectangle as a separator at `y: parent.height - 1px`.

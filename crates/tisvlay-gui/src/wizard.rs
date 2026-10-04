@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::compat::{DaemonClient, PairTerminal, PairingProgressDetail};
+use crate::compat::{
+    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgressDetail,
+};
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -146,6 +148,32 @@ pub(crate) fn cancel_wizard_manual_lookup(cancel: &WizardManualLookupCancel) {
     }
 }
 
+/// The name a discovery pick should leave in the wizard's name field:
+/// `default` (the picked entry's name) when the field is empty or still
+/// holds what the previous pick auto-filled, `None` when the user typed
+/// it — so Back + a different pick doesn't keep the earlier TV's name,
+/// and a hand-typed name is never overwritten.
+pub(crate) fn picked_tv_name(
+    current: &str,
+    last_autofilled: &str,
+    default: &str,
+) -> Option<String> {
+    (current.is_empty() || current == last_autofilled).then(|| default.to_string())
+}
+
+/// Fill the wizard's name field from a pick per [`picked_tv_name`],
+/// remembering the fill so the next pick can replace it.
+pub(crate) fn fill_picked_tv_name(wizard: &PairingWizard<'_>, default: &str) {
+    if let Some(name) = picked_tv_name(
+        &wizard.get_tv_name(),
+        &wizard.get_tv_name_autofilled(),
+        default,
+    ) {
+        wizard.set_tv_name(SharedString::from(name.as_str()));
+        wizard.set_tv_name_autofilled(SharedString::from(name));
+    }
+}
+
 /// Push `entries` into the wizard's `discovered` Slint model.
 /// Caller has already locked + mutated `entries`; this just rebuilds
 /// the visible view from the updated source-of-truth.
@@ -175,6 +203,11 @@ pub(crate) fn reset_wizard(
     wizard.set_step(1);
     wizard.set_selected_index(-1);
     wizard.set_tv_name(SharedString::default());
+    wizard.set_tv_name_autofilled(SharedString::default());
+    wizard.set_mac_notice(SharedString::default());
+    wizard.set_mac_reported(SharedString::default());
+    wizard.set_mac_configured(SharedString::default());
+    wizard.set_mac_error(SharedString::default());
     wizard.set_system_profile(SharedString::default());
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
@@ -328,10 +361,9 @@ fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: impl std::fmt::
 /// schema fetch was triggered by the wizard's manual-add path
 /// (rather than picking from the SSDP-discovered list). When set,
 /// fields whose autofill missed get a context-specific helper —
-/// today, the `mac` field's "Required for Wake-on-LAN" line is
-/// replaced with a clearer "we tried, didn't find it" message so
-/// the user understands what happened rather than seeing a silent
-/// empty field.
+/// today, the `mac` field's helper is prefixed with "we tried,
+/// didn't find it", so the user understands what happened rather
+/// than seeing a silent empty field.
 pub(crate) async fn fetch_and_publish_schema(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
@@ -368,20 +400,16 @@ pub(crate) async fn fetch_and_publish_schema(
     }
 }
 
-/// Swap the schema's generic field-level helper text for context-
-/// specific guidance when the manual-entry MAC enrichment didn't
-/// resolve a value. Lives wizard-side rather than as a schema
-/// extension because the override is purely about *which UX path*
-/// the user is on — the schema itself stays vendor-owned. Today
-/// only the `mac` field gets an override; structure makes it easy
-/// to add others as the manual-entry story grows.
+/// Prefix the schema's field-level helper with context for the
+/// manual-entry path when the MAC enrichment didn't resolve a value.
+/// The prefix composes with the vendor's own helper rather than
+/// replacing it: the wizard knows *which UX path* the user is on, but
+/// only the vendor knows what it can do about a blank MAC (LG reads it
+/// from the TV after pairing; a vendor that can't says so itself).
 fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
     for row in rows.iter_mut() {
-        if row.name == "mac" && row.value.is_empty() {
-            row.helper = gettext(
-                "MAC not detected. Enter it manually to enable Wake-on-LAN \
-                 (otherwise the TV won't power on from full-off).",
-            );
+        if row.name == tisvlay_core::MAC_CONFIG_KEY && row.value.is_empty() {
+            row.helper = gettext("MAC not detected. {0}").replace("{0}", &row.helper);
         }
     }
 }
@@ -441,19 +469,20 @@ pub(crate) async fn run_wizard_pair(
     // tv_id immediately. Errors here are unknown-vendor /
     // ConfigInvalidVendorConfig / etc. — route via the field-mapper
     // so per-field problems bounce back to step 2.
-    let tv_id = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
-        Ok(id) => id,
-        Err(e) => {
-            publish_pair_outcome(
-                app_weak,
-                &wizard_gen,
-                captured_gen,
-                Err(PairError::Rpc(e)),
-                true,
-            );
-            return;
-        }
-    };
+    let PairStarted { tv_id, attempt } =
+        match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
+            Ok(started) => started,
+            Err(e) => {
+                publish_pair_outcome(
+                    app_weak,
+                    &wizard_gen,
+                    captured_gen,
+                    Err(PairError::Rpc(e)),
+                    true,
+                );
+                return;
+            }
+        };
 
     // Set tv_id on the wizard so the Cancel button can route the
     // `cancel-pair` rpc. The same pair_tv_id is consumed
@@ -474,9 +503,9 @@ pub(crate) async fn run_wizard_pair(
     // Drain to terminal, dispatching non-terminal phases into the
     // wizard's phase/message fields with the gen-guarded callback.
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, on_progress).await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
 
-    let result = terminal_to_result(outcome, tv_id);
+    let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
 
@@ -521,9 +550,10 @@ async fn run_pair_no_progress(
 ///   the existing TV's credentials in place. The wizard's
 ///   StepPair UI was pre-filled with display-only labels by the
 ///   `on_request_re_pair` handler.
-/// - tv_id is the caller-provided argument (we already know it),
-///   so the drain filter is straightforward — no "first signal
-///   wins" heuristic needed.
+/// - tv_id is the caller-provided argument (we already know it), and
+///   the re-pair rpc returns the session's attempt — the drain filters
+///   on both, so the previous session's replayed `complete` can't end
+///   it.
 /// - Errors route through the same `publish_pair_outcome` path,
 ///   so re-pair surfaces failures with the same UI as the pair flow.
 pub(crate) async fn run_wizard_re_pair(
@@ -545,7 +575,7 @@ pub(crate) async fn run_wizard_re_pair(
             // explicit failure instead of an optimistic `complete`.
             let result = match daemon.re_pair(&tv_id).await {
                 Err(e) => Err(PairError::Rpc(e)),
-                Ok(()) => {
+                Ok(_) => {
                     let msg = gettext(
                         "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
                     );
@@ -559,21 +589,24 @@ pub(crate) async fn run_wizard_re_pair(
 
     // Re-pair's sync RPC errors are TvNotFound / AlreadyPairing —
     // route them through the same outcome publisher.
-    if let Err(e) = daemon.re_pair(&tv_id).await {
-        publish_pair_outcome(
-            app_weak,
-            &wizard_gen,
-            captured_gen,
-            Err(PairError::Rpc(e)),
-            true,
-        );
-        return;
-    }
+    let attempt = match daemon.re_pair(&tv_id).await {
+        Ok(attempt) => attempt,
+        Err(e) => {
+            publish_pair_outcome(
+                app_weak,
+                &wizard_gen,
+                captured_gen,
+                Err(PairError::Rpc(e)),
+                true,
+            );
+            return;
+        }
+    };
 
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, on_progress).await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
 
-    let result = terminal_to_result(outcome, tv_id);
+    let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
 
@@ -620,7 +653,7 @@ fn make_progress_callback(
 /// `extract_invalid_vendor_config`'s per-field routing.
 enum PairError {
     /// Terminal `failed` phase from the daemon — localize by its `code`.
-    Handshake(PairingProgressDetail),
+    Handshake(Box<PairingProgressDetail>),
     /// A sync-RPC / stream error (unknown vendor, ConfigInvalidVendorConfig,
     /// no-progress fallback) — field-routed, else shown verbatim.
     Rpc(anyhow::Error),
@@ -645,16 +678,38 @@ fn localize_pair_failure(detail: &PairingProgressDetail) -> String {
 }
 
 /// Translate `drain_pair_to_terminal`'s `Result<PairTerminal>` into the
-/// shape [`publish_pair_outcome`] expects: a terminal `Failed` keeps its
-/// typed detail; a stream error stays `anyhow`.
+/// shape [`publish_pair_outcome`] expects: a `Complete` keeps its link-MAC
+/// report for the done step, a terminal `Failed` keeps its typed detail,
+/// and a stream error stays `anyhow`.
 fn terminal_to_result(
     outcome: anyhow::Result<PairTerminal>,
-    tv_id: String,
-) -> Result<String, PairError> {
+) -> Result<Option<LinkMacReport>, PairError> {
     match outcome {
-        Ok(PairTerminal::Complete { .. }) => Ok(tv_id),
-        Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(detail)),
+        Ok(PairTerminal::Complete { link_mac, .. }) => Ok(link_mac),
+        Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(Box::new(detail))),
         Err(e) => Err(PairError::Rpc(e)),
+    }
+}
+
+/// The done step's notice for the MAC the TV reported at pairing, as
+/// (`mac-notice`, reported, configured): "filled" when the daemon stored
+/// it, "differs" when an entered MAC was kept, and no notice for a match
+/// or no report.
+fn mac_notice(report: Option<&LinkMacReport>) -> (&'static str, String, String) {
+    match report {
+        Some(LinkMacReport {
+            reported,
+            outcome: LinkMacOutcome::Filled,
+        }) => ("filled", reported.clone(), String::new()),
+        Some(LinkMacReport {
+            reported,
+            outcome: LinkMacOutcome::Differs { configured },
+        }) => ("differs", reported.clone(), configured.clone()),
+        Some(LinkMacReport {
+            outcome: LinkMacOutcome::Matches,
+            ..
+        })
+        | None => ("", String::new(), String::new()),
     }
 }
 
@@ -673,7 +728,7 @@ fn publish_pair_outcome(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: &WizardGen,
     captured_gen: u64,
-    result: Result<String, PairError>,
+    result: Result<Option<LinkMacReport>, PairError>,
     had_progress_stream: bool,
 ) {
     let wizard_gen = wizard_gen.clone();
@@ -683,7 +738,12 @@ fn publish_pair_outcome(
         }
         let wizard = app.global::<PairingWizard>();
         match result {
-            Ok(_) => {
+            Ok(report) => {
+                let (notice, reported, configured) = mac_notice(report.as_ref());
+                wizard.set_mac_notice(notice.into());
+                wizard.set_mac_reported(SharedString::from(reported));
+                wizard.set_mac_configured(SharedString::from(configured));
+                wizard.set_mac_error(SharedString::default());
                 wizard.set_pair_phase("complete".into());
                 if wizard.get_pair_message().is_empty() {
                     let msg = if had_progress_stream {
@@ -743,4 +803,92 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AutofilledRow, apply_manual_entry_helper_overrides, picked_tv_name};
+
+    /// The done step speaks only when there's something to act on or know:
+    /// a filled MAC, or an entered one that differs from the TV's.
+    #[test]
+    fn mac_notice_per_outcome() {
+        use super::{LinkMacOutcome, LinkMacReport, mac_notice};
+        let report = |outcome| LinkMacReport {
+            reported: "84:90:0A:63:A9:94".into(),
+            outcome,
+        };
+        assert_eq!(
+            mac_notice(Some(&report(LinkMacOutcome::Filled))),
+            ("filled", "84:90:0A:63:A9:94".into(), String::new())
+        );
+        assert_eq!(
+            mac_notice(Some(&report(LinkMacOutcome::Differs {
+                configured: "64:E4:A5:6C:AB:B4".into()
+            }))),
+            (
+                "differs",
+                "84:90:0A:63:A9:94".into(),
+                "64:E4:A5:6C:AB:B4".into()
+            )
+        );
+        assert_eq!(
+            mac_notice(Some(&report(LinkMacOutcome::Matches))),
+            ("", String::new(), String::new())
+        );
+        assert_eq!(mac_notice(None), ("", String::new(), String::new()));
+    }
+
+    /// A missed MAC lookup prefixes the vendor's own helper rather than
+    /// replacing it, so the vendor's note about a blank MAC survives.
+    #[test]
+    fn missed_mac_prefixes_the_vendor_helper() {
+        let vendor_helper =
+            "Required for Wake-on-LAN. Leave blank to read it from the TV after pairing.";
+        let mut rows = vec![
+            AutofilledRow {
+                name: "mac".into(),
+                helper: vendor_helper.into(),
+                ..Default::default()
+            },
+            AutofilledRow {
+                name: "ip".into(),
+                helper: "TV address.".into(),
+                value: String::new(),
+                ..Default::default()
+            },
+        ];
+        apply_manual_entry_helper_overrides(&mut rows);
+        assert_eq!(rows[0].helper, format!("MAC not detected. {vendor_helper}"));
+        assert_eq!(rows[1].helper, "TV address.");
+
+        // A MAC that did resolve keeps the plain vendor helper.
+        let mut found = vec![AutofilledRow {
+            name: "mac".into(),
+            helper: vendor_helper.into(),
+            value: "84:90:0A:63:A9:94".into(),
+            ..Default::default()
+        }];
+        apply_manual_entry_helper_overrides(&mut found);
+        assert_eq!(found[0].helper, vendor_helper);
+    }
+
+    #[test]
+    fn pick_fills_an_empty_name() {
+        assert_eq!(picked_tv_name("", "", "Den TV"), Some("Den TV".into()));
+    }
+
+    #[test]
+    fn repick_replaces_the_previous_autofill() {
+        // Picked the 55", went Back, picked the 42": the 55"'s name goes.
+        assert_eq!(
+            picked_tv_name("OLED55G3PUA", "OLED55G3PUA", "OLED42C3PUA"),
+            Some("OLED42C3PUA".into())
+        );
+    }
+
+    #[test]
+    fn repick_keeps_a_hand_typed_name() {
+        assert_eq!(picked_tv_name("Office", "OLED55G3PUA", "OLED42C3PUA"), None);
+    }
 }

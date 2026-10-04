@@ -8,6 +8,16 @@ pub(crate) mod system {
     pub(crate) const GET_SYSTEM_INFO: &str = "ssap://system/getSystemInfo";
 }
 
+/// Network-state endpoints (need `READ_NETWORK_STATE`).
+pub(crate) mod network {
+    /// Per-interface MACs: `wiredInfo` / `wifiInfo` / `p2pInfo`.
+    pub(crate) const GET_INFO: &str = "ssap://com.webos.service.connectionmanager/getinfo";
+
+    /// Per-interface link state and addressing (`wired` / `wifi` blocks with
+    /// `state` and `ipAddress`). Lowercase: the camel-case `getStatus` 404s.
+    pub(crate) const GET_STATUS: &str = "ssap://com.webos.service.connectionmanager/getstatus";
+}
+
 /// Power control endpoints.
 pub mod power {
     /// Turn off the TV (standby).

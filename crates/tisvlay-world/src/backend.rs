@@ -11,8 +11,15 @@ use uuid::Uuid;
 
 use crate::events::{BackendCmd, BackendEvent, InEvent, PairingUpdate};
 
+/// Ceiling on the pair-time link-MAC read, which sits between a pairing
+/// dial's connect and the pairing's `complete`.
+const LINK_MAC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_flow(
     tv: Uuid,
+    dial: u64,
+    pairing: bool,
     connector: Arc<dyn TvConnector>,
     config: toml::Value,
     wake: bool,
@@ -21,25 +28,28 @@ pub(crate) async fn connect_flow(
     inbox: mpsc::UnboundedSender<InEvent>,
 ) {
     debug!(%tv, wake, "connect_flow started");
-    let dial = if wake {
+    let dialed = if wake {
         let _ = inbox.send(InEvent::Backend {
             tv,
+            dial,
             event: BackendEvent::PowerPhase("wol_sent"),
         });
         let _ = inbox.send(InEvent::Backend {
             tv,
+            dial,
             event: BackendEvent::PowerPhase("connecting"),
         });
         connector.wake_and_connect(&config).await
     } else {
         connector.connect(&config).await
     };
-    debug!(%tv, dialed = dial.is_ok(), "dial finished");
-    let mut connection = match dial {
+    debug!(%tv, dialed = dialed.is_ok(), "dial finished");
+    let mut connection = match dialed {
         Ok(connection) => connection,
         Err(error) => {
             let _ = inbox.send(InEvent::Backend {
                 tv,
+                dial,
                 event: BackendEvent::ConnectFailed {
                     reason: crate::events::DialFailure::from_error(&error),
                 },
@@ -54,6 +64,7 @@ pub(crate) async fn connect_flow(
             reason.message = format!("initial state read failed: {}", reason.message);
             let _ = inbox.send(InEvent::Backend {
                 tv,
+                dial,
                 event: BackendEvent::ConnectFailed { reason },
             });
             return;
@@ -61,6 +72,18 @@ pub(crate) async fn connect_flow(
     };
     let brand = connection.brand();
     let hardware = connection.hardware_id();
+    // Pair-time read, bounded: a slow or silent device costs at most the
+    // timeout before the pairing completes, never its request budget.
+    let link_mac = if pairing {
+        tokio::time::timeout(LINK_MAC_TIMEOUT, connection.get_link_mac())
+            .await
+            .unwrap_or_else(|_| {
+                debug!(%tv, "link MAC read timed out");
+                None
+            })
+    } else {
+        None
+    };
     let capabilities: Vec<String> = connection
         .capabilities()
         .iter_names()
@@ -73,6 +96,7 @@ pub(crate) async fn connect_flow(
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
     let _ = inbox.send(InEvent::Backend {
         tv,
+        dial,
         event: BackendEvent::Connected {
             cmd_tx,
             state: Box::new(state),
@@ -80,6 +104,7 @@ pub(crate) async fn connect_flow(
             hardware,
             capabilities,
             retry,
+            link_mac,
         },
     });
 
@@ -123,6 +148,7 @@ pub(crate) async fn connect_flow(
                     if let Some(reply) = reply {
                         let _ = inbox.send(InEvent::Backend {
                             tv,
+                            dial,
                             event: BackendEvent::CommandDone {
                                 reply,
                                 result: result.map_err(|error| error.to_string()),
@@ -144,6 +170,7 @@ pub(crate) async fn connect_flow(
                     {
                         let _ = inbox.send(InEvent::Backend {
                             tv,
+                            dial,
                             event: BackendEvent::State(Box::new(state)),
                         });
                     }
@@ -156,21 +183,22 @@ pub(crate) async fn connect_flow(
                             while let Ok(state) = rx.try_recv() {
                                 let _ = inbox.send(InEvent::Backend {
                                     tv,
+                                    dial,
                                     event: BackendEvent::State(Box::new(state)),
                                 });
                             }
                         }
-                        let _ = inbox.send(InEvent::Backend { tv, event: BackendEvent::Disconnected });
+                        let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected });
                         return;
                     }
                 }
             },
             update = recv_update(&mut subscription) => match update {
                 Some(state) => {
-                    let _ = inbox.send(InEvent::Backend { tv, event: BackendEvent::State(Box::new(state)) });
+                    let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::State(Box::new(state)) });
                 }
                 None => {
-                    let _ = inbox.send(InEvent::Backend { tv, event: BackendEvent::Disconnected });
+                    let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected });
                     return;
                 }
             },

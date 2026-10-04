@@ -335,12 +335,12 @@ export component HelpOverlay inherits Rectangle {
 // window (which would ride up over the header / sidebar). Encapsulates
 // the wiring every scrollable pane would otherwise re-solder.
 //
-// Pins viewport-width to visible-width (no horizontal scroll — the pane
+// Pins content-width to visible-width (no horizontal scroll — the pane
 // convention). absolute-position is read only in these post-layout
 // handlers, never eagerly (which would trip the layout-cache panic).
 export component HelpScrollView inherits ScrollView {
-    viewport-width: self.visible-width;
-    changed viewport-y => {
+    content-width: self.visible-width;
+    changed content-y => {
         Help.reposition-tick += 1;
     }
     property <bool> help-shown-mirror: Help.shown;

@@ -632,21 +632,22 @@ async fn re_pair_refreshes_credentials_in_place() {
     .await;
 
     let progress = history_sub(&w.client, keys::pairing_progress(&w.site, &id)).await;
-    call(
+    let started = call(
         &w.client,
         &keys::tv_rpc(&w.site, &id, "re-pair"),
         Value::Null,
     )
     .await
     .expect("re-pair ok");
-    // The progress cache replays the original session's `complete` too —
-    // the re-pair's is the second one.
-    let mut completes = 0;
+    let attempt = started["attempt"].clone();
+    assert!(attempt.is_string(), "re-pair reply carries its attempt");
+    assert_ne!(attempt, ok["attempt"], "each session mints its own attempt");
+    // The progress cache may replay the original session's `complete`
+    // ahead of (or, once the re-pair's live samples win the race, never
+    // alongside) the re-pair's — only the re-pair's attempt ends the wait.
     recv_until(&progress, |s| {
-        if payload_json(s)["phase"] == "complete" {
-            completes += 1;
-        }
-        completes >= 2
+        let v = payload_json(s);
+        v["phase"] == "complete" && v["attempt"] == attempt
     })
     .await;
     // Credentials refreshed in place: same uuid, reconnected.
@@ -923,4 +924,48 @@ async fn vendor_field_validation_rejects_blank_required_fields() {
     )
     .await
     .expect("partial patch without the required field is fine");
+}
+
+/// End to end over the wire: a pairing whose device reports its link MAC
+/// stores it (canonical form) when none was configured, and the terminal
+/// sample tells the client what happened.
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_fills_the_mac_the_device_reports() {
+    let w = wire().await;
+    let body = serde_json::to_value(rpc::AddTv {
+        id: None,
+        name: "Routed".into(),
+        vendor: "mock".into(),
+        managed: true,
+        config: json!({
+            "address": "mock://routed",
+            "pairing": "accept",
+            "link_mac": "84-90-0a-63-a9-94",
+        }),
+    })
+    .unwrap();
+    let ok = call(&w.client, &keys::manager_rpc(&w.site, "pair"), body)
+        .await
+        .expect("pair ok");
+    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let progress = history_sub(&w.client, keys::pairing_progress(&w.site, &id)).await;
+    let seen = recv_until(&progress, |s| {
+        let v = payload_json(s);
+        v["phase"] == "complete" && v["attempt"] == ok["attempt"]
+    })
+    .await;
+    let complete = payload_json(seen.last().unwrap());
+    assert_eq!(
+        complete["link_mac"],
+        json!({ "reported": "84:90:0A:63:A9:94", "outcome": { "kind": "filled" } })
+    );
+
+    let config = call(
+        &w.client,
+        &keys::tv_rpc(&w.site, &id, "get-config"),
+        Value::Null,
+    )
+    .await
+    .expect("get-config ok");
+    assert_eq!(config["config"]["mac"], "84:90:0A:63:A9:94");
 }

@@ -33,6 +33,10 @@ Touchpoints in the daemon's pair flow:
 - **Pair-time vs cache-stale.** A TV that gets a new NIC (or factory reset on certain firmwares) keeps the old MAC in the saved config. Pair-time re-capture *should* update on each re-pair so a user who re-pairs after a TV repair gets the fresh MAC. Re-pair already implies the user is making a deliberate update, so overwriting is fine in that path. AddTv is the always-write path; RePair could be the overwrite-anyway path.
 - **Multiple TVs sharing one IP** (none in practice) — not a concern for v1.
 
+## Device-reported MAC — shipped
+
+For vendors that implement `TvConnection::get_link_mac`, the daemon reads the MAC from the device itself on the pairing-verification dial: it fills a blank `mac` and flags a configured one that disagrees. That covers the case every ARP/NDP path here misses, a TV on a routed or VLAN-isolated segment where the kernel neighbor table only sees the gateway. See [architecture.md](../architecture.md) (the `PairVerifying` invariant) and, for LG's `connectionmanager` join, [lg/firmware-quirks.md](../lg/firmware-quirks.md). What remains in this idea is the ARP snoop for vendors that can't report their own MAC.
+
 ## Trade-offs vs the wizard-time enrichment
 
 - **Wizard-time enrichment** (shipped): user sees the MAC populated immediately, can verify before submitting. Subject to the cold-cache miss.

@@ -308,7 +308,9 @@ mod tests {
     fn decode(blob: &[u8]) -> Vec<(u16, u16, u32)> {
         assert_eq!(&blob[..4], &2u32.to_le_bytes());
         blob[4..]
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| {
                 (
                     u16::from_le_bytes([c[0], c[1]]),

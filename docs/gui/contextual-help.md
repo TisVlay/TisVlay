@@ -24,7 +24,7 @@ Fills the window. Places `HelpBubble` **centered over the anchor**, flipped belo
 
 ### `HelpScrollView`
 
-Drop-in `ScrollView` for a scrollable pane body: pins `viewport-width`, bumps `reposition-tick` on scroll, and pushes its post-layout viewport rect to `Help` (via `push-clip()`/`set-clip-if-inside`) so bubbles anchored inside it clamp to the viewport. Used by the TVs / Profiles detail bodies and the About pane.
+Drop-in `ScrollView` for a scrollable pane body: pins `content-width`, bumps `reposition-tick` on scroll, and pushes its post-layout viewport rect to `Help` (via `push-clip()`/`set-clip-if-inside`) so bubbles anchored inside it clamp to the viewport. Used by the TVs / Profiles detail bodies and the About pane.
 
 ### Triggers (`ui/widgets.slint`) — push model
 

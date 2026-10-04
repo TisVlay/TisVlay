@@ -38,7 +38,10 @@ default-members = [
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.92"
+# MSRV = the pinned channel in rust-toolchain.toml (bump the two together),
+# so the floor is exactly what CI builds and the MSRV-aware resolver never
+# holds a dependency back below the compiler we actually ship with.
+rust-version = "1.99"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/ruffsl/tisvlay"
@@ -54,7 +57,7 @@ publish = false
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal"] }
 
 # WebSocket
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 futures-util = "0.3"
 
@@ -162,8 +165,8 @@ bevy_ecs = "0.19"
 # Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
 # API (caches, history, recovery) is behind `unstable` — an accepted
 # risk, tracked in the parity plan's watch items.
-zenoh = "1.9"
-zenoh-ext = { version = "1.9", features = ["unstable"] }
+zenoh = "1.10"
+zenoh-ext = { version = "1.10", features = ["unstable"] }
 
 # EDID parsing for the DRM connector ↔ TV matcher
 edidkit = "0.1"
@@ -180,9 +183,9 @@ freedesktop-icons = "0.4"
 notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
 
 # Kernel netlink: route resolution + carrier/route monitoring
-netlink-packet-core = "0.8"
-netlink-packet-route = "0.30"
-rtnetlink = "0.21"
+netlink-packet-core = "0.9"
+netlink-packet-route = "0.33"
+rtnetlink = "0.23"
 
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
@@ -209,7 +212,7 @@ tisvlay-session = { path = "crates/tisvlay-session" }
 insta = { version = "1", features = ["json", "yaml", "filters"] }
 insta-cmd = "0.7"
 proptest = "1"
-rstest = "0.26"
+rstest = "0.27"
 tempfile = "3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tracing-mock = "0.1.0-beta.3"
