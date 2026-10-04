@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
+use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{manager, profile, tv};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -19,11 +21,14 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
+use crate::support::{body, call, raw_refusal};
+
 type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 
 struct Wire {
     _dir: tempfile::TempDir,
     client: Session,
+    caller: Caller,
     site: String,
     socket: PathBuf,
     // Held for the test lifetime — dropping the stack tears down the world.
@@ -50,6 +55,7 @@ async fn wire() -> Wire {
         .unwrap();
     Wire {
         _dir: dir,
+        caller: Caller::new(client.clone(), "t"),
         client,
         site: "t".into(),
         socket,
@@ -63,41 +69,6 @@ async fn history_sub(session: &Session, key: String) -> Sub {
         .history(HistoryConfig::default().detect_late_publishers())
         .await
         .unwrap()
-}
-
-/// A get that matches zero queryables completes instantly with no
-/// reply — the served side may still be declaring its queryables —
-/// so the no-reply case retries briefly.
-async fn call(client: &Session, key: &str, body: Value) -> Result<Value, Value> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let replies = client
-            .get(key.to_string())
-            .payload(serde_json::to_vec(&body).unwrap())
-            .encoding(Encoding::APPLICATION_JSON)
-            .timeout(Duration::from_secs(5))
-            .await
-            .unwrap();
-        let reply = match tokio::time::timeout(Duration::from_secs(5), replies.recv_async())
-            .await
-            .expect("rpc timed out")
-        {
-            Ok(reply) => reply,
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-            Err(e) => panic!("rpc got no reply: {e}"),
-        };
-        return match reply.result() {
-            Ok(sample) => {
-                Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-            Err(err) => {
-                Err(serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-        };
-    }
 }
 
 async fn recv_until(sub: &Sub, mut pred: impl FnMut(&Sample) -> bool) -> Vec<Sample> {
@@ -135,18 +106,17 @@ fn payload_json(sample: &Sample) -> Value {
 }
 
 async fn add_tv(w: &Wire, name: &str, address: &str) -> Uuid {
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
         config: json!({ "address": address }),
-    })
-    .unwrap();
-    let ok = call(&w.client, &keys::manager_rpc(&w.site, "add-tv"), body)
+    };
+    let ok = call::<manager::AddTv>(&w.caller, &(), &request)
         .await
         .expect("add-tv ok");
-    Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap()
+    ok.id
 }
 
 async fn wait_tv_state(sub: &Sub, site: &str, id: Uuid, path: &str, pred: impl Fn(&Value) -> bool) {
@@ -203,21 +173,17 @@ async fn greeter_timeout_key_and_idle_dispatch() {
     wait_tv_state(&sub, &w.site, tv, "state/link", |v| v["connected"] == true).await;
 
     // An assigned profile with an enabled timer surfaces on the key.
-    let ok = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "create"),
-        json!({ "body": { "name": "Greeter", "idle_timeout_seconds": 300 } }),
+    let ok = call::<profile::Create>(
+        &w.caller,
+        &(),
+        &body(json!({ "body": { "name": "Greeter", "idle_timeout_seconds": 300 } })),
     )
     .await
     .expect("create ok");
-    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-system-profile"),
-        json!({ "profile": profile }),
-    )
-    .await
-    .expect("assign ok");
+    let profile = ok.id;
+    call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({ "profile": profile })))
+        .await
+        .expect("assign ok");
     recv_until(&timeout_sub, |s| payload_json(s)["seconds"] == 300).await;
 
     // Idle blanks (stock on_idle_timeout), resume relights.
@@ -230,13 +196,9 @@ async fn greeter_timeout_key_and_idle_dispatch() {
     wait_tv_state(&sub, &w.site, tv, "state/power", |v| v["state"] == "active").await;
 
     // Unassigning drops the timer back to disabled.
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-system-profile"),
-        json!({}),
-    )
-    .await
-    .expect("unassign ok");
+    call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({})))
+        .await
+        .expect("unassign ok");
     recv_until(&timeout_sub, |s| payload_json(s)["seconds"] == 0).await;
 }
 
@@ -265,7 +227,7 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
 
     // The gate is profile policy: an invalid value is rejected by the
     // profile body's typed parse.
-    let err = call(
+    let err = raw_refusal(
         &w.client,
         &keys::profile_rpc(&w.site, "update"),
         json!({
@@ -273,26 +235,21 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
             "body": { "name": "default", "automate_when": "sometimes" },
         }),
     )
-    .await
-    .expect_err("invalid gate value must fail");
+    .await;
     assert_eq!(err["code"], "bad-request");
 
     // Mock sits on HDMI_1; require the primary input HDMI_2 and gate
     // the default profile on it → gated off.
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-primary-input"),
-        json!({ "input": "HDMI_2" }),
-    )
-    .await
-    .expect("set primary ok");
-    call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "update"),
-        json!({
+    call::<tv::SetPrimaryInput>(&w.caller, &tv, &body(json!({ "input": "HDMI_2" })))
+        .await
+        .expect("set primary ok");
+    call::<profile::Update>(
+        &w.caller,
+        &(),
+        &body(json!({
             "id": tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
             "body": { "name": "default", "automate_when": "on_primary" },
-        }),
+        })),
     )
     .await
     .expect("set gate ok");
@@ -310,13 +267,9 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
     .await;
 
     // Switching onto the primary input re-arms automation.
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &tv, "switch-input"),
-        json!({ "input": "HDMI_2" }),
-    )
-    .await
-    .expect("switch ok");
+    call::<tv::SwitchInput>(&w.caller, &tv, &body(json!({ "input": "HDMI_2" })))
+        .await
+        .expect("switch ok");
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| v["automated"] == true).await;
     put_greeter_idle(&w, false).await;
     put_greeter_idle(&w, true).await;
@@ -493,20 +446,20 @@ async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
     let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
         .await
         .unwrap();
+    let caller = Caller::new(client.clone(), site.as_str());
 
     // Add the armed TV (explicit id matching the hydrated set). The daemon
     // stored the armed set on hydration, so the projection arms this TV as
     // soon as it exists — attributable to hydration, since the session
     // sends no mirror sample after the daemon booted.
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: Some(tv),
         name: "Remote".into(),
         vendor: "mock".into(),
         managed: true,
         config: json!({ "address": "mock://hydrate" }),
-    })
-    .unwrap();
-    call(&client, &keys::manager_rpc(&site, "add-tv"), body)
+    };
+    call::<manager::AddTv>(&caller, &(), &request)
         .await
         .expect("add-tv ok");
 

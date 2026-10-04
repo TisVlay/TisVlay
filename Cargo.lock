@@ -6557,6 +6557,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "serde",
  "serde_json",
  "tisvlay-runtime",
  "tisvlay-wire",

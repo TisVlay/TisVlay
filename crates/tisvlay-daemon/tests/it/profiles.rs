@@ -9,14 +9,17 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tisvlay_core::DiscoveredTv;
 use tisvlay_mock::{MockHandle, new_test_parts};
+use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{manager, profile, tv, vendors};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use tisvlay_world::{InEvent, SystemEvent};
 use uuid::Uuid;
 use zenoh::Session;
-use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::{Sample, SampleKind};
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig};
+
+use crate::support::{body, call, refusal};
 
 type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 
@@ -25,6 +28,7 @@ struct Wire {
     stack: tisvlay_daemon::Stack,
     handle: MockHandle,
     client: Session,
+    caller: Caller,
     site: String,
 }
 
@@ -51,6 +55,7 @@ async fn wire() -> Wire {
         _dir: dir,
         stack,
         handle,
+        caller: Caller::new(client.clone(), "t"),
         client,
         site: "t".into(),
     }
@@ -62,42 +67,6 @@ async fn history_sub(session: &Session, key: String) -> Sub {
         .history(HistoryConfig::default().detect_late_publishers())
         .await
         .unwrap()
-}
-
-/// One RPC round-trip; `Err` carries the decoded typed-error payload.
-/// A get that matches zero queryables completes instantly with no
-/// reply — the served side may still be declaring its queryables —
-/// so the no-reply case retries briefly.
-async fn call(client: &Session, key: &str, body: Value) -> Result<Value, Value> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let replies = client
-            .get(key.to_string())
-            .payload(serde_json::to_vec(&body).unwrap())
-            .encoding(Encoding::APPLICATION_JSON)
-            .timeout(Duration::from_secs(5))
-            .await
-            .unwrap();
-        let reply = match tokio::time::timeout(Duration::from_secs(5), replies.recv_async())
-            .await
-            .expect("rpc timed out")
-        {
-            Ok(reply) => reply,
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-            Err(e) => panic!("rpc got no reply: {e}"),
-        };
-        return match reply.result() {
-            Ok(sample) => {
-                Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-            Err(err) => {
-                Err(serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-        };
-    }
 }
 
 /// Receive samples until `pred` matches, panicking after 10 s.
@@ -137,18 +106,17 @@ fn payload_json(sample: &Sample) -> Value {
 }
 
 async fn add_tv(w: &Wire, name: &str, address: &str) -> Uuid {
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
         config: json!({ "address": address }),
-    })
-    .unwrap();
-    let ok = call(&w.client, &keys::manager_rpc(&w.site, "add-tv"), body)
+    };
+    let ok = call::<manager::AddTv>(&w.caller, &(), &request)
         .await
         .expect("add-tv ok");
-    Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap()
+    ok.id
 }
 
 async fn wait_tv_state(sub: &Sub, site: &str, id: Uuid, path: &str, pred: impl Fn(&Value) -> bool) {
@@ -187,23 +155,23 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
     let w = wire().await;
     let profile_id = Uuid::new_v4();
 
-    let ok = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "create"),
-        json!({ "id": profile_id, "body": { "name": "Movie", "on_dpms_off": "none" } }),
+    let ok = call::<profile::Create>(
+        &w.caller,
+        &(),
+        &body(json!({ "id": profile_id, "body": { "name": "Movie", "on_dpms_off": "none" } })),
     )
     .await
     .expect("create ok");
-    assert_eq!(ok["id"].as_str().unwrap(), profile_id.to_string());
+    assert_eq!(ok.id, profile_id);
 
-    let err = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "create"),
-        json!({ "id": profile_id, "body": { "name": "Clash" } }),
+    let err = call::<profile::Create>(
+        &w.caller,
+        &(),
+        &body(json!({ "id": profile_id, "body": { "name": "Clash" } })),
     )
     .await
     .expect_err("duplicate id must fail");
-    assert_eq!(err["code"], "profile-exists");
+    assert_eq!(refusal(&err).code, "profile-exists");
 
     // Late joiner hydrates the body from the cached publisher.
     let sub = history_sub(&w.client, profile_wild(&w.site)).await;
@@ -213,10 +181,12 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
     })
     .await;
 
-    call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "update"),
-        json!({ "id": profile_id, "body": { "name": "Movie Night", "on_sleep": "power_off" } }),
+    call::<profile::Update>(
+        &w.caller,
+        &(),
+        &body(
+            json!({ "id": profile_id, "body": { "name": "Movie Night", "on_sleep": "power_off" } }),
+        ),
     )
     .await
     .expect("update ok");
@@ -228,14 +198,14 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
     })
     .await;
 
-    let ok = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "duplicate"),
-        json!({ "id": profile_id, "name": "Copy" }),
+    let ok = call::<profile::Duplicate>(
+        &w.caller,
+        &(),
+        &body(json!({ "id": profile_id, "name": "Copy" })),
     )
     .await
     .expect("duplicate ok");
-    let copy_id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let copy_id = ok.id;
     assert_ne!(copy_id, profile_id);
     recv_until(&sub, |s| {
         let body = payload_json(s);
@@ -244,60 +214,36 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
             && body["on_sleep"] == "power_off"
     })
     .await;
-    call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "delete"),
-        json!({ "id": copy_id }),
-    )
-    .await
-    .expect("delete copy ok");
+    call::<profile::Delete>(&w.caller, &(), &body(json!({ "id": copy_id })))
+        .await
+        .expect("delete copy ok");
 
     // A referencing TV blocks deletion until unassigned.
     let tv = add_tv(&w, "Den", "mock://prof-crud").await;
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-system-profile"),
-        json!({ "profile": profile_id }),
-    )
-    .await
-    .expect("assign ok");
-    let err = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "delete"),
-        json!({ "id": profile_id }),
-    )
-    .await
-    .expect_err("delete while referenced must fail");
-    assert_eq!(err["code"], "profile-in-use");
+    call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({ "profile": profile_id })))
+        .await
+        .expect("assign ok");
+    let err = call::<profile::Delete>(&w.caller, &(), &body(json!({ "id": profile_id })))
+        .await
+        .expect_err("delete while referenced must fail");
+    assert_eq!(refusal(&err).code, "profile-in-use");
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-system-profile"),
-        json!({}),
-    )
-    .await
-    .expect("unassign ok");
-    call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "delete"),
-        json!({ "id": profile_id }),
-    )
-    .await
-    .expect("delete ok");
+    call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({})))
+        .await
+        .expect("unassign ok");
+    call::<profile::Delete>(&w.caller, &(), &body(json!({ "id": profile_id })))
+        .await
+        .expect("delete ok");
     recv_until(&sub, |s| {
         s.kind() == SampleKind::Delete
             && s.key_expr().as_str() == keys::profile_system(&w.site, &profile_id)
     })
     .await;
 
-    let err = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "delete"),
-        json!({ "id": profile_id }),
-    )
-    .await
-    .expect_err("second delete must fail");
-    assert_eq!(err["code"], "profile-not-found");
+    let err = call::<profile::Delete>(&w.caller, &(), &body(json!({ "id": profile_id })))
+        .await
+        .expect_err("second delete must fail");
+    assert_eq!(refusal(&err).code, "profile-not-found");
 }
 
 /// The read projections behind the GUI's inheritance editor: `defaults`
@@ -325,56 +271,40 @@ async fn defaults_and_effective_expose_field_resolution() {
         "automate_when": "always",
     });
 
-    let defaults = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "defaults"),
-        Value::Null,
-    )
-    .await
-    .expect("defaults ok");
-    assert_eq!(defaults, stock_map);
+    let defaults = call::<profile::Defaults>(&w.caller, &(), &())
+        .await
+        .expect("defaults ok");
+    assert_eq!(serde_json::to_value(defaults).unwrap(), stock_map);
 
     // A TV with no profile resolves to the pure defaults.
     let tv = add_tv(&w, "Den", "mock://effective").await;
-    let effective = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "effective"),
-        json!({ "id": tv }),
-    )
-    .await
-    .expect("effective ok");
-    assert_eq!(effective, stock_map);
+    let effective = call::<profile::Effective>(&w.caller, &(), &body(json!({ "id": tv })))
+        .await
+        .expect("effective ok");
+    assert_eq!(serde_json::to_value(effective).unwrap(), stock_map);
 
-    let ok = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "create"),
-        json!({ "body": {
+    let ok = call::<profile::Create>(
+        &w.caller,
+        &(),
+        &body(json!({ "body": {
             "name": "Quiet",
             "on_dpms_off": "none",
             "on_sleep": "screen_off",
             "idle_timeout_seconds": 300,
-        } }),
+        } })),
     )
     .await
     .expect("create ok");
-    let profile_id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &tv, "set-system-profile"),
-        json!({ "profile": profile_id }),
-    )
-    .await
-    .expect("assign ok");
+    let profile_id = ok.id;
+    call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({ "profile": profile_id })))
+        .await
+        .expect("assign ok");
 
-    let effective = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "effective"),
-        json!({ "id": tv }),
-    )
-    .await
-    .expect("effective ok");
+    let effective = call::<profile::Effective>(&w.caller, &(), &body(json!({ "id": tv })))
+        .await
+        .expect("effective ok");
     assert_eq!(
-        effective,
+        serde_json::to_value(effective).unwrap(),
         json!({
             "name": "Quiet",
             "on_startup": { "action": "power_on", "restore_input": true, "while_remote": false },
@@ -395,14 +325,10 @@ async fn defaults_and_effective_expose_field_resolution() {
         })
     );
 
-    let err = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "effective"),
-        json!({ "id": Uuid::new_v4() }),
-    )
-    .await
-    .expect_err("unknown TV must fail");
-    assert_eq!(err["code"], "tv-not-found");
+    let err = call::<profile::Effective>(&w.caller, &(), &body(json!({ "id": Uuid::new_v4() })))
+        .await
+        .expect_err("unknown TV must fail");
+    assert_eq!(refusal(&err).code, "tv-not-found");
 }
 
 /// Per-TV resolution: an assigned profile's explicit `none` suppresses the
@@ -423,21 +349,13 @@ async fn assigned_profile_overrides_and_falls_back_per_field() {
     // into a blank — perverse on purpose, so every override outcome is
     // observable while both mocks stay connected (screen actions never
     // drop the mock's link; power-off would).
-    let ok = call(
-        &w.client,
-        &keys::profile_rpc(&w.site, "create"),
-        json!({ "body": { "name": "Cinema", "on_dpms_off": "none", "on_dpms_on": "screen_off" } }),
-    )
+    let ok = call::<profile::Create>(&w.caller, &(), &body(json!({ "body": { "name": "Cinema", "on_dpms_off": "none", "on_dpms_on": "screen_off" } })))
     .await
     .expect("create ok");
-    let profile_id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &custom, "set-system-profile"),
-        json!({ "profile": profile_id }),
-    )
-    .await
-    .expect("assign ok");
+    let profile_id = ok.id;
+    call::<tv::SetSystemProfile>(&w.caller, &custom, &body(json!({ "profile": profile_id })))
+        .await
+        .expect("assign ok");
     wait_tv_state(&sub, &w.site, custom, "meta/config", |v| {
         v["system_profile"] == profile_id.to_string()
     })
@@ -495,23 +413,15 @@ async fn assigned_profile_overrides_and_falls_back_per_field() {
 async fn discovery_session_streams_findings_until_stopped() {
     let w = wire().await;
 
-    let err = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "discover-start"),
-        json!({ "vendor": "nope" }),
-    )
-    .await
-    .expect_err("unknown vendor must fail");
-    assert_eq!(err["code"], "unknown-vendor");
+    let err = call::<manager::DiscoverStart>(&w.caller, &(), &body(json!({ "vendor": "nope" })))
+        .await
+        .expect_err("unknown vendor must fail");
+    assert_eq!(refusal(&err).code, "unknown-vendor");
 
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "discover-start"),
-        json!({ "vendor": "mock" }),
-    )
-    .await
-    .expect("start ok");
-    let session = Uuid::parse_str(ok["session"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::DiscoverStart>(&w.caller, &(), &body(json!({ "vendor": "mock" })))
+        .await
+        .expect("start ok");
+    let session = ok.session;
 
     // The session announces itself via a liveliness token.
     let alive_key = keys::alive_discovery(&w.site, &session);
@@ -550,23 +460,15 @@ async fn discovery_session_streams_findings_until_stopped() {
         }
     }
 
-    call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "discover-stop"),
-        json!({ "session": session }),
-    )
-    .await
-    .expect("stop ok");
+    call::<manager::DiscoverStop>(&w.caller, &(), &body(json!({ "session": session })))
+        .await
+        .expect("stop ok");
     wait_liveliness(&w.client, &alive_key, false).await;
 
-    let err = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "discover-stop"),
-        json!({ "session": session }),
-    )
-    .await
-    .expect_err("second stop must fail");
-    assert_eq!(err["code"], "discovery-not-found");
+    let err = call::<manager::DiscoverStop>(&w.caller, &(), &body(json!({ "session": session })))
+        .await
+        .expect_err("second stop must fail");
+    assert_eq!(refusal(&err).code, "discovery-not-found");
 }
 
 /// Poll the liveliness state of `key` until it matches `want`.
@@ -600,41 +502,29 @@ async fn wait_liveliness(client: &Session, key: &str, want: bool) {
 async fn vendor_catalog_and_schema_queryables() {
     let w = wire().await;
 
-    let list = call(&w.client, &keys::vendors(&w.site), Value::Null)
+    let list = call::<vendors::Catalog>(&w.caller, &(), &())
         .await
         .expect("vendors ok");
     let mock = list
-        .as_array()
-        .expect("vendors is a list")
         .iter()
-        .find(|v| v["id"] == "mock")
+        .find(|v| v.id == "mock")
         .expect("mock vendor listed");
-    assert_eq!(mock["name"], "Mock");
-    assert_eq!(mock["capabilities"], json!(["power", "volume"]));
+    assert_eq!(mock.name, "Mock");
+    assert_eq!(mock.capabilities, ["power", "volume"]);
 
-    let schema = call(
-        &w.client,
-        &keys::vendor_schema(&w.site, "mock"),
-        Value::Null,
-    )
-    .await
-    .expect("schema ok");
+    let schema = call::<vendors::Schema>(&w.caller, "mock", &())
+        .await
+        .expect("schema ok");
     let address = schema
-        .as_array()
-        .expect("schema is a field list")
         .iter()
-        .find(|f| f["name"] == "address")
+        .find(|f| f.name == "address")
         .expect("address field present");
-    assert_eq!(address["required"], true);
+    assert!(address.required);
 
-    let err = call(
-        &w.client,
-        &keys::vendor_schema(&w.site, "nope"),
-        Value::Null,
-    )
-    .await
-    .expect_err("unknown vendor must fail");
-    assert_eq!(err["code"], "unknown-vendor");
+    let err = call::<vendors::Schema>(&w.caller, "nope", &())
+        .await
+        .expect_err("unknown vendor must fail");
+    assert_eq!(refusal(&err).code, "unknown-vendor");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -657,33 +547,29 @@ async fn store_round_trips_profiles_and_assignment() {
     let client1 = zenoh::open(bootstrap::client_config(&socket1).unwrap())
         .await
         .unwrap();
-    let ok = call(
-        &client1,
-        &keys::profile_rpc("t", "create"),
-        json!({ "body": { "name": "Kept", "on_dpms_off": "none" } }),
+    let caller1 = Caller::new(client1.clone(), "t");
+    let ok = call::<profile::Create>(
+        &caller1,
+        &(),
+        &body(json!({ "body": { "name": "Kept", "on_dpms_off": "none" } })),
     )
     .await
     .expect("create ok");
-    let profile_id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    let body = serde_json::to_value(rpc::AddTv {
+    let profile_id = ok.id;
+    let request = rpc::AddTv {
         id: None,
         name: "Den".into(),
         vendor: "mock".into(),
         managed: true,
         config: json!({ "address": "mock://persist-prof" }),
-    })
-    .unwrap();
-    let ok = call(&client1, &keys::manager_rpc("t", "add-tv"), body)
+    };
+    let ok = call::<manager::AddTv>(&caller1, &(), &request)
         .await
         .expect("add-tv ok");
-    let tv = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &client1,
-        &keys::tv_rpc("t", &tv, "set-system-profile"),
-        json!({ "profile": profile_id }),
-    )
-    .await
-    .expect("assign ok");
+    let tv = ok.id;
+    call::<tv::SetSystemProfile>(&caller1, &tv, &body(json!({ "profile": profile_id })))
+        .await
+        .expect("assign ok");
 
     // Wait for the debounced write to capture the assignment.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

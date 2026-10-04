@@ -28,7 +28,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
 use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{user_profile, user_remote};
+use tisvlay_wire::endpoint::{tv, user_profile, user_remote};
 use tisvlay_wire::error::WireError;
 use tisvlay_wire::{keys, payload, rpc, serve};
 use tokio::sync::{mpsc, watch};
@@ -845,25 +845,40 @@ impl Core {
     /// the world honors it without knowing the session's event vocabulary,
     /// and manual clients (which never set it) stay input-neutral.
     fn call_tv(&self, tv: Uuid, spec: tisvlay_core::EventAction) {
-        let restore = spec.restore_input();
-        let (verb, body) = match spec.action() {
-            SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
-            SessionAction::ScreenOn => (
-                "set-screen",
-                json!({ "on": true, "restore_input": restore }),
-            ),
-            SessionAction::PowerOff => ("power-off", Value::Null),
-            SessionAction::PowerOn => ("power-on", json!({ "restore_input": restore })),
-            SessionAction::None => return,
-        };
+        let action = spec.action();
+        if action == SessionAction::None {
+            return;
+        }
+        let restore_input = spec.restore_input();
         let caller = Arc::clone(&self.caller);
-        let key = keys::tv_rpc(&self.site, &tv, verb);
         // Spawned so the matching gate + rpc timeout never block the core
         // select; the Caller re-issues nothing on a write and classifies
         // unavailable-vs-rejected for the log line.
         tokio::spawn(async move {
-            if let Err(error) = caller.call_json(&key, body).await {
-                warn!(%key, %error, "tv rpc failed");
+            let screen = |on| rpc::SetScreen { on, restore_input };
+            let outcome = match action {
+                SessionAction::ScreenOff => {
+                    caller
+                        .call::<tv::SetScreen>(
+                            &tv,
+                            &rpc::SetScreen {
+                                on: false,
+                                restore_input: false,
+                            },
+                        )
+                        .await
+                }
+                SessionAction::ScreenOn => caller.call::<tv::SetScreen>(&tv, &screen(true)).await,
+                SessionAction::PowerOff => caller.call::<tv::PowerOff>(&tv, &()).await,
+                SessionAction::PowerOn => {
+                    caller
+                        .call::<tv::PowerOn>(&tv, &rpc::PowerOn { restore_input })
+                        .await
+                }
+                SessionAction::None => return,
+            };
+            if let Err(error) = outcome {
+                warn!(%tv, %error, "tv rpc failed");
             }
         });
     }

@@ -1220,7 +1220,6 @@ pub mod caller {
 
     use serde::Serialize;
     use serde::de::DeserializeOwned;
-    use serde_json::Value;
     use zenoh::Session;
     use zenoh::bytes::Encoding;
     use zenoh::query::{ConsolidationMode, Querier};
@@ -1356,29 +1355,6 @@ pub mod caller {
                 out.push(decode(&key, &reply_bytes(&key, reply)?)?);
             }
             Ok(out)
-        }
-
-        /// Untyped write, until every client is on [`call`](Self::call).
-        pub async fn call_json(&self, key: &str, body: Value) -> Result<Value, RpcError> {
-            let querier = self.querier(key).await?;
-            self.await_matching(&querier).await?;
-            let bytes = issue(&querier, &encode(&body)).await?;
-            Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
-        }
-
-        /// Untyped read, until every client is on [`call`](Self::call).
-        pub async fn fetch_json(&self, key: &str, body: Value) -> Result<Value, RpcError> {
-            let querier = self.querier(key).await?;
-            self.await_matching(&querier).await?;
-            let body = encode(&body);
-            let bytes = match issue(&querier, &body).await {
-                Err(RpcError::NoReply { .. }) => {
-                    self.await_matching(&querier).await?;
-                    issue(&querier, &body).await?
-                }
-                outcome => outcome?,
-            };
-            Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
         }
 
         /// The cached single-reply querier for `key`.

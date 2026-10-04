@@ -12,9 +12,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tisvlay_core::{Coalescer, ReconcilerMap};
 use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{Unary, tv, user_profile};
 use tisvlay_wire::payload::{self, StatePayload};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use tokio::sync::mpsc;
@@ -183,14 +184,12 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     // TV, based on reconciled intent, with at most one write in flight.
     let volume_scroll = scroll_coalescer(
         Arc::clone(&caller),
-        options.site.clone(),
         handle.clone(),
         reconcilers.clone(),
         ScrollTarget::Volume,
     );
     let backlight_scroll = scroll_coalescer(
         Arc::clone(&caller),
-        options.site.clone(),
         handle.clone(),
         reconcilers.clone(),
         ScrollTarget::Backlight,
@@ -198,7 +197,6 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     tokio::spawn(process_commands(
         Arc::clone(&caller),
         user_caller,
-        options.site.clone(),
         cmd_rx,
         handle.clone(),
         volume_scroll,
@@ -340,14 +338,9 @@ async fn spawn_liveliness_pump(
 /// Execute menu commands as rpcs. Scroll bursts hand off to the
 /// per-target coalescers without awaiting, so a slow set-volume can't
 /// block other commands behind it.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "an entry point taking each handle and channel it owns; a struct would only rename the list"
-)]
 async fn process_commands(
     caller: Arc<Caller>,
     user_caller: Option<Arc<Caller>>,
-    site: String,
     mut rx: mpsc::UnboundedReceiver<TrayCommand>,
     handle: ksni::Handle<TvTray>,
     volume_scroll: Coalescer<Uuid, i32>,
@@ -374,7 +367,7 @@ async fn process_commands(
             }
             continue;
         }
-        execute(&caller, user_caller.as_deref(), &site, command, &handle).await;
+        execute(&caller, user_caller.as_deref(), command, &handle).await;
     }
 }
 
@@ -384,7 +377,6 @@ async fn process_commands(
 /// is in place before any subscription pushes arrive.
 fn scroll_coalescer(
     caller: Arc<Caller>,
-    site: String,
     handle: ksni::Handle<TvTray>,
     reconcilers: Reconcilers,
     target: ScrollTarget,
@@ -393,7 +385,6 @@ fn scroll_coalescer(
         |old: i32, new: i32| old + new,
         move |id: Uuid, steps: i32| {
             let caller = Arc::clone(&caller);
-            let site = site.clone();
             let handle = handle.clone();
             let reconcilers = reconcilers.clone();
             async move {
@@ -420,16 +411,14 @@ fn scroll_coalescer(
                     return;
                 }
                 map.dispatch(&id, level);
-                let verb = match target {
-                    ScrollTarget::Volume => "set-volume",
-                    ScrollTarget::Backlight => "set-backlight",
-                };
-                call(
-                    &caller,
-                    &keys::tv_rpc(&site, &id, verb),
-                    json!({ "level": level }),
-                )
-                .await;
+                match target {
+                    ScrollTarget::Volume => {
+                        call::<tv::SetVolume>(&caller, &id, &rpc::SetVolume { level }).await;
+                    }
+                    ScrollTarget::Backlight => {
+                        call::<tv::SetBacklight>(&caller, &id, &rpc::SetBacklight { level }).await;
+                    }
+                }
             }
         },
     )
@@ -438,61 +427,35 @@ fn scroll_coalescer(
 async fn execute(
     caller: &Caller,
     user_caller: Option<&Caller>,
-    site: &str,
     command: TrayCommand,
     handle: &ksni::Handle<TvTray>,
 ) {
     debug!(?command, "tray command");
     match command {
         TrayCommand::PowerOn(id) => {
-            call(caller, &keys::tv_rpc(site, &id, "power-on"), json!({})).await;
+            call::<tv::PowerOn>(caller, &id, &rpc::PowerOn::default()).await;
         }
         TrayCommand::PowerOff(id) => {
-            call(caller, &keys::tv_rpc(site, &id, "power-off"), Value::Null).await;
+            call::<tv::PowerOff>(caller, &id, &()).await;
         }
         TrayCommand::ScreenOn(id) => {
-            call(
-                caller,
-                &keys::tv_rpc(site, &id, "set-screen"),
-                json!({ "on": true }),
-            )
-            .await;
+            call::<tv::SetScreen>(caller, &id, &screen(true)).await;
         }
         TrayCommand::ScreenOff(id) => {
-            call(
-                caller,
-                &keys::tv_rpc(site, &id, "set-screen"),
-                json!({ "on": false }),
-            )
-            .await;
+            call::<tv::SetScreen>(caller, &id, &screen(false)).await;
         }
         TrayCommand::SwitchInput(id, input) => {
-            call(
-                caller,
-                &keys::tv_rpc(site, &id, "switch-input"),
-                json!({ "input": input }),
-            )
-            .await;
+            call::<tv::SwitchInput>(caller, &id, &rpc::SwitchInput { input }).await;
         }
         TrayCommand::SetSystemProfile(id, profile) => {
-            call(
-                caller,
-                &keys::tv_rpc(site, &id, "set-system-profile"),
-                serde_json::to_value(rpc::SetSystemProfile { profile }).unwrap_or_default(),
-            )
-            .await;
+            call::<tv::SetSystemProfile>(caller, &id, &rpc::SetSystemProfile { profile }).await;
         }
         TrayCommand::SetUserProfile(tv, profile) => {
             let Some(user_caller) = user_caller else {
                 warn!("no session service; user profile change dropped");
                 return;
             };
-            call(
-                user_caller,
-                &keys::user_profile_rpc(site, "assign"),
-                serde_json::to_value(rpc::UserAssign { tv, profile }).unwrap_or_default(),
-            )
-            .await;
+            call::<user_profile::Assign>(user_caller, &(), &rpc::UserAssign { tv, profile }).await;
         }
         TrayCommand::ToggleMute(id) => {
             let muted = handle
@@ -500,20 +463,10 @@ async fn execute(
                 .await
                 .flatten()
                 .unwrap_or(false);
-            call(
-                caller,
-                &keys::tv_rpc(site, &id, "set-muted"),
-                json!({ "muted": !muted }),
-            )
-            .await;
+            call::<tv::SetMuted>(caller, &id, &rpc::SetMuted { muted: !muted }).await;
         }
         TrayCommand::SetManaged(id, managed) => {
-            call(
-                caller,
-                &keys::tv_rpc(site, &id, "set-managed"),
-                json!({ "managed": managed }),
-            )
-            .await;
+            call::<tv::SetManaged>(caller, &id, &rpc::SetManaged { managed }).await;
         }
         // Handled by the coalescers in process_commands.
         TrayCommand::ScrollBy(..) => {}
@@ -559,9 +512,17 @@ async fn activate_gui() -> Result<()> {
 /// One rpc round-trip; failures land in the log, not the UI — the mirror
 /// shows the truth either way. Matching-gated single shot: a click
 /// during route propagation waits it out instead of vanishing.
-async fn call(caller: &Caller, key: &str, body: Value) {
-    if let Err(error) = caller.call_json(key, body).await {
-        warn!(%key, %error, "rpc failed");
+async fn call<R: Unary>(caller: &Caller, target: &R::Target, request: &R::Request) {
+    if let Err(error) = caller.call::<R>(target, request).await {
+        warn!(%error, "rpc failed");
+    }
+}
+
+/// A manual screen toggle: no restore intent.
+fn screen(on: bool) -> rpc::SetScreen {
+    rpc::SetScreen {
+        on,
+        restore_input: false,
     }
 }
 
