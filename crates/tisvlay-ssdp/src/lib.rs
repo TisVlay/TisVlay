@@ -163,13 +163,13 @@ pub async fn search(
 
     Ok(async_stream::stream! {
         let mut buf = [0u8; RECV_BUFFER_SIZE];
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "Instant plus a search timeout; overflow would need a timeout of billions of years"
-        )]
-        let deadline = tokio::time::Instant::now() + timeout;
+        // No deadline if the timeout overflows `Instant` (`Duration::MAX` as
+        // "wait forever"); `tokio::time::timeout` accepts `Duration::MAX`.
+        let deadline = tokio::time::Instant::now().checked_add(timeout);
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining = deadline.map_or(Duration::MAX, |deadline| {
+                deadline.saturating_duration_since(tokio::time::Instant::now())
+            });
             if remaining.is_zero() {
                 break;
             }
@@ -292,13 +292,13 @@ impl SharedSearcher {
         send_m_search_burst(&inner.socket, &self.targets, DEFAULT_MX, self.destination).await?;
 
         Ok(async_stream::stream! {
-            #[expect(
-                clippy::arithmetic_side_effects,
-                reason = "Instant plus a search timeout; overflow would need a timeout of billions of years"
-            )]
-            let deadline = tokio::time::Instant::now() + timeout;
+            // No deadline if the timeout overflows `Instant` (`Duration::MAX` as
+            // "wait forever"); `tokio::time::timeout` accepts `Duration::MAX`.
+            let deadline = tokio::time::Instant::now().checked_add(timeout);
             loop {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let remaining = deadline.map_or(Duration::MAX, |deadline| {
+                    deadline.saturating_duration_since(tokio::time::Instant::now())
+                });
                 if remaining.is_zero() {
                     break;
                 }
@@ -613,6 +613,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_accepts_an_unbounded_timeout() {
+        use futures_util::StreamExt;
+        // `Duration::MAX` means "no deadline": the stream keeps waiting for
+        // replies instead of panicking on `Instant` overflow.
+        let (_silent, addr) = stand_in().await;
+        let opts = SearchOptions {
+            destination: Some(addr),
+            ..Default::default()
+        };
+        let stream = search(
+            &["urn:tisvlay-test:never-matched:device:1"],
+            Duration::MAX,
+            opts,
+        )
+        .await
+        .expect("search setup");
+        tokio::pin!(stream);
+        let next = tokio::time::timeout(Duration::from_millis(50), stream.next()).await;
+        assert!(next.is_err(), "still waiting: {next:?}");
+    }
+
+    #[tokio::test]
     async fn search_parses_the_searched_devices_reply() {
         use futures_util::StreamExt;
         let (device, addr) = stand_in().await;
@@ -708,5 +730,32 @@ mod tests {
         let (got1, got2) = tokio::join!(saw1, saw2);
         assert!(got1, "first subscriber missed the shared response");
         assert!(got2, "second subscriber missed the shared response");
+    }
+
+    /// Replies arrive from anything on the network, so no input may panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn decode_datagram_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+                let _ = decode_datagram(&bytes);
+            }
+
+            #[test]
+            fn parse_response_never_panics(text in any::<String>()) {
+                let _ = parse_response(&text);
+            }
+
+            /// A `200` status line, so every case reaches the header loop,
+            /// with the headers it extracts among the random ones.
+            #[test]
+            fn parse_response_never_panics_on_http_shapes(
+                text in "HTTP/1\\.1 200 OK\r\n((LOCATION|USN|SERVER|ST|[A-Za-z-]{0,12}):[^\r\n]{0,40}\r\n){0,8}(\r\n)?"
+            ) {
+                let _ = parse_response(&text);
+            }
+        }
     }
 }

@@ -71,7 +71,11 @@ impl InputType {
 }
 
 /// Credentials obtained from successful pairing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is written by hand and redacts `data` and the `extra` values: they
+/// are secrets (the LG client key, future refresh tokens), and `Debug`
+/// output can reach logs through `?value` fields and `#[instrument]`.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Credentials {
     /// Vendor-specific credential data.
     ///
@@ -98,6 +102,18 @@ pub struct Credentials {
     /// the persisted vendor config. Other vendors leave it empty.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub extra: std::collections::HashMap<String, String>,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut extra_keys: Vec<&str> = self.extra.keys().map(String::as_str).collect();
+        extra_keys.sort_unstable();
+        f.debug_struct("Credentials")
+            .field("data", &"<redacted>")
+            .field("credential_type", &self.credential_type)
+            .field("extra_keys", &extra_keys)
+            .finish()
+    }
 }
 
 impl Credentials {
@@ -620,5 +636,28 @@ mod tests {
         let state = session.state();
         assert!(state.is_complete());
         assert_eq!(state.credentials().unwrap().data, "key123");
+    }
+
+    /// Credential data and extra values are secrets; `Debug` output (which can
+    /// reach logs) shows only that they exist.
+    #[test]
+    fn credentials_debug_redacts_secrets() {
+        let creds = Credentials {
+            data: "secret-client-key-1234".into(),
+            credential_type: Some("client_key".into()),
+            extra: [(
+                "refresh_token".to_string(),
+                "secret-refresh-5678".to_string(),
+            )]
+            .into(),
+        };
+        for shown in [format!("{creds:?}"), format!("{creds:#?}")] {
+            assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+            assert!(!shown.contains("secret-refresh-5678"), "{shown}");
+            assert!(
+                shown.contains("refresh_token"),
+                "extra keys stay visible: {shown}"
+            );
+        }
     }
 }

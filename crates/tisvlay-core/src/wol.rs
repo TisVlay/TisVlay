@@ -36,8 +36,8 @@ impl MacAddress {
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.replace(['-', ':'], "");
 
-        // Check the digits before slicing: the byte-indexed slices below
-        // would panic on a multi-byte character.
+        // Check the digits first: the pairs below are then ASCII, so
+        // decoding each one can't fail.
         if s.len() != 12 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::InvalidMacAddress(format!(
                 "Expected 12 hex digits, got {s:?}"
@@ -321,6 +321,12 @@ mod tests {
             s in "[0-9A-Fa-f]{0,11}|[0-9A-Fa-f]{13,30}"
         ) {
             prop_assert!(MacAddress::parse(&s).is_err());
+        }
+        /// Any string, MACs from the TV included, parses or is refused
+        /// without panicking. Round-tripping is `mac_parse_display_roundtrip`'s.
+        #[test]
+        fn mac_parse_never_panics(s in any::<String>()) {
+            let _ = MacAddress::parse(&s);
         }
     }
 }

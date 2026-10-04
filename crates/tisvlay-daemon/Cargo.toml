@@ -146,6 +146,7 @@ zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 tempfile = { workspace = true }
 tisvlay-cec = { workspace = true, features = ["test-link"] }
 tisvlay-test = { workspace = true }

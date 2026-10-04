@@ -604,4 +604,17 @@ mod tests {
         let ids: Vec<_> = inputs.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, ["HDMI_1", "HDMI_2", "HDMI_3", "HDMI_4"]);
     }
+
+    /// Input ids arrive over the wire from any client; none may panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn parse_hdmi_input_never_panics(input_id in any::<String>()) {
+                let _ = parse_hdmi_input(&input_id);
+            }
+        }
+    }
 }

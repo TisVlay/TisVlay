@@ -75,7 +75,7 @@ impl FromStr for WebOsScheme {
 /// client_key = "abc123"
 /// default_input = "HDMI_1"
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LgVendorConfig {
     /// IP address for WebSocket connection.
     ///
@@ -115,6 +115,23 @@ pub struct LgVendorConfig {
     /// without surprise (re-pair if your TV is `ws`-only).
     #[serde(default)]
     pub scheme: WebOsScheme,
+}
+
+// Hand-written so the client key never reaches logs via `?config` or
+// `#[instrument]`.
+impl std::fmt::Debug for LgVendorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LgVendorConfig")
+            .field("ip", &self.ip)
+            .field("mac", &self.mac)
+            .field(
+                "client_key",
+                &self.client_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("default_input", &self.default_input)
+            .field("scheme", &self.scheme)
+            .finish()
+    }
 }
 
 impl LgVendorConfig {
@@ -232,5 +249,24 @@ mod tests {
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert_eq!(config.client_key.as_deref(), Some("key"));
         assert_eq!(config.default_input.as_deref(), Some("HDMI_3"));
+    }
+
+    /// The client key must never show up in `Debug` output, which can reach
+    /// logs through `?config` fields and `#[instrument]`.
+    #[test]
+    fn debug_redacts_the_client_key() {
+        let key = "secret-client-key-1234";
+        let config = LgVendorConfig {
+            ip: "192.0.2.1".into(),
+            client_key: Some(key.into()),
+            ..LgVendorConfig::default()
+        };
+        for shown in [format!("{config:?}"), format!("{config:#?}")] {
+            assert!(!shown.contains(key), "client key leaked into {shown}");
+            assert!(
+                shown.contains("192.0.2.1"),
+                "non-secret fields stay visible: {shown}"
+            );
+        }
     }
 }

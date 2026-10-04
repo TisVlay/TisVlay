@@ -354,4 +354,41 @@ mod tests {
         let matches = match_displays_to_tvs(&displays, &tvs);
         assert_eq!(matches[&tv].connector, "card1-DP-2");
     }
+
+    /// A connector's `edid` file is read straight from sysfs; any bytes a
+    /// monitor or adapter reports must parse or be refused, never panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn parse_hardware_id_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+                let _ = parse_hardware_id(&bytes);
+            }
+
+            /// Whole 128-byte blocks with a valid header, a matching
+            /// extension count and correct checksums pass every framing
+            /// check, so the base block and the CTA-861 and DisplayID
+            /// extension decoders see the random bytes.
+            #[test]
+            fn parse_hardware_id_never_panics_past_the_framing(
+                mut blocks in prop::collection::vec(prop::array::uniform::<_, 128>(any::<u8>()), 1..=4)
+            ) {
+                let extensions = u8::try_from(blocks.len().saturating_sub(1)).unwrap();
+                if let Some(base) = blocks.first_mut() {
+                    base[..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
+                    base[126] = extensions;
+                }
+                for (block, tag) in blocks.iter_mut().skip(1).zip([0x02, 0x70].into_iter().cycle()) {
+                    block[0] = tag;
+                }
+                for block in &mut blocks {
+                    let sum = block[..127].iter().fold(0u8, |sum, b| sum.wrapping_add(*b));
+                    block[127] = 0u8.wrapping_sub(sum);
+                }
+                let _ = parse_hardware_id(blocks.as_flattened());
+            }
+        }
+    }
 }

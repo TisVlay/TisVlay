@@ -53,6 +53,14 @@ Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` 
 7. **`unsafe` is confined.** `unsafe_code` is `deny`, not `forbid`, so the few files that need FFI can opt out with a reasoned file-level `#![expect(unsafe_code)]`. Every block gets a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and does one unsafe operation (`multiple_unsafe_ops_per_block`).
 8. **Test code may unwrap, panic, index and print.** `clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
 
+### Parsers of outside input
+
+Code that handles bytes from outside carries a module-level external-input profile. It's the one deliberate exception to rule 2: these lints are too noisy for the whole workspace (see "Never adopted"), so they're opted into per module rather than out of per crate.
+- `#![warn]` of `indexing_slicing`, `arithmetic_side_effects`, `string_slice` and `cast_possible_truncation`;
+- applied to SSDP replies, SSAP messages from the TV, CEC frames, EDID and sysfs data, netlink messages, and MAC strings.
+
+Each site is a checked access (`get`, `checked_*`, `saturating_*`), a typed refusal, or a reasoned `#[expect]` stating the bound. Each entry point that parses raw bytes or text (SSDP datagrams, EDID blobs, MAC strings, the TV's power-state payload, CEC input ids and names) also gets a "never panics on arbitrary input" property test (proptest), because the lint finds code that *could* panic and the property test runs it on adversarial input. Modules that only read values a library already decoded (netlink messages, serde-decoded SSAP JSON, the CEC ioctl link) take the profile alone. A new parser of raw input takes both.
+
 ### Never adopted
 
 Recorded so nobody re-scouts:

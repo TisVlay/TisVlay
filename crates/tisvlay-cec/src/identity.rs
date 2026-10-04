@@ -241,4 +241,21 @@ mod tests {
         assert_eq!(hw.manufacturer.as_deref(), Some("12-34-56"));
         assert_eq!(id.brand, None, "unknown OUI has no canonical brand");
     }
+
+    /// The OSD name comes from a user label; whatever it is, the advertised
+    /// name must fit CEC's 14-byte operand and never panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn clamp_osd_name_never_panics_and_fits(name in any::<String>()) {
+                if let Some(clamped) = clamp_osd_name(&name) {
+                    prop_assert!(clamped.len() <= 14, "{clamped:?} is over 14 bytes");
+                    prop_assert!(sanitize(&name).starts_with(&clamped));
+                }
+            }
+        }
+    }
 }
