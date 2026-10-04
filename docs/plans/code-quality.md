@@ -125,7 +125,7 @@ Configs read from each project's default branch on 2026-10-04 (dates are the las
 - **cargo-hack** (0.6.45) checks each feature in isolation.
 - **cargo-semver-checks** already runs through release-plz for the published crates.
 - **cargo-mutants** (27.1) is mature; it fits a scoped, manual or labeled run.
-- **Formatting:** nightly-only rustfmt options remain unstable. Tombi is overtaking taplo, which has had no release since 2025-05.
+- **Formatting:** nightly-only rustfmt options remain unstable. Taplo's maintainer stepped away in December 2024 and it hasn't released since May 2025; Tombi is replacing it in some projects (wgpu, prettier-plugin-toml), though Taplo configs still outnumber Tombi's about ten to one.
 - **Not worth it here:**
   - Miri, Kani, loom and cargo-geiger: our `unsafe` is FFI that Miri can't execute.
   - cargo-vet and cargo-crev: their review burden doesn't fit one maintainer.
@@ -210,7 +210,7 @@ Each tool joins the flake devShell in this PR, together with its first use: carg
    - `audit` runs weekly (the existing `audit.yml`) and on `Cargo.lock` changes.
    - The `just` recipes exist to reproduce a CI failure locally.
    - `just check` stays fast and offline.
-8. **A Tombi trial.** Run `tombi format` once on a throwaway branch and judge the diff, especially the comment-heavy `deny.toml`, `prek.toml` and `Cargo.toml`. If it reads well, add a `just` recipe and a prek hook in this PR. If not, record why in the never-adopt list.
+8. **A Tombi trial — done 2026-10-04, not adopted yet.** On the nixpkgs build (Tombi 1.5.2), `tombi format` rewrote 23 of 28 TOML files (394+/365−). It indented by two spaces, sorted package fields and dependency tables, and scattered the comment-grouped dependency sections. With `indent-width = 4` and the schema turned off, sorting stopped, but it still regrouped tables: the daemon's `[dependencies]` and `[lints]` moved below `[package.metadata.nfpm]`. The knobs that disable reordering (`table-keys-order`, `array-values-order`) are documented for 1.7 and don't parse in 1.5.2. Revisit when nixpkgs ships Tombi ≥ 1.7 (a Later item).
    - Taplo's author stepped away in December 2024 (taplo#715). Its last release was in May 2025, and it has about 240 open issues.
    - Tombi releases weekly. wgpu (June 2026) and prettier-plugin-toml (September 2026) have switched to it.
 
@@ -319,6 +319,7 @@ Each becomes a `docs/ideas/*.md` entry when the plan retires (§8).
 - **cargo-mutants**, scoped to pure-logic crates (core, wire, the world's reducers, the parsers), run manually or on a label, never a gate.
 - **Fuzzing the parsers with bolero**, extending Q3's property tests into fuzz targets on nightly.
 - **turmoil** for the LG reconnect/backoff logic. Zenoh won't run under it, so it covers the vendor layer only.
+- **Tombi** once nixpkgs ships ≥ 1.7, whose ordering toggles should leave the comment-grouped manifests intact (Q2.8's trial).
 - **crates.io trusted publishing** for the release-plz job, after each crate's first hand publish.
 - **`clippy.toml` `allow-in-tests`** when rust-clippy#17520 merges, replacing the per-lint keys and most test-file allows.
 
