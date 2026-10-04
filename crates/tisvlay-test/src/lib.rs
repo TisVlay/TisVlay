@@ -6,9 +6,9 @@
 //!
 //! # What's here
 //!
-//! - [`PrivateBus`] — spawns a private `dbus-daemon` scoped to a
-//!   single test binary, exposes its address, and tears it down on
-//!   drop. Each test binary gets exactly one via [`PrivateBus::shared`].
+//! - [`PrivateBus`] — spawns a private `dbus-daemon` and exposes its
+//!   address: one per test process via [`PrivateBus::shared`], or one
+//!   per test via [`PrivateBus::isolated`].
 //! - [`fake_logind::FakeLogind`] — a hand-rolled stub of
 //!   `org.freedesktop.login1.Manager` that emits `PrepareForSleep`
 //!   signals. Register it on a [`PrivateBus`] and drive it from tests.
@@ -18,10 +18,9 @@
 //! Rust-only toolchain, no Python test dependency, and the zbus
 //! `ObjectServer` API is expressive enough to hand-roll the few
 //! system services we care about (logind today; more later if we
-//! need them). The private bus also gives us binary-level isolation
-//! for free: nextest runs one process per test binary, so each
-//! binary's `dbus-daemon` is scoped to one process and can't race
-//! with any other test binary's bus.
+//! need them). The private bus also gives us process-level isolation
+//! for free: each test process's `dbus-daemon` is its own, so it can't
+//! race with any other process's bus.
 //!
 //! # Parallelism
 //!

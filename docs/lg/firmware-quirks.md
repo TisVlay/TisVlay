@@ -268,9 +268,9 @@ The router announces the full IGD service catalog (`InternetGatewayDevice`, `WAN
 
 **Implications for the codebase.**
 
-- `tisvlay-ssdp` stays v4-only by design. `Error::Ipv6BindUnsupported` is a deliberate hard reject, not "we haven't gotten around to it" — see the variant's doc comment for the cross-reference back here.
+- `tisvlay-ssdp` stays v4-only by design. `Error::Ipv6Unsupported` is a deliberate hard reject, not "we haven't gotten around to it" — see the variant's doc comment for the cross-reference back here.
 - The `Capabilities::IPV6` bit on the LG backend means *control* over v6, not *discovery*. The two are independent and have to be evaluated separately for every vendor backend.
-- A future vendor that does join `ff02::c` (e.g., a hypothetical Sony/Samsung backend that follows the UPnP spec more literally) is what would justify lifting `Ipv6BindUnsupported` and threading v6 through `tisvlay-ssdp`. Until then, the v4-only stance is correct.
+- A future vendor that does join `ff02::c` (e.g., a hypothetical Sony/Samsung backend that follows the UPnP spec more literally) is what would justify lifting `Ipv6Unsupported` and threading v6 through `tisvlay-ssdp`. Until then, the v4-only stance is correct.
 - Toggling other TV settings that *sound* related — DLNA, "TV On via Mobile", LG ConnectApp — does not flip this behavior on G4 firmware as of 2026-05. Could change with future firmware; rerun the capture protocol if a new revision claims UPnP-over-v6.
 
 ## `connectionmanager` reports each NIC's MAC and which one carries the TV's IP

@@ -58,7 +58,7 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
     )
     .await
     .unwrap();
-    let sunshine = StaticProbe::new(Observation::Absent);
+    let sunshine = StaticProbe::absent();
     let stack = tisvlay_session::serve(SessionOptions {
         system_socket: system_socket.clone(),
         user_socket: user_socket.clone(),
@@ -235,6 +235,28 @@ async fn drive_until(rig: &Rig, sub: &Sub, event: SessionEvent, id: Uuid, want: 
     }
 }
 
+/// Send `event` until its observability tap lands on `tap` (subscribed to
+/// `event/session/*`). The tap is a plain put racing the subscriber's
+/// interest propagation, so this re-drives — callers pick an event whose
+/// dispatch is idempotent where they are.
+async fn drive_tap(rig: &Rig, tap: &Sub, event: SessionEvent, name: &str) {
+    let key = keys::session_event(&rig.site, name);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(rig.stack.client.send(event), "session core gone");
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, tap.recv_async()).await {
+            if sample.key_expr().as_str() == key {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{name} tap never observed"
+        );
+    }
+}
+
 /// The gateway invariant: user keys exist on the user socket only.
 #[tokio::test(flavor = "multi_thread")]
 async fn gateway_isolates_the_user_subtree() {
@@ -247,7 +269,7 @@ async fn gateway_isolates_the_user_subtree() {
         user_socket: user2_socket.clone(),
         site: rig.site.clone(),
         store: None,
-        sunshine: StaticProbe::new(Observation::Absent),
+        sunshine: StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -312,11 +334,7 @@ async fn lock_and_unlock_dispatch_default_actions() {
         v["connected"] == true
     })
     .await;
-    let tap = rig
-        .client
-        .declare_subscriber(format!("tisvlay/{}/event/session/*", rig.site))
-        .await
-        .unwrap();
+    let tap = history_sub(&rig.client, keys::session_event(&rig.site, "*")).await;
 
     drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
     // Activity on the lock screen: the hard-default on_lock_wake is
@@ -324,27 +342,7 @@ async fn lock_and_unlock_dispatch_default_actions() {
     drive_until(&rig, &sub, SessionEvent::LockWake, tv, "active").await;
     drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
     drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
-
-    // The tap is a plain put racing the subscriber's interest
-    // propagation, so keep re-driving (dispatch is idempotent) until
-    // one lands.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    'outer: loop {
-        assert!(
-            rig.stack.client.send(SessionEvent::Unlock),
-            "session core gone"
-        );
-        let step = tokio::time::Instant::now() + Duration::from_millis(500);
-        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, tap.recv_async()).await {
-            if sample.key_expr().as_str().ends_with("/session/unlock") {
-                break 'outer;
-            }
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "unlock tap never observed"
-        );
-    }
+    drive_tap(&rig, &tap, SessionEvent::Unlock, "unlock").await;
 }
 
 /// A user profile's explicit `none` suppresses the lock blank for its TV
@@ -678,7 +676,7 @@ async fn startup_seed_reads_a_preexisting_lock_synchronously() {
 /// idle-timeout watch tracks the resolved minimum.
 #[tokio::test(flavor = "multi_thread")]
 async fn user_store_and_idle_watch_round_trip() {
-    let dir = tisvlay_test::socket_tempdir();
+    let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("session.toml");
     let rig = rig_with_store(Some(&store)).await;
     let tv = add_tv(&rig, "Den", "mock://u-store").await;
@@ -744,7 +742,7 @@ async fn user_store_and_idle_watch_round_trip() {
         user_socket: user2_socket.clone(),
         site: rig.site.clone(),
         store: Some(store),
-        sunshine: StaticProbe::new(Observation::Absent),
+        sunshine: StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -957,10 +955,15 @@ async fn gated_wake_stays_suppressed_while_sunshine_is_busy_or_unknown() {
     for observation in [Observation::Busy, Observation::Unknown] {
         let (rig, tv, sub, fact) = sunshine_armed().await;
         rig.sunshine.set(observation);
+        let tap = history_sub(&rig.client, keys::session_event(&rig.site, "*")).await;
 
         drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
-        assert!(rig.stack.client.send(SessionEvent::Unlock), "core gone");
-        assert_no_sample(&sub, Duration::from_millis(1500), |s| {
+        // The unlock's tap publishes after the eager pull and just before
+        // the gate's decision, so once it lands the suppressed wake has had
+        // its chance — the window below only spans rpc latency. Every
+        // re-driven unlock meets the same gate.
+        drive_tap(&rig, &tap, SessionEvent::Unlock, "unlock").await;
+        assert_no_sample(&sub, Duration::from_millis(500), |s| {
             keys::parse_tv_path(&rig.site, s.key_expr().as_str())
                 .is_some_and(|(id, path)| id == tv && path == "state/power")
                 && payload_json(s)["state"] == "active"
@@ -1228,7 +1231,7 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
-        sunshine: StaticProbe::new(Observation::Absent),
+        sunshine: StaticProbe::absent(),
     })
     .await
     .unwrap();

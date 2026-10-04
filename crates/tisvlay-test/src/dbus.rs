@@ -1,16 +1,18 @@
 //! Private `dbus-daemon` spawner for tests.
 //!
-//! Each test process spawns exactly one private `dbus-daemon` (via
-//! [`PrivateBus::shared`]) and every test in that process connects to
-//! it. Under nextest that's one bus per test (process-per-test); under
-//! plain `cargo test` the tests of a binary share one, each on its own
-//! thread. No two processes ever share a bus.
+//! [`PrivateBus::shared`] is one private `dbus-daemon` per test process,
+//! and every test in that process may connect to it. Under nextest that's
+//! one bus per test (process-per-test); under plain `cargo test` the tests
+//! of a binary share one, each on its own thread. No two processes ever
+//! share a bus. Tests that own well-known names take a
+//! [`PrivateBus::isolated`] bus of their own instead.
 //!
 //! # Lifecycle
 //!
-//! The daemon is spawned lazily on first access and left running for
-//! the lifetime of the test process. To avoid leaking the child if the
-//! run is killed abruptly (SIGINT, panic before drop, etc.), we set
+//! The shared daemon is spawned lazily on first access and left running
+//! for the lifetime of the test process; an isolated one is killed and
+//! reaped when its handle drops. To avoid leaking the child if the run
+//! is killed abruptly (SIGINT, panic before drop, etc.), we set
 //! `PR_SET_PDEATHSIG = SIGKILL` in a `pre_exec` hook so the kernel tears
 //! it down when its parent dies. The kernel's "parent" there is the
 //! *thread* that forked the child, so the fork happens on a dedicated
@@ -35,24 +37,34 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tracing::{debug, instrument};
 
-/// Handle to a private `dbus-daemon` spawned for a single test binary.
+/// Handle to a private `dbus-daemon`; see [`shared`](Self::shared) and
+/// [`isolated`](Self::isolated).
 #[derive(Debug)]
 pub struct PrivateBus {
     address: String,
-    /// Config file + socket dir live here; dropped when the bus is dropped.
-    /// For the shared `LazyLock` instance this never drops, which is fine —
-    /// the kernel reclaims the tempdir when the test process exits.
+    /// Config file + socket dir live here; removed after `Drop` has reaped
+    /// the daemon. The shared `LazyLock` instance never drops, so its
+    /// tempdir is left behind when the test process exits.
     _workdir: TempDir,
-    /// Kept alive so the child stays reachable for explicit kill if needed.
-    /// pdeathsig is the primary cleanup path.
-    _child: Mutex<std::process::Child>,
-    /// Holds the spawner thread open; dropping it lets the thread return,
-    /// and the kernel's pdeathsig then ends the daemon.
+    /// Killed and reaped on drop; pdeathsig covers the abrupt-exit paths.
+    child: Mutex<std::process::Child>,
+    /// Holds the spawner thread open; dropping it lets the thread return.
     _release: std::sync::mpsc::Sender<()>,
 }
 
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        // Reap before the fields drop: the workdir must outlive the
+        // daemon, and an unreaped child lingers as a zombie in a
+        // long-lived `cargo test` process.
+        let child = self.child.get_mut();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 impl PrivateBus {
-    /// Returns a reference to the shared private bus for this test binary,
+    /// Returns a reference to the shared private bus for this test process,
     /// spawning it on first call.
     ///
     /// # Panics
@@ -205,7 +217,7 @@ impl PrivateBus {
         Ok(PrivateBus {
             address,
             _workdir: workdir,
-            _child: Mutex::new(child),
+            child: Mutex::new(child),
             _release: release_tx,
         })
     }

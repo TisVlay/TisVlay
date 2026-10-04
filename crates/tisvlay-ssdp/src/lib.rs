@@ -93,7 +93,8 @@ pub enum Error {
     /// Socket operation failed (bind, send, or recv).
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// A bind address that isn't IPv4 was passed in `SearchOptions`.
+    /// A bind address or destination that isn't IPv4 was passed in
+    /// `SearchOptions` or to [`SharedSearcher::with_destination`].
     ///
     /// Deliberate: every currently-supported vendor's SSDP profile is
     /// v4-only. LG specifically does not join the v6 SSDP multicast
@@ -102,8 +103,8 @@ pub enum Error {
     /// section). SSAP control over v6 works independently; discovery
     /// just isn't the v6 path. Lift this rejection when a vendor that
     /// actually answers on `ff02::c` is added.
-    #[error("only IPv4 bind addresses are supported")]
-    Ipv6BindUnsupported,
+    #[error("only IPv4 addresses are supported")]
+    Ipv6Unsupported,
     /// A response was received but couldn't be parsed.
     #[error("malformed response: {0}")]
     Parse(&'static str),
@@ -139,13 +140,12 @@ pub async fn search(
     let bind_addr = opts
         .bind_addr
         .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
-    if !bind_addr.is_ipv4() {
-        return Err(Error::Ipv6BindUnsupported);
+    let destination = opts.destination.unwrap_or_else(multicast_destination);
+    if !bind_addr.is_ipv4() || !destination.is_ipv4() {
+        return Err(Error::Ipv6Unsupported);
     }
     let mx = opts.mx.unwrap_or(DEFAULT_MX);
     let ttl = opts.ttl.unwrap_or(DEFAULT_TTL);
-
-    let destination = opts.destination.unwrap_or_else(multicast_destination);
 
     let socket = UdpSocket::bind(bind_addr).await?;
     apply_multicast_ttl(&socket, ttl);
@@ -270,6 +270,9 @@ impl SharedSearcher {
     /// reply is missed. Concurrent callers each get their own subscription
     /// and every one sees every response.
     pub async fn search(&self, timeout: Duration) -> Result<impl Stream<Item = SsdpResponse>> {
+        if !self.destination.is_ipv4() {
+            return Err(Error::Ipv6Unsupported);
+        }
         let inner = self.inner().await?;
         let mut rx = inner.tx.subscribe();
         send_m_search_burst(&inner.socket, &self.targets, DEFAULT_MX, self.destination).await?;
@@ -521,21 +524,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ipv6_bind_addr_is_rejected() {
-        let opts = SearchOptions {
-            bind_addr: Some(SocketAddr::new(
-                IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
-                0,
-            )),
+    async fn ipv6_addresses_are_rejected() {
+        let v6 = SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), SSDP_PORT);
+        let bind_v6 = SearchOptions {
+            bind_addr: Some(v6),
             ..Default::default()
         };
-        // `impl Stream` is not `Debug`, so unwrap-style helpers don't
-        // apply — match on the Result directly.
-        match search(&["upnp:rootdevice"], Duration::from_millis(10), opts).await {
-            Err(Error::Ipv6BindUnsupported) => {}
-            Err(other) => panic!("expected Ipv6BindUnsupported, got {other:?}"),
+        let aim_v6 = SearchOptions {
+            destination: Some(v6),
+            ..Default::default()
+        };
+        for opts in [bind_v6, aim_v6] {
+            // `impl Stream` is not `Debug`, so unwrap-style helpers don't
+            // apply — match on the Result directly.
+            match search(&["upnp:rootdevice"], Duration::from_millis(10), opts).await {
+                Err(Error::Ipv6Unsupported) => {}
+                Err(other) => panic!("expected Ipv6Unsupported, got {other:?}"),
+                Ok(_) => panic!("expected error, got Ok"),
+            }
+        }
+        let shared = SharedSearcher::new(0, vec!["upnp:rootdevice".into()]).with_destination(v6);
+        match shared.search(Duration::from_millis(10)).await {
+            Err(Error::Ipv6Unsupported) => {}
+            Err(other) => panic!("expected Ipv6Unsupported, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
         }
+        assert!(shared.local_addr().is_none(), "rejected before binding");
+    }
+
+    #[test]
+    fn searches_default_to_the_multicast_group() {
+        let group: SocketAddr = "239.255.255.250:1900".parse().unwrap();
+        assert_eq!(multicast_destination(), group);
+        assert_eq!(SharedSearcher::new(0, vec![]).destination, group);
     }
 
     /// A loopback stand-in for the searched device — tests aim M-SEARCH

@@ -56,7 +56,7 @@ When a single vendor eventually ships multiple transport variants (one v6-capabl
 
 ### SSDP discovery is v4-only
 
-A separate finding from the transport-family work: LG TVs do not join any v6 SSDP multicast group (`ff02::c`, `ff05::c`, `ff0e::c`) — verified by packet capture, see [docs/lg/firmware-quirks.md § IPv6 SSDP non-participation](lg/firmware-quirks.md#ipv6-ssdp-non-participation--tvs-are-silent-on-ff02c). Combined with the survey-time observation that other consumer TV vendors largely mirror LG's stance, this makes the v4-only SSDP transport the right design today. `tisvlay-ssdp::Error::Ipv6BindUnsupported` exists as a deliberate hard reject; the doc comment on the variant points back at the LG quirks finding so a future reader doesn't mistake it for a TODO. Lift the rejection (and thread v6 through the crate) when a vendor that actually answers on `ff02::c` is added.
+A separate finding from the transport-family work: LG TVs do not join any v6 SSDP multicast group (`ff02::c`, `ff05::c`, `ff0e::c`) — verified by packet capture, see [docs/lg/firmware-quirks.md § IPv6 SSDP non-participation](lg/firmware-quirks.md#ipv6-ssdp-non-participation--tvs-are-silent-on-ff02c). Combined with the survey-time observation that other consumer TV vendors largely mirror LG's stance, this makes the v4-only SSDP transport the right design today. `tisvlay-ssdp::Error::Ipv6Unsupported` exists as a deliberate hard reject; the doc comment on the variant points back at the LG quirks finding so a future reader doesn't mistake it for a TODO. Lift the rejection (and thread v6 through the crate) when a vendor that actually answers on `ff02::c` is added.
 
 ## Connector probe hook
 

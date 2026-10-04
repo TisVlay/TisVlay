@@ -95,9 +95,7 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
-        sunshine: tisvlay_session::sunshine::StaticProbe::new(
-            tisvlay_session::sunshine::Observation::Absent,
-        ),
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();

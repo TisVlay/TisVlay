@@ -165,6 +165,11 @@ impl StaticProbe {
         Arc::new(Self(Mutex::new(observation)))
     }
 
+    /// A host with no Sunshine on it — the common test stand-in.
+    pub fn absent() -> Arc<Self> {
+        Self::new(Observation::Absent)
+    }
+
     /// Change what every later observation reports.
     pub fn set(&self, observation: Observation) {
         *self
@@ -346,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn static_probe_reports_what_it_is_set_to() {
-        let probe = StaticProbe::new(Observation::Absent);
+        let probe = StaticProbe::absent();
         assert_eq!(probe.observe(POLL_TIMEOUT).await, Observation::Absent);
         probe.set(Observation::Busy);
         assert_eq!(probe.observe(POLL_TIMEOUT).await, Observation::Busy);

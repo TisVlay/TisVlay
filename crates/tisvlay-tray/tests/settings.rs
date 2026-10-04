@@ -31,9 +31,7 @@ async fn settings_round_trip_and_persistence() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
-        sunshine: tisvlay_session::sunshine::StaticProbe::new(
-            tisvlay_session::sunshine::Observation::Absent,
-        ),
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -135,9 +133,7 @@ async fn clients_before_stack_see_liveliness_when_it_appears() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
-        sunshine: tisvlay_session::sunshine::StaticProbe::new(
-            tisvlay_session::sunshine::Observation::Absent,
-        ),
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();

@@ -237,8 +237,9 @@ in
     };
 
     sunshinePort = lib.mkOption {
-      type = lib.types.port;
-      default = 47989;
+      type = lib.types.nullOr lib.types.port;
+      default = null;
+      example = 48989;
       description = ''
         Sunshine's base port on loopback, where the session service's
         remote-session detector polls the unauthenticated `/serverinfo`
@@ -246,6 +247,8 @@ in
         configured `port` when that's not the default — e.g. when
         Sunshine is moved aside so Moonshine keeps the GameStream
         defaults, the default port would answer for Moonshine instead.
+        `null` keeps the session service's built-in default, Sunshine's
+        own default port.
       '';
     };
 
@@ -555,13 +558,17 @@ in
         RUST_LOG = cfg.logLevel;
       };
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs [
-          (lib.getExe' cfg.package "tisvlay-session")
-          "--system-socket"
-          systemSocket
-          "--sunshine-port"
-          (toString cfg.sunshinePort)
-        ];
+        ExecStart = lib.escapeShellArgs (
+          [
+            (lib.getExe' cfg.package "tisvlay-session")
+            "--system-socket"
+            systemSocket
+          ]
+          ++ lib.optionals (cfg.sunshinePort != null) [
+            "--sunshine-port"
+            (toString cfg.sunshinePort)
+          ]
+        );
         Restart = "on-failure";
         RestartSec = 5;
       };

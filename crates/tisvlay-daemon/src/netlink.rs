@@ -284,6 +284,9 @@ mod tests {
         // so no route to it; the expectation follows the host rather than
         // assuming either, so the assertion is exact on both.
         let has_v6_loopback = std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).is_ok();
+        if !has_v6_loopback {
+            eprintln!("no ::1 on this host: the v6 route arm is only checked for absence");
+        }
         let iface = resolve_interface_for_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
         assert_eq!(iface.as_deref(), has_v6_loopback.then_some("lo"));
     }

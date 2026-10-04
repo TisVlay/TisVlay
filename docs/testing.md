@@ -513,7 +513,7 @@ Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
 ### D-Bus name ownership is bus-global
 
-Each fake D-Bus service (`FakeLogind`, `FakeScreenSaver`) claims a well-known name, and only one owner can exist per bus. Tests within a single binary share one `PrivateBus`, so two tests that both register the same fake cannot run in parallel in that binary; nextest's process-per-binary model keeps separate binaries isolated for free.
+Each fake D-Bus service (`FakeLogind`, `FakeScreenSaver`) claims a well-known name, and only one owner can exist per bus. Plain `cargo test` runs a binary's tests concurrently in one process, so two tests registering the same fake on `PrivateBus::shared()` would claim each other's name. Any test that owns a name therefore takes `PrivateBus::isolated()`; `shared()` is for tests that only connect or use unique object paths.
 
 ### Real-time waits in wire tests
 

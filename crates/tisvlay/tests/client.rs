@@ -32,9 +32,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
-        sunshine: tisvlay_session::sunshine::StaticProbe::new(
-            tisvlay_session::sunshine::Observation::Absent,
-        ),
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -200,9 +198,7 @@ async fn sdk_remote_session_arms_and_mirrors() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
-        sunshine: tisvlay_session::sunshine::StaticProbe::new(
-            tisvlay_session::sunshine::Observation::Absent,
-        ),
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();

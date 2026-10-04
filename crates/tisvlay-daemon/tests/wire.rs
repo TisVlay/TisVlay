@@ -722,7 +722,7 @@ async fn dpms_transitions_drive_profile_actions_end_to_end() {
     })
     .await;
 
-    let sysfs = tisvlay_test::socket_tempdir();
+    let sysfs = tempfile::tempdir().unwrap();
     let connector_dir = sysfs.path().join("card9-HDMI-A-9");
     std::fs::create_dir_all(&connector_dir).unwrap();
     std::fs::write(connector_dir.join("status"), "connected\n").unwrap();
