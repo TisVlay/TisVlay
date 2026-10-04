@@ -12,19 +12,18 @@
 //!
 //! # Production vs test registration
 //!
-//! - **Production**: [`tisvlay_backends::create_registry()`] registers
-//!   a mock whose state is private. Discovery returns an empty list;
-//!   pairing falls back to the config shorthand. Users who want mock
-//!   TVs add them manually via their config file.
-//! - **Tests**: [`create_test_registry()`] returns a
-//!   `(BackendRegistry, MockHandle)` pair sharing a fresh state.
-//!   Tests drive discovery and pairing via the handle; no global
-//!   state means tests run in parallel by construction.
+//! - **Production**: the daemon registers the mock from
+//!   [`new_production_parts()`], whose state is private. Discovery
+//!   returns an empty list; pairing falls back to the config shorthand.
+//!   Users who want mock TVs add them manually via their config file.
+//! - **Tests**: [`new_test_parts()`] returns the connector and
+//!   discovery plus a [`MockHandle`], all sharing a fresh state. Tests
+//!   drive discovery and pairing via the handle; no global state means
+//!   tests run in parallel by construction.
 //!
 //! [`TvBackend`]: tisvlay_core::TvBackend
 //! [`TvConnector`]: tisvlay_core::TvConnector
 //! [`TvConnection`]: tisvlay_core::TvConnection
-//! [`tisvlay_backends::create_registry()`]: https://docs.rs/tisvlay-backends
 //!
 //! # Design notes
 //!
@@ -69,9 +68,8 @@ pub const VENDOR_NAME: &str = "Mock (testing)";
 /// Build a [`MockConnector`] and [`MockDiscovery`] pair that share a
 /// fresh, empty state, along with a [`MockHandle`] for driving them.
 ///
-/// Used by [`tisvlay_backends::create_test_registry()`] and by any
-/// tests that want to construct a registry from scratch without
-/// going through `tisvlay-backends`.
+/// Used by the daemon's integration tests, which register the
+/// connector and keep the handle to script discovery and pairing.
 ///
 /// In production code, use [`new_production_parts()`] instead —
 /// that returns the connector and discovery without a handle, so

@@ -2,7 +2,7 @@
 //!
 //! Architecture: all async I/O lives in
 //! tokio tasks; the bevy world mutates only at sync points inside
-//! [`Reactor::step`]. Inbound facts arrive as [`InEvent`] messages, systems
+//! `Reactor::step`. Inbound facts arrive as [`InEvent`] messages, systems
 //! react, and outbound work leaves as effects — wire effects
 //! ([`WireEffect`], destined for zenoh in M2) through the effects channel,
 //! connection dials as spawned backend tasks.

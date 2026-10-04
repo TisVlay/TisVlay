@@ -2,7 +2,8 @@
 //!
 //! The connector shares a `MockState` with [`MockHandle`](crate::MockHandle)
 //! so test code can drive discovery and pairing outcomes out-of-band.
-//! Production builds use [`MockConnector::new()`], which creates a
+//! Production builds get theirs from
+//! [`new_production_parts()`](crate::new_production_parts), which creates a
 //! fresh state with no handle; the mock is registered but has an
 //! empty network and no pre-seeded pairing outcomes.
 
@@ -22,7 +23,7 @@ use crate::state::MockState;
 
 /// Factory for mock TV connections.
 ///
-/// Holds a shared [`MockState`] used for discovery and pairing
+/// Holds a shared `MockState` used for discovery and pairing
 /// outcome lookup.
 #[derive(Debug)]
 pub struct MockConnector {
@@ -32,15 +33,15 @@ pub struct MockConnector {
 impl MockConnector {
     /// Create a new mock connector with a fresh, empty state.
     ///
-    /// Used by production `create_registry()` — the handle is
-    /// implicitly dropped, so test hooks are inaccessible.
+    /// No handle shares this state, so test hooks are inaccessible.
     pub fn new() -> Self {
         Self::from_state(Arc::new(Mutex::new(MockState::new())))
     }
 
     /// Wrap an existing shared state. Used by
-    /// [`create_test_registry`](crate::create_test_registry) so
-    /// the connector and handle share state.
+    /// [`new_test_parts`](crate::new_test_parts) so the connector
+    /// and handle share state, and by
+    /// [`new_production_parts`](crate::new_production_parts).
     pub(crate) fn from_state(state: Arc<Mutex<MockState>>) -> Self {
         Self { state }
     }

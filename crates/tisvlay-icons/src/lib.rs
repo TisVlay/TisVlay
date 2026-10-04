@@ -28,7 +28,7 @@ pub enum Variant {
 /// Resolve a request to the first icon file that exists across the theme
 /// cascade — for a consumer that loads the file itself (the GUI loads it
 /// into a Slint image). Returns `None` when no theme ships any candidate.
-/// See [`find`] for the shared cascade walk.
+/// See `find` for the shared cascade walk.
 pub fn resolve(names: &[&str], prefer: Variant) -> Option<PathBuf> {
     find(names, prefer).map(|(_, path)| path)
 }

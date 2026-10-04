@@ -563,13 +563,14 @@ pub trait TvConnector: Send + Sync {
     /// The framework projects this into:
     /// - **Pairing wizard** ([`pairing_schema`](Self::pairing_schema)):
     ///   `UserInput` fields only.
-    /// - **INFO pane** ([`display_info`](Self::display_info)):
+    /// - **INFO pane** ([`display_config`](Self::display_config) +
+    ///   [`display_diagnostics`](Self::display_diagnostics)):
     ///   `UserInput + Diagnostic`, skips `Secret`.
     /// - **Edit pane** (future): `UserInput` only.
     ///
     /// Default impl returns an empty list — backends that haven't
     /// migrated to schema-driven config keep their previous
-    /// behavior (no display_info, no edit support). Override to
+    /// behavior (no INFO-pane rows, no edit support). Override to
     /// describe the full vendor-config shape and tag each field's
     /// visibility; the framework handles projection from there.
     fn config_schema(&self) -> Vec<crate::PairingField> {
@@ -582,8 +583,8 @@ pub trait TvConnector: Send + Sync {
     /// The daemon serves this as JSON from its
     /// `manager/vendors/<id>/schema` queryable; the GUI's
     /// pairing wizard renders the form dynamically from the
-    /// returned [`PairingField`] list. See
-    /// [`pairing_schema`](crate::pairing_schema) for the field
+    /// returned [`PairingField`](crate::PairingField) list. See
+    /// [`PairingFieldType`](crate::PairingFieldType) and [`FieldVisibility`](crate::FieldVisibility) for the field
     /// vocabulary.
     ///
     /// Default impl filters [`config_schema`](Self::config_schema)

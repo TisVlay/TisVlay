@@ -68,7 +68,7 @@ impl WebOsClient {
         Self::register_on(conn, client_key).await
     }
 
-    /// Connect via a known [`WebOsScheme`] and register. Used on
+    /// Connect via a known `WebOsScheme` and register. Used on
     /// reconnects when the pairing flow has already recorded which
     /// scheme the TV speaks into `LgVendorConfig.scheme` — single
     /// dispatch, no fallback round-trip.
@@ -262,7 +262,7 @@ impl WebOsClient {
     ///
     /// Sends a subscribe request and returns the initial response (which
     /// typically contains the current value). Subsequent updates arrive on
-    /// the subscription channel (see [`take_subscription_rx`]).
+    /// the subscription channel (see [`take_subscription_rx`](Self::take_subscription_rx)).
     pub async fn subscribe(&mut self, uri: &str) -> Result<Response> {
         let request = Request::subscribe(self.next_id(), uri);
         let timeout = self.timeout;
@@ -286,7 +286,7 @@ impl WebOsClient {
     /// values at subscribe time).
     ///
     /// After calling this, subscription updates will arrive on the channel
-    /// returned by [`take_subscription_rx`].
+    /// returned by [`take_subscription_rx`](Self::take_subscription_rx).
     pub async fn subscribe_state_updates(
         &mut self,
     ) -> Result<(
@@ -433,7 +433,7 @@ impl WebOsClient {
 
     /// Get the current power state.
     ///
-    /// Routes through [`crate::connection::parse_power_state_payload`]
+    /// Routes through `crate::connection::parse_power_state_payload`
     /// so the `processing` / `onOff` discriminators that LG ships
     /// during transitions take precedence over the stale `state`
     /// field. Without that, a `get_power_state` query issued during

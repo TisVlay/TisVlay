@@ -13,7 +13,7 @@
 //! next becomes active and is then **auto-removed** (one-shot). So we add
 //! one persistent idle watch per notification, and — while any are idle —
 //! hold a single active watch to detect the resume, re-arming it each
-//! cycle. The pure [`Tracker`] owns that bookkeeping; the [`ffi`] strip is
+//! cycle. The pure `Tracker` owns that bookkeeping; the `ffi` strip is
 //! the only code that touches the bus.
 
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use crate::wayland::{IdleNotification, IdleTransition};
 use tokio::sync::mpsc;
 
-/// What the [`Tracker`] wants done in response to a fired watch: forward a
+/// What the `Tracker` wants done in response to a fired watch: forward a
 /// transition to the consumer, and/or (re)arm the one-shot active watch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -129,7 +129,7 @@ pub enum IdleWatch {
 }
 
 /// The bus-facing strip: the only code that touches zbus. Not exercised by
-/// CI (needs a live GNOME IdleMonitor); the [`Tracker`] carries the logic.
+/// CI (needs a live GNOME IdleMonitor); the `Tracker` carries the logic.
 mod ffi {
     use super::{Action, Handle, Tracker};
     use crate::wayland::{IdleNotification, IdleTransition};

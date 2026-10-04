@@ -19,9 +19,7 @@ use tisvlay_core::{DiscoveredTv, Result, TvDiscovery};
 
 use crate::state::MockState;
 
-/// Discovery implementation backed by [`MockState::discovered`].
-///
-/// [`MockState::discovered`]: crate::state::MockState::discovered
+/// Discovery implementation backed by the shared mock state's discovered list.
 #[derive(Debug)]
 pub struct MockDiscovery {
     state: Arc<Mutex<MockState>>,
@@ -30,8 +28,8 @@ pub struct MockDiscovery {
 impl MockDiscovery {
     /// Create a new discovery instance backed by the given state.
     ///
-    /// Called by [`create_test_registry`](crate::create_test_registry)
-    /// and by [`create_production_instance`](crate::create_production_instance)
+    /// Called by [`new_test_parts`](crate::new_test_parts) and by
+    /// [`new_production_parts`](crate::new_production_parts), the latter
     /// with a fresh, unreachable state.
     pub(crate) fn new(state: Arc<Mutex<MockState>>) -> Self {
         Self { state }

@@ -170,7 +170,7 @@ impl EventAction {
 
     /// Whether this event's action fires while the TV is armed by a
     /// remote session. The bare (`Plain`) form is always gated
-    /// (`false`), matching [`while_remote_default`] — a bare token is
+    /// (`false`), matching `while_remote_default` — a bare token is
     /// suppressed while armed; firing anyway is opt-in through the
     /// table form.
     pub fn while_remote(self) -> bool {
@@ -315,7 +315,7 @@ macro_rules! profile_plumbing {
             }
 
             /// Resolve to concrete values, filling `None` fields from
-            /// [`$resolved::default()`].
+            /// `$resolved::default()`.
             pub fn resolve(&self) -> $resolved {
                 let d = $resolved::default();
                 $resolved {

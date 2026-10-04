@@ -13,7 +13,7 @@
 //! - A typed payload describing the failure
 //! - A stable machine-readable id (`PowerError::id()` returns
 //!   `"power.no-mac-configured"` etc.) for client-side routing.
-//! - A human-readable [`Display`] message via `thiserror`.
+//! - A human-readable [`Display`](std::fmt::Display) message via `thiserror`.
 //!
 //! Vendor crates (`tisvlay-lg`, future `tisvlay-samsung`) can layer
 //! their own backend-specific errors on top via the boxed `source`

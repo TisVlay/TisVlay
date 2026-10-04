@@ -62,7 +62,7 @@ pub struct CecVendorConfig {
     /// this is the reverse direction, what we answer when the TV asks *us*
     /// for a name.
     ///
-    /// Defaults to [`DEFAULT_OSD_NAME`]; disable advertising via
+    /// Defaults to `DEFAULT_OSD_NAME` (`"TisVlay"`); disable advertising via
     /// [`Self::advertise_osd_name`], not by emptying the name. Normalized at
     /// parse (`de_osd_name`): control characters stripped, clamped to the
     /// 14-byte CEC field on a char boundary, and an empty result falls back

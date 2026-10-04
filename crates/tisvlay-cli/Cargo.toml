@@ -10,6 +10,10 @@ publish.workspace = true
 [[bin]]
 name = "tisvlay"
 path = "src/main.rs"
+# The SDK library is also named `tisvlay`; documenting both writes the same
+# `target/doc/tisvlay/` page, and rustdoc warns on the collision. The CLI's
+# reference lives in its `--help` and the user guide, not in rustdoc.
+doc = false
 
 [dependencies]
 anyhow = { workspace = true }
