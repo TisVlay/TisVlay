@@ -416,7 +416,7 @@ mod fake {
     use parking_lot::Mutex;
     use std::collections::VecDeque;
 
-    /// A scripted [`CecLink`] for tests: holds a mutable power status that
+    /// A scripted `CecLink` for tests: holds a mutable power status that
     /// `power_on` / `power_off` flip, so connector and connection logic
     /// run without a real `/dev/cecN`. `ignore_wakes` models a TV that
     /// drops the first N `power_on` sends before reporting on, so tests

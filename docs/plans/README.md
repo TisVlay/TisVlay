@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None currently._
+- [`code-quality.md`](code-quality.md) — lint table, cheap quality tools (shear, typos, rustdoc, cargo-hack, MSRV), dependency-duplicate enforcement; measured against a late-2026 ecosystem survey.
 
 When a plan is in flight, list it here with
 a one-line summary of the work it covers:

@@ -110,7 +110,7 @@ pub struct LgVendorConfig {
     /// persisted so reconnects dispatch directly to the right
     /// scheme without probing — saves a TLS handshake per connect
     /// for ws-only TVs and skips a wss→ws fallback round-trip for
-    /// wss-capable ones. Defaults to [`WebOsScheme::Wss`] when
+    /// wss-capable ones. Defaults to `WebOsScheme::Wss` when
     /// absent so configs that pre-date this field deserialize
     /// without surprise (re-pair if your TV is `ws`-only).
     #[serde(default)]

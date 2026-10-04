@@ -190,9 +190,10 @@ All project commands live in the `justfile` at the repo root — it is the singl
 
 ```bash
 just              # list all recipes, grouped by purpose
-just check        # deny + licenses + fmt + build + clippy + test
+just check        # deny + licenses + fmt + build + clippy + doc + test
 just build        # cargo build --profile test --workspace --all-targets --all-features
-just clippy       # cargo clippy ... -- -D warnings
+just clippy       # cargo clippy (warnings denied via build.warnings)
+just doc          # cargo doc --workspace --no-deps (warnings denied)
 just test         # cargo nextest run + cargo test --doc
 just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
 just cov          # coverage summary
@@ -211,7 +212,7 @@ just package-deb  # build the .deb package
 
 ## Linting & CI
 
-All checks are defined in `prek.toml`, which dispatches to `just` recipes. Hook ids match the corresponding `just` recipe names, ordered by priority: file checks → `fmt` → `build` → `clippy` → `test`. Build and clippy use `--profile test` so `cargo test` reuses all build artifacts.
+All checks are defined in `prek.toml`, which dispatches to `just` recipes. Hook ids match the corresponding `just` recipe names, ordered by priority: file checks → `fmt` → `build` → `clippy`/`doc` → `test`. Build and clippy use `--profile test` so `cargo test` reuses all build artifacts. The gate recipes deny warnings by exporting `CARGO_BUILD_WARNINGS=deny` — never set in `.cargo/config.toml`, which the Nix package build reads; the policy lives in `docs/build.md` § Lint policy.
 
 ```bash
 prek run -a                                          # all checks
