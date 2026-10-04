@@ -23,7 +23,7 @@
 //! async fn main() -> tisvlay_core::Result<()> {
 //!     let connector = LgConnector::new();
 //!     let config = LgConfig {
-//!         client_key: Some("your_client_key".to_string()),
+//!         client_key: Some("your_client_key".into()),
 //!         default_input: None,
 //!     };
 //!

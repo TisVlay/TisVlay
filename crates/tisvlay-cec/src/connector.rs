@@ -445,7 +445,11 @@ mod tests {
         let mut rx = session.subscribe();
         loop {
             if let PairingState::Complete { credentials } = rx.borrow_and_update().clone() {
-                assert_eq!(credentials.data, "", "CEC pairs with empty credentials");
+                assert_eq!(
+                    credentials.data.expose(),
+                    "",
+                    "CEC pairs with empty credentials"
+                );
                 return;
             }
             rx.changed()

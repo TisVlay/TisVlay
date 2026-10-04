@@ -1,12 +1,12 @@
 # API hygiene: typed RPC endpoints, typed errors, secret types
 
-Status: drafted 2026-10-04. Two review rounds are folded in, and every open question is ruled. **A0 and A are implemented** (typed rpc endpoints; typed errors and the SDK API), and their durable content has moved out: the endpoint model, the "why no framework" decision and the error model to `docs/architecture.md` (§ Typed rpc endpoints, § Error model), the conventions to `CLAUDE.md`, the upgrade note to `packaging/README.md`, and the deferrals to `docs/ideas/`. B1 and B2 are pending.
+Status: drafted 2026-10-04. Two review rounds are folded in, and every open question is ruled. **A0, A and B1 are implemented** (typed rpc endpoints; typed errors and the SDK API; `Secret`), and their durable content has moved out: the endpoint model, the "why no framework" decision and the error model to `docs/architecture.md` (§ Typed rpc endpoints, § Error model), the conventions to `CLAUDE.md`, the upgrade note to `packaging/README.md`, the secrecy 0.8 duplicate's reason to `packaging/licensing/deny.toml`, and the deferrals to `docs/ideas/`. B2 is pending.
 
 Three public-API cleanups, landing as four PRs in a fixed order:
 
 - **A0, typed endpoints (done):** each of the 46 rpcs is declared once (its key, request type and response type), and clients and servers derive from that declaration.
 - **A, typed errors and the SDK API (done):** the rpc-reply codes become an enum, and the client SDK (`tisvlay`) gets typed errors, parameters and returns in one pass.
-- **B1, `Secret`:** the LG client key becomes a type whose `Debug` can't leak it.
+- **B1, `Secret` (done):** the LG client key becomes a type whose `Debug` can't leak it.
 - **B2, `VendorConfig`:** the untyped vendor config becomes a type whose `Debug` prints key names only, threaded through the connector trait.
 
 The live debug-log key leak has its own hotfix PR, #149 (open).
@@ -39,33 +39,17 @@ The live debug-log key leak has its own hotfix PR, #149 (open).
 
 ## 3. Current state
 
-The rpc layer is typed since A0 (`docs/architecture.md` § Typed rpc endpoints), and its errors since A (§ Error model). What follows is the state B changes.
+The rpc layer is typed since A0 (`docs/architecture.md` § Typed rpc endpoints), and its errors since A (§ Error model). Since B1, the client key is a `tisvlay_core::Secret` wherever it's typed (`Credentials`, the LG config, payloads and client). What follows is the state B2 changes.
 
-**The client key** lives in:
+**The client key** still travels untyped in:
 
-- core's `Credentials.data` (its serde derives are vestigial);
-- lg's `LgVendorConfig`, `RegisterPayload`/`RegisteredPayload` and `WebOsClient` (about 59 sites);
 - the untyped vendor config: a `toml::Value` that's always a table, held by about a dozen world and daemon types that derive `Debug`, and passed through the published `TvConnector` trait;
 - the wire's request types (`rpc::AddTv.config`, and the update-config patch), which can carry a key from client to daemon;
 - the plaintext store, by design.
 
 Replies never carry the key, because `get-config` strips schema-`Secret` fields. Core's `TvConfig`/`SystemConfig` are dead code.
 
-## 4. PR B1: `Secret` (core and lg)
-
-- **Dependency:** `secrecy` 0.10 as a workspace dependency (`serde` feature), plus an exact skip in `packaging/licensing/deny.toml`: `{ crate = "secrecy@0.8.0", reason = "zenoh-config pins secrecy 0.8 (public SecretValue); the workspace is on 0.10" }`. `-D unnecessary-skip` retires it on its own.
-- **`tisvlay_core::Secret`:**
-  - a newtype over `secrecy::SecretString`, with transparent `Deserialize`, a hand-written `Serialize` through `expose_secret()`, `Clone`, no `PartialEq`, and `Debug` delegated (`[REDACTED]`);
-  - one type for every typed secret, so secrecy stays out of the public signatures.
-  - Zeroize on drop is incidental: the same key lives in the vendor config and the store.
-- **Adopted by:**
-  - `Credentials.data`, with serde dropped from `Credentials`, `PairingState` and `PairingError`. `Credentials`' `Debug` stays hand-written, with `extra` values plain.
-  - `LgVendorConfig.client_key`, which loses `PartialEq, Eq` (one test adapts).
-  - `RegisterPayload`, `RegisteredPayload` and `WebOsClient`'s API (published lg; free while unpublished).
-- **Redaction tests** assert `[REDACTED]`.
-- **Docs:** `CLAUDE.md`'s secrets convention says typed secrets are `tisvlay_core::Secret`.
-
-## 5. PR B2: `VendorConfig` (core, trait, world, daemon, wire requests)
+## 4. PR B2: `VendorConfig` (core, trait, world, daemon, wire requests)
 
 - **A newtype over `toml::Table`:** serde-transparent, `Clone`, `PartialEq`, a key-names-only `Debug`, `parse::<T>()`, `get`/`get_mut`/`insert`, and no `Deref`.
 - **It spreads through the code:**
@@ -80,7 +64,7 @@ Replies never carry the key, because `get-config` strips schema-`Secret` fields.
   - `CLAUDE.md`'s secrets convention adds that untyped vendor config is `VendorConfig`, and the "never log a `TvConfig`/`TvRecord` whole" caveat goes.
   - This plan retires: §2's secrecy notes go to `CLAUDE.md`'s rationale, the file is deleted, the "Active plans" entry is removed, and inbound references are swept.
 
-## 6. Verification
+## 5. Verification
 
 - **`just check` on every commit and PR.**
 - **Every new gate is proven red:** `{:?}` of a key-holding `Secret`, `VendorConfig` or request doesn't show the key.

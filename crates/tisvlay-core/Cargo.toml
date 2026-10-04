@@ -19,6 +19,8 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Redacted secret values (the client key) behind `Secret`.
+secrecy = { workspace = true }
 socket2 = { workspace = true }
 directories = { workspace = true }
 

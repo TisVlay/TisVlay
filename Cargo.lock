@@ -5638,6 +5638,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "serde",
+ "zeroize",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6576,6 +6586,7 @@ dependencies = [
  "directories",
  "parking_lot",
  "proptest",
+ "secrecy 0.10.3",
  "serde",
  "serde_json",
  "socket2 0.6.5",
@@ -8714,7 +8725,7 @@ dependencies = [
  "json5",
  "nonempty-collections",
  "num_cpus",
- "secrecy",
+ "secrecy 0.8.0",
  "serde",
  "serde_json",
  "serde_with",

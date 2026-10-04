@@ -169,7 +169,7 @@ impl TvConnector for LgConnector {
                                 // subsequent reconnects skip the
                                 // wss→ws fallback (see
                                 // `LgVendorConfig.scheme`).
-                                let creds = Credentials::with_type(key, "client_key")
+                                let creds = Credentials::with_type(key.clone(), "client_key")
                                     .with_extra("scheme", scheme.as_str());
                                 let _ = state_tx.send(PairingState::complete(creds));
                             } else {
@@ -352,7 +352,10 @@ mod tests {
             .unwrap();
         let config: LgVendorConfig = result.try_into().unwrap();
         assert_eq!(config.ip, "192.168.1.100");
-        assert_eq!(config.client_key.as_deref(), Some("my-client-key"));
+        assert_eq!(
+            config.client_key.as_ref().map(tisvlay_core::Secret::expose),
+            Some("my-client-key")
+        );
         assert_eq!(config.scheme, crate::config::WebOsScheme::Wss);
     }
 
@@ -370,7 +373,10 @@ mod tests {
             .unwrap();
         let config: LgVendorConfig = result.try_into().unwrap();
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(config.client_key.as_deref(), Some("key"));
+        assert_eq!(
+            config.client_key.as_ref().map(tisvlay_core::Secret::expose),
+            Some("key")
+        );
         assert_eq!(config.scheme, crate::config::WebOsScheme::Ws);
     }
 

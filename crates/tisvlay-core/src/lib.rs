@@ -14,6 +14,7 @@
 //! ├── config: Profile-based configuration
 //! ├── state: TV state types
 //! ├── error: Vendor-agnostic errors
+//! ├── secret: Debug-redacted credential values
 //! └── wol: Wake-on-LAN (generic)
 //!
 //! tisvlay-lg (separate crate)
@@ -37,6 +38,7 @@ mod pairing_schema;
 mod profile_refs;
 mod reconciler;
 mod refresh_trigger;
+mod secret;
 mod state;
 mod traits;
 pub mod wol;
@@ -83,6 +85,9 @@ pub use state::{
 
 // Errors
 pub use error::{Error, Result};
+
+// Secret values (credentials)
+pub use secret::Secret;
 
 // Wake-on-LAN
 pub use wol::{MAC_CONFIG_KEY, MacAddress, WakeOptions, wake, wake_with_options};
