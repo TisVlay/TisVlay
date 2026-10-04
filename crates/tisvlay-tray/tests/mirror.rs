@@ -75,7 +75,7 @@ async fn converge(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mirror_converges_from_live_and_hydrated_samples() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let (connector, discovery, _handle) = new_test_parts();
@@ -95,6 +95,7 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -248,7 +249,7 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
 /// CEC backend would post-connect.
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_flags_gate_menu_sections() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket: &Path = &dir.path().join("c.sock");
     let (connector, discovery, _handle) = new_test_parts();
     let _daemon = tisvlay_daemon::serve(

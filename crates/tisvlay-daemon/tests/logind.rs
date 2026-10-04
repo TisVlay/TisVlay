@@ -16,13 +16,13 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn logind_sleep_resume_drive_profile_actions() {
-    let bus = PrivateBus::shared();
+    let bus = PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = FakeLogind::register(&service_conn)
         .await
         .expect("fake logind");
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("l.sock");
     let (connector, discovery, _handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(

@@ -41,7 +41,7 @@ async fn private_bus_spawns_and_accepts_connections() {
 
 #[tokio::test]
 async fn fake_logind_emits_prepare_for_sleep() {
-    let bus = PrivateBus::shared();
+    let bus = PrivateBus::isolated();
 
     // Subscriber connection — matches any PrepareForSleep signal on the bus.
     let sub_conn = bus.connect().await.expect("sub conn");
@@ -89,7 +89,7 @@ async fn traced_test_captures_instrumented_calls() {
     // Drives FakeLogind so the #[instrument] spans on register() and
     // emit_prepare_for_sleep() emit events into the per-test capture
     // buffer that #[traced_test] installs.
-    let bus = PrivateBus::shared();
+    let bus = PrivateBus::isolated();
     let conn = bus.connect().await.expect("conn");
     let logind = FakeLogind::register(&conn).await.expect("register");
     logind
@@ -106,7 +106,7 @@ async fn traced_test_captures_instrumented_calls() {
 
 #[tokio::test]
 async fn fake_logind_emits_locked_hint_change() {
-    let bus = PrivateBus::shared();
+    let bus = PrivateBus::isolated();
 
     // Subscriber: the `PropertiesChanged` the lock watcher follows.
     let sub_conn = bus.connect().await.expect("sub conn");

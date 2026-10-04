@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
+use tisvlay_session::sunshine::{Observation, StaticProbe};
 use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
@@ -33,6 +34,8 @@ struct Rig {
     user: Session,
     site: String,
     mock: tisvlay_mock::MockHandle,
+    /// The core's Sunshine observation — tests script it; `Absent` by default.
+    sunshine: Arc<StaticProbe>,
 }
 
 async fn rig() -> Rig {
@@ -40,7 +43,7 @@ async fn rig() -> Rig {
 }
 
 async fn rig_with_store(store: Option<&Path>) -> Rig {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let (connector, discovery, handle) = new_test_parts();
@@ -55,11 +58,13 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
     )
     .await
     .unwrap();
+    let sunshine = StaticProbe::absent();
     let stack = tisvlay_session::serve(SessionOptions {
         system_socket: system_socket.clone(),
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: store.map(Path::to_path_buf),
+        sunshine: sunshine.clone(),
     })
     .await
     .unwrap();
@@ -77,6 +82,7 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
         user,
         site: "t".into(),
         mock: handle,
+        sunshine,
     }
 }
 
@@ -229,18 +235,41 @@ async fn drive_until(rig: &Rig, sub: &Sub, event: SessionEvent, id: Uuid, want: 
     }
 }
 
+/// Send `event` until its observability tap lands on `tap` (subscribed to
+/// `event/session/*`). The tap is a plain put racing the subscriber's
+/// interest propagation, so this re-drives — callers pick an event whose
+/// dispatch is idempotent where they are.
+async fn drive_tap(rig: &Rig, tap: &Sub, event: SessionEvent, name: &str) {
+    let key = keys::session_event(&rig.site, name);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(rig.stack.client.send(event), "session core gone");
+        let step = tokio::time::Instant::now() + Duration::from_millis(500);
+        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, tap.recv_async()).await {
+            if sample.key_expr().as_str() == key {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{name} tap never observed"
+        );
+    }
+}
+
 /// The gateway invariant: user keys exist on the user socket only.
 #[tokio::test(flavor = "multi_thread")]
 async fn gateway_isolates_the_user_subtree() {
     let rig = rig().await;
     // A second session service for another "user", same site.
-    let dir2 = tempfile::tempdir().unwrap();
+    let dir2 = tisvlay_test::socket_tempdir();
     let user2_socket = dir2.path().join("user2.sock");
     let _stack2 = tisvlay_session::serve(SessionOptions {
         system_socket: rig.system_socket.clone(),
         user_socket: user2_socket.clone(),
         site: rig.site.clone(),
         store: None,
+        sunshine: StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -305,11 +334,7 @@ async fn lock_and_unlock_dispatch_default_actions() {
         v["connected"] == true
     })
     .await;
-    let tap = rig
-        .client
-        .declare_subscriber(format!("tisvlay/{}/event/session/*", rig.site))
-        .await
-        .unwrap();
+    let tap = history_sub(&rig.client, keys::session_event(&rig.site, "*")).await;
 
     drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
     // Activity on the lock screen: the hard-default on_lock_wake is
@@ -317,27 +342,7 @@ async fn lock_and_unlock_dispatch_default_actions() {
     drive_until(&rig, &sub, SessionEvent::LockWake, tv, "active").await;
     drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
     drive_until(&rig, &sub, SessionEvent::Unlock, tv, "active").await;
-
-    // The tap is a plain put racing the subscriber's interest
-    // propagation, so keep re-driving (dispatch is idempotent) until
-    // one lands.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    'outer: loop {
-        assert!(
-            rig.stack.client.send(SessionEvent::Unlock),
-            "session core gone"
-        );
-        let step = tokio::time::Instant::now() + Duration::from_millis(500);
-        while let Ok(Ok(sample)) = tokio::time::timeout_at(step, tap.recv_async()).await {
-            if sample.key_expr().as_str().ends_with("/session/unlock") {
-                break 'outer;
-            }
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "unlock tap never observed"
-        );
-    }
+    drive_tap(&rig, &tap, SessionEvent::Unlock, "unlock").await;
 }
 
 /// A user profile's explicit `none` suppresses the lock blank for its TV
@@ -459,7 +464,7 @@ async fn user_profile_overrides_and_guards() {
 /// lock/unlock end to end.
 #[tokio::test(flavor = "multi_thread")]
 async fn lock_watcher_drives_lock_unlock() {
-    let bus = tisvlay_test::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
@@ -603,7 +608,7 @@ async fn screen_drift_while_idle_reasserts_after_grace() {
 /// seed the locked-idle timer stays gated off and never blanks the TV.
 #[tokio::test(flavor = "multi_thread")]
 async fn lock_watcher_seed_reads_a_preexisting_lock() {
-    let bus = tisvlay_test::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
@@ -642,7 +647,7 @@ async fn lock_watcher_seed_reads_a_preexisting_lock() {
 /// docs/architecture.md.
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_seed_reads_a_preexisting_lock_synchronously() {
-    let bus = tisvlay_test::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = tisvlay_test::fake_logind::FakeLogind::register(&service_conn)
         .await
@@ -737,6 +742,7 @@ async fn user_store_and_idle_watch_round_trip() {
         user_socket: user2_socket.clone(),
         site: rig.site.clone(),
         store: Some(store),
+        sunshine: StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -864,22 +870,11 @@ async fn armed_remote_suppresses_gated_events() {
     .await;
 }
 
-/// A live Sunshine source is refreshed on the wake edge: because the gate
-/// and the `/serverinfo` detector share this process, an unlock probes the
-/// endpoint synchronously and clears the source when the stream has ended,
-/// so the wake fires instead of being suppressed for up to a poll interval.
-/// The probe here observes the endpoint absent (no `sunshine` process under
-/// test), which disarms exactly as a `FREE` reading would.
-#[tokio::test(flavor = "multi_thread")]
-async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
+/// A TV armed by a live `Sunshine` source, its unlock gated off while
+/// armed (the remote edges stay inert so arming never moves the panel).
+/// Returns the rig, the TV, its state subscriber, and the remote fact.
+async fn sunshine_armed() -> (Rig, Uuid, Sub, Sub) {
     use tisvlay_wire::payload::RemoteSourceKind;
-
-    let sunshine = |active: bool| RemoteReport {
-        kind: RemoteSourceKind::Sunshine,
-        detail: "serverinfo".into(),
-        active,
-        provisional: false,
-    };
 
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://eager-sunshine").await;
@@ -888,9 +883,6 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
         v["connected"] == true
     })
     .await;
-
-    // Unlock gated off while armed; the remote edges stay inert (`none`) so
-    // arming itself never moves the panel — the lock/unlock pair drives it.
     create_and_assign(
         &rig,
         tv,
@@ -909,7 +901,15 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
 
     // A live Sunshine source arms the TV (attributed kinds always arm).
     let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
-    assert!(rig.stack.remote.report(sunshine(true)), "core gone");
+    assert!(
+        rig.stack.remote.report(RemoteReport {
+            kind: RemoteSourceKind::Sunshine,
+            detail: "serverinfo".into(),
+            active: true,
+            provisional: false,
+        }),
+        "core gone"
+    );
     recv_until(&fact, |s| {
         s.kind() == zenoh::sample::SampleKind::Put
             && payload_json(s)["armed"]
@@ -917,6 +917,19 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
                 .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
     })
     .await;
+    (rig, tv, sub, fact)
+}
+
+/// A live Sunshine source is refreshed on the wake edge: because the gate
+/// and the `/serverinfo` detector share this process, an unlock probes the
+/// endpoint synchronously and clears the source when the stream has ended,
+/// so the wake fires instead of being suppressed for up to a poll interval.
+/// The scripted probe observes the process gone, which disarms exactly as a
+/// `FREE` reading would.
+#[tokio::test(flavor = "multi_thread")]
+async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
+    let (rig, tv, sub, fact) = sunshine_armed().await;
+    rig.sunshine.set(Observation::Absent);
 
     // Blank via lock (an off-going event fires even while armed), then wake
     // via unlock: the eager pull observes the endpoint gone, clears the
@@ -932,6 +945,35 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
         }
     })
     .await;
+}
+
+/// The eager pull only clears a source the endpoint says is gone: a busy
+/// stream, or a reading it can't classify, keeps the source and the wake
+/// stays suppressed.
+#[tokio::test(flavor = "multi_thread")]
+async fn gated_wake_stays_suppressed_while_sunshine_is_busy_or_unknown() {
+    for observation in [Observation::Busy, Observation::Unknown] {
+        let (rig, tv, sub, fact) = sunshine_armed().await;
+        rig.sunshine.set(observation);
+        let tap = history_sub(&rig.client, keys::session_event(&rig.site, "*")).await;
+
+        drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+        // The unlock's tap publishes after the eager pull and just before
+        // the gate's decision, so once it lands the suppressed wake has had
+        // its chance — the window below only spans rpc latency. Every
+        // re-driven unlock meets the same gate.
+        drive_tap(&rig, &tap, SessionEvent::Unlock, "unlock").await;
+        assert_no_sample(&sub, Duration::from_millis(500), |s| {
+            keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+                .is_some_and(|(id, path)| id == tv && path == "state/power")
+                && payload_json(s)["state"] == "active"
+        })
+        .await;
+        assert_no_sample(&fact, Duration::from_millis(200), |s| {
+            payload_json(s)["sources"] == json!([])
+        })
+        .await;
+    }
 }
 
 /// The connect/disconnect actions fire on arm and disarm edges.
@@ -1178,7 +1220,7 @@ async fn armed_converges_when_tv_hydrates_after_arming() {
 /// the system-socket mirror still ends on the full armed set.
 #[tokio::test(flavor = "multi_thread")]
 async fn armed_survives_a_system_link_outage_at_arm_time() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
 
@@ -1189,6 +1231,7 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
+        sunshine: StaticProbe::absent(),
     })
     .await
     .unwrap();

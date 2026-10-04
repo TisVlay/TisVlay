@@ -31,7 +31,7 @@ struct Wire {
 }
 
 async fn wire() -> Wire {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("g.sock");
     let (connector, discovery, _handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(
@@ -441,7 +441,7 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
 /// same history query a graceful in-process re-subscribe would.
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("g.sock");
     let site = "t".to_string();
     let tv = Uuid::new_v4();

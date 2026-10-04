@@ -1872,8 +1872,8 @@ ip = "192.168.1.101"
         assert!(config.user.profiles.is_empty());
         assert!(config.system.profiles.is_empty());
 
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join("tisvlay_test_config_b.toml");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_file = temp_dir.path().join("config.toml");
         config.save_to(&temp_file).unwrap();
 
         let mut content = String::new();
@@ -1891,8 +1891,6 @@ ip = "192.168.1.101"
             saved_config.system.profiles.is_empty(),
             "save_to must not auto-insert system profiles"
         );
-
-        let _ = std::fs::remove_file(temp_file);
     }
 
     #[test]
@@ -1919,8 +1917,8 @@ ip = "192.168.1.101"
             },
         );
 
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join("tisvlay_test_config2_b.toml");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_file = temp_dir.path().join("config.toml");
         config.save_to(&temp_file).unwrap();
 
         let mut content = String::new();
@@ -1939,8 +1937,6 @@ ip = "192.168.1.101"
                 .contains_key(&DEFAULT_USER_PROFILE_UUID)
         );
         assert!(saved_config.system.profiles.contains_key(&guest_uuid));
-
-        let _ = std::fs::remove_file(temp_file);
     }
 
     // =========================================================================

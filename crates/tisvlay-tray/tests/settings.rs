@@ -8,7 +8,7 @@ use tisvlay_tray::notify::{Notifier, load_settings, serve_settings};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn settings_round_trip_and_persistence() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let config_path = dir.path().join("tray.toml");
@@ -31,6 +31,7 @@ async fn settings_round_trip_and_persistence() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -40,7 +41,7 @@ async fn settings_round_trip_and_persistence() {
     let tray_link = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket).unwrap())
         .await
         .unwrap();
-    let notifier = Notifier::new(load_settings(&config_path).unwrap());
+    let (notifier, mut toasts) = Notifier::capturing(load_settings(&config_path).unwrap());
     let service = tokio::spawn(serve_settings(
         tray_link,
         "t".into(),
@@ -79,9 +80,14 @@ async fn settings_round_trip_and_persistence() {
     let on_disk = load_settings(&config_path).unwrap();
     assert!(!on_disk.tv_wake && on_disk.tv_pairing);
 
-    // Test toast rpc acks (display is best-effort headlessly) and the
-    // info rpc reports the config location.
+    // The test toast rpc acks and queues the toast (bypassing the category
+    // gate); the info rpc reports the config location.
     client.send_test_notification().await.unwrap();
+    let toast = tokio::time::timeout(std::time::Duration::from_secs(5), toasts.recv())
+        .await
+        .expect("test toast queued")
+        .expect("notifier alive");
+    assert_eq!(toast.summary, "Test notification");
     assert_eq!(
         client.config_path().await.unwrap(),
         config_path.display().to_string()
@@ -94,7 +100,7 @@ async fn settings_round_trip_and_persistence() {
 /// availabilities must flip without recreating the clients.
 #[tokio::test(flavor = "multi_thread")]
 async fn clients_before_stack_see_liveliness_when_it_appears() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let config_path = dir.path().join("tray.toml");
@@ -127,13 +133,14 @@ async fn clients_before_stack_see_liveliness_when_it_appears() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();
     let tray_link = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket).unwrap())
         .await
         .unwrap();
-    let notifier = Notifier::new(load_settings(&config_path).unwrap());
+    let (notifier, _toasts) = Notifier::capturing(load_settings(&config_path).unwrap());
     let service = tokio::spawn(serve_settings(
         tray_link,
         "t".into(),

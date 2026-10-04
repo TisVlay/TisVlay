@@ -22,7 +22,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
 - [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
 - [Eager remote-state refresh on gated events (world-side DPMS path)](ideas/eager-remote-state-refresh.md)
-- [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, configurable Sunshine endpoint, PipeWire test fake)](ideas/remote-session-followups.md)
+- [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](ideas/remote-session-followups.md)
 
 ## Operational
 

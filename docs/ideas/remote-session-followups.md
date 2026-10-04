@@ -18,7 +18,7 @@ Related deferrals filed separately: the world-side eager remote-state refresh ([
 
 - **Tray quick-toggle + richer indicator.** The tray indicator is read-only today. A quick manual arm/disarm toggle (routing through the same `remote-session start|stop` verb) and a per-source breakdown in the indicator are natural additions once there is demand.
 - **GUI editing of the portal allow-list.** The attributed-exe allow-list (`krdpserver`, `rustdesk`, `sunshine`) is built in. Exposing it as an editable profile field would let users attribute other portal-using remote apps without a code change. Trigger: a portal-based remote app outside the list that a user wants attributed rather than falling back to the unattributed screencast signal.
-- **Configurable Sunshine endpoint.** The `/serverinfo` poll hard-codes `127.0.0.1:47989`. A user who runs Sunshine on a non-default port (or wants the poll disabled outright) would need a knob. Trigger: a non-default Sunshine port report.
+- **Switch to disable the Sunshine poll.** The port is configurable (`--sunshine-port`), but there's no way to turn the `/serverinfo` poll off outright (a `StaticProbe` set to `Absent` already models it internally). Trigger: a user who wants the poll gone, e.g. Sunshine present but managed purely through its hooks.
 
 ## Testing & internals
 

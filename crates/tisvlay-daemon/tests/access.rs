@@ -60,7 +60,7 @@ async fn fail_fast_client_denied_then_granted() {
     if running_as_root() {
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let (socket, _stack) = boot(&dir).await;
 
     chmod(&socket, 0o000);
@@ -95,7 +95,7 @@ async fn narrowing_denies_new_connects_but_keeps_established() {
     if running_as_root() {
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let (socket, _stack) = boot(&dir).await;
 
     let established = zenoh::open(bootstrap::client_config(&socket).unwrap())
@@ -132,7 +132,7 @@ async fn resilient_link_recovers_when_granted() {
     if running_as_root() {
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let (socket, _stack) = boot(&dir).await;
 
     chmod(&socket, 0o000);

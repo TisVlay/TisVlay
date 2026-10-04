@@ -188,34 +188,55 @@ cov_baseline_lines := "52"
 # code only. Matches crate names and test-only modules.
 cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock)/|test_server)'"
 
+# Where `_cov-collect` records the test run's exit status, so the report
+# recipes can still render coverage after a failure and then exit with it.
+cov_status := "target/llvm-cov-target/cov-test-status"
+
+# Fail with the recorded test status, if the run had failures.
+cov_verdict := 'status=$(cat ' + cov_status + ' 2>/dev/null || echo 1); if [ "$status" != 0 ]; then echo "tests failed (exit $status) - coverage reflects a failing run" >&2; exit "$status"; fi'
+
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
 # Mirrors `test-ci` — see that recipe's comment for the
-# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale.
+# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale. Every test runs
+# (`--no-fail-fast`) and a failure is recorded rather than aborting, so
+# the report recipes still render what ran; they exit with the recorded
+# status afterwards. The gate (`test-ci`) stays fail-fast.
 [private]
 _cov-collect:
-    CARGO_PROFILE_DEV_DEBUG=line-tables-only \
-        cargo llvm-cov --no-report nextest --workspace --all-features
-    cargo test --workspace --all-features --doc
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export CARGO_PROFILE_DEV_DEBUG=line-tables-only
+    status=0
+    cargo llvm-cov --no-report nextest --workspace --all-features --no-fail-fast || status=$?
+    cargo test --workspace --all-features --doc || { rc=$?; [ "$status" = 0 ] && status=$rc; }
+    mkdir -p "$(dirname {{ cov_status }})"
+    echo "$status" > {{ cov_status }}
 
 # Text summary of workspace coverage
 [group('coverage')]
 cov: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --summary-only
+    @{{ cov_verdict }}
 
 # HTML coverage report (opens in browser)
 [group('coverage')]
 cov-html: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --html --open
+    @{{ cov_verdict }}
 
 # Generate lcov.info for VS Code Coverage Gutters
 [group('coverage')]
 cov-lcov: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     @echo "Wrote lcov.info - point VS Code Coverage Gutters at it."
+    @{{ cov_verdict }}
 
-# Ratchet check - fails if below `lines` percent (default: cov_baseline_lines)
+# Ratchet check - fails if below `lines` percent (default: cov_baseline_lines).
+# A failing test run fails the ratchet before any comparison: partial
+# coverage must neither pass nor move the baseline.
 [group('coverage')]
 cov-ratchet lines=cov_baseline_lines: _cov-collect
+    @{{ cov_verdict }}
     cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ lines }} --summary-only
 
 # --- Dev run targets ----------------------------------------------------

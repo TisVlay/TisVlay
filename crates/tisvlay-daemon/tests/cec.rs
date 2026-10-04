@@ -20,7 +20,7 @@ type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cec_power_cycle_keeps_the_link_up() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("c.sock");
     let connector = CecConnector::with_fake_opener(FakeCecLinkOpener::new(PowerStatus::On));
     let _stack = tisvlay_daemon::serve(
@@ -141,7 +141,7 @@ async fn wait_power(sub: &Sub, id: Uuid, want: &str, link_was_up: &mut bool) -> 
 /// paired-but-dead row.
 #[tokio::test(flavor = "multi_thread")]
 async fn cec_pair_fails_typed_when_device_is_inaccessible() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("p.sock");
     let connector = CecConnector::with_fake_opener(FakeCecLinkOpener::permission_denied());
     let _stack = tisvlay_daemon::serve(

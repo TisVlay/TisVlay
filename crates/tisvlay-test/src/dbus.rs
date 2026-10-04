@@ -1,17 +1,24 @@
 //! Private `dbus-daemon` spawner for tests.
 //!
-//! Each test binary spawns exactly one private `dbus-daemon` process
-//! (via [`PrivateBus::shared`]) and every test in that binary connects
-//! to it. Binary-level isolation is provided by nextest's
-//! process-per-binary model — no two test binaries ever share a bus.
+//! [`PrivateBus::shared`] is one private `dbus-daemon` per test process,
+//! and every test in that process may connect to it. Under nextest that's
+//! one bus per test (process-per-test); under plain `cargo test` the tests
+//! of a binary share one, each on its own thread. No two processes ever
+//! share a bus. Tests that own well-known names take a
+//! [`PrivateBus::isolated`] bus of their own instead.
 //!
 //! # Lifecycle
 //!
-//! The daemon is spawned lazily on first access and left running for
-//! the lifetime of the test binary. To avoid leaking the child if
-//! `cargo test` is killed abruptly (SIGINT, panic before drop, etc.),
-//! we set `PR_SET_PDEATHSIG = SIGKILL` in a `pre_exec` hook so the
-//! kernel tears it down automatically when the test process dies.
+//! The shared daemon is spawned lazily on first access and left running
+//! for the lifetime of the test process; an isolated one is killed and
+//! reaped when its handle drops. To avoid leaking the child if the run
+//! is killed abruptly (SIGINT, panic before drop, etc.), we set
+//! `PR_SET_PDEATHSIG = SIGKILL` in a `pre_exec` hook so the kernel tears
+//! it down when its parent dies. The kernel's "parent" there is the
+//! *thread* that forked the child, so the fork happens on a dedicated
+//! thread that lives as long as the process — forking from whichever
+//! test touched the bus first would kill the daemon when that test's
+//! thread exits, under `cargo test`'s thread-per-test model.
 //!
 //! # Bus address
 //!
@@ -30,21 +37,34 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tracing::{debug, instrument};
 
-/// Handle to a private `dbus-daemon` spawned for a single test binary.
+/// Handle to a private `dbus-daemon`; see [`shared`](Self::shared) and
+/// [`isolated`](Self::isolated).
 #[derive(Debug)]
 pub struct PrivateBus {
     address: String,
-    /// Config file + socket dir live here; dropped when the bus is dropped.
-    /// For the shared `LazyLock` instance this never drops, which is fine —
-    /// the kernel reclaims the tempdir when the test process exits.
+    /// Config file + socket dir live here; removed after `Drop` has reaped
+    /// the daemon. The shared `LazyLock` instance never drops, so its
+    /// tempdir is left behind when the test process exits.
     _workdir: TempDir,
-    /// Kept alive so the child stays reachable for explicit kill if needed.
-    /// pdeathsig is the primary cleanup path.
-    _child: Mutex<std::process::Child>,
+    /// Killed and reaped on drop; pdeathsig covers the abrupt-exit paths.
+    child: Mutex<std::process::Child>,
+    /// Holds the spawner thread open; dropping it lets the thread return.
+    _release: std::sync::mpsc::Sender<()>,
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        // Reap before the fields drop: the workdir must outlive the
+        // daemon, and an unreaped child lingers as a zombie in a
+        // long-lived `cargo test` process.
+        let child = self.child.get_mut();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 impl PrivateBus {
-    /// Returns a reference to the shared private bus for this test binary,
+    /// Returns a reference to the shared private bus for this test process,
     /// spawning it on first call.
     ///
     /// # Panics
@@ -53,9 +73,29 @@ impl PrivateBus {
     /// that need this harness are expected to run in an environment where
     /// `dbus-daemon` is available (nix dev shell, CI image, etc.).
     pub fn shared() -> &'static PrivateBus {
-        static BUS: LazyLock<PrivateBus> =
-            LazyLock::new(|| PrivateBus::spawn().expect("failed to spawn private dbus-daemon"));
+        static BUS: LazyLock<PrivateBus> = LazyLock::new(PrivateBus::isolated);
         &BUS
+    }
+
+    /// A private bus of the caller's own, for tests that own well-known
+    /// names (a [`FakeLogind`](crate::fake_logind::FakeLogind), a fake
+    /// ScreenSaver). Name ownership is bus-wide, so such tests sharing one
+    /// bus in a process — plain `cargo test` runs a binary's tests
+    /// concurrently in one process — would claim each other's names.
+    /// Dropping it ends the daemon.
+    ///
+    /// # Panics
+    ///
+    /// Same as [`shared`](Self::shared).
+    pub fn isolated() -> PrivateBus {
+        match PrivateBus::spawn() {
+            Ok(bus) => bus,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => panic!(
+                "dbus-daemon not found on PATH: the tisvlay-test D-Bus fakes need it \
+                 (the Nix dev shell provides it; elsewhere install the dbus package)"
+            ),
+            Err(e) => panic!("failed to spawn private dbus-daemon: {e}"),
+        }
     }
 
     /// The bus address as a `unix:path=...` string, suitable for
@@ -76,9 +116,7 @@ impl PrivateBus {
 
     #[instrument(skip_all)]
     fn spawn() -> std::io::Result<PrivateBus> {
-        let workdir = tempfile::Builder::new()
-            .prefix("tisvlay-test-bus-")
-            .tempdir()?;
+        let workdir = crate::tmp::socket_tempdir();
 
         // Minimal session bus config pinned to a socket inside our tempdir.
         // No services are activated; tests register their own objects on
@@ -129,7 +167,22 @@ impl PrivateBus {
             });
         }
 
-        let mut child = cmd.spawn()?;
+        // Fork from a thread that lives as long as the bus handle, so the
+        // pdeathsig fires when the bus is dropped (never, for the shared
+        // one) or the process dies — not when the calling test's thread
+        // ends.
+        let (spawned_tx, spawned_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("tisvlay-test-bus".into())
+            .spawn(move || {
+                let _ = spawned_tx.send(cmd.spawn());
+                // Returns once the bus handle drops its sender.
+                let _ = release_rx.recv();
+            })?;
+        let mut child = spawned_rx
+            .recv()
+            .map_err(|_| std::io::Error::other("bus spawner thread exited early"))??;
         let stdout = child
             .stdout
             .take()
@@ -164,7 +217,8 @@ impl PrivateBus {
         Ok(PrivateBus {
             address,
             _workdir: workdir,
-            _child: Mutex::new(child),
+            child: Mutex::new(child),
+            _release: release_tx,
         })
     }
 }

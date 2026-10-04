@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sdk_mirrors_rpcs_and_watches() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let (connector, discovery, _handle) = new_test_parts();
@@ -32,6 +32,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -177,7 +178,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
 /// round-trip through the world back into `TvInfo.remote_armed`.
 #[tokio::test(flavor = "multi_thread")]
 async fn sdk_remote_session_arms_and_mirrors() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let (connector, discovery, _handle) = new_test_parts();
@@ -197,6 +198,7 @@ async fn sdk_remote_session_arms_and_mirrors() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
+        sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
     })
     .await
     .unwrap();
@@ -324,7 +326,7 @@ async fn wait_for(daemon: &DaemonClient, pred: impl Fn(&[tisvlay::TvInfo]) -> bo
 /// including the seeded editable default profile.
 #[tokio::test(flavor = "multi_thread")]
 async fn client_before_daemon_connects_when_it_appears() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("late.sock");
 
     let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
@@ -385,7 +387,7 @@ async fn client_before_daemon_connects_when_it_appears() {
 /// legitimately land before the first attempt.)
 #[tokio::test(flavor = "multi_thread")]
 async fn first_rpc_races_route_propagation_and_still_lands() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let (connector, discovery, _handle) = new_test_parts();
     let _daemon = tisvlay_daemon::serve(
