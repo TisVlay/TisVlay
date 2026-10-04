@@ -42,6 +42,7 @@ urlencoding = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 rstest = { workspace = true }
 
 [features]

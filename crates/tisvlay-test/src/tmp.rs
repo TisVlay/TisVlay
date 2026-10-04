@@ -17,6 +17,10 @@ const SOCKET_ROOM: usize = 40;
 /// in it. `TMPDIR` when it leaves room under the `sun_path` limit, else
 /// `/tmp`: a long `TMPDIR` (a nested CI or tool scratch dir) would push
 /// every socket path past the limit and fail each bind.
+#[expect(
+    clippy::panic,
+    reason = "test infrastructure: a temp dir that can't be created fails the test with a clear message"
+)]
 pub fn socket_tempdir() -> TempDir {
     let base = std::env::temp_dir();
     let base = if base.as_os_str().len() + SOCKET_ROOM <= SUN_PATH_MAX {

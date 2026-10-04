@@ -6,6 +6,16 @@
 //! Connector names use the full sysfs directory name (`card1-HDMI-A-1`),
 //! matching what the DPMS watcher is configured with.
 
+// External-input profile: this module handles EDID and sysfs data from the
+// kernel, so indexing, arithmetic, string slicing and narrowing casts must
+// be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -95,16 +105,16 @@ fn identity_matches(tv: &HardwareId, edid: &HardwareId) -> bool {
 }
 
 fn match_score(tv: &HardwareId, edid: &HardwareId) -> u32 {
-    let mut score = 0;
+    let mut score: u32 = 0;
     if let (Some(a), Some(b)) = (&tv.model, &edid.model)
         && a == b
     {
-        score += 1;
+        score = score.saturating_add(1);
     }
     if let (Some(a), Some(b)) = (&tv.serial, &edid.serial)
         && a == b
     {
-        score += 2;
+        score = score.saturating_add(2);
     }
     score
 }
@@ -198,9 +208,9 @@ pub(crate) async fn probe_task(
                             serde_json::from_slice(&sample.payload().to_bytes())
                                 .unwrap_or(Value::Null);
                         let hw = HardwareId {
-                            manufacturer: value["make"].as_str().map(str::to_string),
-                            model: value["model"].as_str().map(str::to_string),
-                            serial: value["serial"].as_str().map(str::to_string),
+                            manufacturer: value.get("make").and_then(Value::as_str).map(str::to_string),
+                            model: value.get("model").and_then(Value::as_str).map(str::to_string),
+                            serial: value.get("serial").and_then(Value::as_str).map(str::to_string),
                         };
                         if hw.manufacturer.is_some() {
                             tvs.insert(tv, hw);
@@ -343,5 +353,42 @@ mod tests {
         let tvs = vec![(tv, hw("GSM", "OLED42C3PUA", Some("S123")))];
         let matches = match_displays_to_tvs(&displays, &tvs);
         assert_eq!(matches[&tv].connector, "card1-DP-2");
+    }
+
+    /// A connector's `edid` file is read straight from sysfs; any bytes a
+    /// monitor or adapter reports must parse or be refused, never panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn parse_hardware_id_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+                let _ = parse_hardware_id(&bytes);
+            }
+
+            /// Whole 128-byte blocks with a valid header, a matching
+            /// extension count and correct checksums pass every framing
+            /// check, so the base block and the CTA-861 and DisplayID
+            /// extension decoders see the random bytes.
+            #[test]
+            fn parse_hardware_id_never_panics_past_the_framing(
+                mut blocks in prop::collection::vec(prop::array::uniform::<_, 128>(any::<u8>()), 1..=4)
+            ) {
+                let extensions = u8::try_from(blocks.len().saturating_sub(1)).unwrap();
+                if let Some(base) = blocks.first_mut() {
+                    base[..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
+                    base[126] = extensions;
+                }
+                for (block, tag) in blocks.iter_mut().skip(1).zip([0x02, 0x70].into_iter().cycle()) {
+                    block[0] = tag;
+                }
+                for block in &mut blocks {
+                    let sum = block[..127].iter().fold(0u8, |sum, b| sum.wrapping_add(*b));
+                    block[127] = 0u8.wrapping_sub(sum);
+                }
+                let _ = parse_hardware_id(blocks.as_flattened());
+            }
+        }
     }
 }

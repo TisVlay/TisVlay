@@ -236,7 +236,7 @@ pub use ffi::point_at_host_spa_plugins;
 /// live PipeWire server); verified manually.
 mod ffi {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
     use pipewire_native::properties::Properties;
     use pipewire_native::proxy::node::{NodeEvents, NodeState};
@@ -378,13 +378,13 @@ mod ffi {
                     return;
                 }
                 let np = node_props(props);
-                let reports = tracker.lock().unwrap().on_global(id, &np);
+                let reports = locked(tracker).on_global(id, &np);
                 emit(client, flags, reports);
                 // A matching node: bind it to receive its run state for `detail`.
                 watch_node_state(&reg_for_bind, id, version, tracker, client, flags);
             }),
             global_remove: some_closure!([^(tracker, client, flags)] id, {
-                let reports = tracker.lock().unwrap().on_removed(id);
+                let reports = locked(tracker).on_removed(id);
                 emit(client, flags, reports);
             }),
         });
@@ -396,7 +396,7 @@ mod ffi {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
         // Clear the source (real detail) before unwinding.
-        let reports = tracker.lock().unwrap().clear();
+        let reports = locked(&tracker).clear();
         emit(client, &flags, reports);
         main_loop.quit();
         core.disconnect();
@@ -405,6 +405,13 @@ mod ffi {
             return Err(FfiError::CoreGone);
         }
         Ok(())
+    }
+
+    /// Lock the tracker, recovering it if a panicking PipeWire callback
+    /// poisoned the mutex: its state is plain bookkeeping that stays
+    /// consistent between calls, so the next event can safely carry on.
+    fn locked(tracker: &Mutex<Tracker>) -> MutexGuard<'_, Tracker> {
+        tracker.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Bind a matching node and forward its run-state changes into the
@@ -425,7 +432,7 @@ mod ffi {
         };
         node.add_listener(NodeEvents {
             info: some_closure!([^(tracker, client, flags)] info, {
-                let reports = tracker.lock().unwrap().on_state(info.id, state_label(info.state));
+                let reports = locked(tracker).on_state(info.id, state_label(info.state));
                 emit(client, flags, reports);
             }),
             ..Default::default()
@@ -435,7 +442,7 @@ mod ffi {
         node.proxy().add_listener(ProxyEvents {
             removed: some_closure!([node ^(tracker, client, flags)] {
                 if let Some(id) = node.proxy().bound_id() {
-                    let reports = tracker.lock().unwrap().on_removed(id);
+                    let reports = locked(tracker).on_removed(id);
                     emit(client, flags, reports);
                 }
             }),

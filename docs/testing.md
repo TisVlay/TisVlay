@@ -109,7 +109,9 @@ proptest! {
 }
 ```
 
-When a proptest fails, it writes a `.proptest-regressions` file. **Commit these files** — they replay the failing seed on future runs.
+When a proptest fails, it writes a `.proptest-regressions` file. **Commit these files** — they replay the failing seed on future runs. Don't commit one produced by a deliberate mutation check: it records a bug that was never real.
+
+**Every parser of outside input has a "never panics" property.** Each feeds arbitrary input, shaped toward what the parser reads where that helps, and asserts only that it returns: the SSDP decoder, the EDID probe, the LG power-state payload, CEC input ids and OSD-name clamping, and MAC parsing. A sharper invariant goes in where one exists: the clamped OSD name always fits CEC's 14-byte operand. See `docs/build.md` § Lint policy, "Parsers of outside input".
 
 ## LG backend testing
 

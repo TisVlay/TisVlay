@@ -8,6 +8,16 @@
 //! never touch a real `/dev/cecN` ioctl. Daemon-level coverage of the
 //! always-reachable state machine rides the mock backend, not this seam.
 
+// External-input profile: this module handles CEC frames from the kernel,
+// so indexing, arithmetic, string slicing and narrowing casts must be
+// checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -467,7 +477,7 @@ mod fake {
             if *remaining == 0 {
                 *self.power.lock() = PowerStatus::On;
             } else {
-                *remaining -= 1;
+                *remaining = remaining.saturating_sub(1);
             }
             Ok(())
         }

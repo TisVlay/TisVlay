@@ -1,6 +1,11 @@
 //! The GUI-facing SDK against a live daemon + session service: mirror
 //! hydration into `TvInfo`, watcher events, rpcs, and profile bodies.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "integration tests fail loudly by design; clippy's allow-*-in-tests keys don't reach helper fns under tests/"
+)]
+
 use std::sync::Arc;
 use std::time::Duration;
 

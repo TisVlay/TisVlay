@@ -3,6 +3,12 @@
 //! profiles, the logind lock watcher, persistence, and the idle-timeout
 //! watch.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "integration tests fail loudly by design; clippy's allow-*-in-tests keys don't reach helper fns under tests/"
+)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

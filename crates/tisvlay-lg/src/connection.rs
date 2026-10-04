@@ -975,4 +975,54 @@ mod tests {
         conn.close().await.unwrap();
         assert!(!conn.is_connected());
     }
+
+    /// The power-state payload comes from the TV; any JSON must map to a
+    /// state or to `None`, never panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// JSON values biased toward the keys and values the parser reads.
+        fn payload() -> impl Strategy<Value = Value> {
+            let leaf = prop_oneof![
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::from),
+                any::<i64>().prop_map(Value::from),
+                any::<String>().prop_map(Value::from),
+                prop_oneof![
+                    Just("Active"),
+                    Just("Active Standby"),
+                    Just("Screen Off"),
+                    Just("Suspend"),
+                    Just("off"),
+                    Just("None"),
+                    Just(""),
+                ]
+                .prop_map(Value::from),
+            ];
+            leaf.prop_recursive(3, 24, 4, |inner| {
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                    prop::collection::btree_map(
+                        prop_oneof![
+                            Just("state".to_string()),
+                            Just("processing".to_string()),
+                            Just("onOff".to_string()),
+                            "[a-zA-Z]{0,10}",
+                        ],
+                        inner,
+                        0..5,
+                    )
+                    .prop_map(|m| Value::Object(m.into_iter().collect())),
+                ]
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn parse_power_state_payload_never_panics(payload in payload()) {
+                let _ = parse_power_state_payload(&payload);
+            }
+        }
+    }
 }

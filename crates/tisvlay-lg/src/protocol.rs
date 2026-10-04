@@ -3,6 +3,16 @@
 //! The SSAP (Simple Service Access Protocol) is a JSON-based protocol
 //! used by LG WebOS TVs over WebSocket connections.
 
+// External-input profile: this module handles SSAP messages from the TV,
+// so indexing, arithmetic, string slicing and narrowing casts must be
+// checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -66,8 +76,8 @@ pub enum ResponseType {
     Hello,
 }
 
-/// Registration payload sent during pairing.
-#[derive(Debug, Clone, Serialize)]
+/// Registration payload sent during pairing. `Debug` redacts the client key.
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterPayload {
     /// Whether to force a new pairing prompt.
@@ -79,6 +89,20 @@ pub struct RegisterPayload {
     /// Previously obtained client key (None for new pairing).
     #[serde(rename = "client-key", skip_serializing_if = "Option::is_none")]
     pub client_key: Option<String>,
+}
+
+impl std::fmt::Debug for RegisterPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterPayload")
+            .field("force_pairing", &self.force_pairing)
+            .field("pairing_type", &self.pairing_type)
+            .field("manifest", &self.manifest)
+            .field(
+                "client_key",
+                &self.client_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// Application manifest for registration.
@@ -228,12 +252,20 @@ impl Default for Manifest {
     }
 }
 
-/// Registered response payload containing the client key.
-#[derive(Debug, Clone, Deserialize)]
+/// Registered response payload containing the client key. `Debug` redacts it.
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct RegisteredPayload {
     /// Client key for future connections.
     pub client_key: String,
+}
+
+impl std::fmt::Debug for RegisteredPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisteredPayload")
+            .field("client_key", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Power state response.
@@ -319,7 +351,9 @@ impl Request {
             id: id.into(),
             msg_type: RequestType::Register,
             uri: None,
-            payload: Some(serde_json::to_value(payload).unwrap()),
+            payload: Some(serde_json::to_value(payload).expect(
+                "RegisterPayload is a plain string-keyed struct, so serializing it cannot fail",
+            )),
         }
     }
 
@@ -354,6 +388,31 @@ impl Request {
             msg_type: RequestType::Subscribe,
             uri: Some(uri.into()),
             payload: Some(payload),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The client key authenticates every later connection; it must never
+    /// show up in `Debug` output, which can reach logs.
+    #[test]
+    fn debug_redacts_the_client_key() {
+        let key = "secret-client-key-1234";
+        let register = RegisterPayload::new(Some(key.to_string()));
+        let registered = RegisteredPayload {
+            client_key: key.to_string(),
+        };
+        for shown in [
+            format!("{register:?}"),
+            format!("{register:#?}"),
+            format!("{registered:?}"),
+            format!("{registered:#?}"),
+        ] {
+            assert!(!shown.contains(key), "client key leaked into {shown}");
+            assert!(shown.contains("<redacted>"), "{shown}");
         }
     }
 }

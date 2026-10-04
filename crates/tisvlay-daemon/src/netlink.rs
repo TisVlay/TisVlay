@@ -11,6 +11,16 @@
 //! riding ethernet, and an NM software disconnect (which keeps carrier
 //! up but withdraws addresses/routes) surfaces as a lost route.
 
+// External-input profile: this module handles netlink route messages from
+// the kernel, so indexing, arithmetic, string slicing and narrowing casts
+// must be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
@@ -133,13 +143,13 @@ async fn watch_network(
                             if !re_resolve(&world, &monitored, &mut resolved).await {
                                 break;
                             }
-                            settle_at = Some(tokio::time::Instant::now() + ROUTE_SETTLE);
+                            settle_at = tokio::time::Instant::now().checked_add(ROUTE_SETTLE);
                         }
                     }
                     _ => {}
                 }
             }
-            _ = async { tokio::time::sleep_until(settle_at.unwrap()).await },
+            _ = async { tokio::time::sleep_until(settle_at.expect("the branch is enabled only while settle_at is Some")).await },
                 if settle_at.is_some() =>
             {
                 settle_at = None;

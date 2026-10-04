@@ -1,5 +1,15 @@
 //! High-level WebOS TV client.
 
+// External-input profile: this module handles SSAP responses from the TV,
+// so indexing, arithmetic, string slicing and narrowing casts must be
+// checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use crate::endpoints::{
     audio, input, luna, network, notification, picture, power, system, timeouts,
 };
@@ -157,6 +167,10 @@ impl WebOsClient {
         // To handle the two-phase flow, we use request_wait() which only
         // registers the oneshot (no send) for the second phase.
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Instant plus the PAIRING_MS constant cannot overflow"
+        )]
         let deadline = tokio::time::Instant::now() + pairing_timeout;
 
         // Phase 1: send the register request and get the first response.
@@ -235,7 +249,7 @@ impl WebOsClient {
     /// Generate the next request ID.
     fn next_id(&mut self) -> String {
         let id = self.request_id;
-        self.request_id += 1;
+        self.request_id = self.request_id.wrapping_add(1);
         format!("req_{}", id)
     }
 
@@ -313,8 +327,11 @@ impl WebOsClient {
         )];
 
         // (request_id, uri-or-synthetic-uri-for-bookkeeping, request)
-        let mut prepared: Vec<(String, String, Request)> =
-            Vec::with_capacity(plain_endpoints.len() + payload_endpoints.len());
+        let mut prepared: Vec<(String, String, Request)> = Vec::with_capacity(
+            plain_endpoints
+                .len()
+                .saturating_add(payload_endpoints.len()),
+        );
 
         for uri in plain_endpoints {
             let request = Request::subscribe(self.next_id(), *uri);
@@ -615,7 +632,7 @@ impl WebOsClient {
     pub async fn get_link_mac(&mut self, dialed: IpAddr) -> Option<MacAddress> {
         let status = self.network_read(network::GET_STATUS).await?;
         let Some(iface) = ["wired", "wifi"].into_iter().find(|name| {
-            let block = &status[*name];
+            let block = status.get(*name).unwrap_or(&Value::Null);
             block["state"] == "connected"
                 && block["ipAddress"]
                     .as_str()
@@ -626,7 +643,10 @@ impl WebOsClient {
             return None;
         };
         let info = self.network_read(network::GET_INFO).await?;
-        let mac = info[format!("{iface}Info")]["macAddress"].as_str()?;
+        let mac = info
+            .get(format!("{iface}Info"))?
+            .get("macAddress")?
+            .as_str()?;
         MacAddress::parse(mac)
             .inspect_err(|e| tracing::debug!(iface, mac, error = %e, "unparsable link MAC"))
             .ok()
@@ -637,7 +657,9 @@ impl WebOsClient {
     /// failures can arrive as a normal response rather than an error.
     async fn network_read(&mut self, uri: &str) -> Option<Value> {
         match self.command(uri, json!({})).await {
-            Ok(response) if response.payload["returnValue"] == true => Some(response.payload),
+            Ok(response) if response.payload.get("returnValue") == Some(&Value::Bool(true)) => {
+                Some(response.payload)
+            }
             Ok(response) => {
                 tracing::debug!(uri, payload = %response.payload, "network read refused");
                 None

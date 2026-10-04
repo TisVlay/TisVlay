@@ -51,14 +51,22 @@ Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` 
 5. **Prove it red.** Before review, a deliberate violation must fail `just clippy`.
 6. **Generated code** (Slint's `include_modules!` in `tisvlay-gui`) sits in a module that allows `warnings` plus the clippy groups, so no lint added later has to revisit it. Deny-level lints such as `unsafe_code` still apply.
 7. **`unsafe` is confined.** `unsafe_code` is `deny`, not `forbid`, so the few files that need FFI can opt out with a reasoned file-level `#![expect(unsafe_code)]`. Every block gets a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and does one unsafe operation (`multiple_unsafe_ops_per_block`).
-8. **Test code may print and use `dbg!`.** `clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
+8. **Test code may unwrap, panic, index and print.** `clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
+
+### Parsers of outside input
+
+Code that handles bytes from outside carries a module-level external-input profile. It's the one deliberate exception to rule 2: these lints are too noisy for the whole workspace (see "Never adopted"), so they're opted into per module rather than out of per crate.
+- `#![warn]` of `indexing_slicing`, `arithmetic_side_effects`, `string_slice` and `cast_possible_truncation`;
+- applied to SSDP replies, SSAP messages from the TV, CEC frames, EDID and sysfs data, netlink messages, and MAC strings.
+
+Each site is a checked access (`get`, `checked_*`, `saturating_*`), a typed refusal, or a reasoned `#[expect]` stating the bound. Each entry point that parses raw bytes or text (SSDP datagrams, EDID blobs, MAC strings, the TV's power-state payload, CEC input ids and names) also gets a "never panics on arbitrary input" property test (proptest), because the lint finds code that *could* panic and the property test runs it on adversarial input. Modules that only read values a library already decoded (netlink messages, serde-decoded SSAP JSON, the CEC ioctl link) take the profile alone. A new parser of raw input takes both.
 
 ### Never adopted
 
 Recorded so nobody re-scouts:
 
 - **Groups:** `nursery` and `restriction` as groups. `clippy::cargo`, whose `multiple_crate_versions` walks the whole graph per crate; cargo-deny's `bans` covers duplicates.
-- **Restriction lints workspace-wide:** `expect_used` (an `expect` stating its invariant is the idiom here), `indexing_slicing`, `arithmetic_side_effects` and `as_conversions`. Too noisy for an I/O-bound daemon.
+- **Restriction lints workspace-wide:** `expect_used` (an `expect` stating its invariant is the idiom here), `indexing_slicing`, `arithmetic_side_effects` and `as_conversions`. Too noisy for an I/O-bound daemon; the parsers of outside input opt in per module instead.
 - **`allow_attributes`:** it flags reasoned `#[allow]`s too, which rule 3 relies on.
 - **`redundant_pub_crate`:** it contradicts the `unreachable_pub` lint already in the table.
 - **`missing_docs_in_private_items`.**
