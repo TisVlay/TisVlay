@@ -2469,9 +2469,9 @@ fn register_callbacks(
     // Tray global — notification settings + test notification.
     //
     // Each per-switch toggle gets wrapped into a one-field
-    // `NotificationSettingsBody` so the user can change one category
-    // without re-stating the others (`UpdateNotificationSettings`
-    // applies only `Some(_)` fields). The wire-side category name
+    // `NotificationSettingsPatch` so the user can change one category
+    // without re-stating the others (the update rpc applies only
+    // `Some(_)` fields). The wire-side category name
     // is the snake_case string from the Slint global.
     //
     // Tray-offline → warn + no-op. The settings pane already
@@ -2520,9 +2520,9 @@ fn register_callbacks(
     });
 }
 
-/// Wrap a single (category, enabled) pair into a partial
-/// `NotificationSettingsBody`. Unknown category names produce a
-/// fully-`None` body (a no-op `UpdateNotificationSettings` call),
+/// Wrap a single (category, enabled) pair into a
+/// `NotificationSettingsPatch`. Unknown category names produce an
+/// empty patch (a no-op update),
 /// not a panic — the wire identifiers are settings-pane–controlled,
 /// so an unrecognized string here would indicate a missed Slint /
 /// Rust sync we'd want to log rather than crash on.

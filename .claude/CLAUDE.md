@@ -230,7 +230,7 @@ CI runs file checks via prek, then a single `just test-ci` (clippy + nextest + d
 Rules the lints can't fully express; the lint policy and its reasons are in `docs/build.md` § Lint policy.
 
 - **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
-- **Errors:** published library crates expose `thiserror` types callers can match on. `anyhow` belongs in binaries and the in-workspace client SDK, whose callers only report errors.
+- **Errors:** published crates and the client SDK expose `thiserror` types callers can match on. Binaries and binary-glue libraries (`tisvlay-runtime`, the service crates' library halves, wire's `bootstrap`) may use `anyhow`. The model is in `docs/architecture.md` § Error model.
 - **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
 - **Secrets never reach `Debug`.** The LG credential types (`Credentials`, `LgVendorConfig` and the register payloads) implement `Debug` by hand and redact the client key; a new type holding a credential does the same. The untyped vendor-config TOML still carries the key in derived `Debug`, so never log a `TvConfig` or `TvRecord` whole.
 - **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.

@@ -8,8 +8,8 @@ concrete trigger; pick one off when its trigger fires.
 
 (Two review observations are *not* listed here because they're decisions,
 not deferred work, and already live in `docs/design.md`'s Tray1 section:
-the deliberate two-type split between on-disk `NotificationSettings` and
-the wire `NotificationSettingsBody`, and the serialized emit-worker /
+the deliberate two-type split between the full `NotificationSettings` and
+the update's `NotificationSettingsPatch`, and the serialized emit-worker /
 backoff rationale.)
 
 ## (Speculative) `PeerClient` trait over the client structs
