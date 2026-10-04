@@ -23,6 +23,11 @@
 //! # Ok(()) }
 //! ```
 
+#![expect(
+    unsafe_code,
+    reason = "the fake reads the test process's own uid (libc::getuid)"
+)]
+
 use tracing::{debug, instrument};
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
@@ -114,12 +119,8 @@ impl ManagerIface {
         // that lifecycle and the fd is just a placeholder.
         let file = std::fs::File::open("/dev/null")
             .map_err(|e| zbus::fdo::Error::Failed(format!("open /dev/null: {e}")))?;
-        use std::os::fd::{IntoRawFd, OwnedFd};
-        // SAFETY: we own the fd from `File::open`, and `into_raw_fd`
-        // transfers ownership out without closing it, so wrapping in
-        // `OwnedFd::from_raw_fd` re-takes that ownership exactly once.
-        let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(file.into_raw_fd()) };
-        Ok(zbus::zvariant::OwnedFd::from(owned))
+        let fd = std::os::fd::OwnedFd::from(file);
+        Ok(zbus::zvariant::OwnedFd::from(fd))
     }
 
     /// The lock watcher's hydration source: one graphical session owned by

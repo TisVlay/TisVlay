@@ -22,6 +22,11 @@
 //! is exactly the reconcile-on-restart behavior the preserved runtime
 //! directory needs when a grant is turned off.
 
+#![expect(
+    unsafe_code,
+    reason = "libc xattr calls that read and write the socket's POSIX ACL, and getgrnam_r to resolve group names"
+)]
+
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::os::unix::fs::MetadataExt;

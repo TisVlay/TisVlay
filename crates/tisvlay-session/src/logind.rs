@@ -14,6 +14,11 @@
 //! system bus (headless CI) warns once and idles with supervised retry;
 //! it never blocks or kills the session service.
 
+#![expect(
+    unsafe_code,
+    reason = "libc::getuid to find this user's logind sessions"
+)]
+
 use std::collections::HashMap;
 
 use futures_util::StreamExt;

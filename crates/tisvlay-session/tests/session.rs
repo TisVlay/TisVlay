@@ -480,9 +480,9 @@ async fn lock_watcher_drives_lock_unlock() {
 
     let watcher_conn = bus.connect().await.expect("watcher conn");
     let client = rig.stack.client.clone();
-    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let is_locked = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
-    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
     tokio::spawn(async move {
         let _ = tisvlay_session::watch_lock(watcher_conn, client, locked, active).await;
     });
@@ -620,9 +620,9 @@ async fn lock_watcher_seed_reads_a_preexisting_lock() {
     let rig = rig().await;
     let watcher_conn = bus.connect().await.expect("watcher conn");
     let client = rig.stack.client.clone();
-    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let is_locked = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let locked = is_locked.clone();
-    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
     tokio::spawn(async move {
         let _ = tisvlay_session::watch_lock(watcher_conn, client, locked, active).await;
     });
@@ -656,8 +656,8 @@ async fn startup_seed_reads_a_preexisting_lock_synchronously() {
     fake.set_locked(true).await.unwrap();
 
     let seed_conn = bus.connect().await.expect("seed conn");
-    let is_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let is_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let is_locked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let is_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     tisvlay_session::seed_lock_state_on(&seed_conn, &is_locked, &is_active).await;
 

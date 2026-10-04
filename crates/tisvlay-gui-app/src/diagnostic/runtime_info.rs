@@ -3,6 +3,14 @@
 //! and the renderer maps `None` to JSON `null` so consumers can tell
 //! "probe didn't run" apart from "field was empty".
 
+#![cfg_attr(
+    all(target_os = "linux", target_env = "gnu"),
+    expect(
+        unsafe_code,
+        reason = "libc::gnu_get_libc_version for the diagnostic blob's glibc field"
+    )
+)]
+
 /// Kernel release string from `uname()` (e.g. `6.18.24`). Returns
 /// `None` when the syscall surface yields a non-UTF-8 value, which
 /// is exceedingly rare on Linux but possible (the kernel's release
@@ -27,22 +35,23 @@ pub(super) fn glibc_version() -> Option<String> {
     use std::ffi::CStr;
 
     // SAFETY: `gnu_get_libc_version` is a thread-safe libc call that
-    // returns a pointer to a static C string with no aliasing
-    // concerns. The pointer is valid for the lifetime of the
-    // process; `CStr::from_ptr` only dereferences it for the
-    // duration of the call. Returns `None` if the pointer is null
-    // (theoretical) or the bytes aren't valid UTF-8.
-    unsafe {
-        let p = libc::gnu_get_libc_version();
-        if p.is_null() {
-            return None;
-        }
-        CStr::from_ptr(p).to_str().ok().map(str::to_owned)
+    // returns a pointer to a static C string, valid for the lifetime of
+    // the process.
+    let p = unsafe { libc::gnu_get_libc_version() };
+    if p.is_null() {
+        return None;
     }
+    // SAFETY: `p` is non-null and points at that static NUL-terminated
+    // string; `CStr::from_ptr` only reads it for the duration of the call.
+    // `None` if the bytes aren't valid UTF-8.
+    unsafe { CStr::from_ptr(p) }
+        .to_str()
+        .ok()
+        .map(str::to_owned)
 }
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-pub fn glibc_version() -> Option<String> {
+pub(super) fn glibc_version() -> Option<String> {
     None
 }
 

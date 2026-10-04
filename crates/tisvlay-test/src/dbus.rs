@@ -28,6 +28,11 @@
 //! [`zbus::connection::Builder::address`] so they bypass zbus's
 //! per-process `OnceCell` connection cache.
 
+#![expect(
+    unsafe_code,
+    reason = "a pre_exec hook sets PR_SET_PDEATHSIG in the forked dbus-daemon"
+)]
+
 use parking_lot::Mutex;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -155,17 +160,17 @@ impl PrivateBus {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        // SAFETY: pre_exec runs after fork() in the child before exec().
-        // prctl is async-signal-safe, and we don't touch any shared state.
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        let die_with_parent = || {
+            // SAFETY: prctl(PR_SET_PDEATHSIG) takes plain integers and is
+            // async-signal-safe.
+            if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        // SAFETY: pre_exec runs after fork() in the child before exec(); the
+        // hook only calls prctl and touches no shared state.
+        unsafe { std::os::unix::process::CommandExt::pre_exec(&mut cmd, die_with_parent) };
 
         // Fork from a thread that lives as long as the bus handle, so the
         // pdeathsig fires when the bus is dropped (never, for the shared

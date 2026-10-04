@@ -11,6 +11,11 @@
 //! resolution; the outcome is returned, not printed, so each surface renders
 //! it its own way (the CLI prints, the GUI shows a dialog).
 
+#![expect(
+    unsafe_code,
+    reason = "libc user/group database and credential calls (getpwuid_r, getgrnam_r, getgroups, geteuid) for the enrollment check"
+)]
+
 use std::ffi::CStr;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;

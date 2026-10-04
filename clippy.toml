@@ -1,0 +1,5 @@
+# clippy configuration. Test code may print and use `dbg!`: a test exists
+# to fail loudly. These keys cover `#[test]` fns and `#[cfg(test)]`
+# modules only, not helper fns under `tests/`.
+allow-dbg-in-tests = true
+allow-print-in-tests = true

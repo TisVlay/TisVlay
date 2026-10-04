@@ -155,7 +155,7 @@ async fn transport_facts_reach_the_link_without_a_dial() {
         .as_table_mut()
         .unwrap()
         .insert("refuse_connect".into(), toml::Value::Boolean(true));
-    let mut record = support::tv_record(id, "Idle", config);
+    let mut record = tv_record(id, "Idle", config);
     record.managed = false;
 
     client.command(Command::AddTv {
@@ -338,7 +338,7 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
     table.insert("refuse_connect".into(), toml::Value::Boolean(true));
     table.insert("wake".into(), toml::Value::Boolean(false));
     client.command(Command::AddTv {
-        record: Box::new(support::tv_record(id, "Wakeless", config)),
+        record: Box::new(tv_record(id, "Wakeless", config)),
         reply: None,
     });
     collect_until(&mut effects, |e| {

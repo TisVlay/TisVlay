@@ -519,7 +519,10 @@ pub(crate) async fn run_wizard_pair(
 /// a pair that may still be in flight or fail. Sync-validation
 /// errors (unknown vendor, ConfigInvalidVendorConfig) still
 /// route through their normal field-mapping path.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a spawned task: the client handles plus the pair request's fields, each moved in once from the caller"
+)]
 async fn run_pair_no_progress(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,

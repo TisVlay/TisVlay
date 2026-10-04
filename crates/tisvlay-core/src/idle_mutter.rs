@@ -122,7 +122,6 @@ impl Drop for Handle {
 /// Shared by the session adapter and the login greeter, which both select
 /// between the wayland (`ext-idle-notify`) and Mutter (D-Bus) transports.
 #[derive(Debug)]
-#[allow(dead_code)] // inner handles are held for their Drop, never read
 pub enum IdleWatch {
     Wayland(crate::wayland::WatchHandle),
     Mutter(Handle),
@@ -151,7 +150,6 @@ mod ffi {
         fn add_user_active_watch(&self) -> zbus::Result<u32>;
 
         /// Remove a watch by id (unused: connection close removes all).
-        #[allow(dead_code)]
         fn remove_watch(&self, id: u32) -> zbus::Result<()>;
 
         /// Emitted with the id of the watch that fired.

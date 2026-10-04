@@ -396,7 +396,7 @@ mod tests {
             &self,
             _: &toml::Value,
         ) -> tisvlay_core::Result<Box<dyn tisvlay_core::TvConnection>> {
-            unimplemented!("redaction test never connects")
+            unreachable!("redaction test never connects")
         }
         fn supports_wake(&self, _: &toml::Value) -> bool {
             false
@@ -408,20 +408,20 @@ mod tests {
             &self,
             _: &toml::Value,
         ) -> tisvlay_core::Result<Box<dyn tisvlay_core::TvConnection>> {
-            unimplemented!("redaction test never connects")
+            unreachable!("redaction test never connects")
         }
         fn start_pairing(
             &self,
             _: &toml::Value,
         ) -> tisvlay_core::Result<tisvlay_core::PairingSession> {
-            unimplemented!("redaction test never pairs")
+            unreachable!("redaction test never pairs")
         }
         fn build_config_from_pairing(
             &self,
             _: &toml::Value,
             _: &tisvlay_core::Credentials,
         ) -> tisvlay_core::Result<toml::Value> {
-            unimplemented!("redaction test never pairs")
+            unreachable!("redaction test never pairs")
         }
         fn config_schema(&self) -> Vec<PairingField> {
             vec![

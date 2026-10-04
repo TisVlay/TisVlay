@@ -1,6 +1,9 @@
 //! Shared helpers for the world test binaries: reactor bootstrap with the
 //! mock backend, and effect-tap assertion utilities.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "shared by several test binaries, each using a different subset"
+)]
 
 use std::sync::Arc;
 use std::time::Duration;

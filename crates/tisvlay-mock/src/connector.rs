@@ -123,7 +123,7 @@ impl TvConnector for MockConnector {
         }
 
         if config.refuse_connect {
-            return Err(tisvlay_core::Error::backend(
+            return Err(Error::backend(
                 crate::VENDOR_ID,
                 "connect refused by test config",
             ));

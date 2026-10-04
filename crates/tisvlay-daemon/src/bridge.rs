@@ -39,7 +39,10 @@ pub(crate) struct VendorMeta {
     pub connector: Arc<dyn tisvlay_core::TvConnector>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an entry point taking each handle and channel it owns; a struct would only rename the list"
+)]
 pub(crate) async fn run(
     session: Session,
     site: String,

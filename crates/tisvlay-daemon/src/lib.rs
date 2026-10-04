@@ -208,8 +208,8 @@ pub struct VendorReg {
     pub retry: Option<tisvlay_core::RetryConfig>,
 }
 
-impl std::fmt::Debug for VendorReg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for VendorReg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VendorReg")
             .field("id", &self.id)
             .field("name", &self.name)
@@ -635,7 +635,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         let ready = Arc::clone(&stack.startup_ready);
         tokio::spawn(async move {
             await_startup_ready(ready).await;
-            world.send(tisvlay_world::InEvent::System {
+            world.send(InEvent::System {
                 event: SystemEvent::Startup,
                 connector: None,
             });

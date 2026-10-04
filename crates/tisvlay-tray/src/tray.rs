@@ -733,7 +733,6 @@ fn command_item(
     .into()
 }
 
-#[allow(clippy::type_complexity)]
 fn activate(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     command: impl Fn() -> TrayCommand + Send + Sync + 'static,

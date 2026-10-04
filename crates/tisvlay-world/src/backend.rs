@@ -15,7 +15,10 @@ use crate::events::{BackendCmd, BackendEvent, InEvent, PairingUpdate};
 /// dial's connect and the pairing's `complete`.
 const LINK_MAC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a spawned task: one dial's inputs (the TV, its connector, config and policy flags) and the inbox it reports to, moved in once by its only caller"
+)]
 pub(crate) async fn connect_flow(
     tv: Uuid,
     dial: u64,

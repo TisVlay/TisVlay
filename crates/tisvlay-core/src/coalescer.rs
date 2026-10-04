@@ -31,9 +31,8 @@ pub struct Coalescer<K, V> {
     inner: std::sync::Arc<CoalescerInner<K, V>>,
 }
 
-type ApplyFn<K, V> = Box<
-    dyn Fn(K, V) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
->;
+type ApplyFn<K, V> =
+    Box<dyn Fn(K, V) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 struct CoalescerInner<K, V> {
     senders:
@@ -67,7 +66,7 @@ where
     where
         Merge: Fn(V, V) -> V + Send + Sync + 'static,
         Apply: Fn(K, V) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
     {
         Self {
             inner: std::sync::Arc::new(CoalescerInner {

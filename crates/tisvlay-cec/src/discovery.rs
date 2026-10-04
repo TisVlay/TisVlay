@@ -216,7 +216,7 @@ mod tests {
         let addrs: Vec<String> = tvs
             .iter()
             .map(|t| {
-                std::path::Path::new(&t.address)
+                Path::new(&t.address)
                     .file_name()
                     .unwrap()
                     .to_string_lossy()

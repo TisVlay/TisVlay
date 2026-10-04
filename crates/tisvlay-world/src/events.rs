@@ -108,7 +108,7 @@ pub enum SystemEvent {
 #[derive(Debug)]
 pub enum PairingUpdate {
     /// The session's cancel channel, sent once at task start.
-    Handle(tokio::sync::mpsc::Sender<tisvlay_core::PairingCommand>),
+    Handle(mpsc::Sender<tisvlay_core::PairingCommand>),
     /// A pairing state transition (progress or terminal).
     State(Box<tisvlay_core::PairingState>),
     /// The reactor built the final vendor config from credentials — spawn

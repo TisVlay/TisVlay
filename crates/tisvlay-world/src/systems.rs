@@ -245,7 +245,10 @@ fn arm_desired_input(
 
 /// Route a power-on request: in-band on a live handle, otherwise the wake
 /// dial for wake-capable transports.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "takes the calling system's queries and resources; bundling them would only rename the list"
+)]
 fn power_on_tv(
     commands: &mut Commands,
     outbox: &mut Outbox,
@@ -316,7 +319,10 @@ type ScreenRow<'a> = (
 /// Backends that emulate screen via power route straight to power actions.
 /// A wake-needy or disconnected `screen_on` rides the power path instead
 /// of erroring; a disconnected `screen_off` is a satisfied no-op.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "takes the calling system's queries and resources; bundling them would only rename the list"
+)]
 fn dispatch_screen(
     commands: &mut Commands,
     outbox: &mut Outbox,
@@ -425,7 +431,10 @@ fn dispatch_screen(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn handle_lifecycle_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -617,7 +626,10 @@ struct SettingsWrites<'w, 's> {
 }
 
 /// Setters, backend passthrough commands, and config read/patch.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn handle_tv_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -907,7 +919,6 @@ fn reconcile_link_mac(
 /// Two-pass config patch: validate every key, then apply. Top-level keys
 /// map onto settings; everything else merges into the vendor table (a JSON
 /// `null` unsets the key), which forces a reconnect.
-#[allow(clippy::too_many_arguments)]
 fn apply_config_patch(
     commands: &mut Commands,
     entity: Entity,
@@ -1052,7 +1063,10 @@ fn send_backend(
 /// Verify pending screen dispatches against the cached power state; retry
 /// within the backend's budget; escalate an unmet `screen_on` to the wake
 /// path (in place for standby-reachable transports, wake dial otherwise).
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn verify_dispatch(
     mut commands: Commands,
     clock: Res<Clock>,
@@ -1134,7 +1148,10 @@ fn verify_dispatch(
 /// verify budget, clear on first compliance, fail observably. A TV
 /// with no link waits through its dial; one with no dial left sheds
 /// the intent (the wake it rode already reported its own failure).
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn reconcile_input(
     mut commands: Commands,
     clock: Res<Clock>,
@@ -1228,7 +1245,10 @@ fn publish_profile(
 /// System-profile CRUD plus the two read projections (`defaults`,
 /// `effective`). Bodies live on entities (PUT/DELETE lifecycle on the
 /// wire); deletion is refused while any TV references the profile.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn handle_profile_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1407,7 +1427,10 @@ struct StateWrites<'w, 's> {
     monitored: Query<'w, 's, &'static MonitoredInterface>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn apply_backend_events(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1710,7 +1733,10 @@ fn publish_pairing_progress(
 
 /// Drive pairing sessions: progress publishes, terminal handling, and the
 /// spawn (or credential refresh) of the paired TV.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn apply_pairing_updates(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1852,7 +1878,10 @@ fn apply_pairing_updates(
 /// single dial gate). Events are scoped: only TVs whose route-resolved
 /// `MonitoredInterface` matches the transitioning NIC react — a wifi
 /// drop must not park a TV riding ethernet.
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn handle_carrier_events(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1908,7 +1937,10 @@ fn handle_carrier_events(
 /// signal for it). Route back → unpark and redial. Route shifted to a
 /// different NIC → redial unless the protocol survives a source-IP
 /// change (WebSocket over TCP doesn't).
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn apply_route_resolutions(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -2081,8 +2113,14 @@ fn derive_remote_armed(armed: Res<RemoteArmed>, mut q: Query<(&TvId, &mut payloa
 /// dial. Connector-scoped events apply only to TVs matched to exactly
 /// that connector; global events (no connector) reach every automated
 /// TV.
-#[allow(clippy::type_complexity)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn dispatch_system_events(
     mut reader: MessageReader<InEvent>,
     profile: Res<SystemProfile>,
@@ -2375,7 +2413,10 @@ fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, boo
 }
 
 /// Dial TVs with an outstanding connect request, respecting backoff.
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn reconcile_connections(
     mut commands: Commands,
     clock: Res<Clock>,
