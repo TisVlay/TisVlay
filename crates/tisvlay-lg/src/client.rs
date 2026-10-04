@@ -307,7 +307,7 @@ impl WebOsClient {
             input::GET_EXTERNAL_INPUT_LIST,
             input::GET_CURRENT_INPUT,
         ];
-        let payload_endpoints: Vec<(&str, serde_json::Value)> = vec![(
+        let payload_endpoints: Vec<(&str, Value)> = vec![(
             picture::GET_SYSTEM_SETTINGS,
             json!({"category": "picture", "keys": ["backlight"]}),
         )];
@@ -765,7 +765,7 @@ mod tests {
         server.drop_connection();
 
         // Give the reader loop time to notice the close.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Next command should fail with a connection error.
         let result = client.get_power_state().await;
@@ -877,10 +877,7 @@ mod tests {
     #[tokio::test]
     async fn screen_on_masks_500_idempotent_error() {
         let server = FakeSsapServer::start().await;
-        server.set_command_error(
-            crate::endpoints::power::TURN_ON_SCREEN,
-            "500 method not allowed",
-        );
+        server.set_command_error(power::TURN_ON_SCREEN, "500 method not allowed");
         let mut client = WebOsClient::connect_url(&server.ws_url(), None)
             .await
             .unwrap();
@@ -903,10 +900,7 @@ mod tests {
     #[tokio::test]
     async fn screen_on_propagates_minus_102_not_in_screen_off_substate() {
         let server = FakeSsapServer::start().await;
-        server.set_command_error(
-            crate::endpoints::power::TURN_ON_SCREEN,
-            "-102 not in screen-off substate",
-        );
+        server.set_command_error(power::TURN_ON_SCREEN, "-102 not in screen-off substate");
         let mut client = WebOsClient::connect_url(&server.ws_url(), None)
             .await
             .unwrap();
@@ -1014,7 +1008,7 @@ mod tests {
         );
 
         // The update should arrive on the subscription channel.
-        let update = tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
+        let update = tokio::time::timeout(Duration::from_secs(2), sub_rx.recv())
             .await
             .expect("should receive within 2s")
             .expect("channel should not be closed");

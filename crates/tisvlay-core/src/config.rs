@@ -1136,7 +1136,7 @@ impl SystemConfig {
     /// `Uuid` type rejects malformed values), so this only catches
     /// the multi-entry collision case.
     pub fn validate_tv_ids(&self) -> Result<()> {
-        let mut seen = std::collections::HashMap::<Uuid, usize>::new();
+        let mut seen = HashMap::<Uuid, usize>::new();
         for (i, tv) in self.tv.iter().enumerate() {
             if let Some(&prev) = seen.get(&tv.uuid) {
                 return Err(Error::ConfigValidation(format!(
@@ -1680,11 +1680,7 @@ mac = "AA:BB:CC:DD:EE:FF"
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
 
         // Check system profile
-        let sys_default = config
-            .system
-            .profiles
-            .get(&DEFAULT_SYSTEM_PROFILE_UUID)
-            .unwrap();
+        let sys_default = &config.system.profiles[&DEFAULT_SYSTEM_PROFILE_UUID];
         assert_eq!(sys_default.on_startup, Some(SessionAction::PowerOn.into()));
         assert_eq!(
             sys_default.on_shutdown,
@@ -1693,11 +1689,7 @@ mac = "AA:BB:CC:DD:EE:FF"
         assert_eq!(sys_default.on_reboot, Some(SessionAction::None.into()));
 
         // Check user profile
-        let user_default = config
-            .user
-            .profiles
-            .get(&DEFAULT_USER_PROFILE_UUID)
-            .unwrap();
+        let user_default = &config.user.profiles[&DEFAULT_USER_PROFILE_UUID];
         assert_eq!(
             user_default.on_session_lock,
             Some(SessionAction::ScreenOff.into())
@@ -2388,7 +2380,7 @@ profile.user = "{gaming_uuid}"
         let deserialized: UserConfig = toml::from_str(&serialized).unwrap();
 
         assert_eq!(deserialized.user.profiles.len(), 1);
-        let gaming = deserialized.user.profiles.get(&gaming_uuid).unwrap();
+        let gaming = &deserialized.user.profiles[&gaming_uuid];
         assert_eq!(gaming.on_session_lock, Some(SessionAction::None.into()));
         assert_eq!(gaming.unlocked_idle_timeout_seconds, Some(0));
         // None fields should not be serialized
@@ -2630,11 +2622,11 @@ ip = "192.168.1.1"
         assert!(merged.contains_key("gaming"));
 
         // "default" should be the user's version (unlocked_idle_timeout_seconds = 600)
-        let default = merged.get("default").unwrap();
+        let default = &merged["default"];
         assert_eq!(default.unlocked_idle_timeout_seconds, Some(600));
 
         // "foo" comes from system
-        let foo = merged.get("foo").unwrap();
+        let foo = &merged["foo"];
         assert_eq!(foo.on_session_lock, Some(SessionAction::None.into()));
     }
 

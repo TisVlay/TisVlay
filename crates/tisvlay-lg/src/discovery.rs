@@ -106,7 +106,7 @@ fn parse_response(resp: &SsdpResponse) -> Option<DiscoveredTv> {
         location: location.to_string(),
         // `source` tags how the TV was found (SSDP for LG's network scan)
         // so the wizard can show a discovery-source chip.
-        vendor_data: std::collections::HashMap::from([("source".to_string(), "ssdp".to_string())]),
+        vendor_data: HashMap::from([("source".to_string(), "ssdp".to_string())]),
     })
 }
 
@@ -214,7 +214,7 @@ mod tests {
             hardware_id: None,
             vendor: "lg".to_string(),
             location: String::new(),
-            vendor_data: std::collections::HashMap::new(),
+            vendor_data: HashMap::new(),
         };
         assert!(has_dlna_name(&with_dlna));
 

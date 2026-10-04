@@ -83,7 +83,7 @@ async fn settings_round_trip_and_persistence() {
     // The test toast rpc acks and queues the toast (bypassing the category
     // gate); the info rpc reports the config location.
     client.send_test_notification().await.unwrap();
-    let toast = tokio::time::timeout(std::time::Duration::from_secs(5), toasts.recv())
+    let toast = tokio::time::timeout(Duration::from_secs(5), toasts.recv())
         .await
         .expect("test toast queued")
         .expect("notifier alive");

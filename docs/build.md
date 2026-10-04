@@ -40,6 +40,30 @@ Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` 
 - **Why per recipe and not `.cargo/config.toml`:** the Nix package build (`buildRustPackage`) reads that file with nixpkgs' rustc. A warning that a newer compiler adds would then break a NixOS rebuild. Local `cargo build` / `cargo run` stay warn-only, so a half-edited file still runs.
 - **Rustdoc is a gate too.** `just doc` builds the workspace's API docs (`--no-deps`), so a broken intra-doc link, or a public doc linking a private item, fails like any other lint. In CI it runs in the Lint step's prek pass. The CLI's binary sets `doc = false`, since it shares the `tisvlay` name with the SDK library.
 
+### Adding a lint
+
+1. **Pick lints, never enable groups.** No `pedantic`, `nursery`, `restriction` or `clippy::cargo` group is enabled; their lints enter the `[workspace.lints]` table one at a time, on their merits. Allowing a group is fine, as on generated code.
+2. **Strict by default, exceptions opt out.** A lint goes in the shared table, so every crate (and every new one) inherits it. A crate that legitimately differs opts out with one reasoned crate-root attribute: the CLI's `print_stdout`/`print_stderr`. A lint isn't spread as per-crate opt-ins.
+3. **Every allowance states its reason** (`allow_attributes_without_reason`):
+   - `#[expect(lint, reason = "…")]` where the lint fires unconditionally. When the last site goes, `unfulfilled_lint_expectations` fails the build, so stale allowances can't linger.
+   - `#[allow(lint, reason = "…")]` only where it depends on features or tests, so an `expect` would be unfulfilled in some build. For example, a test-support module shared by binaries that each use a different subset.
+4. **A new lint lands at zero sites.** It enters at `warn`, which blocks (see above), and its PR fixes or expects every site; there is no crate-level "fix later" marker.
+5. **Prove it red.** Before review, a deliberate violation must fail `just clippy`.
+6. **Generated code** (Slint's `include_modules!` in `tisvlay-gui`) sits in a module that allows `warnings` plus the clippy groups, so no lint added later has to revisit it. Deny-level lints such as `unsafe_code` still apply.
+7. **`unsafe` is confined.** `unsafe_code` is `deny`, not `forbid`, so the few files that need FFI can opt out with a reasoned file-level `#![expect(unsafe_code)]`. Every block gets a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and does one unsafe operation (`multiple_unsafe_ops_per_block`).
+8. **Test code may print and use `dbg!`.** `clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
+
+### Never adopted
+
+Recorded so nobody re-scouts:
+
+- **Groups:** `nursery` and `restriction` as groups. `clippy::cargo`, whose `multiple_crate_versions` walks the whole graph per crate; cargo-deny's `bans` covers duplicates.
+- **Restriction lints workspace-wide:** `expect_used` (an `expect` stating its invariant is the idiom here), `indexing_slicing`, `arithmetic_side_effects` and `as_conversions`. Too noisy for an I/O-bound daemon.
+- **`allow_attributes`:** it flags reasoned `#[allow]`s too, which rule 3 relies on.
+- **`redundant_pub_crate`:** it contradicts the `unreachable_pub` lint already in the table.
+- **`missing_docs_in_private_items`.**
+- **Nightly-only rustfmt options, and a nightly toolchain:** `-Zthreads` measured at 3–5 s off a cold build and nothing off an incremental one.
+
 ## Profile knobs
 
 In the workspace `Cargo.toml`:

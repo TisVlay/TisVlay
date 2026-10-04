@@ -224,6 +224,16 @@ prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt on
 
 CI runs file checks via prek, then a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`). Design notes: `docs/build.md`.
 
+### Code conventions
+
+Rules the lints can't fully express; the lint policy and its reasons are in `docs/build.md` § Lint policy.
+
+- **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
+- **Errors:** published library crates expose `thiserror` types callers can match on. `anyhow` belongs in binaries and the in-workspace client SDK, whose callers only report errors.
+- **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
+- **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
+- **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.
+
 ### Dead Code Detection
 
 Public items are invisible to Rust's `dead_code` lint. Use `cargo workspace-unused-pub` periodically after major refactors; false positives include trait impl methods required by frameworks (rustls, ksni, zenoh handlers) and builder methods reserved for future use.

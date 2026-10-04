@@ -574,7 +574,6 @@ impl DaemonClient {
 
     /// Bus-wide findings (root item shape): every discovery session.s
     /// puts as `(id, name, address, hardware_id, vendor, vendor_data)`.
-    #[allow(clippy::type_complexity)]
     pub async fn discovery_found_stream(
         &self,
     ) -> Result<
@@ -1387,8 +1386,8 @@ mod mirror_row {
         vendor: Option<payload::VendorRows>,
     }
 
-    impl From<&crate::mirror::TvRow> for Row {
-        fn from(row: &crate::mirror::TvRow) -> Self {
+    impl From<&mirror::TvRow> for Row {
+        fn from(row: &mirror::TvRow) -> Self {
             Self {
                 power: row.power.clone(),
                 volume: row.volume.clone(),

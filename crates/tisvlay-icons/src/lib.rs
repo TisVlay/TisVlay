@@ -162,7 +162,7 @@ fn icon_themes() -> &'static [String] {
 /// `[Icons] Theme=...`. Returns `None` when the file or key is absent.
 fn detect_kde_theme() -> Option<String> {
     let home = std::env::var_os("HOME")?;
-    let path = std::path::PathBuf::from(home).join(".config/kdeglobals");
+    let path = PathBuf::from(home).join(".config/kdeglobals");
     let content = std::fs::read_to_string(&path).ok()?;
     let mut in_icons_section = false;
     for line in content.lines() {

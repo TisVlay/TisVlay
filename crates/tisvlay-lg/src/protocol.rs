@@ -347,7 +347,7 @@ impl Request {
     pub fn subscribe_with_payload(
         id: impl Into<String>,
         uri: impl Into<String>,
-        payload: serde_json::Value,
+        payload: Value,
     ) -> Self {
         Self {
             id: id.into(),

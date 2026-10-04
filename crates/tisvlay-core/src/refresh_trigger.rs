@@ -98,7 +98,7 @@ impl RefreshTrigger {
     pub fn fire<F, Fut>(&self, refresh_fn: F)
     where
         F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = ()> + Send,
+        Fut: Future<Output = ()> + Send,
     {
         use std::sync::atomic::Ordering;
         self.dirty.store(true, Ordering::Relaxed);

@@ -43,7 +43,7 @@ impl std::fmt::Display for WebOsScheme {
 
 impl FromStr for WebOsScheme {
     type Err = Error;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "wss" => Ok(Self::Wss),
             "ws" => Ok(Self::Ws),

@@ -241,9 +241,30 @@ section = "utils"
 [workspace.lints.rust]
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
+# `unsafe` is confined to the files that need it (libc ACL and user-database
+# calls, the logind FFI, the glibc version probe, the session's
+# SPA_PLUGIN_DIR setup, the test fakes); each carries a reasoned
+# `#![expect(unsafe_code)]`, so a new `unsafe` anywhere else is refused.
+# `deny`, not `forbid`: `forbid` would reject those exceptions.
+unsafe_code = "deny"
+unused_qualifications = "warn"
+non_ascii_idents = "warn"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+# Every allowance states why (`#[expect(…, reason = "…")]` preferred).
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# `process::exit` outside `main` skips destructors; `main` is exempt.
+exit = "warn"
+get_unwrap = "warn"
+# Binaries and libraries log through tracing; the CLI, which prints its
+# output, opts out at its crate root. `println!` also panics on a closed pipe.
+print_stdout = "warn"
+print_stderr = "warn"
 
 # `split-debuginfo = "unpacked"` keeps debug info in sibling .o files
 # instead of inside the linked artifact — relinks don't have to copy

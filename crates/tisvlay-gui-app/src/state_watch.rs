@@ -487,8 +487,8 @@ async fn refresh_about_components(
 ) {
     async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
     where
-        F1: std::future::Future<Output = anyhow::Result<String>>,
-        F2: std::future::Future<Output = anyhow::Result<String>>,
+        F1: Future<Output = anyhow::Result<String>>,
+        F2: Future<Output = anyhow::Result<String>>,
     {
         Some(PeerInfo {
             version: version.await.ok()?,

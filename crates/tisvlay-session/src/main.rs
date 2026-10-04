@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "main sets SPA_PLUGIN_DIR before the async runtime starts any thread"
+)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,8 +48,17 @@ fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("tisvlay-session.toml"))
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // SAFETY: the async runtime isn't built yet, so this is the only
+    // thread and nothing else can touch the environment.
+    unsafe { tisvlay_session::point_at_host_spa_plugins() };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
     tisvlay_core::logging::init(&["tisvlay_session=info", "zbus=warn"], &[])?;

@@ -162,7 +162,7 @@ async fn screen_off_noop_gives_up_with_event() {
 async fn emulated_screen_keeps_standby_link_up() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = {
-        let id = uuid::Uuid::new_v4();
+        let id = Uuid::new_v4();
         client.command(Command::AddTv {
             record: Box::new(tv_record(id, "Cec", cec_like_config("mock://cec"))),
             reply: Some(1),
@@ -208,7 +208,7 @@ async fn profile_screen_actions_respect_emulation() {
     let (mut effects, client, handle) = spawn_reactor();
     client.command(Command::AddTv {
         record: Box::new(tv_record(
-            uuid::Uuid::new_v4(),
+            Uuid::new_v4(),
             "Cec",
             cec_like_config("mock://cecprof"),
         )),
@@ -243,7 +243,7 @@ async fn profile_screen_actions_respect_emulation() {
 #[tokio::test]
 async fn startup_event_upgrades_the_boot_dial_to_a_wake() {
     let (mut effects, client, handle) = spawn_reactor();
-    let id = uuid::Uuid::new_v4();
+    let id = Uuid::new_v4();
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::String("mock://boot".into()));
     table.insert("refuse_connect".into(), toml::Value::Boolean(true));
@@ -274,7 +274,7 @@ async fn startup_event_upgrades_the_boot_dial_to_a_wake() {
 #[tokio::test]
 async fn disconnected_screen_on_elevates_to_wake() {
     let (mut effects, client, handle) = spawn_reactor();
-    let id = uuid::Uuid::new_v4();
+    let id = Uuid::new_v4();
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::String("mock://elev".into()));
     table.insert("refuse_connect".into(), toml::Value::Boolean(true));
@@ -308,7 +308,7 @@ async fn disconnected_screen_on_elevates_to_wake() {
 #[tokio::test]
 async fn disconnected_screen_off_is_a_satisfied_noop() {
     let (mut effects, client, handle) = spawn_reactor();
-    let id = uuid::Uuid::new_v4();
+    let id = Uuid::new_v4();
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::String("mock://dark".into()));
     table.insert("refuse_connect".into(), toml::Value::Boolean(true));
@@ -380,7 +380,7 @@ async fn wake_needy_screen_on_preflights_to_the_wake_dial() {
 #[tokio::test]
 async fn wake_needy_screen_on_wakes_in_place_when_standby_reachable() {
     let (mut effects, client, handle) = spawn_reactor();
-    let id = uuid::Uuid::new_v4();
+    let id = Uuid::new_v4();
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::String("mock://sr".into()));
     table.insert("reachable_in_standby".into(), toml::Value::Boolean(true));
@@ -425,7 +425,7 @@ async fn wake_needy_screen_on_wakes_in_place_when_standby_reachable() {
 async fn screen_off_during_pending_dial_lands_after_connect() {
     let (mut effects, client, handle) = spawn_reactor();
     handle.set_connect_delay(Duration::from_millis(400));
-    let id = uuid::Uuid::new_v4();
+    let id = Uuid::new_v4();
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Race", mock_config("mock://race"))),
         reply: Some(1),
@@ -771,7 +771,7 @@ async fn remote_armed_projection_tracks_the_set() {
 #[tokio::test]
 async fn automation_wake_restores_the_primary_input() {
     let (mut effects, client, _handle) = spawn_reactor();
-    let id = uuid::Uuid::new_v4();
+    let id = Uuid::new_v4();
     let mut table = toml::value::Table::new();
     table.insert("address".into(), toml::Value::String("mock://inp".into()));
     table.insert("initial_input".into(), toml::Value::String("HDMI_2".into()));

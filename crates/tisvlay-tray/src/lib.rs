@@ -338,7 +338,10 @@ async fn spawn_liveliness_pump(
 /// Execute menu commands as rpcs. Scroll bursts hand off to the
 /// per-target coalescers without awaiting, so a slow set-volume can't
 /// block other commands behind it.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an entry point taking each handle and channel it owns; a struct would only rename the list"
+)]
 async fn process_commands(
     caller: Arc<Caller>,
     user_caller: Option<Arc<Caller>>,
@@ -515,6 +518,10 @@ async fn execute(
         // Handled in process_commands (needs the pending flag).
         TrayCommand::OpenGui => {}
         #[cfg(debug_assertions)]
+        #[expect(
+            clippy::exit,
+            reason = "debug-only Quit ends the tray process immediately"
+        )]
         TrayCommand::Quit => std::process::exit(0),
     }
 }

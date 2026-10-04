@@ -161,7 +161,10 @@ pub struct WatchHandle {
     /// Write end of the stop pipe; its `Drop` (closing the fd) is the stop
     /// signal the watch thread's `poll` wakes on (`POLLHUP`). Held only for
     /// that side effect.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: closing it stops the idle loop"
+    )]
     stop: OwnedFd,
 }
 
@@ -267,7 +270,10 @@ fn spawn_watch(
 }
 
 /// Run the Wayland event loop in a dedicated thread.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the idle loop takes each handle and channel it owns"
+)]
 fn run_idle_loop(
     _conn: Connection,
     mut event_queue: EventQueue<WaylandState>,

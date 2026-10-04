@@ -110,12 +110,12 @@ fn breeze_dark_light_hexes() {
 fn status_variants_derive_from_base() {
     let t = tokens();
     for base in ["success", "danger", "warn", "info"] {
-        let soft = t.get(&format!("{base}-soft")).unwrap();
+        let soft = &t[&format!("{base}-soft")];
         assert!(
             soft.contains(&format!("{base}.with-alpha")),
             "`{base}-soft` should be `{base}.with-alpha(…)`, got: {soft}"
         );
-        let text = t.get(&format!("{base}-text")).unwrap();
+        let text = &t[&format!("{base}-text")];
         // Direction matters: brighten in the dark branch (before `:`) and
         // darken in the light branch (after). A swap would darken on the
         // dark soft-wash (illegible), so assert the order, not just that
@@ -132,7 +132,7 @@ fn status_variants_derive_from_base() {
         );
     }
     // Selection tracks the accent (Breeze's Selection role IS the accent).
-    let sel = t.get("row-selected").unwrap();
+    let sel = &t["row-selected"];
     assert!(
         sel.contains("accent.with-alpha"),
         "`row-selected` should be an accent wash, got: {sel}"

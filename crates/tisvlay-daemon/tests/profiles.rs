@@ -23,7 +23,6 @@ type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 struct Wire {
     _dir: tempfile::TempDir,
     stack: tisvlay_daemon::Stack,
-    #[allow(dead_code)]
     handle: MockHandle,
     client: Session,
     site: String,

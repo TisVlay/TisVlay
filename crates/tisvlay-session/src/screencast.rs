@@ -25,6 +25,11 @@
 //! warning, and a lost connection tears the source down and reconnects —
 //! it never blocks or kills the session service.
 
+#![expect(
+    unsafe_code,
+    reason = "env::set_var points PipeWire at the host's SPA plugins, under an unsafe fn whose caller guarantees the process is still single-threaded"
+)]
+
 use std::collections::BTreeMap;
 
 use tisvlay_wire::payload::RemoteSourceKind;
@@ -223,6 +228,8 @@ impl From<std::io::Error> for FfiError {
     }
 }
 
+pub use ffi::point_at_host_spa_plugins;
+
 /// The FFI-facing strip: the only code that touches `pipewire-native`.
 /// Deliberately thin — it wires registry/node events to the pure
 /// [`Tracker`] and forwards its reports. Not exercised by CI (needs a
@@ -242,7 +249,6 @@ mod ffi {
 
     /// One-time global init of the PipeWire support libraries.
     pub(super) fn init() {
-        point_at_host_spa_plugins();
         pipewire_native::init();
     }
 
@@ -255,7 +261,12 @@ mod ffi {
     /// the host's real dirs unless the operator already pinned one. The
     /// loader searches a colon-separated list in order and skips dirs that
     /// don't load, so we hand it every layout that exists and let it pick.
-    fn point_at_host_spa_plugins() {
+    ///
+    /// # Safety
+    ///
+    /// It calls [`std::env::set_var`], so no other thread may exist yet: call
+    /// it from `main` before the async runtime starts.
+    pub unsafe fn point_at_host_spa_plugins() {
         if std::env::var_os("SPA_PLUGIN_DIR").is_some() {
             return;
         }
@@ -280,9 +291,8 @@ mod ffi {
         if dirs.is_empty() {
             return;
         }
-        // SAFETY: runs once at detector-thread startup before
-        // `pipewire_native::init()` — the only reader of SPA_PLUGIN_DIR —
-        // and we never mutate it again.
+        // SAFETY: by this fn's contract no other thread exists yet, so
+        // nothing can read or write the environment concurrently.
         unsafe { std::env::set_var("SPA_PLUGIN_DIR", dirs.join(":")) };
     }
 

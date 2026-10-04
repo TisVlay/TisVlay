@@ -143,7 +143,7 @@ fn spawn_tv_rpc(
     tv_id: String,
     log_label: &'static str,
     title: String,
-    fut: impl std::future::Future<Output = Result<()>> + Send + 'static,
+    fut: impl Future<Output = Result<()>> + Send + 'static,
 ) {
     let app_weak = app_weak.clone();
     tokio::spawn(async move {
@@ -267,7 +267,7 @@ pub fn run() -> Result<()> {
     // `/usr/share/locale/<locale>/LC_MESSAGES/tisvlay-gui.mo`. v1 ships
     // English only — every `@tr("…")` and `gettext("…")` returns the
     // literal in the absence of a matching catalog.
-    tisvlay_gui_ui::init_translations();
+    init_translations();
 
     let args = Args::parse();
     let _ = ENDPOINTS.set(Endpoints {
@@ -752,7 +752,10 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an entry point taking each handle and channel it owns; a struct would only rename the list"
+)]
 fn register_callbacks(
     app: &AppWindow,
     daemon: Arc<DaemonClient>,
@@ -764,7 +767,7 @@ fn register_callbacks(
     wizard_cancel: WizardDiscoveryCancel,
     wizard_manual_lookup_cancel: WizardManualLookupCancel,
     editor: ProfileEditor,
-    nav: &crate::nav::NavHandles,
+    nav: &nav::NavHandles,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -903,7 +906,7 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             let name = name.to_string();
             tokio::spawn(async move {
-                let result: anyhow::Result<uuid::Uuid> = match editor_kind {
+                let result: Result<uuid::Uuid> = match editor_kind {
                     EditorKind::System => d.create_system_profile(&name).await,
                     EditorKind::User => {
                         let session_ref = s.read().await;
@@ -950,7 +953,7 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             let new_name = new_name.to_string();
             tokio::spawn(async move {
-                let result: anyhow::Result<uuid::Uuid> = match editor_kind {
+                let result: Result<uuid::Uuid> = match editor_kind {
                     EditorKind::System => d.duplicate_system_profile(source, &new_name).await,
                     EditorKind::User => {
                         let session_ref = s.read().await;
@@ -1008,7 +1011,7 @@ fn register_callbacks(
             let ed = ed.clone();
             let app_weak = app_weak.clone();
             tokio::spawn(async move {
-                let result: anyhow::Result<()> = match editor_kind {
+                let result: Result<()> = match editor_kind {
                     EditorKind::System => d.delete_system_profile(uuid).await,
                     EditorKind::User => {
                         let session_ref = s.read().await;
@@ -1512,7 +1515,7 @@ fn register_callbacks(
             let Some(uuid) = bodies
                 .iter()
                 .find(|(u, b)| {
-                    crate::state::display_profile_name(**u, &b.name, DEFAULT_SYSTEM_PROFILE_UUID)
+                    state::display_profile_name(**u, &b.name, DEFAULT_SYSTEM_PROFILE_UUID)
                         == picked_name
                 })
                 .map(|(u, _)| *u)
@@ -1570,7 +1573,7 @@ fn register_callbacks(
             let Some(uuid) = bodies
                 .iter()
                 .find(|(u, b)| {
-                    crate::state::display_profile_name(**u, &b.name, DEFAULT_USER_PROFILE_UUID)
+                    state::display_profile_name(**u, &b.name, DEFAULT_USER_PROFILE_UUID)
                         == picked_name
                 })
                 .map(|(u, _)| *u)
@@ -1875,13 +1878,11 @@ fn register_callbacks(
                     // "default" + indicator glyph) so std `ComboBox`'s
                     // string-match `current-value` resolves to the
                     // right model row.
-                    wizard.set_system_profile(SharedString::from(
-                        crate::state::display_profile_name(
-                            DEFAULT_SYSTEM_PROFILE_UUID,
-                            "default",
-                            DEFAULT_SYSTEM_PROFILE_UUID,
-                        ),
-                    ));
+                    wizard.set_system_profile(SharedString::from(state::display_profile_name(
+                        DEFAULT_SYSTEM_PROFILE_UUID,
+                        "default",
+                        DEFAULT_SYSTEM_PROFILE_UUID,
+                    )));
                 }
                 // User picked a TV — stop the streaming discovery
                 // session AND any in-flight manual-entry MAC lookup

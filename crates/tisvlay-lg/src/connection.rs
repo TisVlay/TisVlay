@@ -131,8 +131,7 @@ impl LgConnection {
     where
         F: FnMut(
             &mut WebOsClient,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + '_>>,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<T>> + Send + '_>>,
     {
         let client = self.ensure_connected().await?;
         match f(client).await {

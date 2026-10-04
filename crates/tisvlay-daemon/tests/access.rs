@@ -4,6 +4,8 @@
 //! named-user ACL entry is, to the kernel's `connect()` check, the same
 //! event as the mode widen/narrow performed here.
 
+#![expect(unsafe_code, reason = "libc::geteuid to skip the DAC tests under root")]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

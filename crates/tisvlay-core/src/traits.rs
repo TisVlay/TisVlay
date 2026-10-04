@@ -681,7 +681,7 @@ pub trait TvDiscovery: Send + Sync {
     fn discover(
         &self,
         timeout: std::time::Duration,
-    ) -> impl std::future::Future<Output = Result<Vec<DiscoveredTv>>> + Send;
+    ) -> impl Future<Output = Result<Vec<DiscoveredTv>>> + Send;
 }
 
 #[cfg(test)]

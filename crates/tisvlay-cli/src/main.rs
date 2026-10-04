@@ -1,3 +1,12 @@
+// The CLI prints its results to stdout by design; the workspace print
+// lints target the daemons and libraries, which log through tracing.
+// `allow`, not `expect`: the bin's test build doesn't trip `print_stderr`.
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the CLI prints its output"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -635,7 +644,7 @@ fn vendor_candidates() -> Vec<CompletionCandidate> {
 /// one. Any failure (no daemon, wedged daemon, timeout) yields no
 /// candidates rather than blocking the prompt.
 fn blocking_candidates(
-    query: impl std::future::Future<Output = Option<Vec<CompletionCandidate>>>,
+    query: impl Future<Output = Option<Vec<CompletionCandidate>>>,
 ) -> Vec<CompletionCandidate> {
     let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1334,6 +1343,10 @@ async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) ->
         }
         Ok(())
     } else if json_out {
+        #[expect(
+            clippy::exit,
+            reason = "`status --json` reports a missing daemon as exit code 1 after printing its JSON, with no error text"
+        )]
         std::process::exit(1);
     } else {
         bail!(
