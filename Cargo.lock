@@ -6696,6 +6696,14 @@ dependencies = [
 name = "tisvlay-gui"
 version = "0.3.0"
 dependencies = [
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "tisvlay-gui-app"
+version = "0.3.0"
+dependencies = [
  "anyhow",
  "ashpd",
  "clap",
@@ -6708,10 +6716,10 @@ dependencies = [
  "rustix 1.1.5",
  "serde_json",
  "slint",
- "slint-build",
  "tempfile",
  "tisvlay",
  "tisvlay-core",
+ "tisvlay-gui",
  "tisvlay-icons",
  "tisvlay-wire",
  "tokio",

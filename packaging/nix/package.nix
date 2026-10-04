@@ -42,7 +42,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   rpathLibs = callPackage ./slint-runtime.nix { };
 
   nativeBuildInputs = [
-    # build.rs (tisvlay-gui) and preBuild both invoke cargo-about for
+    # build.rs (tisvlay-gui-app) and preBuild both invoke cargo-about for
     # the same THIRD-PARTY-LICENSES.html — embedded in the binary and
     # installed to share/doc/ respectively.
     cargo-about

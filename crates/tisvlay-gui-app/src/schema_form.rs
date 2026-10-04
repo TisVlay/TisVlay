@@ -50,7 +50,7 @@ pub(crate) struct AutofilledRow {
 }
 
 impl AutofilledRow {
-    pub fn into_slint(self) -> PairingFieldRow {
+    pub(crate) fn into_slint(self) -> PairingFieldRow {
         let (state, error) = validate_value(
             &self.name,
             parse_field_type(&self.field_type),
@@ -84,7 +84,7 @@ impl AutofilledRow {
 /// — keeps the form rendering through a forward-compat schema that
 /// introduces a new variant before we've taught the GUI about it.
 /// The validator just treats it as plain text.
-pub fn parse_field_type(s: &str) -> PairingFieldType {
+pub(crate) fn parse_field_type(s: &str) -> PairingFieldType {
     match s {
         "password" => PairingFieldType::Password,
         "ip" => PairingFieldType::Ip,
@@ -104,7 +104,7 @@ pub fn parse_field_type(s: &str) -> PairingFieldType {
 /// passes the `pair` / `update-config` rpcs. Empty +
 /// non-required → "pristine" (no opinion yet); otherwise validation
 /// routes us into "valid" or "invalid".
-pub fn validate_value(
+pub(crate) fn validate_value(
     name: &str,
     field_type: PairingFieldType,
     required: bool,
@@ -140,7 +140,7 @@ pub fn validate_value(
 /// Walk the schema-fields model and decide whether the form's
 /// submit button should enable. True iff every required field has a
 /// non-empty value AND no field is in `state == "invalid"`.
-pub fn compute_schema_valid(model: &ModelRc<PairingFieldRow>) -> bool {
+pub(crate) fn compute_schema_valid(model: &ModelRc<PairingFieldRow>) -> bool {
     for i in 0..model.row_count() {
         let Some(row) = model.row_data(i) else {
             continue;
@@ -288,7 +288,7 @@ pub(crate) fn prefill_schema_from_config(
 /// clearing a field mean the same thing on both form paths; only the
 /// wire encoding differs.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ClearedOptionals {
+pub(crate) enum ClearedOptionals {
     /// Pairing payload: omit the key. A fresh config parse applies the
     /// serde default for every absent field, and the pairing params
     /// become TOML, which cannot carry null anyway.
@@ -312,7 +312,7 @@ pub enum ClearedOptionals {
 /// int) convert to JSON numbers when parseable, falling back to
 /// string. Strings (including ip / mac / password / path) stay
 /// strings.
-pub fn build_config_json_from_schema(
+pub(crate) fn build_config_json_from_schema(
     model: &ModelRc<PairingFieldRow>,
     cleared: ClearedOptionals,
 ) -> String {

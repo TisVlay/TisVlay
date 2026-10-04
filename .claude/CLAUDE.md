@@ -52,7 +52,10 @@ tisvlay/
 │   ├── tisvlay/                   # Client SDK: DaemonClient/SessionClient/TrayClient +
 │   │                             # StateWatcher (root-D-Bus-client-compatible surface)
 │   ├── tisvlay-cli/               # CLI (binary name: tisvlay) — pure zenoh client
-│   └── tisvlay-gui/               # Slint settings window (ui/*.slint, lang/ gettext)
+│   ├── tisvlay-gui/               # Compiled Slint UI only (ui/*.slint, lang/ gettext;
+│   │                             # owns the gettext domain; lib name tisvlay_gui_ui)
+│   └── tisvlay-gui-app/           # Settings window: state, rpcs, tests, `tisvlay-gui`
+│                                 # binary (lib name tisvlay_gui)
 │
 ├── packaging/
 │   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM)

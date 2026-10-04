@@ -2,7 +2,7 @@
 
 The About pane's "Diagnostics" button copies a JSON blob to the user's clipboard so they can paste it into a GitHub issue. The blob is a one-shot snapshot of the running GUI process's view of itself, its peer services, the host runtime, and the configured TV inventory — enough to answer most "what's the user's setup?" questions without a follow-up round-trip.
 
-The renderer lives in [`crates/tisvlay-gui/src/diagnostic.rs`](../crates/tisvlay-gui/src/diagnostic.rs); host probes (kernel / glibc / OS) live in the [`runtime_info`](../crates/tisvlay-gui/src/diagnostic/runtime_info.rs) submodule.
+The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tisvlay-gui-app/src/diagnostic.rs); host probes (kernel / glibc / OS) live in the [`runtime_info`](../crates/tisvlay-gui-app/src/diagnostic/runtime_info.rs) submodule.
 
 ## Schema (v1)
 

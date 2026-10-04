@@ -35,7 +35,7 @@ below), then attach via the project-root `.mcp.json`.
   invocation:
   ```sh
   SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315 \
-      cargo run -p tisvlay-gui --features slint/mcp
+      cargo run -p tisvlay-gui-app --features slint/mcp
   ```
 
 - **Disabling Slint's `accessibility` default feature does NOT break
@@ -406,7 +406,7 @@ in case it comes up again:
   code*) confirm this is a known gap without a roadmap.
 
 The pivot: hand the HTML off to the user's browser via `xdg-open`.
-[`crates/tisvlay-gui/src/main.rs::open_notices_html`](../crates/tisvlay-gui/src/main.rs)
+[`crates/tisvlay-gui-app/src/main.rs::open_notices_html`](../crates/tisvlay-gui-app/src/main.rs)
 prefers an installed copy at `/usr/share/doc/<pkg>/...` (FHS,
 populated by nfpm) or `$prefix/share/doc/<pkg>/...` (current_exe()-
 relative, covers Nix / AppImage / non-FHS), with a per-process

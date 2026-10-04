@@ -22,7 +22,7 @@ const INTERFACE: &str = "org.freedesktop.FileManager1";
 /// returns `Err` on failure; callers typically log and move on
 /// (mirroring the rest of the GUI's "best-effort, never panic" launch
 /// affordances).
-pub async fn reveal(connection: &Connection, path: &Path) -> Result<()> {
+pub(crate) async fn reveal(connection: &Connection, path: &Path) -> Result<()> {
     let uri = path_to_uri(path)?;
     debug!(uri = %uri, "FileManager1.ShowItems");
 

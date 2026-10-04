@@ -127,7 +127,7 @@ const COMPONENT_CATALOGUE: &[(&str, &str, &str)] = &[
 /// rpc. Always probed together because they ride one reply.
 /// `config_path` is empty when the peer has no config file (GUI).
 #[derive(Clone, Default, Debug)]
-pub struct PeerInfo {
+pub(crate) struct PeerInfo {
     pub version: String,
     pub config_path: String,
 }

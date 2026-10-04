@@ -7,7 +7,7 @@
 /// `None` when the syscall surface yields a non-UTF-8 value, which
 /// is exceedingly rare on Linux but possible (the kernel's release
 /// field is typically a stable ASCII subset).
-pub fn kernel_release() -> Option<String> {
+pub(super) fn kernel_release() -> Option<String> {
     let utsname = rustix::system::uname();
     let release = utsname.release().to_string_lossy().into_owned();
     if release.is_empty() {
@@ -23,7 +23,7 @@ pub fn kernel_release() -> Option<String> {
 /// packaging triage cares about the *deployment* glibc, not whatever
 /// the binary was built against.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-pub fn glibc_version() -> Option<String> {
+pub(super) fn glibc_version() -> Option<String> {
     use std::ffi::CStr;
 
     // SAFETY: `gnu_get_libc_version` is a thread-safe libc call that
@@ -65,7 +65,7 @@ pub fn glibc_version() -> Option<String> {
 /// `Type::NixOS` defence against distro-detection typos. A future
 /// `os_info` release that switches to raw-string version storage
 /// will fix this without a code change on our side.
-pub fn os_release() -> (Option<String>, Option<String>) {
+pub(super) fn os_release() -> (Option<String>, Option<String>) {
     let info = os_info::get();
     let id = match info.os_type() {
         os_info::Type::Unknown => None,

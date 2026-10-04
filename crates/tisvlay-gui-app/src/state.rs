@@ -27,7 +27,7 @@ use uuid::Uuid;
 /// Per-TV view-model row in a thread-safe shape (no `Rc` inside).
 /// Converted to the Slint-generated `TvViewModel` inside the event
 /// loop, where `ModelRc::new` is allowed.
-pub struct TvViewRaw {
+pub(crate) struct TvViewRaw {
     pub uuid: SharedString,
     pub name: SharedString,
     pub vendor: SharedString,
@@ -102,7 +102,7 @@ pub struct TvViewRaw {
 /// Assigned/info), matching the 3-state classification the master
 /// list row uses for the row-level aggregate.
 #[derive(Debug, Clone)]
-pub struct ProfileTvRefRaw {
+pub(crate) struct ProfileTvRefRaw {
     pub uuid: SharedString,
     pub name: SharedString,
     pub automated: bool,
@@ -119,7 +119,7 @@ pub struct ProfileTvRefRaw {
 /// suffixed with the default-indicator glyph. See
 /// [`display_profile_name`] for the synthesis rules.
 #[derive(Debug, Clone)]
-pub struct ProfileRowRaw {
+pub(crate) struct ProfileRowRaw {
     pub uuid: SharedString,
     pub name: SharedString,
     pub display_name: SharedString,
@@ -130,7 +130,7 @@ pub struct ProfileRowRaw {
 }
 
 /// Snapshot of fetched state for one refresh pass.
-pub struct StateSnapshot {
+pub(crate) struct StateSnapshot {
     pub tvs: Vec<TvViewRaw>,
     /// Friendly-name list for the TVs-pane System-profile ComboBox.
     /// Derived from the body catalog so the same fetch feeds both
@@ -146,7 +146,7 @@ pub struct StateSnapshot {
 
 /// Pure-data inputs the renderer needs from one IO pass. Decoupled
 /// from D-Bus so [`convert_snapshot`] can be exercised by unit tests.
-pub struct SnapshotInputs {
+pub(crate) struct SnapshotInputs {
     pub tvs: Vec<TvInfo>,
     /// System-profile catalog, keyed by parsed UUID. From the
     /// daemon's `profile/system/<uuid>` keys.
@@ -170,7 +170,7 @@ pub struct SnapshotInputs {
 /// body catalog, one optional session-service call for the
 /// user-profile body catalog, and one optional session-service call
 /// per TV for the user-profile assignment.
-pub async fn fetch_state(
+pub(crate) async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
 ) -> Result<StateSnapshot> {
@@ -214,7 +214,7 @@ pub async fn fetch_state(
 /// so callers can refresh one row on a `SystemProfileChanged` event
 /// without going through a full catalog list. Errors propagate so the
 /// caller can decide whether to retry or drop the cached row.
-pub async fn fetch_system_profile_body(
+pub(crate) async fn fetch_system_profile_body(
     daemon: &DaemonClient,
     uuid: Uuid,
 ) -> Result<SystemProfileBody> {
@@ -222,7 +222,7 @@ pub async fn fetch_system_profile_body(
 }
 
 /// User-side mirror of [`fetch_system_profile_body`].
-pub async fn fetch_user_profile_body(
+pub(crate) async fn fetch_user_profile_body(
     session: &SessionClient,
     uuid: Uuid,
 ) -> Result<UserProfileBody> {
@@ -231,7 +231,7 @@ pub async fn fetch_user_profile_body(
 
 /// Pure renderer: shape `SnapshotInputs` into the `StateSnapshot` the
 /// GUI consumes. No IO; testable without an event loop.
-pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
+pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
     let SnapshotInputs {
         tvs,
         system_profile_bodies,

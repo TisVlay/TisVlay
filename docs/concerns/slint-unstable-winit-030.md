@@ -14,7 +14,7 @@ Slint marks the `winit_030` module as "may be removed or changed in future minor
 
 ### Pin
 
-`slint = "=1.18.1"` — exact-version pin in `crates/tisvlay-gui/Cargo.toml`. The matching test dependency `i-slint-backend-testing` and `slint-build` are similarly exact-pinned to `=1.18.1` (the latter so the `.slint` compiler can't desync from the runtime under `cargo update`).
+`slint = "=1.18.1"` — exact-version pin in the root `Cargo.toml`'s `[workspace.dependencies]`, shared by `tisvlay-gui` and `tisvlay-gui-app`. The matching test dependency `i-slint-backend-testing` and `slint-build` are similarly exact-pinned to `=1.18.1` (the latter so the `.slint` compiler can't desync from the runtime under `cargo update`).
 
 ### Risk
 
@@ -54,8 +54,8 @@ token) are manual KDE QA.
 
 When bumping `slint` to a new version, verify these still compile and behave as before:
 
-- `crates/tisvlay-gui/src/dbus.rs::raise()` — `app.window().with_winit_window(|w| w.request_user_attention(...))` path.
-- `crates/tisvlay-gui/src/lib.rs` — `BackendSelector::new().with_winit_window_attributes_hook(...)` path and the `WindowAttributesExtStartupNotify` import from `slint::winit_030::winit::platform::startup_notify`.
+- `crates/tisvlay-gui-app/src/dbus.rs::raise()` — `app.window().with_winit_window(|w| w.request_user_attention(...))` path.
+- `crates/tisvlay-gui-app/src/lib.rs` — `BackendSelector::new().with_winit_window_attributes_hook(...)` path and the `WindowAttributesExtStartupNotify` import from `slint::winit_030::winit::platform::startup_notify`.
 - `ActivationToken::from_raw(token)` import from `slint::winit_030::winit::window::ActivationToken` (note: the type is *also* exposed at `slint::winit_030::winit::platform::startup_notify::ActivationToken` but as private — use the public one).
 
 ### Alternative rejected: direct `winit = "0.30"` dev-dep
