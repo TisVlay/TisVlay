@@ -103,7 +103,7 @@ cargo build --release
 
 Binaries land in `target/release/`. Building from Cargo does **not** install the systemd units — copy those from [`packaging/`](https://github.com/ruffsl/tisvlay/tree/main/packaging) if you want the daemon and session services managed by systemd, and create the `tisvlay` group yourself.
 
-A Rust toolchain is required; install it from <https://rust-lang.org/tools/install/>.
+A recent stable Rust toolchain is required — at least the `rust-version` declared in the workspace `Cargo.toml`; install it from <https://rust-lang.org/tools/install/>.
 
 ## HDMI-CEC backend (optional)
 

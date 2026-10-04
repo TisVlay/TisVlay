@@ -16,7 +16,7 @@ For HDMI-CEC, the kernel must expose a `/dev/cecN` node — most GPU HDMI ports 
 
 - **Linux** — the daemon needs no D-Bus (it uses a local IPC socket). The desktop **session and tray** services do use the session/system D-Bus for desktop integration (logind, the screensaver, the system tray, and notifications), so they expect a normal desktop bus.
 - **Socket access** — the daemon's control socket is `0660`, group-owned. The **active seat's user has access automatically** (a presence grant the daemon applies while you're at the console); everyone else — SSH, scripts, headless — needs membership in the **`tisvlay` group**, granted one-click by `tisvlay enable-access`. See [Installation](../getting-started/installation.md).
-- **Network reachability** — the host and TV on the same L2 network (Wake-on-LAN magic packets don't cross routers).
+- **Network reachability** — the host and TV on the same L2 network (Wake-on-LAN magic packets are broadcasts and don't cross routers). Control itself is routable: a TV on a separate subnet or VLAN works once your router relays or reflects the wake broadcast to it.
 - **Idle & lock-wake detection** (optional; powers the in-session idle timer and unblanking the TV when you touch the lock screen) — a Wayland compositor with `ext-idle-notify-v1` (KDE Plasma, wlroots compositors) **or GNOME** (detected through Mutter's own idle monitor).
 - For the DPMS display-blank automation, the host must expose the matched connector's power state via `/sys/class/drm/*/dpms` (verified on KDE Plasma Wayland).
 - **A CEC adapter** — only for the HDMI-CEC backend; see the adapter note under Supported TVs above.
@@ -31,4 +31,4 @@ For HDMI-CEC, the kernel must expose a `/dev/cecN` node — most GPU HDMI ports 
 
 - Full-feature control (input, volume, backlight) is LG-only for now; other brands are reachable over HDMI-CEC for power and screen-blank.
 - Over HDMI-CEC only power and screen-blank are supported — volume, backlight, and arbitrary input switching aren't reliable over CEC, and screen-blank is emulated by powering the TV off/on (CEC can't blank a panel that stays on).
-- Wake-on-LAN cannot cross subnets, and TVs may briefly ignore it during a pixel-refresh cycle. (The CEC backend wakes over the bus instead, so it doesn't use Wake-on-LAN.)
+- Wake-on-LAN cannot cross subnets on its own (it needs a router that relays the wake broadcast), and TVs may briefly ignore it during a pixel-refresh cycle. (The CEC backend wakes over the bus instead, so it doesn't use Wake-on-LAN.)

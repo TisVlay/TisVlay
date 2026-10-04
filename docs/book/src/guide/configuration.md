@@ -31,7 +31,7 @@ system = "00000000-0000-0000-0000-000000005159"   # assigned system profile (by 
 
 [tv.config]
 ip = "192.168.1.170"
-mac = "84:90:0a:63:a9:94"
+mac = "84:90:0a:63:a9:94"  # Wake-on-LAN; read from the TV at pair time if left out
 # LG also stores, set automatically during pairing:
 #   client_key = "…"   scheme = "wss"
 ```

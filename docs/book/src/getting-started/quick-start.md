@@ -7,12 +7,12 @@ This walks through pairing your first TV and controlling it from the command lin
 Make sure the TV is on and on the same network, then pair it. The TV shows an on-screen prompt — accept it.
 
 ```sh
-tisvlay pair "Living Room" --vendor lg --params '{"ip":"192.168.1.100","mac":"AA:BB:CC:DD:EE:FF"}'
+tisvlay pair "Living Room" --vendor lg --params '{"ip":"192.168.1.100"}'
 ```
 
 - The first argument (`"Living Room"`) is the TV's name.
 - `--vendor lg` selects the LG WebOS backend.
-- `--params` carries the vendor's pairing fields as JSON. For LG that's `ip` (required) and `mac` (the MAC address for Wake-on-LAN — without it, tisvlay can't power the TV back on from standby).
+- `--params` carries the vendor's pairing fields as JSON. For LG that's `ip` (required) and, optionally, `mac` — the MAC address tisvlay needs for Wake-on-LAN to power the TV back on from standby. Leave it out and tisvlay reads it from the TV when pairing completes, printing a `mac: detected … (saved)` line.
 
 See [Pairing](./pairing.md) for discovery, the GUI wizard, and HDMI-CEC.
 

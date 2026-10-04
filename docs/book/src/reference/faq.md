@@ -18,7 +18,7 @@ No. The daemon plus the CLI is a complete remote control. Add `tisvlay-session` 
 
 ### Is `screen off` safe for an OLED?
 
-That's what it's for. `tisvlay screen <id> off` turns the panel off while the TV stays powered and connected — no burn-in exposure, instant resume — which is why it's the default lock/idle action. `power off` is deeper (standby): the TV drops off the network and needs Wake-on-LAN to return.
+That's what it's for. `tisvlay screen <id> off` turns the panel off while the TV stays powered and connected — no burn-in exposure, instant resume — which is why it's the default lock/idle action. `power off` is deeper (standby): the TV refuses control connections (even if it still answers on the network) and needs Wake-on-LAN to return.
 
 ### Can I script tisvlay?
 

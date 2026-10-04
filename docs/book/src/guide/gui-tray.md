@@ -4,13 +4,13 @@ Two optional desktop frontends: a settings window for setup and configuration, a
 
 ## Settings window (`tisvlay-gui`)
 
-Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single-instance: launching it again focuses the existing window.
+Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single-instance: launching it again focuses the existing window. It's styled after KDE's Breeze color schemes and follows your desktop's light/dark preference live, so it looks native on Plasma in either scheme.
 
 **TVs** — a master list of your TVs with a detail view per TV:
 
 - Live controls: power, screen on/off, volume, mute, backlight, input switching — with connection state, the active power state (including transitional states like *Warming up…*), and the TV's vendor-reported details (make, model, and similar identity rows) as live state.
 - The pencil toggles edit mode for the TV's configuration: name, managed flag, profile assignments, primary input, and the vendor-specific settings (IP, MAC, …). Optional fields show their effective default — **clearing one reverts it to that default** rather than storing an empty value.
-- **Add TV** opens the pairing wizard: discovered TVs stream into the list as they answer; or switch to manual entry, pick a vendor, and fill the vendor's form (the *Mock (testing)* vendor lives here too — see [the troubleshooting page](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend)). Pairing progress and the TV's accept prompt are narrated step by step.
+- **Add TV** opens the pairing wizard: discovered TVs stream into the list as they answer; or switch to manual entry, pick a vendor, and fill the vendor's form (the *Mock (testing)* vendor lives here too — see [the troubleshooting page](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend)). Pairing progress and the TV's accept prompt are narrated step by step. Leave the MAC blank if it wasn't auto-detected: the final step reports the MAC read from the TV, or offers **Use reported** / **Keep mine** if it differs from the one you entered (see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac)).
 
 **Profiles** — the full profile catalog editor: create, rename, duplicate, delete, and a per-field editor showing whether each field is set or inherited. Each action row also carries two small icon toggles: **restore input** (switch the TV back to its primary input after this action) and the **while-remote** gate (a network toggle — whether the action still fires while a remote session has the TV armed). A user profile additionally has a **REMOTE SESSION** card with the *Screen capture arms* switch (whether an unattributed screen capture should arm the TV). See [Profiles](./profiles.md) and [Remote-Session Awareness](./remote-sessions.md).
 
