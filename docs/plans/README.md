@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`api-hygiene.md`](api-hygiene.md) — typed SDK errors and a shared wire error-code enum (PR A), then secret types for the LG client key and the vendor-config bag (PR B).
+- [`api-hygiene.md`](api-hygiene.md) — typed RPC endpoints (A0), typed SDK errors over a shared wire error-code enum (A), then secret types for the LG client key (B1) and the vendor-config bag (B2).
 
 When a plan is in flight, list it here with
 a one-line summary of the work it covers:
