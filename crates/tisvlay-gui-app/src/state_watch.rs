@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use crate::compat::{
-    DaemonClient, NotificationSettingsBody, RefreshTrigger, SessionClient, StateEvent,
-    StateWatcher, TrayClient,
+    DaemonClient, NotificationSettings, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+    TrayClient,
 };
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -73,7 +73,7 @@ pub(crate) async fn initial_fetch_and_watch(
     // switch positions even if the GUI starts while the tray is
     // offline; gets overwritten with real values once
     // `refresh_tray_notifications` lands a fetch.
-    let initial_tray_notifications = body_to_slint(&NotificationSettingsBody::defaults());
+    let initial_tray_notifications = settings_to_slint(&NotificationSettings::default());
     on_ui(&app_weak, move |app| {
         if let Some(snapshot) = initial_snapshot {
             push_snapshot(&app, snapshot);
@@ -148,8 +148,8 @@ async fn fetch_and_publish_vendors(
             daemon.get_vendor_capabilities(&id),
             daemon.get_pairing_schema(&id),
         );
-        let caps = caps.unwrap_or_else(|e| {
-            debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
+        let caps = caps.ok().flatten().unwrap_or_else(|| {
+            debug!(vendor = %id, "vendor capabilities unavailable; treating as empty");
             tisvlay_core::Capabilities::empty()
         });
         // The schema's first field is the vendor's primary descriptor
@@ -427,26 +427,21 @@ pub(crate) async fn refresh_tray_notifications(
             None => return,
         }
     };
-    let settings = body_to_slint(&body);
+    let settings = settings_to_slint(&body);
     on_ui(app_weak, move |app| {
         app.global::<Tray>().set_notifications(settings);
     });
 }
 
-/// Lower a `NotificationSettingsBody` (every field `Option<bool>`)
-/// into the Slint `TrayNotificationSettings` struct (every field
-/// `bool`). The tray's property getter fills every field, so the
-/// `unwrap_or(true)` only guards the theoretical partial body from a
-/// future version-skewed tray — falling back to the documented
-/// default-on. (`TrayNotificationSettings` is Slint-generated, so the
-/// field list can't route through `NotificationCategory::ALL` the way
-/// the tray-side conversions do.)
-fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
+/// Lower the tray's settings into the Slint `TrayNotificationSettings`
+/// struct. (`TrayNotificationSettings` is Slint-generated, so the field
+/// list can't route through `NotificationCategory::ALL`.)
+fn settings_to_slint(settings: &NotificationSettings) -> TrayNotificationSettings {
     TrayNotificationSettings {
-        tv_connection: body.tv_connection.unwrap_or(true),
-        tv_pairing: body.tv_pairing.unwrap_or(true),
-        tv_wake: body.tv_wake.unwrap_or(true),
-        daemon_offline: body.daemon_offline.unwrap_or(true),
+        tv_connection: settings.tv_connection,
+        tv_pairing: settings.tv_pairing,
+        tv_wake: settings.tv_wake,
+        daemon_offline: settings.daemon_offline,
     }
 }
 
@@ -487,8 +482,8 @@ async fn refresh_about_components(
 ) {
     async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
     where
-        F1: Future<Output = anyhow::Result<String>>,
-        F2: Future<Output = anyhow::Result<String>>,
+        F1: Future<Output = tisvlay::Result<String>>,
+        F2: Future<Output = tisvlay::Result<String>>,
     {
         Some(PeerInfo {
             version: version.await.ok()?,

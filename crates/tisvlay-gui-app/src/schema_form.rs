@@ -300,7 +300,7 @@ pub(crate) enum ClearedOptionals {
     Null,
 }
 
-/// Build a config-payload JSON object from the schema-fields model.
+/// Build a config-payload object from the schema-fields model.
 /// Walks each row and emits `{ <name>: <value>, ... }` matching the
 /// schema's `name` keys; a cleared optional row is encoded per
 /// [`ClearedOptionals`] (an empty `""` is never sent — typed validators
@@ -312,10 +312,10 @@ pub(crate) enum ClearedOptionals {
 /// int) convert to JSON numbers when parseable, falling back to
 /// string. Strings (including ip / mac / password / path) stay
 /// strings.
-pub(crate) fn build_config_json_from_schema(
+pub(crate) fn build_config_from_schema(
     model: &ModelRc<PairingFieldRow>,
     cleared: ClearedOptionals,
-) -> String {
+) -> serde_json::Map<String, serde_json::Value> {
     let mut obj = serde_json::Map::new();
     for i in 0..model.row_count() {
         let Some(row) = model.row_data(i) else {
@@ -341,7 +341,7 @@ pub(crate) fn build_config_json_from_schema(
         };
         obj.insert(row.name.to_string(), json_val);
     }
-    serde_json::Value::Object(obj).to_string()
+    obj
 }
 
 #[cfg(test)]
@@ -590,16 +590,15 @@ mod tests {
         assert!(!compute_schema_valid(&m));
     }
 
-    // ---------- build_config_json_from_schema ----------
+    // ---------- build_config_from_schema ----------
 
     #[test]
-    fn build_config_json_omits_cleared_optionals_for_pair() {
+    fn build_config_omits_cleared_optionals_for_pair() {
         let m = model(vec![
             row("ip", "ip", true, "10.0.0.1", "valid"),
             row("name", "string", false, "", "pristine"),
         ]);
-        let json = build_config_json_from_schema(&m, ClearedOptionals::Omit);
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Omit);
         assert_eq!(parsed["ip"], "10.0.0.1");
         assert!(
             parsed.get("name").is_none(),
@@ -608,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_json_nulls_cleared_optionals_for_edit() {
+    fn build_config_nulls_cleared_optionals_for_edit() {
         // The edit patch must carry an explicit null for a cleared
         // optional — the merge removes the stored key on null, so the
         // serde default reapplies. Omitting would keep the old value
@@ -617,8 +616,7 @@ mod tests {
             row("ip", "ip", true, "10.0.0.1", "valid"),
             row("mac", "mac", false, "", "pristine"),
         ]);
-        let json = build_config_json_from_schema(&m, ClearedOptionals::Null);
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Null);
         assert_eq!(parsed["ip"], "10.0.0.1");
         assert_eq!(
             parsed.get("mac"),
@@ -628,16 +626,14 @@ mod tests {
     }
 
     #[test]
-    fn build_config_json_emits_typed_scalars_for_bool_and_numeric() {
+    fn build_config_emits_typed_scalars_for_bool_and_numeric() {
         let m = model(vec![
             row("automated", "bool", false, "true", "valid"),
             row("port", "port", false, "3001", "valid"),
             row("retries", "int", false, "5", "valid"),
             row("ip", "ip", true, "10.0.0.1", "valid"),
         ]);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&build_config_json_from_schema(&m, ClearedOptionals::Omit))
-                .unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Omit);
         assert_eq!(parsed["automated"], serde_json::Value::Bool(true));
         assert_eq!(parsed["port"].as_i64(), Some(3001));
         assert_eq!(parsed["retries"].as_i64(), Some(5));
@@ -645,11 +641,9 @@ mod tests {
     }
 
     #[test]
-    fn build_config_json_falls_back_to_string_for_unparsable_numerics() {
+    fn build_config_falls_back_to_string_for_unparsable_numerics() {
         let m = model(vec![row("port", "port", false, "not-a-number", "invalid")]);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&build_config_json_from_schema(&m, ClearedOptionals::Omit))
-                .unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Omit);
         assert_eq!(
             parsed["port"],
             serde_json::Value::String("not-a-number".into())

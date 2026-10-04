@@ -177,28 +177,24 @@ pub(crate) async fn fetch_state(
     let tvs = daemon.list_tvs().await?;
     debug!(count = tvs.len(), "Fetched TVs from daemon");
 
-    let system_profile_bodies = daemon
-        .list_system_profile_bodies()
-        .await
-        .unwrap_or_default();
+    let system_profile_bodies = daemon.list_system_profile_bodies().await;
 
     let user_profile_bodies = match session {
-        Some(s) => s.list_user_profile_bodies().await.unwrap_or_default(),
+        Some(s) => s.list_user_profile_bodies().await,
         None => HashMap::new(),
     };
 
     let mut user_profile_by_uuid = HashMap::new();
     if let Some(s) = session {
-        // Per-TV assignment lookups are independent — issue them
-        // concurrently so the refresh pass isn't serialized on
-        // round-trips.
-        let profiles =
-            futures_util::future::join_all(tvs.iter().map(|tv| s.get_tv_user_profile(&tv.uuid)))
-                .await;
-        for (tv, profile) in tvs.iter().zip(profiles) {
-            if let Ok(profile) = profile {
-                user_profile_by_uuid.insert(tv.uuid.clone(), profile);
-            }
+        // Assignments come from the session client's mirror; an
+        // unassigned TV maps to the empty string the model expects.
+        for tv in &tvs {
+            let Ok(id) = tv.uuid.parse() else { continue };
+            let profile = s.get_tv_user_profile(id).await;
+            user_profile_by_uuid.insert(
+                tv.uuid.clone(),
+                profile.map(|p| p.to_string()).unwrap_or_default(),
+            );
         }
     }
 
@@ -210,14 +206,13 @@ pub(crate) async fn fetch_state(
     }))
 }
 
-/// Fetch a single system-profile body. Wraps the typed CRUD wrapper
-/// so callers can refresh one row on a `SystemProfileChanged` event
-/// without going through a full catalog list. Errors propagate so the
-/// caller can decide whether to retry or drop the cached row.
+/// Fetch a single system-profile body from the mirror, so callers can
+/// refresh one row on a `SystemProfileChanged` event without a full
+/// catalog list. `None` when the mirror doesn't hold it (yet).
 pub(crate) async fn fetch_system_profile_body(
     daemon: &DaemonClient,
     uuid: Uuid,
-) -> Result<SystemProfileBody> {
+) -> Option<SystemProfileBody> {
     daemon.get_system_profile(uuid).await
 }
 
@@ -225,7 +220,7 @@ pub(crate) async fn fetch_system_profile_body(
 pub(crate) async fn fetch_user_profile_body(
     session: &SessionClient,
     uuid: Uuid,
-) -> Result<UserProfileBody> {
+) -> Option<UserProfileBody> {
     session.get_user_profile(uuid).await
 }
 
@@ -569,7 +564,7 @@ impl HasName for UserProfileBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::{DesktopMapping, HardwareId, SessionAction};
+    use tisvlay_core::{DesktopMapping, HardwareId, SessionAction};
 
     /// Build a `TvInfo` with sensible defaults so each test only
     /// names the fields it cares about. `TvInfo` doesn't derive

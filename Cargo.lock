@@ -6515,10 +6515,10 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 name = "tisvlay"
 version = "0.3.0"
 dependencies = [
- "anyhow",
  "futures-util",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "tisvlay-core",
  "tisvlay-daemon",
  "tisvlay-mock",

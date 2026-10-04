@@ -767,13 +767,13 @@ pub(crate) async fn prime_system_layers(daemon: &DaemonClient, editor: &ProfileE
             floor()
         }
     };
-    let default_body = match daemon.get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID).await {
-        Ok(b) => b,
-        Err(e) => {
-            debug!(error = %e, "Default system profile body fetch failed; using the floor");
+    let default_body = daemon
+        .get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID)
+        .await
+        .unwrap_or_else(|| {
+            debug!("Default system profile not mirrored yet; using the floor");
             floor()
-        }
-    };
+        });
     let mut state = editor.lock();
     state.system.baseline = baseline;
     state.system.default_body = default_body;
@@ -789,13 +789,13 @@ pub(crate) async fn prime_user_layers(session: &SessionClient, editor: &ProfileE
             floor()
         }
     };
-    let default_body = match session.get_user_profile(DEFAULT_USER_PROFILE_UUID).await {
-        Ok(b) => b,
-        Err(e) => {
-            debug!(error = %e, "Default user profile body fetch failed; using the floor");
+    let default_body = session
+        .get_user_profile(DEFAULT_USER_PROFILE_UUID)
+        .await
+        .unwrap_or_else(|| {
+            debug!("Default user profile not mirrored yet; using the floor");
             floor()
-        }
-    };
+        });
     let mut state = editor.lock();
     state.user.baseline = baseline;
     state.user.default_body = default_body;
@@ -869,22 +869,23 @@ pub(crate) async fn select(
                     Some(s) => fetch_user_profile_body(s, uuid)
                         .await
                         .map(SystemOrUser::User),
-                    None => Err(anyhow::anyhow!(
-                        "Session service unavailable; cannot load user profile body"
-                    )),
+                    None => {
+                        warn!(uuid = %uuid, "Session service unavailable; cannot load user profile body");
+                        None
+                    }
                 }
             }
         };
 
         match fetch_result {
-            Ok(SystemOrUser::System(body)) => {
+            Some(SystemOrUser::System(body)) => {
                 editor.lock().system.cache_body(uuid, body);
             }
-            Ok(SystemOrUser::User(body)) => {
+            Some(SystemOrUser::User(body)) => {
                 editor.lock().user.cache_body(uuid, body);
             }
-            Err(e) => {
-                warn!(uuid = %uuid, ?kind, error = %e, "Profile body fetch failed");
+            None => {
+                warn!(uuid = %uuid, ?kind, "Profile body not in the mirror");
             }
         }
     }
@@ -1274,12 +1275,9 @@ pub(crate) async fn handle_system_changed(
     app_weak: slint::Weak<AppWindow>,
     uuid: Uuid,
 ) {
-    let new_body = match fetch_system_profile_body(&daemon, uuid).await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(uuid = %uuid, error = %e, "Refreshing system profile body failed");
-            return;
-        }
+    let Some(new_body) = fetch_system_profile_body(&daemon, uuid).await else {
+        warn!(uuid = %uuid, "Changed system profile body not in the mirror");
+        return;
     };
 
     let (kind_for_refresh, refresh) = {
@@ -1321,17 +1319,17 @@ pub(crate) async fn handle_system_added(
     uuid: Uuid,
 ) {
     match fetch_system_profile_body(&daemon, uuid).await {
-        Ok(body) => {
+        Some(body) => {
             // In a fresh launch the default profile lands here (mirror
             // hydration finishes after the startup prime); `cache_body`
             // routes it to the inherit-chain slot so inheriting rows
             // stop resolving against the stale prime fallback.
             editor.lock().system.cache_body(uuid, body);
         }
-        Err(e) => {
+        None => {
             // Non-fatal â the next select on this UUID will re-fetch
             // through the lazy-prime path.
-            debug!(uuid = %uuid, error = %e, "Eager fetch after SystemProfileAdded failed");
+            debug!(uuid = %uuid, "Added system profile body not in the mirror yet");
         }
     }
 }
@@ -1379,12 +1377,9 @@ pub(crate) async fn handle_user_changed(
         debug!(uuid = %uuid, "UserProfileChanged arrived while session service unavailable");
         return;
     };
-    let new_body = match fetch_user_profile_body(client, uuid).await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(uuid = %uuid, error = %e, "Refreshing user profile body failed");
-            return;
-        }
+    let Some(new_body) = fetch_user_profile_body(client, uuid).await else {
+        warn!(uuid = %uuid, "Changed user profile body not in the mirror");
+        return;
     };
     drop(session_ref);
 
@@ -1415,11 +1410,11 @@ pub(crate) async fn handle_user_added(
         return;
     };
     match fetch_user_profile_body(client, uuid).await {
-        Ok(body) => {
+        Some(body) => {
             editor.lock().user.cache_body(uuid, body);
         }
-        Err(e) => {
-            debug!(uuid = %uuid, error = %e, "Eager fetch after UserProfileAdded failed");
+        None => {
+            debug!(uuid = %uuid, "Added user profile body not in the mirror yet");
         }
     }
 }
@@ -1713,7 +1708,7 @@ async fn update_system_field(
         snapshot_system_body(&state, uuid)
     };
     set_system_field(&mut body, wire, patch)?;
-    daemon.update_system_profile(uuid, &body).await
+    Ok(daemon.update_system_profile(uuid, &body).await?)
 }
 
 async fn update_user_field(
@@ -1732,7 +1727,7 @@ async fn update_user_field(
     let client = session_ref
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-    client.update_user_profile(uuid, &body).await
+    Ok(client.update_user_profile(uuid, &body).await?)
 }
 
 /// Apply a ComboBox-driven enum edit to the selected profile. The
@@ -1977,7 +1972,7 @@ pub(crate) async fn dispatch_reset_all(
                 name: snapshot.name,
                 ..Default::default()
             };
-            daemon.update_system_profile(uuid, &body).await
+            Ok(daemon.update_system_profile(uuid, &body).await?)
         }
         EditorKind::User => {
             let snapshot = {
@@ -1992,7 +1987,7 @@ pub(crate) async fn dispatch_reset_all(
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            client.update_user_profile(uuid, &body).await
+            Ok(client.update_user_profile(uuid, &body).await?)
         }
     }
 }
@@ -2016,7 +2011,7 @@ pub(crate) async fn dispatch_rename(
                 snapshot_system_body(&state, uuid)
             };
             body.name = new_name.to_string();
-            daemon.update_system_profile(uuid, &body).await
+            Ok(daemon.update_system_profile(uuid, &body).await?)
         }
         EditorKind::User => {
             let mut body = {
@@ -2028,7 +2023,7 @@ pub(crate) async fn dispatch_rename(
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            client.update_user_profile(uuid, &body).await
+            Ok(client.update_user_profile(uuid, &body).await?)
         }
     }
 }
@@ -2055,14 +2050,14 @@ pub(crate) async fn dispatch_select_after_create(
     // fetch).
     match kind {
         EditorKind::System => {
-            if let Ok(body) = fetch_system_profile_body(&daemon, uuid).await {
+            if let Some(body) = fetch_system_profile_body(&daemon, uuid).await {
                 editor.lock().system.cache_body(uuid, body);
             }
         }
         EditorKind::User => {
             let session_ref = session.read().await;
             if let Some(client) = session_ref.as_ref()
-                && let Ok(body) = fetch_user_profile_body(client, uuid).await
+                && let Some(body) = fetch_user_profile_body(client, uuid).await
             {
                 editor.lock().user.cache_body(uuid, body);
             }

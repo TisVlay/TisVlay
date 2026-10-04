@@ -816,6 +816,17 @@ pub mod error {
         DaemonShuttingDown = "daemon-shutting-down",
     }
 
+    /// The `(field, reason)` an `invalid-field` refusal's message names;
+    /// `None` for any other code. Reasons may contain colons (IPv6), so
+    /// only the first `": "` separates.
+    pub fn invalid_field_parts(code: ErrorCode, message: &str) -> Option<(&str, &str)> {
+        if code != ErrorCode::InvalidField {
+            return None;
+        }
+        let (field, reason) = message.split_once(": ")?;
+        (!field.is_empty()).then_some((field, reason))
+    }
+
     impl std::fmt::Display for ErrorCode {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str(self.as_str())
@@ -899,15 +910,9 @@ pub mod error {
         }
 
         /// The `(field, reason)` an [`invalid_field`](Self::invalid_field)
-        /// refusal names, split from its message; `None` for any other
-        /// refusal. Reasons may contain colons (IPv6), so only the first
-        /// `": "` separates.
+        /// refusal names (see [`invalid_field_parts`]).
         pub fn as_invalid_field(&self) -> Option<(&str, &str)> {
-            if self.code != ErrorCode::InvalidField {
-                return None;
-            }
-            let (field, reason) = self.message.split_once(": ")?;
-            (!field.is_empty()).then_some((field, reason))
+            invalid_field_parts(self.code, &self.message)
         }
 
         /// The reserved default profile cannot be deleted.

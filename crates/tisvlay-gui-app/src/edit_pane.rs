@@ -8,53 +8,23 @@
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::compat::RpcError;
 use crate::schema_form::compute_schema_valid;
 use crate::{AppWindow, EditPane, PairingFieldRow, on_ui};
-use tisvlay_wire::error::ErrorCode;
+use tisvlay::ErrorCode;
 
-/// Parse an `invalid-field` error message into `(field_name,
-/// reason)`. The daemon emits the message as `"<field>: <reason>"`;
-/// split on the first `": "` so reasons carrying further colons
-/// (e.g. IPv6 addresses) stay intact in the reason half.
-fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
-    let (field, reason) = msg.split_once(": ")?;
-    if field.is_empty() {
-        return None;
-    }
-    Some((field.to_string(), reason.to_string()))
+/// The `(field, reason)` of the daemon's `invalid-field` refusal, so the
+/// form can mark the offending row. `None` for any other error (network,
+/// pairing rejected, …): callers surface those in their generic slot.
+pub(crate) fn extract_invalid_vendor_config(err: &tisvlay::Error) -> Option<(String, String)> {
+    err.invalid_field()
+        .map(|(field, reason)| (field.to_string(), reason.to_string()))
 }
 
-/// Walk an `anyhow::Error` chain looking for a typed [`RpcError`]
-/// with the given wire code. Returns its message on match. Underpins
-/// the per-error helpers below — clients route on the stable code
-/// rather than the display string.
-fn find_rpc_error(err: &anyhow::Error, code: ErrorCode) -> Option<String> {
-    err.chain()
-        .filter_map(|cause| match cause.downcast_ref::<RpcError>() {
-            Some(RpcError::Service(error)) => Some(error),
-            _ => None,
-        })
-        .find(|error| error.code == code)
-        .map(|error| error.message.clone())
-}
-
-/// Inspect an `anyhow::Error` chain for the daemon's `invalid-field`
-/// rpc error and, if found, extract the `(field, reason)` pair.
-/// Returns `None` for any other error (network, pairing-rejected,
-/// etc.) so callers can fall back to surface the message in the
-/// wizard's generic pair-failed slot.
-pub(crate) fn extract_invalid_vendor_config(err: &anyhow::Error) -> Option<(String, String)> {
-    let detail = find_rpc_error(err, ErrorCode::InvalidField)?;
-    parse_invalid_vendor_config(&detail)
-}
-
-/// True when the error chain carries the daemon's `pairing-not-found`
-/// rpc error — i.e., a cancel-pair call raced normal completion.
-/// Callers downgrade the log level instead of treating it as a real
-/// failure.
-pub(crate) fn is_not_pairing(err: &anyhow::Error) -> bool {
-    find_rpc_error(err, ErrorCode::PairingNotFound).is_some()
+/// True when the daemon refused with `pairing-not-found`: a cancel-pair
+/// call raced normal completion. Callers downgrade the log level instead
+/// of treating it as a real failure.
+pub(crate) fn is_not_pairing(err: &tisvlay::Error) -> bool {
+    err.rpc_code() == Some(ErrorCode::PairingNotFound)
 }
 
 /// Edit-form gate. Mirrors the wizard's [`compute_schema_valid`]
@@ -114,11 +84,11 @@ pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: Str
 mod tests {
     use super::*;
 
-    fn rpc_err(code: ErrorCode, message: &str) -> anyhow::Error {
-        anyhow::Error::new(RpcError::Service(tisvlay_wire::error::WireError {
+    fn rpc_err(code: ErrorCode, message: &str) -> tisvlay::Error {
+        tisvlay::Error::Rpc {
             code,
             message: message.into(),
-        }))
+        }
     }
 
     #[test]
@@ -131,25 +101,13 @@ mod tests {
     }
 
     #[test]
-    fn extract_invalid_vendor_config_survives_context_wrapping() {
-        // Callers add context above the SDK error; the chain walk must
-        // still find the typed cause underneath.
-        let err =
-            rpc_err(ErrorCode::InvalidField, "mac: not a MAC address").context("saving TV config");
-        assert_eq!(
-            extract_invalid_vendor_config(&err),
-            Some(("mac".into(), "not a MAC address".into()))
-        );
-    }
-
-    #[test]
     fn extract_invalid_vendor_config_ignores_other_codes() {
         let err = rpc_err(ErrorCode::BadRequest, "vendor config: expected a table");
         assert_eq!(extract_invalid_vendor_config(&err), None);
-        assert_eq!(
-            extract_invalid_vendor_config(&anyhow::anyhow!("plain")),
-            None
-        );
+        let timeout = tisvlay::Error::Timeout {
+            service: tisvlay::Service::Daemon,
+        };
+        assert_eq!(extract_invalid_vendor_config(&timeout), None);
     }
 
     #[test]

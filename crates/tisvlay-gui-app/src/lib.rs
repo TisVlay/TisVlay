@@ -49,7 +49,7 @@ use wizard::{
 };
 
 use schema_form::{
-    AutofilledRow, ClearedOptionals, build_config_json_from_schema, compute_schema_valid,
+    AutofilledRow, ClearedOptionals, build_config_from_schema, compute_schema_valid,
     parse_field_type, prefill_schema_from_config, validate_value,
 };
 
@@ -66,7 +66,7 @@ use clap::Parser;
 // xgettext both find the same source-of-truth in the .pot file.
 use crate::compat::{
     Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
-    NotificationCategory, NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
+    NotificationCategory, NotificationSettingsPatch, ReconcilerMap, SessionClient, TrayClient,
 };
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -131,6 +131,32 @@ fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: Str
             action_label: SharedString::default(),
         });
     });
+}
+
+/// Run an SDK call for the TV or profile `id` from the Slint model. The
+/// model holds ids as strings, so they're parsed here, at the GUI's edge;
+/// the SDK's error joins the GUI's `anyhow` chain.
+pub(crate) async fn with_id<T, Fut>(id: &str, call: impl FnOnce(uuid::Uuid) -> Fut) -> Result<T>
+where
+    Fut: Future<Output = tisvlay::Result<T>>,
+{
+    let id = id
+        .parse()
+        .with_context(|| format!("invalid id '{id}' in the window's model"))?;
+    Ok(call(id).await?)
+}
+
+/// An error with its cause chain (`outer: cause: …`), for the window's
+/// error slots — the SDK keeps causes in `source()`, not in `Display`.
+pub(crate) fn error_text(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 /// Spawn a fire-and-forget per-TV rpc. On failure, warn-log the
@@ -911,11 +937,13 @@ fn register_callbacks(
             let name = name.to_string();
             tokio::spawn(async move {
                 let result: Result<uuid::Uuid> = match editor_kind {
-                    EditorKind::System => d.create_system_profile(&name).await,
+                    EditorKind::System => d.create_system_profile(&name).await.map_err(Into::into),
                     EditorKind::User => {
                         let session_ref = s.read().await;
                         match session_ref.as_ref() {
-                            Some(client) => client.create_user_profile(&name).await,
+                            Some(client) => {
+                                client.create_user_profile(&name).await.map_err(Into::into)
+                            }
                             None => Err(anyhow::anyhow!("Session service unavailable")),
                         }
                     }
@@ -958,11 +986,11 @@ fn register_callbacks(
             let new_name = new_name.to_string();
             tokio::spawn(async move {
                 let result: Result<uuid::Uuid> = match editor_kind {
-                    EditorKind::System => d.duplicate_system_profile(source, &new_name).await,
+                    EditorKind::System => d.duplicate_system_profile(source, &new_name).await.map_err(Into::into),
                     EditorKind::User => {
                         let session_ref = s.read().await;
                         match session_ref.as_ref() {
-                            Some(client) => client.duplicate_user_profile(source, &new_name).await,
+                            Some(client) => client.duplicate_user_profile(source, &new_name).await.map_err(Into::into),
                             None => Err(anyhow::anyhow!("Session service unavailable")),
                         }
                     }
@@ -1016,11 +1044,13 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             tokio::spawn(async move {
                 let result: Result<()> = match editor_kind {
-                    EditorKind::System => d.delete_system_profile(uuid).await,
+                    EditorKind::System => d.delete_system_profile(uuid).await.map_err(Into::into),
                     EditorKind::User => {
                         let session_ref = s.read().await;
                         match session_ref.as_ref() {
-                            Some(client) => client.delete_user_profile(uuid).await,
+                            Some(client) => {
+                                client.delete_user_profile(uuid).await.map_err(Into::into)
+                            }
                             None => Err(anyhow::anyhow!("Session service unavailable")),
                         }
                     }
@@ -1347,7 +1377,7 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             async move {
                 recs.volume.dispatch(&id, v);
-                if let Err(e) = d.set_volume(&id, v).await {
+                if let Err(e) = with_id(&id, |tv| d.set_volume(tv, v)).await {
                     let msg = format!("{e}");
                     warn!(tv_id = %id, error = %msg, "set_volume failed");
                     push_tvs_error(&app_weak, gettext("Couldn't change volume"), msg);
@@ -1365,7 +1395,7 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             async move {
                 recs.backlight.dispatch(&id, v);
-                if let Err(e) = d.set_backlight(&id, v).await {
+                if let Err(e) = with_id(&id, |tv| d.set_backlight(tv, v)).await {
                     let msg = format!("{e}");
                     warn!(tv_id = %id, error = %msg, "set_backlight failed");
                     push_tvs_error(&app_weak, gettext("Couldn't change backlight"), msg);
@@ -1389,7 +1419,7 @@ fn register_callbacks(
             tv_id.clone(),
             "set_mute failed",
             gettext("Couldn't change mute"),
-            async move { d.set_mute(&tv_id, muted).await },
+            async move { with_id(&tv_id, |tv| d.set_mute(tv, muted)).await },
         );
     });
 
@@ -1406,9 +1436,9 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             let result = if on {
-                d.screen_on(&tv_id).await
+                with_id(&tv_id, |tv| d.screen_on(tv)).await
             } else {
-                d.screen_off(&tv_id).await
+                with_id(&tv_id, |tv| d.screen_off(tv)).await
             };
             if let Err(e) = result {
                 let msg = format!("{e}");
@@ -1434,7 +1464,7 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         let input_id = input_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = d.switch_input(&tv_id, &input_id).await {
+            if let Err(e) = with_id(&tv_id, |tv| d.switch_input(tv, &input_id)).await {
                 let msg = format!("{e}");
                 warn!(tv_id = %tv_id, input = %input_id, error = %msg, "switch_input failed");
                 push_tvs_error(&app_weak, gettext("Couldn't switch input"), msg);
@@ -1471,7 +1501,7 @@ fn register_callbacks(
             tv_id.clone(),
             "power_off failed",
             gettext("Power off failed"),
-            async move { d.power_off(&tv_id).await },
+            async move { with_id(&tv_id, |tv| d.power_off(tv)).await },
         );
     });
 
@@ -1482,7 +1512,7 @@ fn register_callbacks(
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = d.set_tv_managed(&tv_id, managed).await {
+            if let Err(e) = with_id(&tv_id, |tv| d.set_tv_managed(tv, managed)).await {
                 let msg = format!("{e}");
                 warn!(tv_id = %tv_id, managed, error = %msg, "set_managed failed");
                 push_tvs_error(&app_weak, gettext("Couldn't update managed"), msg);
@@ -1507,15 +1537,7 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         let picked_name = profile.to_string();
         tokio::spawn(async move {
-            let bodies = match d.list_system_profile_bodies().await {
-                Ok(b) => b,
-                Err(e) => {
-                    let msg = format!("{e}");
-                    warn!(tv_id = %tv_id, name = %picked_name, error = %msg, "set_system_profile: list_system_profile_bodies failed");
-                    push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
-                    return;
-                }
-            };
+            let bodies = d.list_system_profile_bodies().await;
             let Some(uuid) = bodies
                 .iter()
                 .find(|(u, b)| {
@@ -1532,7 +1554,7 @@ fn register_callbacks(
                 );
                 return;
             };
-            if let Err(e) = d.set_tv_system_profile(&tv_id, &uuid.to_string()).await {
+            if let Err(e) = with_id(&tv_id, |tv| d.set_tv_system_profile(tv, Some(uuid))).await {
                 let msg = format!("{e}");
                 warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_system_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
@@ -1560,15 +1582,7 @@ fn register_callbacks(
                 );
                 return;
             };
-            let bodies = match client.list_user_profile_bodies().await {
-                Ok(b) => b,
-                Err(e) => {
-                    let msg = format!("{e}");
-                    warn!(tv_id = %tv_id, name = %picked_name, error = %msg, "set_user_profile: list_user_profile_bodies failed");
-                    push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
-                    return;
-                }
-            };
+            let bodies = client.list_user_profile_bodies().await;
             let Some(uuid) = bodies
                 .iter()
                 .find(|(u, b)| {
@@ -1585,7 +1599,7 @@ fn register_callbacks(
                 );
                 return;
             };
-            if let Err(e) = client.set_tv_user_profile(&tv_id, &uuid.to_string()).await {
+            if let Err(e) = with_id(&tv_id, |tv| client.set_tv_user_profile(tv, Some(uuid))).await {
                 let msg = format!("{e}");
                 warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_user_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
@@ -1601,7 +1615,8 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         let input = input.to_string();
         tokio::spawn(async move {
-            if let Err(e) = d.set_tv_primary_input(&tv_id, &input).await {
+            let primary = (!input.is_empty()).then_some(input.as_str());
+            if let Err(e) = with_id(&tv_id, |tv| d.set_tv_primary_input(tv, primary)).await {
                 let msg = format!("{e}");
                 warn!(tv_id = %tv_id, input = %input, error = %msg, "set_primary_input failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change primary input"), msg);
@@ -1619,7 +1634,7 @@ fn register_callbacks(
             tv_id.clone(),
             "remove_tv failed",
             gettext("Couldn't remove TV"),
-            async move { d.remove_tv(&tv_id).await },
+            async move { with_id(&tv_id, |tv| d.remove_tv(tv)).await },
         );
     });
 
@@ -1751,6 +1766,10 @@ fn register_callbacks(
             warn!(tv_id = %tv_id_str, "wizard: request_re_pair for unknown TV id, ignoring");
             return;
         };
+        let Ok(tv_id) = tv_id_str.parse::<uuid::Uuid>() else {
+            warn!(tv_id = %tv_id_str, "wizard: request_re_pair with an invalid TV id, ignoring");
+            return;
+        };
 
         // Reset wizard state, prefill from the existing TV, jump
         // to StepPair. `reset_wizard` clears the schema-form rows
@@ -1779,7 +1798,7 @@ fn register_callbacks(
         wizard.set_active(true);
 
         tokio::spawn(async move {
-            run_wizard_re_pair(ctx.daemon, app_weak, ctx.generation, tv_id_str).await;
+            run_wizard_re_pair(ctx.daemon, app_weak, ctx.generation, tv_id).await;
         });
     });
 
@@ -1810,19 +1829,15 @@ fn register_callbacks(
             &ctx.discovery_cancel,
             &ctx.manual_cancel,
         );
-        if tv_id.is_empty() {
+        let Ok(tv) = tv_id.parse::<uuid::Uuid>() else {
             return;
-        }
+        };
         let d = ctx.daemon.clone();
         tokio::spawn(async move {
-            if let Err(e) = d.cancel_pair(&tv_id).await {
-                // NotPairing is the expected error if the pair
-                // already completed in the small window between
-                // the user clicking Cancel and our D-Bus call —
-                // log at debug rather than warn for that case.
-                // Detected via the typed D-Bus error name
-                // (`org.tisvlay.Error.NotPairing`) so the check is
-                // stable across message wording / localization.
+            if let Err(e) = d.cancel_pair(tv).await {
+                // `pairing-not-found` is the expected refusal if the
+                // pair completed between the click and the call: log
+                // it at debug rather than warn.
                 if is_not_pairing(&e) {
                     debug!(tv_id = %tv_id, "wizard cancel: pair already completed");
                 } else {
@@ -1918,10 +1933,8 @@ fn register_callbacks(
                     return;
                 }
                 let vendor = wizard.get_selected_vendor().to_string();
-                let config_json = build_config_json_from_schema(
-                    &wizard.get_schema_fields(),
-                    ClearedOptionals::Omit,
-                );
+                let config =
+                    build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
                 let managed = wizard.get_managed();
 
                 wizard.set_step(3);
@@ -1932,7 +1945,7 @@ fn register_callbacks(
                 let wg = ctx.generation.clone();
                 let app_weak = app.as_weak();
                 tokio::spawn(async move {
-                    run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
+                    run_wizard_pair(d, app_weak, wg, name, vendor, config, managed).await;
                 });
             }
             // Pair → Done. Only allowed when pair_phase == "complete".
@@ -1978,8 +1991,7 @@ fn register_callbacks(
             return;
         }
         let vendor = wizard.get_selected_vendor().to_string();
-        let config_json =
-            build_config_json_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
+        let config = build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
         let managed = wizard.get_managed();
 
         wizard.set_pair_phase(SharedString::default());
@@ -1989,7 +2001,7 @@ fn register_callbacks(
         let wg = ctx.generation.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
+            run_wizard_pair(d, app_weak, wg, name, vendor, config, managed).await;
         });
     });
 
@@ -2008,11 +2020,15 @@ fn register_callbacks(
             return;
         }
         wizard.set_mac_error(SharedString::default());
-        let patch = serde_json::json!({ tisvlay_core::MAC_CONFIG_KEY: reported }).to_string();
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            tisvlay_core::MAC_CONFIG_KEY.into(),
+            serde_json::Value::String(reported),
+        );
         let d = ctx.daemon.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            let result = d.update_tv_config(&tv_id, &patch).await;
+            let result = with_id(&tv_id, |tv| d.update_tv_config(tv, &patch)).await;
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
                 match result {
@@ -2184,16 +2200,14 @@ fn register_callbacks(
                 }
             };
 
-            let config_json_str = match d.get_tv_config(&uuid_owned).await {
-                Ok(s) => s,
+            let config_json = match with_id(&uuid_owned, |tv| d.get_tv_config(tv)).await {
+                Ok(view) => serde_json::to_value(view).unwrap_or_default(),
                 Err(e) => {
                     warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: GetConfig failed");
                     publish_edit_error(&app_weak, format!("{e:#}"));
                     return;
                 }
             };
-            let config_json: serde_json::Value = serde_json::from_str(&config_json_str)
-                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
             let raw_rows = prefill_schema_from_config(&schema, &config_json);
             on_ui(&app_weak, move |app| {
@@ -2279,16 +2293,12 @@ fn register_callbacks(
         // Null mode: a cleared optional field becomes an explicit null in
         // the patch, which the merge turns into "remove the stored key" —
         // clearing a field resets it to the schema default.
-        let vendor_patch =
-            build_config_json_from_schema(&edit_pane.get_fields(), ClearedOptionals::Null);
-        // Merge name into the vendor-fields patch. `build_config_…`
-        // emits a top-level JSON object, so parse + insert + re-serialize.
-        let mut patch: serde_json::Value =
-            serde_json::from_str(&vendor_patch).unwrap_or(serde_json::json!({}));
-        if let Some(obj) = patch.as_object_mut() {
-            obj.insert("name".to_string(), serde_json::Value::String(name));
-        }
-        let patch_str = patch.to_string();
+        let mut patch = build_config_from_schema(&edit_pane.get_fields(), ClearedOptionals::Null);
+        patch.insert("name".to_string(), serde_json::Value::String(name));
+        let Ok(tv) = tv_uuid.parse::<uuid::Uuid>() else {
+            warn!(tv_uuid = %tv_uuid, "EditPane.save: invalid TV id in the model");
+            return;
+        };
 
         edit_pane.set_saving(true);
         edit_pane.set_error(SharedString::default());
@@ -2296,7 +2306,7 @@ fn register_callbacks(
         let app_weak = app.as_weak();
         let d = d.clone();
         tokio::spawn(async move {
-            let result = d.update_tv_config(&tv_uuid, &patch_str).await;
+            let result = d.update_tv_config(tv, &patch).await;
             on_ui(&app_weak, move |app| {
                 let edit_pane = app.global::<EditPane>();
                 edit_pane.set_saving(false);
@@ -2320,7 +2330,7 @@ fn register_callbacks(
                             let model = edit_pane.get_fields();
                             mark_edit_field_invalid(&edit_pane, &model, &field, &reason);
                         } else {
-                            edit_pane.set_error(SharedString::from(format!("{e:#}")));
+                            edit_pane.set_error(SharedString::from(error_text(&e)));
                         }
                     }
                 }
@@ -2516,13 +2526,13 @@ fn register_callbacks(
 /// not a panic — the wire identifiers are settings-pane–controlled,
 /// so an unrecognized string here would indicate a missed Slint /
 /// Rust sync we'd want to log rather than crash on.
-fn build_notification_update(category: &str, enabled: bool) -> NotificationSettingsBody {
-    let mut body = NotificationSettingsBody::default();
+fn build_notification_update(category: &str, enabled: bool) -> NotificationSettingsPatch {
+    let mut patch = NotificationSettingsPatch::default();
     match NotificationCategory::from_key(category) {
-        Some(cat) => cat.set(&mut body, enabled),
+        Some(cat) => cat.set(&mut patch, enabled),
         None => warn!(category = %category, "Unknown notification category from Slint"),
     }
-    body
+    patch
 }
 
 #[cfg(test)]
@@ -2563,6 +2573,23 @@ mod notification_key_tests {
             covered.len(),
             NotificationCategory::ALL.len(),
             "settings pane has a notification row with no matching category"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_text_renders_the_cause_chain() {
+        let error = tisvlay::Error::Transport {
+            what: "connect to the daemon socket",
+            source: Some(Box::new(std::io::Error::other("permission denied"))),
+        };
+        assert_eq!(
+            error_text(&error),
+            "connect to the daemon socket: permission denied"
         );
     }
 }
