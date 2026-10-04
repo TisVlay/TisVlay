@@ -215,10 +215,11 @@ impl Reconcilers {
     pub(crate) fn reconcile(&self, snapshot: &mut StateSnapshot) {
         for tv in &mut snapshot.tvs {
             let uuid = tv.uuid.to_string();
-            tv.volume = self.volume.observe(&uuid, tv.volume.clamp(0, 100) as u8) as i32;
-            tv.backlight = self
-                .backlight
-                .observe(&uuid, tv.backlight.clamp(0, 100) as u8) as i32;
+            tv.volume = i32::from(self.volume.observe(&uuid, tv.volume.clamp(0, 100) as u8));
+            tv.backlight = i32::from(
+                self.backlight
+                    .observe(&uuid, tv.backlight.clamp(0, 100) as u8),
+            );
         }
     }
 }
@@ -279,7 +280,7 @@ pub fn run() -> Result<()> {
             .user_socket
             .clone()
             .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path),
-        site: args.site.clone(),
+        site: args.site,
     });
     info!("tisvlay-gui starting");
 
@@ -686,10 +687,10 @@ pub fn run() -> Result<()> {
         session.clone(),
         tray.clone(),
         reconcilers.clone(),
-        wizard_entries.clone(),
-        wizard_gen.clone(),
-        wizard_cancel.clone(),
-        wizard_manual_lookup_cancel.clone(),
+        wizard_entries,
+        wizard_gen,
+        wizard_cancel,
+        wizard_manual_lookup_cancel,
         editor.clone(),
         &nav,
     );
@@ -702,7 +703,7 @@ pub fn run() -> Result<()> {
         tray,
         reconcilers,
         app_weak,
-        supported_vendors_cache.clone(),
+        supported_vendors_cache,
         editor,
     ));
 
@@ -747,6 +748,9 @@ pub fn run() -> Result<()> {
     // driving tasks. `rt` drops at end of `main`, aborting any
     // remaining tasks.
     app.run()?;
+    // The name claim and the object server live exactly as long as this
+    // connection, so release it only once the window has closed.
+    drop(gui_dbus);
 
     info!("tisvlay-gui shutting down");
     Ok(())
@@ -1303,7 +1307,7 @@ fn register_callbacks(
     {
         let d = daemon.clone();
         let s = session.clone();
-        let ed = editor.clone();
+        let ed = editor;
         let app_weak = app.as_weak();
         profiles_global.on_rename_selected(move |new_name| {
             let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
@@ -1353,7 +1357,7 @@ fn register_callbacks(
     });
     let backlight_coalescer: Coalescer<String, u8> = Coalescer::new(|_, new| new, {
         let d = daemon.clone();
-        let recs = reconcilers.clone();
+        let recs = reconcilers;
         let app_weak = app.as_weak();
         move |id: String, v: u8| {
             let d = d.clone();
@@ -1370,7 +1374,7 @@ fn register_callbacks(
         }
     });
 
-    let coalescer = volume_coalescer.clone();
+    let coalescer = volume_coalescer;
     daemon_global.on_set_volume(move |tv_id, value| {
         coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
     });
@@ -1389,7 +1393,7 @@ fn register_callbacks(
         );
     });
 
-    let coalescer = backlight_coalescer.clone();
+    let coalescer = backlight_coalescer;
     daemon_global.on_set_backlight(move |tv_id, value| {
         coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
     });
@@ -1547,19 +1551,14 @@ fn register_callbacks(
         let picked_name = profile.to_string();
         tokio::spawn(async move {
             let session_ref = s.read().await;
-            let client = match session_ref.as_ref() {
-                Some(c) => c,
-                None => {
-                    warn!(tv_id = %tv_id, "set_user_profile: session service unavailable");
-                    push_tvs_error(
-                        &app_weak,
-                        gettext("Session service unavailable"),
-                        gettext(
-                            "User-profile assignments require the per-user tisvlay-session service.",
-                        ),
-                    );
-                    return;
-                }
+            let Some(client) = session_ref.as_ref() else {
+                warn!(tv_id = %tv_id, "set_user_profile: session service unavailable");
+                push_tvs_error(
+                    &app_weak,
+                    gettext("Session service unavailable"),
+                    gettext("User-profile assignments require the per-user tisvlay-session service."),
+                );
+                return;
             };
             let bodies = match client.list_user_profile_bodies().await {
                 Ok(b) => b,
@@ -1625,7 +1624,7 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
-    let s = session.clone();
+    let s = session;
     let tr = tray.clone();
     let app_weak = app.as_weak();
     daemon_global.on_reload_config(move || {
@@ -1685,10 +1684,10 @@ fn register_callbacks(
     // callback clones this once instead of its individual handles.
     let wizard_ctx = WizardCtx {
         daemon: daemon.clone(),
-        entries: wizard_entries.clone(),
-        generation: wizard_gen.clone(),
-        discovery_cancel: wizard_cancel.clone(),
-        manual_cancel: wizard_manual_lookup_cancel.clone(),
+        entries: wizard_entries,
+        generation: wizard_gen,
+        discovery_cancel: wizard_cancel,
+        manual_cancel: wizard_manual_lookup_cancel,
     };
 
     // Open wizard + start discovery.
@@ -1774,7 +1773,7 @@ fn register_callbacks(
         // Hardware model isn't carried in TvViewModel today — leave
         // blank; the wizard's StepPair UI handles an empty value.
         wizard.set_selected_hw_model(SharedString::default());
-        wizard.set_tv_name(tv.name.clone());
+        wizard.set_tv_name(tv.name);
         wizard.set_pair_tv_id(SharedString::from(tv_id_str.as_str()));
         wizard.set_step(3);
         wizard.set_active(true);
@@ -2266,7 +2265,7 @@ fn register_callbacks(
     });
 
     let app_weak = app.as_weak();
-    let d = daemon.clone();
+    let d = daemon;
     edit_pane.on_save(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -2338,7 +2337,7 @@ fn register_callbacks(
     // except the schema fetch is told `manual_entry: true` so the
     // helper-override logic can substitute the MAC field's helper
     // text when enrichment came up empty.
-    let ctx = wizard_ctx.clone();
+    let ctx = wizard_ctx;
     let app_weak = app.as_weak();
     wizard.on_manual_add(move || {
         let Some(app) = app_weak.upgrade() else {
@@ -2403,7 +2402,7 @@ fn register_callbacks(
                     res = tokio::time::timeout(
                         std::time::Duration::from_secs(1),
                         d.enrich_manual_entry(&vendor, &ip),
-                    ) => res.ok().and_then(|r| r.ok()).unwrap_or_default(),
+                    ) => res.ok().and_then(std::result::Result::ok).unwrap_or_default(),
                 }
             };
 
@@ -2495,7 +2494,7 @@ fn register_callbacks(
         });
     });
 
-    let t = tray.clone();
+    let t = tray;
     tray_global.on_send_test_notification(move || {
         let t = t.clone();
         tokio::spawn(async move {

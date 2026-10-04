@@ -781,7 +781,7 @@ async fn collect_vendor_candidates(socket: &Path) -> Option<Vec<CompletionCandid
 fn print_fields(value: &Value) {
     fn walk(value: &Value, indent: usize) {
         let Some(object) = value.as_object() else {
-            println!("{}", value);
+            println!("{value}");
             return;
         };
         let mut entries: Vec<(&String, &Value)> = object.iter().collect();

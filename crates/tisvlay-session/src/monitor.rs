@@ -268,7 +268,7 @@ async fn run(main_bus: zbus::Connection, client: RemoteClient) {
 // crate-local type) can carry the conversion from this module.
 impl From<zbus::fdo::Error> for Fault {
     fn from(e: zbus::fdo::Error) -> Self {
-        Fault::Bus(e.into())
+        Self::Bus(e.into())
     }
 }
 

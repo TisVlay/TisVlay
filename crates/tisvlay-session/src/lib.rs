@@ -154,6 +154,7 @@ pub struct SessionOptions {
 }
 
 /// A running session service.
+#[must_use = "dropping the stack shuts the session service down"]
 #[derive(Debug)]
 pub struct SessionStack {
     pub client: SessionClient,
@@ -501,7 +502,7 @@ impl Core {
                     Err(_) => break 'run,
                     Ok(sample) => self.apply_power(&sample),
                 },
-                _ = drift_deadline(next_drift) => self.reassert_due(),
+                () = drift_deadline(next_drift) => self.reassert_due(),
             }
         }
         // Clean exit (a channel closed on logout/restart): the
@@ -1369,20 +1370,17 @@ pub async fn idle_adapter(
         push_idle(LOCKED_IDLE_TAG, locked_secs);
         push_idle(UNLOCKED_IDLE_TAG, unlocked_secs);
         let (wl_tx, mut transitions) = mpsc::unbounded_channel();
-        let _guard = match start_idle_watch(notifications, wl_tx).await {
-            Some(guard) => guard,
-            None => {
-                warn!("no idle transport available; retrying");
-                tokio::select! {
-                    changed = timeouts.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
+        let Some(_guard) = start_idle_watch(notifications, wl_tx).await else {
+            warn!("no idle transport available; retrying");
+            tokio::select! {
+                changed = timeouts.changed() => {
+                    if changed.is_err() {
+                        return;
                     }
-                    () = tokio::time::sleep(WATCH_RETRY) => {}
                 }
-                continue;
+                () = tokio::time::sleep(WATCH_RETRY) => {}
             }
+            continue;
         };
         let mut lock_wake_sent = false;
         loop {

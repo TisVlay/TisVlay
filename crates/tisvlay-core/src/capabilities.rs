@@ -233,7 +233,7 @@ impl<'de> Deserialize<'de> for Capabilities {
         D: serde::Deserializer<'de>,
     {
         let strings: Vec<String> = Vec::deserialize(deserializer)?;
-        let str_refs: Vec<&str> = strings.iter().map(|s| s.as_str()).collect();
+        let str_refs: Vec<&str> = strings.iter().map(String::as_str).collect();
         Ok(Self::from_strings(&str_refs))
     }
 }

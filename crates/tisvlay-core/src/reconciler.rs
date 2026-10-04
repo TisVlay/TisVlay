@@ -202,7 +202,7 @@ where
         self.inner
             .lock()
             .get(key)
-            .map(|r| r.current())
+            .map(Reconciler::current)
             .unwrap_or(fallback)
     }
 

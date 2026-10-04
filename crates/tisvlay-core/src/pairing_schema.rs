@@ -258,7 +258,7 @@ impl PairingField {
                 .map(|p| if p == 0 { Err(()) } else { Ok(()) })
                 .map_err(|_| ())
                 .and_then(|r| r)
-                .map_err(|_| invalid("must be a number between 1 and 65535")),
+                .map_err(|()| invalid("must be a number between 1 and 65535")),
             PairingFieldType::Select => {
                 if self.options.iter().any(|opt| opt == value) {
                     Ok(())

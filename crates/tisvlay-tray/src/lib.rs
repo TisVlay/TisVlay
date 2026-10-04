@@ -443,10 +443,10 @@ async fn execute(
     debug!(?command, "tray command");
     match command {
         TrayCommand::PowerOn(id) => {
-            call(caller, &keys::tv_rpc(site, &id, "power-on"), Value::Null).await
+            call(caller, &keys::tv_rpc(site, &id, "power-on"), Value::Null).await;
         }
         TrayCommand::PowerOff(id) => {
-            call(caller, &keys::tv_rpc(site, &id, "power-off"), Value::Null).await
+            call(caller, &keys::tv_rpc(site, &id, "power-off"), Value::Null).await;
         }
         TrayCommand::ScreenOn(id) => {
             call(
@@ -454,7 +454,7 @@ async fn execute(
                 &keys::tv_rpc(site, &id, "set-screen"),
                 json!({ "on": true }),
             )
-            .await
+            .await;
         }
         TrayCommand::ScreenOff(id) => {
             call(
@@ -462,7 +462,7 @@ async fn execute(
                 &keys::tv_rpc(site, &id, "set-screen"),
                 json!({ "on": false }),
             )
-            .await
+            .await;
         }
         TrayCommand::SwitchInput(id, input) => {
             call(
@@ -470,7 +470,7 @@ async fn execute(
                 &keys::tv_rpc(site, &id, "switch-input"),
                 json!({ "input": input }),
             )
-            .await
+            .await;
         }
         TrayCommand::SetSystemProfile(id, profile) => {
             call(
@@ -478,7 +478,7 @@ async fn execute(
                 &keys::tv_rpc(site, &id, "set-system-profile"),
                 serde_json::to_value(rpc::SetSystemProfile { profile }).unwrap_or_default(),
             )
-            .await
+            .await;
         }
         TrayCommand::SetUserProfile(tv, profile) => {
             let Some(user_caller) = user_caller else {
@@ -490,7 +490,7 @@ async fn execute(
                 &keys::user_profile_rpc(site, "assign"),
                 serde_json::to_value(rpc::UserAssign { tv, profile }).unwrap_or_default(),
             )
-            .await
+            .await;
         }
         TrayCommand::ToggleMute(id) => {
             let muted = handle
@@ -503,7 +503,7 @@ async fn execute(
                 &keys::tv_rpc(site, &id, "set-muted"),
                 json!({ "muted": !muted }),
             )
-            .await
+            .await;
         }
         TrayCommand::SetManaged(id, managed) => {
             call(
@@ -511,7 +511,7 @@ async fn execute(
                 &keys::tv_rpc(site, &id, "set-managed"),
                 json!({ "managed": managed }),
             )
-            .await
+            .await;
         }
         // Handled by the coalescers in process_commands.
         TrayCommand::ScrollBy(..) => {}

@@ -311,6 +311,7 @@ macro_rules! profile_plumbing {
 
             /// Merge with a base: `None` fields fall through to `base`,
             /// `Some` fields win. `name` is preserved from `self`.
+            #[must_use]
             pub fn merge_with_base(&self, base: &$config) -> $config {
                 $config {
                     name: self.name.clone(),
@@ -938,6 +939,7 @@ impl TvConfig {
     }
 
     /// Set the primary input (the port this PC is connected to).
+    #[must_use]
     pub fn with_primary_input(mut self, input: impl Into<String>) -> Self {
         self.primary_input = Some(input.into());
         self
@@ -947,6 +949,7 @@ impl TvConfig {
     ///
     /// The config must be serializable to TOML. It will be stored under
     /// the vendor name key (e.g., `lg = { ... }`).
+    #[must_use]
     pub fn with_vendor_config<T: Serialize>(mut self, config: &T) -> Self {
         if let Ok(value) = toml::Value::try_from(config) {
             self.vendor_config.insert(self.vendor.clone(), value);
@@ -1085,7 +1088,7 @@ impl SystemConfig {
         }
 
         let content = std::fs::read_to_string(path)?;
-        let mut config: SystemConfig = toml::from_str(&content)?;
+        let mut config: Self = toml::from_str(&content)?;
         config.validate_tv_ids()?;
         config.system.ensure_default();
         config.user.ensure_default();
@@ -1258,7 +1261,7 @@ impl UserConfig {
         }
 
         let content = std::fs::read_to_string(path)?;
-        let config: UserConfig = toml::from_str(&content)?;
+        let config: Self = toml::from_str(&content)?;
         Ok(Some(config))
     }
 
@@ -2805,8 +2808,7 @@ ip = "192.168.1.1"
         let err = config.validate_tv_ids().unwrap_err();
         assert!(
             err.to_string().contains("Duplicate"),
-            "error should say duplicate: {}",
-            err
+            "error should say duplicate: {err}"
         );
     }
 

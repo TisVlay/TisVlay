@@ -145,10 +145,10 @@ fn gid_of(name: &str) -> Option<u32> {
         let ret = unsafe {
             libc::getgrnam_r(
                 cname.as_ptr(),
-                &mut grp,
-                buf.as_mut_ptr() as *mut libc::c_char,
+                &raw mut grp,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
                 buflen,
-                &mut result,
+                &raw mut result,
             )
         };
         if ret == 0 {
@@ -243,8 +243,8 @@ fn setxattr(path: &Path, value: &[u8]) -> std::io::Result<()> {
     let ret = unsafe {
         libc::setxattr(
             cpath.as_ptr(),
-            ACL_XATTR.as_ptr() as *const libc::c_char,
-            value.as_ptr() as *const libc::c_void,
+            ACL_XATTR.as_ptr().cast::<libc::c_char>(),
+            value.as_ptr().cast::<libc::c_void>(),
             value.len(),
             0,
         )
@@ -260,7 +260,7 @@ fn removexattr(path: &Path) -> std::io::Result<()> {
     let cpath = cpath(path)?;
     // SAFETY: both pointers reference valid C strings for the duration.
     let ret =
-        unsafe { libc::removexattr(cpath.as_ptr(), ACL_XATTR.as_ptr() as *const libc::c_char) };
+        unsafe { libc::removexattr(cpath.as_ptr(), ACL_XATTR.as_ptr().cast::<libc::c_char>()) };
     if ret == 0 {
         Ok(())
     } else {
@@ -278,8 +278,8 @@ fn getxattr(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
         let n = unsafe {
             libc::getxattr(
                 cpath.as_ptr(),
-                ACL_XATTR.as_ptr() as *const libc::c_char,
-                buf.as_mut_ptr() as *mut libc::c_void,
+                ACL_XATTR.as_ptr().cast::<libc::c_char>(),
+                buf.as_mut_ptr().cast::<libc::c_void>(),
                 buf.len(),
             )
         };

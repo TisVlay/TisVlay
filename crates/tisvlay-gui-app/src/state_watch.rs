@@ -625,10 +625,10 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     sync_vec_model(&app.get_tvs(), tvs, |m| app.set_tvs(m));
     app.set_tvs_connected_count(connected_count);
     sync_vec_model(&app.get_system_profiles(), snapshot.system_profiles, |m| {
-        app.set_system_profiles(m)
+        app.set_system_profiles(m);
     });
     sync_vec_model(&app.get_user_profiles(), snapshot.user_profiles, |m| {
-        app.set_user_profiles(m)
+        app.set_user_profiles(m);
     });
 
     // Profiles pane master lists. ProfileRow is generated from
@@ -675,7 +675,7 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     }
 
     sync_vec_model(&profiles.get_system(), system_rows, |m| {
-        profiles.set_system(m)
+        profiles.set_system(m);
     });
     sync_vec_model(&profiles.get_user(), user_rows, |m| profiles.set_user(m));
 }

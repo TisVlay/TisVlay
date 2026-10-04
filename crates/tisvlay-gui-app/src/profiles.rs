@@ -423,15 +423,13 @@ pub(crate) enum ResolvedValue {
 
 impl ResolvedValue {
     pub(crate) fn is_locally_set(&self) -> bool {
-        matches!(self, ResolvedValue::LocallySet { .. })
+        matches!(self, Self::LocallySet { .. })
     }
 
     /// Body-relative current value (what the widget shows).
     pub(crate) fn current(&self) -> &str {
         match self {
-            ResolvedValue::LocallySet { current } | ResolvedValue::Inheriting { current } => {
-                current
-            }
+            Self::LocallySet { current } | Self::Inheriting { current } => current,
         }
     }
 }
@@ -968,7 +966,7 @@ fn push_editor_rows(
     on_ui(&app_weak, move |app| {
         let profiles = app.global::<Profiles>();
         push_card_model(profiles.get_editor_fields(), main_raw, same_profile, |m| {
-            profiles.set_editor_fields(m)
+            profiles.set_editor_fields(m);
         });
         push_card_model(
             profiles.get_editor_remote_fields(),
@@ -1547,7 +1545,7 @@ fn set_system_field(
         "on_idle_timeout" => body.on_idle_timeout = action_field_patch(patch, "on_idle_timeout")?,
         "on_idle_resume" => body.on_idle_resume = action_field_patch(patch, "on_idle_resume")?,
         "idle_timeout_seconds" => {
-            body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
+            body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?;
         }
         "automate_when" => body.automate_when = automate_when_patch(patch, "automate_when")?,
         other => anyhow::bail!("Unknown system-profile field: {other}"),
@@ -1560,27 +1558,27 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
     match wire {
         "on_session_lock" => body.on_session_lock = action_field_patch(patch, "on_session_lock")?,
         "on_session_unlock" => {
-            body.on_session_unlock = action_field_patch(patch, "on_session_unlock")?
+            body.on_session_unlock = action_field_patch(patch, "on_session_unlock")?;
         }
         "on_lock_wake" => body.on_lock_wake = action_field_patch(patch, "on_lock_wake")?,
         "on_idle_timeout" => body.on_idle_timeout = action_field_patch(patch, "on_idle_timeout")?,
         "on_idle_resume" => body.on_idle_resume = action_field_patch(patch, "on_idle_resume")?,
         "locked_idle_timeout_seconds" => {
-            body.locked_idle_timeout_seconds = number_patch(patch, "locked_idle_timeout_seconds")?
+            body.locked_idle_timeout_seconds = number_patch(patch, "locked_idle_timeout_seconds")?;
         }
         "unlocked_idle_timeout_seconds" => {
             body.unlocked_idle_timeout_seconds =
-                number_patch(patch, "unlocked_idle_timeout_seconds")?
+                number_patch(patch, "unlocked_idle_timeout_seconds")?;
         }
         "on_remote_connect" => {
-            body.on_remote_connect = action_field_patch(patch, "on_remote_connect")?
+            body.on_remote_connect = action_field_patch(patch, "on_remote_connect")?;
         }
         "on_remote_disconnect" => {
-            body.on_remote_disconnect = action_field_patch(patch, "on_remote_disconnect")?
+            body.on_remote_disconnect = action_field_patch(patch, "on_remote_disconnect")?;
         }
         "on_local_return" => body.on_local_return = action_field_patch(patch, "on_local_return")?,
         "remote_screencast_arms" => {
-            body.remote_screencast_arms = bool_patch(patch, "remote_screencast_arms")?
+            body.remote_screencast_arms = bool_patch(patch, "remote_screencast_arms")?;
         }
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
@@ -3133,7 +3131,7 @@ mod tests {
             ..Default::default()
         };
         let body = SystemProfileBody {
-            name: snapshot.name.clone(),
+            name: snapshot.name,
             ..Default::default()
         };
         assert_eq!(body.name, "evening");
@@ -3156,7 +3154,7 @@ mod tests {
             ..Default::default()
         };
         let body = UserProfileBody {
-            name: snapshot.name.clone(),
+            name: snapshot.name,
             ..Default::default()
         };
         assert_eq!(body.name, "movies");

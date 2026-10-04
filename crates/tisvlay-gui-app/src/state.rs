@@ -290,9 +290,9 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             has_input: tv.capabilities.contains(Capabilities::INPUT),
             has_backlight: tv.capabilities.contains(Capabilities::BACKLIGHT),
             is_screen_on: tv.is_screen_on,
-            volume: tv.volume as i32,
+            volume: i32::from(tv.volume),
             muted: tv.muted,
-            backlight: tv.backlight as i32,
+            backlight: i32::from(tv.backlight),
             current_input: SharedString::from(tv.current_input.as_str()),
             available_input_ids,
             // ComboBox renders `current-value` verbatim. Resolve the

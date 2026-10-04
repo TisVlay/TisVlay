@@ -116,12 +116,14 @@ impl Default for WakeOptions {
 
 impl WakeOptions {
     /// Use a specific broadcast address (e.g., subnet broadcast).
+    #[must_use]
     pub fn with_broadcast(mut self, addr: Ipv4Addr) -> Self {
         self.broadcast_addr = addr;
         self
     }
 
     /// Use a specific port.
+    #[must_use]
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
@@ -133,17 +135,17 @@ pub fn wake_with_options(mac: &MacAddress, options: WakeOptions) -> Result<()> {
     let packet = build_magic_packet(mac);
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-        .map_err(|e| Error::WakeOnLan(format!("Failed to create socket: {}", e)))?;
+        .map_err(|e| Error::WakeOnLan(format!("Failed to create socket: {e}")))?;
 
     socket
         .set_broadcast(true)
-        .map_err(|e| Error::WakeOnLan(format!("Failed to enable broadcast: {}", e)))?;
+        .map_err(|e| Error::WakeOnLan(format!("Failed to enable broadcast: {e}")))?;
 
     let dest = SocketAddr::V4(SocketAddrV4::new(options.broadcast_addr, options.port));
 
     socket
         .send_to(&packet, &dest.into())
-        .map_err(|e| Error::WakeOnLan(format!("Failed to send packet: {}", e)))?;
+        .map_err(|e| Error::WakeOnLan(format!("Failed to send packet: {e}")))?;
 
     tracing::debug!(
         mac = %mac,
