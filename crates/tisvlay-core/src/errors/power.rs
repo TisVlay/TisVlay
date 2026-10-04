@@ -7,9 +7,8 @@
 //!
 //! `tv_id` is intentionally NOT a field on these variants: the
 //! caller already knows which TV it acted on, and including it
-//! everywhere would be redundant in log output. Wrapping enums
-//! (`TvManagerError`, `DaemonError`) carry `tv_id` once at the
-//! outer layer.
+//! everywhere would be redundant in log output. A caller that wants
+//! the id in its message adds it at its own layer.
 
 use std::fmt;
 

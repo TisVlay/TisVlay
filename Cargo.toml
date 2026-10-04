@@ -10,6 +10,7 @@ members = [
     "crates/tisvlay-wire",
     "crates/tisvlay-world",
     "crates/tisvlay-icons",
+    "crates/tisvlay-runtime",
     "crates/tisvlay",
     "crates/tisvlay-cli",
     "crates/tisvlay-daemon",
@@ -218,6 +219,7 @@ tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-wire = { path = "crates/tisvlay-wire" }
 tisvlay-world = { path = "crates/tisvlay-world" }
 tisvlay-icons = { path = "crates/tisvlay-icons" }
+tisvlay-runtime = { path = "crates/tisvlay-runtime" }
 tisvlay-gui = { path = "crates/tisvlay-gui" }
 tisvlay = { path = "crates/tisvlay" }
 # Binary crates exposed as libs for cross-crate integration tests.

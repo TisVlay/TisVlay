@@ -19,14 +19,12 @@
 //! tisvlay-lg (separate crate)
 //! └── LG WebOS implementation of traits
 //! ```
-//!
-//! # Features
-//!
-//! - `logging` - Shared logging init with journald support for binaries
-//! - `wayland` - ext-idle-notify-v1 idle-detection transport
 
-// Core modules (always available)
-mod action;
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
+
+// Modules
 mod capabilities;
 mod coalescer;
 mod config;
@@ -43,22 +41,11 @@ mod state;
 mod traits;
 pub mod wol;
 
-// Optional modules
-#[cfg(feature = "access")]
-pub mod access;
-#[cfg(feature = "mutter-idle")]
-pub mod idle_mutter;
-#[cfg(feature = "logging")]
-pub mod logging;
-#[cfg(feature = "wayland")]
-pub mod wayland;
-
 // =============================================================================
 // Public re-exports: Core abstractions
 // =============================================================================
 
 // Traits
-pub use action::ActionExecutor;
 pub use traits::{RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities

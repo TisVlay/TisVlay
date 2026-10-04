@@ -16,7 +16,8 @@ libc = { workspace = true }
 pipewire-native = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tisvlay-core = { workspace = true, features = ["mutter-idle", "logging"] }
+tisvlay-core = { workspace = true }
+tisvlay-runtime = { workspace = true, features = ["mutter-idle", "logging"] }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }

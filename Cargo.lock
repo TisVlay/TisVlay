@@ -6558,7 +6558,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "serde_json",
- "tisvlay-core",
+ "tisvlay-runtime",
  "tisvlay-wire",
  "tokio",
  "uuid",
@@ -6570,15 +6570,11 @@ dependencies = [
 name = "tisvlay-core"
 version = "0.3.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bitflags 2.13.2",
  "directories",
- "futures-util",
- "libc",
  "parking_lot",
  "proptest",
- "rustix 1.1.5",
  "serde",
  "serde_json",
  "socket2 0.6.5",
@@ -6587,13 +6583,7 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
- "tracing-journald",
- "tracing-log",
- "tracing-subscriber",
  "uuid",
- "wayland-client",
- "wayland-protocols",
- "zbus",
 ]
 
 [[package]]
@@ -6617,6 +6607,7 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-lg",
  "tisvlay-mock",
+ "tisvlay-runtime",
  "tisvlay-test",
  "tisvlay-wire",
  "tisvlay-world",
@@ -6636,7 +6627,7 @@ dependencies = [
  "anyhow",
  "clap",
  "serde_json",
- "tisvlay-core",
+ "tisvlay-runtime",
  "tisvlay-wire",
  "tokio",
  "tracing",
@@ -6673,6 +6664,7 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-gui",
  "tisvlay-icons",
+ "tisvlay-runtime",
  "tisvlay-wire",
  "tokio",
  "tracing",
@@ -6726,6 +6718,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tisvlay-runtime"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "libc",
+ "rustix 1.1.5",
+ "socket2 0.6.5",
+ "tokio",
+ "tracing",
+ "tracing-journald",
+ "tracing-log",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "zbus",
+]
+
+[[package]]
 name = "tisvlay-session"
 version = "0.3.0"
 dependencies = [
@@ -6741,6 +6752,7 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-daemon",
  "tisvlay-mock",
+ "tisvlay-runtime",
  "tisvlay-test",
  "tisvlay-wire",
  "tokio",
@@ -6798,6 +6810,7 @@ dependencies = [
  "tisvlay-daemon",
  "tisvlay-icons",
  "tisvlay-mock",
+ "tisvlay-runtime",
  "tisvlay-session",
  "tisvlay-test",
  "tisvlay-wire",

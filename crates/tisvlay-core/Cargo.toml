@@ -32,41 +32,10 @@ uuid = { workspace = true }
 # Sync mutex without poisoning (Reconciler, ReconcilerMap, Coalescer).
 parking_lot = { workspace = true }
 
-# Optional: one-click socket-group enrollment (pkexec usermod) for the CLI/GUI
-libc = { workspace = true, optional = true }
-
-# Optional: logging init for binaries
-anyhow = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true }
-tracing-journald = { workspace = true, optional = true }
-tracing-log = { workspace = true, optional = true }
-
-# Optional: Wayland idle detection (ext-idle-notify-v1) for session/greeter
-wayland-client = { workspace = true, optional = true }
-wayland-protocols = { workspace = true, optional = true }
-# Interruptible poll over the wayland fd + a stop pipe, so the idle watch can be
-# torn down and re-registered on a timeout change. The same crate (and the same
-# `poll`) wayland-backend itself uses to read events.
-rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
-
-# Optional: GNOME idle detection (org.gnome.Mutter.IdleMonitor) — the D-Bus
-# fallback where Mutter lacks ext-idle-notify. Shares the wayland idle vocab.
-zbus = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
 tempfile = { workspace = true }
-
-[features]
-default = []
-access = ["dep:libc", "dep:anyhow"]
-logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
-wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]
-# The Mutter D-Bus idle transport shares the wayland idle vocabulary
-# (`IdleNotification`/`IdleTransition`), so it pulls in `wayland`.
-mutter-idle = ["wayland", "dep:zbus", "dep:futures-util"]
 
 [lints]
 workspace = true

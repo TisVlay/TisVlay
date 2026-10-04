@@ -3,6 +3,9 @@
 //! See the crate-level [README](https://crates.io/crates/tisvlay-ssdp) for
 //! usage, scope, and firewall-bind rationale.
 
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
 // External-input profile: this module handles SSDP replies from the
 // network, so indexing, arithmetic, string slicing and narrowing casts
 // must be checked here (docs/build.md, Lint policy).

@@ -259,7 +259,7 @@ pub(crate) fn endpoints() -> &'static Endpoints {
 /// thin shim that calls this; the GUI's own integration tests reach
 /// the types and submodules behind this library crate directly.
 pub fn run() -> Result<()> {
-    tisvlay_core::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"], &[])?;
+    tisvlay_runtime::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"], &[])?;
 
     // Localization: one `tisvlay-gui` gettext catalog serves Slint's
     // `@tr()` and our Rust-side `gettextrs::gettext()` calls; installed
@@ -795,7 +795,7 @@ fn register_callbacks(
     // enroll blocks on the polkit prompt, so it runs off the UI thread
     // and posts its outcome back.
     {
-        use tisvlay_core::access;
+        use tisvlay_runtime::access;
         let socket = endpoints().system_socket.clone();
         if !access::has_access(&socket) {
             errors_global.set_access(ErrorState {

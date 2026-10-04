@@ -77,6 +77,7 @@ impl std::fmt::Debug for RefreshTrigger {
 }
 
 impl RefreshTrigger {
+    /// An idle trigger: no refresh in flight, nothing pending.
     pub fn new() -> Self {
         Self {
             in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

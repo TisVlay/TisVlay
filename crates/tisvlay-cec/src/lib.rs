@@ -16,6 +16,10 @@
 //! `linux_cec::AsyncDevice`, tests use a scripted fake, so the
 //! backend builds and tests with no `/dev/cecN` present.
 
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
+
 mod backend;
 mod config;
 mod connection;

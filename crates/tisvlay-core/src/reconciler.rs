@@ -177,6 +177,7 @@ where
     K: Hash + Eq + Clone,
     V: Copy + PartialEq + Send + 'static,
 {
+    /// An empty map; reconcilers are created per key on first use.
     pub fn new() -> Self {
         Self::default()
     }
