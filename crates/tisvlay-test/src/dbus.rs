@@ -1,17 +1,22 @@
 //! Private `dbus-daemon` spawner for tests.
 //!
-//! Each test binary spawns exactly one private `dbus-daemon` process
-//! (via [`PrivateBus::shared`]) and every test in that binary connects
-//! to it. Binary-level isolation is provided by nextest's
-//! process-per-binary model — no two test binaries ever share a bus.
+//! Each test process spawns exactly one private `dbus-daemon` (via
+//! [`PrivateBus::shared`]) and every test in that process connects to
+//! it. Under nextest that's one bus per test (process-per-test); under
+//! plain `cargo test` the tests of a binary share one, each on its own
+//! thread. No two processes ever share a bus.
 //!
 //! # Lifecycle
 //!
 //! The daemon is spawned lazily on first access and left running for
-//! the lifetime of the test binary. To avoid leaking the child if
-//! `cargo test` is killed abruptly (SIGINT, panic before drop, etc.),
-//! we set `PR_SET_PDEATHSIG = SIGKILL` in a `pre_exec` hook so the
-//! kernel tears it down automatically when the test process dies.
+//! the lifetime of the test process. To avoid leaking the child if the
+//! run is killed abruptly (SIGINT, panic before drop, etc.), we set
+//! `PR_SET_PDEATHSIG = SIGKILL` in a `pre_exec` hook so the kernel tears
+//! it down when its parent dies. The kernel's "parent" there is the
+//! *thread* that forked the child, so the fork happens on a dedicated
+//! thread that lives as long as the process — forking from whichever
+//! test touched the bus first would kill the daemon when that test's
+//! thread exits, under `cargo test`'s thread-per-test model.
 //!
 //! # Bus address
 //!
@@ -53,8 +58,14 @@ impl PrivateBus {
     /// that need this harness are expected to run in an environment where
     /// `dbus-daemon` is available (nix dev shell, CI image, etc.).
     pub fn shared() -> &'static PrivateBus {
-        static BUS: LazyLock<PrivateBus> =
-            LazyLock::new(|| PrivateBus::spawn().expect("failed to spawn private dbus-daemon"));
+        static BUS: LazyLock<PrivateBus> = LazyLock::new(|| match PrivateBus::spawn() {
+            Ok(bus) => bus,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => panic!(
+                "dbus-daemon not found on PATH: the tisvlay-test D-Bus fakes need it \
+                 (the Nix dev shell provides it; elsewhere install the dbus package)"
+            ),
+            Err(e) => panic!("failed to spawn private dbus-daemon: {e}"),
+        });
         &BUS
     }
 
@@ -129,7 +140,20 @@ impl PrivateBus {
             });
         }
 
-        let mut child = cmd.spawn()?;
+        // Fork from a thread that never exits, so the pdeathsig fires with
+        // the process rather than with the calling test's thread.
+        let (spawned_tx, spawned_rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("tisvlay-test-bus".into())
+            .spawn(move || {
+                let _ = spawned_tx.send(cmd.spawn());
+                loop {
+                    std::thread::park();
+                }
+            })?;
+        let mut child = spawned_rx
+            .recv()
+            .map_err(|_| std::io::Error::other("bus spawner thread exited early"))??;
         let stdout = child
             .stdout
             .take()
