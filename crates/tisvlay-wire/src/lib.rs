@@ -5,6 +5,8 @@
 //! scouting discipline). Key-space reference: the "Key space" section of
 //! `docs/architecture.md`.
 
+pub mod endpoint;
+
 pub mod payload {
     //! Wire payload structs — the load-bearing design decision:
     //! each struct is simultaneously the bevy component, the serde wire
@@ -878,6 +880,27 @@ pub mod error {
                 message: format!("system profile {id} is referenced by at least one TV"),
             }
         }
+
+        pub fn unknown_rpc(verb: &str) -> Self {
+            Self {
+                code: "unknown-rpc".into(),
+                message: format!("no such rpc: {verb}"),
+            }
+        }
+
+        pub fn discovery_not_found(session: Uuid) -> Self {
+            Self {
+                code: "discovery-not-found".into(),
+                message: format!("no discovery session {session}"),
+            }
+        }
+
+        pub fn daemon_shutting_down() -> Self {
+            Self {
+                code: "daemon-shutting-down".into(),
+                message: "world reactor is gone".into(),
+            }
+        }
     }
 }
 
@@ -1043,6 +1066,142 @@ pub mod rpc {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub timeout_ms: Option<u64>,
     }
+
+    /// Body for `manager/rpc/enrich`: hint a manually entered TV's MAC
+    /// from the ARP cache before pairing.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct Enrich {
+        pub vendor: String,
+        pub ip: String,
+    }
+
+    /// Body for `tv/<id>/rpc/update-config`: known top-level keys apply
+    /// to the TV's settings, everything else merges into the vendor table.
+    pub type UpdateConfig = serde_json::Map<String, serde_json::Value>;
+
+    /// Body for `user/remote/rpc/set`: toggle a manual remote-session
+    /// source (`manual` when omitted).
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct RemoteSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub source: Option<String>,
+        pub active: bool,
+    }
+
+    /// The tray's notification switches: the cached settings pub and the
+    /// `get`/`update` replies (field names are the category keys).
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct NotificationSettings {
+        pub tv_connection: bool,
+        pub tv_pairing: bool,
+        pub tv_wake: bool,
+        pub daemon_offline: bool,
+    }
+
+    impl Default for NotificationSettings {
+        fn default() -> Self {
+            // Every category documented default-on.
+            Self {
+                tv_connection: true,
+                tv_pairing: true,
+                tv_wake: true,
+                daemon_offline: true,
+            }
+        }
+    }
+
+    impl NotificationSettings {
+        /// Apply a partial update: absent fields keep their current value.
+        #[must_use]
+        pub fn merged_with(self, patch: &NotificationSettingsPatch) -> Self {
+            Self {
+                tv_connection: patch.tv_connection.unwrap_or(self.tv_connection),
+                tv_pairing: patch.tv_pairing.unwrap_or(self.tv_pairing),
+                tv_wake: patch.tv_wake.unwrap_or(self.tv_wake),
+                daemon_offline: patch.daemon_offline.unwrap_or(self.daemon_offline),
+            }
+        }
+    }
+
+    /// Body for `user/tray/rpc/update`: only the switches being changed.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct NotificationSettingsPatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tv_connection: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tv_pairing: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tv_wake: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub daemon_offline: Option<bool>,
+    }
+
+    /// Reply to an rpc that only acknowledges: `{}` on the wire.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Ack {}
+
+    /// Reply carrying the id the service minted (TV or profile creation).
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Created {
+        pub id: Uuid,
+    }
+
+    /// Reply to `manager/rpc/pair`: the TV id and this session's attempt
+    /// id, which stamps its progress samples.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PairStarted {
+        pub id: Uuid,
+        pub attempt: Uuid,
+    }
+
+    /// Reply to `tv/<id>/rpc/re-pair`: the new session's attempt id.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RePairStarted {
+        pub attempt: Uuid,
+    }
+
+    /// Reply to `manager/rpc/discover-start`: the scan session id.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct DiscoverySession {
+        pub session: Uuid,
+    }
+
+    /// Reply to every service's `info` rpc. `state_path` is empty when
+    /// the service runs without persistence.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct ServiceInfo {
+        pub version: String,
+        pub state_path: String,
+    }
+
+    /// One entry of the `manager/vendors` catalog.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct VendorEntry {
+        pub id: String,
+        pub name: String,
+        pub capabilities: Vec<String>,
+    }
+
+    /// Reply to `manager/rpc/enrich`: the MAC hint, when the ARP cache
+    /// had one.
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct EnrichReply {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mac: Option<String>,
+    }
+
+    /// Reply to `tv/<id>/rpc/get-config`: the TV's settings plus its
+    /// vendor table with schema-`Secret` fields removed.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct TvConfigView {
+        pub id: Uuid,
+        pub name: String,
+        pub vendor: String,
+        pub managed: bool,
+        pub system_profile: Option<Uuid>,
+        pub primary_input: Option<String>,
+        pub config: serde_json::Map<String, serde_json::Value>,
+    }
 }
 
 pub mod caller {
@@ -1051,132 +1210,175 @@ pub mod caller {
     //! declared querier per exact rpc key; every call awaits the querier's
     //! matching status before firing, so the zero-matching-queryables
     //! instant-no-reply race cannot happen: matching ⇒ routable. A
-    //! service absent past the deadline fails fast as `rpc.unavailable`,
-    //! and the liveliness token stays a *presence display* signal only —
-    //! rpc readiness is the querier's job.
+    //! service absent past the deadline fails fast as
+    //! [`RpcError::Unavailable`], and the liveliness token stays a
+    //! *presence display* signal only — rpc readiness is the querier's job.
 
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
     use serde_json::Value;
     use zenoh::Session;
     use zenoh::bytes::Encoding;
     use zenoh::query::{ConsolidationMode, Querier};
 
+    use crate::endpoint::{Streaming, Unary};
     use crate::error::WireError;
 
     /// Per-call timeout once a matched queryable holds the query.
     pub const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// How long a call waits for a matching queryable to become routable
-    /// before failing `rpc.unavailable`. Route propagation on a fresh
-    /// link completes in tens of milliseconds; the margin covers a
+    /// before failing [`RpcError::Unavailable`]. Route propagation on a
+    /// fresh link completes in tens of milliseconds; the margin covers a
     /// service that is mid-start.
     pub const MATCHING_DEADLINE: Duration = Duration::from_secs(2);
 
-    /// Typed rpc failure: the service's [`WireError`] code + message, or
-    /// one of the caller's own codes (`rpc.unavailable`, `rpc.timeout`,
-    /// `rpc.no-reply`). Callers route on `code` instead of parsing the
-    /// display string; displays as `"{message} ({code})"`.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct RpcError {
-        pub code: String,
-        pub message: String,
+    /// How an rpc call ended, when it didn't end in a typed reply.
+    #[derive(Debug)]
+    pub enum RpcError {
+        /// The service refused the request.
+        Service(WireError),
+        /// No service matched the key within [`MATCHING_DEADLINE`].
+        Unavailable { key: String },
+        /// A service held the query but didn't reply within [`RPC_TIMEOUT`].
+        Timeout { key: String },
+        /// The query closed without a reply after matching confirmed (the
+        /// service dropped mid-call). For a write, the outcome is unknown.
+        NoReply { key: String },
+        /// The local zenoh session failed the call.
+        Transport { key: String, source: zenoh::Error },
+        /// A reply that isn't the rpc's response type, or an error payload
+        /// that isn't a [`WireError`].
+        Undecodable { key: String },
     }
 
     impl std::fmt::Display for RpcError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{} ({})", self.message, self.code)
-        }
-    }
-
-    impl std::error::Error for RpcError {}
-
-    impl RpcError {
-        fn caller(code: &str, message: impl Into<String>) -> Self {
-            Self {
-                code: code.into(),
-                message: message.into(),
+            match self {
+                Self::Service(error) => write!(f, "{} ({})", error.message, error.code),
+                Self::Unavailable { key } => {
+                    write!(f, "no rpc service for {key} within {MATCHING_DEADLINE:?}")
+                }
+                Self::Timeout { key } => write!(f, "rpc {key}: timed out"),
+                Self::NoReply { key } => write!(f, "rpc {key}: no reply"),
+                Self::Transport { key, .. } => write!(f, "rpc {key}: transport failure"),
+                Self::Undecodable { key } => write!(f, "rpc {key}: undecodable reply"),
             }
         }
     }
 
-    /// Matching-gated rpc caller over one zenoh session. Queriers are
-    /// cached per key, so repeat calls skip declaration and their
-    /// matching status is already resolved.
+    impl std::error::Error for RpcError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Transport { source, .. } => Some(source.as_ref()),
+                _ => None,
+            }
+        }
+    }
+
+    /// Matching-gated rpc caller over one zenoh session, addressing one
+    /// site. Queriers are cached per key, so repeat calls skip
+    /// declaration and their matching status is already resolved.
     #[derive(Debug)]
     pub struct Caller {
         session: Session,
+        site: String,
         queriers: Mutex<HashMap<String, Arc<Querier<'static>>>>,
     }
 
     impl Caller {
-        pub fn new(session: Session) -> Self {
+        pub fn new(session: Session, site: impl Into<String>) -> Self {
             Self {
                 session,
+                site: site.into(),
                 queriers: Mutex::new(HashMap::new()),
             }
         }
 
-        /// Single-shot rpc: matching-gated, never re-issued. The shape
-        /// for writes — the daemon mints state (uuids, discovery
-        /// sessions) before its deferred ack, so a reply lost mid-flight
-        /// must surface as an error rather than a duplicate-minting
-        /// re-issue.
-        pub async fn call(&self, key: &str, body: Value) -> Result<Value, RpcError> {
-            let querier = self.querier(key).await?;
-            self.await_matching(&querier).await?;
-            issue(&querier, &body).await
+        /// The site every call addresses.
+        pub fn site(&self) -> &str {
+            &self.site
         }
 
-        /// Idempotent read: like [`call`](Self::call), plus one re-issue
-        /// when the reply channel closes empty after matching confirmed
-        /// (queryable dropped mid-call, reply lost mid-flight — safe to
-        /// re-ask for a read).
-        pub async fn fetch(&self, key: &str, body: Value) -> Result<Value, RpcError> {
-            let querier = self.querier(key).await?;
-            self.await_matching(&querier).await?;
-            match issue(&querier, &body).await {
-                Err(error) if error.code == "rpc.no-reply" => {
-                    self.await_matching(&querier).await?;
-                    issue(&querier, &body).await
-                }
-                outcome => outcome,
-            }
-        }
-
-        /// Multi-reply rpc (streaming discovery): consolidation off so
-        /// same-key replies survive; zero replies is a legitimate empty
-        /// result, never re-issued. `window` bounds the collection (scan
-        /// windows legitimately exceed [`RPC_TIMEOUT`]); the querier is
-        /// declared per call since timeout is declaration-time state and
-        /// multi-reply verbs are one-shot human actions.
-        pub async fn call_many(
+        /// One rpc, one typed reply. Matching-gated; re-issued once when
+        /// the reply channel closes empty only if `R::REISSUE` (reads) —
+        /// a write that minted state before a lost reply must surface as
+        /// an error rather than mint twice.
+        pub async fn call<R: Unary>(
             &self,
-            key: &str,
-            body: Value,
-            window: Duration,
-        ) -> Result<Vec<Value>, RpcError> {
+            target: &R::Target,
+            request: &R::Request,
+        ) -> Result<R::Response, RpcError> {
+            let key = R::key(&self.site, target);
+            let body = encode(request);
+            let querier = self.querier(&key).await?;
+            self.await_matching(&querier).await?;
+            let bytes = match issue(&querier, &body).await {
+                Err(RpcError::NoReply { .. }) if R::REISSUE => {
+                    self.await_matching(&querier).await?;
+                    issue(&querier, &body).await?
+                }
+                outcome => outcome?,
+            };
+            decode(&key, &bytes)
+        }
+
+        /// One rpc, one reply per finding, collected until `R::window`
+        /// closes. Consolidation is off so same-key replies survive; zero
+        /// replies is a legitimate empty result, never re-issued. The
+        /// querier is declared per call since its timeout is the window.
+        pub async fn call_many<R: Streaming>(
+            &self,
+            target: &R::Target,
+            request: &R::Request,
+        ) -> Result<Vec<R::Response>, RpcError> {
+            let key = R::key(&self.site, target);
             let querier = self
                 .session
-                .declare_querier(key.to_string())
-                .timeout(window)
+                .declare_querier(key.clone())
+                .timeout(R::window(request))
                 .consolidation(ConsolidationMode::None)
                 .await
-                .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+                .map_err(|source| transport(&key, source))?;
             self.await_matching(&querier).await?;
             let replies = querier
                 .get()
-                .payload(encode(&body)?)
+                .payload(encode(request))
                 .encoding(Encoding::APPLICATION_JSON)
                 .await
-                .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+                .map_err(|source| transport(&key, source))?;
             let mut out = Vec::new();
             while let Ok(reply) = replies.recv_async().await {
-                out.push(decode_reply(key, reply)?);
+                out.push(decode(&key, &reply_bytes(&key, reply)?)?);
             }
             Ok(out)
+        }
+
+        /// Untyped write, until every client is on [`call`](Self::call).
+        pub async fn call_json(&self, key: &str, body: Value) -> Result<Value, RpcError> {
+            let querier = self.querier(key).await?;
+            self.await_matching(&querier).await?;
+            let bytes = issue(&querier, &encode(&body)).await?;
+            Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        }
+
+        /// Untyped read, until every client is on [`call`](Self::call).
+        pub async fn fetch_json(&self, key: &str, body: Value) -> Result<Value, RpcError> {
+            let querier = self.querier(key).await?;
+            self.await_matching(&querier).await?;
+            let body = encode(&body);
+            let bytes = match issue(&querier, &body).await {
+                Err(RpcError::NoReply { .. }) => {
+                    self.await_matching(&querier).await?;
+                    issue(&querier, &body).await?
+                }
+                outcome => outcome?,
+            };
+            Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
         }
 
         /// The cached single-reply querier for `key`.
@@ -1189,7 +1391,7 @@ pub mod caller {
                     .declare_querier(key.to_string())
                     .timeout(RPC_TIMEOUT)
                     .await
-                    .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?,
+                    .map_err(|source| transport(key, source))?,
             );
             // A concurrent first call may have raced us; keep whichever
             // landed first so the loser's querier undeclares on drop.
@@ -1206,10 +1408,14 @@ pub mod caller {
         /// queryable — the fact liveliness tokens cannot provide, since
         /// token arrival races queryable-route propagation.
         async fn await_matching(&self, querier: &Querier<'static>) -> Result<(), RpcError> {
+            let key = querier.key_expr().as_str();
             if status(querier).await?.matching() {
                 return Ok(());
             }
-            let listener = querier.matching_listener().await.map_err(transport)?;
+            let listener = querier
+                .matching_listener()
+                .await
+                .map_err(|source| transport(key, source))?;
             // Re-check after subscribing: the flip may have landed
             // between the status read and the listener declaration.
             if status(querier).await?.matching() {
@@ -1221,20 +1427,11 @@ pub mod caller {
                         return Ok(());
                     }
                 }
-                Err(RpcError::caller(
-                    "rpc.transport",
-                    "matching listener closed",
-                ))
+                Err(transport(key, "matching listener closed".into()))
             })
             .await
-            .map_err(|_| {
-                RpcError::caller(
-                    "rpc.unavailable",
-                    format!(
-                        "no rpc service for {} within {MATCHING_DEADLINE:?}",
-                        querier.key_expr()
-                    ),
-                )
+            .map_err(|_| RpcError::Unavailable {
+                key: key.to_string(),
             })?
         }
     }
@@ -1242,67 +1439,68 @@ pub mod caller {
     async fn status(
         querier: &Querier<'static>,
     ) -> Result<zenoh::matching::MatchingStatus, RpcError> {
-        querier.matching_status().await.map_err(transport)
+        querier
+            .matching_status()
+            .await
+            .map_err(|source| transport(querier.key_expr().as_str(), source))
     }
 
-    async fn issue(querier: &Querier<'static>, body: &Value) -> Result<Value, RpcError> {
+    /// Issue one query and take its first reply's payload.
+    async fn issue(querier: &Querier<'static>, body: &[u8]) -> Result<Vec<u8>, RpcError> {
         let key = querier.key_expr().as_str().to_string();
         let replies = querier
             .get()
-            .payload(encode(body)?)
+            .payload(body.to_vec())
             .encoding(Encoding::APPLICATION_JSON)
             .await
-            .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+            .map_err(|source| transport(&key, source))?;
         match replies.recv_async().await {
-            Ok(reply) => decode_reply(&key, reply),
+            Ok(reply) => reply_bytes(&key, reply),
             // Empty channel close: the query finalized with zero replies.
             // With matching confirmed this is the rare dropped-mid-call
             // case, not the routing race.
-            Err(_) => Err(RpcError::caller(
-                "rpc.no-reply",
-                format!("rpc {key}: no reply"),
-            )),
+            Err(_) => Err(RpcError::NoReply { key }),
         }
     }
 
-    fn transport(e: impl std::fmt::Display) -> RpcError {
-        RpcError::caller("rpc.transport", e.to_string())
+    fn transport(key: &str, source: zenoh::Error) -> RpcError {
+        RpcError::Transport {
+            key: key.to_string(),
+            source,
+        }
     }
 
-    fn encode(body: &Value) -> Result<Vec<u8>, RpcError> {
-        serde_json::to_vec(body).map_err(|e| RpcError::caller("rpc.encode", e.to_string()))
+    fn encode<T: Serialize + ?Sized>(body: &T) -> Vec<u8> {
+        serde_json::to_vec(body)
+            .expect("rpc bodies are structs and string-keyed maps, which always encode as JSON")
     }
 
-    fn decode_reply(key: &str, reply: zenoh::query::Reply) -> Result<Value, RpcError> {
+    fn decode<T: DeserializeOwned>(key: &str, bytes: &[u8]) -> Result<T, RpcError> {
+        serde_json::from_slice(bytes).map_err(|_| RpcError::Undecodable {
+            key: key.to_string(),
+        })
+    }
+
+    /// A reply's payload, or the call's failure: the service's
+    /// [`WireError`], or zenoh's synthetic timeout reply.
+    fn reply_bytes(key: &str, reply: zenoh::query::Reply) -> Result<Vec<u8>, RpcError> {
         match reply.result() {
-            Ok(sample) => {
-                Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
-            }
+            Ok(sample) => Ok(sample.payload().to_bytes().into_owned()),
             Err(err) => {
                 let bytes = err.payload().to_bytes();
                 match serde_json::from_slice::<WireError>(&bytes) {
-                    Ok(error) => Err(RpcError {
-                        code: error.code,
-                        message: error.message,
-                    }),
+                    Ok(error) => Err(RpcError::Service(error)),
                     // Zenoh's query timeout arrives as a synthetic
-                    // ReplyError("Timeout"), not a WireError — surface
-                    // it under its own code so "service slow" stays
-                    // distinguishable from a genuine service error.
-                    Err(_) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        if text.contains("Timeout") {
-                            Err(RpcError::caller(
-                                "rpc.timeout",
-                                format!("rpc {key}: timed out"),
-                            ))
-                        } else {
-                            Err(RpcError::caller(
-                                "unknown",
-                                format!("rpc {key}: undecodable error payload"),
-                            ))
-                        }
+                    // ReplyError("Timeout"), not a WireError — keep "service
+                    // slow" distinguishable from a genuine service error.
+                    Err(_) if String::from_utf8_lossy(&bytes).contains("Timeout") => {
+                        Err(RpcError::Timeout {
+                            key: key.to_string(),
+                        })
                     }
+                    Err(_) => Err(RpcError::Undecodable {
+                        key: key.to_string(),
+                    }),
                 }
             }
         }

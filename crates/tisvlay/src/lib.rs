@@ -292,7 +292,7 @@ impl DaemonClient {
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session.clone())),
+            caller: Arc::new(Caller::new(session.clone(), site)),
             session,
             site: site.to_string(),
             mirror,
@@ -856,7 +856,7 @@ impl DaemonClient {
 
     async fn call(&self, key: &str, body: Value) -> Result<Value> {
         self.caller
-            .call(key, body)
+            .call_json(key, body)
             .await
             .map_err(anyhow::Error::new)
     }
@@ -864,7 +864,7 @@ impl DaemonClient {
     /// Idempotent read: rides the caller's re-issue-once path.
     async fn fetch(&self, key: &str, body: Value) -> Result<Value> {
         self.caller
-            .fetch(key, body)
+            .fetch_json(key, body)
             .await
             .map_err(anyhow::Error::new)
     }
@@ -926,7 +926,7 @@ impl SessionClient {
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session)),
+            caller: Arc::new(Caller::new(session, site)),
             site: site.to_string(),
             mirror,
             events,
@@ -1102,7 +1102,7 @@ impl SessionClient {
 
     async fn call(&self, key: &str, body: Value) -> Result<Value> {
         self.caller
-            .call(key, body)
+            .call_json(key, body)
             .await
             .map_err(anyhow::Error::new)
     }
@@ -1110,7 +1110,7 @@ impl SessionClient {
     /// Idempotent read: rides the caller's re-issue-once path.
     async fn fetch(&self, key: &str, body: Value) -> Result<Value> {
         self.caller
-            .fetch(key, body)
+            .fetch_json(key, body)
             .await
             .map_err(anyhow::Error::new)
     }
@@ -1169,7 +1169,7 @@ impl TrayClient {
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session)),
+            caller: Arc::new(Caller::new(session, site)),
             site: site.to_string(),
             alive,
             events,
@@ -1220,7 +1220,7 @@ impl TrayClient {
 
     async fn call(&self, verb: &str, body: Value) -> Result<Value> {
         self.caller
-            .call(&keys::user_tray_rpc(&self.site, verb), body)
+            .call_json(&keys::user_tray_rpc(&self.site, verb), body)
             .await
             .map_err(anyhow::Error::new)
     }
@@ -1228,7 +1228,7 @@ impl TrayClient {
     /// Idempotent read: rides the caller's re-issue-once path.
     async fn fetch(&self, verb: &str, body: Value) -> Result<Value> {
         self.caller
-            .fetch(&keys::user_tray_rpc(&self.site, verb), body)
+            .fetch_json(&keys::user_tray_rpc(&self.site, verb), body)
             .await
             .map_err(anyhow::Error::new)
     }

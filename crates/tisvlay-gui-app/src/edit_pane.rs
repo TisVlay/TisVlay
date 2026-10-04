@@ -30,9 +30,12 @@ fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
 /// rather than the display string.
 fn find_rpc_error(err: &anyhow::Error, code: &str) -> Option<String> {
     err.chain()
-        .filter_map(|cause| cause.downcast_ref::<RpcError>())
-        .find(|rpc| rpc.code == code)
-        .map(|rpc| rpc.message.clone())
+        .filter_map(|cause| match cause.downcast_ref::<RpcError>() {
+            Some(RpcError::Service(error)) => Some(error),
+            _ => None,
+        })
+        .find(|error| error.code == code)
+        .map(|error| error.message.clone())
 }
 
 /// Inspect an `anyhow::Error` chain for the daemon's `invalid-field`
@@ -111,10 +114,10 @@ mod tests {
     use super::*;
 
     fn rpc_err(code: &str, message: &str) -> anyhow::Error {
-        anyhow::Error::new(RpcError {
+        anyhow::Error::new(RpcError::Service(tisvlay_wire::error::WireError {
             code: code.into(),
             message: message.into(),
-        })
+        }))
     }
 
     #[test]

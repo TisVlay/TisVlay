@@ -175,8 +175,10 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     // Matching-gated rpc callers, one per socket — menu clicks and
     // scroll writes ride them so route propagation is waited out
     // instead of dropping the action.
-    let caller = Arc::new(Caller::new(system.clone()));
-    let user_caller = user.clone().map(|session| Arc::new(Caller::new(session)));
+    let caller = Arc::new(Caller::new(system.clone(), options.site.clone()));
+    let user_caller = user
+        .clone()
+        .map(|session| Arc::new(Caller::new(session, options.site.clone())));
     // One coalescer per scroll target: rapid ticks fold into one rpc per
     // TV, based on reconciled intent, with at most one write in flight.
     let volume_scroll = scroll_coalescer(
@@ -558,7 +560,7 @@ async fn activate_gui() -> Result<()> {
 /// shows the truth either way. Matching-gated single shot: a click
 /// during route propagation waits it out instead of vanishing.
 async fn call(caller: &Caller, key: &str, body: Value) {
-    if let Err(error) = caller.call(key, body).await {
+    if let Err(error) = caller.call_json(key, body).await {
         warn!(%key, %error, "rpc failed");
     }
 }

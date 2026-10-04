@@ -326,7 +326,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
 
     // Matching-gated caller for TV rpcs on the system socket, shared into
     // every dispatch's spawned task.
-    let caller = Arc::new(Caller::new(system.clone()));
+    let caller = Arc::new(Caller::new(system.clone(), options.site.clone()));
 
     let mut core = Core {
         system,
@@ -894,7 +894,7 @@ impl Core {
         // select; the Caller re-issues nothing on a write and classifies
         // unavailable-vs-rejected for the log line.
         tokio::spawn(async move {
-            if let Err(error) = caller.call(&key, body).await {
+            if let Err(error) = caller.call_json(&key, body).await {
                 warn!(%key, %error, "tv rpc failed");
             }
         });

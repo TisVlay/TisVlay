@@ -17,6 +17,7 @@ use clap_complete::CompleteEnv;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::{Value, json};
 use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::manager;
 use tisvlay_wire::{keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -347,8 +348,8 @@ async fn run() -> Result<()> {
         return enable_access(&socket);
     }
     let session = open_client(&socket).await?;
-    let caller = Caller::new(session.clone());
     let site = &cli.site;
+    let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
     match cli.command {
         // Handled above, before the client opens (needs no connection).
@@ -357,7 +358,7 @@ async fn run() -> Result<()> {
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
         Command::Discover { vendor, timeout_ms } => {
-            discover(&caller, site, vendor, timeout_ms, json_out).await
+            discover(&caller, vendor, timeout_ms, json_out).await
         }
         Command::Pair {
             name,
@@ -560,7 +561,14 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            user_profile_cmd(&user, &Caller::new(user.clone()), site, cmd, json_out).await
+            user_profile_cmd(
+                &user,
+                &Caller::new(user.clone(), site.as_str()),
+                site,
+                cmd,
+                json_out,
+            )
+            .await
         }
         Command::RemoteSession(cmd) => {
             let user_socket = cli
@@ -574,7 +582,13 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            remote_session_cmd(&Caller::new(user.clone()), site, cmd, json_out).await
+            remote_session_cmd(
+                &Caller::new(user.clone(), site.as_str()),
+                site,
+                cmd,
+                json_out,
+            )
+            .await
         }
     }
 }
@@ -756,8 +770,8 @@ async fn collect_vendor_candidates(socket: &Path) -> Option<Vec<CompletionCandid
     let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
-    let vendors = Caller::new(session)
-        .fetch(&keys::vendors("main"), Value::Null)
+    let vendors = Caller::new(session, "main")
+        .fetch_json(&keys::vendors("main"), Value::Null)
         .await
         .ok()?;
     Some(
@@ -1152,17 +1166,17 @@ async fn open_client(socket: &Path) -> Result<Session> {
 /// `code: message`.
 async fn call(caller: &Caller, key: &str, body: Value) -> Result<Value> {
     caller
-        .call(key, body)
+        .call_json(key, body)
         .await
-        .map_err(|e| anyhow!("{}: {}", e.code, e.message))
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// One rpc read: idempotent, rides the caller's re-issue-once path.
 async fn fetch(caller: &Caller, key: &str, body: Value) -> Result<Value> {
     caller
-        .fetch(key, body)
+        .fetch_json(key, body)
         .await
-        .map_err(|e| anyhow!("{}: {}", e.code, e.message))
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// One acknowledged rpc: call, print the human ack.
@@ -1172,41 +1186,25 @@ async fn ack(caller: &Caller, key: &str, body: Value) -> Result<()> {
     Ok(())
 }
 
-/// Multi-reply RPC: collect every reply until the query finalizes.
-/// Consolidation must be off — same-key replies otherwise collapse to the
-/// latest one.
-async fn call_many(
-    caller: &Caller,
-    key: &str,
-    body: Value,
-    timeout: Duration,
-) -> Result<Vec<Value>> {
-    caller
-        .call_many(key, body, timeout)
-        .await
-        .map_err(|e| anyhow!("{}: {}", e.code, e.message))
-}
-
 async fn discover(
     caller: &Caller,
-    site: &str,
     vendor: Option<String>,
     timeout_ms: u64,
     json_out: bool,
 ) -> Result<()> {
-    let body = serde_json::to_value(rpc::Discover {
+    let request = rpc::Discover {
         vendor,
         timeout_ms: Some(timeout_ms),
-    })?;
-    let found = call_many(
-        caller,
-        &keys::manager_rpc(site, "discover"),
-        body,
-        Duration::from_millis(timeout_ms + 4000),
-    )
-    .await?;
+    };
+    let found = caller
+        .call_many::<manager::Discover>(&(), &request)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&found)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&found)?)?
+        );
         return Ok(());
     }
     if found.is_empty() {
@@ -1214,17 +1212,14 @@ async fn discover(
         return Ok(());
     }
     for tv in found {
-        let mac = tv["vendor_data"]["mac"]
-            .as_str()
+        let mac = tv
+            .vendor_data
+            .get("mac")
             .map(|mac| format!("  mac={mac}"))
             .unwrap_or_default();
         println!(
             "{}  {}  {}  id={}{}",
-            tv["vendor"].as_str().unwrap_or("?"),
-            tv["name"].as_str().unwrap_or("?"),
-            tv["address"].as_str().unwrap_or("?"),
-            tv["id"].as_str().unwrap_or("?"),
-            mac,
+            tv.vendor, tv.name, tv.address, tv.id, mac,
         );
     }
     Ok(())

@@ -416,8 +416,8 @@ async fn first_rpc_races_route_propagation_and_still_lands() {
     // Typed service errors stay terminal and fast — the matching gate
     // must not swallow them into retries.
     let error = daemon.get_pairing_schema("nope").await.unwrap_err();
-    let rpc = error
-        .downcast_ref::<tisvlay::RpcError>()
-        .expect("typed rpc error");
-    assert_eq!(rpc.code, "unknown-vendor");
+    match error.downcast_ref::<tisvlay::RpcError>() {
+        Some(tisvlay::RpcError::Service(rpc)) => assert_eq!(rpc.code, "unknown-vendor"),
+        other => panic!("expected a typed service error, got {other:?}"),
+    }
 }

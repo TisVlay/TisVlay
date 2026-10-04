@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
 use tisvlay_session::sunshine::{Observation, StaticProbe};
 use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
+use tisvlay_wire::endpoint::user_remote;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -1322,14 +1323,16 @@ async fn remote_verb_rpc_round_trips() {
     })
     .await;
 
-    let caller = Caller::new(rig.user.clone());
+    let caller = Caller::new(rig.user.clone(), rig.site.clone());
     // Arm via the rpc — the reply echoes the fact.
+    let set = |active| rpc::RemoteSet {
+        source: Some("cli".into()),
+        active,
+    };
     let reply = caller
-        .call(
-            &keys::user_remote_rpc(&rig.site, "set"),
-            json!({ "source": "cli", "active": true }),
-        )
+        .call::<user_remote::Set>(&(), &set(true))
         .await
+        .map(|state| serde_json::to_value(state).unwrap())
         .expect("set arms");
     assert!(
         reply["sources"].as_array().is_some_and(|s| s
@@ -1340,8 +1343,9 @@ async fn remote_verb_rpc_round_trips() {
 
     // status reflects the armed source.
     let status = caller
-        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .call::<user_remote::Status>(&(), &())
         .await
+        .map(|state| serde_json::to_value(state).unwrap())
         .expect("status ok");
     assert!(
         status["sources"]
@@ -1352,15 +1356,13 @@ async fn remote_verb_rpc_round_trips() {
 
     // Disarm; status goes empty.
     caller
-        .call(
-            &keys::user_remote_rpc(&rig.site, "set"),
-            json!({ "source": "cli", "active": false }),
-        )
+        .call::<user_remote::Set>(&(), &set(false))
         .await
         .expect("set disarms");
     let status = caller
-        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .call::<user_remote::Status>(&(), &())
         .await
+        .map(|state| serde_json::to_value(state).unwrap())
         .expect("status ok");
     assert_eq!(status["sources"], json!([]), "disarmed status is empty");
 }

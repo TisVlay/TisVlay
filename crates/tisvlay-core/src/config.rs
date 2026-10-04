@@ -585,7 +585,7 @@ profile_plumbing! {
 /// This is the result of merging a [`UserProfileConfig`] chain
 /// (user profile -> system default -> hard-coded defaults).
 /// Consumers (session monitor, idle detector) use this type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedUserProfile {
     /// Action on session lock event.
     pub on_session_lock: EventAction,
