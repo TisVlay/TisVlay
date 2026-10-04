@@ -103,6 +103,24 @@
                 hash = "sha256-//t3ASNljC4rosk5oOmcJy8PZKRYjlQ0euzzAmfiSPQ=";
               };
             };
+            # tombi (TOML formatter, `just fmt`) pinned to the version CI
+            # installs (`tombi@1.7.1` in ci.yml), so local and CI formatting
+            # can't disagree; nixpkgs lags behind. Bump both together, and
+            # drop this override once nixpkgs reaches the pin.
+            tombiSrc = pkgs.fetchFromGitHub {
+              owner = "tombi-toml";
+              repo = "tombi";
+              tag = "v1.7.1";
+              hash = "sha256-eeBtmMrkDWOADw7FMLLD8hYq5WYg/aFyATtYIMFYFk0=";
+            };
+            tombi = pkgs.tombi.overrideAttrs {
+              version = "1.7.1";
+              src = tombiSrc;
+              cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                src = tombiSrc;
+                hash = "sha256-YJLhWIwB3Y8836Rq4ahRzBSnhp7bH8w2/oXfRVTOPXg=";
+              };
+            };
           in
           pkgs.mkShell {
             packages =
@@ -155,6 +173,8 @@
                 slintViewer
                 socat
                 tcpdump
+                # TOML formatter (`just fmt`; config in tombi.toml), pinned above.
+                tombi
                 # Spell checker for code, docs and identifiers (`just typos`;
                 # config in _typos.toml).
                 typos

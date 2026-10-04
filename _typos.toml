@@ -9,8 +9,8 @@ locale = "en-us"
 # netlink-packet-route / rtnetlink API paths that keep the British spelling;
 # matched as code so prose "neighbour" still fails.
 extend-ignore-re = [
-  "netlink_packet_route::neighbour::",
-  "\\.neighbours\\(\\)",
+    "netlink_packet_route::neighbour::",
+    "\\.neighbours\\(\\)",
 ]
 
 [default.extend-identifiers]
@@ -36,9 +36,9 @@ wrapp = "wrapp"
 
 [files]
 extend-exclude = [
-  # Translation catalogs: generated, and msgids mirror the sources.
-  "*.pot",
-  "*.po",
-  "Cargo.lock",
-  "target/",
+    # Translation catalogs: generated, and msgids mirror the sources.
+    "*.pot",
+    "*.po",
+    "Cargo.lock",
+    "target/",
 ]

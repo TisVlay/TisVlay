@@ -16,10 +16,11 @@ default:
 # drift: test profile, whole workspace, all targets + all features.
 check_flags := "--profile test --workspace --all-targets --all-features"
 
-# Format all Rust code
+# Format all Rust (rustfmt) and TOML (tombi; config in tombi.toml)
 [group('check')]
 fmt:
     cargo fmt
+    tombi format --quiet
 
 # Build the workspace (test profile, all targets, all features)
 [group('check')]

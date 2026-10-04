@@ -47,6 +47,7 @@ jobs:
             cargo-sbom@0.10.0
             cargo-shear@1.13.4
             just
+            tombi@1.7.1
             typos@1.50.2
 
       - name: Cache

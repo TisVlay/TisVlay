@@ -18,6 +18,7 @@ fail-fast = false
 retries = 1
 # Always show failing test output immediately.
 failure-output = "immediate-final"
+
 # JUnit XML for inline PR test results via dorny/test-reporter.
 [profile.ci.junit]
 path = "junit.xml"

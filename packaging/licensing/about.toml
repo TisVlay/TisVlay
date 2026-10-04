@@ -65,32 +65,40 @@ ignore-dev-dependencies = true
 
 [slint]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [slint.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[slint.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [slint-build]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [slint-build.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[slint-build.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [slint-macros]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [slint-macros.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[slint-macros.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-backend-selector]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-backend-selector.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-backend-selector.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
@@ -101,56 +109,70 @@ accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
 
 [i-slint-backend-winit]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-backend-winit.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-backend-winit.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-common]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-common.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-common.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-compiler]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-compiler.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-compiler.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-core]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-core.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-core.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-core-macros]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-core-macros.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-core-macros.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-renderer-femtovg]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-renderer-femtovg.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-renderer-femtovg.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-renderer-skia]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-renderer-skia.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-renderer-skia.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
@@ -161,8 +183,10 @@ checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 # doesn't surface it.
 [i-slint-renderer-software]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
 [i-slint-renderer-software.clarify]
 license = "LicenseRef-Slint-Royalty-free-2.0"
+
 [[i-slint-renderer-software.clarify.files]]
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
