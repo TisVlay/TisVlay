@@ -23,6 +23,8 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
 - [Eager remote-state refresh on gated events (world-side DPMS path)](ideas/eager-remote-state-refresh.md)
 - [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](ideas/remote-session-followups.md)
+- [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](ideas/zenoh-typed-queryables.md)
+- [SDK methods for the rpcs only the CLI reaches (add-tv, discover, user effective)](ideas/sdk-cli-only-rpcs.md)
 
 ## Operational
 

@@ -50,10 +50,24 @@ alive/{daemon,session,…}                              liveliness tokens (sessi
 user/profile/<uuid>, user/profile/rpc/<verb>          user-profile catalog + CRUD
 user/tv/<uuid>/profile                                per-TV user-profile assignment
 user/remote/session, user/remote/rpc/<verb>           remote-session fact (cached pub) + manual arm/disarm verbs
+user/tray/settings, user/tray/rpc/<verb>              tray notification switches (cached pub) + get/update/test/info
 user/alive/{session,tray}                             per-user service liveliness
 ```
 
 Secrets never reach the wire: `get-config` redacts through the vendor `config_schema` visibility tags (`Secret` fields dropped daemon-side).
+
+### Typed rpc endpoints
+
+Every rpc is declared once, in [`tisvlay-wire`'s `endpoint` module](../crates/tisvlay-wire/src/endpoint.rs), as a marker type implementing `Rpc`: its key, its request type and its response type. A `Unary` rpc answers once (`REISSUE` marks the reads safe to re-issue when a matched query closes without a reply); the one `Streaming` rpc, `discover`, answers once per finding until its window closes. Bodies are JSON on the wire.
+
+- **Families:** a small macro invocation per verb-shaped family (`manager`, `profile`, `tv`, `user_profile`, `user_remote`, `user_tray`) generates the markers and the family's `Call` enum, one variant per rpc carrying its decoded request. The vendor catalog, keyed by vendor rather than verb, is declared by hand.
+- **Clients** call `Caller::call::<R>(target, request)` (or `call_many::<R>`). The caller holds the site, awaits the querier's matching status, and decodes the reply as `R::Response`: a reply that doesn't fit is an error, never a silent null.
+- **Servers** decode each query with `Call::decode(verb, payload)` and match the enum exhaustively, so a family member without a handler, or a handler fed the wrong body type, doesn't compile. An unknown verb is `unknown-rpc` and a malformed body `bad-request` on every server. Replies go out through `serve::reply::<R>`.
+- **World-answered rpcs** (add-tv, pair, profiles, the per-TV commands) carry a typed `Reply<R>` token in their `Command`: replying takes `R::Response`, so the world's replies are type-checked too. The paths several rpcs share (power and screen dispatch, the backend's deferred acks) carry an erased `AckReply`; refusals an `AnyReply`.
+- **`RpcError`** is a call's outcome when it didn't end in a typed reply: the service's `WireError`, or the caller's own `Unavailable`, `Timeout`, `NoReply`, `Transport` or `Undecodable`.
+- **No wire compatibility:** every client ships with the daemon, so requests decode strictly. A newer daemon and an older user service (until re-login after an upgrade) may refuse each other; that window is accepted rather than coded around.
+
+**Why no rpc framework.** Typed endpoints are the idiomatic Rust shape (postcard-rpc's `Endpoint`, Bitwarden's `RpcRequest`, Fedimint's `TypedApiEndpoint`; the server-side request enum is tarpc's, minus its transport). The frameworks themselves don't fit: zrpc (ZettaScale's zenoh rpc) is alpha and brings its own encoding and key layout, which break the zenoh laws below; tarpc needs a connection-shaped transport, which zenoh query/reply isn't; gRPC would replace zenoh outright. zenoh's own typed-queryable proposal ([eclipse-zenoh/zenoh#2510](https://github.com/eclipse-zenoh/zenoh/issues/2510)) would slot under this layer if it lands.
 
 ## The world
 

@@ -234,6 +234,7 @@ Rules the lints can't fully express; the lint policy and its reasons are in `doc
 - **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
 - **Secrets never reach `Debug`.** The LG credential types (`Credentials`, `LgVendorConfig` and the register payloads) implement `Debug` by hand and redact the client key; a new type holding a credential does the same. The untyped vendor-config TOML still carries the key in derived `Debug`, so never log a `TvConfig` or `TvRecord` whole.
 - **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
+- **A new rpc is declared once** in its family's table in `tisvlay-wire`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
 - **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
 - **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.
 
