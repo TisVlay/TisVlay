@@ -1,13 +1,13 @@
 # API hygiene: typed SDK errors and secret types
 
-Status: drafted 2026-10-04, then revised after three reviews (design, implementation correctness, maintainability). Nothing is implemented yet. Open questions are in §8.
+Status: drafted 2026-10-04, revised after three reviews (design, implementation correctness, maintainability), open questions ruled. Nothing is implemented yet.
 
 Two public-API cleanups the code-quality pass deferred:
 
 - **PR A, typed errors:** the client SDK (`tisvlay`) stops returning `anyhow::Result`. The wire's rpc-reply codes become one enum, and the wire `Caller`'s failures become an enum that wraps them.
 - **PR B, secret types:** the LG client key becomes a type whose `Debug` can't leak it, and the untyped vendor config becomes a type that prints key names only. This closes a live leak (§3).
 
-A goes first and carries this plan. B may split in two (§8).
+Three PRs, in order: A, then B1 (`Secret`) and B2 (`VendorConfig`). A carries this plan. The live leak (§3) gets a standalone hotfix first.
 
 ## 1. Rulings
 
@@ -259,10 +259,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 - **SDK parameters as `Uuid` and `&Value`** instead of `&str` ids and JSON strings, which would remove most `InvalidInput`.
 - **The SDK's stringly pairing `phase` matching** (`"complete"`/`"failed"`).
 
-## 8. Open questions
+## 8. Owner rulings on the review round
 
-1. **PR shape:** A, then B as one PR, or B split into B1 (`Secret`: core plus lg, small and self-contained) and B2 (`VendorConfig`: wide, touching the trait, world, daemon and the leak fix)?
-2. **The live leak:** fix it now as a one-line hotfix (log the update's kind, not its payload), or let B2's type change close it?
+1. **B splits into B1 and B2.** B1 is `Secret` across core and lg: small and self-contained. B2 is `VendorConfig`: the trait, the world and daemon holders, the dead `TvConfig` removal.
+2. **The live leak gets a hotfix now,** as a standalone PR off main that logs the update's kind, not its payload, with a regression test. B2 then makes the class impossible.
 
 ## 9. Retirement
 
