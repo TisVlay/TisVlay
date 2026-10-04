@@ -49,11 +49,26 @@ CI provisions `cargo-about` via `taiki-e/install-action` (the Setup step), so th
 
 ## Dep-graph posture
 
-The workspace pulls roughly 700 transitive crates. Each *version* of a crate is a separate compile unit, so we keep an eye on multi-version pinning — on a 2-core CI runner that's real wall time. Goals: minimize duplicated versions, surface new duplicates without blocking PRs.
+The workspace pulls several hundred transitive crates. Each *version* of a crate is a separate compile unit, so duplicates cost compile time, and on a 2-core CI runner that's real wall time.
+
+The policy is **one version per crate unless an upstream crate forces two.** Each exception is a `skip` entry carrying its reason. A plain warning is not enough: it drifted, letting 19 unexplained duplicates pile up unnoticed.
 
 ### `cargo-deny [bans]` config
 
-[`packaging/licensing/deny.toml`](../packaging/licensing/deny.toml) has a `[bans] multiple-versions = "warn"` policy with a curated `skip` list. Each skip entry has a `reason` field citing the upstream consumer that gates dedup, so contributors don't waste time investigating known-and-accepted offenders.
+[`packaging/licensing/deny.toml`](../packaging/licensing/deny.toml) sets `[bans] multiple-versions = "deny"` with a curated `skip` list.
+- Each skip entry has a `reason` naming the upstream crate that forces the duplicate, so nobody re-investigates known cases.
+- `just deny` runs with `-D unnecessary-skip -D unmatched-skip`, so an entry that no longer matches anything fails too, and the list can't outlive its duplicates.
+
+### The bump routine
+
+A dependency update that introduces a duplicate fails `just deny`, and with it prek and CI. To clear it:
+
+1. **Find the cause:** `cargo tree -d -e normal --target x86_64-unknown-linux-gnu` shows each duplicated crate and who pulls each version.
+2. **Dedup if we can.** If one of our own crates asks for the other version, align it.
+3. **Otherwise skip the older version exactly**, as `{ crate = "name@x.y.z", reason = "<upstream> pins name x.y; <other> is on z" }`. The exact version makes the entry go stale, and fail, once that upstream catches up, which prompts its removal.
+4. **Use `skip-tree` sparingly.** It hides any new duplicates that appear underneath the skipped subtree.
+
+The emergency escape, when a bump must land before its duplicates are triaged, is a one-off `cargo deny --config packaging/licensing/deny.toml check -W multiple-versions bans`. The config never flips back to `warn`.
 
 Three known multi-version sources, in decreasing actionability:
 

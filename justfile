@@ -118,14 +118,16 @@ check: deny shear typos licenses-html fmt build clippy doc test
 #
 # Pipeline rationale + maintenance reference: `docs/licensing.md`.
 
-# Enforce the SPDX allow-list (`licenses`) and surface multi-version
-# dep duplication as warnings (`bans`) — see `deny.toml` for the
-# skip-list and `docs/build.md` "Dep-graph posture" for the
-# routine. `bans` is `multiple-versions = "warn"`, so it never
-# fails the build; output is informational.
+# Enforce the SPDX allow-list (`licenses`), code provenance (`sources`)
+# and one version per crate (`bans`, `multiple-versions = "deny"`). A
+# dependency update that adds a duplicate fails here; the bump routine
+# is in `docs/build.md` "Dep-graph posture". `-D unnecessary-skip -D
+# unmatched-skip` make a stale skip-list entry an error too, so the
+# list can't outlive the duplicates it excuses.
 [group('check')]
 deny:
-    cargo deny --config packaging/licensing/deny.toml check licenses bans sources
+    cargo deny --config packaging/licensing/deny.toml check \
+        -D unnecessary-skip -D unmatched-skip licenses bans sources
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes). Doubles as the cargo-about

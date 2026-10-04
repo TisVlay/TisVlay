@@ -23,6 +23,8 @@ NeighbourState = "NeighbourState"
 UPnP = "UPnP"
 GUPnP = "GUPnP"
 MiniUPnPd = "MiniUPnPd"
+# The deflate crate.
+flate2 = "flate2"
 
 [default.extend-words]
 # Route "output interface", netlink-packet-route's `RouteAttribute::Oif`.
