@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
+use tisvlay_session::sunshine::{Observation, StaticProbe};
 use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
@@ -33,6 +34,8 @@ struct Rig {
     user: Session,
     site: String,
     mock: tisvlay_mock::MockHandle,
+    /// The core's Sunshine observation — tests script it; `Absent` by default.
+    sunshine: Arc<StaticProbe>,
 }
 
 async fn rig() -> Rig {
@@ -55,11 +58,13 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
     )
     .await
     .unwrap();
+    let sunshine = StaticProbe::new(Observation::Absent);
     let stack = tisvlay_session::serve(SessionOptions {
         system_socket: system_socket.clone(),
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: store.map(Path::to_path_buf),
+        sunshine: sunshine.clone(),
     })
     .await
     .unwrap();
@@ -77,6 +82,7 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
         user,
         site: "t".into(),
         mock: handle,
+        sunshine,
     }
 }
 
@@ -241,6 +247,7 @@ async fn gateway_isolates_the_user_subtree() {
         user_socket: user2_socket.clone(),
         site: rig.site.clone(),
         store: None,
+        sunshine: StaticProbe::new(Observation::Absent),
     })
     .await
     .unwrap();
@@ -737,6 +744,7 @@ async fn user_store_and_idle_watch_round_trip() {
         user_socket: user2_socket.clone(),
         site: rig.site.clone(),
         store: Some(store),
+        sunshine: StaticProbe::new(Observation::Absent),
     })
     .await
     .unwrap();
@@ -864,22 +872,11 @@ async fn armed_remote_suppresses_gated_events() {
     .await;
 }
 
-/// A live Sunshine source is refreshed on the wake edge: because the gate
-/// and the `/serverinfo` detector share this process, an unlock probes the
-/// endpoint synchronously and clears the source when the stream has ended,
-/// so the wake fires instead of being suppressed for up to a poll interval.
-/// The probe here observes the endpoint absent (no `sunshine` process under
-/// test), which disarms exactly as a `FREE` reading would.
-#[tokio::test(flavor = "multi_thread")]
-async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
+/// A TV armed by a live `Sunshine` source, its unlock gated off while
+/// armed (the remote edges stay inert so arming never moves the panel).
+/// Returns the rig, the TV, its state subscriber, and the remote fact.
+async fn sunshine_armed() -> (Rig, Uuid, Sub, Sub) {
     use tisvlay_wire::payload::RemoteSourceKind;
-
-    let sunshine = |active: bool| RemoteReport {
-        kind: RemoteSourceKind::Sunshine,
-        detail: "serverinfo".into(),
-        active,
-        provisional: false,
-    };
 
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://eager-sunshine").await;
@@ -888,9 +885,6 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
         v["connected"] == true
     })
     .await;
-
-    // Unlock gated off while armed; the remote edges stay inert (`none`) so
-    // arming itself never moves the panel — the lock/unlock pair drives it.
     create_and_assign(
         &rig,
         tv,
@@ -909,7 +903,15 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
 
     // A live Sunshine source arms the TV (attributed kinds always arm).
     let fact = history_sub(&rig.user, keys::user_remote_session(&rig.site)).await;
-    assert!(rig.stack.remote.report(sunshine(true)), "core gone");
+    assert!(
+        rig.stack.remote.report(RemoteReport {
+            kind: RemoteSourceKind::Sunshine,
+            detail: "serverinfo".into(),
+            active: true,
+            provisional: false,
+        }),
+        "core gone"
+    );
     recv_until(&fact, |s| {
         s.kind() == zenoh::sample::SampleKind::Put
             && payload_json(s)["armed"]
@@ -917,6 +919,19 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
                 .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
     })
     .await;
+    (rig, tv, sub, fact)
+}
+
+/// A live Sunshine source is refreshed on the wake edge: because the gate
+/// and the `/serverinfo` detector share this process, an unlock probes the
+/// endpoint synchronously and clears the source when the stream has ended,
+/// so the wake fires instead of being suppressed for up to a poll interval.
+/// The scripted probe observes the process gone, which disarms exactly as a
+/// `FREE` reading would.
+#[tokio::test(flavor = "multi_thread")]
+async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
+    let (rig, tv, sub, fact) = sunshine_armed().await;
+    rig.sunshine.set(Observation::Absent);
 
     // Blank via lock (an off-going event fires even while armed), then wake
     // via unlock: the eager pull observes the endpoint gone, clears the
@@ -932,6 +947,30 @@ async fn gated_wake_eagerly_refreshes_a_stale_sunshine_source() {
         }
     })
     .await;
+}
+
+/// The eager pull only clears a source the endpoint says is gone: a busy
+/// stream, or a reading it can't classify, keeps the source and the wake
+/// stays suppressed.
+#[tokio::test(flavor = "multi_thread")]
+async fn gated_wake_stays_suppressed_while_sunshine_is_busy_or_unknown() {
+    for observation in [Observation::Busy, Observation::Unknown] {
+        let (rig, tv, sub, fact) = sunshine_armed().await;
+        rig.sunshine.set(observation);
+
+        drive_until(&rig, &sub, SessionEvent::Lock, tv, "screenoff").await;
+        assert!(rig.stack.client.send(SessionEvent::Unlock), "core gone");
+        assert_no_sample(&sub, Duration::from_millis(1500), |s| {
+            keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+                .is_some_and(|(id, path)| id == tv && path == "state/power")
+                && payload_json(s)["state"] == "active"
+        })
+        .await;
+        assert_no_sample(&fact, Duration::from_millis(200), |s| {
+            payload_json(s)["sources"] == json!([])
+        })
+        .await;
+    }
 }
 
 /// The connect/disconnect actions fire on arm and disarm edges.
@@ -1189,6 +1228,7 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
         user_socket: user_socket.clone(),
         site: "t".into(),
         store: None,
+        sunshine: StaticProbe::new(Observation::Absent),
     })
     .await
     .unwrap();

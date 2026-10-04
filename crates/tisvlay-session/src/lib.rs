@@ -16,7 +16,7 @@ mod monitor;
 mod remote;
 mod screencast;
 mod store;
-mod sunshine;
+pub mod sunshine;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -148,6 +148,9 @@ pub struct SessionOptions {
     pub site: String,
     /// Persisted user profiles + assignments. `None` = ephemeral.
     pub store: Option<PathBuf>,
+    /// The Sunshine observation the core's eager pull takes on a gated
+    /// wake — [`sunshine::HostProbe`] in production, scripted in tests.
+    pub sunshine: Arc<dyn sunshine::SunshineProbe>,
 }
 
 /// A running session service.
@@ -327,6 +330,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let mut core = Core {
         system,
         user,
+        sunshine: options.sunshine,
         site: options.site,
         profiles: snapshot
             .profile
@@ -387,6 +391,8 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
 struct Core {
     system: Session,
     user: Session,
+    /// The eager pull's Sunshine observation (see `eager_refresh_sunshine`).
+    sunshine: Arc<dyn sunshine::SunshineProbe>,
     site: String,
     profiles: HashMap<Uuid, UserProfileConfig>,
     assignments: HashMap<Uuid, Uuid>,
@@ -795,7 +801,7 @@ impl Core {
         // The poll owns the single (Sunshine, "serverinfo") key and it is
         // live here (checked above), so fold the observation against
         // armed = true: Free/Absent clears the source, Busy/Unknown leaves it.
-        let observation = sunshine::probe_once(sunshine::EAGER_TIMEOUT).await;
+        let observation = self.sunshine.observe(sunshine::EAGER_TIMEOUT).await;
         if let (_, Some(report)) = sunshine::decide(true, observation)
             && self.remote_sources.apply(&report)
         {

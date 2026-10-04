@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
+use tisvlay_session::sunshine::{HostProbe, SunshineProbe};
 
 #[derive(Parser, Debug)]
 #[command(name = "tisvlay-session", about = "TisVlay per-user session service")]
@@ -27,6 +29,12 @@ struct Args {
     /// Run without persistence.
     #[arg(long)]
     ephemeral: bool,
+
+    /// Sunshine's base port on loopback, where its unauthenticated
+    /// `/serverinfo` answers. Set it when Sunshine runs on a non-default
+    /// base port (e.g. moved aside so Moonshine keeps the defaults).
+    #[arg(long, default_value_t = tisvlay_session::sunshine::DEFAULT_PORT)]
+    sunshine_port: u16,
 }
 
 fn default_config_path() -> PathBuf {
@@ -46,6 +54,9 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Some(args.config.unwrap_or_else(default_config_path))
     };
+    let sunshine: Arc<dyn SunshineProbe> = Arc::new(HostProbe {
+        port: args.sunshine_port,
+    });
     let stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
         system_socket: args
             .system_socket
@@ -55,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path),
         site: args.site,
         store,
+        sunshine: sunshine.clone(),
     })
     .await?;
 
@@ -116,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
     // its own source key, coexisting with the optional `global_prep_cmd`
     // hook: the hook is the instant arm, the poll owns disarm, self-heal,
     // and the zero-config fallback. Runs for the session lifetime.
-    tisvlay_session::spawn_sunshine_detector(stack.remote.clone());
+    tisvlay_session::spawn_sunshine_detector(stack.remote.clone(), sunshine);
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down");

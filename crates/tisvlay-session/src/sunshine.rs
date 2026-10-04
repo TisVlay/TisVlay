@@ -31,9 +31,19 @@
 //!
 //! The probe gates on process presence (a cheap procfs scan) so an idle box
 //! pays nothing while Sunshine is absent, and it needs Sunshine's HTTP port
-//! reachable on loopback — a firewall or a non-default port defeats it.
+//! reachable on loopback — a firewall defeats it, and a non-default base
+//! port (Sunshine moved aside so Moonshine can keep the GameStream
+//! defaults) must be configured with `--sunshine-port`, or the probe asks
+//! whatever owns the default port instead.
+//!
+//! The probe is a [`SunshineProbe`] handed in through the session options,
+//! so the host reads stay out of tests: [`HostProbe`] is the real one, and
+//! [`StaticProbe`] observes whatever its owner sets.
 
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tisvlay_wire::payload::RemoteSourceKind;
@@ -43,9 +53,9 @@ use tracing::debug;
 
 use crate::{RemoteClient, RemoteReport};
 
-/// Sunshine's unauthenticated HTTP port — serves `/serverinfo` in the
-/// clear (the HTTPS port needs a paired client cert).
-const SERVERINFO_ADDR: (&str, u16) = ("127.0.0.1", 47989);
+/// Sunshine's default base port, which serves the unauthenticated HTTP
+/// `/serverinfo` in the clear (the HTTPS port needs a paired client cert).
+pub const DEFAULT_PORT: u16 = 47989;
 
 /// Per-probe connect+read budget. Loopback is fast; this only bounds a
 /// listener that accepts but then stalls, so a wedged endpoint cannot hang
@@ -87,11 +97,91 @@ pub(crate) enum ServerState {
 /// unreachable-but-present endpoint folded into `Unknown` so a transient
 /// blip keeps the last level rather than flapping the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Observation {
+pub enum Observation {
+    /// A stream is active.
     Busy,
+    /// Idle.
     Free,
+    /// Present but unclassifiable or unreachable — keep the last level.
     Unknown,
+    /// No sunshine process.
     Absent,
+}
+
+/// A boxed probe future; the trait stays object-safe without an
+/// async-trait dependency.
+pub type ObserveFuture<'a> = Pin<Box<dyn Future<Output = Observation> + Send + 'a>>;
+
+/// One bounded Sunshine observation, as the detector and the core's eager
+/// pull both take it. [`HostProbe`] reads the host; [`StaticProbe`] reports
+/// a set value (tests script it; `Absent` also turns detection off).
+pub trait SunshineProbe: Send + Sync + std::fmt::Debug {
+    /// Observe within `timeout`.
+    fn observe(&self, timeout: Duration) -> ObserveFuture<'_>;
+}
+
+/// The real probe: gate on a sunshine process in procfs, then classify
+/// `/serverinfo` on loopback `port` (Sunshine's base port).
+#[derive(Debug, Clone, Copy)]
+pub struct HostProbe {
+    pub port: u16,
+}
+
+impl Default for HostProbe {
+    fn default() -> Self {
+        Self { port: DEFAULT_PORT }
+    }
+}
+
+impl SunshineProbe for HostProbe {
+    /// An unreachable endpoint while the process is present is `Unknown`
+    /// (keep the last level), never `Free`. The poll passes its interval
+    /// budget; the eager pull passes a tight one.
+    fn observe(&self, timeout: Duration) -> ObserveFuture<'_> {
+        Box::pin(async move {
+            if !sunshine_present() {
+                return Observation::Absent;
+            }
+            match query_serverinfo(self.port, timeout).await {
+                Ok(ServerState::Busy) => Observation::Busy,
+                Ok(ServerState::Free) => Observation::Free,
+                Ok(ServerState::Unknown) => Observation::Unknown,
+                Err(error) => {
+                    debug!(%error, port = self.port, "sunshine /serverinfo unreachable; keeping last level");
+                    Observation::Unknown
+                }
+            }
+        })
+    }
+}
+
+/// A probe that reports whatever its owner last set — no host reads. Tests
+/// script observations with it; set to `Absent` it disables detection.
+#[derive(Debug)]
+pub struct StaticProbe(Mutex<Observation>);
+
+impl StaticProbe {
+    pub fn new(observation: Observation) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(observation)))
+    }
+
+    /// Change what every later observation reports.
+    pub fn set(&self, observation: Observation) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = observation;
+    }
+}
+
+impl SunshineProbe for StaticProbe {
+    fn observe(&self, _timeout: Duration) -> ObserveFuture<'_> {
+        let observation = *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Box::pin(std::future::ready(observation))
+    }
 }
 
 /// Classify a `/serverinfo` response body. Sunshine reports its level in a
@@ -154,18 +244,18 @@ pub(crate) fn is_sunshine_comm(comm: &str) -> bool {
 /// arms and disarms a `Sunshine` source on its own key. Runs for the
 /// session lifetime; the only exit is a dead core (nothing left to report
 /// to).
-pub fn spawn(client: RemoteClient) {
-    tokio::spawn(run(client));
+pub fn spawn(client: RemoteClient, probe: Arc<dyn SunshineProbe>) {
+    tokio::spawn(run(client, probe));
 }
 
 /// The poll loop: observe, fold into the arm state, emit on change, sleep.
 /// A short interval while the process is present keeps arm latency low in
 /// the hook-less case; a longer interval while it is absent keeps an idle
 /// box cheap.
-async fn run(client: RemoteClient) {
+async fn run(client: RemoteClient, probe: Arc<dyn SunshineProbe>) {
     let mut armed = false;
     loop {
-        let observation = probe_once(POLL_TIMEOUT).await;
+        let observation = probe.observe(POLL_TIMEOUT).await;
         let (next, change) = decide(armed, observation);
         armed = next;
         if let Some(report) = change {
@@ -179,26 +269,6 @@ async fn run(client: RemoteClient) {
             _ => PRESENT_INTERVAL,
         };
         tokio::time::sleep(interval).await;
-    }
-}
-
-/// One bounded observation: gate on process presence, then classify
-/// `/serverinfo` within `timeout`. An unreachable endpoint while the
-/// process is present is `Unknown` (keep the last level), never `Free`. The
-/// poll passes its interval budget; the session-side eager pull passes a
-/// tight one — one implementation for both.
-pub(crate) async fn probe_once(timeout: Duration) -> Observation {
-    if !sunshine_present() {
-        return Observation::Absent;
-    }
-    match query_serverinfo(timeout).await {
-        Ok(ServerState::Busy) => Observation::Busy,
-        Ok(ServerState::Free) => Observation::Free,
-        Ok(ServerState::Unknown) => Observation::Unknown,
-        Err(error) => {
-            debug!(%error, "sunshine /serverinfo unreachable; keeping last level");
-            Observation::Unknown
-        }
     }
 }
 
@@ -231,9 +301,9 @@ fn sunshine_present() -> bool {
 /// unauthenticated localhost request does not justify an HTTP client dep).
 /// `Ok` means the server answered and the body was classified; `Err` is a
 /// connect/read failure or timeout, which the caller folds into `Unknown`.
-async fn query_serverinfo(timeout: Duration) -> io::Result<ServerState> {
+async fn query_serverinfo(port: u16, timeout: Duration) -> io::Result<ServerState> {
     let exchange = async {
-        let mut stream = TcpStream::connect(SERVERINFO_ADDR).await?;
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
         stream
             .write_all(b"GET /serverinfo HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await?;
@@ -249,6 +319,38 @@ async fn query_serverinfo(timeout: Duration) -> io::Result<ServerState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `/serverinfo` is fetched from the configured port, not a fixed one —
+    /// a stand-in server on an ephemeral port answers in place of Sunshine.
+    #[tokio::test]
+    async fn queries_serverinfo_on_the_configured_port() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 256];
+            let _ = stream.read(&mut request).await;
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.0 200 OK\r\n\r\n<root><state>SUNSHINE_SERVER_BUSY</state></root>",
+                )
+                .await;
+        });
+        assert_eq!(
+            query_serverinfo(port, POLL_TIMEOUT).await.unwrap(),
+            ServerState::Busy
+        );
+    }
+
+    #[tokio::test]
+    async fn static_probe_reports_what_it_is_set_to() {
+        let probe = StaticProbe::new(Observation::Absent);
+        assert_eq!(probe.observe(POLL_TIMEOUT).await, Observation::Absent);
+        probe.set(Observation::Busy);
+        assert_eq!(probe.observe(POLL_TIMEOUT).await, Observation::Busy);
+    }
 
     #[test]
     fn parses_the_busy_and_free_state_tokens() {
