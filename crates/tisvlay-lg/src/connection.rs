@@ -29,6 +29,11 @@ pub struct LgConnection {
     /// each fresh reconnect. Returned from [`hardware_id`](Self::hardware_id)
     /// without blocking.
     hardware_id: std::sync::Arc<std::sync::RwLock<Option<tisvlay_core::HardwareId>>>,
+    /// Test override for where a reconnect dials — the fake SSAP server's
+    /// URL, since the real path always dials the configured IP on the
+    /// standard SSAP ports.
+    #[cfg(test)]
+    reconnect_url: Option<String>,
 }
 
 impl LgConnection {
@@ -48,6 +53,8 @@ impl LgConnection {
             config,
             capabilities: Capabilities::STOCK,
             hardware_id: std::sync::Arc::new(std::sync::RwLock::new(hardware_id)),
+            #[cfg(test)]
+            reconnect_url: None,
         }
     }
 
@@ -72,6 +79,20 @@ impl LgConnection {
         }
     }
 
+    /// Open and register a fresh client for the configured TV.
+    async fn dial(&self) -> Result<WebOsClient> {
+        #[cfg(test)]
+        if let Some(url) = &self.reconnect_url {
+            return WebOsClient::connect_url(url, self.config.client_key.clone()).await;
+        }
+        WebOsClient::connect_with_scheme(
+            &self.config.ip,
+            self.config.scheme,
+            self.config.client_key.clone(),
+        )
+        .await
+    }
+
     /// Ensure the WebSocket connection is alive, reconnecting if needed.
     async fn ensure_connected(&mut self) -> Result<&mut WebOsClient> {
         let needs_reconnect = match &self.client {
@@ -81,12 +102,7 @@ impl LgConnection {
 
         if needs_reconnect {
             info!(ip = %self.config.ip, scheme = %self.config.scheme, "Reconnecting to LG TV");
-            let client = WebOsClient::connect_with_scheme(
-                &self.config.ip,
-                self.config.scheme,
-                self.config.client_key.clone(),
-            )
-            .await?;
+            let client = self.dial().await?;
             self.client = Some(client);
 
             // Best-effort identity refresh on fresh connect. Runs once
@@ -908,12 +924,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Build an LgConnection that points at the fake server.
-        // Override the config IP to the fake server address so
-        // ensure_connected() reconnects there.
+        // An LgConnection on the fake server, its reconnect aimed back at
+        // it: the real reconnect path dials the configured IP on the
+        // standard SSAP ports, which the fake server isn't on.
         let mut config = LgVendorConfig::new(server.addr().ip().to_string());
         config.client_key = Some("test-client-key".to_string());
         let mut conn = LgConnection::new(client, config, None);
+        conn.reconnect_url = Some(server.ws_url());
 
         // First call succeeds.
         let state = conn.get_state().await.unwrap();
@@ -923,32 +940,11 @@ mod tests {
         server.drop_connection();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // with_retry should detect the stale connection, reconnect
-        // to the fake server (which accepts a new connection), and
-        // succeed on the retry.
-        //
-        // NOTE: This test only works if LgConnection::ensure_connected
-        // reconnects via Connection::connect (wss then ws). The fake
-        // server only listens on one port, but the wss attempt will
-        // fail fast (connection refused on wrong port) and the ws
-        // fallback hits the fake server's port... except the fake
-        // server isn't on port 3000. The ensure_connected path uses
-        // the config IP with hardcoded ports, not our random port.
-        //
-        // So with_retry will fail to reconnect here because it goes
-        // through WebOsClient::connect(ip) which tries ports 3001/3000.
-        // This is a known limitation — testing with_retry end-to-end
-        // requires making LgConnection's reconnect path configurable,
-        // which is a Layer 3+ enhancement.
-        //
-        // For now, verify the error is a connection error (not a panic).
-        let result = conn.get_state().await;
-        // The retry will fail because the fake server isn't on port 3000/3001.
-        // But the error path in with_retry IS exercised.
-        assert!(
-            result.is_err(),
-            "should fail since fake server isn't on standard ports"
-        );
+        // with_retry detects the stale connection, reconnects — aimed at
+        // the fake server, which accepts a fresh connection — and the
+        // retried command succeeds.
+        let state = conn.get_state().await.expect("reconnected and retried");
+        assert!(state.is_on);
     }
 
     #[tokio::test]
