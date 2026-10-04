@@ -26,10 +26,26 @@ fmt:
 build:
     cargo build {{ check_flags }}
 
+# The gates deny warnings through cargo's `build.warnings` rather than
+# `-- -D warnings`: it covers clippy, test and rustdoc builds alike, fails
+# replayed (cached) warnings too, and toggling it doesn't invalidate the
+# build cache. It is set per gate recipe, never in `.cargo/config.toml` —
+# the Nix package build reads that file with nixpkgs' rustc, and a newer
+# compiler's new warning must not break a NixOS rebuild. Local `cargo
+# build`/`cargo run` stay warn-only.
+deny_warnings := "CARGO_BUILD_WARNINGS=deny"
+
 # Run clippy with warnings denied
 [group('check')]
 clippy:
-    cargo clippy {{ check_flags }} -- -D warnings
+    {{ deny_warnings }} cargo clippy {{ check_flags }}
+
+# Build the API docs with warnings denied (broken or private intra-doc
+# links). `--no-deps`: only the workspace's own docs are checked.
+# `--profile test` reuses the dependency metadata `just clippy` built.
+[group('check')]
+doc:
+    {{ deny_warnings }} cargo doc --profile test --workspace --no-deps --all-features
 
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
@@ -39,15 +55,19 @@ test:
 
 # Run the full check pipeline (clippy + tests + doc tests + coverage
 # report) under a single coverage-instrumented build. `cargo llvm-cov
-# show-env --sh` emits the `export VAR=…` lines for
-# RUSTFLAGS=-C instrument-coverage and
-# CARGO_TARGET_DIR=target/llvm-cov-target/; `eval`-ing them in this
-# bash recipe means subsequent cargo commands all share that target
-# dir. Without this, clippy and the coverage build would each
-# compile the workspace independently (different RUSTFLAGS →
-# different cargo fingerprints, no artifact reuse). Design + the
+# show-env --sh` emits `export VAR=…` lines that route every later
+# cargo command through cargo-llvm-cov's RUSTC_WRAPPER, which adds
+# `-C instrument-coverage` and points LLVM_PROFILE_FILE into the
+# target dir; `eval`-ing them in this bash recipe means clippy, nextest
+# and the doc tests all share one instrumented build. Design + the
 # residual clippy-vs-build dual-compile finding live in
 # `docs/build.md` "Build pipeline".
+#
+# CARGO_TARGET_DIR is pinned to `target/llvm-cov-target/` before the
+# `eval`. show-env doesn't choose a directory itself, and
+# cargo doesn't rebuild when only RUSTC_WRAPPER changes, so sharing
+# `target/` would reuse an uninstrumented `just build`: no `.profraw`,
+# and a failed report.
 #
 # `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
 # `target/llvm-cov-target/` to fit the runner's free-disk ceiling.
@@ -66,9 +86,11 @@ test-ci:
     set -euo pipefail
     export CARGO_PROFILE_DEV_DEBUG=line-tables-only
     export NEXTEST_PROFILE=ci
+    export {{ deny_warnings }}
+    export CARGO_TARGET_DIR=target/llvm-cov-target
     eval "$(cargo llvm-cov show-env --sh)"
     cargo llvm-cov clean --profraw-only
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
@@ -77,7 +99,7 @@ test-ci:
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
-check: deny licenses-html fmt build clippy test
+check: deny licenses-html fmt build clippy doc test
 
 # Review pending snapshot changes (insta)
 [group('check')]

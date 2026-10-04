@@ -177,9 +177,10 @@ Each PR passes `just check` and `prek run -a`, lists its before → after counts
    - Fix the 26 warnings.
    - Set `doc = false` on the CLI's `[[bin]]`, which `build.warnings` doesn't cover, to end the filename collision.
    - Measured cost: 37 s cold, nothing when nothing changed, and 2 s after editing a crate.
-3. **The tools in the flake devShell:** cargo-shear, typos and cargo-hack.
 
 ### Q2 — Tools and dependency hygiene
+
+Each tool joins the flake devShell in this PR, together with its first use: cargo-shear, typos, cargo-hack, and tombi if adopted.
 
 1. **cargo-shear replaces the dead machete metadata.**
    - `just shear` runs `cargo shear --deny-warnings`. It joins `just check`, with a prek hook filtered on `Cargo\.toml$`.

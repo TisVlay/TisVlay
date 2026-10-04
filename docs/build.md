@@ -4,17 +4,27 @@ Developer-facing reference for how the workspace compiles, what gets pulled into
 
 ## Build pipeline
 
-`just test-ci` is the canonical CI entry point. It runs the full check pipeline (clippy + nextest + doc tests + coverage report) under a single coverage-instrumented build, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice with different `RUSTFLAGS`.
+`just test-ci` is the canonical CI entry point. It runs the full check pipeline (clippy + nextest + doc tests + coverage report) under a single coverage-instrumented build, so all four stages share `target/llvm-cov-target/` instead of compiling the workspace twice, once plain and once instrumented.
 
-The mechanism: `cargo llvm-cov show-env --sh` emits `export VAR=…` lines for `RUSTFLAGS=-C instrument-coverage` and `CARGO_TARGET_DIR=target/llvm-cov-target/`; `eval`-ing them in a multi-line bash recipe means subsequent cargo commands all share that target dir. Without this, clippy and the coverage build would each compile the workspace independently — different `RUSTFLAGS` produce different cargo fingerprints, so artifacts can't be reused.
+The mechanism: `cargo llvm-cov show-env --sh` emits `export VAR=…` lines that route every later cargo command through cargo-llvm-cov's `RUSTC_WRAPPER`, which adds `-C instrument-coverage` and points `LLVM_PROFILE_FILE` into the target dir. `eval`-ing them in a multi-line bash recipe means clippy, nextest and the doc tests all share one instrumented build. The recipe pins `CARGO_TARGET_DIR=target/llvm-cov-target/` before the `eval`: show-env doesn't choose a directory itself, and cargo doesn't rebuild when only `RUSTC_WRAPPER` changes. Sharing `target/` would therefore reuse an uninstrumented `just build`, leaving no `.profraw` and a failing report.
 
-There's a residual dual-compile that *can't* be eliminated on stable today (verified by `cargo clippy -v` rustc invocations): even with shared target dir + rustflags, cargo treats `cargo clippy` and `cargo nextest run` as different "modes" with different artifact-emit flags. clippy emits `--emit=dep-info,metadata` (rmeta only — interface, no machine code); nextest emits `--emit=dep-info,metadata,link` (rmeta + `.rlib`). cargo's fingerprint distinguishes the two artifact kinds, so every workspace crate is recompiled in the second invocation. This is upstream cargo design — see "Review triggers" for the goal that may eventually fix it.
+There's a residual dual-compile that *can't* be eliminated on stable today (verified by `cargo clippy -v` rustc invocations): even with one target dir and one instrumentation setting, cargo treats `cargo clippy` and `cargo nextest run` as different "modes" with different artifact-emit flags. clippy emits `--emit=dep-info,metadata` (rmeta only — interface, no machine code); nextest emits `--emit=dep-info,metadata,link` (rmeta + `.rlib`). cargo's fingerprint distinguishes the two artifact kinds, so every workspace crate is recompiled in the second invocation. This is upstream cargo design — see "Review triggers" for the goal that may eventually fix it.
 
 `tisvlay-gui` looks uniquely doubly-compiled when grepping for `Compiling X` lines because it's the only workspace crate with a `build.rs` — its build-script binary forces a "Compiling" verb in the clippy step where every other workspace crate gets "Checking" (rmeta-only). Cosmetic, not actual extra duplication.
 
 ### CI feature scope
 
 CI lints and tests with `--all-features` — the same flags as local `prek`. The workspace's feature surface is small (core's `logging`/`wayland`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled), so the instrumented all-features build fits the runner comfortably and there is exactly one feature configuration to reason about. The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
+
+## Lint policy
+
+### Warnings are errors in the gates
+
+Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` export `CARGO_BUILD_WARNINGS=deny` (cargo's `build.warnings`). So a lint at `warn` in `[workspace.lints]` blocks a commit and a CI run just as `deny` would.
+
+- **Why `build.warnings` and not `-- -D warnings`:** it covers clippy, test and rustdoc builds with one setting. It also fails on warnings replayed from the cache, and toggling it doesn't invalidate the build cache, which passing `-D warnings` through clippy or `RUSTFLAGS` does. It doesn't cover build-script `cargo::warning=` lines or cargo's own manifest and filename-collision warnings.
+- **Why per recipe and not `.cargo/config.toml`:** the Nix package build (`buildRustPackage`) reads that file with nixpkgs' rustc. A warning that a newer compiler adds would then break a NixOS rebuild. Local `cargo build` / `cargo run` stay warn-only, so a half-edited file still runs.
+- **Rustdoc is a gate too.** `just doc` builds the workspace's API docs (`--no-deps`), so a broken intra-doc link, or a public doc linking a private item, fails like any other lint. In CI it runs in the Lint step's prek pass. The CLI's binary sets `doc = false`, since it shares the `tisvlay` name with the SDK library.
 
 ## Profile knobs
 
