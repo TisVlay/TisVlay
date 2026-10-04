@@ -169,8 +169,13 @@ bevy_ecs = "0.19"
 # Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
 # API (caches, history, recovery) is behind `unstable` — an accepted
 # risk, tracked in the parity plan's watch items.
-zenoh = "1.10"
-zenoh-ext = { version = "1.10", features = ["unstable"] }
+#
+# Every TisVlay link is a Unix socket, so zenoh's default transports (QUIC,
+# TLS, WebSocket, TCP, UDP, compression, multilink, pubkey/usrpwd auth) are
+# switched off — on zenoh-ext too, whose `default` re-enables them. Add a
+# `transport_*` feature back here if a link ever needs one.
+zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
+zenoh-ext = { version = "1.10", default-features = false, features = ["unstable"] }
 
 # EDID parsing for the DRM connector ↔ TV matcher
 edidkit = "0.1"
@@ -251,7 +256,10 @@ split-debuginfo = "unpacked"
 debug = "line-tables-only"
 
 # Tuning for shipped binaries (Nix, musl release, .deb/.rpm/.archlinux).
+# Cargo's default codegen units and no LTO, on purpose: `codegen-units = 1`
+# serializes each crate's optimization (zenoh and the Slint-generated GUI
+# stall the whole build on one core), and thin LTO adds a mostly serial
+# pass per binary. TisVlay waits on sockets, D-Bus and timers, so the
+# cross-crate inlining those buy isn't worth a build ~30% slower.
 [profile.release]
-lto = "thin"
-codegen-units = 1
 strip = "symbols"
