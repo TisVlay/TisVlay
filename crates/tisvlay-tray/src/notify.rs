@@ -15,8 +15,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use tisvlay_wire::keys;
+use tisvlay_wire::endpoint::user_tray;
+use tisvlay_wire::error::WireError;
+use tisvlay_wire::{keys, rpc, serve};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use zenoh::Session;
@@ -24,27 +25,7 @@ use zenoh::bytes::Encoding;
 use zenoh::query::Query;
 use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
 
-/// Wire/config body for the notification switches — same shape the
-/// GUI's settings pane speaks (field names are the category keys).
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotificationSettings {
-    pub tv_connection: bool,
-    pub tv_pairing: bool,
-    pub tv_wake: bool,
-    pub daemon_offline: bool,
-}
-
-impl Default for NotificationSettings {
-    fn default() -> Self {
-        // Every category documented default-on (root parity).
-        Self {
-            tv_connection: true,
-            tv_pairing: true,
-            tv_wake: true,
-            daemon_offline: true,
-        }
-    }
-}
+pub use tisvlay_wire::rpc::NotificationSettings;
 
 /// On-disk wrapper for the settings file: the schema version tag rides
 /// the persisted form only, never the wire body. Absence *defines*
@@ -70,27 +51,12 @@ pub enum Category {
     DaemonOffline = 3,
 }
 
-impl NotificationSettings {
-    fn bits(self) -> u8 {
-        u8::from(self.tv_connection)
-            | u8::from(self.tv_pairing) << 1
-            | u8::from(self.tv_wake) << 2
-            | u8::from(self.daemon_offline) << 3
-    }
-
-    /// Merge a partial wire update (`null`/absent fields keep current).
-    fn merged_with(mut self, patch: &Value) -> Self {
-        let apply = |field: &str, slot: &mut bool| {
-            if let Some(value) = patch.get(field).and_then(Value::as_bool) {
-                *slot = value;
-            }
-        };
-        apply("tv_connection", &mut self.tv_connection);
-        apply("tv_pairing", &mut self.tv_pairing);
-        apply("tv_wake", &mut self.tv_wake);
-        apply("daemon_offline", &mut self.daemon_offline);
-        self
-    }
+/// The settings as the notifier's gate bits, one per [`Category`].
+fn bits(settings: NotificationSettings) -> u8 {
+    u8::from(settings.tv_connection)
+        | u8::from(settings.tv_pairing) << 1
+        | u8::from(settings.tv_wake) << 2
+        | u8::from(settings.daemon_offline) << 3
 }
 
 /// One queued toast.
@@ -143,13 +109,13 @@ impl Notifier {
     /// returned receiver instead of the desktop — what tests assert on,
     /// with no real notification popping up.
     pub fn capturing(initial: NotificationSettings) -> (Self, mpsc::UnboundedReceiver<Toast>) {
-        let enabled = Arc::new(AtomicU8::new(initial.bits()));
+        let enabled = Arc::new(AtomicU8::new(bits(initial)));
         let (tx, rx) = mpsc::unbounded_channel();
         (Self { enabled, tx }, rx)
     }
 
     pub fn set_enabled(&self, settings: NotificationSettings) {
-        self.enabled.store(settings.bits(), Ordering::Release);
+        self.enabled.store(bits(settings), Ordering::Release);
     }
 
     pub fn notify(&self, category: Category, summary: &str, body: &str, icon: &'static str) {
@@ -263,59 +229,32 @@ pub async fn serve_settings(
 
     info!(site, config = %config_path.display(), "tray settings service running");
     while let Some(query) = queries.recv().await {
-        let verb = keys::parse_user_tray_rpc(&site, query.key_expr().as_str())
-            .unwrap_or_default()
-            .to_string();
-        let body: Value = query
-            .payload()
-            .and_then(|bytes| serde_json::from_slice(&bytes.to_bytes()).ok())
-            .unwrap_or(Value::Null);
-        match verb.as_str() {
-            "get" => reply_json(&query, &serde_json::to_value(settings).unwrap_or_default()).await,
-            "update" => {
-                settings = settings.merged_with(&body);
+        let key = query.key_expr().as_str().to_string();
+        let call = keys::parse_user_tray_rpc(&site, &key)
+            .ok_or_else(|| WireError::unknown_rpc(&key))
+            .and_then(|verb| user_tray::Call::decode(verb, &serve::payload(&query)));
+        match call {
+            Err(error) => serve::reply_err(&query, &error).await,
+            Ok(user_tray::Call::Get(())) => serve::reply::<user_tray::Get>(&query, &settings).await,
+            Ok(user_tray::Call::Update(patch)) => {
+                settings = settings.merged_with(&patch);
                 notifier.set_enabled(settings);
                 save_settings(&config_path, &settings);
                 publish(settings).await;
-                reply_json(&query, &serde_json::to_value(settings).unwrap_or_default()).await;
+                serve::reply::<user_tray::Update>(&query, &settings).await;
             }
-            "test" => {
+            Ok(user_tray::Call::Test(())) => {
                 notifier.notify_test();
-                reply_json(&query, &json!({})).await;
+                serve::reply::<user_tray::Test>(&query, &rpc::Ack {}).await;
             }
-            "info" => {
-                reply_json(
-                    &query,
-                    &json!({
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "state_path": config_path.display().to_string(),
-                    }),
-                )
-                .await;
-            }
-            other => {
-                let error = tisvlay_wire::error::WireError::bad_request(format!(
-                    "no such tray rpc: {other}"
-                ));
-                let bytes = serde_json::to_vec(&error).unwrap_or_default();
-                let _ = query
-                    .reply_err(bytes)
-                    .encoding(Encoding::APPLICATION_JSON)
-                    .await;
+            Ok(user_tray::Call::Info(())) => {
+                let info = rpc::ServiceInfo {
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    state_path: config_path.display().to_string(),
+                };
+                serve::reply::<user_tray::Info>(&query, &info).await;
             }
         }
     }
     Ok(())
-}
-
-async fn reply_json(query: &Query, payload: &Value) {
-    let bytes = serde_json::to_vec(payload).unwrap_or_default();
-    let key = query.key_expr().clone().into_owned();
-    if let Err(e) = query
-        .reply(key, bytes)
-        .encoding(Encoding::APPLICATION_JSON)
-        .await
-    {
-        warn!(%e, "tray rpc reply failed");
-    }
 }

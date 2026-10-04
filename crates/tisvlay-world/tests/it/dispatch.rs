@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use support::*;
 use tisvlay_core::{EventAction, PowerState, SessionAction, SystemProfileConfig};
-use tisvlay_world::{Command, InEvent, ProfileRecord, SystemEvent};
+use tisvlay_world::{Command, InEvent, ProfileRecord, Reply, SystemEvent};
 use uuid::Uuid;
 
 /// A gated version of one action: the stock verb with `while_remote =
@@ -31,13 +31,13 @@ async fn assign_remote_profile(
     let profile = Uuid::new_v4();
     client.command(Command::AddProfile {
         record: Box::new(ProfileRecord { id: profile, body }),
-        reply: Some(90),
+        reply: Some(Reply::new(90)),
     });
     collect_until(effects, |e| reply_to(e, 90)).await;
     client.command(Command::SetSystemProfile {
         id: tv,
         profile: Some(profile),
-        reply: Some(91),
+        reply: Some(Reply::new(91)),
     });
     collect_until(effects, |e| reply_to(e, 91)).await;
     profile
@@ -84,7 +84,7 @@ async fn screen_on_noop_retries_then_escalates_to_wake() {
         id,
         on: true,
         restore_input: false,
-        reply: Some(30),
+        reply: Some(Reply::new(30)),
     });
     collect_until(&mut effects, |e| reply_to(e, 30)).await;
 
@@ -130,7 +130,7 @@ async fn screen_off_noop_gives_up_with_event() {
         id,
         on: false,
         restore_input: false,
-        reply: Some(31),
+        reply: Some(Reply::new(31)),
     });
     collect_until(&mut effects, |e| reply_to(e, 31)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -165,7 +165,7 @@ async fn emulated_screen_keeps_standby_link_up() {
         let id = Uuid::new_v4();
         client.command(Command::AddTv {
             record: Box::new(tv_record(id, "Cec", cec_like_config("mock://cec"))),
-            reply: Some(1),
+            reply: Some(Reply::new(1)),
         });
         collect_until(&mut effects, |e| link_connected(e, true)).await;
         id
@@ -175,7 +175,7 @@ async fn emulated_screen_keeps_standby_link_up() {
         id,
         on: false,
         restore_input: false,
-        reply: Some(32),
+        reply: Some(Reply::new(32)),
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "standby")
@@ -186,7 +186,7 @@ async fn emulated_screen_keeps_standby_link_up() {
         id,
         on: true,
         restore_input: false,
-        reply: Some(33),
+        reply: Some(Reply::new(33)),
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
@@ -212,7 +212,7 @@ async fn profile_screen_actions_respect_emulation() {
             "Cec",
             cec_like_config("mock://cecprof"),
         )),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
 
@@ -292,7 +292,7 @@ async fn disconnected_screen_on_elevates_to_wake() {
         id,
         on: true,
         restore_input: false,
-        reply: Some(40),
+        reply: Some(Reply::new(40)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 40)).await;
     assert!(
@@ -323,7 +323,7 @@ async fn disconnected_screen_off_is_a_satisfied_noop() {
         id,
         on: false,
         restore_input: false,
-        reply: Some(41),
+        reply: Some(Reply::new(41)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 41)).await;
     assert!(
@@ -357,7 +357,7 @@ async fn wake_needy_screen_on_preflights_to_the_wake_dial() {
         id,
         on: true,
         restore_input: false,
-        reply: Some(42),
+        reply: Some(Reply::new(42)),
     });
     collect_until(&mut effects, |e| link_connected(e, false)).await;
     let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
@@ -386,7 +386,7 @@ async fn wake_needy_screen_on_wakes_in_place_when_standby_reachable() {
     table.insert("reachable_in_standby".into(), toml::Value::Boolean(true));
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Sr", toml::Value::Table(table))),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
 
@@ -400,7 +400,7 @@ async fn wake_needy_screen_on_wakes_in_place_when_standby_reachable() {
         id,
         on: true,
         restore_input: false,
-        reply: Some(44),
+        reply: Some(Reply::new(44)),
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
@@ -428,7 +428,7 @@ async fn screen_off_during_pending_dial_lands_after_connect() {
     let id = Uuid::new_v4();
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Race", mock_config("mock://race"))),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     // The AddTv reply proves the spawn (and its PendingConnect) flushed;
     // the dial itself is still sleeping in the connect delay.
@@ -438,7 +438,7 @@ async fn screen_off_during_pending_dial_lands_after_connect() {
         id,
         on: false,
         restore_input: false,
-        reply: Some(45),
+        reply: Some(Reply::new(45)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 45)).await;
     assert!(
@@ -482,7 +482,7 @@ async fn escalation_reasserts_on_reconnect_then_gives_up() {
         id,
         on: true,
         restore_input: false,
-        reply: Some(43),
+        reply: Some(Reply::new(43)),
     });
     collect_until(&mut effects, |e| reply_to(e, 43)).await;
 
@@ -779,7 +779,7 @@ async fn automation_wake_restores_the_primary_input() {
     record.primary_input = Some("HDMI_1".into());
     client.command(Command::AddTv {
         record: Box::new(record),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
 
@@ -799,7 +799,7 @@ async fn automation_wake_restores_the_primary_input() {
     client.command(Command::SwitchInput {
         id,
         input: "HDMI_2".into(),
-        reply: Some(50),
+        reply: Some(Reply::new(50)),
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_2")
@@ -808,7 +808,7 @@ async fn automation_wake_restores_the_primary_input() {
     client.command(Command::PowerOn {
         id,
         restore_input: false,
-        reply: Some(51),
+        reply: Some(Reply::new(51)),
     });
     collect_until(&mut effects, |e| reply_to(e, 51)).await;
     assert_quiet(&mut effects, Duration::from_millis(300), |e| {

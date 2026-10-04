@@ -14,8 +14,8 @@ mod reactor;
 mod systems;
 
 pub use events::{
-    BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
-    RouteRequest, StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord,
+    Reply, ReplyTo, RouteRequest, StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
 };
 pub use reactor::{Reactor, WorldClient};
 pub use systems::{CONNECT_BACKOFF, CONNECT_MAX_ATTEMPTS};

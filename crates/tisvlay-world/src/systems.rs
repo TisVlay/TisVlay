@@ -10,6 +10,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
 use tisvlay_core::{PairingCommand, PairingState, TvState};
+use tisvlay_wire::endpoint::Rpc;
+use tisvlay_wire::rpc::{Created, PairStarted, RePairStarted};
 use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
@@ -21,8 +23,8 @@ use crate::components::{
     RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
-    BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
-    StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord,
+    Reply, StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.
@@ -77,25 +79,24 @@ pub(crate) fn build_schedule() -> Schedule {
     schedule
 }
 
-fn reply_ok(outbox: &mut Outbox, reply: Option<ReplyTo>) {
-    reply_value(outbox, reply, json!({}));
-}
-
-fn reply_value(outbox: &mut Outbox, reply: Option<ReplyTo>, value: serde_json::Value) {
-    if let Some(to) = reply {
-        outbox.0.push(Effect::Wire(WireEffect::Reply {
-            to,
-            result: Ok(value),
-        }));
+/// Answer an rpc with its typed response.
+fn respond<R: Rpc>(outbox: &mut Outbox, reply: Option<Reply<R>>, response: &R::Response) {
+    if let Some(reply) = reply {
+        outbox.0.push(Effect::Wire(reply.ok(response)));
     }
 }
 
-fn reply_err(outbox: &mut Outbox, reply: Option<ReplyTo>, error: WireError) {
-    if let Some(to) = reply {
-        outbox.0.push(Effect::Wire(WireEffect::Reply {
-            to,
-            result: Err(error),
-        }));
+/// Acknowledge an rpc that answers with [`Ack`](tisvlay_wire::rpc::Ack).
+fn reply_ok(outbox: &mut Outbox, reply: Option<impl Into<AckReply>>) {
+    if let Some(reply) = reply {
+        outbox.0.push(Effect::Wire(reply.into().ok()));
+    }
+}
+
+/// Refuse an rpc.
+fn reply_err(outbox: &mut Outbox, reply: Option<impl Into<AnyReply>>, error: WireError) {
+    if let Some(reply) = reply {
+        outbox.0.push(Effect::Wire(reply.into().err(error)));
     }
 }
 
@@ -258,7 +259,7 @@ fn power_on_tv(
     handle: Option<&ConnectionHandle>,
     link: Option<&payload::Link>,
     restore_to: Option<String>,
-    reply: Option<ReplyTo>,
+    reply: Option<AckReply>,
 ) {
     match handle {
         Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOn).is_ok() => {
@@ -332,7 +333,7 @@ fn dispatch_screen(
     on: bool,
     row: ScreenRow,
     restore_to: Option<String>,
-    reply: Option<ReplyTo>,
+    reply: Option<AckReply>,
 ) {
     let (handle, pending, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
@@ -490,7 +491,14 @@ fn handle_lifecycle_commands(
                     vendor: vendor.clone(),
                     params: config.clone(),
                 });
-                reply_ok(&mut outbox, *reply);
+                respond(
+                    &mut outbox,
+                    *reply,
+                    &PairStarted {
+                        id: *id,
+                        attempt: *attempt,
+                    },
+                );
             }
             Command::RePair { id, attempt, reply } => {
                 let Some(&entity) = index.0.get(id) else {
@@ -521,7 +529,7 @@ fn handle_lifecycle_commands(
                     vendor: vendor_ref.vendor.clone(),
                     params: vendor_ref.config.clone(),
                 });
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &RePairStarted { attempt: *attempt });
             }
             Command::CancelPair { id, reply } => match pairing.index.0.get(id) {
                 Some(&entity) => {
@@ -550,7 +558,7 @@ fn handle_lifecycle_commands(
                 }
                 spawn_tv(&mut commands, &mut index, &mut outbox, record);
                 dirty.0 = true;
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &Created { id: record.id });
             }
             Command::RemoveTv { id, reply } => match index.0.get(id).copied() {
                 Some(entity) => {
@@ -609,7 +617,7 @@ fn handle_lifecycle_commands(
                     handle,
                     link,
                     restore_to,
-                    *reply,
+                    reply.map(AckReply::from),
                 );
             }
             _ => {}
@@ -664,16 +672,16 @@ fn handle_tv_commands(
             continue;
         };
         match cmd {
-            Command::SetName { name, .. } => {
+            Command::SetName { name, reply, .. } => {
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     if identity.name != *name {
                         identity.name = name.clone();
                         dirty.0 = true;
                     }
-                    reply_ok(&mut outbox, reply);
+                    reply_ok(&mut outbox, *reply);
                 }
             }
-            Command::SetManaged { managed, .. } => {
+            Command::SetManaged { managed, reply, .. } => {
                 let (handle, pending, ..) = q
                     .get(entity)
                     .unwrap_or((None, false, None, None, None, None));
@@ -684,27 +692,28 @@ fn handle_tv_commands(
                     meta.managed = *managed;
                     dirty.0 = true;
                 }
-                reply_ok(&mut outbox, reply);
+                reply_ok(&mut outbox, *reply);
             }
-            Command::SetSystemProfile { profile, .. } => {
+            Command::SetSystemProfile { profile, reply, .. } => {
                 if let Ok(mut meta) = writes.meta.get_mut(entity)
                     && meta.system_profile != *profile
                 {
                     meta.system_profile = *profile;
                     dirty.0 = true;
                 }
-                reply_ok(&mut outbox, reply);
+                reply_ok(&mut outbox, *reply);
             }
-            Command::SetPrimaryInput { input, .. } => {
+            Command::SetPrimaryInput { input, reply, .. } => {
                 if let Ok(mut meta) = writes.meta.get_mut(entity)
                     && meta.primary_input != *input
                 {
                     meta.primary_input = input.clone();
                     dirty.0 = true;
                 }
-                reply_ok(&mut outbox, reply);
+                reply_ok(&mut outbox, *reply);
             }
-            Command::SetVolume { level, .. } => {
+            Command::SetVolume { level, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -714,7 +723,8 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::SetMuted { muted, .. } => {
+            Command::SetMuted { muted, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -724,7 +734,8 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::SwitchInput { input, .. } => {
+            Command::SwitchInput { input, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 // A manual switch is authoritative — it cancels any
                 // pending restore intent instead of fighting it.
                 commands.entity(entity).remove::<DesiredInput>();
@@ -737,7 +748,8 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::SetBacklight { level, .. } => {
+            Command::SetBacklight { level, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -748,7 +760,10 @@ fn handle_tv_commands(
                 );
             }
             Command::SetScreen {
-                on, restore_input, ..
+                on,
+                restore_input,
+                reply,
+                ..
             } => {
                 let row = q
                     .get(entity)
@@ -771,10 +786,11 @@ fn handle_tv_commands(
                     *on,
                     row,
                     restore_to,
-                    reply,
+                    reply.map(AckReply::from),
                 );
             }
-            Command::PowerOff { .. } => {
+            Command::PowerOff { reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -784,13 +800,13 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::GetConfig { .. } => {
-                let Some(to) = reply else { continue };
+            Command::GetConfig { reply, .. } => {
+                let Some(reply) = *reply else { continue };
                 if let Some(record) = build_record(entity, id, &writes) {
-                    outbox.0.push(Effect::RedactConfig { reply: to, record });
+                    outbox.0.push(Effect::RedactConfig { reply, record });
                 }
             }
-            Command::UpdateConfig { patch, .. } => {
+            Command::UpdateConfig { patch, reply, .. } => {
                 match apply_config_patch(
                     &mut commands,
                     entity,
@@ -802,9 +818,9 @@ fn handle_tv_commands(
                 ) {
                     Ok(()) => {
                         dirty.0 = true;
-                        reply_ok(&mut outbox, reply);
+                        reply_ok(&mut outbox, *reply);
                     }
-                    Err(error) => reply_err(&mut outbox, reply, error),
+                    Err(error) => reply_err(&mut outbox, *reply, error),
                 }
             }
             _ => {}
@@ -812,20 +828,22 @@ fn handle_tv_commands(
     }
 }
 
-fn command_reply(cmd: &Command) -> Option<ReplyTo> {
+/// The reply a per-TV command owes, erased: enough to refuse it before
+/// the command is dispatched.
+fn command_reply(cmd: &Command) -> Option<AnyReply> {
     match cmd {
-        Command::SetName { reply, .. }
-        | Command::SetManaged { reply, .. }
-        | Command::SetSystemProfile { reply, .. }
-        | Command::SetPrimaryInput { reply, .. }
-        | Command::SetVolume { reply, .. }
-        | Command::SetMuted { reply, .. }
-        | Command::SwitchInput { reply, .. }
-        | Command::SetBacklight { reply, .. }
-        | Command::SetScreen { reply, .. }
-        | Command::PowerOff { reply, .. }
-        | Command::GetConfig { reply, .. }
-        | Command::UpdateConfig { reply, .. } => *reply,
+        Command::SetName { reply, .. } => reply.map(AnyReply::from),
+        Command::SetManaged { reply, .. } => reply.map(AnyReply::from),
+        Command::SetSystemProfile { reply, .. } => reply.map(AnyReply::from),
+        Command::SetPrimaryInput { reply, .. } => reply.map(AnyReply::from),
+        Command::SetVolume { reply, .. } => reply.map(AnyReply::from),
+        Command::SetMuted { reply, .. } => reply.map(AnyReply::from),
+        Command::SwitchInput { reply, .. } => reply.map(AnyReply::from),
+        Command::SetBacklight { reply, .. } => reply.map(AnyReply::from),
+        Command::SetScreen { reply, .. } => reply.map(AnyReply::from),
+        Command::PowerOff { reply, .. } => reply.map(AnyReply::from),
+        Command::GetConfig { reply, .. } => reply.map(AnyReply::from),
+        Command::UpdateConfig { reply, .. } => reply.map(AnyReply::from),
         _ => None,
     }
 }
@@ -1049,7 +1067,7 @@ fn send_backend(
     entity: Entity,
     id: Uuid,
     cmd: BackendCmd,
-    reply: Option<ReplyTo>,
+    reply: Option<AckReply>,
 ) {
     match q.get(entity).ok().and_then(|(handle, ..)| handle) {
         // The reply rides inside the command and is answered from the
@@ -1276,7 +1294,7 @@ fn handle_profile_commands(
                         }
                         publish_profile(&mut outbox, &site, &record.id, &body);
                         dirty.0 = true;
-                        reply_ok(&mut outbox, *reply);
+                        respond(&mut outbox, *reply, &Created { id: record.id });
                         continue;
                     }
                 } else if index.0.contains_key(&record.id) {
@@ -1289,7 +1307,7 @@ fn handle_profile_commands(
                 index.0.insert(record.id, entity);
                 publish_profile(&mut outbox, &site, &record.id, &body);
                 dirty.0 = true;
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &Created { id: record.id });
             }
             Command::UpdateProfile { id, body, reply } => match index.0.get(id) {
                 Some(&entity) => {
@@ -1337,7 +1355,7 @@ fn handle_profile_commands(
                 index.0.insert(*new_id, entity);
                 publish_profile(&mut outbox, &site, new_id, &body);
                 dirty.0 = true;
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &Created { id: *new_id });
             }
             Command::DeleteProfile { id, reply } => match index.0.get(id).copied() {
                 Some(entity) => {
@@ -1365,14 +1383,7 @@ fn handle_profile_commands(
                 // this and child profiles.
                 let mut floor = tisvlay_core::SystemProfileConfig::full_default();
                 floor.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-                match serde_json::to_value(&floor) {
-                    Ok(value) => reply_value(&mut outbox, *reply, value),
-                    Err(error) => reply_err(
-                        &mut outbox,
-                        *reply,
-                        WireError::bad_request(format!("encode defaults: {error}")),
-                    ),
-                }
+                respond(&mut outbox, *reply, &floor);
             }
             Command::EffectiveProfile { id, reply } => match tvs.0.get(id) {
                 Some(&entity) => {
@@ -1397,14 +1408,7 @@ fn handle_profile_commands(
                     if merged.name.trim().is_empty() {
                         merged.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
                     }
-                    match serde_json::to_value(&merged) {
-                        Ok(value) => reply_value(&mut outbox, *reply, value),
-                        Err(error) => reply_err(
-                            &mut outbox,
-                            *reply,
-                            WireError::bad_request(format!("encode effective: {error}")),
-                        ),
-                    }
+                    respond(&mut outbox, *reply, &merged);
                 }
                 None => reply_err(&mut outbox, *reply, WireError::tv_not_found(*id)),
             },

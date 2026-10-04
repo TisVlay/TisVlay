@@ -663,7 +663,7 @@ impl DaemonClient {
     }
 
     pub async fn power_on(&self, tv: &str) -> Result<()> {
-        self.tv_call(tv, "power-on", Value::Null).await
+        self.tv_call(tv, "power-on", json!({})).await
     }
 
     pub async fn power_off(&self, tv: &str) -> Result<()> {

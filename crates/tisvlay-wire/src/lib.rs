@@ -1708,3 +1708,61 @@ pub mod bootstrap {
         }
     }
 }
+
+pub mod serve {
+    //! The server half of the endpoint contract: a query's body, typed
+    //! replies, and refusals. Reply failures (the querier gone) are logged,
+    //! never fatal — the caller's own timeout reports them.
+
+    use zenoh::bytes::Encoding;
+    use zenoh::query::Query;
+
+    use crate::endpoint::Rpc;
+    use crate::error::WireError;
+
+    /// A query's body bytes, empty when it carried none.
+    pub fn payload(query: &Query) -> Vec<u8> {
+        query
+            .payload()
+            .map(|payload| payload.to_bytes().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Answer `query` with `R`'s response. Streaming rpcs call this once
+    /// per finding.
+    pub async fn reply<R: Rpc>(query: &Query, response: &R::Response) {
+        let bytes = serde_json::to_vec(response)
+            .expect("rpc responses are structs, which always encode as JSON");
+        send(query, bytes).await;
+    }
+
+    /// Answer `query` with a response already encoded as JSON — the
+    /// daemon's world replies, typed where the world built them.
+    pub async fn reply_json(query: &Query, response: &serde_json::Value) {
+        let bytes = serde_json::to_vec(response).expect("a JSON value always encodes as JSON");
+        send(query, bytes).await;
+    }
+
+    /// Refuse `query` with a typed error.
+    pub async fn reply_err(query: &Query, error: &WireError) {
+        let bytes = serde_json::to_vec(error).expect("WireError always encodes as JSON");
+        if let Err(e) = query
+            .reply_err(bytes)
+            .encoding(Encoding::APPLICATION_JSON)
+            .await
+        {
+            tracing::warn!(key = %query.key_expr(), %e, "rpc refusal failed");
+        }
+    }
+
+    async fn send(query: &Query, bytes: Vec<u8>) {
+        let key = query.key_expr().clone().into_owned();
+        if let Err(e) = query
+            .reply(key, bytes)
+            .encoding(Encoding::APPLICATION_JSON)
+            .await
+        {
+            tracing::warn!(key = %query.key_expr(), %e, "rpc reply failed");
+        }
+    }
+}

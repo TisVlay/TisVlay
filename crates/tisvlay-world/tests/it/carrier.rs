@@ -5,7 +5,7 @@ use crate::support;
 use std::time::Duration;
 
 use support::*;
-use tisvlay_world::{Command, InEvent, SystemEvent};
+use tisvlay_world::{Command, InEvent, Reply, SystemEvent};
 use uuid::Uuid;
 
 /// Carrier down parks network-dependent connections; carrier up redials.
@@ -294,7 +294,7 @@ async fn routeless_failure_returns_the_attempt_but_keeps_the_backoff() {
     table.insert("refuse_connect".into(), toml::Value::Boolean(true));
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Flap", toml::Value::Table(table))),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(&mut effects, |e| reply_to(e, 1)).await;
 

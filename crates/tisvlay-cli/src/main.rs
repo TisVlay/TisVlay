@@ -458,12 +458,12 @@ async fn run() -> Result<()> {
             watch_pairing(&session, &caller, site, id, &reply_attempt(&started)?).await
         }
         Command::Power { id, state } => {
-            let verb = if state == "on" {
-                "power-on"
+            let (verb, body) = if state == "on" {
+                ("power-on", json!({}))
             } else {
-                "power-off"
+                ("power-off", Value::Null)
             };
-            ack(&caller, &keys::tv_rpc(site, &id, verb), Value::Null).await
+            ack(&caller, &keys::tv_rpc(site, &id, verb), body).await
         }
         Command::Reconnect { id } => {
             ack(&caller, &keys::tv_rpc(site, &id, "reconnect"), Value::Null).await

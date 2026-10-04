@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 use tisvlay_core::TvConnector;
+use tisvlay_wire::rpc::TvConfigView;
 use tokio::sync::mpsc;
 
 use crate::backend;
@@ -299,11 +300,8 @@ impl Reactor {
                     None => tracing::debug!("no store attached, persist snapshot dropped"),
                 },
                 Effect::RedactConfig { reply, record } => {
-                    let payload = redacted_config(&self.connectors, record);
-                    let _ = self.effects_tx.send(WireEffect::Reply {
-                        to: reply,
-                        result: Ok(payload),
-                    });
+                    let view = redacted_config(&self.connectors, record);
+                    let _ = self.effects_tx.send(reply.ok(&view));
                 }
             }
         }
@@ -348,7 +346,7 @@ fn transport_facts(
 fn redacted_config(
     connectors: &HashMap<String, Arc<dyn TvConnector>>,
     record: TvRecord,
-) -> serde_json::Value {
+) -> TvConfigView {
     let mut config = serde_json::Map::new();
     if let Some(connector) = connectors.get(&record.vendor) {
         let secret: HashSet<String> = connector
@@ -368,15 +366,15 @@ fn redacted_config(
             }
         }
     }
-    serde_json::json!({
-        "id": record.id,
-        "name": record.name,
-        "vendor": record.vendor,
-        "managed": record.managed,
-        "system_profile": record.system_profile,
-        "primary_input": record.primary_input,
-        "config": config,
-    })
+    TvConfigView {
+        id: record.id,
+        name: record.name,
+        vendor: record.vendor,
+        managed: record.managed,
+        system_profile: record.system_profile,
+        primary_input: record.primary_input,
+        config,
+    }
 }
 
 #[cfg(test)]
@@ -454,10 +452,10 @@ mod tests {
             primary_input: None,
             config: toml::Value::Table(table),
         };
-        let json = redacted_config(&connectors, record);
-        assert_eq!(json["config"]["ip"], "192.0.2.1");
-        assert!(json["config"].get("client_key").is_none());
-        assert!(!json.to_string().contains("SECRET"));
-        assert_eq!(json["name"], "T");
+        let view = redacted_config(&connectors, record);
+        assert_eq!(view.config["ip"], "192.0.2.1");
+        assert!(!view.config.contains_key("client_key"));
+        assert!(!serde_json::to_string(&view).unwrap().contains("SECRET"));
+        assert_eq!(view.name, "T");
     }
 }

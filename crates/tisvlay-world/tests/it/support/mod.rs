@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tisvlay_mock::{MockHandle, new_test_parts};
-use tisvlay_world::{Command, Reactor, TvRecord, WireEffect, WorldClient};
+use tisvlay_world::{Command, Reactor, Reply, TvRecord, WireEffect, WorldClient};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
@@ -115,7 +115,7 @@ pub(crate) async fn add_connected_tv(
     let id = Uuid::new_v4();
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Den", mock_config(address))),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(effects, |e| link_connected(e, true)).await;
     id

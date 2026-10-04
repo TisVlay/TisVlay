@@ -3,15 +3,17 @@
 //!
 //! One task owns everything — the publisher map, the pending-reply map,
 //! and the pairing liveliness tokens — so there are no locks here either.
+//! Each rpc family decodes into its endpoint `Call` enum and is matched
+//! exhaustively: a new rpc without a route here doesn't compile.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
-use tisvlay_wire::{keys, rpc};
-use tisvlay_world::{Command, ReplyTo, WireEffect, WireError, WorldClient};
+use serde_json::Value;
+use tisvlay_wire::endpoint::{manager, profile, tv, vendors};
+use tisvlay_wire::{keys, rpc, serve};
+use tisvlay_world::{Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -50,17 +52,18 @@ pub(crate) async fn run(
     world: WorldClient,
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     catalog: Arc<Vec<VendorMeta>>,
-    info: Value,
+    info: rpc::ServiceInfo,
     ready: tokio::sync::oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
     let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
     let mut queryables: Vec<Queryable<()>> = Vec::new();
+    // `vendors/**` also matches the bare catalog key: `**` spans zero
+    // chunks too.
     for key in [
         keys::manager_rpc_wild(&site),
         keys::tv_rpc_wild(&site),
         keys::profile_rpc_wild(&site),
         keys::vendors_wild(&site),
-        keys::vendors(&site),
     ] {
         let tx = query_tx.clone();
         let queryable = session
@@ -107,22 +110,16 @@ pub(crate) async fn run(
     }
 }
 
-struct PendingQuery {
-    query: Query,
-    /// Reply payload overriding the world's plain `{}` ack — carries the
-    /// generated uuid for add-tv / pair.
-    ok_payload: Option<Value>,
-}
-
 struct Bridge {
     session: Session,
     site: String,
     world: WorldClient,
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     catalog: Arc<Vec<VendorMeta>>,
-    info: Value,
+    info: rpc::ServiceInfo,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
-    pending: HashMap<ReplyTo, PendingQuery>,
+    /// Queries the world owes a reply, by correlation id.
+    pending: HashMap<ReplyTo, Query>,
     next_reply: ReplyTo,
     pairing_tokens: HashMap<String, LivelinessToken>,
     discovery_sessions: HashMap<Uuid, tokio::task::JoinHandle<()>>,
@@ -164,25 +161,13 @@ impl Bridge {
                 }
             }
             WireEffect::Reply { to, result } => {
-                let Some(pending) = self.pending.remove(&to) else {
+                let Some(query) = self.pending.remove(&to) else {
                     warn!(to, "reply for unknown query dropped");
                     return;
                 };
                 match result {
-                    Ok(value) => {
-                        let payload = pending.ok_payload.unwrap_or(value);
-                        let bytes = serde_json::to_vec(&payload).unwrap_or_default();
-                        let key = pending.query.key_expr().clone().into_owned();
-                        if let Err(e) = pending
-                            .query
-                            .reply(key, bytes)
-                            .encoding(Encoding::APPLICATION_JSON)
-                            .await
-                        {
-                            warn!(to, %e, "reply failed");
-                        }
-                    }
-                    Err(error) => reply_err(&pending.query, &error).await,
+                    Ok(value) => serve::reply_json(&query, &value).await,
+                    Err(error) => serve::reply_err(&query, &error).await,
                 }
             }
         }
@@ -255,103 +240,228 @@ impl Bridge {
 
     async fn handle_query(&mut self, query: Query) {
         let key = query.key_expr().as_str().to_string();
-        let body: Value = match query.payload() {
-            Some(bytes) => match serde_json::from_slice(&bytes.to_bytes()) {
-                Ok(value) => value,
-                Err(e) => {
-                    reply_err(&query, &bad_request(format!("invalid JSON body: {e}"))).await;
+        let payload = serve::payload(&query);
+        let reply = self.next_reply;
+        let command = if key.starts_with(&keys::vendors(&self.site)) {
+            match vendors::Call::decode(&self.site, &key, &payload) {
+                Ok(call) => {
+                    self.serve_vendors(&query, call).await;
                     return;
                 }
-            },
-            None => Value::Null,
+                Err(error) => Err(error),
+            }
+        } else if let Some(verb) = keys::parse_manager_rpc(&self.site, &key) {
+            match manager::Call::decode(verb, &payload) {
+                Err(error) => Err(error),
+                // Introspection and discovery are served bridge-side,
+                // never touching the world.
+                Ok(manager::Call::Info(())) => {
+                    serve::reply::<manager::Info>(&query, &self.info).await;
+                    return;
+                }
+                Ok(manager::Call::Enrich(request)) => {
+                    self.handle_enrich(query, request);
+                    return;
+                }
+                Ok(manager::Call::Discover(request)) => {
+                    self.handle_discover(query, request);
+                    return;
+                }
+                Ok(manager::Call::DiscoverStart(request)) => {
+                    self.handle_discover_start(&query, request).await;
+                    return;
+                }
+                Ok(manager::Call::DiscoverStop(request)) => {
+                    self.handle_discover_stop(&query, request).await;
+                    return;
+                }
+                Ok(manager::Call::AddTv(request)) => self.add_tv(request, reply).await,
+                Ok(manager::Call::Pair(request)) => self.pair(request, reply).await,
+                Ok(manager::Call::CancelPair(request)) => Ok(Command::CancelPair {
+                    id: request.id,
+                    reply: Some(Reply::new(reply)),
+                }),
+            }
+        } else if let Some(verb) = keys::parse_profile_rpc(&self.site, &key) {
+            profile::Call::decode(verb, &payload).map(|call| profile_command(call, reply))
+        } else if let Some((id, verb)) = keys::parse_tv_rpc(&self.site, &key) {
+            tv::Call::decode(verb, &payload).and_then(|call| self.tv_command(id, call, reply))
+        } else {
+            Err(WireError::unknown_rpc(&key))
         };
-        // Catalog reads, introspection, and discovery are served
-        // bridge-side, never touching the world.
-        if key == keys::manager_rpc(&self.site, "info") {
-            let info = self.info.clone();
-            reply_json(&query, &info).await;
-            return;
-        }
-        if key == keys::manager_rpc(&self.site, "enrich") {
-            self.handle_enrich(query, &body).await;
-            return;
-        }
-        if key == keys::vendors(&self.site) {
-            let list: Vec<Value> = self
-                .catalog
-                .iter()
-                .map(|v| json!({ "id": v.id, "name": v.name, "capabilities": v.capabilities }))
-                .collect();
-            reply_json(&query, &Value::Array(list)).await;
-            return;
-        }
-        if let Some(rest) = key.strip_prefix(&format!("tisvlay/{}/manager/vendors/", self.site))
-            && let Some(vendor) = rest.strip_suffix("/schema")
-        {
-            match self.catalog.iter().find(|v| v.id == vendor) {
-                Some(meta) => {
-                    let schema =
-                        serde_json::to_value(meta.connector.pairing_schema()).unwrap_or_default();
-                    reply_json(&query, &schema).await;
-                }
-                None => reply_err(&query, &WireError::unknown_vendor(vendor)).await,
-            }
-            return;
-        }
-        match keys::parse_manager_rpc(&self.site, &key) {
-            Some("discover") => {
-                self.handle_discover(query, &body);
-                return;
-            }
-            Some("discover-start") => {
-                self.handle_discover_start(query, &body).await;
-                return;
-            }
-            Some("discover-stop") => {
-                self.handle_discover_stop(query, &body).await;
-                return;
-            }
-            _ => {}
-        }
-        let reply_id = self.next_reply;
-        self.next_reply += 1;
-        match self.route(&key, &body, reply_id).await {
-            Ok((command, ok_payload)) => {
-                debug!(%key, reply_id, "rpc routed");
-                self.pending
-                    .insert(reply_id, PendingQuery { query, ok_payload });
+        match command {
+            Ok(command) => {
+                debug!(%key, reply, "rpc routed");
+                self.next_reply += 1;
+                self.pending.insert(reply, query);
                 if !self.world.command(command)
-                    && let Some(pending) = self.pending.remove(&reply_id)
+                    && let Some(query) = self.pending.remove(&reply)
                 {
-                    reply_err(
-                        &pending.query,
-                        &WireError {
-                            code: "daemon-shutting-down".into(),
-                            message: "world reactor is gone".into(),
-                        },
-                    )
-                    .await;
+                    serve::reply_err(&query, &WireError::daemon_shutting_down()).await;
                 }
             }
-            Err(error) => reply_err(&query, &error).await,
+            Err(error) => serve::reply_err(&query, &error).await,
         }
+    }
+
+    /// The vendor catalog and per-vendor pairing schemas.
+    async fn serve_vendors(&self, query: &Query, call: vendors::Call) {
+        match call {
+            vendors::Call::Catalog(()) => {
+                let list: Vec<rpc::VendorEntry> = self
+                    .catalog
+                    .iter()
+                    .map(|v| rpc::VendorEntry {
+                        id: v.id.clone(),
+                        name: v.name.clone(),
+                        capabilities: v.capabilities.clone(),
+                    })
+                    .collect();
+                serve::reply::<vendors::Catalog>(query, &list).await;
+            }
+            vendors::Call::Schema { vendor } => {
+                match self.catalog.iter().find(|v| v.id == vendor) {
+                    Some(meta) => {
+                        serve::reply::<vendors::Schema>(query, &meta.connector.pairing_schema())
+                            .await;
+                    }
+                    None => serve::reply_err(query, &WireError::unknown_vendor(&vendor)).await,
+                }
+            }
+        }
+    }
+
+    /// Enroll a TV from a full config.
+    async fn add_tv(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
+        let id = request.id.unwrap_or_else(Uuid::new_v4);
+        let config = enrich_config_mac(request.config).await;
+        self.validate_vendor_fields(&request.vendor, &config, false)?;
+        Ok(Command::AddTv {
+            record: Box::new(tisvlay_world::TvRecord {
+                id,
+                name: request.name,
+                vendor: request.vendor,
+                managed: request.managed,
+                system_profile: None,
+                primary_input: None,
+                config: json_to_toml(&config)?,
+            }),
+            reply: Some(Reply::new(reply)),
+        })
+    }
+
+    /// Start pairing a new TV.
+    async fn pair(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
+        let config = enrich_config_mac(request.config).await;
+        self.validate_vendor_fields(&request.vendor, &config, false)?;
+        Ok(Command::Pair {
+            id: request.id.unwrap_or_else(Uuid::new_v4),
+            attempt: Uuid::new_v4(),
+            name: request.name,
+            vendor: request.vendor,
+            config: json_to_toml(&config)?,
+            managed: request.managed,
+            reply: Some(Reply::new(reply)),
+        })
+    }
+
+    /// Map a per-TV rpc onto its world command.
+    fn tv_command(&self, id: Uuid, call: tv::Call, reply: ReplyTo) -> Result<Command, WireError> {
+        Ok(match call {
+            tv::Call::SetVolume(request) => Command::SetVolume {
+                id,
+                level: request.level,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SetMuted(request) => Command::SetMuted {
+                id,
+                muted: request.muted,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SetName(request) => Command::SetName {
+                id,
+                name: request.name,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SetManaged(request) => Command::SetManaged {
+                id,
+                managed: request.managed,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SetSystemProfile(request) => Command::SetSystemProfile {
+                id,
+                profile: request.profile,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SetPrimaryInput(request) => Command::SetPrimaryInput {
+                id,
+                input: request.input,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SwitchInput(request) => Command::SwitchInput {
+                id,
+                input: request.input,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SetBacklight(request) => Command::SetBacklight {
+                id,
+                level: request.level,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::SetScreen(request) => Command::SetScreen {
+                id,
+                on: request.on,
+                restore_input: request.restore_input,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::PowerOn(request) => Command::PowerOn {
+                id,
+                restore_input: request.restore_input,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::PowerOff(()) => Command::PowerOff {
+                id,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::Reconnect(()) => Command::Reconnect {
+                id,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::Remove(()) => Command::RemoveTv {
+                id,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::GetConfig(()) => Command::GetConfig {
+                id,
+                reply: Some(Reply::new(reply)),
+            },
+            tv::Call::UpdateConfig(patch) => {
+                let patch = Value::Object(patch);
+                if let Some(vendor) = self.vendors_by_tv.get(&id) {
+                    self.validate_vendor_fields(vendor, &patch, true)?;
+                }
+                Command::UpdateConfig {
+                    id,
+                    patch,
+                    reply: Some(Reply::new(reply)),
+                }
+            }
+            tv::Call::RePair(()) => Command::RePair {
+                id,
+                attempt: Uuid::new_v4(),
+                reply: Some(Reply::new(reply)),
+            },
+        })
     }
 
     /// Open-ended scan session: publish findings until stopped, with a
     /// liveliness token marking the session alive (dropped tokens tell
     /// wizards the daemon or session died).
-    async fn handle_discover_start(&mut self, query: Query, body: &Value) {
-        let request: rpc::DiscoverStart = match parse(body) {
-            Ok(request) => request,
-            Err(error) => {
-                reply_err(&query, &error).await;
-                return;
-            }
-        };
+    async fn handle_discover_start(&mut self, query: &Query, request: rpc::DiscoverStart) {
         if let Some(vendor) = &request.vendor
             && !self.discoveries.contains_key(vendor)
         {
-            reply_err(&query, &WireError::unknown_vendor(vendor)).await;
+            serve::reply_err(query, &WireError::unknown_vendor(vendor)).await;
             return;
         }
         let session_id = Uuid::new_v4();
@@ -400,83 +510,64 @@ impl Bridge {
             }
         });
         self.discovery_sessions.insert(session_id, handle);
-        reply_json(&query, &json!({ "session": session_id })).await;
+        serve::reply::<manager::DiscoverStart>(
+            query,
+            &rpc::DiscoverySession {
+                session: session_id,
+            },
+        )
+        .await;
     }
 
-    async fn handle_discover_stop(&mut self, query: Query, body: &Value) {
-        let request: rpc::DiscoverStop = match parse(body) {
-            Ok(request) => request,
-            Err(error) => {
-                reply_err(&query, &error).await;
-                return;
-            }
-        };
+    async fn handle_discover_stop(&mut self, query: &Query, request: rpc::DiscoverStop) {
         match self.discovery_sessions.remove(&request.session) {
             Some(handle) => {
                 // Aborting drops the task's liveliness token with it.
                 handle.abort();
-                reply_json(&query, &json!({})).await;
+                serve::reply::<manager::DiscoverStop>(query, &rpc::Ack {}).await;
             }
             None => {
-                reply_err(
-                    &query,
-                    &WireError {
-                        code: "discovery-not-found".into(),
-                        message: format!("no discovery session {}", request.session),
-                    },
-                )
-                .await;
+                serve::reply_err(query, &WireError::discovery_not_found(request.session)).await;
             }
         }
     }
 
     /// Manual-entry enrichment: probe the ARP cache for `ip` (after the
     /// vendor primes it) so the wizard can hint the device's MAC before
-    /// pairing. Best-effort — an empty map just means no hint.
-    async fn handle_enrich(&self, query: Query, body: &Value) {
-        let vendor = body["vendor"].as_str().unwrap_or_default().to_string();
-        let ip = body["ip"]
-            .as_str()
-            .or_else(|| body["address"].as_str())
-            .unwrap_or_default()
-            .to_string();
+    /// pairing. Best-effort — an empty reply just means no hint.
+    fn handle_enrich(&self, query: Query, request: rpc::Enrich) {
         let connector = self
             .catalog
             .iter()
-            .find(|meta| meta.id == vendor)
+            .find(|meta| meta.id == request.vendor)
             .map(|meta| Arc::clone(&meta.connector));
         tokio::spawn(async move {
-            if let (Some(connector), Ok(addr)) = (connector, ip.parse()) {
+            if let (Some(connector), Ok(addr)) = (connector, request.ip.parse()) {
                 let _ = connector.probe_arp_cache(addr).await;
             }
-            let mut map = serde_json::Map::new();
-            if let Some(mac) = crate::arp::lookup_mac(&ip).await {
-                map.insert(tisvlay_core::MAC_CONFIG_KEY.into(), Value::String(mac));
-            }
-            reply_json(&query, &Value::Object(map)).await;
+            let reply = rpc::EnrichReply {
+                mac: crate::arp::lookup_mac(&request.ip).await,
+            };
+            serve::reply::<manager::Enrich>(&query, &reply).await;
         });
     }
 
-    /// The M2b decision made concrete: a bounded scan is one query whose
-    /// findings stream back as multiple replies — dropping the query at the
-    /// end finalizes it. Open-ended wizard scans stay session-pub-shaped
-    /// (deferred until a wizard consumer exists).
-    fn handle_discover(&self, query: Query, body: &Value) {
-        let request: rpc::Discover = match parse(body) {
-            Ok(request) => request,
-            Err(error) => {
-                tokio::spawn(async move { reply_err(&query, &error).await });
-                return;
-            }
-        };
+    /// A bounded scan is one query whose findings stream back as multiple
+    /// replies; dropping the query at the end finalizes it.
+    fn handle_discover(&self, query: Query, request: rpc::Discover) {
         // Clamp under the client-side query timeout so replies land in time.
-        let window = Duration::from_millis(request.timeout_ms.unwrap_or(3000).min(8000));
+        let window = Duration::from_millis(
+            request
+                .timeout_ms
+                .unwrap_or(manager::DISCOVER_DEFAULT_MS)
+                .min(manager::DISCOVER_MAX_MS),
+        );
         let discoveries = Arc::clone(&self.discoveries);
         tokio::spawn(async move {
             if let Some(vendor) = &request.vendor
                 && !discoveries.contains_key(vendor)
             {
-                reply_err(&query, &WireError::unknown_vendor(vendor)).await;
+                serve::reply_err(&query, &WireError::unknown_vendor(vendor)).await;
                 return;
             }
             for (vendor, discovery) in discoveries.iter() {
@@ -495,17 +586,7 @@ impl Bridge {
                                 tv.vendor_data
                                     .insert(tisvlay_core::MAC_CONFIG_KEY.into(), mac);
                             }
-                            let Ok(bytes) = serde_json::to_vec(&tv) else {
-                                continue;
-                            };
-                            let key = query.key_expr().clone().into_owned();
-                            if let Err(e) = query
-                                .reply(key, bytes)
-                                .encoding(Encoding::APPLICATION_JSON)
-                                .await
-                            {
-                                warn!(vendor, %e, "discovery reply failed");
-                            }
+                            serve::reply::<manager::Discover>(&query, &tv).await;
                         }
                     }
                     Err(error) => warn!(vendor, %error, "discovery scan failed"),
@@ -552,314 +633,47 @@ impl Bridge {
         }
         Ok(())
     }
-
-    /// Map an RPC key + JSON body onto a world command. The reply
-    /// correlation id is threaded through so the world's reply comes back
-    /// to this query.
-    async fn route(
-        &self,
-        key: &str,
-        body: &Value,
-        reply: ReplyTo,
-    ) -> Result<(Command, Option<Value>), WireError> {
-        if let Some(verb) = keys::parse_manager_rpc(&self.site, key) {
-            return match verb {
-                "add-tv" => {
-                    let req: rpc::AddTv = parse(body)?;
-                    let id = req.id.unwrap_or_else(Uuid::new_v4);
-                    let config = enrich_config_mac(req.config).await;
-                    self.validate_vendor_fields(&req.vendor, &config, false)?;
-                    Ok((
-                        Command::AddTv {
-                            record: Box::new(tisvlay_world::TvRecord {
-                                id,
-                                name: req.name,
-                                vendor: req.vendor,
-                                managed: req.managed,
-                                system_profile: None,
-                                primary_input: None,
-                                config: json_to_toml(&config)?,
-                            }),
-                            reply: Some(reply),
-                        },
-                        Some(json!({ "id": id })),
-                    ))
-                }
-                "pair" => {
-                    let req: rpc::AddTv = parse(body)?;
-                    let id = req.id.unwrap_or_else(Uuid::new_v4);
-                    let attempt = Uuid::new_v4();
-                    let config = enrich_config_mac(req.config).await;
-                    self.validate_vendor_fields(&req.vendor, &config, false)?;
-                    Ok((
-                        Command::Pair {
-                            id,
-                            attempt,
-                            name: req.name,
-                            vendor: req.vendor,
-                            config: json_to_toml(&config)?,
-                            managed: req.managed,
-                            reply: Some(reply),
-                        },
-                        Some(json!({ "id": id, "attempt": attempt })),
-                    ))
-                }
-                "cancel-pair" => {
-                    let req: rpc::TvRef = parse(body)?;
-                    Ok((
-                        Command::CancelPair {
-                            id: req.id,
-                            reply: Some(reply),
-                        },
-                        None,
-                    ))
-                }
-                _ => Err(unknown_rpc(verb)),
-            };
-        }
-        if let Some(verb) = keys::parse_profile_rpc(&self.site, key) {
-            return match verb {
-                "create" => {
-                    let req: rpc::ProfileCreate = parse(body)?;
-                    let id = req.id.unwrap_or_else(Uuid::new_v4);
-                    Ok((
-                        Command::AddProfile {
-                            record: Box::new(tisvlay_world::ProfileRecord { id, body: req.body }),
-                            reply: Some(reply),
-                        },
-                        Some(json!({ "id": id })),
-                    ))
-                }
-                "update" => {
-                    let req: rpc::ProfileUpdate = parse(body)?;
-                    Ok((
-                        Command::UpdateProfile {
-                            id: req.id,
-                            body: Box::new(req.body),
-                            reply: Some(reply),
-                        },
-                        None,
-                    ))
-                }
-                "duplicate" => {
-                    let req: rpc::ProfileDuplicate = parse(body)?;
-                    let new_id = Uuid::new_v4();
-                    Ok((
-                        Command::DuplicateProfile {
-                            id: req.id,
-                            new_id,
-                            name: req.name,
-                            reply: Some(reply),
-                        },
-                        Some(json!({ "id": new_id })),
-                    ))
-                }
-                "delete" => {
-                    let req: rpc::TvRef = parse(body)?;
-                    Ok((
-                        Command::DeleteProfile {
-                            id: req.id,
-                            reply: Some(reply),
-                        },
-                        None,
-                    ))
-                }
-                "defaults" => Ok((Command::ProfileDefaults { reply: Some(reply) }, None)),
-                "effective" => {
-                    let req: rpc::TvRef = parse(body)?;
-                    Ok((
-                        Command::EffectiveProfile {
-                            id: req.id,
-                            reply: Some(reply),
-                        },
-                        None,
-                    ))
-                }
-                _ => Err(unknown_rpc(verb)),
-            };
-        }
-        if let Some((id, verb)) = keys::parse_tv_rpc(&self.site, key) {
-            let command = match verb {
-                "set-volume" => {
-                    let req: rpc::SetVolume = parse(body)?;
-                    Command::SetVolume {
-                        id,
-                        level: req.level,
-                        reply: Some(reply),
-                    }
-                }
-                "set-muted" => {
-                    let req: rpc::SetMuted = parse(body)?;
-                    Command::SetMuted {
-                        id,
-                        muted: req.muted,
-                        reply: Some(reply),
-                    }
-                }
-                "set-name" => {
-                    let req: rpc::SetName = parse(body)?;
-                    Command::SetName {
-                        id,
-                        name: req.name,
-                        reply: Some(reply),
-                    }
-                }
-                "set-managed" => {
-                    let req: rpc::SetManaged = parse(body)?;
-                    Command::SetManaged {
-                        id,
-                        managed: req.managed,
-                        reply: Some(reply),
-                    }
-                }
-                "set-system-profile" => {
-                    let req: rpc::SetSystemProfile = parse(body)?;
-                    Command::SetSystemProfile {
-                        id,
-                        profile: req.profile,
-                        reply: Some(reply),
-                    }
-                }
-                "set-primary-input" => {
-                    let req: rpc::SetPrimaryInput = parse(body)?;
-                    Command::SetPrimaryInput {
-                        id,
-                        input: req.input,
-                        reply: Some(reply),
-                    }
-                }
-                "switch-input" => {
-                    let req: rpc::SwitchInput = parse(body)?;
-                    Command::SwitchInput {
-                        id,
-                        input: req.input,
-                        reply: Some(reply),
-                    }
-                }
-                "set-backlight" => {
-                    let req: rpc::SetBacklight = parse(body)?;
-                    Command::SetBacklight {
-                        id,
-                        level: req.level,
-                        reply: Some(reply),
-                    }
-                }
-                "set-screen" => {
-                    let req: rpc::SetScreen = parse(body)?;
-                    Command::SetScreen {
-                        id,
-                        on: req.on,
-                        restore_input: req.restore_input,
-                        reply: Some(reply),
-                    }
-                }
-                "get-config" => Command::GetConfig {
-                    id,
-                    reply: Some(reply),
-                },
-                "update-config" => {
-                    if !body.is_object() {
-                        return Err(bad_request("config patch must be a JSON object".into()));
-                    }
-                    if let Some(vendor) = self.vendors_by_tv.get(&id) {
-                        self.validate_vendor_fields(&vendor.clone(), body, true)?;
-                    }
-                    Command::UpdateConfig {
-                        id,
-                        patch: body.clone(),
-                        reply: Some(reply),
-                    }
-                }
-                "re-pair" => {
-                    let attempt = Uuid::new_v4();
-                    return Ok((
-                        Command::RePair {
-                            id,
-                            attempt,
-                            reply: Some(reply),
-                        },
-                        Some(json!({ "attempt": attempt })),
-                    ));
-                }
-                "power-on" => {
-                    // An empty body is a plain manual power-on (the CLI
-                    // and SDK send none).
-                    let req: rpc::PowerOn = if body.is_null() {
-                        rpc::PowerOn::default()
-                    } else {
-                        parse(body)?
-                    };
-                    Command::PowerOn {
-                        id,
-                        restore_input: req.restore_input,
-                        reply: Some(reply),
-                    }
-                }
-                "power-off" => Command::PowerOff {
-                    id,
-                    reply: Some(reply),
-                },
-                "reconnect" => Command::Reconnect {
-                    id,
-                    reply: Some(reply),
-                },
-                "remove" => Command::RemoveTv {
-                    id,
-                    reply: Some(reply),
-                },
-                _ => return Err(unknown_rpc(verb)),
-            };
-            return Ok((command, None));
-        }
-        Err(unknown_rpc(key))
-    }
 }
 
-async fn reply_json(query: &Query, payload: &Value) {
-    let bytes = serde_json::to_vec(payload).unwrap_or_default();
-    let key = query.key_expr().clone().into_owned();
-    if let Err(e) = query
-        .reply(key, bytes)
-        .encoding(Encoding::APPLICATION_JSON)
-        .await
-    {
-        warn!(%e, "reply failed");
-    }
-}
-
-async fn reply_err(query: &Query, error: &WireError) {
-    let bytes = serde_json::to_vec(error).unwrap_or_default();
-    if let Err(e) = query
-        .reply_err(bytes)
-        .encoding(Encoding::APPLICATION_JSON)
-        .await
-    {
-        warn!(%e, "reply_err failed");
-    }
-}
-
-fn parse<T: DeserializeOwned>(body: &Value) -> Result<T, WireError> {
-    serde_json::from_value(body.clone()).map_err(|e| bad_request(e.to_string()))
-}
-
-fn bad_request(message: String) -> WireError {
-    WireError {
-        code: "bad-request".into(),
-        message,
-    }
-}
-
-fn unknown_rpc(what: &str) -> WireError {
-    WireError {
-        code: "unknown-rpc".into(),
-        message: format!("no such rpc: {what}"),
+/// Map a system-profile rpc onto its world command.
+fn profile_command(call: profile::Call, reply: ReplyTo) -> Command {
+    match call {
+        profile::Call::Create(request) => Command::AddProfile {
+            record: Box::new(tisvlay_world::ProfileRecord {
+                id: request.id.unwrap_or_else(Uuid::new_v4),
+                body: request.body,
+            }),
+            reply: Some(Reply::new(reply)),
+        },
+        profile::Call::Update(request) => Command::UpdateProfile {
+            id: request.id,
+            body: Box::new(request.body),
+            reply: Some(Reply::new(reply)),
+        },
+        profile::Call::Duplicate(request) => Command::DuplicateProfile {
+            id: request.id,
+            new_id: Uuid::new_v4(),
+            name: request.name,
+            reply: Some(Reply::new(reply)),
+        },
+        profile::Call::Delete(request) => Command::DeleteProfile {
+            id: request.id,
+            reply: Some(Reply::new(reply)),
+        },
+        profile::Call::Defaults(()) => Command::ProfileDefaults {
+            reply: Some(Reply::new(reply)),
+        },
+        profile::Call::Effective(request) => Command::EffectiveProfile {
+            id: request.id,
+            reply: Some(Reply::new(reply)),
+        },
     }
 }
 
 /// Vendor configs are JSON on the wire and `toml::Value` at the backend
 /// seam — a pure serde transcode (JSON `null` has no TOML form and errors).
 fn json_to_toml(value: &Value) -> Result<toml::Value, WireError> {
-    toml::Value::try_from(value).map_err(|e| bad_request(format!("vendor config: {e}")))
+    toml::Value::try_from(value).map_err(|e| WireError::bad_request(format!("vendor config: {e}")))
 }
 
 /// An IP-addressed vendor config without a `mac` can't Wake-on-LAN. The

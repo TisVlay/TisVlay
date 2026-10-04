@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use support::*;
 use tisvlay_core::PowerState;
-use tisvlay_world::{BackendEvent, Command, InEvent, WireEffect};
+use tisvlay_world::{BackendEvent, Command, InEvent, Reply, WireEffect};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -17,7 +17,7 @@ async fn add_tv_connects_and_publishes_initial_state() {
     let id = Uuid::new_v4();
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Den", mock_config("mock://den"))),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
 
     let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
@@ -92,7 +92,10 @@ async fn remove_tv_is_boring() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://gone").await;
 
-    client.command(Command::RemoveTv { id, reply: Some(2) });
+    client.command(Command::RemoveTv {
+        id,
+        reply: Some(Reply::new(2)),
+    });
     let seen = collect_until(&mut effects, |e| reply_to(e, 2)).await;
     let deletes: Vec<&str> = seen
         .iter()
@@ -108,7 +111,7 @@ async fn remove_tv_is_boring() {
     client.command(Command::SetVolume {
         id,
         level: 10,
-        reply: Some(3),
+        reply: Some(Reply::new(3)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 3)).await;
     assert_eq!(
@@ -126,7 +129,7 @@ async fn remove_tv_is_boring() {
     client.command(Command::SetVolume {
         id,
         level: 11,
-        reply: Some(4),
+        reply: Some(Reply::new(4)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 4)).await;
     assert!(
@@ -164,7 +167,10 @@ async fn disconnect_stays_down_until_reconnect_command() {
         "no auto-redial after disconnect"
     );
 
-    client.command(Command::Reconnect { id, reply: Some(5) });
+    client.command(Command::Reconnect {
+        id,
+        reply: Some(Reply::new(5)),
+    });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
     assert_eq!(handle.connect_call_count("mock://den"), 2);
 }

@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::events::{
-    BackendCmd, ReplyTo, StoreSnapshot, SystemEvent, TransportInfo, TvRecord, WireEffect,
+    BackendCmd, Reply, StoreSnapshot, SystemEvent, TransportInfo, TvRecord, WireEffect,
 };
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
@@ -334,5 +334,8 @@ pub(crate) enum Effect {
     /// Redact a TV's config against its vendor schema and reply — the
     /// reactor owns the connectors (and thus the schemas), so the Secret
     /// filtering happens there and credentials never reach the bridge.
-    RedactConfig { reply: ReplyTo, record: TvRecord },
+    RedactConfig {
+        reply: Reply<tisvlay_wire::endpoint::tv::GetConfig>,
+        record: TvRecord,
+    },
 }

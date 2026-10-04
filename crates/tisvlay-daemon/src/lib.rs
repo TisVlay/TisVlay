@@ -327,10 +327,12 @@ pub async fn serve(
     let bridge_site = site.to_string();
     let bridge_world = world.clone();
     // Introspection served by the bridge (About pane rows).
-    let info = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "state_path": store_path.map(|p| p.display().to_string()).unwrap_or_default(),
-    });
+    let info = tisvlay_wire::rpc::ServiceInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+        state_path: store_path
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    };
     let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         if let Err(e) = bridge::run(

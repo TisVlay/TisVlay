@@ -6834,6 +6834,7 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-test",
  "tokio",
+ "tracing",
  "uuid",
  "zenoh",
 ]

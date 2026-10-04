@@ -445,7 +445,7 @@ async fn execute(
     debug!(?command, "tray command");
     match command {
         TrayCommand::PowerOn(id) => {
-            call(caller, &keys::tv_rpc(site, &id, "power-on"), Value::Null).await;
+            call(caller, &keys::tv_rpc(site, &id, "power-on"), json!({})).await;
         }
         TrayCommand::PowerOff(id) => {
             call(caller, &keys::tv_rpc(site, &id, "power-off"), Value::Null).await;

@@ -69,7 +69,7 @@ async fn cec_power_cycle_keeps_the_link_up() {
     let mut link_dropped = wait_power(&sub, id, "standby", &mut link_was_up).await;
 
     // Power on: wake happens in place on the live handle.
-    call_ok(&client, &keys::tv_rpc("t", &id, "power-on"), Value::Null).await;
+    call_ok(&client, &keys::tv_rpc("t", &id, "power-on"), json!({})).await;
     link_dropped |= wait_power(&sub, id, "active", &mut link_was_up).await;
 
     assert!(
