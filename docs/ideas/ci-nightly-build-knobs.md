@@ -49,5 +49,5 @@ Path 1 is simpler and aligns with the project's greenfield posture; path 2 is re
 
 ## Out of scope
 
-- `cargo-careful`, `miri`, `mutants` — orthogonal nightly tools, not relevant here.
+- `cargo-careful` and `miri` (nightly tools) and `cargo-mutants` (see [mutation-testing.md](mutation-testing.md)) — orthogonal to build time, not relevant here.
 - Build-time wins that are already captured by other sprints (rust-lld default, `Swatinem/rust-cache`).

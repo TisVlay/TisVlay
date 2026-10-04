@@ -47,6 +47,9 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 ## Build & CI
 
+- [Mutation testing with cargo-mutants (scoped to pure-logic crates, on demand)](ideas/mutation-testing.md)
+- [Fuzzing the parsers (grow the never-panic properties into bolero fuzz targets)](ideas/parser-fuzzing.md)
+- [Deterministic network simulation (turmoil) for the LG reconnect logic](ideas/deterministic-network-tests.md)
 - [Switchover follow-ups: tray gettext, mock-backend gating, coverage baseline, fresh design doc](ideas/switchover-followups.md)
 - [Move the pre-publish artifact smoke-test into CI](ideas/ci-artifact-smoke-test.md)
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
