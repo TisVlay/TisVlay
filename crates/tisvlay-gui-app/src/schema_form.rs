@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_json_falls_back_to_string_for_unparseable_numerics() {
+    fn build_config_json_falls_back_to_string_for_unparsable_numerics() {
         let m = model(vec![row("port", "port", false, "not-a-number", "invalid")]);
         let parsed: serde_json::Value =
             serde_json::from_str(&build_config_json_from_schema(&m, ClearedOptionals::Omit))

@@ -33,6 +33,9 @@ jobs:
           rustup component add llvm-tools-preview
           rustup show
 
+      # Tools whose output can differ between releases (formatters, linters,
+      # dictionaries) are pinned to the flake's versions so local and CI
+      # agree; bump them together after a `nix flake update`.
       - name: Setup
         uses: taiki-e/install-action@v2
         with:
@@ -42,7 +45,10 @@ jobs:
             cargo-llvm-cov
             cargo-nextest
             cargo-sbom@0.10.0
+            cargo-shear@1.13.4
             just
+            tombi@1.7.1
+            typos@1.50.2
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -118,3 +124,72 @@ jobs:
           fail-on-error: false
           list-suites: failed
           list-tests: failed
+
+  # The workspace must build on its declared `rust-version` floor. The floor
+  # is read from Cargo.toml, so this job never needs editing; rustup installs
+  # it beside the pinned dev toolchain. No --ignore-rust-version: a
+  # dependency that outgrows the floor fails here. Reproduce locally with
+  # `just msrv` (Nix-provided toolchain).
+  msrv:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev
+
+      - name: Toolchain
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          # "1.95" means 1.95.0; rustup would otherwise take the latest patch.
+          case "$msrv" in *.*.*) ;; *) msrv="$msrv.0" ;; esac
+          rustup toolchain install "$msrv" --profile minimal
+          # Overrides rust-toolchain.toml for every later step, rust-cache
+          # included, so it neither installs the dev pin nor keys on it.
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      - name: Check
+        run: cargo check --workspace --all-targets --all-features --locked
+
+  # Every other gate builds with --all-features; this one builds each crate
+  # with each feature on its own (and with none), so a crate that no longer
+  # compiles with a feature off is caught. Same recipe as locally.
+  features:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev
+
+      - name: Setup
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            cargo-hack
+            just
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: features
+
+      - name: Check each feature
+        run: just hack

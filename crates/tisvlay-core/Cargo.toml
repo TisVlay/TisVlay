@@ -56,9 +56,7 @@ futures-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-insta = { workspace = true }
 proptest = { workspace = true }
-rstest = { workspace = true }
 tempfile = { workspace = true }
 
 [features]

@@ -36,7 +36,7 @@ pub struct CecVendorConfig {
     )]
     pub physical_address: PhysicalAddress,
 
-    /// Fulfil screen-blank actions by powering the TV. HDMI-CEC has no
+    /// Fulfill screen-blank actions by powering the TV. HDMI-CEC has no
     /// discrete screen-off (the panel can't blank while the TV stays on), so
     /// with this on the backend emulates the `SCREEN` capability via power: a
     /// `screen_off` action (e.g. the stock idle/lock/DPMS profiles) powers

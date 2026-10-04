@@ -16,10 +16,11 @@ default:
 # drift: test profile, whole workspace, all targets + all features.
 check_flags := "--profile test --workspace --all-targets --all-features"
 
-# Format all Rust code
+# Format all Rust (rustfmt) and TOML (tombi; config in tombi.toml)
 [group('check')]
 fmt:
     cargo fmt
+    tombi format --quiet
 
 # Build the workspace (test profile, all targets, all features)
 [group('check')]
@@ -46,6 +47,19 @@ clippy:
 [group('check')]
 doc:
     {{ deny_warnings }} cargo doc --profile test --workspace --no-deps --all-features
+
+# Find unused or misplaced dependencies. cargo-shear parses the sources
+# (no build), so it runs in seconds; false positives go under a crate's
+# `[package.metadata.cargo-shear] ignored`, with a comment saying why.
+[group('check')]
+shear:
+    cargo shear --deny-warnings
+
+# Spell-check code, docs and identifiers, enforcing American English
+# (config: `_typos.toml`).
+[group('check')]
+typos:
+    typos
 
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
@@ -99,30 +113,53 @@ test-ci:
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
-check: deny licenses-html fmt build clippy doc test
+check: deny shear typos licenses-html fmt build clippy doc test
 
-# Review pending snapshot changes (insta)
-[group('check')]
-test-snapshot-review:
-    cargo insta review
+# --- Slow / networked checks (CI jobs) ---------------------------------
+#
+# These run in CI, not in `just check` or prek: each takes minutes cold
+# or needs the network. The recipes exist to reproduce a CI failure
+# locally. Background: `docs/build.md` "Checks that run in CI".
 
-# Accept all pending snapshot changes (insta)
-[group('check')]
-test-snapshot-accept:
-    cargo insta accept
+# RustSec advisories + yanked crates (network). Weekly in CI and on
+# Cargo.lock changes; triaged advisories live in deny.toml's ignore-list.
+[group('ci')]
+audit:
+    cargo deny --config packaging/licensing/deny.toml check advisories
+
+# Build every crate with each feature on its own (and with none), since
+# every other gate builds with --all-features. `--no-dev-deps` makes
+# cargo-hack strip dev-dependencies from the manifests for the run and
+# restore them after, so rust-analyzer may flag errors mid-run.
+[group('ci')]
+hack:
+    cargo hack check --each-feature --no-dev-deps --workspace --target-dir target/hack
+
+# Check the workspace on its MSRV floor: the flake's `msrv-rust`
+# toolchain (read from Cargo.toml's `rust-version`) first on PATH, inside
+# the dev shell for the system libraries. No `--ignore-rust-version`: the
+# toolchain IS the floor, so a dependency that outgrows it fails here.
+[group('ci')]
+msrv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tc=$(nix build --no-link --print-out-paths .#msrv-rust)
+    PATH="$tc/bin:$PATH" cargo check --workspace --all-targets --all-features --target-dir target/msrv
 
 # --- License attribution / policy --------------------------------------
 #
 # Pipeline rationale + maintenance reference: `docs/licensing.md`.
 
-# Enforce the SPDX allow-list (`licenses`) and surface multi-version
-# dep duplication as warnings (`bans`) — see `deny.toml` for the
-# skip-list and `docs/build.md` "Dep-graph posture" for the
-# routine. `bans` is `multiple-versions = "warn"`, so it never
-# fails the build; output is informational.
+# Enforce the SPDX allow-list (`licenses`), code provenance (`sources`)
+# and one version per crate (`bans`, `multiple-versions = "deny"`). A
+# dependency update that adds a duplicate fails here; the bump routine
+# is in `docs/build.md` "Dep-graph posture". `-D unnecessary-skip -D
+# unmatched-skip` make a stale skip-list entry an error too, so the
+# list can't outlive the duplicates it excuses.
 [group('check')]
 deny:
-    cargo deny --config packaging/licensing/deny.toml check licenses bans sources
+    cargo deny --config packaging/licensing/deny.toml check \
+        -D unnecessary-skip -D unmatched-skip licenses bans sources
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes). Doubles as the cargo-about

@@ -1,15 +1,18 @@
 # cargo-deny config — license-policy + multi-version-awareness gate.
 # Pipeline rationale + maintenance reference: `docs/licensing.md`.
 #
-# `[licenses]` enforces the SPDX allow-list. `[bans]` surfaces
-# multi-version dep duplication as warnings (non-blocking) with a
-# curated skip-list documenting known-and-accepted offenders.
+# `[licenses]` enforces the SPDX allow-list. `[bans]` fails on
+# multi-version dep duplication, except for the curated skip-list of
+# upstream-forced duplicates (each with its reason; bump routine in
+# `docs/build.md` "Dep-graph posture").
 # `[sources]` pins code provenance to crates.io and is gated by
 # `just deny`. `[advisories]` gates RustSec/yanked crates but is
-# deliberately NOT in `just deny` — it runs in a separate weekly
-# workflow (.github/workflows/audit.yml) so a newly-disclosed advisory
-# against an unchanged pinned dep still surfaces, without gating every
-# PR/commit on transitive vulnerabilities that have no upstream fix.
+# deliberately NOT in `just deny` — it runs in a separate workflow
+# (.github/workflows/audit.yml): weekly, so a newly-disclosed advisory
+# against an unchanged pinned dep still surfaces, and on PRs that change
+# Cargo.lock or this file, so a dependency update that pulls in an
+# advisory is flagged on its own PR without gating unrelated ones on
+# transitive vulnerabilities that have no upstream fix.
 
 # Restrict resolution to the platforms we ship for. Without this,
 # cargo-deny's default view considers every target triple and
@@ -79,14 +82,13 @@ exceptions = [
     { name = "linux-cec-macros", allow = ["LGPL-2.1-or-later"] },
 ]
 
-# Multi-version dep duplication. `warn` keeps the build green while
-# surfacing the offender in `just deny` output, so a new duplicate
-# is visible without blocking PRs. The `skip` list documents
-# already-evaluated cases — re-audit when the upstream consumer
-# moves (Slint bumps, rustls/ring updates, etc.). Background:
-# `docs/build.md` "Dep-graph posture".
+# Multi-version dep duplication. `deny`: a new duplicate fails `just deny`
+# until it is deduplicated or skipped with a reason. The `skip` list
+# documents already-evaluated cases — re-audit when the upstream consumer
+# moves (Slint bumps, rustls/ring updates, etc.). Bump routine and
+# background: `docs/build.md` "Dep-graph posture".
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
 skip = [
     # Slint compiler internals — `i-slint-compiler` → `rowan` pins
     # 0.14; `prost-build` → `petgraph` (via `i-slint-backend-testing`'s
@@ -117,23 +119,50 @@ skip = [
     { crate = "dirs-sys", reason = "transitive churn; low compile cost" },
     { crate = "foldhash", reason = "transitive churn; low compile cost" },
     { crate = "smol_str", reason = "transitive churn; low compile cost" },
+
+    # Exact-version skips: each names the OLDER version and the upstream
+    # crate pinning it, so the entry goes stale — and `just deny` fails on
+    # it (unnecessary-skip) — once that upstream catches up.
+
+    # zenoh 1.10's dependency floor.
+    { crate = "itertools@0.14.0", reason = "zenoh 1.10 pins itertools 0.14; Slint/femtovg are on 0.15" },
+    { crate = "nix@0.29.0", reason = "zenoh-link-unixsock_stream pins nix 0.29" },
+    { crate = "rand@0.8.8", reason = "zenoh-keyexpr pins rand 0.8; tungstenite is on 0.10" },
+    { crate = "rand_core@0.6.4", reason = "rand 0.8 counterpart (zenoh-keyexpr)" },
+    { crate = "socket2@0.5.10", reason = "zenoh pins socket2 0.5; tokio and our WoL use 0.6" },
+    { crate = "toml@0.9.12", reason = "zenoh-config pins toml 0.9; the workspace is on 1.x" },
+    { crate = "toml_datetime@0.7.5", reason = "toml 0.9 counterpart (zenoh-config)" },
+    { crate = "winnow@0.7.15", reason = "toml 0.9 counterpart (zenoh-config)" },
+    { crate = "spin@0.9.9", reason = "flume 0.11 (zenoh's channel) pins spin 0.9; bevy/uhlc are on 0.10" },
+    # zenoh-crypto's RustCrypto 0.10 stack (hmac/sha3/aes/cipher) vs
+    # tungstenite's sha1 0.11.
+    { crate = "digest@0.10.7", reason = "zenoh-crypto's hmac/sha3 are on digest 0.10; tungstenite's sha1 is on 0.11" },
+    { crate = "block-buffer@0.10.4", reason = "digest 0.10 counterpart (zenoh-crypto)" },
+    { crate = "crypto-common@0.1.7", reason = "digest 0.10 / cipher 0.4 counterpart (zenoh-crypto)" },
+    { crate = "cpufeatures@0.2.17", reason = "aes 0.8 (zenoh-crypto) pins cpufeatures 0.2" },
+
+    # Everything else.
+    { crate = "gettext-rs@0.7.7", reason = "Slint's i-slint-core pins gettext-rs 0.7; ours stays on 0.8 for the RUSTSEC-2026-0244 fix" },
+    { crate = "nix@0.30.1", reason = "rtnetlink 0.23 pins nix 0.30; linux-cec and os_info are on 0.31" },
+    { crate = "libloading@0.8.9", reason = "dlib/glutin/x11rb/zenoh on libloading 0.8; pipewire-native-spa on 0.9" },
+    { crate = "syn@2.0.119", reason = "bevy's macros and other proc-macro crates are still on syn 2" },
+    { crate = "dirs@5.0.1", reason = "freedesktop-icons 0.4 pins dirs 5; shellexpand is on 6" },
+    { crate = "downcast-rs@1.2.1", reason = "wayland-backend pins downcast-rs 1; bevy_reflect is on 2" },
+    { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (Slint's image stack) pins miniz_oxide 0.8; flate2 is on 0.9" },
 ]
 
-# RustSec advisory + yanked-crate gate. Run by the weekly audit workflow
+# RustSec advisory + yanked-crate gate. Run by the audit workflow
 # (.github/workflows/audit.yml), NOT by `just deny` — see the file header.
 # The ignore-list records advisories already triaged against the current
-# lockfile so the weekly run stays green until a NEW advisory lands; each
+# lockfile so the audit run stays green until a NEW advisory lands; each
 # entry carries a reason. Drop an entry once a dep bump clears it.
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 ignore = [
-    # No upstream fix — transitive, accepted:
-    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin-attack timing sidechannel; no fixed release; transitive via the TLS stack" },
     # Unmaintained, no safe upgrade — accepted:
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; no safe upgrade; transitive" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro" },
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; no safe upgrade; transitive" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via winit sctk-adwaita" },
     # Fix available upstream — deferred to a dependency bump:
     { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },

@@ -39,13 +39,14 @@ default-members = [
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-# MSRV = the oldest rustc the workspace actually builds on, verified with
-# `cargo check --workspace --all-targets --all-features`. It must never exceed
-# the rustc nixos-unstable ships: the Nix package, and so the NixOS module,
-# builds with the consumer's nixpkgs compiler, and Cargo refuses any toolchain
-# below this floor. The MSRV-aware resolver holds dependencies to releases
-# that support it, so raise it deliberately when an update needs a newer
-# compiler. The dev/CI pin in rust-toolchain.toml runs ahead independently.
+# MSRV = the oldest rustc the workspace actually builds on, verified by
+# `just msrv` and the CI `msrv` job (both read this value). It must never
+# exceed the rustc nixos-unstable ships: the Nix package, and so the NixOS
+# module, builds with the consumer's nixpkgs compiler, and Cargo refuses
+# any toolchain below this floor. The MSRV-aware resolver holds
+# dependencies to releases that support it, so raise it deliberately when
+# an update needs a newer compiler. The dev/CI pin in rust-toolchain.toml
+# runs ahead independently.
 rust-version = "1.95"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
@@ -121,9 +122,6 @@ parking_lot = "0.12"
 # XDG directories
 directories = "6"
 
-# Ordered map (preserves insertion order for TV list stability)
-indexmap = "2"
-
 # UUID v4 for stable per-TV identifiers (decoupled from user-facing
 # display name so renames don't churn cross-references). Matches
 # NetworkManager's connection-uuid pattern.
@@ -144,7 +142,6 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # Rust protocol client — no libpipewire link. Git-pinned; the pin's
 # rationale + revert condition live at the deny.toml allow-git entry.
 pipewire-native = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
-pipewire-native-spa = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
 # `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
@@ -228,8 +225,6 @@ tisvlay-daemon = { path = "crates/tisvlay-daemon" }
 tisvlay-session = { path = "crates/tisvlay-session" }
 
 # Testing
-insta = { version = "1", features = ["json", "yaml", "filters"] }
-insta-cmd = "0.7"
 proptest = "1"
 rstest = "0.27"
 tempfile = "3"

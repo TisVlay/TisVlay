@@ -153,7 +153,7 @@ fn drift_tone(local: &str, remote: &str) -> &'static str {
 /// Probe the CLI's version by shelling out to `tisvlay --version`.
 /// clap's default `--version` output is `tisvlay 0.1.0\n`; we take
 /// the second whitespace-separated token. Returns `None` on any
-/// failure (binary not on PATH, exit non-zero, unparseable output).
+/// failure (binary not on PATH, exit non-zero, unparsable output).
 pub(crate) async fn probe_cli_version() -> Option<String> {
     let output = tokio::process::Command::new("tisvlay")
         .arg("--version")

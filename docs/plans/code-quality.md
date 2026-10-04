@@ -70,7 +70,7 @@ No macro expansion (Slint, zbus, tokio) trips `unsafe_code`. No `unsafe_code` po
 
 **Other.**
 
-- **`typos`:** 42 hits, nearly all false positives (`Pn` in UPnP prose, `DELET` in a key example, the truncated `.sunshine-wrapp` process name). The real ones are a handful: `mis` in `help.slint`, `inh` in a test, the `unparseable` spelling.
+- **`typos`:** 42 hits without a locale, nearly all false positives: UPnP split at its lowercase letters, a pluralized all-caps zenoh verb, the truncated Sunshine process name. The real ones were a handful (a hyphenated "misattribute", a test fixture address, one spelling of "unparsable"). With `locale = "en-us"` it adds about 60 British spellings, most of them in the ARP neighbor-table code.
 - **Feature combinations are never checked.** Every gate builds with `--all-features`, so a crate that no longer builds with a feature off goes unnoticed. The affected features are core's `access`, `wayland` and `logging`, and cec's `test-link`. `docs/build.md` § CI feature scope argues for exactly one feature configuration.
 - **The MSRV floor is manual.** `rust-version = "1.95"` is verified by hand only, following `docs/ideas/msrv-verification-job.md`.
 - **The nextest `ci` profile retries once**, which hides flaky tests.
@@ -125,7 +125,7 @@ Configs read from each project's default branch on 2026-10-04 (dates are the las
 - **cargo-hack** (0.6.45) checks each feature in isolation.
 - **cargo-semver-checks** already runs through release-plz for the published crates.
 - **cargo-mutants** (27.1) is mature; it fits a scoped, manual or labeled run.
-- **Formatting:** nightly-only rustfmt options remain unstable. Tombi is overtaking taplo, which has had no release since 2025-05.
+- **Formatting:** nightly-only rustfmt options remain unstable. Taplo's maintainer stepped away in December 2024 and it hasn't released since May 2025; Tombi is replacing it in some projects (wgpu, prettier-plugin-toml), though Taplo configs still outnumber Tombi's about ten to one.
 - **Not worth it here:**
   - Miri, Kani, loom and cargo-geiger: our `unsafe` is FFI that Miri can't execute.
   - cargo-vet and cargo-crev: their review burden doesn't fit one maintainer.
@@ -189,10 +189,10 @@ Each tool joins the flake devShell in this PR, together with its first use: carg
    - Only cargo-shear's `ignored` list depends on review to stay honest; record whether shear warns on stale entries.
 2. **typos.**
    - `just typos` joins `just check`, with a local prek hook dispatching to it, so the version comes from the flake.
-   - `_typos.toml` sets `locale = "en-us"`, adds `extend-words` for the protocol tokens (`Pn`, `DELET`, `wrapp`, `EIS`), and excludes `.pot`/`.po`, `Cargo.lock` and `target/`.
+   - `_typos.toml` sets `locale = "en-us"` and allow-lists only names this repo can't rename: netlink-packet-route's British-spelled neighbor types (`NeighbourState` and friends), `oif`, the portal's EIS, the truncated Sunshine comm, and UPnP-derived product names. It excludes `.pot`/`.po`, `Cargo.lock` and `target/`.
    - Fix the real typos, misspelled public identifiers included, since nothing is published yet (§7).
 3. **Duplicate versions become blocking.**
-   - Align `gettext-rs` to Slint's `0.7`.
+   - `gettext-rs` stays on 0.8 (reversed from the first draft). Aligning to Slint's 0.7 put our own crate directly on RUSTSEC-2026-0244, the unsound `setlocale`, which 0.8 fixes by marking it `unsafe`. Slint's 0.7.7 gets a skip like the other upstream pins instead.
    - Give each of the other 18 duplicates an exact `name@version` skip, on the *older* version, with a reason naming the upstream gate. The skip then goes stale, and fails, once upstream catches up.
    - Flip `multiple-versions` to `"deny"`.
    - Run `just deny` with `-D unnecessary-skip -D unmatched-skip` so a stale skip is an error too.
@@ -210,9 +210,11 @@ Each tool joins the flake devShell in this PR, together with its first use: carg
    - `audit` runs weekly (the existing `audit.yml`) and on `Cargo.lock` changes.
    - The `just` recipes exist to reproduce a CI failure locally.
    - `just check` stays fast and offline.
-8. **A Tombi trial.** Run `tombi format` once on a throwaway branch and judge the diff, especially the comment-heavy `deny.toml`, `prek.toml` and `Cargo.toml`. If it reads well, add a `just` recipe and a prek hook in this PR. If not, record why in the never-adopt list.
-   - Taplo's author stepped away in December 2024 (taplo#715). Its last release was in May 2025, and it has about 240 open issues.
-   - Tombi releases weekly. wgpu (June 2026) and prettier-plugin-toml (September 2026) have switched to it.
+8. **Tombi — adopted in formatting-only mode, after two trials (2026-10-04).**
+   - With its schema on, it sorts within blank-line-separated groups. That scatters the dependency sections our manifests group under header comments, so the schema stays off: no sorting at all.
+   - What remains is four-space indentation, a blank line between tables, safe single → double quotes (backslash regexes stay literal), and sub-tables grouped under their parent. The daemon's `[dependencies]` move below `[package.metadata.nfpm]`. That's 8 files.
+   - Run by `just fmt` beside rustfmt, with the `fmt` hook watching `.toml` files too.
+   - Version 1.7.1 is built through the flake, since nixpkgs lags at 1.5.2. CI installs `tombi@1.7.1` to match, so local and CI formatting can't disagree.
 
 ### Q1b — The free denies and the unsafe policy
 
@@ -354,7 +356,7 @@ Each becomes a `docs/ideas/*.md` entry when the plan retires (§8).
 7. **Misspelled identifiers are fixed now**, public ones included, while nothing is published.
 8. **The slow checks run in CI, as is customary.** GitHub Actions is re-enabled: `msrv` and `hack` as pull-request jobs, `audit` weekly and on `Cargo.lock` changes. The `just` recipes reproduce them locally (Q2.7).
 9. **`tisvlay-core`'s binary glue (`logging`, `access`) moves to a new unpublished crate**, so the published core carries no anyhow and fewer dependencies (Q6.1).
-10. **Tombi: a throwaway trial first**, adopted in Q2 only if the reformat reads well (Q2.8).
+10. **Tombi: a throwaway trial first**, adopted in Q2 only if the reformat reads well. It did, in formatting-only mode, with the version pinned through the flake (Q2.8).
 11. **Sequencing: plan order.** The feature branches the draft worried about have merged.
 12. **Flaky tests are quarantined, never retried**, and the nextest `ci` profile's retries go to 0 (QT.3).
 13. **A conventions section in `CLAUDE.md`**, started in Q1b and grown with each PR.

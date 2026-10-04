@@ -1000,13 +1000,13 @@ mod tests {
     #[test]
     fn default_profile_fans_in_unassigned_tvs() {
         // The fan-out semantic from `references_of`: a TV with an empty
-        // (unparseable / unset) `system_profile` field implicitly
+        // (unparsable / unset) `system_profile` field implicitly
         // references the reserved default UUID. The convert pipeline
         // must surface that in the default row's `referenced_by`.
         let tv_uuid = Uuid::new_v4();
         let tv = {
             let mut t = sample_tv(&tv_uuid.to_string(), "Unassigned-TV");
-            t.system_profile = String::new(); // unparseable → None on the assignment
+            t.system_profile = String::new(); // unparsable → None on the assignment
             t.automated = true;
             t
         };

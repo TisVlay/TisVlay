@@ -14,7 +14,21 @@ There's a residual dual-compile that *can't* be eliminated on stable today (veri
 
 ### CI feature scope
 
-CI lints and tests with `--all-features` — the same flags as local `prek`. The workspace's feature surface is small (core's `logging`/`wayland`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled), so the instrumented all-features build fits the runner comfortably and there is exactly one feature configuration to reason about. The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
+CI lints and tests with `--all-features` — the same flags as local `prek` — so the instrumented build has exactly one feature configuration to reason about. The workspace's feature surface is small (core's `access`/`logging`/`wayland`/`mutter-idle`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled). What that single configuration can't catch, a crate that no longer builds with one of its features off, is the separate `features` job's concern (`just hack`; see "Checks that run in CI"). The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
+
+## Checks that run in CI
+
+Three checks take minutes cold or need the network, so they run as CI jobs rather than in `just check` or prek. Each has a `just` recipe that reproduces it locally:
+
+| Check | CI | Local | What it catches |
+|---|---|---|---|
+| MSRV floor | `msrv` job, every PR | `just msrv` | Code or a dependency that needs a newer compiler than `rust-version` |
+| Feature combinations | `features` job, every PR | `just hack` | A crate that doesn't build with one of its features on its own, or with none |
+| Advisories | `audit.yml`, weekly + on `Cargo.lock` or `deny.toml` changes | `just audit` | RustSec advisories and yanked crates |
+
+- **MSRV:** the floor is read from `Cargo.toml` in both places. CI installs it with rustup. Locally, `just msrv` uses the flake's `msrv-rust` toolchain on `PATH` inside the dev shell. rustup-installed toolchains misbehave under the NixOS dev shell: `rustup run` still resolves the shell's own cargo, and they fail on `slint-macros`. There's no `--ignore-rust-version`, because the toolchain is the floor.
+- **Raising the floor:** only when an update needs a newer compiler, and never past the rustc that nixpkgs ships. The Nix package builds with the consumer's nixpkgs compiler, and cargo refuses any toolchain older than `rust-version`. Check before raising it: `nix eval --raw --inputs-from . nixpkgs#rustc.version`.
+- **Features:** `cargo hack check --each-feature --no-dev-deps`. `--no-dev-deps` strips dev-dependencies from the manifests for the run and restores them after, so rust-analyzer may flag phantom errors while it runs.
 
 ## Lint policy
 
@@ -49,19 +63,32 @@ CI provisions `cargo-about` via `taiki-e/install-action` (the Setup step), so th
 
 ## Dep-graph posture
 
-The workspace pulls roughly 700 transitive crates. Each *version* of a crate is a separate compile unit, so we keep an eye on multi-version pinning — on a 2-core CI runner that's real wall time. Goals: minimize duplicated versions, surface new duplicates without blocking PRs.
+The workspace pulls several hundred transitive crates. Each *version* of a crate is a separate compile unit, so duplicates cost compile time, and on a 2-core CI runner that's real wall time.
+
+The policy is **one version per crate unless an upstream crate forces two.** Each exception is a `skip` entry carrying its reason. A plain warning is not enough: it drifted, letting 19 unexplained duplicates pile up unnoticed.
 
 ### `cargo-deny [bans]` config
 
-[`packaging/licensing/deny.toml`](../packaging/licensing/deny.toml) has a `[bans] multiple-versions = "warn"` policy with a curated `skip` list. Each skip entry has a `reason` field citing the upstream consumer that gates dedup, so contributors don't waste time investigating known-and-accepted offenders.
+[`packaging/licensing/deny.toml`](../packaging/licensing/deny.toml) sets `[bans] multiple-versions = "deny"` with a curated `skip` list.
+- Each skip entry has a `reason` naming the upstream crate that forces the duplicate, so nobody re-investigates known cases.
+- `just deny` runs with `-D unnecessary-skip -D unmatched-skip`, so an entry that no longer matches anything fails too, and the list can't outlive its duplicates.
 
-Three known multi-version sources, in decreasing actionability:
+### The bump routine
 
-- **Slint compiler internals** — `i-slint-compiler → rowan` pins `hashbrown 0.14`; `i-slint-backend-testing/mcp → prost-build → petgraph` pins `hashbrown 0.15`. Re-audit on Slint bump.
-- **`smithay-clipboard 0.7.3` cascade** — that crate pulls *both* SCTK 0.19 and SCTK 0.20 internally; the SCTK 0.19 path cascades `calloop 0.13`, `rustix 0.38`, `thiserror 1`, `linux-raw-sys`, `signal-hook` duplicates. Pulled transitively via Slint's `copypasta`. Re-audit on Slint or `smithay-clipboard` upgrade.
-- **`rustls`/`ring`** — keeps `getrandom 0.2`. Only path to old getrandom in our tree. Re-audit if `rustls` swaps its default crypto backend or `ring` upgrades.
+A dependency update that introduces a duplicate fails `just deny`, and with it prek and CI. To clear it:
 
-Smaller offenders (`tiny-skia`, `foldhash`, `pastey`, `zune-*`, `dirs-sys`) trace back to the Slint stack or have negligible compile cost. Listed in the skip-list with a `reason` and reviewed periodically.
+1. **Find the cause:** `cargo tree -d -e normal --target x86_64-unknown-linux-gnu` shows each duplicated crate and who pulls each version.
+2. **Dedup if we can.** If one of our own crates asks for the other version, align it.
+3. **Otherwise skip the older version exactly**, as `{ crate = "name@x.y.z", reason = "<upstream> pins name x.y; <other> is on z" }`. The exact version makes the entry go stale, and fail, once that upstream catches up, which prompts its removal.
+4. **Use `skip-tree` sparingly.** It hides any new duplicates that appear underneath the skipped subtree.
+
+The emergency escape, when a bump must land before its duplicates are triaged, is a one-off `cargo deny --config packaging/licensing/deny.toml check -W duplicate bans`. The config never flips back to `warn`.
+
+The skip list's reasons are the inventory of known duplicates; this doc doesn't repeat them. The big clusters, each worth a re-audit when its upstream bumps:
+
+- **zenoh's pins:** `toml 0.9`, `rand 0.8`, `socket2 0.5`, `nix 0.29`, `itertools 0.14` and the `digest 0.10` crypto stack.
+- **winit's SCTK 0.19 path** (through Slint): `rustix 0.38`, `thiserror 1` and `tiny-skia` via `sctk-adwaita`.
+- **Slint's compiler internals:** `hashbrown`, through `rowan` and `prost-build`'s `petgraph`.
 
 ### `[graph] targets` filter
 

@@ -618,7 +618,7 @@ async fn while_remote_gate_suppresses_a_formerly_exempt_sleep() {
 #[tokio::test]
 async fn while_remote_default_suppresses_dpms_on_while_armed() {
     let (mut effects, client, _handle) = spawn_reactor();
-    let id = add_connected_tv(&mut effects, &client, "mock://inh").await;
+    let id = add_connected_tv(&mut effects, &client, "mock://inherit").await;
     // No profile fields set — every event resolves to its stock action;
     // the wake-ish stock floor is gated by default.
     assign_remote_profile(

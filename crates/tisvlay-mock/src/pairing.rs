@@ -7,7 +7,7 @@
 //! `[tv.mock] pairing = "..."` config knob.) Don't copy the
 //! test-driving parts when cloning mock as a skeleton.
 //!
-//! Pairing is modelled as an explicit state transition
+//! Pairing is modeled as an explicit state transition
 //! `Idle → Prompted → {Accepted, Rejected, TimedOut}`. Real backends
 //! have much more complex flows (WebSocket handshake, capability
 //! exchange, credential persistence, etc.), but from the tisvlay

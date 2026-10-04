@@ -55,6 +55,16 @@
           # nixpkgs' is 1.16.1, which predates `--check` / `--screenshot`.
           # Exposed so the devShell and CI can share one definition.
           slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
+
+          # The workspace's MSRV toolchain, for `just msrv`. The version is
+          # read from Cargo.toml's `rust-version` (padded to x.y.z), so the
+          # floor lives in one place.
+          msrv-rust =
+            let
+              floor = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.rust-version;
+              parts = builtins.length (builtins.splitVersion floor);
+            in
+            pkgs.rust-bin.stable.${if parts == 2 then "${floor}.0" else floor}.minimal;
         };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
@@ -93,6 +103,24 @@
                 hash = "sha256-//t3ASNljC4rosk5oOmcJy8PZKRYjlQ0euzzAmfiSPQ=";
               };
             };
+            # tombi (TOML formatter, `just fmt`) pinned to the version CI
+            # installs (`tombi@1.7.1` in ci.yml), so local and CI formatting
+            # can't disagree; nixpkgs lags behind. Bump both together, and
+            # drop this override once nixpkgs reaches the pin.
+            tombiSrc = pkgs.fetchFromGitHub {
+              owner = "tombi-toml";
+              repo = "tombi";
+              tag = "v1.7.1";
+              hash = "sha256-eeBtmMrkDWOADw7FMLLD8hYq5WYg/aFyATtYIMFYFk0=";
+            };
+            tombi = pkgs.tombi.overrideAttrs {
+              version = "1.7.1";
+              src = tombiSrc;
+              cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                src = tombiSrc;
+                hash = "sha256-YJLhWIwB3Y8836Rq4ahRzBSnhp7bH8w2/oXfRVTOPXg=";
+              };
+            };
           in
           pkgs.mkShell {
             packages =
@@ -105,9 +133,14 @@
                 # docs/licensing.md. Pinned to 0.9.1 via cargoAbout (above).
                 cargoAbout
                 cargo-deny
-                cargo-insta
+                # cargo-hack checks each feature in isolation (`just hack`);
+                # every other gate builds with --all-features.
+                cargo-hack
                 cargo-llvm-cov
                 cargo-nextest
+                # cargo-shear finds unused and misplaced dependencies
+                # (`just shear`) by parsing sources; no build needed.
+                cargo-shear
                 # cargo-sbom emits a whole-workspace SBOM (SPDX) for `just sbom`.
                 cargo-sbom
                 # cargo-zigbuild + zig drive the release build: zig serves
@@ -140,6 +173,11 @@
                 slintViewer
                 socat
                 tcpdump
+                # TOML formatter (`just fmt`; config in tombi.toml), pinned above.
+                tombi
+                # Spell checker for code, docs and identifiers (`just typos`;
+                # config in _typos.toml).
+                typos
                 wakeonlan
                 rust
                 # i18n tooling. `gettext` provides xgettext / msgfmt /

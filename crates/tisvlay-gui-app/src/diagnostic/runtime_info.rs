@@ -62,7 +62,7 @@ pub fn glibc_version() -> Option<String> {
 /// (stanislav-tkach/os_info#318, with a proposed string-based
 /// redesign in #280); kept here because the alternative (raw inline
 /// parser, or staying on `etc-os-release`) loses the typed
-/// `Type::NixOS` defence against distro-detection typos. A future
+/// `Type::NixOS` defense against distro-detection typos. A future
 /// `os_info` release that switches to raw-string version storage
 /// will fix this without a code change on our side.
 pub(super) fn os_release() -> (Option<String>, Option<String>) {

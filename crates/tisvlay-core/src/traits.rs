@@ -431,7 +431,7 @@ pub trait TvConnector: Send + Sync {
         false
     }
 
-    /// Whether this backend fulfils screen-blank actions by powering the
+    /// Whether this backend fulfills screen-blank actions by powering the
     /// device — i.e. emulates the `SCREEN` capability via `POWER`.
     ///
     /// For a device with `POWER` but no discrete screen-blank (HDMI-CEC: the
@@ -607,7 +607,7 @@ pub trait TvConnector: Send + Sync {
     /// Default no-op. Vendors that talk to an IP-addressed device
     /// (LG, future Sony/Samsung) should override to send a single
     /// transport-layer datagram or open a TCP connection that
-    /// triggers the kernel's neighbour resolution on the way out.
+    /// triggers the kernel's neighbor resolution on the way out.
     ///
     /// IP family agnostic by signature — the daemon's family gate
     /// uses the vendor's `Capabilities::IPV4` / `IPV6` bits to decide

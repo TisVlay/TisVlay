@@ -436,8 +436,8 @@ struct Core {
     caller: Arc<Caller>,
     _alive: zenoh::liveliness::LivelinessToken,
     /// System-socket presence token. Dropping it (Core drop, on crash or
-    /// clean exit) DELETEs the daemon's departure signal; held here so it
-    /// lives exactly as long as the running service.
+    /// clean exit) sends the daemon its departure signal, a liveliness
+    /// DELETE; held here so it lives exactly as long as the running service.
     _alive_system: zenoh::liveliness::LivelinessToken,
 }
 
@@ -507,8 +507,8 @@ impl Core {
         }
         // Clean exit (a channel closed on logout/restart): the
         // `_alive_system` token, dropped with `Core` immediately after,
-        // DELETEs on the daemon's `session_alive` subscriber, which clears
-        // the armed set. A crash that skips this path departs the same
+        // sends a DELETE to the daemon's `session_alive` subscriber, which
+        // clears the armed set. A crash that skips this path departs the same
         // token, so the daemon disarms on the DELETE either way — no empty
         // mirror put is needed.
     }

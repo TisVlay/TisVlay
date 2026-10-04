@@ -60,7 +60,7 @@ A separate finding from the transport-family work: LG TVs do not join any v6 SSD
 
 ## Connector probe hook
 
-`TvConnector::probe_arp_cache(&self, ip: IpAddr) -> Result<()>` is the daemon's vendor-owned hook for priming the kernel ARP cache when passive lookup misses. Default no-op; vendor crates that talk to IP-addressed devices override to send a single transport-layer datagram or open a TCP connection that triggers kernel neighbour resolution on the way out. The trait method is family-agnostic (`IpAddr`, not `Ipv4Addr`) so an IPv6 follow-up doesn't reshape the trait.
+`TvConnector::probe_arp_cache(&self, ip: IpAddr) -> Result<()>` is the daemon's vendor-owned hook for priming the kernel ARP cache when passive lookup misses. Default no-op; vendor crates that talk to IP-addressed devices override to send a single transport-layer datagram or open a TCP connection that triggers kernel neighbor resolution on the way out. The trait method is family-agnostic (`IpAddr`, not `Ipv4Addr`) so an IPv6 follow-up doesn't reshape the trait.
 
 LG's override sends a single UDP byte to the SSAP wss port (3001), bound to `0.0.0.0:0` — the kernel routing table picks the correct outbound NIC + source IP for the destination, which is the right behavior on typical multi-NIC hosts. The TV's UDP stack discards the unexpected byte silently (no TLS handshake side-effect, no inbound port needed, no `CAP_NET_RAW`). Explicit source-IP binding via netlink route lookup would only matter for VPN-policy-routing edge cases that aren't in scope today; filed as deferred work if anyone hits it.
 

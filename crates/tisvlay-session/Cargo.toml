@@ -14,7 +14,6 @@ directories = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
 pipewire-native = { workspace = true }
-pipewire-native-spa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tisvlay-core = { workspace = true, features = ["mutter-idle", "logging"] }

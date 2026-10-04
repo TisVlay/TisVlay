@@ -120,7 +120,7 @@ export global Help {
         root.text = "";
         // Clear the owner too, so no stale trigger reads as the owner
         // between bubbles (every owner check is paired with `shown`
-        // today, but a bare `owner` read would otherwise mis-attribute).
+        // today, but a bare `owner` read would otherwise misattribute).
         root.owner = 0;
         // Reset the clip so the next bubble (which may not live in a
         // ScrollView) falls back to the whole window until its own
