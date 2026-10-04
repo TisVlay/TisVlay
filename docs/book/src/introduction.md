@@ -1,6 +1,6 @@
 ![Banner](docs/artwork/banner.png)
 
-**TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for mixed multi-display setups, mitigating energy usage and display burn-in.
+**TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for heterogeneous multi-display setups, mitigating energy usage and display burn-in.
 
 [![CI Pipeline](https://github.com/ruffsl/tisvlay/actions/workflows/ci.yml/badge.svg)](https://github.com/ruffsl/tisvlay/actions/workflows/ci.yml)
 [![Crates.io Version](https://img.shields.io/crates/v/tisvlay)](https://crates.io/crates/tisvlay)
