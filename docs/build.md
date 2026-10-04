@@ -27,11 +27,13 @@ In the workspace `Cargo.toml`:
 
 ## Build scripts
 
-[`tisvlay-gui/build.rs`](../crates/tisvlay-gui/build.rs) is the only build script in the workspace. It does three things:
+The GUI is split across two crates so the Slint-generated code — about 120k lines of Rust, compiled on one thread by rustc's front end — builds alongside the zenoh/SDK chain instead of after it. Each has a build script:
 
-1. **Compile Slint UI** via `slint_build::compile("ui/main.slint")` — generates the Rust code that `slint::include_modules!()` reads at compile time.
-2. **Emit `VERGEN_*` env vars** for the diagnostic blob's `gui.{target,rustc,git_sha}` fields. Hand-rolled rather than via `vergen-gix`, which would pull tens of gitoxide crates for three env vars: target triple from cargo's `TARGET`, rustc semver parsed from `rustc -V`, git SHA from `git rev-parse --short=7 HEAD`. Failures emit the `VERGEN_IDEMPOTENT_OUTPUT` sentinel (vendored tarball, Nix sandbox without `.git/`, missing git binary); `diagnostic::maybe_git_sha` collapses that to JSON `null`.
-3. **Generate the bundled-dep license HTML** via `cargo-about generate`. On `Err(NotFound)` (cargo-about not on `$PATH`) writes a stub-blob HTML so the build still succeeds. The About-pane "View notices" button shows install instructions in the stub case.
+- [`tisvlay-gui/build.rs`](../crates/tisvlay-gui/build.rs) **compiles the Slint UI** via `slint_build::compile("ui/main.slint")`, generating the Rust code that `slint::include_modules!()` in that crate reads at compile time (plus the `lang/` catalogs' `.mo` files). The crate depends only on `slint`. Slint names the gettext domain after this package, which is why the UI crate holds the `tisvlay-gui` name.
+- [`tisvlay-gui-app/build.rs`](../crates/tisvlay-gui-app/build.rs) belongs to the crate with the handwritten code and the `tisvlay-gui` binary (its library is still named `tisvlay_gui`), and does two things:
+
+1. **Emit `VERGEN_*` env vars** for the diagnostic blob's `gui.{target,rustc,git_sha}` fields. Hand-rolled rather than via `vergen-gix`, which would pull tens of gitoxide crates for three env vars: target triple from cargo's `TARGET`, rustc semver parsed from `rustc -V`, git SHA from `git rev-parse --short=7 HEAD`. Failures emit the `VERGEN_IDEMPOTENT_OUTPUT` sentinel (vendored tarball, Nix sandbox without `.git/`, missing git binary); `diagnostic::maybe_git_sha` collapses that to JSON `null`.
+2. **Generate the bundled-dep license HTML** via `cargo-about generate`. On `Err(NotFound)` (cargo-about not on `$PATH`) writes a stub-blob HTML so the build still succeeds. The About-pane "View notices" button shows install instructions in the stub case.
 
 CI provisions `cargo-about` via `taiki-e/install-action` (the Setup step), so the `licenses-html` gate and `build.rs` both run the real generator; the stub fallback covers only ad-hoc builds outside CI / the dev shell where `cargo-about` isn't on `$PATH`. Shipped distro builds invoke `just licenses-html` from the Nix dev shell where `cargo-about` is provisioned. See [licensing.md](licensing.md) for the packaging path.
 
@@ -87,7 +89,8 @@ nix shell nixpkgs#python3 --command python3 scripts/bench_build_baselines.py
 ## References
 
 - [`packaging/licensing/deny.toml`](../packaging/licensing/deny.toml) — `[graph]` / `[licenses]` / `[bans]` config with per-entry rationale.
-- [`crates/tisvlay-gui/build.rs`](../crates/tisvlay-gui/build.rs) — slint-build, env-var emitter, cargo-about wrapper with stub fallback.
+- [`crates/tisvlay-gui/build.rs`](../crates/tisvlay-gui/build.rs) — slint-build.
+- [`crates/tisvlay-gui-app/build.rs`](../crates/tisvlay-gui-app/build.rs) — env-var emitter, cargo-about wrapper with stub fallback.
 - [`justfile`](../justfile) — `test-ci` recipe (show-env entry point), `deny` recipe.
 - [Cargo cross-workspace-cache 2026 goal](https://rust-lang.github.io/rust-project-goals/2026/cargo-cross-workspace-cache.html) — upstream work that may obsolete the share-target workaround.
 - [taiki-e/cargo-llvm-cov `show-env`](https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#get-coverage-of-cc-code-linked-to-rust-libtest-binary) — the `--sh` invocation our pipeline depends on.

@@ -161,7 +161,7 @@ i18n-extract:
         --from-code=UTF-8 --package-name=tisvlay-gui \
         --copyright-holder='TisVlay contributors' \
         --output={{ gui_pot }} \
-        $(find crates/tisvlay-gui/src -name '*.rs')
+        $(find crates/tisvlay-gui-app/src -name '*.rs')
     # Slint pass: append @tr() strings to the same .pot via --join-existing.
     slint-tr-extractor --join-existing --default-domain=tisvlay-gui \
         --package-name=tisvlay-gui \

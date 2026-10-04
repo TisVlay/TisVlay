@@ -14,7 +14,7 @@ mod runtime_info;
 /// Embedded blob schema version. Bump on breaking field renames /
 /// removals so consumers branch on the version rather than guessing
 /// from field presence.
-pub const SCHEMA_VERSION: u32 = 1;
+pub(crate) const SCHEMA_VERSION: u32 = 1;
 
 const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -47,7 +47,7 @@ const VERGEN_IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
 /// COMPONENTS table. `name` is the catalogue id (`"tisvlay-daemon"`,
 /// `"tisvlay-session"`, `"tisvlay-tray"`); the renderer routes by it.
 #[derive(Debug, Clone, Default)]
-pub struct ComponentSnap {
+pub(crate) struct ComponentSnap {
     pub name: String,
     pub version: String,
     pub connected: bool,
@@ -58,14 +58,14 @@ pub struct ComponentSnap {
 /// rolls up (vendor for `by_vendor` count, connected for `connected`
 /// count). Matches a subset of `TvViewModel`.
 #[derive(Debug, Clone, Default)]
-pub struct TvSnap {
+pub(crate) struct TvSnap {
     pub vendor: String,
     pub connected: bool,
 }
 
 /// All inputs the renderer needs. Pure data; no Slint, no D-Bus.
 #[derive(Debug)]
-pub struct Inputs<'a> {
+pub(crate) struct Inputs<'a> {
     pub components: &'a [ComponentSnap],
     pub tvs: &'a [TvSnap],
     /// `true` when the GUI is dialed into the per-user dev daemon
@@ -79,7 +79,7 @@ pub struct Inputs<'a> {
 
 /// Render the diagnostic blob. Returns pretty-printed JSON; falls
 /// back to compact JSON if pretty-print fails (effectively never).
-pub fn build_blob(inputs: Inputs<'_>) -> String {
+pub(crate) fn build_blob(inputs: Inputs<'_>) -> String {
     let value = render(&inputs);
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
 }

@@ -13,8 +13,8 @@ When a user launches the GUI from any entry point:
 
 Implementation is split across:
 
-- [`crates/tisvlay-gui/src/dbus.rs`](../../crates/tisvlay-gui/src/dbus.rs) — `try_claim_and_serve` (bus claim + interface registration), `ApplicationService::raise` (Activate dispatch).
-- [`crates/tisvlay-gui/src/lib.rs`](../../crates/tisvlay-gui/src/lib.rs) — `BackendSelector::with_winit_window_attributes_hook` consumes the cold-spawn token at `AppWindow::new()` time.
+- [`crates/tisvlay-gui-app/src/dbus.rs`](../../crates/tisvlay-gui-app/src/dbus.rs) — `try_claim_and_serve` (bus claim + interface registration), `ApplicationService::raise` (Activate dispatch).
+- [`crates/tisvlay-gui-app/src/lib.rs`](../../crates/tisvlay-gui-app/src/lib.rs) — `BackendSelector::with_winit_window_attributes_hook` consumes the cold-spawn token at `AppWindow::new()` time.
 - [`crates/tisvlay-tray/src/main.rs`](../../crates/tisvlay-tray/src/main.rs) — `activate_gui` calls the GUI's `Application.Activate` with empty `platform_data` (the tray is surfaceless, see below).
 
 ## Register-before-claim ordering invariant

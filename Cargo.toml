@@ -17,6 +17,7 @@ members = [
     "crates/tisvlay-greeter",
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",
+    "crates/tisvlay-gui-app",
 ]
 
 # `default-members` = the shipping binary crates. Bare `cargo build` /
@@ -32,7 +33,7 @@ default-members = [
     "crates/tisvlay-session",
     "crates/tisvlay-greeter",
     "crates/tisvlay-tray",
-    "crates/tisvlay-gui",
+    "crates/tisvlay-gui-app",
 ]
 
 [workspace.package]
@@ -183,6 +184,14 @@ edidkit = "0.1"
 # System tray (StatusNotifierItem)
 ksni = "0.3"
 
+# Slint GUI toolkit, shared by tisvlay-gui (the compiled UI) and
+# tisvlay-gui-app (the code driving it). Wayland-only winit backend: the
+# session stack is Wayland-only, and dropping the X11 backend keeps x11rb
+# off the cold-build path. `unstable-winit-030` is a preliminary API, so
+# slint is pinned exactly — bump it together with slint-build and
+# i-slint-backend-testing, re-checking the winit-030 call sites.
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+
 # Freedesktop icon-theme lookup (name → file path), shared by the GUI
 # and tray via tisvlay-icons.
 freedesktop-icons = "0.4"
@@ -212,6 +221,7 @@ tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-wire = { path = "crates/tisvlay-wire" }
 tisvlay-world = { path = "crates/tisvlay-world" }
 tisvlay-icons = { path = "crates/tisvlay-icons" }
+tisvlay-gui = { path = "crates/tisvlay-gui" }
 tisvlay = { path = "crates/tisvlay" }
 # Binary crates exposed as libs for cross-crate integration tests.
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }
