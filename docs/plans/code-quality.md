@@ -245,11 +245,8 @@ Each tool joins the flake devShell in this PR, together with its first use: carg
 
 Clippy treats `#[test]` fns and `#[cfg(test)]` modules as tests, but not helper fns under `tests/`. So Q3's `unwrap_used` and `panic` would flag the 291 unwraps and 25 diagnostic panics in those helpers. Restructuring the tests fixes that and pays for itself.
 
-1. **Consolidate.** Each crate's `tests/*.rs` binaries become one `tests/it/main.rs` with modules. That's 25 binaries today: daemon 7, world 4, `tisvlay-test` 3, tray and gui-app 2 each, the rest 1.
-   - Shared helpers become ordinary modules, which retires world's `#![allow(dead_code)]` on `tests/support`.
-   - Measured before: a daemon edit relinks seven test binaries (2.4 s on 32 cores, linked in parallel), and those seven take 791 MB on disk. The PR measures the after.
-   - Test names gain a module prefix (`it::wire::…`), so update recipes and docs that filter by test binary name. nextest still runs every test in its own process, and the hermetic-test work already made plain `cargo test` safe with many tests in one binary.
-2. **One allow per crate.** Each `tests/it/main.rs` root carries a reasoned `#![allow(clippy::unwrap_used, clippy::panic, reason = "integration tests fail loudly by design")]`. That's about ten lines in all, deleted when rust-clippy#17520's `allow-in-tests` lands.
+1. **Consolidate — done.** The five crates with several suites (daemon 7, world 4, `tisvlay-test` 3, tray and gui-app 2 each) now each build one `tests/it/main.rs` binary with the suites as modules. The six single-suite crates keep their one `tests/<name>.rs`, which is already one binary. Measured: 46 → 33 test binaries; the daemon's test binaries 791 MB → about 125 MB; rebuild after a daemon edit 2.4 s → 1.8 s. World's support module needs no `dead_code` allow any more.
+2. **One allow per crate — moved to Q3,** which is where `unwrap_used` and `panic` enter the table. An allow for a lint that isn't enabled yet would be premature. With one root per crate, Q3 adds about eleven reasoned crate-root allows (one per crate with integration tests), deleted when rust-clippy#17520's `allow-in-tests` lands.
 3. **Flaky tests are quarantined, never retried.** The nextest `ci` profile's retries go from 1 to 0. A flaky test gets an issue and `#[ignore = "flaky: #N"]` until fixed. The policy goes into `docs/testing.md`.
 
 ### Q3 — Malformed input and panics

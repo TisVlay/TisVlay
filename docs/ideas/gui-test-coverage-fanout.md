@@ -18,7 +18,7 @@ Realistic target with a focused fan-out: workspace line coverage from today's 52
 
 ## Gating condition
 
-CI build time. Each Slint testing-backend test needs its own integration-test binary (Slint's once-per-process init constraint), so a fan-out adds N test binaries. Each binary independently links the full GUI dep graph (slint, ashpd, arboard, freedesktop-icons, etc.). The testing-infra sprint already pushed CI runtime up meaningfully; adding ~10 more test binaries would compound that — and the previous PR already hit a runner-OOM during link that we worked around by dropping `--all-features` from the coverage build.
+CI build time. The fan-out was first planned as one test binary per flow, each linking the full GUI dep graph (slint, ashpd, arboard, freedesktop-icons, etc.). That premise no longer holds: Slint's testing backend initializes once per process behind the fixture's `OnceLock` guard, so tests share a binary, and gui-app's suites already live in one (`tests/it/`, see [testing.md](../testing.md) "One integration-test binary per crate"). New flows add modules, not binaries. What remains is the runtime of booting `TestGui` per scenario — and the previous PR already hit a runner-OOM during link that we worked around by dropping `--all-features` from the coverage build.
 
 **Pick this up after CI build setup is optimized.** Candidate optimizations to land first:
 
@@ -43,7 +43,7 @@ Order from highest-coverage-gain to lowest:
 
 - **Expose `register_callbacks` via `__internals`** — tests need to invoke it on a synthesized AppWindow + mocked DaemonClient, mirroring the existing `__internals` re-export pattern (`SnapshotInputs`, `convert_snapshot`, etc.).
 - **Split `run()` into `bootstrap()` + `run_loop()`** — tests call `bootstrap` (build app, wire callbacks, return the AppWindow) without entering the blocking event loop. Production main calls both.
-- **Per-scenario `tests/gui_<flow>.rs`** — one test binary per flow due to Slint's once-per-process init constraint. The fixture's `OnceLock` guard handles double-init safely; the constraint is upstream.
+- **Per-scenario modules under `tests/it/`** — one module per flow in gui-app's single test binary. The fixture's `OnceLock` guard makes Slint's once-per-process init safe to share.
 
 ## What `accent` and `icon_theme` need
 

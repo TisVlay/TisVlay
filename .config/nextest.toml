@@ -14,8 +14,9 @@ success-output = "never"
 [profile.ci]
 # In CI, run all tests even if some fail — we want the full picture.
 fail-fast = false
-# Retry once to paper over transient network/D-Bus flakes in CI.
-retries = 1
+# No retries: a retry hides a flaky test. A flaky test is quarantined
+# instead (`#[ignore = "flaky: #N"]` plus an issue) — see docs/testing.md.
+retries = 0
 # Always show failing test output immediately.
 failure-output = "immediate-final"
 

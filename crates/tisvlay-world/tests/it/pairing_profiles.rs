@@ -1,7 +1,7 @@
 //! Slice B world tests: pairing lifecycle, the wake path, and system-event
 //! profile dispatch — all asserted on the wire-effects tap.
 
-mod support;
+use crate::support;
 
 use std::time::Duration;
 

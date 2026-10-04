@@ -1,6 +1,6 @@
 //! Carrier parking and connector-scoped DPMS dispatch.
 
-mod support;
+use crate::support;
 
 use std::time::Duration;
 
