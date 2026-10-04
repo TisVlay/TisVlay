@@ -163,10 +163,10 @@ fn group_name(gid: u32) -> Option<String> {
         let ret = unsafe {
             libc::getgrgid_r(
                 gid,
-                &mut grp,
-                buf.as_mut_ptr() as *mut libc::c_char,
+                &raw mut grp,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
                 buf.len(),
-                &mut result,
+                &raw mut result,
             )
         };
         if ret == 0 {
@@ -200,10 +200,10 @@ fn gid_of(name: &str) -> Option<u32> {
         let ret = unsafe {
             libc::getgrnam_r(
                 cname.as_ptr(),
-                &mut grp,
-                buf.as_mut_ptr() as *mut libc::c_char,
+                &raw mut grp,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
                 buf.len(),
-                &mut result,
+                &raw mut result,
             )
         };
         if ret == 0 {
@@ -232,10 +232,10 @@ fn current_user_name() -> Result<String> {
         let ret = unsafe {
             libc::getpwuid_r(
                 uid,
-                &mut pwd,
-                buf.as_mut_ptr() as *mut libc::c_char,
+                &raw mut pwd,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
                 buf.len(),
-                &mut result,
+                &raw mut result,
             )
         };
         if ret == 0 {

@@ -135,7 +135,7 @@ impl WebOsClient {
 
     /// Check if the connection is still active.
     pub fn is_connected(&self) -> bool {
-        self.conn.as_ref().is_some_and(|c| c.is_alive())
+        self.conn.as_ref().is_some_and(Connection::is_alive)
     }
 
     /// Get a reference to the connection, returning an error if closed.
@@ -243,14 +243,14 @@ impl WebOsClient {
     /// `LgVendorConfig.scheme` and skip the wss→ws fallback on
     /// subsequent reconnects.
     pub(crate) fn scheme(&self) -> Option<crate::config::WebOsScheme> {
-        self.conn.as_ref().map(|c| c.scheme())
+        self.conn.as_ref().map(Connection::scheme)
     }
 
     /// Generate the next request ID.
     fn next_id(&mut self) -> String {
         let id = self.request_id;
         self.request_id = self.request_id.wrapping_add(1);
-        format!("req_{}", id)
+        format!("req_{id}")
     }
 
     /// Send a command and get the response.
@@ -343,7 +343,7 @@ impl WebOsClient {
             // calls at routing time — each (category, keys) pair
             // gets its own pseudo-URI so the state forwarder can
             // tell them apart.
-            let synthetic_uri = format!("{}#picture/backlight", uri);
+            let synthetic_uri = format!("{uri}#picture/backlight");
             prepared.push((request.id.clone(), synthetic_uri, request));
         }
 
@@ -500,7 +500,7 @@ impl WebOsClient {
 
     /// Set the volume (0-100).
     pub async fn set_volume(&mut self, volume: u8) -> Result<()> {
-        let volume = volume.min(100) as i32;
+        let volume = i32::from(volume.min(100));
         self.command(audio::SET_VOLUME, json!({"volume": volume}))
             .await?;
         Ok(())
@@ -527,7 +527,7 @@ impl WebOsClient {
         let muted = response
             .payload
             .get("mute")
-            .and_then(|v| v.as_bool())
+            .and_then(Value::as_bool)
             .unwrap_or(false);
         Ok(muted)
     }
@@ -555,7 +555,7 @@ impl WebOsClient {
     /// workaround via createAlert instead (shared by bscpylgtv,
     /// LGTVCompanion, etc.).
     pub async fn set_backlight(&mut self, backlight: u8) -> Result<()> {
-        let backlight = backlight.min(100) as i32;
+        let backlight = i32::from(backlight.min(100));
 
         let luna_params = json!({
             "category": "picture",
@@ -612,7 +612,7 @@ impl WebOsClient {
             .payload
             .get("settings")
             .and_then(|s| s.get("backlight"))
-            .and_then(|v| v.as_i64())
+            .and_then(Value::as_i64)
             .unwrap_or(50);
 
         Ok(raw.clamp(0, 100) as u8)

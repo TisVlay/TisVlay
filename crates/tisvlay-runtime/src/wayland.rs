@@ -144,7 +144,7 @@ impl Dispatch<ExtIdleNotificationV1, u32> for WaylandState {
         match event {
             ext_idle_notification_v1::Event::Idled => state.forward(*data, IdleTransition::Idled),
             ext_idle_notification_v1::Event::Resumed => {
-                state.forward(*data, IdleTransition::Resumed)
+                state.forward(*data, IdleTransition::Resumed);
             }
             _ => {}
         }
@@ -156,6 +156,7 @@ impl Dispatch<ExtIdleNotificationV1, u32> for WaylandState {
 /// stop pipe (via `poll`) and exits. A consumer that needs to re-register
 /// notifications (e.g. the session when its idle timeout changes) drops the old
 /// handle and starts a fresh watch.
+#[must_use = "dropping the handle stops the idle watch"]
 #[derive(Debug)]
 pub struct WatchHandle {
     /// Write end of the stop pipe; its `Drop` (closing the fd) is the stop
@@ -183,7 +184,7 @@ pub fn start_idle_watch(
     tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> Result<WatchHandle, WaylandIdleError> {
     let conn = Connection::connect_to_env().map_err(|e| {
-        WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland: {}", e))
+        WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland: {e}"))
     })?;
     spawn_watch(conn, notifications, tx)
 }
@@ -202,7 +203,7 @@ pub fn start_idle_watch_on_socket(
     tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> Result<WatchHandle, WaylandIdleError> {
     let conn = Connection::from_socket(stream).map_err(|e| {
-        WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland socket: {}", e))
+        WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland socket: {e}"))
     })?;
     spawn_watch(conn, notifications, tx)
 }
@@ -217,7 +218,7 @@ fn spawn_watch(
     // Initialize the event queue and registry.
     let (globals, event_queue): (GlobalList, EventQueue<WaylandState>) = registry_queue_init(&conn)
         .map_err(|e| {
-            WaylandIdleError::ConnectionFailed(format!("Failed to initialize registry: {}", e))
+            WaylandIdleError::ConnectionFailed(format!("Failed to initialize registry: {e}"))
         })?;
 
     let global_list = globals.contents().clone_list();
@@ -248,7 +249,7 @@ fn spawn_watch(
     // (the handle dropped) wakes the watch's `poll` on the read end so it exits
     // cleanly, allowing a fresh watch to be registered.
     let (stop_read, stop_write) = rustix::pipe::pipe()
-        .map_err(|e| WaylandIdleError::ThreadSpawnFailed(format!("stop pipe: {}", e)))?;
+        .map_err(|e| WaylandIdleError::ThreadSpawnFailed(format!("stop pipe: {e}")))?;
 
     thread::Builder::new()
         .name("wayland-idle".to_string())
@@ -326,10 +327,9 @@ fn run_idle_loop(
             error!("Wayland flush error: {}", e);
             break;
         }
-        let guard = match event_queue.prepare_read() {
-            Some(guard) => guard,
-            // Events are already queued; loop back to dispatch them.
-            None => continue,
+        // `None`: events are already queued; loop back to dispatch them.
+        let Some(guard) = event_queue.prepare_read() else {
+            continue;
         };
         let (stop_ready, wl_ready) = {
             let wl_fd = guard.connection_fd();
@@ -387,9 +387,9 @@ pub enum WaylandIdleError {
 impl std::fmt::Display for WaylandIdleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ConnectionFailed(msg) => write!(f, "Wayland connection failed: {}", msg),
-            Self::ProtocolNotSupported(msg) => write!(f, "Protocol not supported: {}", msg),
-            Self::ThreadSpawnFailed(msg) => write!(f, "Thread spawn failed: {}", msg),
+            Self::ConnectionFailed(msg) => write!(f, "Wayland connection failed: {msg}"),
+            Self::ProtocolNotSupported(msg) => write!(f, "Protocol not supported: {msg}"),
+            Self::ThreadSpawnFailed(msg) => write!(f, "Thread spawn failed: {msg}"),
         }
     }
 }

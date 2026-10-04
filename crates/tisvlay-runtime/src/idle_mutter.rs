@@ -106,6 +106,7 @@ pub async fn start_idle_watch(
 /// Handle to a running Mutter idle watch. Dropping it aborts the watch
 /// task, which drops its private bus connection — Mutter removes the
 /// watches when the connection closes, so no explicit teardown is needed.
+#[must_use = "dropping the handle stops the Mutter idle watch"]
 #[derive(Debug)]
 pub struct Handle {
     task: tokio::task::JoinHandle<()>,
@@ -121,6 +122,7 @@ impl Drop for Handle {
 /// `Drop` (dropping it stops the watch); the inner handles are never read.
 /// Shared by the session adapter and the login greeter, which both select
 /// between the wayland (`ext-idle-notify`) and Mutter (D-Bus) transports.
+#[must_use = "dropping it stops the idle watch"]
 #[derive(Debug)]
 pub enum IdleWatch {
     Wayland(crate::wayland::WatchHandle),

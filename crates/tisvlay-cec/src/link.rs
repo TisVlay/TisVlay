@@ -455,6 +455,7 @@ mod fake {
         }
 
         /// Seed the scripted TV identity the connection/discovery queries.
+        #[must_use]
         pub fn with_identity(
             mut self,
             osd_name: &str,

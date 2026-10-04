@@ -85,21 +85,16 @@ pub(crate) fn wire(
 
     // Set the pane and restore its selection. The sole writer of
     // `active-pane`; never touches history (callers own that).
-    let apply: ApplyFn = {
-        let daemon = daemon.clone();
-        let session = session.clone();
-        let editor = editor.clone();
-        Rc::new(move |app: &AppWindow, pane: Pane, sel: &NavSel| {
-            app.set_active_pane(pane);
-            match sel {
-                NavSel::Tv(uuid) => app.set_selected_tv_index(resolve_tv_index(app, uuid)),
-                NavSel::Profile(kind, uuid) if !uuid.is_empty() => {
-                    select_profile_in_ui(app, &daemon, &session, &editor, *kind, uuid.clone());
-                }
-                _ => {}
+    let apply: ApplyFn = Rc::new(move |app: &AppWindow, pane: Pane, sel: &NavSel| {
+        app.set_active_pane(pane);
+        match sel {
+            NavSel::Tv(uuid) => app.set_selected_tv_index(resolve_tv_index(app, uuid)),
+            NavSel::Profile(kind, uuid) if !uuid.is_empty() => {
+                select_profile_in_ui(app, &daemon, &session, &editor, *kind, uuid.clone());
             }
-        })
-    };
+            _ => {}
+        }
+    });
 
     // Record a new destination: snapshot the outgoing pane's live
     // selection, drop any forward history, push, apply.
@@ -131,7 +126,6 @@ pub(crate) fn wire(
     // Move one step back (`forward == false`) or forward through the
     // history, capturing the page being left so its selection is current.
     let step: StepFn = {
-        let history = history.clone();
         let apply = apply.clone();
         Rc::new(move |app: &AppWindow, forward: bool| {
             let dest = {

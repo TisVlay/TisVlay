@@ -72,10 +72,10 @@ pub enum Category {
 
 impl NotificationSettings {
     fn bits(self) -> u8 {
-        (self.tv_connection as u8)
-            | (self.tv_pairing as u8) << 1
-            | (self.tv_wake as u8) << 2
-            | (self.daemon_offline as u8) << 3
+        u8::from(self.tv_connection)
+            | u8::from(self.tv_pairing) << 1
+            | u8::from(self.tv_wake) << 2
+            | u8::from(self.daemon_offline) << 3
     }
 
     /// Merge a partial wire update (`null`/absent fields keep current).

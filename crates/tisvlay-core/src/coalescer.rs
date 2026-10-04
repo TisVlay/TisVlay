@@ -95,7 +95,7 @@ where
                     (inner.apply)(key_inner.clone(), latest).await;
                 }
             });
-            map.insert(key.clone(), tx.clone());
+            map.insert(key, tx.clone());
             tx
         };
         drop(map);

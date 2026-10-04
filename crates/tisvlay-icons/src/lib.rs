@@ -60,7 +60,7 @@ fn find(names: &[&str], prefer: Variant) -> Option<(String, PathBuf)> {
     type Memo = Mutex<HashMap<(Vec<String>, bool), Option<(String, PathBuf)>>>;
     static MEMO: OnceLock<Memo> = OnceLock::new();
     let key = (
-        names.iter().map(|s| s.to_string()).collect(),
+        names.iter().map(ToString::to_string).collect(),
         matches!(prefer, Variant::Symbolic),
     );
     let memo = MEMO.get_or_init(Memo::default);

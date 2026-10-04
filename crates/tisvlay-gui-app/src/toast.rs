@@ -27,12 +27,9 @@ static TOAST_GEN: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn show_toast(app_weak: slint::Weak<AppWindow>, message: &str) {
     let generation = TOAST_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let message = message.to_string();
-    on_ui(&app_weak, {
-        let message = message.clone();
-        move |app| {
-            app.global::<Toast>()
-                .set_message(SharedString::from(message));
-        }
+    on_ui(&app_weak, move |app| {
+        app.global::<Toast>()
+            .set_message(SharedString::from(message));
     });
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(TOAST_DURATION_MS)).await;

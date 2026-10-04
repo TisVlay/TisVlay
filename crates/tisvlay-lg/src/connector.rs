@@ -29,7 +29,7 @@ fn parse_config(vendor_config: &toml::Value) -> Result<LgVendorConfig> {
     vendor_config
         .clone()
         .try_into()
-        .map_err(|e| Error::backend("lg", format!("Invalid vendor config: {}", e)))
+        .map_err(|e| Error::backend("lg", format!("Invalid vendor config: {e}")))
 }
 
 /// Factory for creating LG WebOS connections.
@@ -144,7 +144,7 @@ impl TvConnector for LgConnector {
 
     fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
         let config = parse_config(vendor_config)?;
-        let ip = config.ip.clone();
+        let ip = config.ip;
 
         let (session, mut command_rx, state_tx) = PairingSession::create();
 
@@ -234,7 +234,7 @@ impl TvConnector for LgConnector {
         })?;
         config.scheme = scheme.parse()?;
         toml::Value::try_from(&config)
-            .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {}", e)))
+            .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {e}")))
     }
 
     fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {

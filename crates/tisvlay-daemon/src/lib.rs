@@ -114,6 +114,7 @@ pub async fn open(socket: &Path, site: &str) -> Result<Daemon> {
 }
 
 /// The full daemon stack: session + world reactor + zenoh bridge.
+#[must_use = "dropping the stack withdraws the daemon's liveliness token, so clients see it as gone"]
 #[derive(Debug)]
 pub struct Stack {
     pub daemon: Daemon,
@@ -185,8 +186,8 @@ async fn await_startup_ready(state: Arc<StartupReadiness>) {
         // or the fallback deadline.
         let wake_at = if settled { deadline_at } else { settle_at };
         tokio::select! {
-            _ = state.notify.notified() => {}
-            _ = tokio::time::sleep_until(wake_at) => {
+            () = state.notify.notified() => {}
+            () = tokio::time::sleep_until(wake_at) => {
                 if settled {
                     return; // fallback deadline
                 }
@@ -233,16 +234,19 @@ impl VendorReg {
         }
     }
 
+    #[must_use]
     pub fn with_discovery(mut self, discovery: Arc<dyn DynDiscovery>) -> Self {
         self.discovery = Some(discovery);
         self
     }
 
+    #[must_use]
     pub fn with_retry(mut self, retry: tisvlay_core::RetryConfig) -> Self {
         self.retry = Some(retry);
         self
     }
 
+    #[must_use]
     pub fn with_capabilities(mut self, capabilities: Vec<String>) -> Self {
         self.capabilities = capabilities;
         self

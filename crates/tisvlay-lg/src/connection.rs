@@ -161,7 +161,7 @@ impl TvConnection for LgConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.client.as_ref().is_some_and(|c| c.is_connected())
+        self.client.as_ref().is_some_and(WebOsClient::is_connected)
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
@@ -321,7 +321,7 @@ impl TvConnection for LgConnection {
                     .id
                     .as_ref()
                     .and_then(|id| id_to_uri.get(id))
-                    .map(|s| s.as_str());
+                    .map(String::as_str);
 
                 if let Some(uri) = uri {
                     let changed =
@@ -388,27 +388,27 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
             return true;
         }
     } else if uri.contains("getVolume") {
-        if let Some(vol) = payload.get("volume").and_then(|v| v.as_i64()) {
+        if let Some(vol) = payload.get("volume").and_then(Value::as_i64) {
             state.volume = Some(vol.clamp(0, 100) as u8);
             // Some firmware includes mute in volume updates.
-            if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+            if let Some(muted) = payload.get("mute").and_then(Value::as_bool) {
                 state.muted = Some(muted);
             }
             return true;
         }
         // Also check nested volumeStatus format (subscription updates use this).
         if let Some(status) = payload.get("volumeStatus") {
-            if let Some(vol) = status.get("volume").and_then(|v| v.as_i64()) {
+            if let Some(vol) = status.get("volume").and_then(Value::as_i64) {
                 state.volume = Some(vol.clamp(0, 100) as u8);
             }
             // The field is "muteStatus" (bool) in volumeStatus, not "muted".
-            if let Some(muted) = status.get("muteStatus").and_then(|v| v.as_bool()) {
+            if let Some(muted) = status.get("muteStatus").and_then(Value::as_bool) {
                 state.muted = Some(muted);
             }
             return true;
         }
     } else if uri.contains("getMute") {
-        if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+        if let Some(muted) = payload.get("mute").and_then(Value::as_bool) {
             state.muted = Some(muted);
             return true;
         }
@@ -420,10 +420,7 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
                 .filter_map(|d| {
                     let id = d.get("id")?.as_str()?;
                     let label = d.get("label")?.as_str()?;
-                    let connected = d
-                        .get("connected")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
+                    let connected = d.get("connected").and_then(Value::as_bool).unwrap_or(false);
                     // Build reverse mapping: app ID → physical input ID.
                     // LG reports inputs as apps (e.g., "com.webos.app.hdmi1")
                     // in getForegroundAppInfo, but uses physical IDs (e.g.,
@@ -462,7 +459,7 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
         if let Some(bl) = payload
             .get("settings")
             .and_then(|s| s.get("backlight"))
-            .and_then(|v| v.as_i64())
+            .and_then(Value::as_i64)
         {
             state.backlight = Some(bl.clamp(0, 100) as u8);
             return true;

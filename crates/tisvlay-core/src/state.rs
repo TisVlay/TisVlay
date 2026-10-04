@@ -308,18 +308,21 @@ impl DiscoveredTv {
     }
 
     /// Insert a `key → value` entry into [`Self::vendor_data`].
+    #[must_use]
     pub fn with_vendor_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vendor_data.insert(key.into(), value.into());
         self
     }
 
     /// Attach a hardware identity to this discovery entry.
+    #[must_use]
     pub fn with_hardware_id(mut self, hardware_id: HardwareId) -> Self {
         self.hardware_id = Some(hardware_id);
         self
     }
 
     /// Set the location URL.
+    #[must_use]
     pub fn with_location(mut self, location: impl Into<String>) -> Self {
         self.location = location.into();
         self

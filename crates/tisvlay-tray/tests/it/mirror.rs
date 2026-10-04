@@ -66,7 +66,7 @@ async fn converge(
             sample = user_sub.recv_async() => {
                 mirror.apply_user_sample(site, &sample.expect("user sub closed"));
             }
-            _ = tokio::time::sleep_until(deadline) => {
+            () = tokio::time::sleep_until(deadline) => {
                 panic!("mirror never converged; state: {mirror:#?}");
             }
         }

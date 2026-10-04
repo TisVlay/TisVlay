@@ -248,6 +248,7 @@ impl SharedSearcher {
 
     /// Send bursts to `destination` instead of the multicast group — a
     /// unicast search of one host, or a test's loopback stand-in.
+    #[must_use]
     pub fn with_destination(mut self, destination: SocketAddr) -> Self {
         self.destination = destination;
         self

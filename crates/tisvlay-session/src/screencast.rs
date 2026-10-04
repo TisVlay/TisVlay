@@ -224,7 +224,7 @@ enum FfiError {
 
 impl From<std::io::Error> for FfiError {
     fn from(e: std::io::Error) -> Self {
-        FfiError::Connect(e)
+        Self::Connect(e)
     }
 }
 
@@ -348,7 +348,7 @@ mod ffi {
         // A broken pipe (server gone) flips `done` so the supervisor can
         // reconnect.
         {
-            let done = flags.done.clone();
+            let done = &flags.done;
             core.add_listener(pipewire_native::core::CoreEvents::new(
                 None,
                 None,

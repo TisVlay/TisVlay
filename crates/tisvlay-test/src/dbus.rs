@@ -77,7 +77,7 @@ impl PrivateBus {
     /// Panics if `dbus-daemon` is not on `PATH` or fails to start. Tests
     /// that need this harness are expected to run in an environment where
     /// `dbus-daemon` is available (nix dev shell, CI image, etc.).
-    pub fn shared() -> &'static PrivateBus {
+    pub fn shared() -> &'static Self {
         static BUS: LazyLock<PrivateBus> = LazyLock::new(PrivateBus::isolated);
         &BUS
     }
@@ -96,8 +96,8 @@ impl PrivateBus {
         clippy::panic,
         reason = "test infrastructure: a missing or failing dbus-daemon fails the test with a clear message"
     )]
-    pub fn isolated() -> PrivateBus {
-        match PrivateBus::spawn() {
+    pub fn isolated() -> Self {
+        match Self::spawn() {
             Ok(bus) => bus,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => panic!(
                 "dbus-daemon not found on PATH: the tisvlay-test D-Bus fakes need it \
@@ -124,7 +124,7 @@ impl PrivateBus {
     }
 
     #[instrument(skip_all)]
-    fn spawn() -> std::io::Result<PrivateBus> {
+    fn spawn() -> std::io::Result<Self> {
         let workdir = crate::tmp::socket_tempdir();
 
         // Minimal session bus config pinned to a socket inside our tempdir.
@@ -223,7 +223,7 @@ impl PrivateBus {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        Ok(PrivateBus {
+        Ok(Self {
             address,
             _workdir: workdir,
             child: Mutex::new(child),

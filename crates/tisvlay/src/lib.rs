@@ -1435,7 +1435,7 @@ mod mirror_row {
                     .system_profile
                     .map(|p| p.to_string())
                     .unwrap_or_default(),
-                primary_input: meta.primary_input.clone().unwrap_or_default(),
+                primary_input: meta.primary_input.unwrap_or_default(),
                 hardware_id: HardwareId {
                     manufacturer: identity.make.clone(),
                     model: identity.model.clone(),

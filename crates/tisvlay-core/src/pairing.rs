@@ -136,6 +136,7 @@ impl Credentials {
     }
 
     /// Insert a key/value into [`Self::extra`] (builder shorthand).
+    #[must_use]
     pub fn with_extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra.insert(key.into(), value.into());
         self

@@ -52,6 +52,7 @@ Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` 
 6. **Generated code** (Slint's `include_modules!` in `tisvlay-gui`) sits in a module that allows `warnings` plus the clippy groups, so no lint added later has to revisit it. Deny-level lints such as `unsafe_code` still apply.
 7. **`unsafe` is confined.** `unsafe_code` is `deny`, not `forbid`, so the few files that need FFI can opt out with a reasoned file-level `#![expect(unsafe_code)]`. Every block gets a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and does one unsafe operation (`multiple_unsafe_ops_per_block`).
 8. **Test code may unwrap, panic, index and print.** `clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
+9. **A tool that joins `just check`** comes from the flake devShell (built there from source when nixpkgs lags, as tombi is) and gets a prek hook whose id matches its recipe name, with a file filter where one is cheap.
 
 ### Parsers of outside input
 
@@ -70,7 +71,21 @@ Recorded so nobody re-scouts:
 - **`allow_attributes`:** it flags reasoned `#[allow]`s too, which rule 3 relies on.
 - **`redundant_pub_crate`:** it contradicts the `unreachable_pub` lint already in the table.
 - **`missing_docs_in_private_items`.**
+- **Pedantic lints weighed and passed over**, so the yearly probe needn't re-weigh them: `needless_pass_by_value` (it fights `move`-into-task signatures), `missing_const_for_fn` (its suggestions can be wrong) and `must_use_candidate` (very noisy; `#[must_use]` goes on by hand, see CLAUDE.md's code conventions).
+- **A `disallowed-methods` list,** until a real incident motivates an entry. One for `process::exit` would duplicate `clippy::exit`.
 - **Nightly-only rustfmt options, and a nightly toolchain:** `-Zthreads` measured at 3–5 s off a cold build and nothing off an incremental one.
+- **Tools:** Miri, Kani, loom and cargo-geiger (our `unsafe` is FFI that Miri can't execute); cargo-vet and cargo-crev (their review burden doesn't fit one maintainer); cargo-udeps (needs nightly); rust-code-analysis (stale); `unused_crate_dependencies` (fires once per compile target).
+- **Embark's shared lint list as a template:** it's archived.
+
+### Lessons (the October 2026 code-quality pass)
+
+The policy above came from a survey of how well-regarded Rust projects configure lints, measured against this workspace before anything was adopted. The plan and its numbers live in git history.
+
+- **What the ecosystem does.** None of Bevy, ruff/uv, rust-analyzer, rustls, wasmtime, cargo, Deno, Zed, tokio or the Linux kernel enables `restriction`, `nursery` or `clippy::cargo` as a group. Only Astral enables `pedantic`, with an allow list. The lints that recur are the ones adopted here: `print_*`, `dbg_macro`/`todo`, reasoned allows, documented `unsafe`, `unreachable_pub`, `redundant_clone`, `manual_let_else`, `use_self`. None of them uses `unwrap_used`, `indexing_slicing`, `arithmetic_side_effects` or `as_conversions` workspace-wide.
+- **Measure before adopting.** A proposal of pedantic and nursery plus a dozen restriction lints, all at deny, measured in the thousands of sites in our code. Most were doc-style lints or contradicted rules already in the table. Slint's generated module added far more, from the restriction lints and rustc's allow-by-default ones: its generator already allows the clippy groups.
+- **Converting allows to `#[expect]` is a census.** About a quarter of the bare allows came back unfulfilled: stale, and deleted.
+- **A warning-only gate drifts.** With duplicate versions at `warn`, nearly twenty accumulated unnoticed. A gate either blocks or it gets ignored.
+- **Tools find real things fast.** cargo-shear found a dozen unused or misplaced dependencies, including a whole snapshot-testing layer the docs described and nothing used. The first advisory run caught an unsound `gettext-rs` that an over-eager dedup had just pulled in. The parser lint profile found no live bug, but turned a couple dozen "safe because of a check elsewhere" sites into code that can't panic.
 
 ## Profile knobs
 
