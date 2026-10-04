@@ -2,7 +2,7 @@
 //! backend's test handle, assert on the wire-effects tap. The wire IS the
 //! observable contract — no reaching into world internals.
 
-mod support;
+use crate::support;
 
 use std::time::{Duration, Instant};
 

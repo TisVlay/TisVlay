@@ -244,7 +244,7 @@ See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
 
 - `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters.
 - `tisvlay-mock` — fake vendor backend (implements `tisvlay-core` traits), always registered in the daemon.
-- Wire-level integration tests live in each binary crate's `tests/` (daemon: wire/profiles/cec/greeter/logind/liveliness; session; tray mirror + settings; SDK client) — they boot real daemon/session stacks on temp sockets, no fixture crate needed.
+- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; tray: mirror + settings), single-suite crates as one `tests/<name>.rs` (session, SDK client) — they boot real daemon/session stacks on temp sockets, no fixture crate needed.
 
 ```bash
 just test                   # cargo nextest run + doc tests

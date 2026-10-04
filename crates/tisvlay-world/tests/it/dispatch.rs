@@ -1,7 +1,7 @@
 //! Reliable-dispatch tests: verify-retry-escalate for screen actions, and
 //! the CEC-shaped transports (standby-reachable, screen-via-power).
 
-mod support;
+use crate::support;
 
 use std::time::{Duration, Instant};
 

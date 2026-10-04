@@ -27,9 +27,26 @@ Configuration: `.config/nextest.toml` with two profiles:
 | Profile | Retries | Slow warning | Output |
 |---------|---------|--------------|--------|
 | `default` | 0 | 60s | terminal |
-| `ci` | 1 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
+| `ci` | 0 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
 
 **Process-per-test isolation** is nextest's default and the canonical runner, since wire tests each boot a full daemon (or daemon + session service) stack — a zenoh runtime on a per-test temp Unix socket, netlink sockets, and for the consumed-D-Bus adapters a private `dbus-daemon`. The suite doesn't *depend* on it, though: plain `cargo test --workspace --all-features` passes too, with each binary's tests concurrent in one process. That holds because every rig binds its own sockets, and tests that own well-known D-Bus names take a [`PrivateBus::isolated`](#privatebus) bus of their own. Keep it that way: a test that only passes alone in its process is relying on an accident.
+
+### One integration-test binary per crate
+
+Each crate compiles its integration tests into a single binary. Where a crate has several suites, they are modules of `tests/it/main.rs` (`tests/it/wire.rs`, `tests/it/profiles.rs`, …). A crate with one suite keeps a single `tests/<name>.rs`.
+
+- **Why:** every `tests/*.rs` file is a separate crate, and each one compiles and links the whole stack again. Folding the daemon's seven suites into one binary took its test binaries from 791 MB to about 125 MB, and the rebuild after a daemon edit from 2.4 s to 1.8 s. Across the workspace, 46 test binaries became 33.
+- **Shared helpers are plain modules** (`tests/it/support/mod.rs`, declared once in `main.rs` and imported with `use crate::support;`). Dead code in them is evaluated once, so they need no `dead_code` allow.
+- **Filtering:** a multi-suite crate's binary is named `it`; a single-suite crate's takes its file's name (`tisvlay-session::session`). Select one suite with a nextest filter such as `cargo nextest run --workspace --all-features -E 'binary_id(tisvlay-daemon::it) & test(/^wire::/)'`. Use `--workspace`, not `-p`: tokio's `test-util` only unifies across the workspace build.
+- **Add a new suite** as a module beside the others, not as a new `tests/*.rs` file.
+
+### Flaky tests are quarantined, never retried
+
+Both nextest profiles run with `retries = 0`; a retry hides a flaky test and lets it rot. When a test turns out to be flaky:
+
+1. File an issue with the failure output.
+2. Mark the test `#[ignore = "flaky: #N"]`, so the reason and the tracking issue sit on the test.
+3. Fix it or delete it. A quarantined test has no permanent home.
 
 ### Test execution pipeline
 
@@ -53,7 +70,7 @@ flowchart LR
 | Type | Location | Tool | When |
 |------|----------|------|------|
 | Unit | `#[cfg(test)] mod tests` in source | built-in | every change |
-| Integration | `crates/*/tests/*.rs` | built-in | every change |
+| Integration | `crates/*/tests/` (one binary per crate; `tests/it/` when there are several suites) | built-in | every change |
 | Doc | `///` examples in `pub` items | `cargo test --doc` | every change |
 | Parameterized | unit/integration | `rstest` | every change |
 | Property | unit/integration | `proptest` | every change |
@@ -266,7 +283,7 @@ Each fake sits in a different *direction* relative to the code under test. The t
 
 ```mermaid
 flowchart TD
-    W["<b>crates/*/tests/*.rs</b><br/>wire tests: real zenoh clients<br/>over a per-test Unix socket"]
+    W["<b>crates/*/tests/</b><br/>wire tests: real zenoh clients<br/>over a per-test Unix socket"]
     D["<b>tisvlay-daemon / tisvlay-session</b><br/>the real serve() stack under test"]
     M["<b>tisvlay-mock</b><br/>fake TV (peer side)<br/><i>MockConnector · MockHandle</i>"]
     T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · FakeScreenSaver</i>"]
@@ -355,7 +372,7 @@ flowchart TD
     BUS --> WORLD
 ```
 
-The shared setup helper in `tisvlay-daemon/tests/wire.rs` is the template:
+The shared setup helper in `tisvlay-daemon/tests/it/wire.rs` is the template:
 
 ```rust
 async fn wire() -> Wire {
@@ -382,16 +399,17 @@ async fn wire() -> Wire {
 
 ### Test inventory
 
-- `tisvlay-world/tests/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `pairing_profiles.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
-- `tisvlay-daemon/tests/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
-- `tisvlay-daemon/tests/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
-- `tisvlay-daemon/tests/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
-- `tisvlay-daemon/tests/greeter.rs` — the greeter contract (timeout key + idle puts driving system-profile actions) and the `automate_when` gate.
-- `tisvlay-daemon/tests/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
-- `tisvlay-daemon/tests/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
+- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `pairing_profiles.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
+- `tisvlay-daemon/tests/it/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
+- `tisvlay-daemon/tests/it/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
+- `tisvlay-daemon/tests/it/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
+- `tisvlay-daemon/tests/it/greeter.rs` — the greeter contract (timeout key + idle puts driving system-profile actions) and the `automate_when` gate.
+- `tisvlay-daemon/tests/it/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
+- `tisvlay-daemon/tests/it/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
+- `tisvlay-daemon/tests/it/access.rs` — socket-permission flips against a live daemon: granting or revoking access mid-run, the kernel-level path a seat ACL change takes.
 - `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the ScreenSaver adapter (via `FakeScreenSaver`), user-store persistence, and the idle-timeout watch.
-- `tisvlay-tray/tests/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
-- `tisvlay-tray/tests/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
+- `tisvlay-tray/tests/it/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
+- `tisvlay-tray/tests/it/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
 - `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, and connect-before-daemon resilience.
 
 ### Zenoh testing gotchas
@@ -433,7 +451,7 @@ The repo sets this once in `.cargo/config.toml [env]`, which Cargo reads from th
 - `accessible-label` (translated via `@tr(...)`) — the screen-reader announcement; defaults to the visible text on button primitives. Tests query via `ElementHandle::find_by_accessible_label`.
 - `accessible-id` (literal, untranslated, `<pane>-<element>`) — the stable test selector. Tests query via `ElementQuery::match_predicate(|e| e.accessible_id() == ...)` until upstream adds a direct finder ([slint-ui/slint#9940](https://github.com/slint-ui/slint/pull/9940) shipped the property; finder remains TBD).
 
-Slint propagates accessibility properties to descendants, so an `accessible-id` query returns one hit per descendant of the target widget — see `tisvlay-gui/tests/about_pane.rs` for `find_by_accessible_id` (returns the first match) and `count_by_id` (renders-or-not check).
+Slint propagates accessibility properties to descendants, so an `accessible-id` query returns one hit per descendant of the target widget — see `tisvlay-gui-app/tests/it/about_pane.rs` for `find_by_accessible_id` (returns the first match) and `count_by_id` (renders-or-not check).
 
 ### What we deliberately don't do
 
@@ -491,7 +509,7 @@ fn publish_tv_emits_instrumented_debug_event() {
 
 ## Deterministic time
 
-`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test/tests/clock_spike.rs`).
+`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test/tests/it/clock_spike.rs`).
 
 Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
