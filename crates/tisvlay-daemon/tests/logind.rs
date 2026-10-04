@@ -22,7 +22,7 @@ async fn logind_sleep_resume_drive_profile_actions() {
         .await
         .expect("fake logind");
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("l.sock");
     let (connector, discovery, _handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(

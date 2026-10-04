@@ -402,18 +402,20 @@ mod tests {
     /// in-sync one as a no-op.
     #[test]
     fn kernel_accepts_and_round_trips_the_blob() {
-        let dir = std::env::temp_dir().join(format!("tisvlay-acl-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("acl-target");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acl-target");
         std::fs::write(&path, b"").unwrap();
         let uids = BTreeSet::from([12, 34]);
         let value = blob(0o660, Some(7), &uids);
         match setxattr(&path, &value) {
             Ok(()) => {}
-            // The Nix build sandbox seccomp-filters the setxattr family
-            // (ENOTSUP) to keep xattrs out of store paths — nothing to
-            // verify there; the layout stays covered by the blob tests.
-            Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => return,
+            // The environment refuses xattrs outright — nothing to verify
+            // there; the layout stays covered by the blob tests. The Nix
+            // build sandbox seccomp-filters the setxattr family (ENOTSUP)
+            // to keep xattrs out of store paths; a container seccomp
+            // policy may answer EPERM instead (we own the file, so EPERM
+            // is the environment, not the blob).
+            Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::EPERM)) => return,
             Err(e) => panic!("kernel rejected the ACL blob: {e}"),
         }
         assert_eq!(getxattr(&path).unwrap().as_deref(), Some(value.as_slice()));
@@ -426,6 +428,5 @@ mod tests {
         assert!(clear(&path));
         assert!(apply(&path, Some(7), &uids));
         assert!(!apply(&path, Some(7), &uids));
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

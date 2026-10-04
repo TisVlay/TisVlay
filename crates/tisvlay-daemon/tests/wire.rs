@@ -28,7 +28,7 @@ struct Wire {
 }
 
 async fn wire() -> Wire {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("w.sock");
     let (connector, discovery, handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(
@@ -264,7 +264,7 @@ async fn volume_rpc_lands_as_state_publish() {
 /// path) hydrates the same TV for a late client.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_preserves_tvs_via_store() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let store = dir.path().join("daemon.toml");
     let socket1 = dir.path().join("a.sock");
     let (connector, discovery, _handle) = new_test_parts();
@@ -722,7 +722,7 @@ async fn dpms_transitions_drive_profile_actions_end_to_end() {
     })
     .await;
 
-    let sysfs = tempfile::tempdir().unwrap();
+    let sysfs = tisvlay_test::socket_tempdir();
     let connector_dir = sysfs.path().join("card9-HDMI-A-9");
     std::fs::create_dir_all(&connector_dir).unwrap();
     std::fs::write(connector_dir.join("status"), "connected\n").unwrap();

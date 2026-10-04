@@ -8,7 +8,7 @@ use tisvlay_tray::notify::{Notifier, load_settings, serve_settings};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn settings_round_trip_and_persistence() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let config_path = dir.path().join("tray.toml");
@@ -102,7 +102,7 @@ async fn settings_round_trip_and_persistence() {
 /// availabilities must flip without recreating the clients.
 #[tokio::test(flavor = "multi_thread")]
 async fn clients_before_stack_see_liveliness_when_it_appears() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let config_path = dir.path().join("tray.toml");

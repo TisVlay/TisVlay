@@ -43,7 +43,7 @@ async fn rig() -> Rig {
 }
 
 async fn rig_with_store(store: Option<&Path>) -> Rig {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let (connector, discovery, handle) = new_test_parts();
@@ -240,7 +240,7 @@ async fn drive_until(rig: &Rig, sub: &Sub, event: SessionEvent, id: Uuid, want: 
 async fn gateway_isolates_the_user_subtree() {
     let rig = rig().await;
     // A second session service for another "user", same site.
-    let dir2 = tempfile::tempdir().unwrap();
+    let dir2 = tisvlay_test::socket_tempdir();
     let user2_socket = dir2.path().join("user2.sock");
     let _stack2 = tisvlay_session::serve(SessionOptions {
         system_socket: rig.system_socket.clone(),
@@ -678,7 +678,7 @@ async fn startup_seed_reads_a_preexisting_lock_synchronously() {
 /// idle-timeout watch tracks the resolved minimum.
 #[tokio::test(flavor = "multi_thread")]
 async fn user_store_and_idle_watch_round_trip() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let store = dir.path().join("session.toml");
     let rig = rig_with_store(Some(&store)).await;
     let tv = add_tv(&rig, "Den", "mock://u-store").await;
@@ -1217,7 +1217,7 @@ async fn armed_converges_when_tv_hydrates_after_arming() {
 /// the system-socket mirror still ends on the full armed set.
 #[tokio::test(flavor = "multi_thread")]
 async fn armed_survives_a_system_link_outage_at_arm_time() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
 

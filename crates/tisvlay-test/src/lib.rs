@@ -34,8 +34,10 @@
 
 pub mod dbus;
 pub mod fake_logind;
+pub mod tmp;
 
 pub use dbus::PrivateBus;
+pub use tmp::socket_tempdir;
 
 // Re-export tracing test utilities so consumers don't need to track
 // these crates in their own Cargo.toml.

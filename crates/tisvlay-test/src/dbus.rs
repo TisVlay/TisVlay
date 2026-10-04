@@ -87,9 +87,7 @@ impl PrivateBus {
 
     #[instrument(skip_all)]
     fn spawn() -> std::io::Result<PrivateBus> {
-        let workdir = tempfile::Builder::new()
-            .prefix("tisvlay-test-bus-")
-            .tempdir()?;
+        let workdir = crate::tmp::socket_tempdir();
 
         // Minimal session bus config pinned to a socket inside our tempdir.
         // No services are activated; tests register their own objects on

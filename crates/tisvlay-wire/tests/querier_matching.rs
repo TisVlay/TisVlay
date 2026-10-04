@@ -40,7 +40,7 @@ async fn await_matching(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn matching_flips_when_the_peer_hub_serves_and_gets_then_succeed() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("probe.sock");
 
     // Consumer first: connect-only resilient peer, no hub exists yet
@@ -99,7 +99,7 @@ async fn matching_flips_when_the_peer_hub_serves_and_gets_then_succeed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn matching_propagates_through_a_router_to_a_client_link_server() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("probe-router.sock");
 
     // Hub: router (the session service's user-socket shape).

@@ -27,6 +27,7 @@ zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
 
 [dev-dependencies]
+tisvlay-test = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
 tisvlay-mock = { workspace = true }

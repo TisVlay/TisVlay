@@ -30,7 +30,7 @@ struct Wire {
 }
 
 async fn wire() -> Wire {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("p.sock");
     let (connector, discovery, handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(
@@ -640,7 +640,7 @@ async fn vendor_catalog_and_schema_queryables() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn store_round_trips_profiles_and_assignment() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tisvlay_test::socket_tempdir();
     let store = dir.path().join("daemon.toml");
     let socket1: PathBuf = dir.path().join("a.sock");
     let (connector, discovery, _handle) = new_test_parts();

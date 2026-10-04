@@ -9,7 +9,7 @@ use anyhow::anyhow;
 // test touching a zenoh session needs the multi_thread flavor.
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_liveliness_token_visible_to_client() -> anyhow::Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("m0.sock");
     let daemon = tisvlay_daemon::open(&socket, "spiketest").await?;
 

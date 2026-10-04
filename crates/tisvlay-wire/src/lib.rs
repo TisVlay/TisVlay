@@ -1479,7 +1479,7 @@ pub mod bootstrap {
         /// missing packaged path leaves the dev default in place.
         #[test]
         fn stale_dev_socket_falls_through_to_the_packaged_path() {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tisvlay_test::socket_tempdir();
             let dev = dir.path().join("zenoh.sock");
             let packaged = dir.path().join("packaged.sock");
 
