@@ -94,18 +94,18 @@ impl NotificationSettings {
 }
 
 /// One queued toast.
-#[derive(Debug)]
-struct Emit {
-    summary: String,
-    body: String,
-    icon: &'static str,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub summary: String,
+    pub body: String,
+    pub icon: &'static str,
 }
 
 /// Lock-free category gate + single-worker emit queue.
 #[derive(Clone)]
 pub struct Notifier {
     enabled: Arc<AtomicU8>,
-    tx: mpsc::UnboundedSender<Emit>,
+    tx: mpsc::UnboundedSender<Toast>,
 }
 
 impl std::fmt::Debug for Notifier {
@@ -115,9 +115,10 @@ impl std::fmt::Debug for Notifier {
 }
 
 impl Notifier {
+    /// A notifier that shows its toasts on the desktop (the session bus's
+    /// notification daemon).
     pub fn new(initial: NotificationSettings) -> Self {
-        let enabled = Arc::new(AtomicU8::new(initial.bits()));
-        let (tx, mut rx) = mpsc::unbounded_channel::<Emit>();
+        let (notifier, mut rx) = Self::capturing(initial);
         tokio::spawn(async move {
             while let Some(emit) = rx.recv().await {
                 // One in-flight show at a time: a flap storm while the
@@ -135,7 +136,16 @@ impl Notifier {
                 }
             }
         });
-        Self { enabled, tx }
+        notifier
+    }
+
+    /// A notifier whose toasts (category gate applied) arrive on the
+    /// returned receiver instead of the desktop — what tests assert on,
+    /// with no real notification popping up.
+    pub fn capturing(initial: NotificationSettings) -> (Self, mpsc::UnboundedReceiver<Toast>) {
+        let enabled = Arc::new(AtomicU8::new(initial.bits()));
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { enabled, tx }, rx)
     }
 
     pub fn set_enabled(&self, settings: NotificationSettings) {
@@ -146,7 +156,7 @@ impl Notifier {
         if self.enabled.load(Ordering::Acquire) & (1 << category as u8) == 0 {
             return;
         }
-        let _ = self.tx.send(Emit {
+        let _ = self.tx.send(Toast {
             summary: summary.to_string(),
             body: body.to_string(),
             icon,
@@ -155,7 +165,7 @@ impl Notifier {
 
     /// Bypasses the category gate — the settings pane's test button.
     fn notify_test(&self) {
-        let _ = self.tx.send(Emit {
+        let _ = self.tx.send(Toast {
             summary: "Test notification".into(),
             body: "TisVlay tray notifications are working.".into(),
             icon: "video-display",

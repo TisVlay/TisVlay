@@ -43,7 +43,7 @@ async fn settings_round_trip_and_persistence() {
     let tray_link = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket).unwrap())
         .await
         .unwrap();
-    let notifier = Notifier::new(load_settings(&config_path).unwrap());
+    let (notifier, mut toasts) = Notifier::capturing(load_settings(&config_path).unwrap());
     let service = tokio::spawn(serve_settings(
         tray_link,
         "t".into(),
@@ -82,9 +82,14 @@ async fn settings_round_trip_and_persistence() {
     let on_disk = load_settings(&config_path).unwrap();
     assert!(!on_disk.tv_wake && on_disk.tv_pairing);
 
-    // Test toast rpc acks (display is best-effort headlessly) and the
-    // info rpc reports the config location.
+    // The test toast rpc acks and queues the toast (bypassing the category
+    // gate); the info rpc reports the config location.
     client.send_test_notification().await.unwrap();
+    let toast = tokio::time::timeout(std::time::Duration::from_secs(5), toasts.recv())
+        .await
+        .expect("test toast queued")
+        .expect("notifier alive");
+    assert_eq!(toast.summary, "Test notification");
     assert_eq!(
         client.config_path().await.unwrap(),
         config_path.display().to_string()
@@ -139,7 +144,7 @@ async fn clients_before_stack_see_liveliness_when_it_appears() {
     let tray_link = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket).unwrap())
         .await
         .unwrap();
-    let notifier = Notifier::new(load_settings(&config_path).unwrap());
+    let (notifier, _toasts) = Notifier::capturing(load_settings(&config_path).unwrap());
     let service = tokio::spawn(serve_settings(
         tray_link,
         "t".into(),
