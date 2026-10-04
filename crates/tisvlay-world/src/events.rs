@@ -3,6 +3,7 @@
 
 use bevy_ecs::message::Message;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::Instant;
 use tisvlay_core::TvState;
 use tokio::sync::mpsc;
@@ -105,7 +106,6 @@ pub enum SystemEvent {
 }
 
 /// Updates flowing from a pairing session into the world.
-#[derive(Debug)]
 pub enum PairingUpdate {
     /// The session's cancel channel, sent once at task start.
     Handle(mpsc::Sender<tisvlay_core::PairingCommand>),
@@ -116,6 +116,28 @@ pub enum PairingUpdate {
     ConfigReady(toml::Value),
     /// Config build failed after successful pairing.
     ConfigFailed(String),
+}
+
+// Hand-written so the vendor config's credentials (the LG client key)
+// never reach logs: `ConfigReady` shows only the config's key names.
+impl fmt::Debug for PairingUpdate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Handle(tx) => f.debug_tuple("Handle").field(tx).finish(),
+            Self::State(state) => f.debug_tuple("State").field(state).finish(),
+            Self::ConfigReady(config) => {
+                let mut keys: Vec<&str> = config
+                    .as_table()
+                    .map(|table| table.keys().map(String::as_str).collect())
+                    .unwrap_or_default();
+                keys.sort_unstable();
+                f.debug_struct("ConfigReady")
+                    .field("keys", &keys)
+                    .finish_non_exhaustive()
+            }
+            Self::ConfigFailed(reason) => f.debug_tuple("ConfigFailed").field(reason).finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -460,3 +482,27 @@ pub enum WireEffect {
 }
 
 pub use tisvlay_wire::error::WireError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pairing_update_debug_shows_only_config_keys() {
+        let mut table = toml::Table::new();
+        table.insert("ip".into(), "192.0.2.1".into());
+        table.insert("client_key".into(), "secret-client-key-1234".into());
+        let event = InEvent::PairingUpdate {
+            id: Uuid::nil(),
+            update: PairingUpdate::ConfigReady(toml::Value::Table(table)),
+        };
+        for shown in [format!("{event:?}"), format!("{event:#?}")] {
+            assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+            assert!(!shown.contains("192.0.2.1"), "{shown}");
+            assert!(
+                shown.contains("client_key"),
+                "key names stay visible: {shown}"
+            );
+        }
+    }
+}
