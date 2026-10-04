@@ -1,15 +1,28 @@
-# Weekly RustSec advisory scan, deliberately separate from ci.yml's blocking
-# gate. A newly-disclosed advisory against an unchanged, pinned dependency
-# never surfaces on a quiet repo: `just deny` does not run advisories, and it
-# only re-runs when the lockfile changes. This schedule catches it. It gates
-# no PR (schedule / manual dispatch only), so a transitive vulnerability with
-# no upstream fix cannot block work; the deny.toml ignore-list keeps it green
-# until a genuinely new advisory lands.
+# RustSec advisory scan, separate from ci.yml's lint/test job. Two triggers:
+# - weekly, because a newly-disclosed advisory against an unchanged, pinned
+#   dependency never surfaces on a quiet repo otherwise;
+# - on Cargo.lock changes, so a dependency update that pulls in a vulnerable
+#   version is flagged on its own PR.
+# The deny.toml ignore-list records already-triaged advisories (each with a
+# reason) so the run stays green until a genuinely new one lands. Reproduce
+# locally with `just audit`.
 name: Audit
 
 on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  push:
+    branches:
+      - "main"
+    paths:
+      - "Cargo.lock"
+      - "packaging/licensing/deny.toml"
+  pull_request:
+    branches:
+      - "main"
+    paths:
+      - "Cargo.lock"
+      - "packaging/licensing/deny.toml"
   workflow_dispatch:
 
 permissions:

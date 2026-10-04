@@ -55,6 +55,16 @@
           # nixpkgs' is 1.16.1, which predates `--check` / `--screenshot`.
           # Exposed so the devShell and CI can share one definition.
           slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
+
+          # The workspace's MSRV toolchain, for `just msrv`. The version is
+          # read from Cargo.toml's `rust-version` (padded to x.y.z), so the
+          # floor lives in one place.
+          msrv-rust =
+            let
+              floor = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.rust-version;
+              parts = builtins.length (builtins.splitVersion floor);
+            in
+            pkgs.rust-bin.stable.${if parts == 2 then "${floor}.0" else floor}.minimal;
         };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true

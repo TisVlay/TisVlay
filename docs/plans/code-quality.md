@@ -192,7 +192,7 @@ Each tool joins the flake devShell in this PR, together with its first use: carg
    - `_typos.toml` sets `locale = "en-us"` and allow-lists only names this repo can't rename: netlink-packet-route's British-spelled neighbor types (`NeighbourState` and friends), `oif`, the portal's EIS, the truncated Sunshine comm, and UPnP-derived product names. It excludes `.pot`/`.po`, `Cargo.lock` and `target/`.
    - Fix the real typos, misspelled public identifiers included, since nothing is published yet (§7).
 3. **Duplicate versions become blocking.**
-   - Align `gettext-rs` to Slint's `0.7`.
+   - `gettext-rs` stays on 0.8 (reversed from the first draft). Aligning to Slint's 0.7 put our own crate directly on RUSTSEC-2026-0244, the unsound `setlocale`, which 0.8 fixes by marking it `unsafe`. Slint's 0.7.7 gets a skip like the other upstream pins instead.
    - Give each of the other 18 duplicates an exact `name@version` skip, on the *older* version, with a reason naming the upstream gate. The skip then goes stale, and fails, once upstream catches up.
    - Flip `multiple-versions` to `"deny"`.
    - Run `just deny` with `-D unnecessary-skip -D unmatched-skip` so a stale skip is an error too.

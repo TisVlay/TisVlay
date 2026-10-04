@@ -190,13 +190,16 @@ All project commands live in the `justfile` at the repo root — it is the singl
 
 ```bash
 just              # list all recipes, grouped by purpose
-just check        # deny + licenses + fmt + build + clippy + doc + test
+just check        # deny + shear + typos + licenses + fmt + build + clippy + doc + test
 just build        # cargo build --profile test --workspace --all-targets --all-features
 just clippy       # cargo clippy (warnings denied via build.warnings)
 just doc          # cargo doc --workspace --no-deps (warnings denied)
+just shear        # unused / misplaced dependencies (cargo-shear)
+just typos        # spell check, American English (_typos.toml)
 just test         # cargo nextest run + cargo test --doc
 just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
 just cov          # coverage summary
+just msrv / hack / audit  # CI-only checks, reproducible locally (docs/build.md)
 just package-deb  # build the .deb package
 ```
 

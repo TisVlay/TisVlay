@@ -39,13 +39,14 @@ default-members = [
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-# MSRV = the oldest rustc the workspace actually builds on, verified with
-# `cargo check --workspace --all-targets --all-features`. It must never exceed
-# the rustc nixos-unstable ships: the Nix package, and so the NixOS module,
-# builds with the consumer's nixpkgs compiler, and Cargo refuses any toolchain
-# below this floor. The MSRV-aware resolver holds dependencies to releases
-# that support it, so raise it deliberately when an update needs a newer
-# compiler. The dev/CI pin in rust-toolchain.toml runs ahead independently.
+# MSRV = the oldest rustc the workspace actually builds on, verified by
+# `just msrv` and the CI `msrv` job (both read this value). It must never
+# exceed the rustc nixos-unstable ships: the Nix package, and so the NixOS
+# module, builds with the consumer's nixpkgs compiler, and Cargo refuses
+# any toolchain below this floor. The MSRV-aware resolver holds
+# dependencies to releases that support it, so raise it deliberately when
+# an update needs a newer compiler. The dev/CI pin in rust-toolchain.toml
+# runs ahead independently.
 rust-version = "1.95"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"

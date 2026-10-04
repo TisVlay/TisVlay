@@ -114,6 +114,37 @@ test-ci:
 [group('check')]
 check: deny shear typos licenses-html fmt build clippy doc test
 
+# --- Slow / networked checks (CI jobs) ---------------------------------
+#
+# These run in CI, not in `just check` or prek: each takes minutes cold
+# or needs the network. The recipes exist to reproduce a CI failure
+# locally. Background: `docs/build.md` "Checks that run in CI".
+
+# RustSec advisories + yanked crates (network). Weekly in CI and on
+# Cargo.lock changes; triaged advisories live in deny.toml's ignore-list.
+[group('ci')]
+audit:
+    cargo deny --config packaging/licensing/deny.toml check advisories
+
+# Build every crate with each feature on its own (and with none), since
+# every other gate builds with --all-features. `--no-dev-deps` makes
+# cargo-hack strip dev-dependencies from the manifests for the run and
+# restore them after, so rust-analyzer may flag errors mid-run.
+[group('ci')]
+hack:
+    cargo hack check --each-feature --no-dev-deps --workspace --target-dir target/hack
+
+# Check the workspace on its MSRV floor: the flake's `msrv-rust`
+# toolchain (read from Cargo.toml's `rust-version`) first on PATH, inside
+# the dev shell for the system libraries. No `--ignore-rust-version`: the
+# toolchain IS the floor, so a dependency that outgrows it fails here.
+[group('ci')]
+msrv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tc=$(nix build --no-link --print-out-paths .#msrv-rust)
+    PATH="$tc/bin:$PATH" cargo check --workspace --all-targets --all-features --target-dir target/msrv
+
 # --- License attribution / policy --------------------------------------
 #
 # Pipeline rationale + maintenance reference: `docs/licensing.md`.
