@@ -102,7 +102,7 @@ pub(crate) fn reply_err_code(effect: &WireEffect, to: u64) -> Option<&str> {
         WireEffect::Reply {
             to: t,
             result: Err(error),
-        } if *t == to => Some(&error.code),
+        } if *t == to => Some(error.code.as_str()),
         _ => None,
     }
 }

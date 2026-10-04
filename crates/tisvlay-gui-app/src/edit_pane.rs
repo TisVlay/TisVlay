@@ -11,6 +11,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use crate::compat::RpcError;
 use crate::schema_form::compute_schema_valid;
 use crate::{AppWindow, EditPane, PairingFieldRow, on_ui};
+use tisvlay_wire::error::ErrorCode;
 
 /// Parse an `invalid-field` error message into `(field_name,
 /// reason)`. The daemon emits the message as `"<field>: <reason>"`;
@@ -28,7 +29,7 @@ fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
 /// with the given wire code. Returns its message on match. Underpins
 /// the per-error helpers below — clients route on the stable code
 /// rather than the display string.
-fn find_rpc_error(err: &anyhow::Error, code: &str) -> Option<String> {
+fn find_rpc_error(err: &anyhow::Error, code: ErrorCode) -> Option<String> {
     err.chain()
         .filter_map(|cause| match cause.downcast_ref::<RpcError>() {
             Some(RpcError::Service(error)) => Some(error),
@@ -44,7 +45,7 @@ fn find_rpc_error(err: &anyhow::Error, code: &str) -> Option<String> {
 /// etc.) so callers can fall back to surface the message in the
 /// wizard's generic pair-failed slot.
 pub(crate) fn extract_invalid_vendor_config(err: &anyhow::Error) -> Option<(String, String)> {
-    let detail = find_rpc_error(err, "invalid-field")?;
+    let detail = find_rpc_error(err, ErrorCode::InvalidField)?;
     parse_invalid_vendor_config(&detail)
 }
 
@@ -53,7 +54,7 @@ pub(crate) fn extract_invalid_vendor_config(err: &anyhow::Error) -> Option<(Stri
 /// Callers downgrade the log level instead of treating it as a real
 /// failure.
 pub(crate) fn is_not_pairing(err: &anyhow::Error) -> bool {
-    find_rpc_error(err, "pairing-not-found").is_some()
+    find_rpc_error(err, ErrorCode::PairingNotFound).is_some()
 }
 
 /// Edit-form gate. Mirrors the wizard's [`compute_schema_valid`]
@@ -113,16 +114,16 @@ pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: Str
 mod tests {
     use super::*;
 
-    fn rpc_err(code: &str, message: &str) -> anyhow::Error {
+    fn rpc_err(code: ErrorCode, message: &str) -> anyhow::Error {
         anyhow::Error::new(RpcError::Service(tisvlay_wire::error::WireError {
-            code: code.into(),
+            code,
             message: message.into(),
         }))
     }
 
     #[test]
     fn extract_invalid_vendor_config_routes_field_and_reason() {
-        let err = rpc_err("invalid-field", "ip: required");
+        let err = rpc_err(ErrorCode::InvalidField, "ip: required");
         assert_eq!(
             extract_invalid_vendor_config(&err),
             Some(("ip".into(), "required".into()))
@@ -133,7 +134,8 @@ mod tests {
     fn extract_invalid_vendor_config_survives_context_wrapping() {
         // Callers add context above the SDK error; the chain walk must
         // still find the typed cause underneath.
-        let err = rpc_err("invalid-field", "mac: not a MAC address").context("saving TV config");
+        let err =
+            rpc_err(ErrorCode::InvalidField, "mac: not a MAC address").context("saving TV config");
         assert_eq!(
             extract_invalid_vendor_config(&err),
             Some(("mac".into(), "not a MAC address".into()))
@@ -142,7 +144,7 @@ mod tests {
 
     #[test]
     fn extract_invalid_vendor_config_ignores_other_codes() {
-        let err = rpc_err("bad-request", "vendor config: expected a table");
+        let err = rpc_err(ErrorCode::BadRequest, "vendor config: expected a table");
         assert_eq!(extract_invalid_vendor_config(&err), None);
         assert_eq!(
             extract_invalid_vendor_config(&anyhow::anyhow!("plain")),
@@ -152,13 +154,16 @@ mod tests {
 
     #[test]
     fn is_not_pairing_matches_the_cancel_race_code() {
-        assert!(is_not_pairing(&rpc_err("pairing-not-found", "no session")));
-        assert!(!is_not_pairing(&rpc_err("bad-request", "nope")));
+        assert!(is_not_pairing(&rpc_err(
+            ErrorCode::PairingNotFound,
+            "no session"
+        )));
+        assert!(!is_not_pairing(&rpc_err(ErrorCode::BadRequest, "nope")));
     }
 
     #[test]
     fn reason_halves_keep_their_colons() {
-        let err = rpc_err("invalid-field", "ip: not an IP address: ::1::bad");
+        let err = rpc_err(ErrorCode::InvalidField, "ip: not an IP address: ::1::bad");
         assert_eq!(
             extract_invalid_vendor_config(&err),
             Some(("ip".into(), "not an IP address: ::1::bad".into()))

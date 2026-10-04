@@ -417,7 +417,7 @@ async fn first_rpc_races_route_propagation_and_still_lands() {
     // must not swallow them into retries.
     let error = daemon.get_pairing_schema("nope").await.unwrap_err();
     match error.downcast_ref::<tisvlay::RpcError>() {
-        Some(tisvlay::RpcError::Service(rpc)) => assert_eq!(rpc.code, "unknown-vendor"),
+        Some(tisvlay::RpcError::Service(rpc)) => assert_eq!(rpc.code.as_str(), "unknown-vendor"),
         other => panic!("expected a typed service error, got {other:?}"),
     }
 }

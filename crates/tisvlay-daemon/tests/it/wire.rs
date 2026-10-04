@@ -10,6 +10,7 @@ use tisvlay_core::DiscoveredTv;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{manager, tv};
+use tisvlay_wire::error::ErrorCode;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -170,7 +171,7 @@ async fn rpc_errors_are_typed() {
     let err = call::<tv::SetVolume>(&w.caller, &Uuid::new_v4(), &body(json!({ "level": 5 })))
         .await
         .expect_err("unknown tv must fail");
-    assert_eq!(refusal(&err).code, "tv-not-found");
+    assert_eq!(refusal(&err).code, ErrorCode::TvNotFound);
 
     let err = raw_refusal(
         &w.client,
@@ -554,7 +555,7 @@ async fn get_config_reads_and_update_config_moves_the_tv() {
     let err = call::<tv::UpdateConfig>(&w.caller, &id, &body(json!({ "vendor": "lg" })))
         .await
         .expect_err("vendor is immutable");
-    assert_eq!(refusal(&err).code, "bad-request");
+    assert_eq!(refusal(&err).code, ErrorCode::BadRequest);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -637,7 +638,7 @@ async fn discover_streams_findings_as_multiple_replies() {
         .call_many::<manager::Discover>(&(), &request)
         .await
         .unwrap_err();
-    assert_eq!(refusal(&err).code, "unknown-vendor");
+    assert_eq!(refusal(&err).code, ErrorCode::UnknownVendor);
 }
 
 /// Full loop: sysfs DPMS flip → watcher → world system event → stock
@@ -806,7 +807,7 @@ async fn vendor_field_validation_rejects_blank_required_fields() {
     )
     .await
     .expect_err("missing required vendor field must be rejected");
-    assert_eq!(refusal(&err).code, "invalid-field");
+    assert_eq!(refusal(&err).code, ErrorCode::InvalidField);
     assert_eq!(refusal(&err).message, "address: required");
 
     // A valid TV, then a patch blanking the required field. The bridge
@@ -826,7 +827,7 @@ async fn vendor_field_validation_rejects_blank_required_fields() {
     let err = call::<tv::UpdateConfig>(&w.caller, &id, &body(json!({ "address": "  " })))
         .await
         .expect_err("blanking a required vendor field must be rejected");
-    assert_eq!(refusal(&err).code, "invalid-field");
+    assert_eq!(refusal(&err).code, ErrorCode::InvalidField);
     assert_eq!(refusal(&err).message, "address: required");
 
     // Untouched required fields don't block partial patches.

@@ -19,6 +19,7 @@ use tisvlay_session::sunshine::{Observation, StaticProbe};
 use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
 use tisvlay_wire::caller::{Caller, RpcError};
 use tisvlay_wire::endpoint::{Unary, manager, user_profile, user_remote};
+use tisvlay_wire::error::ErrorCode;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -464,7 +465,7 @@ async fn user_profile_overrides_and_guards() {
     let err = call::<user_profile::Delete>(&rig.user_caller, &(), &body(json!({ "id": profile })))
         .await
         .expect_err("delete while assigned must fail");
-    assert_eq!(refusal(&err).code, "profile-in-use");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileInUse);
     call::<user_profile::Assign>(&rig.user_caller, &(), &body(json!({ "tv": quiet })))
         .await
         .expect("unassign ok");

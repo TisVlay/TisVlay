@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tisvlay_cec::{CecConnector, FakeCecLinkOpener, PowerStatus};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{manager, tv};
+use tisvlay_wire::error::ErrorCode;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::handlers::FifoChannelHandler;
@@ -181,5 +182,5 @@ async fn cec_pair_fails_typed_when_device_is_inaccessible() {
 
     // Rollback: the TV is gone from the catalog.
     let err = call::<tv::GetConfig>(&caller, &id, &()).await.unwrap_err();
-    assert_eq!(refusal(&err).code, "tv-not-found");
+    assert_eq!(refusal(&err).code, ErrorCode::TvNotFound);
 }

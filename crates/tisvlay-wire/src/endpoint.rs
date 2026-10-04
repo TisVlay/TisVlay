@@ -344,6 +344,7 @@ pub mod vendors {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorCode;
 
     #[test]
     fn keys_follow_the_family_shapes() {
@@ -382,9 +383,9 @@ mod tests {
     #[test]
     fn unknown_verbs_and_bad_bodies_are_refused() {
         let unknown = tv::Call::decode("teleport", b"null").unwrap_err();
-        assert_eq!(unknown.code, "unknown-rpc");
+        assert_eq!(unknown.code, ErrorCode::UnknownRpc);
         let bad = tv::Call::decode("set-volume", br#"{"level":"loud"}"#).unwrap_err();
-        assert_eq!(bad.code, "bad-request");
+        assert_eq!(bad.code, ErrorCode::BadRequest);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use tisvlay_core::DiscoveredTv;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{manager, profile, tv, vendors};
+use tisvlay_wire::error::ErrorCode;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use tisvlay_world::{InEvent, SystemEvent};
 use uuid::Uuid;
@@ -171,7 +172,7 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
     )
     .await
     .expect_err("duplicate id must fail");
-    assert_eq!(refusal(&err).code, "profile-exists");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileExists);
 
     // Late joiner hydrates the body from the cached publisher.
     let sub = history_sub(&w.client, profile_wild(&w.site)).await;
@@ -226,7 +227,7 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
     let err = call::<profile::Delete>(&w.caller, &(), &body(json!({ "id": profile_id })))
         .await
         .expect_err("delete while referenced must fail");
-    assert_eq!(refusal(&err).code, "profile-in-use");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileInUse);
 
     call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({})))
         .await
@@ -243,7 +244,7 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
     let err = call::<profile::Delete>(&w.caller, &(), &body(json!({ "id": profile_id })))
         .await
         .expect_err("second delete must fail");
-    assert_eq!(refusal(&err).code, "profile-not-found");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileNotFound);
 }
 
 /// The read projections behind the GUI's inheritance editor: `defaults`
@@ -328,7 +329,7 @@ async fn defaults_and_effective_expose_field_resolution() {
     let err = call::<profile::Effective>(&w.caller, &(), &body(json!({ "id": Uuid::new_v4() })))
         .await
         .expect_err("unknown TV must fail");
-    assert_eq!(refusal(&err).code, "tv-not-found");
+    assert_eq!(refusal(&err).code, ErrorCode::TvNotFound);
 }
 
 /// Per-TV resolution: an assigned profile's explicit `none` suppresses the
@@ -416,7 +417,7 @@ async fn discovery_session_streams_findings_until_stopped() {
     let err = call::<manager::DiscoverStart>(&w.caller, &(), &body(json!({ "vendor": "nope" })))
         .await
         .expect_err("unknown vendor must fail");
-    assert_eq!(refusal(&err).code, "unknown-vendor");
+    assert_eq!(refusal(&err).code, ErrorCode::UnknownVendor);
 
     let ok = call::<manager::DiscoverStart>(&w.caller, &(), &body(json!({ "vendor": "mock" })))
         .await
@@ -468,7 +469,7 @@ async fn discovery_session_streams_findings_until_stopped() {
     let err = call::<manager::DiscoverStop>(&w.caller, &(), &body(json!({ "session": session })))
         .await
         .expect_err("second stop must fail");
-    assert_eq!(refusal(&err).code, "discovery-not-found");
+    assert_eq!(refusal(&err).code, ErrorCode::DiscoveryNotFound);
 }
 
 /// Poll the liveliness state of `key` until it matches `want`.
@@ -524,7 +525,7 @@ async fn vendor_catalog_and_schema_queryables() {
     let err = call::<vendors::Schema>(&w.caller, "nope", &())
         .await
         .expect_err("unknown vendor must fail");
-    assert_eq!(refusal(&err).code, "unknown-vendor");
+    assert_eq!(refusal(&err).code, ErrorCode::UnknownVendor);
 }
 
 #[tokio::test(flavor = "multi_thread")]
