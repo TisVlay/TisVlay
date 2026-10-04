@@ -106,6 +106,7 @@ pub enum EventAction {
     Plain(SessionAction),
     /// Action with modifiers.
     With {
+        /// The action to take.
         action: SessionAction,
         /// Land the TV on its configured `primary_input` once the
         /// action completes. Meaningful for the on-ish actions on a
@@ -155,12 +156,15 @@ impl EventAction {
         }
     }
 
+    /// The action this row takes, with any modifiers dropped.
     pub fn action(self) -> SessionAction {
         match self {
             Self::Plain(action) | Self::With { action, .. } => action,
         }
     }
 
+    /// Whether the TV should land on its configured `primary_input` after the
+    /// action. Only the modifier form can ask for it.
     pub fn restore_input(self) -> bool {
         match self {
             Self::Plain(_) => false,

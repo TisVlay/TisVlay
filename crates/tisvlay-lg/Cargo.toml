@@ -12,6 +12,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# The `discovery` feature gates `LgDiscovery`; document it on docs.rs.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 # Core abstractions
 tisvlay-core = { workspace = true }

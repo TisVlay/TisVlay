@@ -14,7 +14,7 @@ There's a residual dual-compile that *can't* be eliminated on stable today (veri
 
 ### CI feature scope
 
-CI lints and tests with `--all-features` — the same flags as local `prek` — so the instrumented build has exactly one feature configuration to reason about. The workspace's feature surface is small (core's `access`/`logging`/`wayland`/`mutter-idle`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled). What that single configuration can't catch, a crate that no longer builds with one of its features off, is the separate `features` job's concern (`just hack`; see "Checks that run in CI"). The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
+CI lints and tests with `--all-features` — the same flags as local `prek` — so the instrumented build has exactly one feature configuration to reason about. The workspace's feature surface is small (runtime's `access`/`logging`/`wayland`/`mutter-idle`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled). What that single configuration can't catch, a crate that no longer builds with one of its features off, is the separate `features` job's concern (`just hack`; see "Checks that run in CI"). The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
 
 ## Checks that run in CI
 
@@ -134,16 +134,31 @@ cargo-deny resolves with default features rather than `--all-features`, matching
 
 cargo-deny 0.18+ also excludes dev-deps from `bans` and `licenses` by default — no extra `multiple-versions-include-dev` knob needed.
 
+## First-publish checklist
+
+Five crates are `publish = true`: `tisvlay-core`, `-lg`, `-cec`, `-ssdp` and `-mock`. release-plz publishes their releases, and its `semver_check` runs cargo-semver-checks from the second release on. Its crates.io token carries only the `publish-update` scope, so it can't create a crate: the first publish of each one is done by hand, and that is when this checklist runs. It also runs whenever a crate flips to `publish = true`.
+
+1. **`cargo package -p <crate> --list`, then a full `cargo package -p <crate>`.** The list shows exactly what ships, so read it for fixtures and stray files. The build compiles the packaged crate on its own, which catches path-only dependencies, and cargo warns about missing metadata (description, license, documentation, homepage or repository).
+2. **A `readme`.** Only `tisvlay-ssdp` sets one today; without it the crates.io page is empty.
+3. **`#![warn(missing_docs)]` at the crate root.** Every public item documented, with no filler (`/// The client.` says nothing).
+4. **docs.rs sees every public item.** Where a non-default feature gates items, set `[package.metadata.docs.rs] all-features = true` (`tisvlay-lg` does, for `discovery`). Leave it off where the only feature exposes test doubles (`tisvlay-cec`'s `test-link`).
+5. **No binary glue in the public API:** no `anyhow`, no logging setup, no desktop transports. Those live in the unpublished `tisvlay-runtime`; a library error is a `thiserror` type the caller can match on.
+6. **After the first publish, set up crates.io trusted publishing** for the release-plz job, so later releases need no long-lived token.
+
 ## Review triggers
 
 Patterns to revisit when their gating condition fires:
 
-- **`smithay-clipboard` cascade dedup** — re-audit cargo-deny skip entries on every Slint bump; a future `copypasta` upgrade may drop the SCTK 0.19 path.
+- **winit's SCTK 0.19 path** — re-audit the cargo-deny skip entries it forces on every Slint or winit bump; an upgrade that moves winit to SCTK 0.20 drops them.
 - **`rustls`/`ring` getrandom** — re-audit when `rustls` upgrades its default crypto backend or when `ring` updates getrandom.
 - **`vergen-gix` reintroduction** — only if `vergen-gix` ever drops the dashmap/imara-diff pins itself, or if `git` becomes unavailable on a build target we care about.
 - **Cargo cross-workspace-cache (2026 goal)** — tracked in [concerns/test-ci-cargo-llvm-cov-show-env.md](concerns/test-ci-cargo-llvm-cov-show-env.md). When the nightly preview lands, evaluate whether its cache-key design generalizes to "instrumented vs not"; that would obsolete the show-env workaround.
 - **`LLVM_PROFILE_FILE` defaulting in `.cargo/config.toml`** — tracked in [concerns/profraw-stray-files-outside-target.md](concerns/profraw-stray-files-outside-target.md). The workspace defaults this env var so stray instrumented runs (lingering binaries in `target/debug/deps/` from past coverage builds) write under `target/profraw/` instead of leaking `default_<hash>_<pid>.profraw` to per-crate cwds. Cargo-team posture is "user-side responsibility"; revisit if [rust-lang/cargo#13040](https://github.com/rust-lang/cargo/issues/13040) or [#13136](https://github.com/rust-lang/cargo/issues/13136) progress.
 - **Switching to nightly Rust** — tracked in [ideas/ci-nightly-build-knobs.md](ideas/ci-nightly-build-knobs.md). Worth re-opening if CI cycle time becomes a real bottleneck for PR turnaround.
+- **cargo-shear vs `[lints.cargo]`**: when the toolchain pin reaches the release that stabilizes cargo's own lints, try `[workspace.lints.cargo] unused_dependencies` and `missing_lints_inheritance`. If they cover what shear finds, retire `just shear`.
+- **clippy's generic `allow-in-tests`** (rust-clippy#17520): once it ships, replace the per-lint `allow-*-in-tests` keys in `clippy.toml`, and delete the integration-test roots' `#![expect(clippy::unwrap_used, clippy::panic)]`.
+- **The yearly pedantic probe**: once a year, run clippy once with `-W clippy::pedantic` (and the nursery lints worth a look) and consider new hand-picked lints for `[workspace.lints]`. No group is ever enabled (§ Lint policy).
+- **tombi**: when nixpkgs reaches the pinned version, drop the flake override. Bump the pin and CI's `tombi@<version>` together.
 
 ## Re-running the build-time bench
 

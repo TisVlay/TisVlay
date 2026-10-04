@@ -39,6 +39,10 @@
 //! }
 //! ```
 
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
+
 mod backend;
 mod client;
 mod config;

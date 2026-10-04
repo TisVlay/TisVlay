@@ -443,6 +443,8 @@ mod fake {
     }
 
     impl FakeCecLink {
+        /// A fake link reporting `power`, with no scripted identity and
+        /// honoring every wake.
         pub fn new(power: PowerStatus) -> Self {
             Self {
                 power: Mutex::new(power),
@@ -528,6 +530,8 @@ mod fake {
     }
 
     impl FakeCecLinkOpener {
+        /// An opener whose links start at `initial` power, with nothing
+        /// scripted and every open permitted.
         pub fn new(initial: PowerStatus) -> Self {
             Self {
                 initial,

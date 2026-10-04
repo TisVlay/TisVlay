@@ -20,8 +20,11 @@
 //! └── LG WebOS implementation of traits
 //! ```
 
-// Core modules (always available)
-mod action;
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
+
+// Modules
 mod capabilities;
 mod coalescer;
 mod config;
@@ -43,7 +46,6 @@ pub mod wol;
 // =============================================================================
 
 // Traits
-pub use action::ActionExecutor;
 pub use traits::{RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities
