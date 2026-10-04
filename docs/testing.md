@@ -29,7 +29,7 @@ Configuration: `.config/nextest.toml` with two profiles:
 | `default` | 0 | 60s | terminal |
 | `ci` | 1 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
 
-**Process-per-test isolation** matters because wire tests each boot a full daemon (or daemon + session service) stack — a zenoh runtime listening on a per-test temp Unix socket, netlink sockets, and for the consumed-D-Bus adapters a private `dbus-daemon`. `cargo test`'s shared-process model would have those runtimes stepping on each other.
+**Process-per-test isolation** is nextest's default and the canonical runner, since wire tests each boot a full daemon (or daemon + session service) stack — a zenoh runtime on a per-test temp Unix socket, netlink sockets, and for the consumed-D-Bus adapters a private `dbus-daemon`. The suite doesn't *depend* on it, though: plain `cargo test --workspace --all-features` passes too, with each binary's tests concurrent in one process. That holds because every rig binds its own sockets, and tests that own well-known D-Bus names take a [`PrivateBus::isolated`](#privatebus) bus of their own. Keep it that way: a test that only passes alone in its process is relying on an accident.
 
 ### Test execution pipeline
 
@@ -129,6 +129,8 @@ just cov-ratchet  # fails if below baseline (CI uses this)
 ```
 
 The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Run `just cov` to see the current number.
+
+A failing test doesn't hide the report: the local `cov*` recipes run every test (`--no-fail-fast`), render the coverage of what ran, then exit with the test status ("tests failed … coverage reflects a failing run"). `cov-ratchet` checks that status first and fails before comparing, so partial coverage never passes or moves the baseline; `test-ci` stays fail-fast.
 
 CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. Every stage runs `--all-features`, same as local `just test`. Dev-only code is excluded from the coverage denominator via the `cov_exclude` regex in the justfile — `(tisvlay-(test|mock)/|test_server)` — so test infrastructure doesn't count against the ratchet. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
 
@@ -240,6 +242,25 @@ just daemon-start
 
 Boot-config entries are additive seeds; TVs already in the daemon's writable state file win, and anything paired at runtime (e.g., `tisvlay pair` with vendor `mock` and `pairing = "accept"`) persists to the state file regardless.
 
+## Hermetic tests: no host state
+
+A test's outcome must not depend on the machine it runs on: what's running (a dev box with Sunshine or Moonshine), the network (a Nix build sandbox or container with no multicast route, IPv6 off), the session bus, or `TMPDIR`. Production code that reads the host takes its source through a seam, and tests hand in a fake:
+
+| Host dependency | Seam | Test fake |
+|---|---|---|
+| Sunshine process + `/serverinfo` on loopback | `SessionOptions.sunshine: Arc<dyn SunshineProbe>` | `StaticProbe` (scripted observation) |
+| SSDP multicast send | `SearchOptions.destination`, `SharedSearcher::with_destination` | a loopback UDP stand-in |
+| Desktop notifications (session bus) | `Notifier::capturing` | the returned toast receiver |
+| LG reconnect's fixed SSAP ports | `LgConnection` test-only `reconnect_url` | `FakeSsapServer` |
+| TV network-state replies | `FakeSsapServer::set_command_payload` | scripted payloads |
+| Consumed D-Bus services | `PrivateBus` + `tisvlay-test` fakes | `FakeLogind`, … |
+
+Supporting rules:
+
+- **Unix sockets** go in `tisvlay_test::socket_tempdir()`, not `tempfile::tempdir()`: a long `TMPDIR` would push socket paths past `sun_path`'s 108 bytes. Other temp files get a private `tempfile::tempdir()`, never a fixed name in the shared temp dir.
+- **Tests whose point is the real kernel** (the netlink route lookup, the ACL xattr round trip) don't get a seam, which would test nothing. They derive their expectation from the host's capability (is `::1` bindable?) or skip an environment that refuses the operation outright (`ENOTSUP` / `EPERM` from a sandbox), and stay exact otherwise.
+- To check a change really is hermetic, run the test binary in a namespace with no network: `unshare -rn sh -c 'ip link set lo up; target/debug/deps/<test-binary>'`.
+
 ## Test infrastructure: two crates
 
 Test-only crates are `publish = false` and split by what they fake:
@@ -285,7 +306,7 @@ Dev-only crate providing shared infrastructure for the consumed-D-Bus adapters. 
 
 ### PrivateBus
 
-Spawns one private `dbus-daemon` per test binary via `LazyLock`.
+`PrivateBus::shared()` is one private `dbus-daemon` per test process (via `LazyLock`): one per test under nextest, one shared by a binary's tests under plain `cargo test`. Tests that own a well-known name (a `FakeLogind`, a fake ScreenSaver) use `PrivateBus::isolated()` instead — a bus of their own, ended when dropped — because name ownership is bus-wide.
 
 ```rust
 let bus = PrivateBus::shared();
@@ -293,10 +314,10 @@ let conn = bus.connect().await?;
 ```
 
 Key design:
-- `PR_SET_PDEATHSIG = SIGKILL` — kernel kills daemon on test crash
+- `PR_SET_PDEATHSIG = SIGKILL` — kernel kills daemon on test crash. The kernel ties it to the *thread* that forked the child, so the fork runs on a dedicated thread that lives as long as the process; forking from the first test's thread would kill the daemon when that test ends under `cargo test`
 - Env scrubbing (`DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS`, `DBUS_STARTER_*`) — isolates from user session
 - `Builder::address(...)` — bypasses zbus's `OnceCell` connection cache
-- Binary-level isolation via nextest's process-per-binary model
+- Needs `dbus-daemon` on `PATH` (the Nix dev shell provides it) and says so plainly when it's missing
 
 ### Fake D-Bus services
 

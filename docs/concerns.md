@@ -5,7 +5,6 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 ## Testing
 
 - [Session event tests use real-time sleeps](concerns/session-event-tests-real-time-sleeps.md)
-- [`TestDaemon` / `TestSession` name ownership is bus-global](concerns/test-name-ownership-bus-global.md)
 
 ## Build & CI
 
