@@ -72,8 +72,7 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 pub use config::{
     AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
     EventAction, ResolvedSystemProfile, ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction,
-    SystemProfileConfig, USER_PROFILE_FIELDS, UserConfig, UserProfileConfig, UserSection,
-    UserTvConfig, UserTvProfileAssignment, absolutize,
+    SystemProfileConfig, USER_PROFILE_FIELDS, UserProfileConfig,
 };
 
 // Profile-reference computation (used by daemon + clients)

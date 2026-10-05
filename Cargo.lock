@@ -6583,7 +6583,6 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "bitflags 2.13.2",
- "directories",
  "parking_lot",
  "proptest",
  "secrecy 0.10.3",
