@@ -48,7 +48,7 @@ async fn cec_power_cycle_keeps_the_link_up() {
         name: "CecTv".into(),
         vendor: "cec".into(),
         managed: true,
-        config: json!({ "device": "/dev/cec-test" }),
+        config: serde_json::from_value(json!({ "device": "/dev/cec-test" })).unwrap(),
     };
     let id = call::<manager::AddTv>(&caller, &(), &request)
         .await
@@ -154,7 +154,7 @@ async fn cec_pair_fails_typed_when_device_is_inaccessible() {
         name: "CecDenied".into(),
         vendor: "cec".into(),
         managed: true,
-        config: json!({ "device": "/dev/cec-denied" }),
+        config: serde_json::from_value(json!({ "device": "/dev/cec-denied" })).unwrap(),
     };
     let id = call::<manager::Pair>(&caller, &(), &request)
         .await

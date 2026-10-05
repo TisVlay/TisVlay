@@ -335,10 +335,7 @@ impl Bridge {
     /// Enroll a TV from a full config.
     async fn add_tv(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
         let id = request.id.unwrap_or_else(Uuid::new_v4);
-        let config = enrich_config_mac(request.config).await;
-        if let Some(object) = config.as_object() {
-            self.validate_vendor_fields(&request.vendor, object, false)?;
-        }
+        let config = self.prepare_config(&request.vendor, request.config).await?;
         Ok(Command::AddTv {
             record: Box::new(tisvlay_world::TvRecord {
                 id,
@@ -347,7 +344,7 @@ impl Bridge {
                 managed: request.managed,
                 system_profile: None,
                 primary_input: None,
-                config: vendor_config_from_json(&config)?,
+                config,
             }),
             reply: Some(Reply::new(reply)),
         })
@@ -355,16 +352,13 @@ impl Bridge {
 
     /// Start pairing a new TV.
     async fn pair(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
-        let config = enrich_config_mac(request.config).await;
-        if let Some(object) = config.as_object() {
-            self.validate_vendor_fields(&request.vendor, object, false)?;
-        }
+        let config = self.prepare_config(&request.vendor, request.config).await?;
         Ok(Command::Pair {
             id: request.id.unwrap_or_else(Uuid::new_v4),
             attempt: Uuid::new_v4(),
             name: request.name,
             vendor: request.vendor,
-            config: vendor_config_from_json(&config)?,
+            config,
             managed: request.managed,
             reply: Some(Reply::new(reply)),
         })
@@ -593,6 +587,19 @@ impl Bridge {
         });
     }
 
+    /// An enrolling TV's vendor config: the MAC filled from the ARP cache
+    /// when absent, the vendor's required fields checked, then converted
+    /// for the backend.
+    async fn prepare_config(
+        &self,
+        vendor: &str,
+        mut config: serde_json::Map<String, Value>,
+    ) -> Result<VendorConfig, WireError> {
+        enrich_config_mac(&mut config).await;
+        self.validate_vendor_fields(vendor, &config, false)?;
+        vendor_config_from_json(&config)
+    }
+
     /// Validate a vendor-config object against the vendor's `UserInput`
     /// schema (the same projection the wizard and edit pane render).
     /// Full-config mode (`partial = false`, add-tv/pair) requires every
@@ -666,23 +673,23 @@ fn profile_command(call: profile::Call, reply: ReplyTo) -> Command {
 }
 
 /// Vendor configs are JSON on the wire and a [`VendorConfig`] at the backend
-/// seam — a pure serde transcode (a non-object, or a JSON `null` inside,
-/// has no TOML table form and errors).
-fn vendor_config_from_json(value: &Value) -> Result<VendorConfig, WireError> {
-    VendorConfig::from_typed(value)
+/// seam — a pure serde transcode (a JSON `null` has no TOML form and
+/// errors).
+fn vendor_config_from_json(
+    config: &serde_json::Map<String, Value>,
+) -> Result<VendorConfig, WireError> {
+    VendorConfig::from_typed(config)
         .map_err(|e| WireError::bad_request(format!("vendor config: {e}")))
 }
 
 /// An IP-addressed vendor config without a `mac` can't Wake-on-LAN. The
 /// pairing/connect traffic primes the ARP cache, so fill it in here — an
 /// explicit `mac` from the caller always wins.
-async fn enrich_config_mac(mut config: Value) -> Value {
-    if let Some(object) = config.as_object_mut()
-        && !object.contains_key(tisvlay_core::MAC_CONFIG_KEY)
-        && let Some(ip) = object.get("ip").and_then(Value::as_str)
+async fn enrich_config_mac(config: &mut serde_json::Map<String, Value>) {
+    if !config.contains_key(tisvlay_core::MAC_CONFIG_KEY)
+        && let Some(ip) = config.get("ip").and_then(Value::as_str)
         && let Some(mac) = crate::arp::lookup_mac(ip).await
     {
-        object.insert(tisvlay_core::MAC_CONFIG_KEY.into(), Value::String(mac));
+        config.insert(tisvlay_core::MAC_CONFIG_KEY.into(), Value::String(mac));
     }
-    config
 }

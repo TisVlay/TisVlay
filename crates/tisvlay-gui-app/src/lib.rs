@@ -2412,7 +2412,12 @@ fn register_callbacks(
                     res = tokio::time::timeout(
                         std::time::Duration::from_secs(1),
                         d.enrich_manual_entry(&vendor, &ip),
-                    ) => res.ok().and_then(std::result::Result::ok).unwrap_or_default(),
+                    ) => res
+                        .ok()
+                        .and_then(std::result::Result::ok)
+                        .flatten()
+                        .map(|mac| HashMap::from([(tisvlay_core::MAC_CONFIG_KEY.to_string(), mac)]))
+                        .unwrap_or_default(),
                 }
             };
 

@@ -111,7 +111,7 @@ async fn add_tv(w: &Wire, name: &str, address: &str) -> Uuid {
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": address }),
+        config: serde_json::from_value(json!({ "address": address })).unwrap(),
     };
     let ok = call::<manager::AddTv>(&w.caller, &(), &request)
         .await
@@ -457,7 +457,7 @@ async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
         name: "Remote".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://hydrate" }),
+        config: serde_json::from_value(json!({ "address": "mock://hydrate" })).unwrap(),
     };
     call::<manager::AddTv>(&caller, &(), &request)
         .await

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compat::{
-    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgressDetail,
+    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgress,
 };
 use gettextrs::gettext;
 use parking_lot::Mutex;
@@ -288,7 +288,7 @@ pub(crate) async fn run_wizard_discovery(
             biased;
             _ = &mut cancel_rx => break,
             maybe_item = signal_stream.next() => {
-                let Some((id, name, address, hw_id, vendor, vendor_data)) = maybe_item else {
+                let Some(found) = maybe_item else {
                     // Stream ended — daemon shutdown or subscriber dropped.
                     break;
                 };
@@ -296,12 +296,15 @@ pub(crate) async fn run_wizard_discovery(
                     break;
                 }
                 let entry = WizardEntry {
-                    id,
-                    name,
-                    vendor,
-                    address,
-                    hw_model: hw_id.model.unwrap_or_default(),
-                    vendor_data,
+                    id: found.id,
+                    name: found.name,
+                    vendor: found.vendor,
+                    address: found.address,
+                    hw_model: found
+                        .hardware_id
+                        .and_then(|hardware| hardware.model)
+                        .unwrap_or_default(),
+                    vendor_data: found.vendor_data,
                 };
                 // Daemon dedups within a single session; across
                 // overlapping sessions (rare — wizard typically only
@@ -503,13 +506,7 @@ pub(crate) async fn run_wizard_pair(
     // Drain to terminal, dispatching non-terminal phases into the
     // wizard's phase/message fields with the gen-guarded callback.
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(
-        stream,
-        &tv_id.to_string(),
-        &attempt.to_string(),
-        on_progress,
-    )
-    .await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, tv_id, attempt, on_progress).await;
 
     let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
@@ -613,13 +610,7 @@ pub(crate) async fn run_wizard_re_pair(
     };
 
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(
-        stream,
-        &tv_id.to_string(),
-        &attempt.to_string(),
-        on_progress,
-    )
-    .await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, tv_id, attempt, on_progress).await;
 
     let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
@@ -666,7 +657,7 @@ fn make_progress_callback(
 /// `invalid-field` refusal routes to its schema row.
 enum PairError {
     /// Terminal `failed` phase from the daemon — localize by its `code`.
-    Handshake(Box<PairingProgressDetail>),
+    Handshake(Box<PairingProgress>),
     /// A sync-rpc or stream error (unknown vendor, `invalid-field`, the
     /// progress stream ending early) — field-routed, else shown with its
     /// cause chain.
@@ -679,7 +670,7 @@ enum PairError {
 /// daemon's stable, machine-readable `code`; an unknown or absent code
 /// falls back to the daemon's English `message`. The daemon stays
 /// locale-agnostic — the translated copy lives here in the GUI.
-fn localize_pair_failure(detail: &PairingProgressDetail) -> String {
+fn localize_pair_failure(detail: &PairingProgress) -> String {
     if detail.code.as_deref() == Some(DeviceErrorCode::PermissionDenied.as_str()) {
         // Name the actual node from the payload when present.
         let node = detail.path.as_deref().unwrap_or("/dev/cec*");
@@ -702,7 +693,7 @@ fn terminal_to_result(
 ) -> Result<Option<LinkMacReport>, PairError> {
     match outcome {
         Ok(PairTerminal::Complete { link_mac, .. }) => Ok(link_mac),
-        Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(Box::new(detail))),
+        Ok(PairTerminal::Failed { progress, .. }) => Err(PairError::Handshake(Box::new(progress))),
         Err(e) => Err(PairError::Rpc(e)),
     }
 }

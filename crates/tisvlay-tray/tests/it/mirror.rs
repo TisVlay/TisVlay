@@ -97,7 +97,7 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
         name: "Den".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://tray" }),
+        config: serde_json::from_value(json!({ "address": "mock://tray" })).unwrap(),
     };
     let tv = call::<manager::AddTv>(&system_caller, &(), &request)
         .await
@@ -221,7 +221,8 @@ async fn capability_flags_gate_menu_sections() {
         name: "Caps".into(),
         vendor: "mock".into(),
         managed: false,
-        config: json!({ "address": "mock://caps", "refuse_connect": true }),
+        config: serde_json::from_value(json!({ "address": "mock://caps", "refuse_connect": true }))
+            .unwrap(),
     };
     let tv = call::<manager::AddTv>(&Caller::new(client.clone(), "t"), &(), &request)
         .await

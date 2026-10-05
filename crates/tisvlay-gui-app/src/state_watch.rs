@@ -119,46 +119,34 @@ async fn fetch_and_publish_vendors(
     app_weak: &slint::Weak<AppWindow>,
     supported_vendors_cache: &SupportedVendorsCache,
 ) {
-    let mut vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
-    vendor_pairs.sort_by_key(|a| a.1.to_lowercase());
+    let mut vendors = match daemon.get_supported_vendors().await {
+        Ok(vendors) => vendors,
+        Err(e) => {
+            debug!(error = %e, "vendor catalog unavailable");
+            Vec::new()
+        }
+    };
+    vendors.sort_by_key(|vendor| vendor.name.to_lowercase());
     debug!(
-        count = vendor_pairs.len(),
+        count = vendors.len(),
         "Fetched supported vendors from daemon"
     );
     if let Ok(mut cache) = supported_vendors_cache.write() {
-        *cache = vendor_pairs.iter().map(|(id, _)| id.clone()).collect();
+        *cache = vendors.iter().map(|vendor| vendor.id.clone()).collect();
     }
 
-    // Per-vendor capability fetch in a second pass — keeps the
-    // vendor-catalog payload unchanged (still `(id, name)` pairs) and
-    // lets vendors come and go without renegotiating shape. Vendor
-    // counts are O(1) in practice (one to a handful), so the extra
-    // round-trips are negligible against the cost of any user-visible
-    // wizard step. Errors per vendor collapse to "no IP family
-    // support claimed", which means the wizard's affordances stay
-    // conservative — placeholder reverts to v4-only — rather than
-    // silently asserting transport support the daemon didn't
-    // actually confirm.
+    // The catalog carries each vendor's capabilities; the pairing
+    // schema is one rpc per vendor. Vendor counts are O(1) in practice
+    // (one to a handful), so the round-trips are negligible against any
+    // user-visible wizard step.
     let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities, PrimaryField)> =
-        Vec::with_capacity(vendor_pairs.len());
-    for (id, name) in vendor_pairs {
-        // Capabilities and pairing schema are independent rpcs —
-        // fetch them concurrently.
-        let (caps, schema) = tokio::join!(
-            daemon.get_vendor_capabilities(&id),
-            daemon.get_pairing_schema(&id),
-        );
-        let caps = match caps {
-            Ok(Some(caps)) => caps,
-            Ok(None) => {
-                debug!(vendor = %id, "vendor not in the catalog; treating capabilities as empty");
-                tisvlay_core::Capabilities::empty()
-            }
-            Err(e) => {
-                debug!(vendor = %id, error = %e, "vendor capabilities unavailable; treating as empty");
-                tisvlay_core::Capabilities::empty()
-            }
-        };
+        Vec::with_capacity(vendors.len());
+    for vendor in vendors {
+        let id = vendor.id;
+        let name = vendor.name;
+        let names: Vec<&str> = vendor.capabilities.iter().map(String::as_str).collect();
+        let caps = tisvlay_core::Capabilities::from_strings(&names);
+        let schema = daemon.get_pairing_schema(&id).await;
         // The schema's first field is the vendor's primary descriptor
         // (schema-ordering convention) — it becomes the manual-entry
         // panel's identity input. Fetch failure falls back to a

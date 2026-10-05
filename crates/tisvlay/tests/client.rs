@@ -64,7 +64,11 @@ async fn sdk_mirrors_rpcs_and_watches() {
 
     // Catalog reads work before any TV exists.
     let vendors = daemon.get_supported_vendors().await.unwrap();
-    assert_eq!(vendors, vec![("mock".to_string(), "Mock".to_string())]);
+    let names: Vec<(&str, &str)> = vendors
+        .iter()
+        .map(|vendor| (vendor.id.as_str(), vendor.name.as_str()))
+        .collect();
+    assert_eq!(names, [("mock", "Mock")]);
     let schema = daemon.get_pairing_schema("mock").await.unwrap();
     assert!(schema.iter().any(|field| field.name == "address"));
     assert!(daemon.get_pairing_schema("nope").await.is_err());
@@ -82,7 +86,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         .id;
     wait_for(&daemon, |tvs| {
         tvs.iter()
-            .any(|info| info.uuid == tv.to_string() && info.connected && info.volume == 30)
+            .any(|info| info.uuid == tv && info.connected && info.volume == 30)
     })
     .await;
 
@@ -102,8 +106,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
     // Writes round-trip and land back in the mirror.
     daemon.set_volume(tv, 12).await.unwrap();
     wait_for(&daemon, |tvs| {
-        tvs.iter()
-            .any(|info| info.uuid == tv.to_string() && info.volume == 12)
+        tvs.iter().any(|info| info.uuid == tv && info.volume == 12)
     })
     .await;
     let info = daemon
@@ -111,7 +114,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         .await
         .unwrap()
         .into_iter()
-        .find(|info| info.uuid == tv.to_string())
+        .find(|info| info.uuid == tv)
         .unwrap();
     assert!(
         info.capabilities
@@ -178,10 +181,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
 
     // Removal drains the mirror row.
     daemon.remove_tv(tv).await.unwrap();
-    wait_for(&daemon, |tvs| {
-        !tvs.iter().any(|info| info.uuid == tv.to_string())
-    })
-    .await;
+    wait_for(&daemon, |tvs| !tvs.iter().any(|info| info.uuid == tv)).await;
 }
 
 /// The remote-session surface end to end: the manual verb rpc arms a
@@ -243,8 +243,7 @@ async fn sdk_remote_session_arms_and_mirrors() {
         .id;
     let tv_id = tv;
     wait_for(&daemon, |tvs| {
-        tvs.iter()
-            .any(|info| info.uuid == tv.to_string() && info.connected)
+        tvs.iter().any(|info| info.uuid == tv && info.connected)
     })
     .await;
 
@@ -290,8 +289,7 @@ async fn sdk_remote_session_arms_and_mirrors() {
     // The armed flag completes the round-trip through the world and lands
     // on the per-TV meta projection the daemon mirror carries.
     wait_for(&daemon, |tvs| {
-        tvs.iter()
-            .any(|info| info.uuid == tv.to_string() && info.remote_armed)
+        tvs.iter().any(|info| info.uuid == tv && info.remote_armed)
     })
     .await;
 
@@ -314,8 +312,7 @@ async fn sdk_remote_session_arms_and_mirrors() {
         let _ = event;
     }
     wait_for(&daemon, |tvs| {
-        tvs.iter()
-            .any(|info| info.uuid == tv.to_string() && !info.remote_armed)
+        tvs.iter().any(|info| info.uuid == tv && !info.remote_armed)
     })
     .await;
 }
@@ -421,7 +418,11 @@ async fn first_rpc_races_route_propagation_and_still_lands() {
     let daemon = DaemonClient::connect(&system_socket, "t").await.unwrap();
     // No liveliness wait — this is the whole point.
     let vendors = daemon.get_supported_vendors().await.unwrap();
-    assert_eq!(vendors, vec![("mock".to_string(), "Mock".to_string())]);
+    let names: Vec<(&str, &str)> = vendors
+        .iter()
+        .map(|vendor| (vendor.id.as_str(), vendor.name.as_str()))
+        .collect();
+    assert_eq!(names, [("mock", "Mock")]);
 
     // Typed service errors stay terminal and fast — the matching gate
     // must not swallow them into retries.

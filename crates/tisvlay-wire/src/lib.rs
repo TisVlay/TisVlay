@@ -1040,22 +1040,18 @@ pub mod rpc {
         pub vendor: String,
         #[serde(default = "default_true")]
         pub managed: bool,
-        pub config: serde_json::Value,
+        pub config: serde_json::Map<String, serde_json::Value>,
     }
 
     impl std::fmt::Debug for AddTv {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let mut debug = f.debug_struct("AddTv");
-            debug
+            f.debug_struct("AddTv")
                 .field("id", &self.id)
                 .field("name", &self.name)
                 .field("vendor", &self.vendor)
-                .field("managed", &self.managed);
-            match &self.config {
-                serde_json::Value::Object(config) => debug.field("config", &KeyNames(config)),
-                _ => debug.field("config", &"<not an object>"),
-            };
-            debug.finish()
+                .field("managed", &self.managed)
+                .field("config", &KeyNames(&self.config))
+                .finish()
         }
     }
 
@@ -1365,7 +1361,12 @@ pub mod rpc {
         /// can reach logs) shows the vendor config's key names only.
         #[test]
         fn vendor_config_requests_debug_key_names_only() {
-            let config = serde_json::json!({ "ip": "192.0.2.1", "client_key": "hunter2-key" });
+            let config: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(serde_json::json!({
+                    "ip": "192.0.2.1",
+                    "client_key": "hunter2-key",
+                }))
+                .unwrap();
             let add = AddTv {
                 id: None,
                 name: "Den".into(),
@@ -1373,7 +1374,7 @@ pub mod rpc {
                 managed: true,
                 config: config.clone(),
             };
-            let patch: UpdateConfig = serde_json::from_value(config).unwrap();
+            let patch = UpdateConfig(config);
             for shown in [
                 format!("{add:?}"),
                 format!("{add:#?}"),

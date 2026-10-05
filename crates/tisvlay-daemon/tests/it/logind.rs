@@ -72,7 +72,7 @@ async fn logind_sleep_resume_drive_profile_actions() {
         name: "Den".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://logind" }),
+        config: serde_json::from_value(json!({ "address": "mock://logind" })).unwrap(),
     };
     let id = Caller::new(client.clone(), "t")
         .call::<manager::AddTv>(&(), &request)

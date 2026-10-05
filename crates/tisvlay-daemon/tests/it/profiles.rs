@@ -112,7 +112,7 @@ async fn add_tv(w: &Wire, name: &str, address: &str) -> Uuid {
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": address }),
+        config: serde_json::from_value(json!({ "address": address })).unwrap(),
     };
     let ok = call::<manager::AddTv>(&w.caller, &(), &request)
         .await
@@ -562,7 +562,7 @@ async fn store_round_trips_profiles_and_assignment() {
         name: "Den".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://persist-prof" }),
+        config: serde_json::from_value(json!({ "address": "mock://persist-prof" })).unwrap(),
     };
     let ok = call::<manager::AddTv>(&caller1, &(), &request)
         .await

@@ -170,7 +170,7 @@ async fn add_tv(rig: &Rig, name: &str, address: &str) -> Uuid {
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": address }),
+        config: serde_json::from_value(json!({ "address": address })).unwrap(),
     };
     let ok = call::<manager::AddTv>(&rig.caller, &(), &request)
         .await
@@ -1290,7 +1290,7 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
             name: "Den".into(),
             vendor: "mock".into(),
             managed: true,
-            config: json!({ "address": "mock://outage" }),
+            config: serde_json::from_value(json!({ "address": "mock://outage" })).unwrap(),
         };
         let ok = call::<manager::AddTv>(&caller, &(), &request)
             .await

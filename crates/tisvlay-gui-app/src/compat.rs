@@ -7,7 +7,7 @@
 
 pub(crate) use tisvlay::{
     DaemonClient, LinkMacOutcome, LinkMacReport, NotificationCategory, NotificationSettings,
-    NotificationSettingsPatch, PairStarted, PairTerminal, PairingProgressDetail, SessionClient,
+    NotificationSettingsPatch, PairStarted, PairTerminal, PairingProgress, SessionClient,
     StateEvent, StateWatcher, StateWatcherConfig, SystemProfileBody, TrayClient, TvInfo,
     UserProfileBody,
 };

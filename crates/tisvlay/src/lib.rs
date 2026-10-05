@@ -29,10 +29,11 @@ use tisvlay_wire::{bootstrap, keys, rpc};
 pub use error::{BoxError, Error, Result, Service};
 pub use tisvlay_wire::error::ErrorCode;
 pub use tisvlay_wire::payload::{
-    LinkMacOutcome, LinkMacReport, RemoteSessionState, RemoteSource, RemoteSourceKind,
+    LinkMacOutcome, LinkMacReport, PairingProgress, RemoteSessionState, RemoteSource,
+    RemoteSourceKind,
 };
 pub use tisvlay_wire::rpc::{
-    NotificationSettings, NotificationSettingsPatch, PairStarted, TvConfigView,
+    NotificationSettings, NotificationSettingsPatch, PairStarted, TvConfigView, VendorEntry,
 };
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
@@ -48,29 +49,19 @@ use mirror::{SystemMirror, UserMirror};
 pub type SystemProfileBody = SystemProfileConfig;
 pub type UserProfileBody = UserProfileConfig;
 
-/// Pairing progress detail — field-compatible with the root core type,
-/// plus the attempt the sample belongs to.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PairingProgressDetail {
-    pub attempt: String,
-    pub message: String,
-    pub code: Option<String>,
-    pub path: Option<String>,
-    /// `complete` only: the device-reported link MAC and its outcome.
-    pub link_mac: Option<LinkMacReport>,
-}
-
 /// Terminal pairing outcome, drained from the progress key.
 #[derive(Debug, Clone)]
 pub enum PairTerminal {
     Complete {
-        tv_id: String,
+        tv: Uuid,
         message: String,
+        /// The device-reported link MAC and what the daemon did with it.
         link_mac: Option<LinkMacReport>,
     },
     Failed {
-        tv_id: String,
-        detail: PairingProgressDetail,
+        tv: Uuid,
+        /// The `failed` sample: its message, reason `code` and `path`.
+        progress: PairingProgress,
     },
 }
 
@@ -160,7 +151,7 @@ impl NotificationCategory {
 /// Everything `list_tvs` reports per TV, projected from the mirror.
 #[derive(Debug, Clone, Default)]
 pub struct TvInfo {
-    pub uuid: String,
+    pub uuid: Uuid,
     pub name: String,
     pub vendor: String,
     pub brand: String,
@@ -171,7 +162,8 @@ pub struct TvInfo {
     /// Whether a remote session currently arms this TV — the read-only
     /// projection of the world's `remote_armed` gate.
     pub remote_armed: bool,
-    pub system_profile: String,
+    /// The assigned system profile; `None` uses the default.
+    pub system_profile: Option<Uuid>,
     pub primary_input: String,
     pub hardware_id: HardwareId,
     /// The vendor's primary identifying descriptor (LG: IP; CEC: device
@@ -308,12 +300,9 @@ impl DaemonClient {
         Ok(())
     }
 
-    pub async fn get_supported_vendors(&self) -> Result<Vec<(String, String)>> {
-        let list = self.call::<vendors::Catalog>(&(), &()).await?;
-        Ok(list
-            .into_iter()
-            .map(|vendor| (vendor.id, vendor.name))
-            .collect())
+    /// The daemon's vendor catalog.
+    pub async fn get_supported_vendors(&self) -> Result<Vec<VendorEntry>> {
+        self.call::<vendors::Catalog>(&(), &()).await
     }
 
     pub async fn get_pairing_schema(&self, vendor: &str) -> Result<Vec<PairingField>> {
@@ -332,7 +321,7 @@ impl DaemonClient {
             name: name.into(),
             vendor: vendor.into(),
             managed,
-            config: Value::Object(config),
+            config,
         };
         self.call::<manager::Pair>(&(), &request).await
     }
@@ -349,13 +338,12 @@ impl DaemonClient {
             .map(|_| ())
     }
 
-    /// Bus-wide pairing progress (root shape): every session's samples
-    /// as `(tv_id, phase, detail)` tuples, hydrated from the deep
-    /// pairing caches so a re-opened wizard replays prior phases.
+    /// Every pairing session's progress samples as `(tv, sample)`,
+    /// hydrated from the deep pairing caches so a re-opened wizard
+    /// replays prior phases.
     pub async fn pairing_progress_stream(
         &self,
-    ) -> Result<impl futures_util::Stream<Item = (String, String, PairingProgressDetail)> + use<>>
-    {
+    ) -> Result<impl futures_util::Stream<Item = (Uuid, PairingProgress)> + use<>> {
         let sub = self
             .session
             .declare_subscriber(keys::pairing_progress_wild(&self.site))
@@ -370,22 +358,13 @@ impl DaemonClient {
                 else {
                     continue;
                 };
-                let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes())
+                let Ok(progress) =
+                    serde_json::from_slice::<PairingProgress>(&sample.payload().to_bytes())
                 else {
+                    warn!(%tv, "undecodable pairing progress sample skipped");
                     continue;
                 };
-                let item = (
-                    tv.to_string(),
-                    progress["phase"].as_str().unwrap_or_default().to_string(),
-                    PairingProgressDetail {
-                        attempt: progress["attempt"].as_str().unwrap_or_default().to_string(),
-                        message: progress["message"].as_str().unwrap_or_default().to_string(),
-                        code: progress["code"].as_str().map(str::to_string),
-                        path: progress["path"].as_str().map(str::to_string),
-                        link_mac: serde_json::from_value(progress["link_mac"].clone()).ok(),
-                    },
-                );
-                if tx.send(item).is_err() {
+                if tx.send((tv, progress)).is_err() {
                     return;
                 }
             }
@@ -394,21 +373,20 @@ impl DaemonClient {
     }
 
     /// Drain a pairing-progress stream to `attempt`'s terminal phase on
-    /// `tv_id`, reporting its non-terminal phases through `on_progress`.
+    /// `tv`, reporting its non-terminal phases through `on_progress`.
     /// Other attempts' samples — earlier sessions replayed from the deep
     /// cache — are skipped, so a stale terminal can't end the drain.
     pub async fn drain_pair_to_terminal<S>(
         stream: S,
-        target_tv_id: &str,
-        attempt: &str,
+        tv: Uuid,
+        attempt: Uuid,
         on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
+        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
     {
         let mut stream = std::pin::pin!(stream);
-        Self::drain_pair_to_terminal_pinned(stream.as_mut(), target_tv_id, attempt, on_progress)
-            .await
+        Self::drain_pair_to_terminal_pinned(stream.as_mut(), tv, attempt, on_progress).await
     }
 
     /// Pinned-borrow workhorse for [`Self::drain_pair_to_terminal`] —
@@ -416,28 +394,28 @@ impl DaemonClient {
     /// for `awaiting_tv`, cancel, then drain the remainder).
     pub async fn drain_pair_to_terminal_pinned<S>(
         mut stream: std::pin::Pin<&mut S>,
-        target_tv_id: &str,
-        attempt: &str,
+        tv: Uuid,
+        attempt: Uuid,
         mut on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
+        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
     {
         use futures_util::StreamExt;
-        while let Some((tv_id, phase, detail)) = stream.as_mut().next().await {
-            if tv_id != target_tv_id || detail.attempt != attempt {
+        while let Some((sample_tv, progress)) = stream.as_mut().next().await {
+            if sample_tv != tv || progress.attempt != attempt {
                 continue;
             }
-            match phase.as_str() {
+            match progress.phase.as_str() {
                 "complete" => {
                     return Ok(PairTerminal::Complete {
-                        tv_id,
-                        message: detail.message,
-                        link_mac: detail.link_mac,
+                        tv,
+                        message: progress.message,
+                        link_mac: progress.link_mac,
                     });
                 }
-                "failed" => return Ok(PairTerminal::Failed { tv_id, detail }),
-                _ => on_progress(&phase, &detail.message),
+                "failed" => return Ok(PairTerminal::Failed { tv, progress }),
+                _ => on_progress(&progress.phase, &progress.message),
             }
         }
         Err(Error::Transport {
@@ -499,22 +477,10 @@ impl DaemonClient {
             .map(|_| ())
     }
 
-    /// Bus-wide findings (root item shape): every discovery session.s
-    /// puts as `(id, name, address, hardware_id, vendor, vendor_data)`.
+    /// Every discovery session's findings.
     pub async fn discovery_found_stream(
         &self,
-    ) -> Result<
-        impl futures_util::Stream<
-            Item = (
-                String,
-                String,
-                String,
-                HardwareId,
-                String,
-                HashMap<String, String>,
-            ),
-        > + use<>,
-    > {
+    ) -> Result<impl futures_util::Stream<Item = DiscoveredTv> + use<>> {
         let sub = self
             .session
             .declare_subscriber(keys::discovery_found_wild(&self.site))
@@ -526,17 +492,10 @@ impl DaemonClient {
                 let Ok(found) =
                     serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes())
                 else {
+                    warn!("undecodable discovery finding skipped");
                     continue;
                 };
-                let item = (
-                    found.id,
-                    found.name,
-                    found.address,
-                    found.hardware_id.unwrap_or_default(),
-                    found.vendor,
-                    found.vendor_data,
-                );
-                if tx.send(item).is_err() {
+                if tx.send(found).is_err() {
                     return;
                 }
             }
@@ -545,35 +504,15 @@ impl DaemonClient {
     }
 
     /// Manual-entry hint: the daemon probes its ARP cache (after the
-    /// vendor primes it) so the wizard can show the device's MAC before
-    /// pairing. Pair-time enrichment daemon-side remains the safety net.
-    pub async fn enrich_manual_entry(
-        &self,
-        vendor: &str,
-        address: &str,
-    ) -> Result<HashMap<String, String>> {
+    /// vendor primes it) for the device's MAC, so the wizard can show it
+    /// before pairing. Pair-time enrichment daemon-side remains the
+    /// safety net.
+    pub async fn enrich_manual_entry(&self, vendor: &str, address: &str) -> Result<Option<String>> {
         let request = rpc::Enrich {
             vendor: vendor.into(),
             ip: address.into(),
         };
-        let reply = self.call::<manager::Enrich>(&(), &request).await?;
-        Ok(reply
-            .mac
-            .map(|mac| (tisvlay_core::MAC_CONFIG_KEY.to_string(), mac))
-            .into_iter()
-            .collect())
-    }
-
-    /// A vendor's capabilities; `None` when the catalog doesn't list it.
-    pub async fn get_vendor_capabilities(&self, vendor: &str) -> Result<Option<Capabilities>> {
-        let list = self.call::<vendors::Catalog>(&(), &()).await?;
-        Ok(list
-            .into_iter()
-            .find(|entry| entry.id == vendor)
-            .map(|entry| {
-                let refs: Vec<&str> = entry.capabilities.iter().map(String::as_str).collect();
-                Capabilities::from_strings(&refs)
-            }))
+        Ok(self.call::<manager::Enrich>(&(), &request).await?.mac)
     }
 
     pub async fn power_on(&self, tv: Uuid) -> Result<()> {
@@ -1222,7 +1161,7 @@ mod mirror_row {
                 })
                 .unwrap_or_else(|| "unknown".into());
             TvInfo {
-                uuid: id.to_string(),
+                uuid: id,
                 name: identity.name.clone(),
                 vendor: identity.vendor.clone(),
                 brand: identity
@@ -1234,10 +1173,7 @@ mod mirror_row {
                 managed: meta.managed,
                 automated: meta.automated,
                 remote_armed: meta.remote_armed,
-                system_profile: meta
-                    .system_profile
-                    .map(|p| p.to_string())
-                    .unwrap_or_default(),
+                system_profile: meta.system_profile,
                 primary_input: meta.primary_input.unwrap_or_default(),
                 hardware_id: HardwareId {
                     manufacturer: identity.make.clone(),
@@ -1289,14 +1225,20 @@ mod mirror_row {
 mod tests {
     use super::*;
 
-    fn sample(tv: &str, phase: &str, attempt: &str) -> (String, String, PairingProgressDetail) {
+    fn uuid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn sample(tv: Uuid, phase: &str, attempt: Uuid) -> (Uuid, PairingProgress) {
         (
-            tv.into(),
-            phase.into(),
-            PairingProgressDetail {
-                attempt: attempt.into(),
+            tv,
+            PairingProgress {
+                attempt,
+                phase: phase.into(),
                 message: format!("{phase} ({attempt})"),
-                ..Default::default()
+                code: None,
+                path: None,
+                link_mac: None,
             },
         )
     }
@@ -1305,21 +1247,23 @@ mod tests {
     /// terminal; the drain must not mistake it for the current attempt's.
     #[tokio::test]
     async fn drain_skips_terminals_from_other_attempts() {
+        let (tv, other, old, new) = (uuid(1), uuid(2), uuid(10), uuid(11));
         let stream = futures_util::stream::iter([
-            sample("tv", "complete", "old"),
-            sample("other", "complete", "new"),
-            sample("tv", "awaiting_tv", "new"),
-            sample("tv", "failed", "old"),
-            sample("tv", "complete", "new"),
+            sample(tv, "complete", old),
+            sample(other, "complete", new),
+            sample(tv, "awaiting_tv", new),
+            sample(tv, "failed", old),
+            sample(tv, "complete", new),
         ]);
         let mut phases = Vec::new();
-        let terminal = DaemonClient::drain_pair_to_terminal(stream, "tv", "new", |phase, _| {
+        let terminal = DaemonClient::drain_pair_to_terminal(stream, tv, new, |phase, _| {
             phases.push(phase.to_string());
         })
         .await
         .unwrap();
+        let expected = format!("complete ({new})");
         assert!(
-            matches!(&terminal, PairTerminal::Complete { tv_id, message, .. } if tv_id == "tv" && message == "complete (new)"),
+            matches!(&terminal, PairTerminal::Complete { tv: t, message, .. } if *t == tv && *message == expected),
             "{terminal:?}"
         );
         assert_eq!(phases, ["awaiting_tv"]);
@@ -1334,10 +1278,10 @@ mod tests {
                 configured: "64:E4:A5:6C:AB:B4".into(),
             },
         };
-        let (tv, phase, mut detail) = sample("tv", "complete", "a");
-        detail.link_mac = Some(report.clone());
-        let stream = futures_util::stream::iter([(tv, phase, detail)]);
-        let terminal = DaemonClient::drain_pair_to_terminal(stream, "tv", "a", |_, _| {})
+        let (tv, mut progress) = sample(uuid(1), "complete", uuid(10));
+        progress.link_mac = Some(report.clone());
+        let stream = futures_util::stream::iter([(tv, progress)]);
+        let terminal = DaemonClient::drain_pair_to_terminal(stream, tv, uuid(10), |_, _| {})
             .await
             .unwrap();
         assert!(

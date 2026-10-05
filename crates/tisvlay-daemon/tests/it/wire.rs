@@ -128,7 +128,7 @@ fn add_body(name: &str, address: &str) -> rpc::AddTv {
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": address }),
+        config: serde_json::from_value(json!({ "address": address })).unwrap(),
     }
 }
 
@@ -566,7 +566,8 @@ async fn re_pair_refreshes_credentials_in_place() {
         name: "Repairable".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://rp", "pairing": "accept" }),
+        config: serde_json::from_value(json!({ "address": "mock://rp", "pairing": "accept" }))
+            .unwrap(),
     };
     let ok = call::<manager::Pair>(&w.caller, &(), &request)
         .await
@@ -743,7 +744,10 @@ async fn pairing_progress_liveliness_and_cancel_over_wire() {
         name: "Pairing".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://pairwire", "pairing": "manual" }),
+        config: serde_json::from_value(
+            json!({ "address": "mock://pairwire", "pairing": "manual" }),
+        )
+        .unwrap(),
     };
     let ok = call::<manager::Pair>(&w.caller, &(), &request)
         .await
@@ -802,7 +806,7 @@ async fn vendor_field_validation_rejects_blank_required_fields() {
             name: "Blank".into(),
             vendor: "mock".into(),
             managed: true,
-            config: json!({}),
+            config: serde_json::from_value(json!({})).unwrap(),
         },
     )
     .await
@@ -847,11 +851,12 @@ async fn pair_fills_the_mac_the_device_reports() {
         name: "Routed".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({
+        config: serde_json::from_value(json!({
             "address": "mock://routed",
             "pairing": "accept",
             "link_mac": "84-90-0a-63-a9-94",
-        }),
+        }))
+        .unwrap(),
     };
     let ok = call::<manager::Pair>(&w.caller, &(), &request)
         .await

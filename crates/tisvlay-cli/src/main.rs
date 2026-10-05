@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::CompleteEnv;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
@@ -367,8 +367,10 @@ async fn run() -> Result<()> {
             address,
         } => {
             let config = match (params, address) {
-                (Some(params), _) => serde_json::from_str(&params)?,
-                (None, Some(address)) => json!({ "address": address }),
+                (Some(params), _) => {
+                    serde_json::from_str(&params).context("--params must be a JSON object")?
+                }
+                (None, Some(address)) => address_config(address),
                 (None, None) => bail!("provide --params or --address"),
             };
             pair(&session, &caller, site, name, vendor, config).await
@@ -384,7 +386,7 @@ async fn run() -> Result<()> {
                 name,
                 vendor,
                 managed: !unmanaged,
-                config: json!({ "address": address }),
+                config: address_config(address),
             };
             let created = call::<manager::AddTv>(&caller, &(), &request).await?;
             println!("added: {}", created.id);
@@ -1083,13 +1085,18 @@ async fn discover(
     Ok(())
 }
 
+/// A vendor config naming only an address (the mock shorthand).
+fn address_config(address: String) -> serde_json::Map<String, Value> {
+    serde_json::Map::from_iter([("address".to_string(), Value::String(address))])
+}
+
 async fn pair(
     session: &Session,
     caller: &Caller,
     site: &str,
     name: String,
     vendor: String,
-    config: Value,
+    config: serde_json::Map<String, Value>,
 ) -> Result<()> {
     let request = rpc::AddTv {
         id: None,
