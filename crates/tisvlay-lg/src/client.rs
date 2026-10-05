@@ -24,6 +24,15 @@ use std::time::Duration;
 use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, Secret, TvState};
 use tokio::sync::mpsc;
 
+/// A response payload's key names, for logs: the `Registered` payload
+/// carries the client key, so the values never reach a log line.
+fn payload_keys(payload: &Value) -> Vec<&str> {
+    payload
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
 /// Client for controlling an LG WebOS TV.
 pub struct WebOsClient {
     /// WebSocket connection (None if closed).
@@ -175,7 +184,11 @@ impl WebOsClient {
 
         // Phase 1: send the register request and get the first response.
         let response = self.conn()?.request(&request, pairing_timeout).await?;
-        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 1)");
+        tracing::debug!(
+            msg_type = ?response.msg_type,
+            payload_keys = ?payload_keys(&response.payload),
+            "Registration response (phase 1)"
+        );
 
         match response.msg_type {
             ResponseType::Registered => {
@@ -208,7 +221,11 @@ impl WebOsClient {
         // Phase 2: wait for the Registered response (no re-send).
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self.conn()?.request_wait(&request.id, remaining).await?;
-        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 2)");
+        tracing::debug!(
+            msg_type = ?response.msg_type,
+            payload_keys = ?payload_keys(&response.payload),
+            "Registration response (phase 2)"
+        );
 
         match response.msg_type {
             ResponseType::Registered => {
@@ -754,6 +771,16 @@ impl WebOsClient {
 mod tests {
     use super::*;
     use crate::test_server::{FakeSsapServer, RegistrationOutcome};
+
+    /// The registration log line names the `Registered` payload's keys,
+    /// never the client key itself.
+    #[test]
+    fn registration_log_fields_omit_the_client_key() {
+        let payload = json!({ "client-key": "secret-client-key-1234" });
+        let shown = format!("{:?}", payload_keys(&payload));
+        assert!(shown.contains("client-key"), "{shown}");
+        assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+    }
 
     // -----------------------------------------------------------------------
     // Reader-loop fault injection — these exercise the WebOsClient reader

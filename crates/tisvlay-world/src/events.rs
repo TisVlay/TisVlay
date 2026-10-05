@@ -559,3 +559,29 @@ pub enum WireEffect {
 }
 
 pub use tisvlay_wire::error::WireError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pairing update that outlives its session is debug-logged whole; the
+    /// config it carries holds the client key, so only key names may show.
+    #[test]
+    fn pairing_update_debug_shows_only_config_keys() {
+        let mut config = VendorConfig::new();
+        config.insert("ip", "192.0.2.1");
+        config.insert("client_key", "secret-client-key-1234");
+        let event = InEvent::PairingUpdate {
+            id: Uuid::nil(),
+            update: PairingUpdate::ConfigReady(config),
+        };
+        for shown in [format!("{event:?}"), format!("{event:#?}")] {
+            assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+            assert!(!shown.contains("192.0.2.1"), "{shown}");
+            assert!(
+                shown.contains("client_key"),
+                "key names stay visible: {shown}"
+            );
+        }
+    }
+}
