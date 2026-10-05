@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tisvlay_core::VendorConfig;
+use tisvlay_wire::endpoint::Rpc;
 use tisvlay_wire::endpoint::{manager, profile, tv, vendors};
+use tisvlay_wire::serve::Responder;
 use tisvlay_wire::{keys, rpc, serve};
 use tisvlay_world::{Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
 use tokio::sync::mpsc;
@@ -56,22 +58,20 @@ pub(crate) async fn run(
     info: rpc::ServiceInfo,
     ready: tokio::sync::oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
-    let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
+    let (query_tx, mut queries) = mpsc::unbounded_channel::<(Family, Query)>();
     let mut queryables: Vec<Queryable<()>> = Vec::new();
-    // `vendors/**` also matches the bare catalog key: `**` spans zero
-    // chunks too.
-    for key in [
-        keys::manager_rpc_wild(&site),
-        keys::tv_rpc_wild(&site),
-        keys::profile_rpc_wild(&site),
-        keys::vendors_wild(&site),
+    for (family, key) in [
+        (Family::Manager, manager::Incoming::wild(&site)),
+        (Family::Tv, tv::Incoming::wild(&site)),
+        (Family::Profile, profile::Incoming::wild(&site)),
+        (Family::Vendors, vendors::Incoming::wild(&site)),
     ] {
         let tx = query_tx.clone();
         let queryable = session
             .declare_queryable(key.as_str())
             .complete(true)
             .callback(move |query| {
-                let _ = tx.send(query);
+                let _ = tx.send((family, query));
             })
             .await
             .map_err(|e| anyhow::anyhow!("declare rpc queryable {key}: {e}"))?;
@@ -105,10 +105,19 @@ pub(crate) async fn run(
             },
             query = queries.recv() => match query {
                 None => return Ok(()),
-                Some(query) => bridge.handle_query(query).await,
+                Some((family, query)) => bridge.handle_query(family, query).await,
             },
         }
     }
+}
+
+/// The rpc family a queryable serves, tagging each query it receives.
+#[derive(Debug, Clone, Copy)]
+enum Family {
+    Manager,
+    Tv,
+    Profile,
+    Vendors,
 }
 
 struct Bridge {
@@ -239,76 +248,85 @@ impl Bridge {
         }
     }
 
-    async fn handle_query(&mut self, query: Query) {
-        let key = query.key_expr().as_str().to_string();
-        let payload = serve::payload(&query);
-        let reply = self.next_reply;
-        let command = if key.starts_with(&keys::vendors(&self.site)) {
-            match vendors::Call::decode(&self.site, &key, &payload) {
-                Ok(call) => {
-                    self.serve_vendors(&query, call).await;
-                    return;
+    async fn handle_query(&mut self, family: Family, query: Query) {
+        let command = match family {
+            Family::Vendors => {
+                if let Some(incoming) = vendors::Incoming::receive(&self.site, query).await {
+                    self.serve_vendors(incoming).await;
                 }
-                Err(error) => Err(error),
+                return;
             }
-        } else if let Some(verb) = keys::parse_manager_rpc(&self.site, &key) {
-            match manager::Call::decode(verb, &payload) {
-                Err(error) => Err(error),
-                // Introspection and discovery are served bridge-side,
-                // never touching the world.
-                Ok(manager::Call::Info(())) => {
-                    serve::reply::<manager::Info>(&query, &self.info).await;
-                    return;
-                }
-                Ok(manager::Call::Enrich(request)) => {
-                    self.handle_enrich(query, request);
-                    return;
-                }
-                Ok(manager::Call::Discover(request)) => {
-                    self.handle_discover(query, request);
-                    return;
-                }
-                Ok(manager::Call::DiscoverStart(request)) => {
-                    self.handle_discover_start(&query, request).await;
-                    return;
-                }
-                Ok(manager::Call::DiscoverStop(request)) => {
-                    self.handle_discover_stop(&query, request).await;
-                    return;
-                }
-                Ok(manager::Call::AddTv(request)) => self.add_tv(request, reply).await,
-                Ok(manager::Call::Pair(request)) => self.pair(request, reply).await,
-                Ok(manager::Call::CancelPair(request)) => Ok(Command::CancelPair {
-                    id: request.id,
-                    reply: Some(Reply::new(reply)),
-                }),
-            }
-        } else if let Some(verb) = keys::parse_profile_rpc(&self.site, &key) {
-            profile::Call::decode(verb, &payload).map(|call| profile_command(call, reply))
-        } else if let Some((id, verb)) = keys::parse_tv_rpc(&self.site, &key) {
-            tv::Call::decode(verb, &payload).and_then(|call| self.tv_command(id, call, reply))
-        } else {
-            Err(WireError::unknown_rpc(&key))
+            Family::Manager => match manager::Incoming::receive(&self.site, query).await {
+                Some(((), incoming)) => self.manager_command(incoming).await,
+                None => return,
+            },
+            Family::Profile => match profile::Incoming::receive(&self.site, query).await {
+                Some(((), incoming)) => Some(self.profile_command(incoming)),
+                None => return,
+            },
+            Family::Tv => match tv::Incoming::receive(&self.site, query).await {
+                Some((id, incoming)) => self.tv_command(id, incoming).await,
+                None => return,
+            },
         };
-        match command {
-            Ok(command) => {
-                debug!(%key, reply, "rpc routed");
-                self.next_reply += 1;
-                self.pending.insert(reply, query);
-                if !self.world.command(command)
-                    && let Some(query) = self.pending.remove(&reply)
-                {
-                    serve::reply_err(&query, &WireError::daemon_shutting_down()).await;
-                }
+        if let Some(command) = command
+            && !self.world.command(command)
+        {
+            // The world has stopped: nothing filed will be answered.
+            for (_, query) in self.pending.drain() {
+                serve::reply_err(&query, &WireError::daemon_shutting_down()).await;
             }
-            Err(error) => serve::reply_err(&query, &error).await,
+        }
+    }
+
+    /// File a query the world will answer: the reply token it gets is
+    /// typed by the same rpc as the responder it replaces.
+    fn file<R: Rpc>(&mut self, responder: Responder<R>) -> Option<Reply<R>> {
+        let to = self.next_reply;
+        self.next_reply += 1;
+        self.pending.insert(to, responder.into_query());
+        debug!(rpc = R::NAME, reply = to, "rpc routed");
+        Some(Reply::new(to))
+    }
+
+    /// The manager rpcs: introspection and discovery are served
+    /// bridge-side, never touching the world; enrollment and pairing
+    /// become world commands.
+    async fn manager_command(&mut self, incoming: manager::Incoming) -> Option<Command> {
+        match incoming {
+            manager::Incoming::Info((), responder) => {
+                responder.ok(&self.info).await;
+                None
+            }
+            manager::Incoming::Enrich(request, responder) => {
+                self.handle_enrich(responder, request);
+                None
+            }
+            manager::Incoming::Discover(request, responder) => {
+                self.handle_discover(responder, request);
+                None
+            }
+            manager::Incoming::DiscoverStart(request, responder) => {
+                self.handle_discover_start(responder, request).await;
+                None
+            }
+            manager::Incoming::DiscoverStop(request, responder) => {
+                self.handle_discover_stop(responder, request).await;
+                None
+            }
+            manager::Incoming::AddTv(request, responder) => self.add_tv(request, responder).await,
+            manager::Incoming::Pair(request, responder) => self.pair(request, responder).await,
+            manager::Incoming::CancelPair(request, responder) => Some(Command::CancelPair {
+                id: request.id,
+                reply: self.file(responder),
+            }),
         }
     }
 
     /// The vendor catalog and per-vendor pairing schemas.
-    async fn serve_vendors(&self, query: &Query, call: vendors::Call) {
-        match call {
-            vendors::Call::Catalog(()) => {
+    async fn serve_vendors(&self, incoming: vendors::Incoming) {
+        match incoming {
+            vendors::Incoming::Catalog(responder) => {
                 let list: Vec<rpc::VendorEntry> = self
                     .catalog
                     .iter()
@@ -318,25 +336,32 @@ impl Bridge {
                         capabilities: v.capabilities.clone(),
                     })
                     .collect();
-                serve::reply::<vendors::Catalog>(query, &list).await;
+                responder.ok(&list).await;
             }
-            vendors::Call::Schema { vendor } => {
+            vendors::Incoming::Schema { vendor, responder } => {
                 match self.catalog.iter().find(|v| v.id == vendor) {
-                    Some(meta) => {
-                        serve::reply::<vendors::Schema>(query, &meta.connector.pairing_schema())
-                            .await;
-                    }
-                    None => serve::reply_err(query, &WireError::unknown_vendor(&vendor)).await,
+                    Some(meta) => responder.ok(&meta.connector.pairing_schema()).await,
+                    None => responder.err(&WireError::unknown_vendor(&vendor)).await,
                 }
             }
         }
     }
 
     /// Enroll a TV from a full config.
-    async fn add_tv(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
+    async fn add_tv(
+        &mut self,
+        request: rpc::AddTv,
+        responder: Responder<manager::AddTv>,
+    ) -> Option<Command> {
         let id = request.id.unwrap_or_else(Uuid::new_v4);
-        let config = self.prepare_config(&request.vendor, request.config).await?;
-        Ok(Command::AddTv {
+        let config = match self.prepare_config(&request.vendor, request.config).await {
+            Ok(config) => config,
+            Err(error) => {
+                responder.err(&error).await;
+                return None;
+            }
+        };
+        Some(Command::AddTv {
             record: Box::new(tisvlay_world::TvRecord {
                 id,
                 name: request.name,
@@ -346,120 +371,172 @@ impl Bridge {
                 primary_input: None,
                 config,
             }),
-            reply: Some(Reply::new(reply)),
+            reply: self.file(responder),
         })
     }
 
     /// Start pairing a new TV.
-    async fn pair(&self, request: rpc::AddTv, reply: ReplyTo) -> Result<Command, WireError> {
-        let config = self.prepare_config(&request.vendor, request.config).await?;
-        Ok(Command::Pair {
+    async fn pair(
+        &mut self,
+        request: rpc::AddTv,
+        responder: Responder<manager::Pair>,
+    ) -> Option<Command> {
+        let config = match self.prepare_config(&request.vendor, request.config).await {
+            Ok(config) => config,
+            Err(error) => {
+                responder.err(&error).await;
+                return None;
+            }
+        };
+        Some(Command::Pair {
             id: request.id.unwrap_or_else(Uuid::new_v4),
             attempt: Uuid::new_v4(),
             name: request.name,
             vendor: request.vendor,
             config,
             managed: request.managed,
-            reply: Some(Reply::new(reply)),
+            reply: self.file(responder),
         })
     }
 
     /// Map a per-TV rpc onto its world command.
-    fn tv_command(&self, id: Uuid, call: tv::Call, reply: ReplyTo) -> Result<Command, WireError> {
-        Ok(match call {
-            tv::Call::SetVolume(request) => Command::SetVolume {
+    async fn tv_command(&mut self, id: Uuid, incoming: tv::Incoming) -> Option<Command> {
+        Some(match incoming {
+            tv::Incoming::SetVolume(request, responder) => Command::SetVolume {
                 id,
                 level: request.level,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SetMuted(request) => Command::SetMuted {
+            tv::Incoming::SetMuted(request, responder) => Command::SetMuted {
                 id,
                 muted: request.muted,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SetName(request) => Command::SetName {
+            tv::Incoming::SetName(request, responder) => Command::SetName {
                 id,
                 name: request.name,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SetManaged(request) => Command::SetManaged {
+            tv::Incoming::SetManaged(request, responder) => Command::SetManaged {
                 id,
                 managed: request.managed,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SetSystemProfile(request) => Command::SetSystemProfile {
+            tv::Incoming::SetSystemProfile(request, responder) => Command::SetSystemProfile {
                 id,
                 profile: request.profile,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SetPrimaryInput(request) => Command::SetPrimaryInput {
+            tv::Incoming::SetPrimaryInput(request, responder) => Command::SetPrimaryInput {
                 id,
                 input: request.input,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SwitchInput(request) => Command::SwitchInput {
+            tv::Incoming::SwitchInput(request, responder) => Command::SwitchInput {
                 id,
                 input: request.input,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SetBacklight(request) => Command::SetBacklight {
+            tv::Incoming::SetBacklight(request, responder) => Command::SetBacklight {
                 id,
                 level: request.level,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::SetScreen(request) => Command::SetScreen {
+            tv::Incoming::SetScreen(request, responder) => Command::SetScreen {
                 id,
                 on: request.on,
                 restore_input: request.restore_input,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::PowerOn(request) => Command::PowerOn {
+            tv::Incoming::PowerOn(request, responder) => Command::PowerOn {
                 id,
                 restore_input: request.restore_input,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::PowerOff(()) => Command::PowerOff {
+            tv::Incoming::PowerOff((), responder) => Command::PowerOff {
                 id,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::Reconnect(()) => Command::Reconnect {
+            tv::Incoming::Reconnect((), responder) => Command::Reconnect {
                 id,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::Remove(()) => Command::RemoveTv {
+            tv::Incoming::Remove((), responder) => Command::RemoveTv {
                 id,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::GetConfig(()) => Command::GetConfig {
+            tv::Incoming::GetConfig((), responder) => Command::GetConfig {
                 id,
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
-            tv::Call::UpdateConfig(patch) => {
-                if let Some(vendor) = self.vendors_by_tv.get(&id) {
-                    self.validate_vendor_fields(vendor, &patch.0, true)?;
+            tv::Incoming::UpdateConfig(patch, responder) => {
+                if let Some(vendor) = self.vendors_by_tv.get(&id)
+                    && let Err(error) = self.validate_vendor_fields(vendor, &patch.0, true)
+                {
+                    responder.err(&error).await;
+                    return None;
                 }
                 Command::UpdateConfig {
                     id,
                     patch,
-                    reply: Some(Reply::new(reply)),
+                    reply: self.file(responder),
                 }
             }
-            tv::Call::RePair(()) => Command::RePair {
+            tv::Incoming::RePair((), responder) => Command::RePair {
                 id,
                 attempt: Uuid::new_v4(),
-                reply: Some(Reply::new(reply)),
+                reply: self.file(responder),
             },
         })
+    }
+
+    /// Map a system-profile rpc onto its world command.
+    fn profile_command(&mut self, incoming: profile::Incoming) -> Command {
+        match incoming {
+            profile::Incoming::Create(request, responder) => Command::AddProfile {
+                record: Box::new(tisvlay_world::ProfileRecord {
+                    id: request.id.unwrap_or_else(Uuid::new_v4),
+                    body: request.body,
+                }),
+                reply: self.file(responder),
+            },
+            profile::Incoming::Update(request, responder) => Command::UpdateProfile {
+                id: request.id,
+                body: Box::new(request.body),
+                reply: self.file(responder),
+            },
+            profile::Incoming::Duplicate(request, responder) => Command::DuplicateProfile {
+                id: request.id,
+                new_id: Uuid::new_v4(),
+                name: request.name,
+                reply: self.file(responder),
+            },
+            profile::Incoming::Delete(request, responder) => Command::DeleteProfile {
+                id: request.id,
+                reply: self.file(responder),
+            },
+            profile::Incoming::Defaults((), responder) => Command::ProfileDefaults {
+                reply: self.file(responder),
+            },
+            profile::Incoming::Effective(request, responder) => Command::EffectiveProfile {
+                id: request.id,
+                reply: self.file(responder),
+            },
+        }
     }
 
     /// Open-ended scan session: publish findings until stopped, with a
     /// liveliness token marking the session alive (dropped tokens tell
     /// wizards the daemon or session died).
-    async fn handle_discover_start(&mut self, query: &Query, request: rpc::DiscoverStart) {
+    async fn handle_discover_start(
+        &mut self,
+        responder: Responder<manager::DiscoverStart>,
+        request: rpc::DiscoverStart,
+    ) {
         if let Some(vendor) = &request.vendor
             && !self.discoveries.contains_key(vendor)
         {
-            serve::reply_err(query, &WireError::unknown_vendor(vendor)).await;
+            responder.err(&WireError::unknown_vendor(vendor)).await;
             return;
         }
         let session_id = Uuid::new_v4();
@@ -508,24 +585,28 @@ impl Bridge {
             }
         });
         self.discovery_sessions.insert(session_id, handle);
-        serve::reply::<manager::DiscoverStart>(
-            query,
-            &rpc::DiscoverySession {
+        responder
+            .ok(&rpc::DiscoverySession {
                 session: session_id,
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
-    async fn handle_discover_stop(&mut self, query: &Query, request: rpc::DiscoverStop) {
+    async fn handle_discover_stop(
+        &mut self,
+        responder: Responder<manager::DiscoverStop>,
+        request: rpc::DiscoverStop,
+    ) {
         match self.discovery_sessions.remove(&request.session) {
             Some(handle) => {
                 // Aborting drops the task's liveliness token with it.
                 handle.abort();
-                serve::reply::<manager::DiscoverStop>(query, &rpc::Ack {}).await;
+                responder.ok(&rpc::Ack {}).await;
             }
             None => {
-                serve::reply_err(query, &WireError::discovery_not_found(request.session)).await;
+                responder
+                    .err(&WireError::discovery_not_found(request.session))
+                    .await;
             }
         }
     }
@@ -533,7 +614,7 @@ impl Bridge {
     /// Manual-entry enrichment: probe the ARP cache for `ip` (after the
     /// vendor primes it) so the wizard can hint the device's MAC before
     /// pairing. Best-effort — an empty reply just means no hint.
-    fn handle_enrich(&self, query: Query, request: rpc::Enrich) {
+    fn handle_enrich(&self, responder: Responder<manager::Enrich>, request: rpc::Enrich) {
         let connector = self
             .catalog
             .iter()
@@ -546,20 +627,20 @@ impl Bridge {
             let reply = rpc::EnrichReply {
                 mac: crate::arp::lookup_mac(&request.ip).await,
             };
-            serve::reply::<manager::Enrich>(&query, &reply).await;
+            responder.ok(&reply).await;
         });
     }
 
     /// A bounded scan is one query whose findings stream back as multiple
-    /// replies; dropping the query at the end finalizes it.
-    fn handle_discover(&self, query: Query, request: rpc::Discover) {
+    /// replies; finishing the responder at the end finalizes it.
+    fn handle_discover(&self, responder: Responder<manager::Discover>, request: rpc::Discover) {
         let window = manager::discover_scan(&request);
         let discoveries = Arc::clone(&self.discoveries);
         tokio::spawn(async move {
             if let Some(vendor) = &request.vendor
                 && !discoveries.contains_key(vendor)
             {
-                serve::reply_err(&query, &WireError::unknown_vendor(vendor)).await;
+                responder.err(&WireError::unknown_vendor(vendor)).await;
                 return;
             }
             for (vendor, discovery) in discoveries.iter() {
@@ -578,12 +659,13 @@ impl Bridge {
                                 tv.vendor_data
                                     .insert(tisvlay_core::MAC_CONFIG_KEY.into(), mac);
                             }
-                            serve::reply::<manager::Discover>(&query, &tv).await;
+                            responder.send(&tv).await;
                         }
                     }
                     Err(error) => warn!(vendor, %error, "discovery scan failed"),
                 }
             }
+            responder.finish();
         });
     }
 
@@ -638,40 +720,6 @@ impl Bridge {
 }
 
 /// Map a system-profile rpc onto its world command.
-fn profile_command(call: profile::Call, reply: ReplyTo) -> Command {
-    match call {
-        profile::Call::Create(request) => Command::AddProfile {
-            record: Box::new(tisvlay_world::ProfileRecord {
-                id: request.id.unwrap_or_else(Uuid::new_v4),
-                body: request.body,
-            }),
-            reply: Some(Reply::new(reply)),
-        },
-        profile::Call::Update(request) => Command::UpdateProfile {
-            id: request.id,
-            body: Box::new(request.body),
-            reply: Some(Reply::new(reply)),
-        },
-        profile::Call::Duplicate(request) => Command::DuplicateProfile {
-            id: request.id,
-            new_id: Uuid::new_v4(),
-            name: request.name,
-            reply: Some(Reply::new(reply)),
-        },
-        profile::Call::Delete(request) => Command::DeleteProfile {
-            id: request.id,
-            reply: Some(Reply::new(reply)),
-        },
-        profile::Call::Defaults(()) => Command::ProfileDefaults {
-            reply: Some(Reply::new(reply)),
-        },
-        profile::Call::Effective(request) => Command::EffectiveProfile {
-            id: request.id,
-            reply: Some(Reply::new(reply)),
-        },
-    }
-}
-
 /// Vendor configs are JSON on the wire and a [`VendorConfig`] at the backend
 /// seam — a pure serde transcode (a JSON `null` has no TOML form and
 /// errors).

@@ -16,8 +16,7 @@ use anyhow::{Context, Result, anyhow};
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
 use tisvlay_wire::endpoint::user_tray;
-use tisvlay_wire::error::WireError;
-use tisvlay_wire::{keys, rpc, serve};
+use tisvlay_wire::{keys, rpc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use zenoh::Session;
@@ -211,7 +210,7 @@ pub async fn serve_settings(
 
     let (query_tx, mut queries) = mpsc::unbounded_channel::<Query>();
     let _queryable = user
-        .declare_queryable(keys::user_tray_rpc_wild(&site))
+        .declare_queryable(user_tray::Incoming::wild(&site))
         .complete(true)
         .callback(move |query| {
             let _ = query_tx.send(query);
@@ -229,30 +228,28 @@ pub async fn serve_settings(
 
     info!(site, config = %config_path.display(), "tray settings service running");
     while let Some(query) = queries.recv().await {
-        let key = query.key_expr().as_str().to_string();
-        let call = keys::parse_user_tray_rpc(&site, &key)
-            .ok_or_else(|| WireError::unknown_rpc(&key))
-            .and_then(|verb| user_tray::Call::decode(verb, &serve::payload(&query)));
-        match call {
-            Err(error) => serve::reply_err(&query, &error).await,
-            Ok(user_tray::Call::Get(())) => serve::reply::<user_tray::Get>(&query, &settings).await,
-            Ok(user_tray::Call::Update(patch)) => {
+        let Some(((), incoming)) = user_tray::Incoming::receive(&site, query).await else {
+            continue;
+        };
+        match incoming {
+            user_tray::Incoming::Get((), responder) => responder.ok(&settings).await,
+            user_tray::Incoming::Update(patch, responder) => {
                 settings = settings.merged_with(&patch);
                 notifier.set_enabled(settings);
                 save_settings(&config_path, &settings);
                 publish(settings).await;
-                serve::reply::<user_tray::Update>(&query, &settings).await;
+                responder.ok(&settings).await;
             }
-            Ok(user_tray::Call::Test(())) => {
+            user_tray::Incoming::Test((), responder) => {
                 notifier.notify_test();
-                serve::reply::<user_tray::Test>(&query, &rpc::Ack {}).await;
+                responder.ok(&rpc::Ack {}).await;
             }
-            Ok(user_tray::Call::Info(())) => {
+            user_tray::Incoming::Info((), responder) => {
                 let info = rpc::ServiceInfo {
                     version: env!("CARGO_PKG_VERSION").into(),
                     state_path: config_path.display().to_string(),
                 };
-                serve::reply::<user_tray::Info>(&query, &info).await;
+                responder.ok(&info).await;
             }
         }
     }

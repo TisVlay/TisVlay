@@ -1,9 +1,11 @@
 //! Typed rpc endpoints: every rpc is declared once, here, as a key plus
 //! its request and response types, and both sides derive from that
 //! declaration. Clients call through [`Caller`](crate::caller::Caller)
-//! with the marker type; servers decode a query into their family's
-//! request enum and match it exhaustively, so a family member without a
-//! handler, or a handler fed the wrong body type, doesn't compile.
+//! with the marker type. Servers receive a query as their family's
+//! `Incoming` enum and match it exhaustively: each variant carries the
+//! decoded request and a [`Responder`] typed by that rpc, so a family
+//! member without a handler, a handler fed the wrong body type, or a
+//! reply of another rpc's type doesn't compile.
 
 use std::time::Duration;
 
@@ -12,7 +14,8 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::error::WireError;
-use crate::{keys, rpc};
+use crate::serve::Responder;
+use crate::{keys, rpc, serve};
 
 /// One rpc: where it lives and what it carries.
 pub trait Rpc {
@@ -40,6 +43,27 @@ pub trait Streaming: Rpc {
     fn window(request: &Self::Request) -> Duration;
 }
 
+/// A family key parser's result: the verb, plus the target for a family
+/// whose keys carry one (a TV id).
+pub(crate) trait ParsedKey<'a> {
+    type Target;
+    fn split(self) -> (Self::Target, &'a str);
+}
+
+impl<'a> ParsedKey<'a> for &'a str {
+    type Target = ();
+    fn split(self) -> ((), &'a str) {
+        ((), self)
+    }
+}
+
+impl<'a> ParsedKey<'a> for (Uuid, &'a str) {
+    type Target = Uuid;
+    fn split(self) -> (Uuid, &'a str) {
+        self
+    }
+}
+
 /// Decode an rpc body; an absent payload reads as JSON `null`.
 fn decode_body<T: DeserializeOwned>(payload: &[u8]) -> Result<T, WireError> {
     let payload = if payload.is_empty() {
@@ -52,13 +76,21 @@ fn decode_body<T: DeserializeOwned>(payload: &[u8]) -> Result<T, WireError> {
 
 /// Declare one family of verb-shaped rpcs: a marker type per rpc
 /// implementing [`Rpc`] plus [`Unary`] (`read`/`write`) or nothing
-/// (`stream`, whose [`Streaming`] impl is written by hand), and the
-/// family's `Call` enum carrying each rpc's decoded request.
+/// (`stream`, whose [`Streaming`] impl is written by hand); the family's
+/// `Call` enum carrying each rpc's decoded request; and its `Incoming`
+/// enum pairing that request with the rpc's [`Responder`].
+///
+/// `key` builds an rpc's key and `parse` splits one back into its target
+/// and verb; `wild` is the wildcard the family's queryable declares. The
+/// `key` form reads like a closure but is spliced into each marker's
+/// [`Rpc::key`], with `verb` bound to that rpc's verb string.
 macro_rules! family {
     (
         $(#[$family_meta:meta])*
         target: $target:ty,
         key: |$site:ident, $tgt:ident, $verb:ident| $key:expr,
+        parse: $parse:path,
+        wild: $wild:path,
         rpcs: {
             $(
                 $(#[$meta:meta])*
@@ -100,6 +132,49 @@ macro_rules! family {
                 }
             }
         }
+
+        /// A received rpc of this family: its decoded request and the reply
+        /// it owes.
+        #[derive(Debug)]
+        pub enum Incoming {
+            $( $name($request, $crate::serve::Responder<$name>), )*
+        }
+
+        impl Incoming {
+            /// The wildcard this family's queryable declares.
+            pub fn wild(site: &str) -> String {
+                $wild(site)
+            }
+
+            /// Receive a query on this family. A key naming no rpc of the
+            /// family, or a body that doesn't decode, is refused here and
+            /// yields `None`.
+            pub async fn receive(site: &str, query: zenoh::query::Query) -> Option<($target, Self)> {
+                let parsed = $parse(site, query.key_expr().as_str())
+                    .map($crate::endpoint::ParsedKey::split)
+                    .map(|(target, verb)| (target, verb.to_string()));
+                let Some((target, verb)) = parsed else {
+                    let error = $crate::error::WireError::unknown_rpc(query.key_expr().as_str());
+                    $crate::serve::reply_err(&query, &error).await;
+                    return None;
+                };
+                match Call::decode(&verb, &$crate::serve::payload(&query)) {
+                    Ok(call) => Some((target, Self::with_responder(call, query))),
+                    Err(error) => {
+                        $crate::serve::reply_err(&query, &error).await;
+                        None
+                    }
+                }
+            }
+
+            fn with_responder(call: Call, query: zenoh::query::Query) -> Self {
+                match call {
+                    $( Call::$name(request) => {
+                        Self::$name(request, $crate::serve::Responder::new(query))
+                    } )*
+                }
+            }
+        }
     };
     (@kind $name:ident read) => {
         impl $crate::endpoint::Unary for $name {
@@ -122,6 +197,8 @@ pub mod manager {
         /// A decoded manager rpc.
         target: (),
         key: |site, _target, verb| keys::manager_rpc(site, verb),
+        parse: keys::parse_manager_rpc,
+        wild: keys::manager_rpc_wild,
         rpcs: {
             /// The daemon's version and state path.
             Info = "info" (()) -> rpc::ServiceInfo, read;
@@ -176,6 +253,8 @@ pub mod profile {
         /// A decoded system-profile rpc.
         target: (),
         key: |site, _target, verb| keys::profile_rpc(site, verb),
+        parse: keys::parse_profile_rpc,
+        wild: keys::profile_rpc_wild,
         rpcs: {
             Create = "create" (rpc::ProfileCreate) -> rpc::Created, write;
             Update = "update" (rpc::ProfileUpdate) -> rpc::Ack, write;
@@ -197,6 +276,8 @@ pub mod tv {
         /// A decoded per-TV rpc.
         target: Uuid,
         key: |site, tv, verb| keys::tv_rpc(site, tv, verb),
+        parse: keys::parse_tv_rpc,
+        wild: keys::tv_rpc_wild,
         rpcs: {
             SetVolume = "set-volume" (rpc::SetVolume) -> rpc::Ack, write;
             SetMuted = "set-muted" (rpc::SetMuted) -> rpc::Ack, write;
@@ -228,6 +309,8 @@ pub mod user_profile {
         /// A decoded user-profile rpc.
         target: (),
         key: |site, _target, verb| keys::user_profile_rpc(site, verb),
+        parse: keys::parse_user_profile_rpc,
+        wild: keys::user_profile_rpc_wild,
         rpcs: {
             Create = "create" (rpc::UserProfileCreate) -> rpc::Created, write;
             Update = "update" (rpc::UserProfileUpdate) -> rpc::Ack, write;
@@ -253,6 +336,8 @@ pub mod user_remote {
         /// A decoded remote-session rpc.
         target: (),
         key: |site, _target, verb| keys::user_remote_rpc(site, verb),
+        parse: keys::parse_user_remote_rpc,
+        wild: keys::user_remote_rpc_wild,
         rpcs: {
             /// Toggle a manual remote-session source; replies the new state.
             Set = "set" (rpc::RemoteSet) -> crate::payload::RemoteSessionState, write;
@@ -269,6 +354,8 @@ pub mod user_tray {
         /// A decoded tray-settings rpc.
         target: (),
         key: |site, _target, verb| keys::user_tray_rpc(site, verb),
+        parse: keys::parse_user_tray_rpc,
+        wild: keys::user_tray_rpc_wild,
         rpcs: {
             Get = "get" (()) -> rpc::NotificationSettings, read;
             /// Apply a partial update; replies the merged settings.
@@ -347,6 +434,41 @@ pub mod vendors {
                     })
                 }
                 None => Err(WireError::unknown_rpc(key)),
+            }
+        }
+    }
+
+    /// A received vendor-catalog rpc and the reply it owes.
+    #[derive(Debug)]
+    pub enum Incoming {
+        Catalog(Responder<Catalog>),
+        Schema {
+            vendor: String,
+            responder: Responder<Schema>,
+        },
+    }
+
+    impl Incoming {
+        /// The wildcard the catalog queryable declares; `**` spans zero
+        /// chunks too, so it matches the bare catalog key.
+        pub fn wild(site: &str) -> String {
+            keys::vendors_wild(site)
+        }
+
+        /// Receive a query on the catalog. One that names no catalog rpc,
+        /// or whose body doesn't decode, is refused here and yields `None`.
+        pub async fn receive(site: &str, query: zenoh::query::Query) -> Option<Self> {
+            let decoded = Call::decode(site, query.key_expr().as_str(), &serve::payload(&query));
+            match decoded {
+                Ok(Call::Catalog(())) => Some(Self::Catalog(Responder::new(query))),
+                Ok(Call::Schema { vendor }) => Some(Self::Schema {
+                    vendor,
+                    responder: Responder::new(query),
+                }),
+                Err(error) => {
+                    serve::reply_err(&query, &error).await;
+                    None
+                }
             }
         }
     }
@@ -429,3 +551,88 @@ mod tests {
         assert_eq!(serde_json::to_string(&rpc::Ack {}).unwrap(), "{}");
     }
 }
+
+/// The typed layer's compile-time gates. Each `compile_fail` example has a
+/// passing twin that differs only in what the gate checks, so a doctest
+/// can't pass by failing for an unrelated reason.
+///
+/// A call takes its rpc's request type:
+///
+/// ```no_run
+/// # use tisvlay_wire::{caller::Caller, endpoint::tv, rpc};
+/// async fn volume(caller: &Caller, id: uuid::Uuid) {
+///     let _ = caller.call::<tv::SetVolume>(&id, &rpc::SetVolume { level: 20 }).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// # use tisvlay_wire::{caller::Caller, endpoint::tv, rpc};
+/// async fn volume(caller: &Caller, id: uuid::Uuid) {
+///     let _ = caller.call::<tv::SetVolume>(&id, &rpc::SetMuted { muted: true }).await;
+/// }
+/// ```
+///
+/// A streaming rpc is collected, never called for one reply:
+///
+/// ```no_run
+/// # use tisvlay_wire::{caller::Caller, endpoint::manager, rpc};
+/// async fn scan(caller: &Caller) {
+///     let request = rpc::Discover { vendor: None, timeout_ms: None };
+///     let _ = caller.call_many::<manager::Discover>(&(), &request).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0277
+/// # use tisvlay_wire::{caller::Caller, endpoint::manager, rpc};
+/// async fn scan(caller: &Caller) {
+///     let request = rpc::Discover { vendor: None, timeout_ms: None };
+///     let _ = caller.call::<manager::Discover>(&(), &request).await;
+/// }
+/// ```
+///
+/// A server answers with its rpc's response type, and only once:
+///
+/// ```no_run
+/// # use tisvlay_wire::{endpoint::manager, rpc, serve::Responder};
+/// async fn created(responder: Responder<manager::AddTv>) {
+///     responder.ok(&rpc::Created { id: uuid::Uuid::nil() }).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// # use tisvlay_wire::{endpoint::manager, rpc, serve::Responder};
+/// async fn created(responder: Responder<manager::AddTv>) {
+///     responder.ok(&rpc::Ack {}).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0382
+/// # use tisvlay_wire::{endpoint::manager, rpc, serve::Responder};
+/// async fn created(responder: Responder<manager::AddTv>) {
+///     responder.ok(&rpc::Created { id: uuid::Uuid::nil() }).await;
+///     responder.ok(&rpc::Created { id: uuid::Uuid::nil() }).await;
+/// }
+/// ```
+///
+/// A server handles every rpc of its family:
+///
+/// ```no_run
+/// # use tisvlay_wire::{endpoint::user_remote, payload::RemoteSessionState};
+/// async fn serve(incoming: user_remote::Incoming, state: RemoteSessionState) {
+///     match incoming {
+///         user_remote::Incoming::Set(_, responder) => responder.ok(&state).await,
+///         user_remote::Incoming::Status((), responder) => responder.ok(&state).await,
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail,E0004
+/// # use tisvlay_wire::{endpoint::user_remote, payload::RemoteSessionState};
+/// async fn serve(incoming: user_remote::Incoming, state: RemoteSessionState) {
+///     match incoming {
+///         user_remote::Incoming::Status((), responder) => responder.ok(&state).await,
+///     }
+/// }
+/// ```
+#[cfg(doctest)]
+mod gates {}

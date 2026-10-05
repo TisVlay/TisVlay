@@ -18,6 +18,32 @@ pub type ReplyTo = u64;
 
 /// A reply owed to one rpc caller, typed by the rpc it answers: replying
 /// takes that rpc's response type, so a mismatched reply doesn't compile.
+///
+/// ```
+/// # use tisvlay_world::Reply;
+/// # use tisvlay_wire::{endpoint::manager, rpc};
+/// let _ = Reply::<manager::AddTv>::new(1).ok(&rpc::Created { id: uuid::Uuid::nil() });
+/// ```
+///
+/// ```compile_fail,E0308
+/// # use tisvlay_world::Reply;
+/// # use tisvlay_wire::{endpoint::manager, rpc};
+/// let _ = Reply::<manager::AddTv>::new(1).ok(&rpc::Ack {});
+/// ```
+///
+/// Only an rpc answered by [`Ack`] erases into an [`AckReply`]:
+///
+/// ```
+/// # use tisvlay_world::{AckReply, Reply};
+/// # use tisvlay_wire::endpoint::tv;
+/// let _ = AckReply::from(Reply::<tv::SetVolume>::new(1));
+/// ```
+///
+/// ```compile_fail,E0277
+/// # use tisvlay_world::{AckReply, Reply};
+/// # use tisvlay_wire::endpoint::manager;
+/// let _ = AckReply::from(Reply::<manager::AddTv>::new(1));
+/// ```
 pub struct Reply<R> {
     to: ReplyTo,
     rpc: PhantomData<fn() -> R>,

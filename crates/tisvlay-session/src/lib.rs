@@ -30,7 +30,7 @@ use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{tv, user_profile, user_remote};
 use tisvlay_wire::error::WireError;
-use tisvlay_wire::{keys, payload, rpc, serve};
+use tisvlay_wire::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -243,7 +243,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     // daemon bridge — one task owns all state, no locks.
     let (query_tx, queries) = mpsc::unbounded_channel::<Query>();
     let queryable = user
-        .declare_queryable(keys::user_profile_rpc_wild(&options.site))
+        .declare_queryable(user_profile::Incoming::wild(&options.site))
         .complete(true)
         .callback(move |query| {
             let _ = query_tx.send(query);
@@ -255,7 +255,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     // manual/hook sources); routed into the same core loop.
     let (remote_query_tx, remote_queries) = mpsc::unbounded_channel::<Query>();
     let remote_queryable = user
-        .declare_queryable(keys::user_remote_rpc_wild(&options.site))
+        .declare_queryable(user_remote::Incoming::wild(&options.site))
         .complete(true)
         .callback(move |query| {
             let _ = remote_query_tx.send(query);
@@ -721,20 +721,18 @@ impl Core {
     /// Serve the remote verb rpc: `set { source, active }` toggles a
     /// manual source; `status` returns the current fact.
     async fn handle_remote_query(&mut self, query: Query) {
-        let key = query.key_expr().as_str().to_string();
-        let call = keys::parse_user_remote_rpc(&self.site, &key)
-            .ok_or_else(|| WireError::unknown_rpc(&key))
-            .and_then(|verb| user_remote::Call::decode(verb, &serve::payload(&query)));
-        match call {
-            Err(error) => serve::reply_err(&query, &error).await,
-            Ok(user_remote::Call::Set(request)) => {
+        let Some(((), incoming)) = user_remote::Incoming::receive(&self.site, query).await else {
+            return;
+        };
+        match incoming {
+            user_remote::Incoming::Set(request, responder) => {
                 let source = request.source.unwrap_or_else(|| "manual".into());
                 self.apply_remote_report(RemoteReport::manual(source, request.active))
                     .await;
-                serve::reply::<user_remote::Set>(&query, &self.remote_state()).await;
+                responder.ok(&self.remote_state()).await;
             }
-            Ok(user_remote::Call::Status(())) => {
-                serve::reply::<user_remote::Status>(&query, &self.remote_state()).await;
+            user_remote::Incoming::Status((), responder) => {
+                responder.ok(&self.remote_state()).await;
             }
         }
     }
@@ -990,136 +988,150 @@ impl Core {
     }
 
     async fn handle_query(&mut self, query: Query) {
-        let key = query.key_expr().as_str().to_string();
-        let call = keys::parse_user_profile_rpc(&self.site, &key)
-            .ok_or_else(|| WireError::unknown_rpc(&key))
-            .and_then(|verb| user_profile::Call::decode(verb, &serve::payload(&query)));
-        let outcome = match call {
-            Ok(call) => self.route(&query, call).await,
-            Err(error) => Err(error),
+        let Some(((), incoming)) = user_profile::Incoming::receive(&self.site, query).await else {
+            return;
         };
-        if let Err(error) = outcome {
-            serve::reply_err(&query, &error).await;
-        }
-    }
-
-    /// Apply a user-profile rpc and reply; a refusal comes back as the error.
-    async fn route(&mut self, query: &Query, call: user_profile::Call) -> Result<(), WireError> {
-        match call {
-            user_profile::Call::Create(request) => {
-                let id = request.id.unwrap_or_else(Uuid::new_v4);
-                let mut body = request.body;
-                if id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
-                    // Re-creating the reserved default is an upsert with
-                    // the name pinned.
-                    body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-                } else if self.profiles.contains_key(&id) {
-                    return Err(WireError::profile_exists(id));
-                }
-                self.profiles.insert(id, body.clone());
-                self.publish_profile(&id, &body).await;
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                serve::reply::<user_profile::Create>(query, &rpc::Created { id }).await;
+        match incoming {
+            user_profile::Incoming::Create(request, responder) => {
+                responder.answer(self.create_profile(request).await).await;
             }
-            user_profile::Call::Update(request) => {
-                if !self.profiles.contains_key(&request.id) {
-                    return Err(WireError::profile_not_found(request.id));
-                }
-                if request.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID
-                    && request.body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
-                {
-                    return Err(WireError::bad_request(format!(
-                        "default profile's name must be \"{}\"",
-                        tisvlay_core::DEFAULT_PROFILE_NAME
-                    )));
-                }
-                self.profiles.insert(request.id, request.body.clone());
-                self.publish_profile(&request.id, &request.body).await;
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                serve::reply::<user_profile::Update>(query, &rpc::Ack {}).await;
+            user_profile::Incoming::Update(request, responder) => {
+                responder.answer(self.update_profile(request).await).await;
             }
-            user_profile::Call::Duplicate(request) => {
-                let Some(mut body) = self.profiles.get(&request.id).cloned() else {
-                    return Err(WireError::profile_not_found(request.id));
-                };
-                let id = Uuid::new_v4();
-                body.name = request.name;
-                self.profiles.insert(id, body.clone());
-                self.publish_profile(&id, &body).await;
-                self.persist();
-                serve::reply::<user_profile::Duplicate>(query, &rpc::Created { id }).await;
-            }
-            user_profile::Call::Delete(request) => {
-                if request.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
-                    return Err(WireError::profile_reserved(request.id));
-                }
-                if !self.profiles.contains_key(&request.id) {
-                    return Err(WireError::profile_not_found(request.id));
-                }
-                if self
-                    .assignments
-                    .values()
-                    .any(|profile| *profile == request.id)
-                {
-                    return Err(WireError::profile_in_use(request.id));
-                }
-                self.profiles.remove(&request.id);
-                self.delete_key(&keys::user_profile(&self.site, &request.id))
+            user_profile::Incoming::Duplicate(request, responder) => {
+                responder
+                    .answer(self.duplicate_profile(request).await)
                     .await;
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                serve::reply::<user_profile::Delete>(query, &rpc::Ack {}).await;
             }
-            user_profile::Call::Info(()) => {
+            user_profile::Incoming::Delete(request, responder) => {
+                responder
+                    .answer(self.delete_profile(request.id).await)
+                    .await;
+            }
+            user_profile::Incoming::Info((), responder) => {
                 let info = rpc::ServiceInfo {
                     version: env!("CARGO_PKG_VERSION").into(),
                     state_path: self.state_path.clone(),
                 };
-                serve::reply::<user_profile::Info>(query, &info).await;
+                responder.ok(&info).await;
             }
-            user_profile::Call::Defaults(()) => {
+            user_profile::Incoming::Defaults((), responder) => {
                 // The hard-coded floor as a Body — the editable default
                 // profile sits between this and child profiles.
                 let mut floor = UserProfileConfig::full_default();
                 floor.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-                serve::reply::<user_profile::Defaults>(query, &floor).await;
+                responder.ok(&floor).await;
             }
-            user_profile::Call::Effective(request) => {
-                serve::reply::<user_profile::Effective>(query, &self.resolve_for(&request.id))
-                    .await;
+            user_profile::Incoming::Effective(request, responder) => {
+                responder.ok(&self.resolve_for(&request.id)).await;
             }
-            user_profile::Call::Assign(request) => {
-                if let Some(profile) = request.profile {
-                    if !self.profiles.contains_key(&profile) {
-                        return Err(WireError::profile_not_found(profile));
-                    }
-                    self.assignments.insert(request.tv, profile);
-                    self.publish_assignment(&request.tv, Some(profile)).await;
-                } else {
-                    self.assignments.remove(&request.tv);
-                    self.delete_key(&keys::user_tv_profile(&self.site, &request.tv))
-                        .await;
-                }
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                serve::reply::<user_profile::Assign>(query, &rpc::Ack {}).await;
+            user_profile::Incoming::Assign(request, responder) => {
+                responder.answer(self.assign_profile(request).await).await;
             }
         }
-        Ok(())
+    }
+
+    async fn create_profile(
+        &mut self,
+        request: rpc::UserProfileCreate,
+    ) -> Result<rpc::Created, WireError> {
+        let id = request.id.unwrap_or_else(Uuid::new_v4);
+        let mut body = request.body;
+        if id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
+            // Re-creating the reserved default is an upsert with the name
+            // pinned.
+            body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+        } else if self.profiles.contains_key(&id) {
+            return Err(WireError::profile_exists(id));
+        }
+        self.profiles.insert(id, body.clone());
+        self.publish_profile(&id, &body).await;
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Created { id })
+    }
+
+    async fn update_profile(
+        &mut self,
+        request: rpc::UserProfileUpdate,
+    ) -> Result<rpc::Ack, WireError> {
+        if !self.profiles.contains_key(&request.id) {
+            return Err(WireError::profile_not_found(request.id));
+        }
+        if request.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID
+            && request.body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
+        {
+            return Err(WireError::bad_request(format!(
+                "default profile's name must be \"{}\"",
+                tisvlay_core::DEFAULT_PROFILE_NAME
+            )));
+        }
+        self.profiles.insert(request.id, request.body.clone());
+        self.publish_profile(&request.id, &request.body).await;
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Ack {})
+    }
+
+    async fn duplicate_profile(
+        &mut self,
+        request: rpc::ProfileDuplicate,
+    ) -> Result<rpc::Created, WireError> {
+        let Some(mut body) = self.profiles.get(&request.id).cloned() else {
+            return Err(WireError::profile_not_found(request.id));
+        };
+        let id = Uuid::new_v4();
+        body.name = request.name;
+        self.profiles.insert(id, body.clone());
+        self.publish_profile(&id, &body).await;
+        self.persist();
+        Ok(rpc::Created { id })
+    }
+
+    async fn delete_profile(&mut self, id: Uuid) -> Result<rpc::Ack, WireError> {
+        if id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
+            return Err(WireError::profile_reserved(id));
+        }
+        if !self.profiles.contains_key(&id) {
+            return Err(WireError::profile_not_found(id));
+        }
+        if self.assignments.values().any(|profile| *profile == id) {
+            return Err(WireError::profile_in_use(id));
+        }
+        self.profiles.remove(&id);
+        self.delete_key(&keys::user_profile(&self.site, &id)).await;
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Ack {})
+    }
+
+    async fn assign_profile(&mut self, request: rpc::UserAssign) -> Result<rpc::Ack, WireError> {
+        if let Some(profile) = request.profile {
+            if !self.profiles.contains_key(&profile) {
+                return Err(WireError::profile_not_found(profile));
+            }
+            self.assignments.insert(request.tv, profile);
+            self.publish_assignment(&request.tv, Some(profile)).await;
+        } else {
+            self.assignments.remove(&request.tv);
+            self.delete_key(&keys::user_tv_profile(&self.site, &request.tv))
+                .await;
+        }
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Ack {})
     }
 
     async fn publish_profile(&mut self, id: &Uuid, body: &UserProfileConfig) {
