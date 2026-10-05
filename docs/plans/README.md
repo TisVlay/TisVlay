@@ -15,6 +15,8 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
+_None currently._
+
 When a plan is in flight, list it here with
 a one-line summary of the work it covers:
 

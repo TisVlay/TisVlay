@@ -27,19 +27,18 @@ impl VendorConfig {
         toml::Table::try_from(config).map(Self)
     }
 
-    /// Deserialize the table into a vendor's typed config.
-    pub fn parse<T: DeserializeOwned>(&self) -> Result<T, toml::de::Error> {
-        self.0.clone().try_into()
+    /// Deserialize the table into `vendor`'s typed config; a mismatch is
+    /// that vendor's backend error.
+    pub fn parse<T: DeserializeOwned>(&self, vendor: &str) -> crate::Result<T> {
+        self.0
+            .clone()
+            .try_into()
+            .map_err(|e| crate::Error::backend(vendor, format!("invalid {vendor} config: {e}")))
     }
 
     /// One value.
     pub fn get(&self, key: &str) -> Option<&toml::Value> {
         self.0.get(key)
-    }
-
-    /// One value, mutably.
-    pub fn get_mut(&mut self, key: &str) -> Option<&mut toml::Value> {
-        self.0.get_mut(key)
     }
 
     /// Set a value, returning the one it replaced.
@@ -114,7 +113,11 @@ mod tests {
             config.get("ip").and_then(toml::Value::as_str),
             Some("192.0.2.1")
         );
-        assert_eq!(config.parse::<Typed>().unwrap(), typed);
+        assert_eq!(config.parse::<Typed>("test").unwrap(), typed);
+        let mut wrong = VendorConfig::new();
+        wrong.insert("ip", 7);
+        let error = wrong.parse::<Typed>("test").unwrap_err().to_string();
+        assert!(error.contains("invalid test config"), "{error}");
     }
 
     #[test]

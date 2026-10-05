@@ -24,13 +24,6 @@ const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 60;
 /// poll aggressively to find the earliest moment the TV is ready.
 const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Helper to deserialize LgVendorConfig from the vendor config.
-fn parse_config(vendor_config: &VendorConfig) -> Result<LgVendorConfig> {
-    vendor_config
-        .parse()
-        .map_err(|e| Error::backend("lg", format!("Invalid vendor config: {e}")))
-}
-
 /// Factory for creating LG WebOS connections.
 #[derive(Debug)]
 pub struct LgConnector;
@@ -55,7 +48,7 @@ impl TvConnector for LgConnector {
     }
 
     async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
 
         debug!(
             ip = %config.ip,
@@ -90,13 +83,14 @@ impl TvConnector for LgConnector {
     }
 
     fn supports_wake(&self, vendor_config: &VendorConfig) -> bool {
-        parse_config(vendor_config)
+        vendor_config
+            .parse::<LgVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.mac.is_some())
             .unwrap_or(false)
     }
 
     async fn wake(&self, vendor_config: &VendorConfig) -> Result<()> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         if let Some(ref mac) = config.mac {
             let mac_addr = MacAddress::parse(mac)?;
             tisvlay_core::wol::wake_with_retry(&mac_addr, 8).await?;
@@ -111,7 +105,7 @@ impl TvConnector for LgConnector {
     ) -> Result<Box<dyn TvConnection>> {
         self.wake(vendor_config).await?;
 
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         let mut last_err = None;
 
         for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
@@ -145,7 +139,7 @@ impl TvConnector for LgConnector {
     }
 
     fn start_pairing(&self, vendor_config: &VendorConfig) -> Result<PairingSession> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         let ip = config.ip;
 
         let (session, mut command_rx, state_tx) = PairingSession::create();
@@ -224,7 +218,7 @@ impl TvConnector for LgConnector {
         pairing_params: &VendorConfig,
         credentials: &Credentials,
     ) -> Result<VendorConfig> {
-        let mut config = parse_config(pairing_params)?;
+        let mut config = pairing_params.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         config.client_key = Some(credentials.data.clone());
         // Persist the working WebSocket scheme captured during the
         // pairing handshake — `connect()` reads this on reconnects
@@ -352,7 +346,7 @@ mod tests {
         let result = connector
             .build_config_from_pairing(&params, &creds)
             .unwrap();
-        let config: LgVendorConfig = result.parse().unwrap();
+        let config: LgVendorConfig = result.parse(crate::VENDOR_ID).unwrap();
         assert_eq!(config.ip, "192.168.1.100");
         assert_eq!(
             config.client_key.as_ref().map(tisvlay_core::Secret::expose),
@@ -373,7 +367,7 @@ mod tests {
         let result = connector
             .build_config_from_pairing(&params, &creds)
             .unwrap();
-        let config: LgVendorConfig = result.parse().unwrap();
+        let config: LgVendorConfig = result.parse(crate::VENDOR_ID).unwrap();
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert_eq!(
             config.client_key.as_ref().map(tisvlay_core::Secret::expose),

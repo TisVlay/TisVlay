@@ -547,8 +547,8 @@ pub trait TvConnector: Send + Sync {
     /// Build vendor config from pairing results for persistence.
     ///
     /// After pairing completes with [`Credentials`](crate::Credentials), this
-    /// method constructs the full vendor config that can be saved to the
-    /// config file. `pairing_params` contains the initial
+    /// method constructs the full vendor config the daemon persists in its
+    /// store. `pairing_params` contains the initial
     /// parameters used to reach the device.
     fn build_config_from_pairing(
         &self,
@@ -642,7 +642,7 @@ fn display_rows_for_visibility(
             // consistent. (Schema defaults are authored to match the serde
             // defaults, so this is the value actually in force.)
             let value =
-                toml_field_as_string(vendor_config, &f.name).unwrap_or_else(|| f.default.clone());
+                field_as_string(vendor_config, &f.name).unwrap_or_else(|| f.default.clone());
             if value.is_empty() {
                 return None;
             }
@@ -653,7 +653,7 @@ fn display_rows_for_visibility(
 
 /// Look up a vendor-config field by name and stringify its scalar value.
 /// Returns `None` for missing keys or container types (arrays / tables).
-fn toml_field_as_string(config: &VendorConfig, name: &str) -> Option<String> {
+fn field_as_string(config: &VendorConfig, name: &str) -> Option<String> {
     match config.get(name)? {
         toml::Value::String(s) => Some(s.clone()),
         toml::Value::Integer(i) => Some(i.to_string()),

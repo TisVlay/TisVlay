@@ -66,13 +66,6 @@ impl Default for CecConnector {
     }
 }
 
-/// Parse the vendor config into a [`CecVendorConfig`], with a helpful error.
-fn parse_config(value: &VendorConfig) -> Result<CecVendorConfig> {
-    value
-        .parse::<CecVendorConfig>()
-        .map_err(|e| Error::backend(crate::VENDOR_ID, format!("invalid CEC config: {e}")))
-}
-
 /// Whether a CEC power status means the TV is reachable for control —
 /// i.e. on, or transitioning on.
 fn reachable(status: PowerStatus) -> bool {
@@ -105,14 +98,15 @@ impl TvConnector for CecConnector {
         // HDMI-CEC has no discrete screen-blank, so honor screen actions by
         // powering the TV (default on). The daemon reads this to advertise
         // SCREEN and dispatch screen_off/screen_on as power_off/power_on.
-        parse_config(vendor_config)
+        vendor_config
+            .parse::<CecVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.emulate_screen_via_power)
             .unwrap_or(false)
     }
 
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
         let link = self
             .opener
             .open(
@@ -148,7 +142,7 @@ impl TvConnector for CecConnector {
 
     #[instrument(skip(self, vendor_config))]
     async fn wake(&self, vendor_config: &VendorConfig) -> Result<()> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
         let link = self
             .opener
             .open(&config.device, config.physical_address, None)
@@ -161,7 +155,7 @@ impl TvConnector for CecConnector {
         &self,
         vendor_config: &VendorConfig,
     ) -> Result<Box<dyn TvConnection>> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
         let mut link = self
             .opener
             .open(
@@ -226,7 +220,7 @@ impl TvConnector for CecConnector {
         // CEC has no authentication — any device on the bus is reachable.
         // Validate the config parses, then complete immediately with empty
         // credentials (the trivial end of the pairing state machine).
-        let _config = parse_config(vendor_config)?;
+        let _config = vendor_config.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
         let (session, _command_rx, state_tx) = PairingSession::create();
         tokio::spawn(async move {
             let _ = state_tx.send(PairingState::complete(Credentials::new("")));
@@ -241,7 +235,7 @@ impl TvConnector for CecConnector {
     ) -> Result<VendorConfig> {
         // No credentials to merge — echo the validated config back so the
         // daemon persists a well-formed `[tv.cec]` entry.
-        let config = parse_config(pairing_params)?;
+        let config = pairing_params.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
         VendorConfig::from_typed(&config)
             .map_err(|e| Error::backend(crate::VENDOR_ID, format!("serialize config: {e}")))
     }
@@ -465,7 +459,7 @@ mod tests {
     fn invalid_config_is_rejected() {
         let mut bad = VendorConfig::new();
         bad.insert("device", 7);
-        assert!(parse_config(&bad).is_err());
+        assert!(bad.parse::<CecVendorConfig>(crate::VENDOR_ID).is_err());
     }
 
     #[test]

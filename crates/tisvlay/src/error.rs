@@ -33,7 +33,11 @@ pub enum Error {
     },
     /// A reply didn't decode as its rpc's response type.
     #[error("malformed reply from the {service}")]
-    Protocol { service: Service },
+    Protocol {
+        service: Service,
+        #[source]
+        source: BoxError,
+    },
 }
 
 /// Which service a call went to.
@@ -83,7 +87,9 @@ impl Error {
         }
     }
 
-    /// Map a call's outcome to the SDK's error, naming the service.
+    /// Map a call's outcome to the SDK's error, naming the service. A
+    /// transport or decode failure keeps the call's error (its key, and
+    /// zenoh's or serde's cause) as the source.
     pub(crate) fn from_rpc(service: Service, error: RpcError) -> Self {
         match error {
             RpcError::Service(refusal) => Self::Rpc {
@@ -92,11 +98,14 @@ impl Error {
             },
             RpcError::Unavailable { .. } => Self::Unavailable { service },
             RpcError::Timeout { .. } | RpcError::NoReply { .. } => Self::Timeout { service },
-            RpcError::Transport { source, .. } => Self::Transport {
+            error @ RpcError::Transport { .. } => Self::Transport {
                 what: "rpc transport failure",
-                source: Some(source),
+                source: Some(Box::new(error)),
             },
-            RpcError::Undecodable { .. } => Self::Protocol { service },
+            error @ RpcError::Undecodable { .. } => Self::Protocol {
+                service,
+                source: Box::new(error),
+            },
         }
     }
 }
@@ -130,12 +139,31 @@ mod tests {
                 service: Service::Session
             }
         ));
+        let malformed = Error::from_rpc(
+            Service::Tray,
+            RpcError::Undecodable {
+                key: key(),
+                source: serde_json::from_str::<u8>("\"x\"").unwrap_err(),
+            },
+        );
         assert!(matches!(
-            Error::from_rpc(Service::Tray, RpcError::Undecodable { key: key() }),
+            malformed,
             Error::Protocol {
-                service: Service::Tray
+                service: Service::Tray,
+                ..
             }
         ));
+        // The chain names the rpc and serde's reason, for the log line
+        // a version-skewed client produces.
+        let mut chain = malformed.to_string();
+        let mut source = std::error::Error::source(&malformed);
+        while let Some(cause) = source {
+            chain.push_str(": ");
+            chain.push_str(&cause.to_string());
+            source = cause.source();
+        }
+        assert!(chain.contains("manager/rpc/pair"), "{chain}");
+        assert!(chain.contains("invalid type"), "{chain}");
         assert_eq!(
             Error::from_rpc(Service::Daemon, RpcError::Unavailable { key: key() }).rpc_code(),
             None

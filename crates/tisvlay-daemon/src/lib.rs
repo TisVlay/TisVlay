@@ -281,7 +281,8 @@ pub async fn serve(
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
     tokio::spawn(reactor.run());
-    // Seed the editable default profile (root ensure_default parity).
+    // Seed the editable default profile, so the catalog always has the
+    // inheritance baseline.
     // AddTv-style replay from the store lands later and upserts over
     // this, so user edits to the default survive restarts.
     let mut default_profile = tisvlay_core::SystemProfileConfig::full_default();

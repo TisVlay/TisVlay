@@ -137,7 +137,7 @@ scheme = "wss"
 
         write_atomic(&path, &loaded);
         let reloaded = load_store(&path).unwrap();
-        let lg: tisvlay_lg::LgVendorConfig = reloaded.tv[0].config.parse().unwrap();
+        let lg: tisvlay_lg::LgVendorConfig = reloaded.tv[0].config.parse("lg").unwrap();
         assert_eq!(
             lg.client_key.as_ref().map(tisvlay_core::Secret::expose),
             Some("lg-client-key-1234")

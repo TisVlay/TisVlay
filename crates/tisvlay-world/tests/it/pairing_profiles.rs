@@ -11,8 +11,7 @@ use tisvlay_world::{Command, InEvent, Reply, SystemEvent, WireEffect};
 use uuid::Uuid;
 
 fn pairing_config(address: &str, mode: &str) -> VendorConfig {
-    let mut config = VendorConfig::new();
-    config.insert("address", address);
+    let mut config = mock_config(address);
     config.insert("pairing", mode);
     config
 }
@@ -135,7 +134,7 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
     let seen = collect_until(&mut effects, |e| reply_to(e, 21)).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 21)),
-        Some("tv-not-found")
+        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
     );
 }
 
@@ -199,7 +198,7 @@ async fn pair_reject_publishes_typed_failure_and_no_tv() {
     let seen = collect_until(&mut effects, |e| reply_to(e, 12)).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 12)),
-        Some("tv-not-found")
+        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
     );
 }
 

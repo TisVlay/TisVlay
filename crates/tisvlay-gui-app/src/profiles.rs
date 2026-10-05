@@ -1708,7 +1708,7 @@ async fn update_system_field(
         snapshot_system_body(&state, uuid)
     };
     set_system_field(&mut body, wire, patch)?;
-    Ok(daemon.update_system_profile(uuid, &body).await?)
+    Ok(daemon.update_system_profile(uuid, body).await?)
 }
 
 async fn update_user_field(
@@ -1727,7 +1727,7 @@ async fn update_user_field(
     let client = session_ref
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-    Ok(client.update_user_profile(uuid, &body).await?)
+    Ok(client.update_user_profile(uuid, body).await?)
 }
 
 /// Apply a ComboBox-driven enum edit to the selected profile. The
@@ -1972,7 +1972,7 @@ pub(crate) async fn dispatch_reset_all(
                 name: snapshot.name,
                 ..Default::default()
             };
-            Ok(daemon.update_system_profile(uuid, &body).await?)
+            Ok(daemon.update_system_profile(uuid, body).await?)
         }
         EditorKind::User => {
             let snapshot = {
@@ -1987,7 +1987,7 @@ pub(crate) async fn dispatch_reset_all(
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            Ok(client.update_user_profile(uuid, &body).await?)
+            Ok(client.update_user_profile(uuid, body).await?)
         }
     }
 }
@@ -2011,7 +2011,7 @@ pub(crate) async fn dispatch_rename(
                 snapshot_system_body(&state, uuid)
             };
             body.name = new_name.to_string();
-            Ok(daemon.update_system_profile(uuid, &body).await?)
+            Ok(daemon.update_system_profile(uuid, body).await?)
         }
         EditorKind::User => {
             let mut body = {
@@ -2023,7 +2023,7 @@ pub(crate) async fn dispatch_rename(
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            Ok(client.update_user_profile(uuid, &body).await?)
+            Ok(client.update_user_profile(uuid, body).await?)
         }
     }
 }

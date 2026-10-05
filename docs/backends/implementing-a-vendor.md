@@ -11,7 +11,7 @@ The core is vendor- and transport-agnostic. It knows four traits and nothing abo
 - **`TvConnection`** — a live, per-device control handle: power, screen, volume, mute, input, backlight, and an optional `subscribe_state()` push channel. **Every feature method defaults to `Err(NotSupported)`** — a backend overrides only what its hardware does.
 - **`TvDiscovery`** — an optional, bounded `discover(timeout) -> Vec<DiscoveredTv>` scan. Backends with no discovery protocol simply don't implement it (and omit `Capabilities::DISCOVERY`).
 
-The single composition point is the daemon: [`tisvlay-daemon`](../../crates/tisvlay-daemon) is the *only* crate that imports vendor crates (one `VendorReg` entry per vendor in its `run()`). Everything else (CLI, GUI, session, tray) stays vendor-blind — clients learn the vendor catalog and each vendor's pairing schema from the daemon's `manager/vendors` queryables over zenoh. The whole vendor config travels as an opaque [`VendorConfig`](../../crates/tisvlay-core/src/vendor_config.rs); only your crate ever deserializes it, through `VendorConfig::parse`.
+The single composition point is the daemon: [`tisvlay-daemon`](../../crates/tisvlay-daemon) is the *only* crate that imports vendor crates (one `VendorReg` entry per vendor in its `run()`). Everything else (CLI, GUI, session, tray) stays vendor-blind — clients learn the vendor catalog and each vendor's pairing schema from the daemon's `manager/vendors` queryables over zenoh. The whole vendor config travels as an opaque [`VendorConfig`](../../crates/tisvlay-core/src/vendor_config.rs); only your crate deserializes it into your config type, through `VendorConfig::parse`. The daemon reads it only generically: the schema-driven display rows and the shared `mac`/`wake_id` keys (Wake-on-LAN and the pair-time MAC fill).
 
 ## Crate structure
 
@@ -110,7 +110,7 @@ Create a `docs/<vendor>/` directory mirroring [docs/lg/](../lg): a `protocol.md`
 Why the abstraction is shaped this way:
 
 ### Why vendor config is an opaque `VendorConfig`, not a core-known enum
-The core has zero vendor knowledge by construction: only your crate can deserialize `[tv.<vendor>]`. A core-side config enum would re-couple every vendor to the core and force a core change per vendor. The cost — a runtime deserialize instead of a compile-time type — buys the "no daemon/CLI/GUI change to add a vendor" property. The wrapper around the TOML table exists for one reason: it may hold a credential, so its `Debug` prints key names only, and a world or daemon holder can't log the key by accident.
+The core has zero vendor knowledge by construction: only your crate can deserialize the vendor config into its typed form. A core-side config enum would re-couple every vendor to the core and force a core change per vendor. The cost — a runtime deserialize instead of a compile-time type — buys the "no daemon/CLI/GUI change to add a vendor" property. The wrapper around the TOML table exists for one reason: it may hold a credential, so its `Debug` prints key names only, and a world or daemon holder can't log the key by accident.
 
 ### Why schema-driven field visibility, not per-field rpc plumbing
 One `config_schema()` row projects to the wizard, INFO pane, and config display automatically. The alternative — an rpc verb, dispatch arm, and GUI widget per field — is N edits across the stack for what should be one declaration.

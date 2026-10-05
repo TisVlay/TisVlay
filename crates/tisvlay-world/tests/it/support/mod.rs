@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
+use tisvlay_wire::error::ErrorCode;
 use tisvlay_world::{Command, Reactor, Reply, TvRecord, WireEffect, WorldClient};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
@@ -98,12 +99,12 @@ pub(crate) fn reply_to(effect: &WireEffect, to: u64) -> bool {
     matches!(effect, WireEffect::Reply { to: t, .. } if *t == to)
 }
 
-pub(crate) fn reply_err_code(effect: &WireEffect, to: u64) -> Option<&str> {
+pub(crate) fn reply_err_code(effect: &WireEffect, to: u64) -> Option<ErrorCode> {
     match effect {
         WireEffect::Reply {
             to: t,
             result: Err(error),
-        } if *t == to => Some(error.code.as_str()),
+        } if *t == to => Some(error.code),
         _ => None,
     }
 }

@@ -57,7 +57,7 @@ impl<R: Rpc> Reply<R> {
         WireEffect::Reply {
             to: self.to,
             result: Ok(serde_json::to_value(response)
-                .expect("rpc responses are structs, which always encode as JSON")),
+                .expect("rpc responses are serde structs, string-keyed maps and lists of them, which always encode as JSON")),
         }
     }
 }

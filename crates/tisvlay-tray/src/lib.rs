@@ -439,10 +439,10 @@ async fn execute(
             call::<tv::PowerOff>(caller, &id, &()).await;
         }
         TrayCommand::ScreenOn(id) => {
-            call::<tv::SetScreen>(caller, &id, &screen(true)).await;
+            call::<tv::SetScreen>(caller, &id, &rpc::SetScreen::manual(true)).await;
         }
         TrayCommand::ScreenOff(id) => {
-            call::<tv::SetScreen>(caller, &id, &screen(false)).await;
+            call::<tv::SetScreen>(caller, &id, &rpc::SetScreen::manual(false)).await;
         }
         TrayCommand::SwitchInput(id, input) => {
             call::<tv::SwitchInput>(caller, &id, &rpc::SwitchInput { input }).await;
@@ -514,15 +514,7 @@ async fn activate_gui() -> Result<()> {
 /// during route propagation waits it out instead of vanishing.
 async fn call<R: Unary>(caller: &Caller, target: &R::Target, request: &R::Request) {
     if let Err(error) = caller.call::<R>(target, request).await {
-        warn!(%error, "rpc failed");
-    }
-}
-
-/// A manual screen toggle: no restore intent.
-fn screen(on: bool) -> rpc::SetScreen {
-    rpc::SetScreen {
-        on,
-        restore_input: false,
+        warn!(rpc = R::NAME, %error, "rpc failed");
     }
 }
 
@@ -547,7 +539,7 @@ async fn spawn_pairing_toasts(
     // Plain subscriber: the deep pairing cache would replay finished
     // sessions as fresh toasts on every tray start.
     let sub = system
-        .declare_subscriber(format!("tisvlay/{site}/pairing/*/progress"))
+        .declare_subscriber(keys::pairing_progress_wild(site))
         .await
         .map_err(|e| anyhow!("subscribe pairing progress: {e}"))?;
     let site = site.to_string();

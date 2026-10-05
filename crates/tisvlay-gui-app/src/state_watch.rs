@@ -148,10 +148,17 @@ async fn fetch_and_publish_vendors(
             daemon.get_vendor_capabilities(&id),
             daemon.get_pairing_schema(&id),
         );
-        let caps = caps.ok().flatten().unwrap_or_else(|| {
-            debug!(vendor = %id, "vendor capabilities unavailable; treating as empty");
-            tisvlay_core::Capabilities::empty()
-        });
+        let caps = match caps {
+            Ok(Some(caps)) => caps,
+            Ok(None) => {
+                debug!(vendor = %id, "vendor not in the catalog; treating capabilities as empty");
+                tisvlay_core::Capabilities::empty()
+            }
+            Err(e) => {
+                debug!(vendor = %id, error = %e, "vendor capabilities unavailable; treating as empty");
+                tisvlay_core::Capabilities::empty()
+            }
+        };
         // The schema's first field is the vendor's primary descriptor
         // (schema-ordering convention) — it becomes the manual-entry
         // panel's identity input. Fetch failure falls back to a
@@ -231,13 +238,11 @@ async fn watch_state(
     editor: ProfileEditor,
 ) {
     // No debounce: every state event triggers a refresh fire.
-    // The default 100ms (originally a flood guard before
-    // `RefreshTrigger` existed) is now redundant — `RefreshTrigger`
-    // already folds concurrent fires into a single in-flight refresh
-    // plus one trailing-edge follow-up, so floods can't backlog.
+    // `RefreshTrigger` folds concurrent fires into a single in-flight
+    // refresh plus one trailing-edge follow-up, so floods can't backlog.
     //
-    // Removing the debounce means the daemon→GUI sample rate is bounded
-    // by `fetch_state` latency (≈ms locally), not by a fixed timer.
+    // The daemon→GUI sample rate is therefore bounded by `fetch_state`
+    // latency (≈ms locally), not by a fixed timer.
     // Slint's winit backend then rate-limits the visual side: it
     // queries the live monitor refresh rate via
     // `current_monitor().refresh_rate_millihertz()` and coalesces
@@ -248,10 +253,7 @@ async fn watch_state(
     // `invoke_from_event_loop` is cheap; the property tracker dedups
     // and only one paint per frame happens regardless of how many
     // updates feed in.
-    let watcher_config = crate::compat::StateWatcherConfig {
-        signal_debounce: std::time::Duration::ZERO,
-        ..Default::default()
-    };
+    let watcher_config = crate::compat::StateWatcherConfig::default();
     // Session/tray events ride the clients built at startup (resilient
     // links, never replaced); the watcher synthesizes `*Appeared` for
     // peers already alive at construction, so the initial availability

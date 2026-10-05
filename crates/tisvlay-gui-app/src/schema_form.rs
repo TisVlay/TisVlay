@@ -228,21 +228,12 @@ pub(crate) fn autofill_schema(
 /// schema field looks itself up in the supplied object by `name`,
 /// falling back to the field's `default` when absent. Used by the
 /// TVs pane's edit-pencil flow to prefill the form with the TV's
-/// current values before the user makes any changes.
-///
-/// The `get-config` reply nests the vendor table under `config`
-/// (top level carries the TV-level fields: `name`, `managed`, …);
-/// the schema fields live in that nested table, so it wins when
-/// present. A flat object still works — callers can pass the vendor
-/// table directly.
+/// current values before the user makes any changes. `config` is the
+/// `get-config` reply's vendor table, where the schema fields live.
 pub(crate) fn prefill_schema_from_config(
     schema: &[PairingField],
-    config: &serde_json::Value,
+    config: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<AutofilledRow> {
-    let table = config
-        .get("config")
-        .and_then(|nested| nested.as_object())
-        .or_else(|| config.as_object());
     schema
         .iter()
         .map(|f| {
@@ -252,8 +243,8 @@ pub(crate) fn prefill_schema_from_config(
             // cleanly through the same widget that handles user
             // input. Missing or null falls through to the field's
             // declared default.
-            let value = table
-                .and_then(|t| t.get(&f.name))
+            let value = config
+                .get(&f.name)
                 .map(|v| match v {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Bool(b) => b.to_string(),
@@ -508,37 +499,23 @@ mod tests {
 
     // ---------- prefill_schema_from_config ----------
 
-    #[test]
-    fn prefill_schema_from_config_projects_string_values() {
-        let f = field("ip", PairingFieldType::Ip, true);
-        let cfg = serde_json::json!({ "ip": "10.0.0.5" });
-        let rows = prefill_schema_from_config(&[f], &cfg);
-        assert_eq!(rows[0].value, "10.0.0.5");
+    fn object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_value(value).unwrap()
     }
 
     #[test]
-    fn prefill_schema_from_config_reads_the_nested_vendor_table() {
-        // The full `get-config` reply shape: TV-level fields at the
-        // top, vendor fields nested under `config`. The prefill must
-        // read the nested table — otherwise every field misses and
-        // the edit pane opens blank over a fully-configured TV.
-        let ip = field("ip", PairingFieldType::Ip, true);
-        let mac = field("mac", PairingFieldType::Mac, false);
-        let reply = serde_json::json!({
-            "name": "Living Room",
-            "managed": true,
-            "config": { "ip": "192.168.1.50", "mac": "84:90:0a:63:a9:94" }
-        });
-        let rows = prefill_schema_from_config(&[ip, mac], &reply);
-        assert_eq!(rows[0].value, "192.168.1.50");
-        assert_eq!(rows[1].value, "84:90:0a:63:a9:94");
+    fn prefill_schema_from_config_projects_string_values() {
+        let f = field("ip", PairingFieldType::Ip, true);
+        let cfg = object(serde_json::json!({ "ip": "10.0.0.5" }));
+        let rows = prefill_schema_from_config(&[f], &cfg);
+        assert_eq!(rows[0].value, "10.0.0.5");
     }
 
     #[test]
     fn prefill_schema_from_config_stringifies_numbers_and_bools() {
         let port = field("port", PairingFieldType::Port, false);
         let auto = field("automated", PairingFieldType::Bool, false);
-        let cfg = serde_json::json!({ "port": 3001, "automated": true });
+        let cfg = object(serde_json::json!({ "port": 3001, "automated": true }));
         let rows = prefill_schema_from_config(&[port, auto], &cfg);
         assert_eq!(rows[0].value, "3001");
         assert_eq!(rows[1].value, "true");
@@ -548,15 +525,15 @@ mod tests {
     fn prefill_schema_from_config_falls_back_to_default_for_missing_or_empty() {
         let mut f = field("ip", PairingFieldType::Ip, false);
         f.default = "0.0.0.0".into();
-        let missing = serde_json::json!({});
+        let missing = object(serde_json::json!({}));
         let rows = prefill_schema_from_config(&[f.clone()], &missing);
         assert_eq!(rows[0].value, "0.0.0.0");
 
-        let empty = serde_json::json!({ "ip": "" });
+        let empty = object(serde_json::json!({ "ip": "" }));
         let rows = prefill_schema_from_config(&[f.clone()], &empty);
         assert_eq!(rows[0].value, "0.0.0.0");
 
-        let null = serde_json::json!({ "ip": null });
+        let null = object(serde_json::json!({ "ip": null }));
         let rows = prefill_schema_from_config(&[f], &null);
         assert_eq!(rows[0].value, "0.0.0.0");
     }

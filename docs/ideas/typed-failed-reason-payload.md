@@ -16,8 +16,8 @@ first consumer. See [design.md](../design.md) (§ Signals — `PairingProgress`)
 and [cec/protocol.md](../cec/protocol.md).
 
 Remaining scope — **no architecture work left**; each item just extends the
-established projection (`tv_manager::failure_reason`) or vocabulary. The
-first three are cheap; the last is the one genuinely feature-sized piece:
+established projection (`tv_manager::failure_reason`) or vocabulary. All
+but the last are cheap; the last is the one genuinely feature-sized piece:
 
 - **Retype `TvManagerError::PairingFailed(Box<dyn Error>)` to carry a typed `PairingError`** (cheap). Today `failure_reason` recovers the code via `downcast_ref::<PairingError>()`, which only works because the *permission* case travels as `ConnectionFailed { source }` (a plain match). If a future device-node backend opens its node *during* `start_pairing`/`build_config_from_pairing`, its `Error::PermissionDenied` boxes into `PairingFailed` and the downcast misses, degrading the code to `pairing.unknown`. Making the variant carry a typed error (mapping `core::Error` → a coded `PairingError` at the boxing sites) drops the downcast and lets every code survive.
 - **Broaden the vocabulary** to every terminal `TvManagerError` beyond what pairing already projects (cheap — add arms to `failure_reason`; handshake-native codes `pairing.rejected`/`timeout`/… already flow).

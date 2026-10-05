@@ -116,7 +116,7 @@ async fn remove_tv_is_boring() {
     let seen = collect_until(&mut effects, |e| reply_to(e, 3)).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 3)),
-        Some("tv-not-found")
+        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
     );
 
     // A stale backend event for the dead uuid is dropped silently — no
@@ -139,7 +139,7 @@ async fn remove_tv_is_boring() {
     );
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 4)),
-        Some("tv-not-found")
+        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
     );
 }
 

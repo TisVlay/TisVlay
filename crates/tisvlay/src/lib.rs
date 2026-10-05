@@ -1,12 +1,11 @@
-//! GUI-facing client SDK: the root stack's `DaemonClient` /
-//! `SessionClient` / `TrayClient` / `StateWatcher` method surface,
-//! reimplemented over zenoh so the forked GUI ports with import swaps.
+//! Client SDK for the TisVlay services: [`DaemonClient`],
+//! [`SessionClient`] and [`TrayClient`], plus a [`StateWatcher`] merging
+//! their change events.
 //!
-//! Reads come from client-side mirrors (history subscribers over the
-//! cached keys — this stack's `GetManagedObjects` equivalent); writes
-//! are rpcs;
-//! change signals are the mirrors' own deltas. TV ids stay strings at
-//! this boundary, matching the root client the GUI was written against.
+//! Reads come from client-side mirrors: history subscribers over the
+//! services' cached keys. Writes are typed rpcs, and change events are
+//! the mirrors' own deltas. Failures are one [`Error`], named for what a
+//! caller can act on.
 
 mod error;
 mod mirror;
@@ -44,8 +43,8 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use mirror::{SystemMirror, UserMirror};
 
-/// Body aliases: the wire carries the config structs verbatim (name +
-/// per-field options), so the D-Bus-era body wrappers collapse.
+/// Profile bodies: the wire carries the config structs verbatim (name
+/// plus per-field options).
 pub type SystemProfileBody = SystemProfileConfig;
 pub type UserProfileBody = UserProfileConfig;
 
@@ -75,15 +74,15 @@ pub enum PairTerminal {
     },
 }
 
-/// The first key in a change window — root parity for logging.
+/// The first key in a change window, for logging.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TvStateChange {
     pub key: String,
 }
 
-/// Change notifications the GUI's refresh dispatcher consumes. Variant
-/// set mirrors the root watcher, including the tray settings-service
-/// events (liveliness + settings republish).
+/// Change notifications from the clients' mirrors and liveliness, plus
+/// the tray settings service's events (liveliness and settings
+/// republish).
 #[derive(Debug, Clone)]
 pub enum StateEvent {
     DaemonStateChanged(TvStateChange),
@@ -105,7 +104,8 @@ pub enum StateEvent {
     FallbackPoll,
 }
 
-/// Root-compatible notification category vocabulary.
+/// The tray's notification categories, keyed by their settings field
+/// names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum NotificationCategory {
@@ -122,10 +122,6 @@ impl NotificationCategory {
         Self::TvWake,
         Self::DaemonOffline,
     ];
-
-    pub const fn bit(self) -> u8 {
-        1u8 << (self as u8)
-    }
 
     const fn key(self) -> &'static str {
         match self {
@@ -159,19 +155,9 @@ impl NotificationCategory {
             Self::DaemonOffline => patch.daemon_offline = Some(value),
         }
     }
-
-    pub const fn default_enabled(self) -> bool {
-        match self {
-            Self::TvConnection => true,
-            Self::TvPairing => true,
-            Self::TvWake => true,
-            Self::DaemonOffline => true,
-        }
-    }
 }
 
-/// Everything `list_tvs` reports per TV — field set matches the root
-/// `TvInfo` so `state.rs` ports unchanged.
+/// Everything `list_tvs` reports per TV, projected from the mirror.
 #[derive(Debug, Clone, Default)]
 pub struct TvInfo {
     pub uuid: String,
@@ -353,14 +339,12 @@ impl DaemonClient {
 
     /// Start a re-pair; returns the attempt id its progress samples carry.
     pub async fn re_pair(&self, tv: Uuid) -> Result<Uuid> {
-        let id = tv;
-        let started = self.call::<tv::RePair>(&id, &()).await?;
+        let started = self.call::<tv::RePair>(&tv, &()).await?;
         Ok(started.attempt)
     }
 
     pub async fn cancel_pair(&self, tv: Uuid) -> Result<()> {
-        let id = tv;
-        self.call::<manager::CancelPair>(&(), &rpc::TvRef { id })
+        self.call::<manager::CancelPair>(&(), &rpc::TvRef { id: tv })
             .await
             .map(|_| ())
     }
@@ -374,7 +358,7 @@ impl DaemonClient {
     {
         let sub = self
             .session
-            .declare_subscriber(format!("tisvlay/{}/pairing/*/progress", self.site))
+            .declare_subscriber(keys::pairing_progress_wild(&self.site))
             .history(HistoryConfig::default().detect_late_publishers())
             .await
             .map_err(|e| Error::transport("subscribe to pairing progress", e))?;
@@ -462,16 +446,15 @@ impl DaemonClient {
         })
     }
 
-    /// One TV's `progress/power` phases (wake feedback), root item type.
+    /// One TV's `progress/power` phases (wake feedback).
     pub async fn power_cycle_progress_stream(
         &self,
         tv: Uuid,
     ) -> Result<impl futures_util::Stream<Item = tisvlay_core::PowerCyclePhase> + use<>> {
         use tisvlay_core::PowerCyclePhase as P;
-        let id = tv;
         let sub = self
             .session
-            .declare_subscriber(keys::tv_path(&self.site, &id, "progress/power"))
+            .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
             .history(HistoryConfig::default().detect_late_publishers())
             .await
             .map_err(|e| Error::transport("subscribe to power progress", e))?;
@@ -501,10 +484,9 @@ impl DaemonClient {
         Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }
 
-    /// Open-ended discovery session. The wire scan runs its own cadence;
-    /// `timeout_ms` is accepted for root-signature parity but the
-    /// session lives until [`Self::stop_discovery`].
-    pub async fn start_discovery(&self, _timeout_ms: u32) -> Result<Uuid> {
+    /// Open an open-ended discovery session; it scans on the daemon's
+    /// cadence until [`Self::stop_discovery`].
+    pub async fn start_discovery(&self) -> Result<Uuid> {
         let started = self
             .call::<manager::DiscoverStart>(&(), &rpc::DiscoverStart { vendor: None })
             .await?;
@@ -535,7 +517,7 @@ impl DaemonClient {
     > {
         let sub = self
             .session
-            .declare_subscriber(format!("tisvlay/{}/discovery/*/found/*", self.site))
+            .declare_subscriber(keys::discovery_found_wild(&self.site))
             .await
             .map_err(|e| Error::transport("subscribe to discovery findings", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
@@ -604,25 +586,13 @@ impl DaemonClient {
     }
 
     pub async fn screen_on(&self, tv: Uuid) -> Result<()> {
-        self.tv_call::<tv::SetScreen>(
-            tv,
-            &rpc::SetScreen {
-                on: true,
-                restore_input: false,
-            },
-        )
-        .await
+        self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(true))
+            .await
     }
 
     pub async fn screen_off(&self, tv: Uuid) -> Result<()> {
-        self.tv_call::<tv::SetScreen>(
-            tv,
-            &rpc::SetScreen {
-                on: false,
-                restore_input: false,
-            },
-        )
-        .await
+        self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(false))
+            .await
     }
 
     pub async fn switch_input(&self, tv: Uuid, input: &str) -> Result<()> {
@@ -640,8 +610,8 @@ impl DaemonClient {
             .await
     }
 
-    pub async fn set_mute(&self, tv: Uuid, mute: bool) -> Result<()> {
-        self.tv_call::<tv::SetMuted>(tv, &rpc::SetMuted { muted: mute })
+    pub async fn set_muted(&self, tv: Uuid, muted: bool) -> Result<()> {
+        self.tv_call::<tv::SetMuted>(tv, &rpc::SetMuted { muted })
             .await
     }
 
@@ -728,12 +698,9 @@ impl DaemonClient {
     pub async fn update_system_profile(
         &self,
         profile: Uuid,
-        body: &SystemProfileBody,
+        body: SystemProfileBody,
     ) -> Result<()> {
-        let request = rpc::ProfileUpdate {
-            id: profile,
-            body: body.clone(),
-        };
+        let request = rpc::ProfileUpdate { id: profile, body };
         self.call::<profile::Update>(&(), &request)
             .await
             .map(|_| ())
@@ -776,8 +743,7 @@ impl DaemonClient {
         tv: Uuid,
         request: &R::Request,
     ) -> Result<()> {
-        let id = tv;
-        self.call::<R>(&id, request).await.map(|_| ())
+        self.call::<R>(&tv, request).await.map(|_| ())
     }
 
     async fn call<R: Unary>(
@@ -873,8 +839,8 @@ impl SessionClient {
         Ok(())
     }
 
-    /// The TV's assigned user-profile uuid, empty string when unset —
-    /// root wire shape.
+    /// The TV's assigned user-profile uuid, from the mirror; `None` when
+    /// it uses the default.
     pub async fn get_tv_user_profile(&self, tv: Uuid) -> Option<Uuid> {
         self.mirror
             .lock()
@@ -919,11 +885,8 @@ impl SessionClient {
         Ok(self.call::<user_profile::Create>(&(), &request).await?.id)
     }
 
-    pub async fn update_user_profile(&self, profile: Uuid, body: &UserProfileBody) -> Result<()> {
-        let request = rpc::UserProfileUpdate {
-            id: profile,
-            body: body.clone(),
-        };
+    pub async fn update_user_profile(&self, profile: Uuid, body: UserProfileBody) -> Result<()> {
+        let request = rpc::UserProfileUpdate { id: profile, body };
         self.call::<user_profile::Update>(&(), &request)
             .await
             .map(|_| ())
@@ -1103,18 +1066,16 @@ impl TrayClient {
     }
 }
 
-/// Root-compatible watcher config; the zenoh watcher forwards mirror
-/// deltas directly, so only the fallback interval is load-bearing.
+/// Watcher tuning: mirror deltas forward directly, so the one knob is
+/// the fallback poll interval.
 #[derive(Debug, Clone)]
 pub struct StateWatcherConfig {
-    pub signal_debounce: Duration,
     pub fallback_poll_interval: Duration,
 }
 
 impl Default for StateWatcherConfig {
     fn default() -> Self {
         Self {
-            signal_debounce: Duration::from_millis(100),
             fallback_poll_interval: Duration::from_secs(300),
         }
     }

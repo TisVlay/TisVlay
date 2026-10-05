@@ -559,13 +559,7 @@ impl Bridge {
     /// A bounded scan is one query whose findings stream back as multiple
     /// replies; dropping the query at the end finalizes it.
     fn handle_discover(&self, query: Query, request: rpc::Discover) {
-        // Clamp under the client-side query timeout so replies land in time.
-        let window = Duration::from_millis(
-            request
-                .timeout_ms
-                .unwrap_or(manager::DISCOVER_DEFAULT_MS)
-                .min(manager::DISCOVER_MAX_MS),
-        );
+        let window = manager::discover_scan(&request);
         let discoveries = Arc::clone(&self.discoveries);
         tokio::spawn(async move {
             if let Some(vendor) = &request.vendor

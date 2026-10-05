@@ -20,6 +20,8 @@ pub trait Rpc {
     type Target: ?Sized;
     type Request: Serialize + DeserializeOwned;
     type Response: Serialize + DeserializeOwned;
+    /// The rpc's name within its family, for logs.
+    const NAME: &'static str;
     /// The rpc's key on `site`.
     fn key(site: &str, target: &Self::Target) -> String;
 }
@@ -73,6 +75,7 @@ macro_rules! family {
                 type Target = $target;
                 type Request = $request;
                 type Response = $response;
+                const NAME: &'static str = $verb_str;
                 fn key($site: &str, $tgt: &$target) -> String {
                     let $verb = $verb_str;
                     $key
@@ -139,22 +142,28 @@ pub mod manager {
 
     /// Margin over the scan window: the daemon replies as findings land,
     /// and the query stays open until its last vendor scan finishes.
-    const DISCOVER_MARGIN: Duration = Duration::from_secs(4);
+    pub(super) const DISCOVER_MARGIN: Duration = Duration::from_secs(4);
 
     /// The scan window the daemon uses when the request names none.
-    pub const DISCOVER_DEFAULT_MS: u64 = 3000;
+    const DISCOVER_DEFAULT_MS: u64 = 3000;
 
     /// The longest scan window the daemon honors, under the zenoh query
     /// timeout ceiling.
-    pub const DISCOVER_MAX_MS: u64 = 8000;
+    pub(super) const DISCOVER_MAX_MS: u64 = 8000;
+
+    /// How long the daemon scans for a bounded discover: the requested
+    /// window (or the default), clamped under the query timeout.
+    pub fn discover_scan(request: &rpc::Discover) -> Duration {
+        let scan = request
+            .timeout_ms
+            .unwrap_or(DISCOVER_DEFAULT_MS)
+            .min(DISCOVER_MAX_MS);
+        Duration::from_millis(scan)
+    }
 
     impl Streaming for Discover {
         fn window(request: &rpc::Discover) -> Duration {
-            let scan = request
-                .timeout_ms
-                .unwrap_or(DISCOVER_DEFAULT_MS)
-                .min(DISCOVER_MAX_MS);
-            Duration::from_millis(scan) + DISCOVER_MARGIN
+            discover_scan(request) + DISCOVER_MARGIN
         }
     }
 }
@@ -286,6 +295,7 @@ pub mod vendors {
         type Target = ();
         type Request = ();
         type Response = Vec<rpc::VendorEntry>;
+        const NAME: &'static str = "catalog";
         fn key(site: &str, _target: &()) -> String {
             keys::vendors(site)
         }
@@ -303,6 +313,7 @@ pub mod vendors {
         type Target = str;
         type Request = ();
         type Response = Vec<tisvlay_core::PairingField>;
+        const NAME: &'static str = "schema";
         fn key(site: &str, vendor: &str) -> String {
             keys::vendor_schema(site, vendor)
         }
@@ -409,7 +420,7 @@ mod tests {
         });
         assert_eq!(
             window,
-            Duration::from_millis(manager::DISCOVER_MAX_MS) + Duration::from_secs(4)
+            Duration::from_millis(manager::DISCOVER_MAX_MS) + manager::DISCOVER_MARGIN
         );
     }
 

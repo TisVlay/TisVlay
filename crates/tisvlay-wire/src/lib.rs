@@ -514,6 +514,10 @@ pub mod keys {
         format!("tisvlay/{site}/pairing/{tv}/progress")
     }
 
+    pub fn pairing_progress_wild(site: &str) -> String {
+        format!("tisvlay/{site}/pairing/*/progress")
+    }
+
     /// System-profile body: `tisvlay/<site>/profile/system/<uuid>`.
     pub fn profile_system(site: &str, id: &Uuid) -> String {
         format!("tisvlay/{site}/profile/system/{id}")
@@ -570,6 +574,11 @@ pub mod keys {
             chunk.push('_');
         }
         format!("tisvlay/{site}/discovery/{session}/found/{chunk}")
+    }
+
+    /// Every discovery session's findings.
+    pub fn discovery_found_wild(site: &str) -> String {
+        format!("tisvlay/{site}/discovery/*/found/*")
     }
 
     /// Liveliness token for a running discovery session.
@@ -803,7 +812,7 @@ pub mod error {
         PairingNotFound = "pairing-not-found",
         WakeNotSupported = "wake-not-supported",
         BadRequest = "bad-request",
-        /// A vendor field failed validation; the message is `"<field>: <reason>"`.
+        /// A vendor field failed validation (see [`WireError::invalid_field`]).
         InvalidField = "invalid-field",
         ProfileReserved = "profile-reserved",
         /// The TV refused or failed the command.
@@ -816,9 +825,8 @@ pub mod error {
         DaemonShuttingDown = "daemon-shutting-down",
     }
 
-    /// The `(field, reason)` an `invalid-field` refusal's message names;
-    /// `None` for any other code. Reasons may contain colons (IPv6), so
-    /// only the first `": "` separates.
+    /// Split a [`WireError::invalid_field`] refusal back into its
+    /// `(field, reason)`; `None` for any other code.
     pub fn invalid_field_parts(code: ErrorCode, message: &str) -> Option<(&str, &str)> {
         if code != ErrorCode::InvalidField {
             return None;
@@ -901,18 +909,13 @@ pub mod error {
         /// A specific vendor-config field failed validation. The
         /// message's `"<field>: <reason>"` shape is load-bearing:
         /// clients route the reason back to the originating form row
-        /// by splitting on the first `": "`.
+        /// ([`invalid_field_parts`]) by splitting on the first `": "`,
+        /// since a reason may contain colons (an IPv6 address).
         pub fn invalid_field(field: &str, reason: impl std::fmt::Display) -> Self {
             Self {
                 code: ErrorCode::InvalidField,
                 message: format!("{field}: {reason}"),
             }
-        }
-
-        /// The `(field, reason)` an [`invalid_field`](Self::invalid_field)
-        /// refusal names (see [`invalid_field_parts`]).
-        pub fn as_invalid_field(&self) -> Option<(&str, &str)> {
-            invalid_field_parts(self.code, &self.message)
         }
 
         /// The reserved default profile cannot be deleted.
@@ -995,12 +998,12 @@ pub mod error {
 
         #[test]
         fn invalid_field_splits_on_the_first_separator() {
+            fn parts(error: &WireError) -> Option<(&str, &str)> {
+                invalid_field_parts(error.code, &error.message)
+            }
             let error = WireError::invalid_field("ip", "not an IP address: ::1::bad");
-            assert_eq!(
-                error.as_invalid_field(),
-                Some(("ip", "not an IP address: ::1::bad"))
-            );
-            assert_eq!(WireError::bad_request("ip: no").as_invalid_field(), None);
+            assert_eq!(parts(&error), Some(("ip", "not an IP address: ::1::bad")));
+            assert_eq!(parts(&WireError::bad_request("ip: no")), None);
         }
     }
 }
@@ -1113,8 +1116,19 @@ pub mod rpc {
         pub restore_input: bool,
     }
 
-    /// Body for `tv/<id>/rpc/power-on` — optional; an absent or null
-    /// body is a plain manual power-on.
+    impl SetScreen {
+        /// A manual toggle: no restore intent.
+        pub fn manual(on: bool) -> Self {
+            Self {
+                on,
+                restore_input: false,
+            }
+        }
+    }
+
+    /// Body for `tv/<id>/rpc/power-on`; the default is a plain manual
+    /// power-on. Like every request, it decodes strictly: send `{}`, not
+    /// an empty body.
     #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
     pub struct PowerOn {
         /// See [`SetScreen::restore_input`].
@@ -1425,7 +1439,10 @@ pub mod caller {
         Transport { key: String, source: zenoh::Error },
         /// A reply that isn't the rpc's response type, or an error payload
         /// that isn't a [`WireError`].
-        Undecodable { key: String },
+        Undecodable {
+            key: String,
+            source: serde_json::Error,
+        },
     }
 
     impl std::fmt::Display for RpcError {
@@ -1438,7 +1455,7 @@ pub mod caller {
                 Self::Timeout { key } => write!(f, "rpc {key}: timed out"),
                 Self::NoReply { key } => write!(f, "rpc {key}: no reply"),
                 Self::Transport { key, .. } => write!(f, "rpc {key}: transport failure"),
-                Self::Undecodable { key } => write!(f, "rpc {key}: undecodable reply"),
+                Self::Undecodable { key, .. } => write!(f, "rpc {key}: undecodable reply"),
             }
         }
     }
@@ -1447,6 +1464,7 @@ pub mod caller {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             match self {
                 Self::Transport { source, .. } => Some(source.as_ref()),
+                Self::Undecodable { source, .. } => Some(source),
                 _ => None,
             }
         }
@@ -1469,11 +1487,6 @@ pub mod caller {
                 site: site.into(),
                 queriers: Mutex::new(HashMap::new()),
             }
-        }
-
-        /// The site every call addresses.
-        pub fn site(&self) -> &str {
-            &self.site
         }
 
         /// One rpc, one typed reply. Matching-gated; re-issued once when
@@ -1625,8 +1638,9 @@ pub mod caller {
     }
 
     fn decode<T: DeserializeOwned>(key: &str, bytes: &[u8]) -> Result<T, RpcError> {
-        serde_json::from_slice(bytes).map_err(|_| RpcError::Undecodable {
+        serde_json::from_slice(bytes).map_err(|source| RpcError::Undecodable {
             key: key.to_string(),
+            source,
         })
     }
 
@@ -1647,8 +1661,9 @@ pub mod caller {
                             key: key.to_string(),
                         })
                     }
-                    Err(_) => Err(RpcError::Undecodable {
+                    Err(source) => Err(RpcError::Undecodable {
                         key: key.to_string(),
+                        source,
                     }),
                 }
             }
@@ -1881,7 +1896,7 @@ pub mod serve {
     /// per finding.
     pub async fn reply<R: Rpc>(query: &Query, response: &R::Response) {
         let bytes = serde_json::to_vec(response)
-            .expect("rpc responses are structs, which always encode as JSON");
+            .expect("rpc responses are serde structs, string-keyed maps and lists of them, which always encode as JSON");
         send(query, bytes).await;
     }
 

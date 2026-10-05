@@ -400,10 +400,7 @@ async fn run() -> Result<()> {
             ack::<tv::SetBacklight>(&caller, &id, &rpc::SetBacklight { level }).await
         }
         Command::Screen { id, state } => {
-            let request = rpc::SetScreen {
-                on: state == "on",
-                restore_input: false,
-            };
+            let request = rpc::SetScreen::manual(state == "on");
             ack::<tv::SetScreen>(&caller, &id, &request).await
         }
         Command::Rename { id, name } => {
@@ -1017,16 +1014,14 @@ async fn open_client(socket: &Path) -> Result<Session> {
         })
 }
 
-/// One typed rpc round-trip, its failure rendered for the terminal.
+/// One typed rpc round-trip; a failure keeps its cause chain for the
+/// terminal.
 async fn call<R: Unary>(
     caller: &Caller,
     target: &R::Target,
     request: &R::Request,
 ) -> Result<R::Response> {
-    caller
-        .call::<R>(target, request)
-        .await
-        .map_err(|e| anyhow!("{e}"))
+    Ok(caller.call::<R>(target, request).await?)
 }
 
 /// Print a reply: pretty JSON with `--json`, aligned fields otherwise.
@@ -1062,10 +1057,7 @@ async fn discover(
         vendor,
         timeout_ms: Some(timeout_ms),
     };
-    let found = caller
-        .call_many::<manager::Discover>(&(), &request)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    let found = caller.call_many::<manager::Discover>(&(), &request).await?;
     if json_out {
         println!(
             "{}",

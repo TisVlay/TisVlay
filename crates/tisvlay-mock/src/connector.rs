@@ -53,13 +53,6 @@ impl Default for MockConnector {
     }
 }
 
-/// Parse the vendor config into a [`MockVendorConfig`], with helpful errors.
-fn parse_config(value: &VendorConfig) -> Result<MockVendorConfig> {
-    value
-        .parse::<MockVendorConfig>()
-        .map_err(|e| Error::backend(crate::VENDOR_ID, format!("invalid mock config: {e}")))
-}
-
 #[async_trait]
 impl TvConnector for MockConnector {
     fn transport(&self) -> Transport {
@@ -80,7 +73,8 @@ impl TvConnector for MockConnector {
         // Test-configurable: models a CEC-style bus that stays reachable in
         // standby (the connection survives power-off). Default `false` so
         // existing network-shaped mock tests are unaffected.
-        parse_config(vendor_config)
+        vendor_config
+            .parse::<MockVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.reachable_in_standby)
             .unwrap_or(false)
     }
@@ -89,14 +83,15 @@ impl TvConnector for MockConnector {
         // Test-configurable: models a backend (CEC) with no discrete
         // screen-blank, so the daemon dispatches screen actions as power.
         // Default `false` so existing mock tests keep their real SCREEN.
-        parse_config(vendor_config)
+        vendor_config
+            .parse::<MockVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.emulate_screen_via_power)
             .unwrap_or(false)
     }
 
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
 
         // Honor any test-injected connect delay (simulates slow/unreachable TV),
         // pick up any test-seeded hardware identity keyed by address, and bump
@@ -138,12 +133,15 @@ impl TvConnector for MockConnector {
     fn supports_wake(&self, vendor_config: &VendorConfig) -> bool {
         // Config-driven so tests can flip it via update-config; wake
         // itself stays a no-op either way.
-        parse_config(vendor_config).map(|c| c.wake).unwrap_or(true)
+        vendor_config
+            .parse::<MockVendorConfig>(crate::VENDOR_ID)
+            .map(|c| c.wake)
+            .unwrap_or(true)
     }
 
     #[instrument(skip(self, vendor_config))]
     async fn wake(&self, vendor_config: &VendorConfig) -> Result<()> {
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
         tracing::debug!(address = %config.address, "mock wake (no-op)");
         Ok(())
     }
@@ -169,7 +167,7 @@ impl TvConnector for MockConnector {
         // If both are set, the handle wins: it's stored directly and the
         // shorthand's would-be-seeded value is overwritten only if no
         // outcome is already present.
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
         let address = config.address.clone();
 
         // Tv ID is derived from the address for mock TVs. In production
@@ -245,7 +243,7 @@ impl TvConnector for MockConnector {
     ) -> Result<VendorConfig> {
         // Credentials are ignored — the mock has nothing to store.
         // Echo the pairing params back so the daemon saves a valid config.
-        let config = parse_config(pairing_params)?;
+        let config = pairing_params.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
         VendorConfig::from_typed(&config)
             .map_err(|e| Error::backend(crate::VENDOR_ID, format!("serialize config: {e}")))
     }

@@ -855,20 +855,19 @@ impl Core {
         // select; the Caller re-issues nothing on a write and classifies
         // unavailable-vs-rejected for the log line.
         tokio::spawn(async move {
-            let screen = |on| rpc::SetScreen { on, restore_input };
             let outcome = match action {
                 SessionAction::ScreenOff => {
                     caller
-                        .call::<tv::SetScreen>(
-                            &tv,
-                            &rpc::SetScreen {
-                                on: false,
-                                restore_input: false,
-                            },
-                        )
+                        .call::<tv::SetScreen>(&tv, &rpc::SetScreen::manual(false))
                         .await
                 }
-                SessionAction::ScreenOn => caller.call::<tv::SetScreen>(&tv, &screen(true)).await,
+                SessionAction::ScreenOn => {
+                    let request = rpc::SetScreen {
+                        on: true,
+                        restore_input,
+                    };
+                    caller.call::<tv::SetScreen>(&tv, &request).await
+                }
                 SessionAction::PowerOff => caller.call::<tv::PowerOff>(&tv, &()).await,
                 SessionAction::PowerOn => {
                     caller

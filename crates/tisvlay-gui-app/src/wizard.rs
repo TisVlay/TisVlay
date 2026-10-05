@@ -266,17 +266,17 @@ pub(crate) async fn run_wizard_discovery(
     let signal_stream = match daemon.discovery_found_stream().await {
         Ok(s) => s,
         Err(e) => {
-            publish_discovery_error(&app_weak, e);
+            publish_discovery_error(&app_weak, &e);
             return;
         }
     };
 
-    // `timeout_ms = 0` ⇒ until-stop-or-hard-cap semantics. The hard
-    // cap is the daemon's safety net for a crashed GUI.
-    let session_id = match daemon.start_discovery(0).await {
+    // The session runs until stopped or the daemon's hard cap, its
+    // safety net for a crashed GUI.
+    let session_id = match daemon.start_discovery().await {
         Ok(sid) => sid,
         Err(e) => {
-            publish_discovery_error(&app_weak, e);
+            publish_discovery_error(&app_weak, &e);
             return;
         }
     };
@@ -342,8 +342,8 @@ pub(crate) async fn run_wizard_discovery(
 }
 
 /// Surface a discovery setup error in the wizard's error banner.
-fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: impl std::fmt::Display) {
-    let msg = format!("{e}");
+fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: &tisvlay::Error) {
+    let msg = error_text(e);
     on_ui(app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();
         wizard.set_discovery_streaming(false);
@@ -391,7 +391,7 @@ pub(crate) async fn fetch_and_publish_schema(
         }
         Err(e) => {
             warn!(vendor = %vendor, error = %e, "GetPairingSchema failed");
-            let msg = format!("{e}");
+            let msg = error_text(&e);
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
                 wizard.set_discovery_error(SharedString::from(msg));

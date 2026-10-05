@@ -1,61 +1,8 @@
-//! Configuration file parsing and management.
-//!
-//! # Configuration Split
-//!
-//! The configuration is split between system and user levels:
-//!
-//! ## System Config (`/var/lib/tisvlay/config.toml`)
-//!
-//! Owned by the daemon. Contains TV definitions, credentials, system profiles
-//! for daemon lifecycle events, and user profile defaults inherited by users.
-//!
-//! ```toml
-//! [system.profiles."00000000-0000-0000-0000-000000005159"]
-//! name = "default"
-//! on_startup = "power_on"
-//! on_shutdown = "power_off"
-//! on_reboot = "none"
-//! on_sleep = "power_off"
-//! on_wake = "power_on"
-//!
-//! [user.profiles."00000000-0000-0000-0000-00000000515a"]
-//! name = "default"
-//! on_session_lock = "screen_off"
-//! on_session_unlock = "screen_on"
-//!
-//! [[tv]]
-//! uuid = "11111111-1111-1111-1111-111111111111"
-//! name = "Living Room TV"
-//! vendor = "lg"
-//! primary_input = "HDMI_1"
-//! profile.system = "00000000-0000-0000-0000-000000005159"
-//!
-//! [tv.lg]
-//! ip = "192.168.1.100"
-//! mac = "AA:BB:CC:DD:EE:FF"
-//! client_key = "abc123"
-//! ```
-//!
-//! ## User Config (`~/.config/tisvlay/session.toml`)
-//!
-//! Owned by each user's `tisvlay-session`. Contains profile definitions
-//! and per-TV profile assignments. Optional — if absent, the session service
-//! inherits the system default profile.
-//!
-//! ```toml
-//! [user.profiles."00000000-0000-0000-0000-00000000515a"]
-//! name = "default"
-//! unlocked_idle_timeout_seconds = 600
-//!
-//! [user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
-//! name = "gaming"
-//! on_session_lock = "none"
-//! unlocked_idle_timeout_seconds = 0
-//!
-//! [[tv]]
-//! uuid = "11111111-1111-1111-1111-111111111111"
-//! profile.user = "a1b2c3d4-0000-0000-0000-000000000020"
-//! ```
+//! Profile vocabulary: the system and user profile bodies, the actions
+//! their events map to, how a body resolves over its defaults, and the
+//! reserved default profiles. The daemon persists system profiles in its
+//! store and the session service persists user profiles in its own; this
+//! module is the shape both share with clients.
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};

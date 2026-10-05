@@ -174,7 +174,7 @@ fn spawn_tv_rpc(
     let app_weak = app_weak.clone();
     tokio::spawn(async move {
         if let Err(e) = fut.await {
-            let msg = format!("{e}");
+            let msg = error_text(&*e);
             warn!(tv_id = %tv_id, error = %msg, "{log_label}");
             push_tvs_error(&app_weak, title, msg);
         }
@@ -956,7 +956,7 @@ fn register_callbacks(
                         warn!(name = %name, error = %e, "create_profile failed");
                         show_toast(
                             app_weak,
-                            &gettext("Create profile failed: {0}").replace("{0}", &format!("{e}")),
+                            &gettext("Create profile failed: {0}").replace("{0}", &error_text(&*e)),
                         );
                     }
                 }
@@ -1012,7 +1012,7 @@ fn register_callbacks(
                         show_toast(
                             app_weak,
                             &gettext("Duplicate profile failed: {0}")
-                                .replace("{0}", &format!("{e}")),
+                                .replace("{0}", &error_text(&*e)),
                         );
                     }
                 }
@@ -1072,7 +1072,7 @@ fn register_callbacks(
                         warn!(uuid = %uuid, error = %e, "delete_profile failed");
                         show_toast(
                             app_weak,
-                            &gettext("Delete profile failed: {0}").replace("{0}", &format!("{e}")),
+                            &gettext("Delete profile failed: {0}").replace("{0}", &error_text(&*e)),
                         );
                     }
                 }
@@ -1154,7 +1154,7 @@ fn register_callbacks(
                     warn!(field = %field, value = %value, error = %e, "value_edited failed");
                     show_toast(
                         app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1182,7 +1182,7 @@ fn register_callbacks(
                     warn!(field = %field, checked, error = %e, "restore_edited failed");
                     show_toast(
                         app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1217,7 +1217,7 @@ fn register_callbacks(
                     warn!(field = %field, fires_while_remote, error = %e, "remote_gated failed");
                     show_toast(
                         app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1244,7 +1244,7 @@ fn register_callbacks(
                     warn!(field = %field, value, error = %e, "value_edited_number failed");
                     show_toast(
                         app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1279,7 +1279,7 @@ fn register_callbacks(
                     warn!(field = %field, value, error = %e, "value_edited_bool failed");
                     show_toast(
                         app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1304,7 +1304,7 @@ fn register_callbacks(
                     warn!(field = %field, error = %e, "reset_field failed");
                     show_toast(
                         app_weak,
-                        &gettext("Reset field failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Reset field failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1328,7 +1328,7 @@ fn register_callbacks(
                     warn!(error = %e, "reset_all failed");
                     show_toast(
                         app_weak,
-                        &gettext("Reset all failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Reset all failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1353,7 +1353,7 @@ fn register_callbacks(
                     warn!(name = %new_name, error = %e, "rename_selected failed");
                     show_toast(
                         app_weak,
-                        &gettext("Rename failed: {0}").replace("{0}", &format!("{e}")),
+                        &gettext("Rename failed: {0}").replace("{0}", &error_text(&*e)),
                     );
                 }
             });
@@ -1378,7 +1378,7 @@ fn register_callbacks(
             async move {
                 recs.volume.dispatch(&id, v);
                 if let Err(e) = with_id(&id, |tv| d.set_volume(tv, v)).await {
-                    let msg = format!("{e}");
+                    let msg = error_text(&*e);
                     warn!(tv_id = %id, error = %msg, "set_volume failed");
                     push_tvs_error(&app_weak, gettext("Couldn't change volume"), msg);
                 }
@@ -1396,7 +1396,7 @@ fn register_callbacks(
             async move {
                 recs.backlight.dispatch(&id, v);
                 if let Err(e) = with_id(&id, |tv| d.set_backlight(tv, v)).await {
-                    let msg = format!("{e}");
+                    let msg = error_text(&*e);
                     warn!(tv_id = %id, error = %msg, "set_backlight failed");
                     push_tvs_error(&app_weak, gettext("Couldn't change backlight"), msg);
                 }
@@ -1419,7 +1419,7 @@ fn register_callbacks(
             tv_id.clone(),
             "set_mute failed",
             gettext("Couldn't change mute"),
-            async move { with_id(&tv_id, |tv| d.set_mute(tv, muted)).await },
+            async move { with_id(&tv_id, |tv| d.set_muted(tv, muted)).await },
         );
     });
 
@@ -1441,7 +1441,7 @@ fn register_callbacks(
                 with_id(&tv_id, |tv| d.screen_off(tv)).await
             };
             if let Err(e) = result {
-                let msg = format!("{e}");
+                let msg = error_text(&*e);
                 warn!(tv_id = %tv_id, on, error = %msg, "set_is_screen_on failed");
                 push_tvs_error(
                     &app_weak,
@@ -1465,7 +1465,7 @@ fn register_callbacks(
         let input_id = input_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = with_id(&tv_id, |tv| d.switch_input(tv, &input_id)).await {
-                let msg = format!("{e}");
+                let msg = error_text(&*e);
                 warn!(tv_id = %tv_id, input = %input_id, error = %msg, "switch_input failed");
                 push_tvs_error(&app_weak, gettext("Couldn't switch input"), msg);
             }
@@ -1484,7 +1484,7 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = run_power_on_with_progress(d, app_weak.clone(), tv_id.clone()).await {
-                let msg = format!("{e}");
+                let msg = error_text(&*e);
                 warn!(tv_id = %tv_id, error = %msg, "power_on failed");
                 push_tvs_error(&app_weak, gettext("Power on failed"), msg);
             }
@@ -1513,7 +1513,7 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = with_id(&tv_id, |tv| d.set_tv_managed(tv, managed)).await {
-                let msg = format!("{e}");
+                let msg = error_text(&*e);
                 warn!(tv_id = %tv_id, managed, error = %msg, "set_managed failed");
                 push_tvs_error(&app_weak, gettext("Couldn't update managed"), msg);
             }
@@ -1555,7 +1555,7 @@ fn register_callbacks(
                 return;
             };
             if let Err(e) = with_id(&tv_id, |tv| d.set_tv_system_profile(tv, Some(uuid))).await {
-                let msg = format!("{e}");
+                let msg = error_text(&*e);
                 warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_system_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
             }
@@ -1600,7 +1600,7 @@ fn register_callbacks(
                 return;
             };
             if let Err(e) = with_id(&tv_id, |tv| client.set_tv_user_profile(tv, Some(uuid))).await {
-                let msg = format!("{e}");
+                let msg = error_text(&*e);
                 warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_user_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
             }
@@ -1617,7 +1617,7 @@ fn register_callbacks(
         tokio::spawn(async move {
             let primary = (!input.is_empty()).then_some(input.as_str());
             if let Err(e) = with_id(&tv_id, |tv| d.set_tv_primary_input(tv, primary)).await {
-                let msg = format!("{e}");
+                let msg = error_text(&*e);
                 warn!(tv_id = %tv_id, input = %input, error = %msg, "set_primary_input failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change primary input"), msg);
             }
@@ -1662,7 +1662,7 @@ fn register_callbacks(
                 report_reload_err(
                     "daemon reload_config failed",
                     gettext("Reload config failed"),
-                    format!("{e}"),
+                    error_text(&e),
                 );
             }
             let session_ref = s.read().await;
@@ -1672,7 +1672,7 @@ fn register_callbacks(
                 report_reload_err(
                     "session reload_config failed",
                     gettext("Reload session config failed"),
-                    format!("{e}"),
+                    error_text(&e),
                 );
             }
             drop(session_ref);
@@ -1684,7 +1684,7 @@ fn register_callbacks(
             if let Some(client) = tray_ref.as_ref()
                 && let Err(e) = client.reload_config().await
             {
-                warn!(error = %format!("{e}"), "tray reload_config failed");
+                warn!(error = %error_text(&e), "tray reload_config failed");
             }
             drop(tray_ref);
             state_watch::refresh_tray_notifications(&tr, &app_weak).await;
@@ -2195,21 +2195,21 @@ fn register_callbacks(
                 Ok(s) => s,
                 Err(e) => {
                     warn!(vendor = %vendor, error = %e, "EditPane.start: GetPairingSchema failed");
-                    publish_edit_error(&app_weak, format!("{e:#}"));
+                    publish_edit_error(&app_weak, error_text(&e));
                     return;
                 }
             };
 
-            let config_json = match with_id(&uuid_owned, |tv| d.get_tv_config(tv)).await {
-                Ok(view) => serde_json::to_value(view).unwrap_or_default(),
+            let view = match with_id(&uuid_owned, |tv| d.get_tv_config(tv)).await {
+                Ok(view) => view,
                 Err(e) => {
                     warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: GetConfig failed");
-                    publish_edit_error(&app_weak, format!("{e:#}"));
+                    publish_edit_error(&app_weak, error_text(&*e));
                     return;
                 }
             };
 
-            let raw_rows = prefill_schema_from_config(&schema, &config_json);
+            let raw_rows = prefill_schema_from_config(&schema, &view.config);
             on_ui(&app_weak, move |app| {
                 let edit_pane = app.global::<EditPane>();
                 let rows: Vec<PairingFieldRow> = raw_rows
