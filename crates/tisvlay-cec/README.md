@@ -44,7 +44,7 @@ async fn main() -> tisvlay_core::Result<()> {
 - `tisvlay-core`: the traits this crate implements and the types they carry. The tisvlay crates release in lockstep, so use matching versions.
 - `serde`: `CecVendorConfig` and `PhysicalAddress` implement `Serialize`/`Deserialize`, which is how the config converts to and from a `VendorConfig`.
 
-`linux-cec` is not part of the API. The `test-link` feature is the one exception: it exposes scripted link doubles for out-of-crate tests, along with linux-cec's `PowerStatus` that they speak. That feature is outside this crate's semver guarantees.
+`linux-cec` is not part of the API. The `test-link` feature is the one exception: it exposes scripted link doubles for out-of-crate tests, along with linux-cec's `PowerStatus` and `VendorId` that they speak. That feature is outside this crate's semver guarantees.
 
 ## License
 

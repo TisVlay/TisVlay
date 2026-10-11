@@ -6,7 +6,6 @@
 // Modules
 mod capabilities;
 mod config;
-mod desktop;
 mod error;
 pub mod errors;
 mod hardware_id;
@@ -30,9 +29,6 @@ pub use capabilities::Capabilities;
 
 // Hardware identity
 pub use hardware_id::HardwareId;
-
-// Desktop mapping (identity)
-pub use desktop::DesktopMapping;
 
 // Pairing
 pub use pairing::{

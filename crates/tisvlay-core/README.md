@@ -38,6 +38,7 @@ These crates' types appear in this crate's API, so a major-version bump of one i
 - `serde`: the config, state and pairing types implement `Serialize`/`Deserialize`, and `VendorConfig` converts through them.
 - `toml`: `VendorConfig` wraps a `toml::Table`, and `Error::Config` carries a `toml::de::Error`.
 - `serde_json`: `Error::Json` carries a `serde_json::Error`.
+- `async-trait`: `TvConnection` and `TvConnector` are `#[async_trait]` traits, so their method signatures are that macro's expansion, and implementations apply the macro too.
 
 ## License
 
