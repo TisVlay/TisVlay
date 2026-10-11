@@ -1075,10 +1075,19 @@ impl Core {
             (index_profiles(&edit.base), index_profiles(&edit.disk));
         let (base_assigned, disk_assigned) =
             (index_assignments(&edit.base), index_assignments(&edit.disk));
-        let changed_profiles: Vec<(Uuid, &UserProfileConfig)> = disk_profiles
+        // Per field: a client change to another field of the same profile,
+        // still waiting to be written, survives. A profile the file adds
+        // (or one the session no longer holds) takes the file's body.
+        let changed_profiles: Vec<(Uuid, UserProfileConfig)> = disk_profiles
             .iter()
             .filter(|(id, body)| base_profiles.get(id) != Some(*body))
-            .map(|(id, body)| (*id, body))
+            .map(|(id, disk)| {
+                let body = match (base_profiles.get(id), self.profiles.get(id)) {
+                    (Some(base), Some(current)) => current.merge_edit(base, disk),
+                    _ => disk.clone(),
+                };
+                (*id, body)
+            })
             .collect();
         let removed_profiles: Vec<Uuid> = base_profiles
             .keys()
@@ -1121,7 +1130,7 @@ impl Core {
         }
         let mut profiles_after = self.profiles.clone();
         for (id, body) in &changed_profiles {
-            profiles_after.insert(*id, (*body).clone());
+            profiles_after.insert(*id, body.clone());
         }
         for id in &removed_profiles {
             profiles_after.remove(id);
@@ -1146,7 +1155,7 @@ impl Core {
 
         // Apply: profiles first, so assignments name existing ones.
         for (id, body) in &changed_profiles {
-            self.profiles.insert(*id, (*body).clone());
+            self.profiles.insert(*id, body.clone());
             self.publish_profile(id, body).await;
         }
         for (tv, profile) in &changed_assignments {

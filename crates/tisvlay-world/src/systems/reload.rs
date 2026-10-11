@@ -21,8 +21,8 @@ pub(super) struct StoreDiff<'a> {
     pub tvs_changed: Vec<(&'a TvRecord, &'a TvRecord)>,
     pub profiles_added: Vec<&'a ProfileRecord>,
     pub profiles_removed: Vec<Uuid>,
-    /// The file's version of each changed profile.
-    pub profiles_changed: Vec<&'a ProfileRecord>,
+    /// (as last written, as the file reads now)
+    pub profiles_changed: Vec<(&'a ProfileRecord, &'a ProfileRecord)>,
 }
 
 impl<'a> StoreDiff<'a> {
@@ -50,7 +50,7 @@ impl<'a> StoreDiff<'a> {
         for profile in &disk.system_profile {
             match base_profiles.get(&profile.id) {
                 None => diff.profiles_added.push(profile),
-                Some(&old) if old != profile => diff.profiles_changed.push(profile),
+                Some(&old) if old != profile => diff.profiles_changed.push((old, profile)),
                 Some(_) => {}
             }
         }
@@ -131,7 +131,7 @@ pub(crate) fn reload_store(
             return Err(WireError::profile_exists(profile.id));
         }
     }
-    for profile in &diff.profiles_changed {
+    for (_, profile) in &diff.profiles_changed {
         if profile.id == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
             && profile.body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
         {
@@ -201,13 +201,16 @@ pub(crate) fn reload_store(
         publish_profile(&mut outbox, &site, &profile.id, &profile.body);
         commands.spawn((ProfileId(profile.id), ProfileBody(profile.body.clone())));
     }
-    for profile in &diff.profiles_changed {
+    // Per field, like TVs: a client change to another field of the same
+    // profile, still waiting to be written, survives.
+    for (old, new) in &diff.profiles_changed {
         if let Some(mut body) = profiles
-            .get(&profile.id)
+            .get(&new.id)
             .and_then(|entity| bodies.get_mut(entity).ok())
         {
-            publish_profile(&mut outbox, &site, &profile.id, &profile.body);
-            body.0 = profile.body.clone();
+            let merged = body.0.merge_edit(&old.body, &new.body);
+            publish_profile(&mut outbox, &site, &new.id, &merged);
+            body.0 = merged;
         }
     }
     for tv in &diff.tvs_added {
