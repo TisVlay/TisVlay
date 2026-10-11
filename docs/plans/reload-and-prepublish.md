@@ -25,7 +25,7 @@ Owner's rulings, 2026-10-11:
 - **App glue moves from core to `tisvlay-runtime`.** Only the GUI and tray use it, and both already depend on runtime.
 - **Dependency types in public APIs:**
   - **Wrap** `linux_cec::PhysicalAddress` in a `tisvlay-cec` newtype. linux-cec is 0.x, seven months old, and has already broken once.
-  - **Leave** core's `Config(#[from] toml::de::Error)` and `Json(#[from] serde_json::Error)`, `VendorConfig`'s `toml::Value`, and `from_typed`'s `toml::ser::Error`. Both crates are 1.x, and the opaque-error wins were judged too small.
+  - **Leave** core's `Config(#[from] toml::de::Error)` and `Json(#[from] serde_json::Error)`, `VendorConfig`'s `toml::Value`, and the toml serialize error `from_typed` returns. Both crates are 1.x, and the opaque-error wins were judged too small.
   - **Accept** tokio, uuid, bitflags, serde, toml and serde_json (core) and futures-core (ssdp) as public dependencies, and document them in each crate's docs.
 
   The grounding is the API guidelines' C-STABLE, the nightly-only status of cargo's `public = true` (RFC 3516), and how reqwest, axum and tokio-rustls handle the same question.
