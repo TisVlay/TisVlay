@@ -25,6 +25,11 @@
 //! warning, and a lost connection tears the source down and reconnects —
 //! it never blocks or kills the session service.
 
+#![expect(
+    unsafe_code,
+    reason = "env::set_var points PipeWire at the host's SPA plugins, under an unsafe fn whose caller guarantees the process is still single-threaded"
+)]
+
 use std::collections::BTreeMap;
 
 use tisvlay_wire::payload::RemoteSourceKind;
@@ -219,9 +224,11 @@ enum FfiError {
 
 impl From<std::io::Error> for FfiError {
     fn from(e: std::io::Error) -> Self {
-        FfiError::Connect(e)
+        Self::Connect(e)
     }
 }
+
+pub use ffi::point_at_host_spa_plugins;
 
 /// The FFI-facing strip: the only code that touches `pipewire-native`.
 /// Deliberately thin — it wires registry/node events to the pure
@@ -229,7 +236,7 @@ impl From<std::io::Error> for FfiError {
 /// live PipeWire server); verified manually.
 mod ffi {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
     use pipewire_native::properties::Properties;
     use pipewire_native::proxy::node::{NodeEvents, NodeState};
@@ -242,7 +249,6 @@ mod ffi {
 
     /// One-time global init of the PipeWire support libraries.
     pub(super) fn init() {
-        point_at_host_spa_plugins();
         pipewire_native::init();
     }
 
@@ -255,7 +261,12 @@ mod ffi {
     /// the host's real dirs unless the operator already pinned one. The
     /// loader searches a colon-separated list in order and skips dirs that
     /// don't load, so we hand it every layout that exists and let it pick.
-    fn point_at_host_spa_plugins() {
+    ///
+    /// # Safety
+    ///
+    /// It calls [`std::env::set_var`], so no other thread may exist yet: call
+    /// it from `main` before the async runtime starts.
+    pub unsafe fn point_at_host_spa_plugins() {
         if std::env::var_os("SPA_PLUGIN_DIR").is_some() {
             return;
         }
@@ -280,9 +291,8 @@ mod ffi {
         if dirs.is_empty() {
             return;
         }
-        // SAFETY: runs once at detector-thread startup before
-        // `pipewire_native::init()` — the only reader of SPA_PLUGIN_DIR —
-        // and we never mutate it again.
+        // SAFETY: by this fn's contract no other thread exists yet, so
+        // nothing can read or write the environment concurrently.
         unsafe { std::env::set_var("SPA_PLUGIN_DIR", dirs.join(":")) };
     }
 
@@ -338,7 +348,7 @@ mod ffi {
         // A broken pipe (server gone) flips `done` so the supervisor can
         // reconnect.
         {
-            let done = flags.done.clone();
+            let done = &flags.done;
             core.add_listener(pipewire_native::core::CoreEvents::new(
                 None,
                 None,
@@ -368,13 +378,13 @@ mod ffi {
                     return;
                 }
                 let np = node_props(props);
-                let reports = tracker.lock().unwrap().on_global(id, &np);
+                let reports = locked(tracker).on_global(id, &np);
                 emit(client, flags, reports);
                 // A matching node: bind it to receive its run state for `detail`.
                 watch_node_state(&reg_for_bind, id, version, tracker, client, flags);
             }),
             global_remove: some_closure!([^(tracker, client, flags)] id, {
-                let reports = tracker.lock().unwrap().on_removed(id);
+                let reports = locked(tracker).on_removed(id);
                 emit(client, flags, reports);
             }),
         });
@@ -386,7 +396,7 @@ mod ffi {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
         // Clear the source (real detail) before unwinding.
-        let reports = tracker.lock().unwrap().clear();
+        let reports = locked(&tracker).clear();
         emit(client, &flags, reports);
         main_loop.quit();
         core.disconnect();
@@ -395,6 +405,13 @@ mod ffi {
             return Err(FfiError::CoreGone);
         }
         Ok(())
+    }
+
+    /// Lock the tracker, recovering it if a panicking PipeWire callback
+    /// poisoned the mutex: its state is plain bookkeeping that stays
+    /// consistent between calls, so the next event can safely carry on.
+    fn locked(tracker: &Mutex<Tracker>) -> MutexGuard<'_, Tracker> {
+        tracker.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Bind a matching node and forward its run-state changes into the
@@ -415,7 +432,7 @@ mod ffi {
         };
         node.add_listener(NodeEvents {
             info: some_closure!([^(tracker, client, flags)] info, {
-                let reports = tracker.lock().unwrap().on_state(info.id, state_label(info.state));
+                let reports = locked(tracker).on_state(info.id, state_label(info.state));
                 emit(client, flags, reports);
             }),
             ..Default::default()
@@ -425,7 +442,7 @@ mod ffi {
         node.proxy().add_listener(ProxyEvents {
             removed: some_closure!([node ^(tracker, client, flags)] {
                 if let Some(id) = node.proxy().bound_id() {
-                    let reports = tracker.lock().unwrap().on_removed(id);
+                    let reports = locked(tracker).on_removed(id);
                     emit(client, flags, reports);
                 }
             }),

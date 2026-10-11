@@ -328,11 +328,11 @@ export component AppWindow inherits Window {
                     }
 
                     // Footer status block — three peer indicators (Daemon /
-                    // Session / Tray) grouped together and centred within
+                    // Session / Tray) grouped together and centered within
                     // the sidebar. Each row is a single left-aligned Text
                     // (dot glyph + label), so the dots naturally share an
                     // x-coord (the row's left edge); wrapping the whole
-                    // VerticalLayout in a centred HorizontalLayout shifts
+                    // VerticalLayout in a centered HorizontalLayout shifts
                     // the block into the middle of the sidebar without
                     // disturbing per-row layout.
                     HorizontalLayout {
@@ -433,7 +433,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Top-centre toast — declared after the HorizontalBox so it
+    // Top-center toast — declared after the HorizontalBox so it
     // renders on top of the panes. Positioned by `x`/`y` rather than
     // a layout because we want it to float over the chrome (titlebar
     // edge included), not inside the sidebar+pane split. Auto-clears

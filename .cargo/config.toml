@@ -12,7 +12,7 @@
 # info into the generated Rust code, which `i-slint-backend-testing`
 # needs for `find_by_element_id` / `accessible_id()` queries. Without
 # it those finders silently return empty iterators and tests look
-# like they "found nothing." See `crates/tisvlay-gui/tests/` and
+# like they "found nothing." See `crates/tisvlay-gui-app/tests/` and
 # `crates/tisvlay-harness/tests/gui_*.rs` for consumers.
 [env]
 SLINT_EMIT_DEBUG_INFO = "1"

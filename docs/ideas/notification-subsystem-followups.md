@@ -7,10 +7,10 @@ feature shipped correct and QA-verified. Each is reuse/idiom work with a
 concrete trigger; pick one off when its trigger fires.
 
 (Two review observations are *not* listed here because they're decisions,
-not deferred work, and already live in `docs/design.md`'s Tray1 section:
-the deliberate two-type split between on-disk `NotificationSettings` and
-the wire `NotificationSettingsBody`, and the serialized emit-worker /
-backoff rationale.)
+not deferred work: reads return the full `NotificationSettings` while an
+update carries a `NotificationSettingsPatch` of only the switches it
+changes (their rustdoc in `tisvlay-wire`), and the serialized emit-worker /
+backoff rationale (`docs/design.md`'s Tray1 section).)
 
 ## (Speculative) `PeerClient` trait over the client structs
 

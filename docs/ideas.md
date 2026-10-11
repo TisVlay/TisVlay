@@ -22,7 +22,12 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
 - [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
 - [Eager remote-state refresh on gated events (world-side DPMS path)](ideas/eager-remote-state-refresh.md)
-- [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, configurable Sunshine endpoint, PipeWire test fake)](ideas/remote-session-followups.md)
+- [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](ideas/remote-session-followups.md)
+- [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](ideas/zenoh-typed-queryables.md)
+- [SDK methods for the rpcs only the CLI reaches (add-tv, discover, user effective)](ideas/sdk-cli-only-rpcs.md)
+- [Prune core's unused error vocabularies (`PowerError`, `PowerErrorCode`, `ConfigErrorCode`)](ideas/core-error-vocabulary-pruning.md)
+- [Reload config from disk (daemon, session, tray): the dead "Reload config" button](ideas/reload-config.md)
+- [A typed `update-config` request (settings fields + flattened vendor map)](ideas/typed-update-config.md)
 
 ## Operational
 
@@ -47,10 +52,12 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 ## Build & CI
 
+- [Mutation testing with cargo-mutants (scoped to pure-logic crates, on demand)](ideas/mutation-testing.md)
+- [Fuzzing the parsers (grow the never-panic properties into bolero fuzz targets)](ideas/parser-fuzzing.md)
+- [Deterministic network simulation (turmoil) for the LG reconnect logic](ideas/deterministic-network-tests.md)
 - [Switchover follow-ups: tray gettext, mock-backend gating, coverage baseline, fresh design doc](ideas/switchover-followups.md)
 - [Move the pre-publish artifact smoke-test into CI](ideas/ci-artifact-smoke-test.md)
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
-- [MSRV verification job (keep the `rust-version` floor honest under the pinned channel)](ideas/msrv-verification-job.md)
 - [Replace hardcoded sleeps in dispatch integration tests with poll-with-deadline](ideas/dispatch-test-event-driven-waits.md)
 - [Seat-watch regression coverage over a fake logind Seat surface](ideas/seat-watch-fake-logind-coverage.md)
 

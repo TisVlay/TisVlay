@@ -14,6 +14,8 @@
 //! Run: `cargo run -p tisvlay-cli --bin gen-cli-docs --features gen-docs`
 //! (prints to stdout; the justfile redirects it to the partial).
 
+#![expect(clippy::print_stdout, reason = "the generator's output is its stdout")]
+
 fn main() {
     let markdown = clap_markdown::help_markdown_custom::<tisvlay_cli::Cli>(
         &clap_markdown::MarkdownOptions::new().show_footer(false),

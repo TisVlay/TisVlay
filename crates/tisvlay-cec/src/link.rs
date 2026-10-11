@@ -8,6 +8,16 @@
 //! never touch a real `/dev/cecN` ioctl. Daemon-level coverage of the
 //! always-reachable state machine rides the mock backend, not this seam.
 
+// External-input profile: this module handles CEC frames from the kernel,
+// so indexing, arithmetic, string slicing and narrowing casts must be
+// checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -416,7 +426,7 @@ mod fake {
     use parking_lot::Mutex;
     use std::collections::VecDeque;
 
-    /// A scripted [`CecLink`] for tests: holds a mutable power status that
+    /// A scripted `CecLink` for tests: holds a mutable power status that
     /// `power_on` / `power_off` flip, so connector and connection logic
     /// run without a real `/dev/cecN`. `ignore_wakes` models a TV that
     /// drops the first N `power_on` sends before reporting on, so tests
@@ -433,6 +443,8 @@ mod fake {
     }
 
     impl FakeCecLink {
+        /// A fake link reporting `power`, with no scripted identity and
+        /// honoring every wake.
         pub fn new(power: PowerStatus) -> Self {
             Self {
                 power: Mutex::new(power),
@@ -443,6 +455,7 @@ mod fake {
         }
 
         /// Seed the scripted TV identity the connection/discovery queries.
+        #[must_use]
         pub fn with_identity(
             mut self,
             osd_name: &str,
@@ -467,7 +480,7 @@ mod fake {
             if *remaining == 0 {
                 *self.power.lock() = PowerStatus::On;
             } else {
-                *remaining -= 1;
+                *remaining = remaining.saturating_sub(1);
             }
             Ok(())
         }
@@ -518,6 +531,8 @@ mod fake {
     }
 
     impl FakeCecLinkOpener {
+        /// An opener whose links start at `initial` power, with nothing
+        /// scripted and every open permitted.
         pub fn new(initial: PowerStatus) -> Self {
             Self {
                 initial,

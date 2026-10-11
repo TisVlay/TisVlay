@@ -91,7 +91,7 @@ fn registered_payload_extracts_client_key() {
     let response: Response = serde_json::from_str(json).unwrap();
     let payload: RegisteredPayload =
         serde_json::from_value(response.payload).expect("should parse as RegisteredPayload");
-    assert_eq!(payload.client_key, "abc123def456");
+    assert_eq!(payload.client_key.expose(), "abc123def456");
 }
 
 #[rstest]
@@ -167,7 +167,7 @@ fn error_response_has_error_message() {
 
 #[test]
 fn register_request_serializes() {
-    let payload = RegisterPayload::new(Some("test-key".to_string()));
+    let payload = RegisterPayload::new(Some("test-key".into()));
     let request = Request::register("reg_0", payload);
     let json = serde_json::to_value(&request).unwrap();
     assert_eq!(json["id"], "reg_0");

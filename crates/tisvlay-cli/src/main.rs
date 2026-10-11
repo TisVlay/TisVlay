@@ -1,13 +1,23 @@
+// The CLI prints its results to stdout by design; the workspace print
+// lints target the daemons and libraries, which log through tracing.
+// `allow`, not `expect`: the bin's test build doesn't trip `print_stderr`.
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the CLI prints its output"
+)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
 use serde_json::{Value, json};
 use tisvlay_cli::{Cli, Command, ProfileCmd, RemoteSessionCmd, UserProfileCmd};
 use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{Unary, manager, profile, tv, user_profile, user_remote, vendors};
 use tisvlay_wire::{keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -31,7 +41,7 @@ fn main() -> Result<()> {
 /// `enable-access`: enroll the current user in the daemon's socket group via
 /// a polkit-authenticated `usermod`, printing the outcome.
 fn enable_access(socket: &Path) -> Result<()> {
-    use tisvlay_core::access::{self, EnrollOutcome};
+    use tisvlay_runtime::access::{self, EnrollOutcome};
     // Gate on the durable grant (group membership), never on reachability:
     // a console user's presence grant makes the socket connectable, yet
     // they are exactly who runs this verb to gain SSH/remote access.
@@ -67,8 +77,8 @@ async fn run() -> Result<()> {
         return enable_access(&socket);
     }
     let session = open_client(&socket).await?;
-    let caller = Caller::new(session.clone());
     let site = &cli.site;
+    let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
     match cli.command {
         // Handled above, before the client opens (needs no connection).
@@ -77,7 +87,7 @@ async fn run() -> Result<()> {
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
         Command::Discover { vendor, timeout_ms } => {
-            discover(&caller, site, vendor, timeout_ms, json_out).await
+            discover(&caller, vendor, timeout_ms, json_out).await
         }
         Command::Pair {
             name,
@@ -86,8 +96,10 @@ async fn run() -> Result<()> {
             address,
         } => {
             let config = match (params, address) {
-                (Some(params), _) => serde_json::from_str(&params)?,
-                (None, Some(address)) => json!({ "address": address }),
+                (Some(params), _) => {
+                    serde_json::from_str(&params).context("--params must be a JSON object")?
+                }
+                (None, Some(address)) => address_config(address),
                 (None, None) => bail!("provide --params or --address"),
             };
             pair(&session, &caller, site, name, vendor, config).await
@@ -98,176 +110,102 @@ async fn run() -> Result<()> {
             vendor,
             unmanaged,
         } => {
-            let body = serde_json::to_value(rpc::AddTv {
+            let request = rpc::AddTv {
                 id: None,
                 name,
                 vendor,
                 managed: !unmanaged,
-                config: json!({ "address": address }),
-            })?;
-            let reply = call(&caller, &keys::manager_rpc(site, "add-tv"), body).await?;
-            println!("added: {}", reply["id"].as_str().unwrap_or("?"));
+                config: address_config(address),
+            };
+            let created = call::<manager::AddTv>(&caller, &(), &request).await?;
+            println!("added: {}", created.id);
             Ok(())
         }
         Command::SetVolume { id, level } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-volume"),
-                json!({ "level": level }),
-            )
-            .await
+            ack::<tv::SetVolume>(&caller, &id, &rpc::SetVolume { level }).await
         }
         Command::Input { id, input } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "switch-input"),
-                json!({ "input": input }),
-            )
-            .await
+            ack::<tv::SwitchInput>(&caller, &id, &rpc::SwitchInput { input }).await
         }
         Command::Backlight { id, level } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-backlight"),
-                json!({ "level": level }),
-            )
-            .await
+            ack::<tv::SetBacklight>(&caller, &id, &rpc::SetBacklight { level }).await
         }
         Command::Screen { id, state } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-screen"),
-                json!({ "on": state == "on" }),
-            )
-            .await
+            let request = rpc::SetScreen::manual(state == "on");
+            ack::<tv::SetScreen>(&caller, &id, &request).await
         }
         Command::Rename { id, name } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-name"),
-                json!({ "name": name }),
-            )
-            .await
+            ack::<tv::SetName>(&caller, &id, &rpc::SetName { name }).await
         }
         Command::Managed { id, managed } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-managed"),
-                json!({ "managed": managed }),
-            )
-            .await
+            ack::<tv::SetManaged>(&caller, &id, &rpc::SetManaged { managed }).await
         }
         Command::Config { id } => {
-            let config =
-                fetch(&caller, &keys::tv_rpc(site, &id, "get-config"), Value::Null).await?;
-            if json_out {
-                println!("{}", serde_json::to_string_pretty(&config)?);
-            } else {
-                print_fields(&config);
-            }
-            Ok(())
+            let config = call::<tv::GetConfig>(&caller, &id, &()).await?;
+            print_reply(&config, json_out)
         }
         Command::ConfigSet { id, patch } => {
-            let patch: Value = serde_json::from_str(&patch)?;
-            ack(&caller, &keys::tv_rpc(site, &id, "update-config"), patch).await
+            let patch: rpc::UpdateConfig = serde_json::from_str(&patch)
+                .map_err(|e| anyhow!("the patch must be a JSON object: {e}"))?;
+            ack::<tv::UpdateConfig>(&caller, &id, &patch).await
         }
         Command::Repair { id } => {
-            let started = call(&caller, &keys::tv_rpc(site, &id, "re-pair"), Value::Null).await?;
+            let started = call::<tv::RePair>(&caller, &id, &()).await?;
             println!("re-pairing session {id} started");
-            watch_pairing(&session, &caller, site, id, &reply_attempt(&started)?).await
+            watch_pairing(&session, &caller, site, id, started.attempt).await
         }
         Command::Power { id, state } => {
-            let verb = if state == "on" {
-                "power-on"
+            if state == "on" {
+                ack::<tv::PowerOn>(&caller, &id, &rpc::PowerOn::default()).await
             } else {
-                "power-off"
-            };
-            ack(&caller, &keys::tv_rpc(site, &id, verb), Value::Null).await
+                ack::<tv::PowerOff>(&caller, &id, &()).await
+            }
         }
-        Command::Reconnect { id } => {
-            ack(&caller, &keys::tv_rpc(site, &id, "reconnect"), Value::Null).await
-        }
+        Command::Reconnect { id } => ack::<tv::Reconnect>(&caller, &id, &()).await,
         Command::Remove { id } => {
-            call(&caller, &keys::tv_rpc(site, &id, "remove"), Value::Null).await?;
+            call::<tv::Remove>(&caller, &id, &()).await?;
             println!("removed");
             Ok(())
         }
         Command::Mute { id, muted } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-muted"),
-                json!({ "muted": muted }),
-            )
-            .await
+            ack::<tv::SetMuted>(&caller, &id, &rpc::SetMuted { muted }).await
         }
         Command::PrimaryInput { id, input } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-primary-input"),
-                json!({ "input": input }),
-            )
-            .await
+            ack::<tv::SetPrimaryInput>(&caller, &id, &rpc::SetPrimaryInput { input }).await
         }
         Command::Assign { id, profile } => {
-            ack(
-                &caller,
-                &keys::tv_rpc(site, &id, "set-system-profile"),
-                json!({ "profile": profile }),
-            )
-            .await
+            ack::<tv::SetSystemProfile>(&caller, &id, &rpc::SetSystemProfile { profile }).await
         }
         Command::Vendors => {
-            let vendors = fetch(&caller, &keys::vendors(site), Value::Null).await?;
+            let vendors = call::<vendors::Catalog>(&caller, &(), &()).await?;
             if json_out {
-                println!("{}", serde_json::to_string_pretty(&vendors)?);
-                return Ok(());
+                return print_reply(&vendors, true);
             }
-            for vendor in vendors.as_array().into_iter().flatten() {
-                let caps: Vec<&str> = vendor["capabilities"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .collect();
+            for vendor in vendors {
                 println!(
                     "{}  {}  [{}]",
-                    vendor["id"].as_str().unwrap_or("?"),
-                    vendor["name"].as_str().unwrap_or("?"),
-                    caps.join(", "),
+                    vendor.id,
+                    vendor.name,
+                    vendor.capabilities.join(", "),
                 );
             }
             Ok(())
         }
         Command::Schema { vendor } => {
-            let schema = fetch(&caller, &keys::vendor_schema(site, &vendor), Value::Null).await?;
+            let schema = call::<vendors::Schema>(&caller, vendor.as_str(), &()).await?;
             if json_out {
-                println!("{}", serde_json::to_string_pretty(&schema)?);
-                return Ok(());
+                return print_reply(&schema, true);
             }
-            for field in schema.as_array().into_iter().flatten() {
-                let required = if field["required"].as_bool().unwrap_or(false) {
-                    " (required)"
-                } else {
-                    ""
-                };
-                println!(
-                    "{}{}  {}",
-                    field["name"].as_str().unwrap_or("?"),
-                    required,
-                    field["helper"].as_str().unwrap_or_default(),
-                );
+            for field in schema {
+                let required = if field.required { " (required)" } else { "" };
+                println!("{}{}  {}", field.name, required, field.helper,);
             }
             Ok(())
         }
         Command::DiscoverSession { vendor } => {
             discover_session(&session, &caller, site, vendor, json_out).await
         }
-        Command::Profile(cmd) => {
-            profile_cmd(&session, &caller, site, cmd, json_out, |verb| {
-                keys::profile_rpc(site, verb)
-            })
-            .await
-        }
+        Command::Profile(cmd) => profile_cmd(&session, &caller, site, cmd, json_out).await,
         Command::UserProfile(cmd) => {
             let user_socket = cli
                 .user_socket
@@ -280,7 +218,14 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            user_profile_cmd(&user, &Caller::new(user.clone()), site, cmd, json_out).await
+            user_profile_cmd(
+                &user,
+                &Caller::new(user.clone(), site.as_str()),
+                site,
+                cmd,
+                json_out,
+            )
+            .await
         }
         Command::RemoteSession(cmd) => {
             let user_socket = cli
@@ -294,7 +239,7 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            remote_session_cmd(&Caller::new(user.clone()), site, cmd, json_out).await
+            remote_session_cmd(&Caller::new(user.clone(), site.as_str()), cmd, json_out).await
         }
     }
 }
@@ -305,7 +250,7 @@ async fn run() -> Result<()> {
 fn print_fields(value: &Value) {
     fn walk(value: &Value, indent: usize) {
         let Some(object) = value.as_object() else {
-            println!("{}", value);
+            println!("{value}");
             return;
         };
         let mut entries: Vec<(&String, &Value)> = object.iter().collect();
@@ -385,7 +330,7 @@ async fn list_catalog(session: &Session, keyexpr: String, json_out: bool) -> Res
 }
 
 /// Build a profile body: `--body` merged over the positional name.
-fn profile_body(name: String, body: Option<String>) -> Result<Value> {
+fn profile_body<T: serde::de::DeserializeOwned>(name: String, body: Option<String>) -> Result<T> {
     let mut body = match body {
         Some(body) => serde_json::from_str(&body)?,
         None => json!({}),
@@ -393,7 +338,7 @@ fn profile_body(name: String, body: Option<String>) -> Result<Value> {
     if body["name"].is_null() {
         body["name"] = Value::String(name);
     }
-    Ok(body)
+    serde_json::from_value(body).map_err(|e| anyhow!("invalid profile body: {e}"))
 }
 
 async fn profile_cmd(
@@ -402,7 +347,6 @@ async fn profile_cmd(
     site: &str,
     cmd: ProfileCmd,
     json_out: bool,
-    key: impl Fn(&str) -> String,
 ) -> Result<()> {
     match cmd {
         ProfileCmd::List => {
@@ -414,46 +358,37 @@ async fn profile_cmd(
             .await
         }
         ProfileCmd::Create { name, body } => {
-            let reply = call(
-                caller,
-                &key("create"),
-                json!({ "body": profile_body(name, body)? }),
-            )
-            .await?;
-            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            let request = rpc::ProfileCreate {
+                id: None,
+                body: profile_body(name, body)?,
+            };
+            let created = call::<profile::Create>(caller, &(), &request).await?;
+            println!("created: {}", created.id);
             Ok(())
         }
         ProfileCmd::Update { id, body } => {
-            let body: Value = serde_json::from_str(&body)?;
-            ack(caller, &key("update"), json!({ "id": id, "body": body })).await
+            let body = serde_json::from_str(&body)?;
+            ack::<profile::Update>(caller, &(), &rpc::ProfileUpdate { id, body }).await
         }
         ProfileCmd::Duplicate { id, name } => {
-            let reply = call(caller, &key("duplicate"), json!({ "id": id, "name": name })).await?;
-            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            let created =
+                call::<profile::Duplicate>(caller, &(), &rpc::ProfileDuplicate { id, name })
+                    .await?;
+            println!("created: {}", created.id);
             Ok(())
         }
         ProfileCmd::Delete { id } => {
-            call(caller, &key("delete"), json!({ "id": id })).await?;
+            call::<profile::Delete>(caller, &(), &rpc::TvRef { id }).await?;
             println!("deleted");
             Ok(())
         }
         ProfileCmd::Defaults => {
-            let defaults = fetch(caller, &key("defaults"), Value::Null).await?;
-            if json_out {
-                println!("{}", serde_json::to_string_pretty(&defaults)?);
-            } else {
-                print_fields(&defaults);
-            }
-            Ok(())
+            let defaults = call::<profile::Defaults>(caller, &(), &()).await?;
+            print_reply(&defaults, json_out)
         }
         ProfileCmd::Effective { tv } => {
-            let effective = fetch(caller, &key("effective"), json!({ "id": tv })).await?;
-            if json_out {
-                println!("{}", serde_json::to_string_pretty(&effective)?);
-            } else {
-                print_fields(&effective);
-            }
-            Ok(())
+            let effective = call::<profile::Effective>(caller, &(), &rpc::TvRef { id: tv }).await?;
+            print_reply(&effective, json_out)
         }
     }
 }
@@ -465,70 +400,46 @@ async fn user_profile_cmd(
     cmd: UserProfileCmd,
     json_out: bool,
 ) -> Result<()> {
-    let key = |verb: &str| keys::user_profile_rpc(site, verb);
     match cmd {
         UserProfileCmd::List => {
             list_catalog(user, format!("tisvlay/{site}/user/profile/*"), json_out).await
         }
         UserProfileCmd::Create { name, body } => {
-            let reply = call(
-                user_caller,
-                &key("create"),
-                json!({ "body": profile_body(name, body)? }),
-            )
-            .await?;
-            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            let request = rpc::UserProfileCreate {
+                id: None,
+                body: profile_body(name, body)?,
+            };
+            let created = call::<user_profile::Create>(user_caller, &(), &request).await?;
+            println!("created: {}", created.id);
             Ok(())
         }
         UserProfileCmd::Update { id, body } => {
-            let body: Value = serde_json::from_str(&body)?;
-            ack(
-                user_caller,
-                &key("update"),
-                json!({ "id": id, "body": body }),
-            )
-            .await
+            let body = serde_json::from_str(&body)?;
+            ack::<user_profile::Update>(user_caller, &(), &rpc::UserProfileUpdate { id, body })
+                .await
         }
         UserProfileCmd::Duplicate { id, name } => {
-            let reply = call(
-                user_caller,
-                &key("duplicate"),
-                json!({ "id": id, "name": name }),
-            )
-            .await?;
-            println!("created: {}", reply["id"].as_str().unwrap_or("?"));
+            let request = rpc::ProfileDuplicate { id, name };
+            let created = call::<user_profile::Duplicate>(user_caller, &(), &request).await?;
+            println!("created: {}", created.id);
             Ok(())
         }
         UserProfileCmd::Delete { id } => {
-            call(user_caller, &key("delete"), json!({ "id": id })).await?;
+            call::<user_profile::Delete>(user_caller, &(), &rpc::TvRef { id }).await?;
             println!("deleted");
             Ok(())
         }
         UserProfileCmd::Defaults => {
-            let defaults = fetch(user_caller, &key("defaults"), Value::Null).await?;
-            if json_out {
-                println!("{}", serde_json::to_string_pretty(&defaults)?);
-            } else {
-                print_fields(&defaults);
-            }
-            Ok(())
+            let defaults = call::<user_profile::Defaults>(user_caller, &(), &()).await?;
+            print_reply(&defaults, json_out)
         }
         UserProfileCmd::Effective { tv } => {
-            let effective = fetch(user_caller, &key("effective"), json!({ "id": tv })).await?;
-            if json_out {
-                println!("{}", serde_json::to_string_pretty(&effective)?);
-            } else {
-                print_fields(&effective);
-            }
-            Ok(())
+            let request = rpc::TvRef { id: tv };
+            let effective = call::<user_profile::Effective>(user_caller, &(), &request).await?;
+            print_reply(&effective, json_out)
         }
         UserProfileCmd::Assign { tv, profile } => {
-            ack(
-                user_caller,
-                &key("assign"),
-                json!({ "tv": tv, "profile": profile }),
-            )
-            .await
+            ack::<user_profile::Assign>(user_caller, &(), &rpc::UserAssign { tv, profile }).await
         }
     }
 }
@@ -537,48 +448,35 @@ async fn user_profile_cmd(
 /// the user socket (the session service serves the verb rpc there).
 async fn remote_session_cmd(
     user_caller: &Caller,
-    site: &str,
     cmd: RemoteSessionCmd,
     json_out: bool,
 ) -> Result<()> {
     match cmd {
         RemoteSessionCmd::Start { source } => {
-            call(
-                user_caller,
-                &keys::user_remote_rpc(site, "set"),
-                json!({ "source": source, "active": true }),
-            )
-            .await?;
+            let request = rpc::RemoteSet {
+                source: Some(source.clone()),
+                active: true,
+            };
+            call::<user_remote::Set>(user_caller, &(), &request).await?;
             if !json_out {
                 println!("armed source '{source}'");
             }
             Ok(())
         }
         RemoteSessionCmd::Stop { source } => {
-            call(
-                user_caller,
-                &keys::user_remote_rpc(site, "set"),
-                json!({ "source": source, "active": false }),
-            )
-            .await?;
+            let request = rpc::RemoteSet {
+                source: Some(source.clone()),
+                active: false,
+            };
+            call::<user_remote::Set>(user_caller, &(), &request).await?;
             if !json_out {
                 println!("disarmed source '{source}'");
             }
             Ok(())
         }
         RemoteSessionCmd::Status => {
-            let state = fetch(
-                user_caller,
-                &keys::user_remote_rpc(site, "status"),
-                Value::Null,
-            )
-            .await?;
-            if json_out {
-                println!("{}", serde_json::to_string_pretty(&state)?);
-            } else {
-                print_fields(&state);
-            }
-            Ok(())
+            let state = call::<user_remote::Status>(user_caller, &(), &()).await?;
+            print_reply(&state, json_out)
         }
     }
 }
@@ -592,16 +490,9 @@ async fn discover_session(
     vendor: Option<String>,
     json_out: bool,
 ) -> Result<()> {
-    let reply = call(
-        caller,
-        &keys::manager_rpc(site, "discover-start"),
-        serde_json::to_value(rpc::DiscoverStart { vendor })?,
-    )
-    .await?;
-    let id: Uuid = reply["session"]
-        .as_str()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| anyhow!("discover-start reply carries the session id"))?;
+    let id = call::<manager::DiscoverStart>(caller, &(), &rpc::DiscoverStart { vendor })
+        .await?
+        .session;
     if !json_out {
         println!("discovery session {id} — ctrl-c stops");
     }
@@ -639,12 +530,7 @@ async fn discover_session(
             _ = tokio::signal::ctrl_c() => break,
         }
     }
-    call(
-        caller,
-        &keys::manager_rpc(site, "discover-stop"),
-        json!({ "session": id }),
-    )
-    .await?;
+    call::<manager::DiscoverStop>(caller, &(), &rpc::DiscoverStop { session: id }).await?;
     if !json_out {
         println!("stopped");
     }
@@ -660,7 +546,7 @@ async fn open_client(socket: &Path) -> Result<Session> {
             // the group-owned runtime dir isn't even searchable, so socket
             // resolution can't see the live daemon and lands on the dev
             // path. Point at the fix instead of the misleading path.
-            if !tisvlay_core::access::has_access(socket) {
+            if !tisvlay_runtime::access::has_access(socket) {
                 anyhow!(
                     "You don't have TV control access yet — run `tisvlay enable-access` to grant it."
                 )
@@ -670,67 +556,55 @@ async fn open_client(socket: &Path) -> Result<Session> {
         })
 }
 
-/// One RPC round-trip: JSON in, JSON out, typed daemon errors surfaced as
-/// `code: message`.
-/// One rpc write: matching-gated single shot, typed errors rendered as
-/// `code: message`.
-async fn call(caller: &Caller, key: &str, body: Value) -> Result<Value> {
-    caller
-        .call(key, body)
-        .await
-        .map_err(|e| anyhow!("{}: {}", e.code, e.message))
+/// One typed rpc round-trip; a failure keeps its cause chain for the
+/// terminal.
+async fn call<R: Unary>(
+    caller: &Caller,
+    target: &R::Target,
+    request: &R::Request,
+) -> Result<R::Response> {
+    Ok(caller.call::<R>(target, request).await?)
 }
 
-/// One rpc read: idempotent, rides the caller's re-issue-once path.
-async fn fetch(caller: &Caller, key: &str, body: Value) -> Result<Value> {
-    caller
-        .fetch(key, body)
-        .await
-        .map_err(|e| anyhow!("{}: {}", e.code, e.message))
+/// Print a reply: pretty JSON with `--json`, aligned fields otherwise.
+/// Going through `serde_json::Value` keeps key order sorted and stable.
+fn print_reply(reply: &impl serde::Serialize, json_out: bool) -> Result<()> {
+    let value = serde_json::to_value(reply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        print_fields(&value);
+    }
+    Ok(())
 }
 
 /// One acknowledged rpc: call, print the human ack.
-async fn ack(caller: &Caller, key: &str, body: Value) -> Result<()> {
-    call(caller, key, body).await?;
+async fn ack<R: Unary<Response = rpc::Ack>>(
+    caller: &Caller,
+    target: &R::Target,
+    request: &R::Request,
+) -> Result<()> {
+    call::<R>(caller, target, request).await?;
     println!("ok");
     Ok(())
 }
 
-/// Multi-reply RPC: collect every reply until the query finalizes.
-/// Consolidation must be off — same-key replies otherwise collapse to the
-/// latest one.
-async fn call_many(
-    caller: &Caller,
-    key: &str,
-    body: Value,
-    timeout: Duration,
-) -> Result<Vec<Value>> {
-    caller
-        .call_many(key, body, timeout)
-        .await
-        .map_err(|e| anyhow!("{}: {}", e.code, e.message))
-}
-
 async fn discover(
     caller: &Caller,
-    site: &str,
     vendor: Option<String>,
     timeout_ms: u64,
     json_out: bool,
 ) -> Result<()> {
-    let body = serde_json::to_value(rpc::Discover {
+    let request = rpc::Discover {
         vendor,
         timeout_ms: Some(timeout_ms),
-    })?;
-    let found = call_many(
-        caller,
-        &keys::manager_rpc(site, "discover"),
-        body,
-        Duration::from_millis(timeout_ms + 4000),
-    )
-    .await?;
+    };
+    let found = caller.call_many::<manager::Discover>(&(), &request).await?;
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&found)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&found)?)?
+        );
         return Ok(());
     }
     if found.is_empty() {
@@ -738,20 +612,22 @@ async fn discover(
         return Ok(());
     }
     for tv in found {
-        let mac = tv["vendor_data"]["mac"]
-            .as_str()
+        let mac = tv
+            .vendor_data
+            .get("mac")
             .map(|mac| format!("  mac={mac}"))
             .unwrap_or_default();
         println!(
             "{}  {}  {}  id={}{}",
-            tv["vendor"].as_str().unwrap_or("?"),
-            tv["name"].as_str().unwrap_or("?"),
-            tv["address"].as_str().unwrap_or("?"),
-            tv["id"].as_str().unwrap_or("?"),
-            mac,
+            tv.vendor, tv.name, tv.address, tv.id, mac,
         );
     }
     Ok(())
+}
+
+/// A vendor config naming only an address (the mock shorthand).
+fn address_config(address: String) -> serde_json::Map<String, Value> {
+    serde_json::Map::from_iter([("address".to_string(), Value::String(address))])
 }
 
 async fn pair(
@@ -760,20 +636,18 @@ async fn pair(
     site: &str,
     name: String,
     vendor: String,
-    config: Value,
+    config: serde_json::Map<String, Value>,
 ) -> Result<()> {
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name,
         vendor,
         managed: true,
         config,
-    })?;
-    let started = call(caller, &keys::manager_rpc(site, "pair"), body).await?;
-    let id = Uuid::parse_str(started["id"].as_str().unwrap_or_default())
-        .map_err(|_| anyhow!("daemon reply carried no pairing id"))?;
-    println!("pairing session {id} started");
-    watch_pairing(session, caller, site, id, &reply_attempt(&started)?).await
+    };
+    let started = call::<manager::Pair>(caller, &(), &request).await?;
+    println!("pairing session {} started", started.id);
+    watch_pairing(session, caller, site, started.id, started.attempt).await
 }
 
 /// One line on what the pairing did with the device-reported link MAC.
@@ -790,14 +664,6 @@ fn link_mac_line(id: Uuid, report: &tisvlay_wire::payload::LinkMacReport) -> Str
     }
 }
 
-/// The attempt id a pair / re-pair reply carries — the progress filter.
-fn reply_attempt(started: &Value) -> Result<String> {
-    started["attempt"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| anyhow!("daemon reply carried no pairing attempt"))
-}
-
 /// Stream a pairing attempt's progress phases to stdout until a terminal
 /// one; ctrl-c sends cancel-pair. Samples from other attempts (earlier
 /// sessions replayed from the cache) are skipped.
@@ -806,7 +672,7 @@ async fn watch_pairing(
     caller: &Caller,
     site: &str,
     id: Uuid,
-    attempt: &str,
+    attempt: Uuid,
 ) -> Result<()> {
     let subscriber = session
         .declare_subscriber(keys::pairing_progress(site, &id))
@@ -819,7 +685,7 @@ async fn watch_pairing(
                 let Ok(sample) = sample else { bail!("progress stream closed") };
                 let value: Value =
                     serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                if value["attempt"] != attempt {
+                if value["attempt"] != attempt.to_string() {
                     continue;
                 }
                 let phase = value["phase"].as_str().unwrap_or("?");
@@ -841,7 +707,7 @@ async fn watch_pairing(
             }
             _ = tokio::signal::ctrl_c() => {
                 println!("cancelling…");
-                let _ = call(caller, &keys::manager_rpc(site, "cancel-pair"), json!({ "id": id })).await;
+                let _ = call::<manager::CancelPair>(caller, &(), &rpc::TvRef { id }).await;
             }
         }
     }
@@ -867,6 +733,10 @@ async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) ->
         }
         Ok(())
     } else if json_out {
+        #[expect(
+            clippy::exit,
+            reason = "`status --json` reports a missing daemon as exit code 1 after printing its JSON, with no error text"
+        )]
         std::process::exit(1);
     } else {
         bail!(
@@ -934,12 +804,11 @@ async fn list(session: &Session, caller: &Caller, site: &str, json_out: bool) ->
         };
         // Backend's primary descriptor (LG: IP): the vendor schema's
         // first field names it, the redacted config carries the value.
-        let descriptor = match descriptor_field(caller, site, vendor, &mut descriptor_fields).await
-        {
-            Some(field) => call(caller, &keys::tv_rpc(site, id, "get-config"), Value::Null)
+        let descriptor = match descriptor_field(caller, vendor, &mut descriptor_fields).await {
+            Some(field) => call::<tv::GetConfig>(caller, id, &())
                 .await
                 .ok()
-                .and_then(|reply| reply["config"][&field].as_str().map(str::to_string)),
+                .and_then(|view| view.config.get(&field)?.as_str().map(str::to_string)),
             None => None,
         }
         .unwrap_or_else(|| "?".into());
@@ -952,17 +821,16 @@ async fn list(session: &Session, caller: &Caller, site: &str, json_out: bool) ->
 /// descriptor, per the schema-ordering convention. Cached per vendor.
 async fn descriptor_field(
     caller: &Caller,
-    site: &str,
     vendor: &str,
     cache: &mut BTreeMap<String, Option<String>>,
 ) -> Option<String> {
     if let Some(field) = cache.get(vendor) {
         return field.clone();
     }
-    let field = call(caller, &keys::vendor_schema(site, vendor), Value::Null)
+    let field = call::<vendors::Schema>(caller, vendor, &())
         .await
         .ok()
-        .and_then(|schema| schema[0]["name"].as_str().map(str::to_string));
+        .and_then(|schema| schema.into_iter().next().map(|field| field.name));
     cache.insert(vendor.to_string(), field.clone());
     field
 }

@@ -77,6 +77,7 @@ impl std::fmt::Debug for RefreshTrigger {
 }
 
 impl RefreshTrigger {
+    /// An idle trigger: no refresh in flight, nothing pending.
     pub fn new() -> Self {
         Self {
             in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -98,7 +99,7 @@ impl RefreshTrigger {
     pub fn fire<F, Fut>(&self, refresh_fn: F)
     where
         F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = ()> + Send,
+        Fut: Future<Output = ()> + Send,
     {
         use std::sync::atomic::Ordering;
         self.dirty.store(true, Ordering::Relaxed);

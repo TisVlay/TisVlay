@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use tisvlay_core::Error;
+use tisvlay_core::{Error, Secret};
 
 /// WebSocket scheme an LG TV speaks.
 ///
@@ -43,7 +43,7 @@ impl std::fmt::Display for WebOsScheme {
 
 impl FromStr for WebOsScheme {
     type Err = Error;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "wss" => Ok(Self::Wss),
             "ws" => Ok(Self::Ws),
@@ -57,9 +57,9 @@ impl FromStr for WebOsScheme {
 
 /// LG WebOS vendor-specific configuration.
 ///
-/// This contains all settings specific to LG WebOS TVs, stored in the
-/// `[tv.lg]` section of the config file. Use `TvConfig::get_vendor_config()`
-/// to deserialize this from the generic vendor config map.
+/// This contains all settings specific to LG WebOS TVs: the typed form of
+/// an LG TV's [`VendorConfig`](tisvlay_core::VendorConfig), read through
+/// its `parse`.
 ///
 /// # Example
 ///
@@ -75,7 +75,7 @@ impl FromStr for WebOsScheme {
 /// client_key = "abc123"
 /// default_input = "HDMI_1"
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LgVendorConfig {
     /// IP address for WebSocket connection.
     ///
@@ -97,7 +97,7 @@ pub struct LgVendorConfig {
     /// pairing prompt. It's used for subsequent connections without
     /// requiring user interaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_key: Option<String>,
+    pub client_key: Option<Secret>,
 
     /// Default HDMI input to switch to on wake.
     ///
@@ -110,7 +110,7 @@ pub struct LgVendorConfig {
     /// persisted so reconnects dispatch directly to the right
     /// scheme without probing — saves a TLS handshake per connect
     /// for ws-only TVs and skips a wss→ws fallback round-trip for
-    /// wss-capable ones. Defaults to [`WebOsScheme::Wss`] when
+    /// wss-capable ones. Defaults to `WebOsScheme::Wss` when
     /// absent so configs that pre-date this field deserialize
     /// without surprise (re-pair if your TV is `ws`-only).
     #[serde(default)]
@@ -130,7 +130,7 @@ impl LgVendorConfig {
     }
 
     /// Set the client key.
-    pub fn set_client_key(&mut self, key: impl Into<String>) {
+    pub fn set_client_key(&mut self, key: impl Into<Secret>) {
         self.client_key = Some(key.into());
     }
 
@@ -158,7 +158,10 @@ mod tests {
         let config: LgVendorConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.ip, "192.168.1.100");
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(config.client_key.as_deref(), Some("abc123"));
+        assert_eq!(
+            config.client_key.as_ref().map(Secret::expose),
+            Some("abc123")
+        );
         assert_eq!(config.default_input.as_deref(), Some("HDMI_1"));
     }
 
@@ -194,13 +197,20 @@ mod tests {
         let config = LgVendorConfig {
             ip: "10.0.0.1".to_string(),
             mac: Some("AA:BB:CC:DD:EE:FF".to_string()),
-            client_key: Some("key123".to_string()),
+            client_key: Some("key123".into()),
             default_input: Some("HDMI_2".to_string()),
             scheme: WebOsScheme::Ws,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: LgVendorConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(config, parsed);
+        assert_eq!(parsed.ip, config.ip);
+        assert_eq!(parsed.mac, config.mac);
+        assert_eq!(
+            parsed.client_key.as_ref().map(Secret::expose),
+            Some("key123")
+        );
+        assert_eq!(parsed.default_input, config.default_input);
+        assert_eq!(parsed.scheme, config.scheme);
     }
 
     #[test]
@@ -230,7 +240,27 @@ mod tests {
         config.set_default_input("HDMI_3");
         assert_eq!(config.ip, "10.0.0.1");
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(config.client_key.as_deref(), Some("key"));
+        assert_eq!(config.client_key.as_ref().map(Secret::expose), Some("key"));
         assert_eq!(config.default_input.as_deref(), Some("HDMI_3"));
+    }
+
+    /// The client key must never show up in `Debug` output, which can reach
+    /// logs through `?config` fields and `#[instrument]`.
+    #[test]
+    fn debug_redacts_the_client_key() {
+        let key = "secret-client-key-1234";
+        let config = LgVendorConfig {
+            ip: "192.0.2.1".into(),
+            client_key: Some(key.into()),
+            ..LgVendorConfig::default()
+        };
+        for shown in [format!("{config:?}"), format!("{config:#?}")] {
+            assert!(!shown.contains(key), "client key leaked into {shown}");
+            assert!(shown.contains("[REDACTED]"), "{shown}");
+            assert!(
+                shown.contains("192.0.2.1"),
+                "non-secret fields stay visible: {shown}"
+            );
+        }
     }
 }

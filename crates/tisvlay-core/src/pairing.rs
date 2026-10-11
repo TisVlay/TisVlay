@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use tokio::sync::{mpsc, watch};
 
+use crate::Secret;
+
 /// Type of user input required during pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,13 +73,17 @@ impl InputType {
 }
 
 /// Credentials obtained from successful pairing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `data` is a [`Secret`]; `Debug` is written by hand so the `extra` values
+/// (future refresh tokens) stay out of it too, since `Debug` output can
+/// reach logs through `?value` fields and `#[instrument]`.
+#[derive(Clone)]
 pub struct Credentials {
     /// Vendor-specific credential data.
     ///
     /// For LG WebOS, this is the client_key.
     /// For other vendors, this might be a token, password hash, etc.
-    pub data: String,
+    pub data: Secret,
 
     /// Optional credential type identifier.
     pub credential_type: Option<String>,
@@ -96,13 +102,24 @@ pub struct Credentials {
     ///
     /// Read by `TvConnector::build_config_from_pairing` to populate
     /// the persisted vendor config. Other vendors leave it empty.
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub extra: std::collections::HashMap<String, String>,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut extra_keys: Vec<&str> = self.extra.keys().map(String::as_str).collect();
+        extra_keys.sort_unstable();
+        f.debug_struct("Credentials")
+            .field("data", &self.data)
+            .field("credential_type", &self.credential_type)
+            .field("extra_keys", &extra_keys)
+            .finish()
+    }
 }
 
 impl Credentials {
     /// Create new credentials with just a data string.
-    pub fn new(data: impl Into<String>) -> Self {
+    pub fn new(data: impl Into<Secret>) -> Self {
         Self {
             data: data.into(),
             credential_type: None,
@@ -111,7 +128,7 @@ impl Credentials {
     }
 
     /// Create new credentials with a type identifier.
-    pub fn with_type(data: impl Into<String>, credential_type: impl Into<String>) -> Self {
+    pub fn with_type(data: impl Into<Secret>, credential_type: impl Into<String>) -> Self {
         Self {
             data: data.into(),
             credential_type: Some(credential_type.into()),
@@ -120,6 +137,7 @@ impl Credentials {
     }
 
     /// Insert a key/value into [`Self::extra`] (builder shorthand).
+    #[must_use]
     pub fn with_extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra.insert(key.into(), value.into());
         self
@@ -127,7 +145,7 @@ impl Credentials {
 }
 
 /// Error that occurred during pairing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PairingError {
     /// Error code for programmatic handling.
     pub code: PairingErrorCode,
@@ -185,12 +203,8 @@ impl std::error::Error for PairingError {}
 ///
 /// The wire/routing form is [`Self::as_str`] (namespaced `pairing.<kebab>`),
 /// carried as the pairing-progress payload's `code` field and matched
-/// by clients. The derived
-/// serde impl exists only because the in-process [`PairingError`] /
-/// [`PairingState`] derive it — those are never serialized across a
-/// boundary, so its (snake_case) form is not a wire contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// by clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairingErrorCode {
     /// User rejected pairing on the TV.
     Rejected,
@@ -230,8 +244,7 @@ impl fmt::Display for PairingErrorCode {
 }
 
 /// Current state of the pairing process.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum PairingState {
     /// Waiting for user to respond to prompt on TV screen.
     ///
@@ -390,7 +403,7 @@ pub enum PairingCommand {
 ///                 println!("Enter {}: {}", input_type, prompt);
 ///             }
 ///             PairingState::Complete { credentials } => {
-///                 println!("Pairing complete! Key: {}", credentials.data);
+///                 println!("Pairing complete! Key: {:?}", credentials.data);
 ///                 break;
 ///             }
 ///             PairingState::Failed { error } => {
@@ -570,11 +583,11 @@ mod tests {
     #[test]
     fn test_credentials() {
         let creds = Credentials::new("mykey");
-        assert_eq!(creds.data, "mykey");
+        assert_eq!(creds.data.expose(), "mykey");
         assert!(creds.credential_type.is_none());
 
         let creds = Credentials::with_type("mykey", "client_key");
-        assert_eq!(creds.data, "mykey");
+        assert_eq!(creds.data.expose(), "mykey");
         assert_eq!(creds.credential_type, Some("client_key".to_string()));
     }
 
@@ -619,6 +632,30 @@ mod tests {
 
         let state = session.state();
         assert!(state.is_complete());
-        assert_eq!(state.credentials().unwrap().data, "key123");
+        assert_eq!(state.credentials().unwrap().data.expose(), "key123");
+    }
+
+    /// Credential data and extra values are secrets; `Debug` output (which can
+    /// reach logs) shows only that they exist.
+    #[test]
+    fn credentials_debug_redacts_secrets() {
+        let creds = Credentials {
+            data: "secret-client-key-1234".into(),
+            credential_type: Some("client_key".into()),
+            extra: [(
+                "refresh_token".to_string(),
+                "secret-refresh-5678".to_string(),
+            )]
+            .into(),
+        };
+        for shown in [format!("{creds:?}"), format!("{creds:#?}")] {
+            assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+            assert!(!shown.contains("secret-refresh-5678"), "{shown}");
+            assert!(shown.contains("[REDACTED]"), "{shown}");
+            assert!(
+                shown.contains("refresh_token"),
+                "extra keys stay visible: {shown}"
+            );
+        }
     }
 }

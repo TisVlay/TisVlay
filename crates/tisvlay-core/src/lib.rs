@@ -14,19 +14,19 @@
 //! ├── config: Profile-based configuration
 //! ├── state: TV state types
 //! ├── error: Vendor-agnostic errors
+//! ├── secret: Debug-redacted credential values
+//! ├── vendor_config: the vendor-specific config table
 //! └── wol: Wake-on-LAN (generic)
 //!
 //! tisvlay-lg (separate crate)
 //! └── LG WebOS implementation of traits
 //! ```
-//!
-//! # Features
-//!
-//! - `logging` - Shared logging init with journald support for binaries
-//! - `wayland` - ext-idle-notify-v1 idle-detection transport
 
-// Core modules (always available)
-mod action;
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
+
+// Modules
 mod capabilities;
 mod coalescer;
 mod config;
@@ -39,26 +39,17 @@ mod pairing_schema;
 mod profile_refs;
 mod reconciler;
 mod refresh_trigger;
+mod secret;
 mod state;
 mod traits;
+mod vendor_config;
 pub mod wol;
-
-// Optional modules
-#[cfg(feature = "access")]
-pub mod access;
-#[cfg(feature = "mutter-idle")]
-pub mod idle_mutter;
-#[cfg(feature = "logging")]
-pub mod logging;
-#[cfg(feature = "wayland")]
-pub mod wayland;
 
 // =============================================================================
 // Public re-exports: Core abstractions
 // =============================================================================
 
 // Traits
-pub use action::ActionExecutor;
 pub use traits::{RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities
@@ -79,11 +70,9 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
-    AutomateWhen, DEFAULT_BIND_PORT, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID,
-    DEFAULT_USER_PROFILE_UUID, DiscoveryConfig, EventAction, ResolvedSystemProfile,
-    ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction, SystemConfig, SystemProfileConfig,
-    SystemSection, TvConfig, TvProfileAssignment, USER_PROFILE_FIELDS, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
+    AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
+    EventAction, ResolvedSystemProfile, ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction,
+    SystemProfileConfig, USER_PROFILE_FIELDS, UserProfileConfig,
 };
 
 // Profile-reference computation (used by daemon + clients)
@@ -96,6 +85,12 @@ pub use state::{
 
 // Errors
 pub use error::{Error, Result};
+
+// Secret values (credentials)
+pub use secret::Secret;
+
+// Vendor-specific config tables
+pub use vendor_config::VendorConfig;
 
 // Wake-on-LAN
 pub use wol::{MAC_CONFIG_KEY, MacAddress, WakeOptions, wake, wake_with_options};

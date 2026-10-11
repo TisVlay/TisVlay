@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::json;
-use tisvlay_core::idle_mutter::IdleWatch;
-use tisvlay_core::wayland::{
+use tisvlay_runtime::idle_mutter::IdleWatch;
+use tisvlay_runtime::wayland::{
     IdleNotification, IdleTransition, WatchHandle, WaylandIdleError, start_idle_watch_on_socket,
 };
 use tisvlay_wire::keys;
@@ -195,7 +195,7 @@ async fn connect_idle_watch(
 
     // GNOME greeter (or a wayland path that never came up): the D-Bus
     // Mutter idle monitor on the greeter session's bus.
-    match tisvlay_core::idle_mutter::start_idle_watch(
+    match tisvlay_runtime::idle_mutter::start_idle_watch(
         vec![IdleNotification { tag: 0, timeout_ms }],
         tx.clone(),
     )

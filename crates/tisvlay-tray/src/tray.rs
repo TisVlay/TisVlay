@@ -23,7 +23,7 @@ use crate::state::{Mirror, TvView};
 /// symbolic glyphs recolor to the panel foreground on light and dark.
 fn themed(names: &[&str], prefer: Variant) -> String {
     tisvlay_icons::resolve_name(names, prefer)
-        .or_else(|| names.first().map(|s| s.to_string()))
+        .or_else(|| names.first().map(ToString::to_string))
         .unwrap_or_default()
 }
 
@@ -39,8 +39,8 @@ impl ScrollTarget {
     /// Whether `tv`'s backend advertises this scroll capability.
     fn supported_by(self, tv: &TvView) -> bool {
         match self {
-            ScrollTarget::Volume => tv.has_volume,
-            ScrollTarget::Backlight => tv.has_backlight,
+            Self::Volume => tv.has_volume,
+            Self::Backlight => tv.has_backlight,
         }
     }
 }
@@ -733,7 +733,6 @@ fn command_item(
     .into()
 }
 
-#[allow(clippy::type_complexity)]
 fn activate(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     command: impl Fn() -> TrayCommand + Send + Sync + 'static,

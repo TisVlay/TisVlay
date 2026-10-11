@@ -16,9 +16,10 @@ tisvlay-core = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+tisvlay-test = { workspace = true }
 
 [lints]
 workspace = true

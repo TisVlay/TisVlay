@@ -2,9 +2,7 @@
 # https://nexte.st/book/configuration.html
 
 [profile.default]
-# Retry failed tests up to 2 times — mostly useful if a test is flaky
-# due to timing (e.g., D-Bus integration tests). Genuine failures still
-# surface quickly because retries only apply to tests that fail.
+# No retries locally: a failure is reported the first time it happens.
 retries = 0
 # Print a warning if a test exceeds 60 seconds (but don't kill it).
 slow-timeout = { period = "60s" }
@@ -16,10 +14,12 @@ success-output = "never"
 [profile.ci]
 # In CI, run all tests even if some fail — we want the full picture.
 fail-fast = false
-# Retry once to paper over transient network/D-Bus flakes in CI.
-retries = 1
+# No retries: a retry hides a flaky test. A flaky test is quarantined
+# instead (`#[ignore = "flaky: #N"]` plus an issue) — see docs/testing.md.
+retries = 0
 # Always show failing test output immediately.
 failure-output = "immediate-final"
+
 # JUnit XML for inline PR test results via dorny/test-reporter.
 [profile.ci.junit]
 path = "junit.xml"

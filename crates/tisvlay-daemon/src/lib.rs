@@ -114,6 +114,7 @@ pub async fn open(socket: &Path, site: &str) -> Result<Daemon> {
 }
 
 /// The full daemon stack: session + world reactor + zenoh bridge.
+#[must_use = "dropping the stack withdraws the daemon's liveliness token, so clients see it as gone"]
 #[derive(Debug)]
 pub struct Stack {
     pub daemon: Daemon,
@@ -185,8 +186,8 @@ async fn await_startup_ready(state: Arc<StartupReadiness>) {
         // or the fallback deadline.
         let wake_at = if settled { deadline_at } else { settle_at };
         tokio::select! {
-            _ = state.notify.notified() => {}
-            _ = tokio::time::sleep_until(wake_at) => {
+            () = state.notify.notified() => {}
+            () = tokio::time::sleep_until(wake_at) => {
                 if settled {
                     return; // fallback deadline
                 }
@@ -208,8 +209,8 @@ pub struct VendorReg {
     pub retry: Option<tisvlay_core::RetryConfig>,
 }
 
-impl std::fmt::Debug for VendorReg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for VendorReg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VendorReg")
             .field("id", &self.id)
             .field("name", &self.name)
@@ -233,16 +234,19 @@ impl VendorReg {
         }
     }
 
+    #[must_use]
     pub fn with_discovery(mut self, discovery: Arc<dyn DynDiscovery>) -> Self {
         self.discovery = Some(discovery);
         self
     }
 
+    #[must_use]
     pub fn with_retry(mut self, retry: tisvlay_core::RetryConfig) -> Self {
         self.retry = Some(retry);
         self
     }
 
+    #[must_use]
     pub fn with_capabilities(mut self, capabilities: Vec<String>) -> Self {
         self.capabilities = capabilities;
         self
@@ -277,7 +281,8 @@ pub async fn serve(
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
     tokio::spawn(reactor.run());
-    // Seed the editable default profile (root ensure_default parity).
+    // Seed the editable default profile, so the catalog always has the
+    // inheritance baseline.
     // AddTv-style replay from the store lands later and upserts over
     // this, so user edits to the default survive restarts.
     let mut default_profile = tisvlay_core::SystemProfileConfig::full_default();
@@ -323,10 +328,12 @@ pub async fn serve(
     let bridge_site = site.to_string();
     let bridge_world = world.clone();
     // Introspection served by the bridge (About pane rows).
-    let info = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "state_path": store_path.map(|p| p.display().to_string()).unwrap_or_default(),
-    });
+    let info = tisvlay_wire::rpc::ServiceInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+        state_path: store_path
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    };
     let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         if let Err(e) = bridge::run(
@@ -635,7 +642,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         let ready = Arc::clone(&stack.startup_ready);
         tokio::spawn(async move {
             await_startup_ready(ready).await;
-            world.send(tisvlay_world::InEvent::System {
+            world.send(InEvent::System {
                 event: SystemEvent::Startup,
                 connector: None,
             });

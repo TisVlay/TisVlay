@@ -10,8 +10,6 @@
         "codegen",
         "dbus",
         "dbusmock",
-        "indexmap",
-        "insta",
         "justfile",
         "lldb",
         "logind",

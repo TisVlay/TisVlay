@@ -16,20 +16,50 @@ default:
 # drift: test profile, whole workspace, all targets + all features.
 check_flags := "--profile test --workspace --all-targets --all-features"
 
-# Format all Rust code
+# Format all Rust (rustfmt) and TOML (tombi; config in tombi.toml)
 [group('check')]
 fmt:
     cargo fmt
+    tombi format --quiet
 
 # Build the workspace (test profile, all targets, all features)
 [group('check')]
 build:
     cargo build {{ check_flags }}
 
+# The gates deny warnings through cargo's `build.warnings` rather than
+# `-- -D warnings`: it covers clippy, test and rustdoc builds alike, fails
+# replayed (cached) warnings too, and toggling it doesn't invalidate the
+# build cache. It is set per gate recipe, never in `.cargo/config.toml` —
+# the Nix package build reads that file with nixpkgs' rustc, and a newer
+# compiler's new warning must not break a NixOS rebuild. Local `cargo
+# build`/`cargo run` stay warn-only.
+deny_warnings := "CARGO_BUILD_WARNINGS=deny"
+
 # Run clippy with warnings denied
 [group('check')]
 clippy:
-    cargo clippy {{ check_flags }} -- -D warnings
+    {{ deny_warnings }} cargo clippy {{ check_flags }}
+
+# Build the API docs with warnings denied (broken or private intra-doc
+# links). `--no-deps`: only the workspace's own docs are checked.
+# `--profile test` reuses the dependency metadata `just clippy` built.
+[group('check')]
+doc:
+    {{ deny_warnings }} cargo doc --profile test --workspace --no-deps --all-features
+
+# Find unused or misplaced dependencies. cargo-shear parses the sources
+# (no build), so it runs in seconds; false positives go under a crate's
+# `[package.metadata.cargo-shear] ignored`, with a comment saying why.
+[group('check')]
+shear:
+    cargo shear --deny-warnings
+
+# Spell-check code, docs and identifiers, enforcing American English
+# (config: `_typos.toml`).
+[group('check')]
+typos:
+    typos
 
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
@@ -39,15 +69,19 @@ test:
 
 # Run the full check pipeline (clippy + tests + doc tests + coverage
 # report) under a single coverage-instrumented build. `cargo llvm-cov
-# show-env --sh` emits the `export VAR=…` lines for
-# RUSTFLAGS=-C instrument-coverage and
-# CARGO_TARGET_DIR=target/llvm-cov-target/; `eval`-ing them in this
-# bash recipe means subsequent cargo commands all share that target
-# dir. Without this, clippy and the coverage build would each
-# compile the workspace independently (different RUSTFLAGS →
-# different cargo fingerprints, no artifact reuse). Design + the
+# show-env --sh` emits `export VAR=…` lines that route every later
+# cargo command through cargo-llvm-cov's RUSTC_WRAPPER, which adds
+# `-C instrument-coverage` and points LLVM_PROFILE_FILE into the
+# target dir; `eval`-ing them in this bash recipe means clippy, nextest
+# and the doc tests all share one instrumented build. Design + the
 # residual clippy-vs-build dual-compile finding live in
 # `docs/build.md` "Build pipeline".
+#
+# CARGO_TARGET_DIR is pinned to `target/llvm-cov-target/` before the
+# `eval`. show-env doesn't choose a directory itself, and
+# cargo doesn't rebuild when only RUSTC_WRAPPER changes, so sharing
+# `target/` would reuse an uninstrumented `just build`: no `.profraw`,
+# and a failed report.
 #
 # `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
 # `target/llvm-cov-target/` to fit the runner's free-disk ceiling.
@@ -66,9 +100,11 @@ test-ci:
     set -euo pipefail
     export CARGO_PROFILE_DEV_DEBUG=line-tables-only
     export NEXTEST_PROFILE=ci
+    export {{ deny_warnings }}
+    export CARGO_TARGET_DIR=target/llvm-cov-target
     eval "$(cargo llvm-cov show-env --sh)"
     cargo llvm-cov clean --profraw-only
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
@@ -77,30 +113,53 @@ test-ci:
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
-check: deny licenses-html fmt build clippy test
+check: deny shear typos licenses-html fmt build clippy doc test
 
-# Review pending snapshot changes (insta)
-[group('check')]
-test-snapshot-review:
-    cargo insta review
+# --- Slow / networked checks (CI jobs) ---------------------------------
+#
+# These run in CI, not in `just check` or prek: each takes minutes cold
+# or needs the network. The recipes exist to reproduce a CI failure
+# locally. Background: `docs/build.md` "Checks that run in CI".
 
-# Accept all pending snapshot changes (insta)
-[group('check')]
-test-snapshot-accept:
-    cargo insta accept
+# RustSec advisories + yanked crates (network). Weekly in CI and on
+# Cargo.lock changes; triaged advisories live in deny.toml's ignore-list.
+[group('ci')]
+audit:
+    cargo deny --config packaging/licensing/deny.toml check advisories
+
+# Build every crate with each feature on its own (and with none), since
+# every other gate builds with --all-features. `--no-dev-deps` makes
+# cargo-hack strip dev-dependencies from the manifests for the run and
+# restore them after, so rust-analyzer may flag errors mid-run.
+[group('ci')]
+hack:
+    cargo hack check --each-feature --no-dev-deps --workspace --target-dir target/hack
+
+# Check the workspace on its MSRV floor: the flake's `msrv-rust`
+# toolchain (read from Cargo.toml's `rust-version`) first on PATH, inside
+# the dev shell for the system libraries. No `--ignore-rust-version`: the
+# toolchain IS the floor, so a dependency that outgrows it fails here.
+[group('ci')]
+msrv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tc=$(nix build --no-link --print-out-paths .#msrv-rust)
+    PATH="$tc/bin:$PATH" cargo check --workspace --all-targets --all-features --target-dir target/msrv
 
 # --- License attribution / policy --------------------------------------
 #
 # Pipeline rationale + maintenance reference: `docs/licensing.md`.
 
-# Enforce the SPDX allow-list (`licenses`) and surface multi-version
-# dep duplication as warnings (`bans`) — see `deny.toml` for the
-# skip-list and `docs/build.md` "Dep-graph posture" for the
-# routine. `bans` is `multiple-versions = "warn"`, so it never
-# fails the build; output is informational.
+# Enforce the SPDX allow-list (`licenses`), code provenance (`sources`)
+# and one version per crate (`bans`, `multiple-versions = "deny"`). A
+# dependency update that adds a duplicate fails here; the bump routine
+# is in `docs/build.md` "Dep-graph posture". `-D unnecessary-skip -D
+# unmatched-skip` make a stale skip-list entry an error too, so the
+# list can't outlive the duplicates it excuses.
 [group('check')]
 deny:
-    cargo deny --config packaging/licensing/deny.toml check licenses bans sources
+    cargo deny --config packaging/licensing/deny.toml check \
+        -D unnecessary-skip -D unmatched-skip licenses bans sources
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes). Doubles as the cargo-about
@@ -161,7 +220,7 @@ i18n-extract:
         --from-code=UTF-8 --package-name=tisvlay-gui \
         --copyright-holder='TisVlay contributors' \
         --output={{ gui_pot }} \
-        $(find crates/tisvlay-gui/src -name '*.rs')
+        $(find crates/tisvlay-gui-app/src -name '*.rs')
     # Slint pass: append @tr() strings to the same .pot via --join-existing.
     slint-tr-extractor --join-existing --default-domain=tisvlay-gui \
         --package-name=tisvlay-gui \
@@ -223,34 +282,55 @@ cov_baseline_lines := "52"
 # code only. Matches crate names and test-only modules.
 cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock)/|test_server)'"
 
+# Where `_cov-collect` records the test run's exit status, so the report
+# recipes can still render coverage after a failure and then exit with it.
+cov_status := "target/llvm-cov-target/cov-test-status"
+
+# Fail with the recorded test status, if the run had failures.
+cov_verdict := 'status=$(cat ' + cov_status + ' 2>/dev/null || echo 1); if [ "$status" != 0 ]; then echo "tests failed (exit $status) - coverage reflects a failing run" >&2; exit "$status"; fi'
+
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
 # Mirrors `test-ci` — see that recipe's comment for the
-# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale.
+# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale. Every test runs
+# (`--no-fail-fast`) and a failure is recorded rather than aborting, so
+# the report recipes still render what ran; they exit with the recorded
+# status afterwards. The gate (`test-ci`) stays fail-fast.
 [private]
 _cov-collect:
-    CARGO_PROFILE_DEV_DEBUG=line-tables-only \
-        cargo llvm-cov --no-report nextest --workspace --all-features
-    cargo test --workspace --all-features --doc
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export CARGO_PROFILE_DEV_DEBUG=line-tables-only
+    status=0
+    cargo llvm-cov --no-report nextest --workspace --all-features --no-fail-fast || status=$?
+    cargo test --workspace --all-features --doc || { rc=$?; [ "$status" = 0 ] && status=$rc; }
+    mkdir -p "$(dirname {{ cov_status }})"
+    echo "$status" > {{ cov_status }}
 
 # Text summary of workspace coverage
 [group('coverage')]
 cov: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --summary-only
+    @{{ cov_verdict }}
 
 # HTML coverage report (opens in browser)
 [group('coverage')]
 cov-html: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --html --open
+    @{{ cov_verdict }}
 
 # Generate lcov.info for VS Code Coverage Gutters
 [group('coverage')]
 cov-lcov: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     @echo "Wrote lcov.info - point VS Code Coverage Gutters at it."
+    @{{ cov_verdict }}
 
-# Ratchet check - fails if below `lines` percent (default: cov_baseline_lines)
+# Ratchet check - fails if below `lines` percent (default: cov_baseline_lines).
+# A failing test run fails the ratchet before any comparison: partial
+# coverage must neither pass nor move the baseline.
 [group('coverage')]
 cov-ratchet lines=cov_baseline_lines: _cov-collect
+    @{{ cov_verdict }}
     cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ lines }} --summary-only
 
 # --- Dev run targets ----------------------------------------------------

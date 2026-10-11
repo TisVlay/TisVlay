@@ -12,9 +12,13 @@
 //! switching (`Set Stream Path`). Volume over CEC is relative-only and
 //! deferred; backlight and OLED screen-blank are not CEC concepts.
 //!
-//! The [`link`] module is the testability seam: production wraps
+//! The `link` module is the testability seam: production wraps
 //! `linux_cec::AsyncDevice`, tests use a scripted fake, so the
 //! backend builds and tests with no `/dev/cecN` present.
+
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
 
 mod backend;
 mod config;

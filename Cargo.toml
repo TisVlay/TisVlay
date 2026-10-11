@@ -10,6 +10,7 @@ members = [
     "crates/tisvlay-wire",
     "crates/tisvlay-world",
     "crates/tisvlay-icons",
+    "crates/tisvlay-runtime",
     "crates/tisvlay",
     "crates/tisvlay-cli",
     "crates/tisvlay-daemon",
@@ -17,6 +18,7 @@ members = [
     "crates/tisvlay-greeter",
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",
+    "crates/tisvlay-gui-app",
 ]
 
 # `default-members` = the shipping binary crates. Bare `cargo build` /
@@ -32,16 +34,21 @@ default-members = [
     "crates/tisvlay-session",
     "crates/tisvlay-greeter",
     "crates/tisvlay-tray",
-    "crates/tisvlay-gui",
+    "crates/tisvlay-gui-app",
 ]
 
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-# MSRV = the pinned channel in rust-toolchain.toml (bump the two together),
-# so the floor is exactly what CI builds and the MSRV-aware resolver never
-# holds a dependency back below the compiler we actually ship with.
-rust-version = "1.99"
+# MSRV = the oldest rustc the workspace actually builds on, verified by
+# `just msrv` and the CI `msrv` job (both read this value). It must never
+# exceed the rustc nixos-unstable ships: the Nix package, and so the NixOS
+# module, builds with the consumer's nixpkgs compiler, and Cargo refuses
+# any toolchain below this floor. The MSRV-aware resolver holds
+# dependencies to releases that support it, so raise it deliberately when
+# an update needs a newer compiler. The dev/CI pin in rust-toolchain.toml
+# runs ahead independently.
+rust-version = "1.95"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/ruffsl/tisvlay"
@@ -64,6 +71,7 @@ futures-util = "0.3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+secrecy = { version = "0.10", features = ["serde"] }
 toml = "1.1"
 
 # Error handling
@@ -116,9 +124,6 @@ parking_lot = "0.12"
 # XDG directories
 directories = "6"
 
-# Ordered map (preserves insertion order for TV list stability)
-indexmap = "2"
-
 # UUID v4 for stable per-TV identifiers (decoupled from user-facing
 # display name so renames don't churn cross-references). Matches
 # NetworkManager's connection-uuid pattern.
@@ -139,7 +144,6 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # Rust protocol client — no libpipewire link. Git-pinned; the pin's
 # rationale + revert condition live at the deny.toml allow-git entry.
 pipewire-native = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
-pipewire-native-spa = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
 # `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
@@ -165,14 +169,27 @@ bevy_ecs = "0.19"
 # Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
 # API (caches, history, recovery) is behind `unstable` — an accepted
 # risk, tracked in the parity plan's watch items.
-zenoh = "1.10"
-zenoh-ext = { version = "1.10", features = ["unstable"] }
+#
+# Every TisVlay link is a Unix socket, so zenoh's default transports (QUIC,
+# TLS, WebSocket, TCP, UDP, compression, multilink, pubkey/usrpwd auth) are
+# switched off — on zenoh-ext too, whose `default` re-enables them. Add a
+# `transport_*` feature back here if a link ever needs one.
+zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
+zenoh-ext = { version = "1.10", default-features = false, features = ["unstable"] }
 
 # EDID parsing for the DRM connector ↔ TV matcher
 edidkit = "0.1"
 
 # System tray (StatusNotifierItem)
 ksni = "0.3"
+
+# Slint GUI toolkit, shared by tisvlay-gui (the compiled UI) and
+# tisvlay-gui-app (the code driving it). Wayland-only winit backend: the
+# session stack is Wayland-only, and dropping the X11 backend keeps x11rb
+# off the cold-build path. `unstable-winit-030` is a preliminary API, so
+# slint is pinned exactly — bump it together with slint-build and
+# i-slint-backend-testing, re-checking the winit-030 call sites.
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 
 # Freedesktop icon-theme lookup (name → file path), shared by the GUI
 # and tray via tisvlay-icons.
@@ -203,14 +220,14 @@ tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-wire = { path = "crates/tisvlay-wire" }
 tisvlay-world = { path = "crates/tisvlay-world" }
 tisvlay-icons = { path = "crates/tisvlay-icons" }
+tisvlay-runtime = { path = "crates/tisvlay-runtime" }
+tisvlay-gui = { path = "crates/tisvlay-gui" }
 tisvlay = { path = "crates/tisvlay" }
 # Binary crates exposed as libs for cross-crate integration tests.
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }
 tisvlay-session = { path = "crates/tisvlay-session" }
 
 # Testing
-insta = { version = "1", features = ["json", "yaml", "filters"] }
-insta-cmd = "0.7"
 proptest = "1"
 rstest = "0.27"
 tempfile = "3"
@@ -221,13 +238,54 @@ tracing-mock = "0.1.0-beta.3"
 section = "utils"
 
 # Centralized lint policy. Each crate opts in with `[lints] workspace =
-# true`. Adjust here, not per-crate.
+# true`. Adjust here, not per-crate. The gates deny every warning, so a
+# lint at "warn" here blocks like "deny"; the rules for adding a lint are
+# in docs/build.md § Lint policy.
 [workspace.lints.rust]
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
+# `unsafe` is confined to the files that need it (libc ACL and user-database
+# calls, the logind FFI, the glibc version probe, the session's
+# SPA_PLUGIN_DIR setup, the test fakes); each carries a reasoned
+# `#![expect(unsafe_code)]`, so a new `unsafe` anywhere else is refused.
+# `deny`, not `forbid`: `forbid` would reject those exceptions.
+unsafe_code = "deny"
+unused_qualifications = "warn"
+non_ascii_idents = "warn"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+# Every allowance states why (`#[expect(…, reason = "…")]` preferred).
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# `process::exit` outside `main` skips destructors; `main` is exempt.
+exit = "warn"
+get_unwrap = "warn"
+# Binaries and libraries log through tracing; the CLI, which prints its
+# output, opts out at its crate root. `println!` also panics on a closed pipe.
+print_stdout = "warn"
+print_stderr = "warn"
+# A panic in shipped code states its invariant: `expect("… because …")`,
+# never a bare `unwrap()`. Tests may unwrap and panic (clippy.toml; the
+# integration-test roots opt out, since clippy can't see their helpers).
+unwrap_used = "warn"
+panic = "warn"
+# Hand-picked pedantic and nursery lints, each on its merits: never the
+# groups (docs/build.md "Adding a lint").
+cast_lossless = "warn"
+borrow_as_ptr = "warn"
+ignored_unit_patterns = "warn"
+manual_let_else = "warn"
+ptr_as_ptr = "warn"
+redundant_clone = "warn"
+redundant_closure_for_method_calls = "warn"
+return_self_not_must_use = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+use_self = "warn"
 
 # `split-debuginfo = "unpacked"` keeps debug info in sibling .o files
 # instead of inside the linked artifact — relinks don't have to copy
@@ -247,7 +305,10 @@ split-debuginfo = "unpacked"
 debug = "line-tables-only"
 
 # Tuning for shipped binaries (Nix, musl release, .deb/.rpm/.archlinux).
+# Cargo's default codegen units and no LTO, on purpose: `codegen-units = 1`
+# serializes each crate's optimization (zenoh and the Slint-generated GUI
+# stall the whole build on one core), and thin LTO adds a mostly serial
+# pass per binary. TisVlay waits on sockets, D-Bus and timers, so the
+# cross-crate inlining those buy isn't worth a build ~30% slower.
 [profile.release]
-lto = "thin"
-codegen-units = 1
 strip = "symbols"

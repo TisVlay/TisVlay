@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use std::time::Duration;
 use tisvlay_core::{
     Credentials, Error, MacAddress, PairingCommand, PairingSession, PairingState, Result,
-    TvConnection, TvConnector,
+    TvConnection, TvConnector, VendorConfig,
 };
 use tracing::{debug, info, warn};
 
@@ -23,14 +23,6 @@ const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 60;
 /// Each attempt is cheap (~50ms TCP connect + close frame), so we
 /// poll aggressively to find the earliest moment the TV is ready.
 const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Helper to deserialize LgVendorConfig from a toml::Value.
-fn parse_config(vendor_config: &toml::Value) -> Result<LgVendorConfig> {
-    vendor_config
-        .clone()
-        .try_into()
-        .map_err(|e| Error::backend("lg", format!("Invalid vendor config: {}", e)))
-}
 
 /// Factory for creating LG WebOS connections.
 #[derive(Debug)]
@@ -55,8 +47,8 @@ impl TvConnector for LgConnector {
         tisvlay_core::Transport::Network
     }
 
-    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
-        let config = parse_config(vendor_config)?;
+    async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
 
         debug!(
             ip = %config.ip,
@@ -90,14 +82,15 @@ impl TvConnector for LgConnector {
         Ok(Box::new(LgConnection::new(client, config, hardware_id)))
     }
 
-    fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
-        parse_config(vendor_config)
+    fn supports_wake(&self, vendor_config: &VendorConfig) -> bool {
+        vendor_config
+            .parse::<LgVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.mac.is_some())
             .unwrap_or(false)
     }
 
-    async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
-        let config = parse_config(vendor_config)?;
+    async fn wake(&self, vendor_config: &VendorConfig) -> Result<()> {
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         if let Some(ref mac) = config.mac {
             let mac_addr = MacAddress::parse(mac)?;
             tisvlay_core::wol::wake_with_retry(&mac_addr, 8).await?;
@@ -106,10 +99,13 @@ impl TvConnector for LgConnector {
         Ok(())
     }
 
-    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+    async fn wake_and_connect(
+        &self,
+        vendor_config: &VendorConfig,
+    ) -> Result<Box<dyn TvConnection>> {
         self.wake(vendor_config).await?;
 
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         let mut last_err = None;
 
         for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
@@ -142,9 +138,9 @@ impl TvConnector for LgConnector {
         }))
     }
 
-    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
-        let config = parse_config(vendor_config)?;
-        let ip = config.ip.clone();
+    fn start_pairing(&self, vendor_config: &VendorConfig) -> Result<PairingSession> {
+        let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
+        let ip = config.ip;
 
         let (session, mut command_rx, state_tx) = PairingSession::create();
 
@@ -169,7 +165,7 @@ impl TvConnector for LgConnector {
                                 // subsequent reconnects skip the
                                 // wss→ws fallback (see
                                 // `LgVendorConfig.scheme`).
-                                let creds = Credentials::with_type(key, "client_key")
+                                let creds = Credentials::with_type(key.clone(), "client_key")
                                     .with_extra("scheme", scheme.as_str());
                                 let _ = state_tx.send(PairingState::complete(creds));
                             } else {
@@ -219,10 +215,10 @@ impl TvConnector for LgConnector {
 
     fn build_config_from_pairing(
         &self,
-        pairing_params: &toml::Value,
+        pairing_params: &VendorConfig,
         credentials: &Credentials,
-    ) -> Result<toml::Value> {
-        let mut config = parse_config(pairing_params)?;
+    ) -> Result<VendorConfig> {
+        let mut config = pairing_params.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         config.client_key = Some(credentials.data.clone());
         // Persist the working WebSocket scheme captured during the
         // pairing handshake — `connect()` reads this on reconnects
@@ -233,8 +229,8 @@ impl TvConnector for LgConnector {
             Error::backend("lg", "pairing credentials missing `scheme` — internal bug")
         })?;
         config.scheme = scheme.parse()?;
-        toml::Value::try_from(&config)
-            .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {}", e)))
+        VendorConfig::from_typed(&config)
+            .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {e}")))
     }
 
     fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
@@ -270,7 +266,7 @@ impl TvConnector for LgConnector {
                 // since some setups manage power externally.
                 required: false,
                 placeholder: "AA:BB:CC:DD:EE:FF".into(),
-                // Daemon ARP-resolves this from the kernel's neighbour
+                // Daemon ARP-resolves this from the kernel's neighbor
                 // table after SSDP yields the IP and stuffs it into
                 // `vendor_data["mac"]`.
                 autofill: "discovery.mac".into(),
@@ -344,22 +340,25 @@ mod tests {
     #[test]
     fn build_config_from_pairing_stores_key() {
         let connector = LgConnector::new();
-        let params = toml::Value::try_from(LgVendorConfig::new("192.168.1.100")).unwrap();
+        let params = VendorConfig::from_typed(&LgVendorConfig::new("192.168.1.100")).unwrap();
         let creds =
             Credentials::with_type("my-client-key", "client_key").with_extra("scheme", "wss");
         let result = connector
             .build_config_from_pairing(&params, &creds)
             .unwrap();
-        let config: LgVendorConfig = result.try_into().unwrap();
+        let config: LgVendorConfig = result.parse(crate::VENDOR_ID).unwrap();
         assert_eq!(config.ip, "192.168.1.100");
-        assert_eq!(config.client_key.as_deref(), Some("my-client-key"));
+        assert_eq!(
+            config.client_key.as_ref().map(tisvlay_core::Secret::expose),
+            Some("my-client-key")
+        );
         assert_eq!(config.scheme, crate::config::WebOsScheme::Wss);
     }
 
     #[test]
     fn build_config_preserves_mac() {
         let connector = LgConnector::new();
-        let params = toml::Value::try_from(LgVendorConfig {
+        let params = VendorConfig::from_typed(&LgVendorConfig {
             mac: Some("AA:BB:CC:DD:EE:FF".into()),
             ..LgVendorConfig::new("10.0.0.1")
         })
@@ -368,9 +367,12 @@ mod tests {
         let result = connector
             .build_config_from_pairing(&params, &creds)
             .unwrap();
-        let config: LgVendorConfig = result.try_into().unwrap();
+        let config: LgVendorConfig = result.parse(crate::VENDOR_ID).unwrap();
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(config.client_key.as_deref(), Some("key"));
+        assert_eq!(
+            config.client_key.as_ref().map(tisvlay_core::Secret::expose),
+            Some("key")
+        );
         assert_eq!(config.scheme, crate::config::WebOsScheme::Ws);
     }
 
@@ -393,17 +395,10 @@ mod tests {
         // (i.e., what re-pair would supply). The fake IP means the spawned
         // WebSocket task will fail asynchronously, but `start_pairing` itself
         // returns immediately with a session — that's what we're verifying.
-        let mut table = toml::value::Table::new();
-        table.insert("ip".into(), toml::Value::String("192.0.2.99".into()));
-        table.insert(
-            "client_key".into(),
-            toml::Value::String("preexisting-key".into()),
-        );
-        table.insert(
-            "mac".into(),
-            toml::Value::String("AA:BB:CC:DD:EE:FF".into()),
-        );
-        let vendor_config = toml::Value::Table(table);
+        let mut vendor_config = VendorConfig::new();
+        vendor_config.insert("ip", "192.0.2.99");
+        vendor_config.insert("client_key", "preexisting-key");
+        vendor_config.insert("mac", "AA:BB:CC:DD:EE:FF");
 
         let session1 = connector.start_pairing(&vendor_config);
         assert!(

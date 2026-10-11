@@ -177,14 +177,12 @@ impl FakeSsapServer {
     ) {
         // Accept connections in a loop to support reconnection tests.
         loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(s) => s,
-                Err(_) => break,
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
             };
 
-            let ws = match tokio_tungstenite::accept_async(stream).await {
-                Ok(ws) => ws,
-                Err(_) => continue,
+            let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                continue;
             };
 
             let (mut sink, mut stream) = ws.split();

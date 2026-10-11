@@ -23,7 +23,7 @@ pub(crate) enum Fault {
 
 impl From<zbus::Error> for Fault {
     fn from(e: zbus::Error) -> Self {
-        Fault::Bus(e)
+        Self::Bus(e)
     }
 }
 

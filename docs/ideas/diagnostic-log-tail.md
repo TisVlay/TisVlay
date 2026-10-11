@@ -4,7 +4,7 @@ The About pane's diagnostic blob (schema reference in [`docs/diagnostics.md`](..
 
 Implementation sketch:
 
-- New layer in `tisvlay-core::logging` (or a sibling module) that writes formatted events into an `Arc<Mutex<VecDeque<String>>>`, capacity-bounded with drop-oldest semantics.
+- New layer in `tisvlay-runtime::logging` (or a sibling module) that writes formatted events into an `Arc<Mutex<VecDeque<String>>>`, capacity-bounded with drop-oldest semantics.
 - Wired alongside the existing `fmt::Layer` so console output is unchanged.
 - `RUST_LOG` filter governs what the ring sees (single source of truth).
 - Default capacity 500 events (~250 KB at typical formatted-event line length); env-var override `TISVLAY_DIAG_BUFFER` for power users.

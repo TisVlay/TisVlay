@@ -1,5 +1,15 @@
 //! High-level WebOS TV client.
 
+// External-input profile: this module handles SSAP responses from the TV,
+// so indexing, arithmetic, string slicing and narrowing casts must be
+// checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use crate::endpoints::{
     audio, input, luna, network, notification, picture, power, system, timeouts,
 };
@@ -11,15 +21,24 @@ use crate::transport::Connection;
 use serde_json::{Value, json};
 use std::net::IpAddr;
 use std::time::Duration;
-use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, TvState};
+use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, Secret, TvState};
 use tokio::sync::mpsc;
+
+/// A response payload's key names, for logs: the `Registered` payload
+/// carries the client key, so the values never reach a log line.
+fn payload_keys(payload: &Value) -> Vec<&str> {
+    payload
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
 
 /// Client for controlling an LG WebOS TV.
 pub struct WebOsClient {
     /// WebSocket connection (None if closed).
     conn: Option<Connection>,
     /// Client key for authentication.
-    client_key: Option<String>,
+    client_key: Option<Secret>,
     /// Request ID counter.
     request_id: u64,
     /// Request timeout.
@@ -62,20 +81,20 @@ impl WebOsClient {
     /// If `client_key` is provided, attempts to reconnect with
     /// existing pairing. If `None` or the key is invalid, a pairing
     /// prompt will be shown on the TV.
-    pub async fn connect(host: &str, client_key: Option<String>) -> Result<Self> {
+    pub async fn connect(host: &str, client_key: Option<Secret>) -> Result<Self> {
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
         let conn = Connection::connect(host, connect_timeout).await?;
         Self::register_on(conn, client_key).await
     }
 
-    /// Connect via a known [`WebOsScheme`] and register. Used on
+    /// Connect via a known `WebOsScheme` and register. Used on
     /// reconnects when the pairing flow has already recorded which
     /// scheme the TV speaks into `LgVendorConfig.scheme` — single
     /// dispatch, no fallback round-trip.
     pub async fn connect_with_scheme(
         host: &str,
         scheme: crate::config::WebOsScheme,
-        client_key: Option<String>,
+        client_key: Option<Secret>,
     ) -> Result<Self> {
         use crate::config::WebOsScheme;
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
@@ -86,7 +105,7 @@ impl WebOsClient {
         Self::register_on(conn, client_key).await
     }
 
-    async fn register_on(conn: Connection, client_key: Option<String>) -> Result<Self> {
+    async fn register_on(conn: Connection, client_key: Option<Secret>) -> Result<Self> {
         let mut client = Self {
             conn: Some(conn),
             client_key: client_key.clone(),
@@ -106,7 +125,7 @@ impl WebOsClient {
     /// Used by tests that run a [`FakeSsapServer`](crate::test_server::FakeSsapServer)
     /// on localhost. Bypasses the wss→ws fallback and connects directly.
     #[cfg(test)]
-    pub(crate) async fn connect_url(url: &str, client_key: Option<String>) -> Result<Self> {
+    pub(crate) async fn connect_url(url: &str, client_key: Option<Secret>) -> Result<Self> {
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
         let conn = Connection::connect_url_plain(url, connect_timeout).await?;
 
@@ -125,7 +144,7 @@ impl WebOsClient {
 
     /// Check if the connection is still active.
     pub fn is_connected(&self) -> bool {
-        self.conn.as_ref().is_some_and(|c| c.is_alive())
+        self.conn.as_ref().is_some_and(Connection::is_alive)
     }
 
     /// Get a reference to the connection, returning an error if closed.
@@ -144,7 +163,7 @@ impl WebOsClient {
     /// response via a oneshot channel. Intermediate messages (e.g.,
     /// subscription updates) are handled by the background reader and
     /// do not interfere with registration.
-    async fn register(&mut self, existing_key: Option<String>) -> Result<String> {
+    async fn register(&mut self, existing_key: Option<Secret>) -> Result<Secret> {
         let payload = RegisterPayload::new(existing_key);
         let request = Request::register(self.next_id(), payload);
 
@@ -157,11 +176,19 @@ impl WebOsClient {
         // To handle the two-phase flow, we use request_wait() which only
         // registers the oneshot (no send) for the second phase.
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Instant plus the PAIRING_MS constant cannot overflow"
+        )]
         let deadline = tokio::time::Instant::now() + pairing_timeout;
 
         // Phase 1: send the register request and get the first response.
         let response = self.conn()?.request(&request, pairing_timeout).await?;
-        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 1)");
+        tracing::debug!(
+            msg_type = ?response.msg_type,
+            payload_keys = ?payload_keys(&response.payload),
+            "Registration response (phase 1)"
+        );
 
         match response.msg_type {
             ResponseType::Registered => {
@@ -194,7 +221,11 @@ impl WebOsClient {
         // Phase 2: wait for the Registered response (no re-send).
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self.conn()?.request_wait(&request.id, remaining).await?;
-        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 2)");
+        tracing::debug!(
+            msg_type = ?response.msg_type,
+            payload_keys = ?payload_keys(&response.payload),
+            "Registration response (phase 2)"
+        );
 
         match response.msg_type {
             ResponseType::Registered => {
@@ -219,8 +250,8 @@ impl WebOsClient {
     }
 
     /// Get the client key (for saving to config).
-    pub fn client_key(&self) -> Option<&str> {
-        self.client_key.as_deref()
+    pub fn client_key(&self) -> Option<&Secret> {
+        self.client_key.as_ref()
     }
 
     /// WebSocket scheme the underlying connection succeeded over.
@@ -229,14 +260,14 @@ impl WebOsClient {
     /// `LgVendorConfig.scheme` and skip the wss→ws fallback on
     /// subsequent reconnects.
     pub(crate) fn scheme(&self) -> Option<crate::config::WebOsScheme> {
-        self.conn.as_ref().map(|c| c.scheme())
+        self.conn.as_ref().map(Connection::scheme)
     }
 
     /// Generate the next request ID.
     fn next_id(&mut self) -> String {
         let id = self.request_id;
-        self.request_id += 1;
-        format!("req_{}", id)
+        self.request_id = self.request_id.wrapping_add(1);
+        format!("req_{id}")
     }
 
     /// Send a command and get the response.
@@ -262,7 +293,7 @@ impl WebOsClient {
     ///
     /// Sends a subscribe request and returns the initial response (which
     /// typically contains the current value). Subsequent updates arrive on
-    /// the subscription channel (see [`take_subscription_rx`]).
+    /// the subscription channel (see [`take_subscription_rx`](Self::take_subscription_rx)).
     pub async fn subscribe(&mut self, uri: &str) -> Result<Response> {
         let request = Request::subscribe(self.next_id(), uri);
         let timeout = self.timeout;
@@ -286,7 +317,7 @@ impl WebOsClient {
     /// values at subscribe time).
     ///
     /// After calling this, subscription updates will arrive on the channel
-    /// returned by [`take_subscription_rx`].
+    /// returned by [`take_subscription_rx`](Self::take_subscription_rx).
     pub async fn subscribe_state_updates(
         &mut self,
     ) -> Result<(
@@ -307,14 +338,17 @@ impl WebOsClient {
             input::GET_EXTERNAL_INPUT_LIST,
             input::GET_CURRENT_INPUT,
         ];
-        let payload_endpoints: Vec<(&str, serde_json::Value)> = vec![(
+        let payload_endpoints: Vec<(&str, Value)> = vec![(
             picture::GET_SYSTEM_SETTINGS,
             json!({"category": "picture", "keys": ["backlight"]}),
         )];
 
         // (request_id, uri-or-synthetic-uri-for-bookkeeping, request)
-        let mut prepared: Vec<(String, String, Request)> =
-            Vec::with_capacity(plain_endpoints.len() + payload_endpoints.len());
+        let mut prepared: Vec<(String, String, Request)> = Vec::with_capacity(
+            plain_endpoints
+                .len()
+                .saturating_add(payload_endpoints.len()),
+        );
 
         for uri in plain_endpoints {
             let request = Request::subscribe(self.next_id(), *uri);
@@ -326,7 +360,7 @@ impl WebOsClient {
             // calls at routing time — each (category, keys) pair
             // gets its own pseudo-URI so the state forwarder can
             // tell them apart.
-            let synthetic_uri = format!("{}#picture/backlight", uri);
+            let synthetic_uri = format!("{uri}#picture/backlight");
             prepared.push((request.id.clone(), synthetic_uri, request));
         }
 
@@ -433,7 +467,7 @@ impl WebOsClient {
 
     /// Get the current power state.
     ///
-    /// Routes through [`crate::connection::parse_power_state_payload`]
+    /// Routes through `crate::connection::parse_power_state_payload`
     /// so the `processing` / `onOff` discriminators that LG ships
     /// during transitions take precedence over the stale `state`
     /// field. Without that, a `get_power_state` query issued during
@@ -483,7 +517,7 @@ impl WebOsClient {
 
     /// Set the volume (0-100).
     pub async fn set_volume(&mut self, volume: u8) -> Result<()> {
-        let volume = volume.min(100) as i32;
+        let volume = i32::from(volume.min(100));
         self.command(audio::SET_VOLUME, json!({"volume": volume}))
             .await?;
         Ok(())
@@ -510,7 +544,7 @@ impl WebOsClient {
         let muted = response
             .payload
             .get("mute")
-            .and_then(|v| v.as_bool())
+            .and_then(Value::as_bool)
             .unwrap_or(false);
         Ok(muted)
     }
@@ -538,7 +572,7 @@ impl WebOsClient {
     /// workaround via createAlert instead (shared by bscpylgtv,
     /// LGTVCompanion, etc.).
     pub async fn set_backlight(&mut self, backlight: u8) -> Result<()> {
-        let backlight = backlight.min(100) as i32;
+        let backlight = i32::from(backlight.min(100));
 
         let luna_params = json!({
             "category": "picture",
@@ -595,7 +629,7 @@ impl WebOsClient {
             .payload
             .get("settings")
             .and_then(|s| s.get("backlight"))
-            .and_then(|v| v.as_i64())
+            .and_then(Value::as_i64)
             .unwrap_or(50);
 
         Ok(raw.clamp(0, 100) as u8)
@@ -615,7 +649,7 @@ impl WebOsClient {
     pub async fn get_link_mac(&mut self, dialed: IpAddr) -> Option<MacAddress> {
         let status = self.network_read(network::GET_STATUS).await?;
         let Some(iface) = ["wired", "wifi"].into_iter().find(|name| {
-            let block = &status[*name];
+            let block = status.get(*name).unwrap_or(&Value::Null);
             block["state"] == "connected"
                 && block["ipAddress"]
                     .as_str()
@@ -626,9 +660,12 @@ impl WebOsClient {
             return None;
         };
         let info = self.network_read(network::GET_INFO).await?;
-        let mac = info[format!("{iface}Info")]["macAddress"].as_str()?;
+        let mac = info
+            .get(format!("{iface}Info"))?
+            .get("macAddress")?
+            .as_str()?;
         MacAddress::parse(mac)
-            .inspect_err(|e| tracing::debug!(iface, mac, error = %e, "unparseable link MAC"))
+            .inspect_err(|e| tracing::debug!(iface, mac, error = %e, "unparsable link MAC"))
             .ok()
     }
 
@@ -637,7 +674,9 @@ impl WebOsClient {
     /// failures can arrive as a normal response rather than an error.
     async fn network_read(&mut self, uri: &str) -> Option<Value> {
         match self.command(uri, json!({})).await {
-            Ok(response) if response.payload["returnValue"] == true => Some(response.payload),
+            Ok(response) if response.payload.get("returnValue") == Some(&Value::Bool(true)) => {
+                Some(response.payload)
+            }
             Ok(response) => {
                 tracing::debug!(uri, payload = %response.payload, "network read refused");
                 None
@@ -733,6 +772,16 @@ mod tests {
     use super::*;
     use crate::test_server::{FakeSsapServer, RegistrationOutcome};
 
+    /// The registration log line names the `Registered` payload's keys,
+    /// never the client key itself.
+    #[test]
+    fn registration_log_fields_omit_the_client_key() {
+        let payload = json!({ "client-key": "secret-client-key-1234" });
+        let shown = format!("{:?}", payload_keys(&payload));
+        assert!(shown.contains("client-key"), "{shown}");
+        assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+    }
+
     // -----------------------------------------------------------------------
     // Reader-loop fault injection — these exercise the WebOsClient reader
     // directly (malformed frame tolerance, socket-drop detection).
@@ -765,7 +814,7 @@ mod tests {
         server.drop_connection();
 
         // Give the reader loop time to notice the close.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Next command should fail with a connection error.
         let result = client.get_power_state().await;
@@ -780,7 +829,10 @@ mod tests {
             .expect("should connect and register");
 
         assert!(client.is_connected());
-        assert_eq!(client.client_key(), Some("test-client-key"));
+        assert_eq!(
+            client.client_key().map(Secret::expose),
+            Some("test-client-key")
+        );
         client.close().await.unwrap();
     }
 
@@ -791,12 +843,14 @@ mod tests {
             client_key: "returning-key".to_string(),
         });
 
-        let mut client =
-            WebOsClient::connect_url(&server.ws_url(), Some("returning-key".to_string()))
-                .await
-                .expect("should register immediately");
+        let mut client = WebOsClient::connect_url(&server.ws_url(), Some("returning-key".into()))
+            .await
+            .expect("should register immediately");
 
-        assert_eq!(client.client_key(), Some("returning-key"));
+        assert_eq!(
+            client.client_key().map(Secret::expose),
+            Some("returning-key")
+        );
         client.close().await.unwrap();
     }
 
@@ -877,10 +931,7 @@ mod tests {
     #[tokio::test]
     async fn screen_on_masks_500_idempotent_error() {
         let server = FakeSsapServer::start().await;
-        server.set_command_error(
-            crate::endpoints::power::TURN_ON_SCREEN,
-            "500 method not allowed",
-        );
+        server.set_command_error(power::TURN_ON_SCREEN, "500 method not allowed");
         let mut client = WebOsClient::connect_url(&server.ws_url(), None)
             .await
             .unwrap();
@@ -903,10 +954,7 @@ mod tests {
     #[tokio::test]
     async fn screen_on_propagates_minus_102_not_in_screen_off_substate() {
         let server = FakeSsapServer::start().await;
-        server.set_command_error(
-            crate::endpoints::power::TURN_ON_SCREEN,
-            "-102 not in screen-off substate",
-        );
+        server.set_command_error(power::TURN_ON_SCREEN, "-102 not in screen-off substate");
         let mut client = WebOsClient::connect_url(&server.ws_url(), None)
             .await
             .unwrap();
@@ -1014,7 +1062,7 @@ mod tests {
         );
 
         // The update should arrive on the subscription channel.
-        let update = tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
+        let update = tokio::time::timeout(Duration::from_secs(2), sub_rx.recv())
             .await
             .expect("should receive within 2s")
             .expect("channel should not be closed");
@@ -1069,7 +1117,7 @@ mod field_probe {
             Some(list) => list.split(',').map(str::trim).collect(),
             None => ENDPOINTS.to_vec(),
         };
-        let mut client = WebOsClient::connect(&host, Some(key)).await.unwrap();
+        let mut client = WebOsClient::connect(&host, Some(key.into())).await.unwrap();
         for uri in uris {
             match client.command(uri, json!({})).await {
                 Ok(response) => println!("{uri}\n  {}", response.payload),

@@ -3,8 +3,19 @@
 //! The SSAP (Simple Service Access Protocol) is a JSON-based protocol
 //! used by LG WebOS TVs over WebSocket connections.
 
+// External-input profile: this module handles SSAP messages from the TV,
+// so indexing, arithmetic, string slicing and narrowing casts must be
+// checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tisvlay_core::Secret;
 
 /// Outgoing message to the TV.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +89,7 @@ pub struct RegisterPayload {
     pub manifest: Manifest,
     /// Previously obtained client key (None for new pairing).
     #[serde(rename = "client-key", skip_serializing_if = "Option::is_none")]
-    pub client_key: Option<String>,
+    pub client_key: Option<Secret>,
 }
 
 /// Application manifest for registration.
@@ -136,7 +147,7 @@ impl RegisterPayload {
     ///
     /// If `client_key` is provided, attempts to reconnect with existing pairing.
     /// If `None`, a new pairing prompt will be shown on the TV.
-    pub fn new(client_key: Option<String>) -> Self {
+    pub fn new(client_key: Option<Secret>) -> Self {
         Self {
             force_pairing: false,
             pairing_type: "PROMPT".to_string(),
@@ -233,7 +244,7 @@ impl Default for Manifest {
 #[serde(rename_all = "kebab-case")]
 pub struct RegisteredPayload {
     /// Client key for future connections.
-    pub client_key: String,
+    pub client_key: Secret,
 }
 
 /// Power state response.
@@ -319,7 +330,9 @@ impl Request {
             id: id.into(),
             msg_type: RequestType::Register,
             uri: None,
-            payload: Some(serde_json::to_value(payload).unwrap()),
+            payload: Some(serde_json::to_value(payload).expect(
+                "RegisterPayload is a plain string-keyed struct, so serializing it cannot fail",
+            )),
         }
     }
 
@@ -347,13 +360,38 @@ impl Request {
     pub fn subscribe_with_payload(
         id: impl Into<String>,
         uri: impl Into<String>,
-        payload: serde_json::Value,
+        payload: Value,
     ) -> Self {
         Self {
             id: id.into(),
             msg_type: RequestType::Subscribe,
             uri: Some(uri.into()),
             payload: Some(payload),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The client key authenticates every later connection; it must never
+    /// show up in `Debug` output, which can reach logs.
+    #[test]
+    fn debug_redacts_the_client_key() {
+        let key = "secret-client-key-1234";
+        let register = RegisterPayload::new(Some(key.into()));
+        let registered = RegisteredPayload {
+            client_key: key.into(),
+        };
+        for shown in [
+            format!("{register:?}"),
+            format!("{register:#?}"),
+            format!("{registered:?}"),
+            format!("{registered:#?}"),
+        ] {
+            assert!(!shown.contains(key), "client key leaked into {shown}");
+            assert!(shown.contains("[REDACTED]"), "{shown}");
         }
     }
 }

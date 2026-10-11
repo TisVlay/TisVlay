@@ -1,6 +1,6 @@
 //! Client-side profile-reference computation.
 //!
-//! v3 drops the server-side `ReferencedBy` property in favour of a
+//! v3 drops the server-side `ReferencedBy` property in favor of a
 //! shared helper both daemon and clients call. The TV list every
 //! client maintains in memory is the source of truth; the helper just
 //! encodes the fan-out rule (a TV whose profile-assignment field is
@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// TV-side data the reference helpers need.
 ///
 /// Built by callers from whatever shape their in-memory TV list takes
-/// (`TvConfig` on the daemon, `TvViewRaw` on the GUI, the cached state
+/// (`TvRecord` on the daemon, `TvViewRaw` on the GUI, the cached state
 /// in the tray). `system_profile` / `user_profile` are `Option<Uuid>`
 /// so callers from data shapes without explicit assignments can pass
 /// `None`; the helpers fall back to the default-UUID semantic.

@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
-use tisvlay_core::TvConnector;
+use tisvlay_core::{TvConnector, VendorConfig};
+use tisvlay_wire::rpc::TvConfigView;
 use tokio::sync::mpsc;
 
 use crate::backend;
@@ -299,11 +300,8 @@ impl Reactor {
                     None => tracing::debug!("no store attached, persist snapshot dropped"),
                 },
                 Effect::RedactConfig { reply, record } => {
-                    let payload = redacted_config(&self.connectors, record);
-                    let _ = self.effects_tx.send(WireEffect::Reply {
-                        to: reply,
-                        result: Ok(payload),
-                    });
+                    let view = redacted_config(&self.connectors, record);
+                    let _ = self.effects_tx.send(reply.ok(&view));
                 }
             }
         }
@@ -317,7 +315,7 @@ impl Reactor {
         &self,
         tv: uuid::Uuid,
         connector: &dyn TvConnector,
-        config: &toml::Value,
+        config: &VendorConfig,
     ) {
         let Some(tx) = &self.routes_tx else { return };
         if !connector.transport().is_network_dependent() {
@@ -332,7 +330,7 @@ impl Reactor {
 /// The connector's config-derived transport characteristics.
 fn transport_facts(
     connector: &dyn TvConnector,
-    config: &toml::Value,
+    config: &VendorConfig,
 ) -> crate::events::TransportInfo {
     crate::events::TransportInfo {
         reachable_in_standby: connector.reachable_in_standby(config),
@@ -348,7 +346,7 @@ fn transport_facts(
 fn redacted_config(
     connectors: &HashMap<String, Arc<dyn TvConnector>>,
     record: TvRecord,
-) -> serde_json::Value {
+) -> TvConfigView {
     let mut config = serde_json::Map::new();
     if let Some(connector) = connectors.get(&record.vendor) {
         let secret: HashSet<String> = connector
@@ -357,26 +355,24 @@ fn redacted_config(
             .filter(|field| field.visibility == tisvlay_core::FieldVisibility::Secret)
             .map(|field| field.name)
             .collect();
-        if let Some(table) = record.config.as_table() {
-            for (key, value) in table {
-                if secret.contains(key) {
-                    continue;
-                }
-                if let Ok(json) = serde_json::to_value(value) {
-                    config.insert(key.clone(), json);
-                }
+        for (key, value) in record.config.iter() {
+            if secret.contains(key) {
+                continue;
+            }
+            if let Ok(json) = serde_json::to_value(value) {
+                config.insert(key.to_string(), json);
             }
         }
     }
-    serde_json::json!({
-        "id": record.id,
-        "name": record.name,
-        "vendor": record.vendor,
-        "managed": record.managed,
-        "system_profile": record.system_profile,
-        "primary_input": record.primary_input,
-        "config": config,
-    })
+    TvConfigView {
+        id: record.id,
+        name: record.name,
+        vendor: record.vendor,
+        managed: record.managed,
+        system_profile: record.system_profile,
+        primary_input: record.primary_input,
+        config,
+    }
 }
 
 #[cfg(test)]
@@ -394,34 +390,34 @@ mod tests {
         }
         async fn connect(
             &self,
-            _: &toml::Value,
+            _: &VendorConfig,
         ) -> tisvlay_core::Result<Box<dyn tisvlay_core::TvConnection>> {
-            unimplemented!("redaction test never connects")
+            unreachable!("redaction test never connects")
         }
-        fn supports_wake(&self, _: &toml::Value) -> bool {
+        fn supports_wake(&self, _: &VendorConfig) -> bool {
             false
         }
-        async fn wake(&self, _: &toml::Value) -> tisvlay_core::Result<()> {
+        async fn wake(&self, _: &VendorConfig) -> tisvlay_core::Result<()> {
             Ok(())
         }
         async fn wake_and_connect(
             &self,
-            _: &toml::Value,
+            _: &VendorConfig,
         ) -> tisvlay_core::Result<Box<dyn tisvlay_core::TvConnection>> {
-            unimplemented!("redaction test never connects")
+            unreachable!("redaction test never connects")
         }
         fn start_pairing(
             &self,
-            _: &toml::Value,
+            _: &VendorConfig,
         ) -> tisvlay_core::Result<tisvlay_core::PairingSession> {
-            unimplemented!("redaction test never pairs")
+            unreachable!("redaction test never pairs")
         }
         fn build_config_from_pairing(
             &self,
-            _: &toml::Value,
+            _: &VendorConfig,
             _: &tisvlay_core::Credentials,
-        ) -> tisvlay_core::Result<toml::Value> {
-            unimplemented!("redaction test never pairs")
+        ) -> tisvlay_core::Result<VendorConfig> {
+            unreachable!("redaction test never pairs")
         }
         fn config_schema(&self) -> Vec<PairingField> {
             vec![
@@ -442,9 +438,9 @@ mod tests {
     fn redaction_strips_secret_fields() {
         let mut connectors: HashMap<String, Arc<dyn TvConnector>> = HashMap::new();
         connectors.insert("stub".into(), Arc::new(StubConnector));
-        let mut table = toml::value::Table::new();
-        table.insert("ip".into(), toml::Value::String("192.0.2.1".into()));
-        table.insert("client_key".into(), toml::Value::String("SECRET".into()));
+        let mut table = VendorConfig::new();
+        table.insert("ip", "192.0.2.1");
+        table.insert("client_key", "SECRET");
         let record = TvRecord {
             id: uuid::Uuid::nil(),
             name: "T".into(),
@@ -452,12 +448,12 @@ mod tests {
             managed: true,
             system_profile: None,
             primary_input: None,
-            config: toml::Value::Table(table),
+            config: table,
         };
-        let json = redacted_config(&connectors, record);
-        assert_eq!(json["config"]["ip"], "192.0.2.1");
-        assert!(json["config"].get("client_key").is_none());
-        assert!(!json.to_string().contains("SECRET"));
-        assert_eq!(json["name"], "T");
+        let view = redacted_config(&connectors, record);
+        assert_eq!(view.config["ip"], "192.0.2.1");
+        assert!(!view.config.contains_key("client_key"));
+        assert!(!serde_json::to_string(&view).unwrap().contains("SECRET"));
+        assert_eq!(view.name, "T");
     }
 }

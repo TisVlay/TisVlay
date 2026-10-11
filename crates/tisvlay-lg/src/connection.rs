@@ -29,6 +29,11 @@ pub struct LgConnection {
     /// each fresh reconnect. Returned from [`hardware_id`](Self::hardware_id)
     /// without blocking.
     hardware_id: std::sync::Arc<std::sync::RwLock<Option<tisvlay_core::HardwareId>>>,
+    /// Test override for where a reconnect dials — the fake SSAP server's
+    /// URL, since the real path always dials the configured IP on the
+    /// standard SSAP ports.
+    #[cfg(test)]
+    reconnect_url: Option<String>,
 }
 
 impl LgConnection {
@@ -48,6 +53,8 @@ impl LgConnection {
             config,
             capabilities: Capabilities::STOCK,
             hardware_id: std::sync::Arc::new(std::sync::RwLock::new(hardware_id)),
+            #[cfg(test)]
+            reconnect_url: None,
         }
     }
 
@@ -72,6 +79,20 @@ impl LgConnection {
         }
     }
 
+    /// Open and register a fresh client for the configured TV.
+    async fn dial(&self) -> Result<WebOsClient> {
+        #[cfg(test)]
+        if let Some(url) = &self.reconnect_url {
+            return WebOsClient::connect_url(url, self.config.client_key.clone()).await;
+        }
+        WebOsClient::connect_with_scheme(
+            &self.config.ip,
+            self.config.scheme,
+            self.config.client_key.clone(),
+        )
+        .await
+    }
+
     /// Ensure the WebSocket connection is alive, reconnecting if needed.
     async fn ensure_connected(&mut self) -> Result<&mut WebOsClient> {
         let needs_reconnect = match &self.client {
@@ -81,12 +102,7 @@ impl LgConnection {
 
         if needs_reconnect {
             info!(ip = %self.config.ip, scheme = %self.config.scheme, "Reconnecting to LG TV");
-            let client = WebOsClient::connect_with_scheme(
-                &self.config.ip,
-                self.config.scheme,
-                self.config.client_key.clone(),
-            )
-            .await?;
+            let client = self.dial().await?;
             self.client = Some(client);
 
             // Best-effort identity refresh on fresh connect. Runs once
@@ -115,8 +131,7 @@ impl LgConnection {
     where
         F: FnMut(
             &mut WebOsClient,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + '_>>,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<T>> + Send + '_>>,
     {
         let client = self.ensure_connected().await?;
         match f(client).await {
@@ -146,7 +161,7 @@ impl TvConnection for LgConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.client.as_ref().is_some_and(|c| c.is_connected())
+        self.client.as_ref().is_some_and(WebOsClient::is_connected)
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
@@ -306,7 +321,7 @@ impl TvConnection for LgConnection {
                     .id
                     .as_ref()
                     .and_then(|id| id_to_uri.get(id))
-                    .map(|s| s.as_str());
+                    .map(String::as_str);
 
                 if let Some(uri) = uri {
                     let changed =
@@ -373,27 +388,27 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
             return true;
         }
     } else if uri.contains("getVolume") {
-        if let Some(vol) = payload.get("volume").and_then(|v| v.as_i64()) {
+        if let Some(vol) = payload.get("volume").and_then(Value::as_i64) {
             state.volume = Some(vol.clamp(0, 100) as u8);
             // Some firmware includes mute in volume updates.
-            if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+            if let Some(muted) = payload.get("mute").and_then(Value::as_bool) {
                 state.muted = Some(muted);
             }
             return true;
         }
         // Also check nested volumeStatus format (subscription updates use this).
         if let Some(status) = payload.get("volumeStatus") {
-            if let Some(vol) = status.get("volume").and_then(|v| v.as_i64()) {
+            if let Some(vol) = status.get("volume").and_then(Value::as_i64) {
                 state.volume = Some(vol.clamp(0, 100) as u8);
             }
             // The field is "muteStatus" (bool) in volumeStatus, not "muted".
-            if let Some(muted) = status.get("muteStatus").and_then(|v| v.as_bool()) {
+            if let Some(muted) = status.get("muteStatus").and_then(Value::as_bool) {
                 state.muted = Some(muted);
             }
             return true;
         }
     } else if uri.contains("getMute") {
-        if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+        if let Some(muted) = payload.get("mute").and_then(Value::as_bool) {
             state.muted = Some(muted);
             return true;
         }
@@ -405,10 +420,7 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
                 .filter_map(|d| {
                     let id = d.get("id")?.as_str()?;
                     let label = d.get("label")?.as_str()?;
-                    let connected = d
-                        .get("connected")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
+                    let connected = d.get("connected").and_then(Value::as_bool).unwrap_or(false);
                     // Build reverse mapping: app ID → physical input ID.
                     // LG reports inputs as apps (e.g., "com.webos.app.hdmi1")
                     // in getForegroundAppInfo, but uses physical IDs (e.g.,
@@ -447,7 +459,7 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
         if let Some(bl) = payload
             .get("settings")
             .and_then(|s| s.get("backlight"))
-            .and_then(|v| v.as_i64())
+            .and_then(Value::as_i64)
         {
             state.backlight = Some(bl.clamp(0, 100) as u8);
             return true;
@@ -908,12 +920,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Build an LgConnection that points at the fake server.
-        // Override the config IP to the fake server address so
-        // ensure_connected() reconnects there.
+        // An LgConnection on the fake server, its reconnect aimed back at
+        // it: the real reconnect path dials the configured IP on the
+        // standard SSAP ports, which the fake server isn't on.
         let mut config = LgVendorConfig::new(server.addr().ip().to_string());
-        config.client_key = Some("test-client-key".to_string());
+        config.client_key = Some("test-client-key".into());
         let mut conn = LgConnection::new(client, config, None);
+        conn.reconnect_url = Some(server.ws_url());
 
         // First call succeeds.
         let state = conn.get_state().await.unwrap();
@@ -923,32 +936,11 @@ mod tests {
         server.drop_connection();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // with_retry should detect the stale connection, reconnect
-        // to the fake server (which accepts a new connection), and
-        // succeed on the retry.
-        //
-        // NOTE: This test only works if LgConnection::ensure_connected
-        // reconnects via Connection::connect (wss then ws). The fake
-        // server only listens on one port, but the wss attempt will
-        // fail fast (connection refused on wrong port) and the ws
-        // fallback hits the fake server's port... except the fake
-        // server isn't on port 3000. The ensure_connected path uses
-        // the config IP with hardcoded ports, not our random port.
-        //
-        // So with_retry will fail to reconnect here because it goes
-        // through WebOsClient::connect(ip) which tries ports 3001/3000.
-        // This is a known limitation — testing with_retry end-to-end
-        // requires making LgConnection's reconnect path configurable,
-        // which is a Layer 3+ enhancement.
-        //
-        // For now, verify the error is a connection error (not a panic).
-        let result = conn.get_state().await;
-        // The retry will fail because the fake server isn't on port 3000/3001.
-        // But the error path in with_retry IS exercised.
-        assert!(
-            result.is_err(),
-            "should fail since fake server isn't on standard ports"
-        );
+        // with_retry detects the stale connection, reconnects — aimed at
+        // the fake server, which accepts a fresh connection — and the
+        // retried command succeeds.
+        let state = conn.get_state().await.expect("reconnected and retried");
+        assert!(state.is_on);
     }
 
     #[tokio::test]
@@ -979,5 +971,55 @@ mod tests {
 
         conn.close().await.unwrap();
         assert!(!conn.is_connected());
+    }
+
+    /// The power-state payload comes from the TV; any JSON must map to a
+    /// state or to `None`, never panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// JSON values biased toward the keys and values the parser reads.
+        fn payload() -> impl Strategy<Value = Value> {
+            let leaf = prop_oneof![
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::from),
+                any::<i64>().prop_map(Value::from),
+                any::<String>().prop_map(Value::from),
+                prop_oneof![
+                    Just("Active"),
+                    Just("Active Standby"),
+                    Just("Screen Off"),
+                    Just("Suspend"),
+                    Just("off"),
+                    Just("None"),
+                    Just(""),
+                ]
+                .prop_map(Value::from),
+            ];
+            leaf.prop_recursive(3, 24, 4, |inner| {
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                    prop::collection::btree_map(
+                        prop_oneof![
+                            Just("state".to_string()),
+                            Just("processing".to_string()),
+                            Just("onOff".to_string()),
+                            "[a-zA-Z]{0,10}",
+                        ],
+                        inner,
+                        0..5,
+                    )
+                    .prop_map(|m| Value::Object(m.into_iter().collect())),
+                ]
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn parse_power_state_payload_never_panics(payload in payload()) {
+                let _ = parse_power_state_payload(&payload);
+            }
+        }
     }
 }

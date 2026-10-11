@@ -1,11 +1,21 @@
-//! Neighbour-table MAC lookup for discovery enrichment (ported from the
+//! Neighbor-table MAC lookup for discovery enrichment (ported from the
 //! root daemon's netlink helper): SSDP replies and pairing traffic have
-//! just primed the kernel's neighbour table, so a discovered TV's MAC —
+//! just primed the kernel's neighbor table, so a discovered TV's MAC —
 //! the Wake-on-LAN prerequisite in the LG vendor config — is one
 //! `RTM_GETNEIGH` dump away. Netlink rather than `/proc/net/arp`: the
 //! packaged unit runs `ProcSubset=pid`, which mounts a `/proc` without
 //! `/proc/net`, while `AF_NETLINK` is already open for the carrier
 //! monitor.
+
+// External-input profile: this module handles netlink neighbor messages
+// from the kernel, so indexing, arithmetic, string slicing and narrowing
+// casts must be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::net::IpAddr;
 
@@ -15,8 +25,8 @@ use netlink_packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, Neig
 use rtnetlink::new_connection;
 use tracing::warn;
 
-/// Look up the MAC address for `ip` from the kernel neighbour table
-/// (equivalent to `ip neighbour show`). `None` when the address doesn't
+/// Look up the MAC address for `ip` from the kernel neighbor table
+/// (equivalent to `ip neighbor show`). `None` when the address doesn't
 /// parse as an IP, isn't in the table (cross-VLAN, wrong subnet), or the
 /// entry has no resolved link-layer address yet — callers treat that as
 /// "ask the user for a MAC", not a hard failure.
@@ -25,27 +35,27 @@ pub(crate) async fn lookup_mac(ip: &str) -> Option<String> {
     let (connection, handle, _) = match new_connection() {
         Ok(c) => c,
         Err(e) => {
-            warn!(error = %e, "failed to create netlink connection for neighbour lookup");
+            warn!(error = %e, "failed to create netlink connection for neighbor lookup");
             return None;
         }
     };
     let conn_task = tokio::spawn(connection);
-    let result = neighbour_lookup(&handle, ip).await;
+    let result = neighbor_lookup(&handle, ip).await;
     conn_task.abort();
     result
 }
 
-async fn neighbour_lookup(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String> {
+async fn neighbor_lookup(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String> {
     let family = match ip {
         IpAddr::V4(_) => AddressFamily::Inet,
         IpAddr::V6(_) => AddressFamily::Inet6,
     };
-    let mut neighbours = handle
+    let mut neighbors = handle
         .neighbours()
         .get()
         .set_address_family(family)
         .execute();
-    while let Ok(Some(msg)) = neighbours.try_next().await {
+    while let Ok(Some(msg)) = neighbors.try_next().await {
         // Skip entries with no resolved link-layer address.
         match msg.header.state {
             NeighbourState::Reachable
@@ -97,7 +107,7 @@ mod tests {
 
     #[tokio::test]
     async fn absent_entries_resolve_to_none() {
-        // TEST-NET-3 (RFC 5737) is never in a real neighbour table.
+        // TEST-NET-3 (RFC 5737) is never in a real neighbor table.
         assert_eq!(lookup_mac("203.0.113.254").await, None);
     }
 }

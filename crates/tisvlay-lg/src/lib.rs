@@ -15,29 +15,27 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use tisvlay_lg::{LgBackend, LgConnector, LgConfig};
-//! use tisvlay_core::{TvConnector, Capabilities};
+//! ```no_run
+//! use tisvlay_core::{TvConnector, VendorConfig};
+//! use tisvlay_lg::{LgConnector, LgVendorConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> tisvlay_core::Result<()> {
-//!     let connector = LgConnector::new();
-//!     let config = LgConfig {
-//!         client_key: Some("your_client_key".to_string()),
-//!         default_input: None,
-//!     };
+//!     let mut config = LgVendorConfig::new("192.168.1.100");
+//!     config.mac = Some("AA:BB:CC:DD:EE:FF".into());
+//!     config.set_client_key("your_client_key");
+//!     let config = VendorConfig::from_typed(&config).expect("an LG config is a TOML table");
 //!
-//!     let mut connection = connector.connect(
-//!         "192.168.1.100",
-//!         Some("AA:BB:CC:DD:EE:FF"),
-//!         &config,
-//!     ).await?;
-//!
-//!     // Use the connection...
+//!     let mut connection = LgConnector::new().connect(&config).await?;
+//!     connection.set_volume(20).await?;
 //!     connection.close().await?;
 //!     Ok(())
 //! }
 //! ```
+
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
 
 mod backend;
 mod client;

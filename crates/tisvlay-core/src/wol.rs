@@ -2,6 +2,16 @@
 //!
 //! Sends "magic packets" to wake devices from standby mode.
 
+// External-input profile: this module handles MAC strings from config and
+// from the TV, so indexing, arithmetic, string slicing and narrowing casts
+// must be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use crate::error::{Error, Result};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -26,22 +36,21 @@ impl MacAddress {
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.replace(['-', ':'], "");
 
-        // Check the digits before slicing: the byte-indexed slices below
-        // would panic on a multi-byte character.
+        // Check the digits first: the pairs below are then ASCII, so
+        // decoding each one can't fail.
         if s.len() != 12 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::InvalidMacAddress(format!(
                 "Expected 12 hex digits, got {s:?}"
             )));
         }
 
-        let bytes: std::result::Result<Vec<u8>, _> = (0..6)
-            .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16))
-            .collect();
-
-        let bytes = bytes.map_err(|e| Error::InvalidMacAddress(e.to_string()))?;
-
         let mut mac = [0u8; 6];
-        mac.copy_from_slice(&bytes);
+        for (byte, pair) in mac.iter_mut().zip(s.as_bytes().as_chunks::<2>().0) {
+            let pair =
+                std::str::from_utf8(pair).map_err(|e| Error::InvalidMacAddress(e.to_string()))?;
+            *byte = u8::from_str_radix(pair, 16)
+                .map_err(|e| Error::InvalidMacAddress(e.to_string()))?;
+        }
         Ok(Self(mac))
     }
 
@@ -73,9 +82,8 @@ fn build_magic_packet(mac: &MacAddress) -> [u8; 102] {
     packet[..6].fill(0xFF);
 
     // 16 repetitions of MAC address
-    for i in 0..16 {
-        let offset = 6 + i * 6;
-        packet[offset..offset + 6].copy_from_slice(mac.bytes());
+    for repetition in packet[6..].as_chunks_mut::<6>().0 {
+        repetition.copy_from_slice(mac.bytes());
     }
 
     packet
@@ -108,12 +116,14 @@ impl Default for WakeOptions {
 
 impl WakeOptions {
     /// Use a specific broadcast address (e.g., subnet broadcast).
+    #[must_use]
     pub fn with_broadcast(mut self, addr: Ipv4Addr) -> Self {
         self.broadcast_addr = addr;
         self
     }
 
     /// Use a specific port.
+    #[must_use]
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
@@ -125,17 +135,17 @@ pub fn wake_with_options(mac: &MacAddress, options: WakeOptions) -> Result<()> {
     let packet = build_magic_packet(mac);
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-        .map_err(|e| Error::WakeOnLan(format!("Failed to create socket: {}", e)))?;
+        .map_err(|e| Error::WakeOnLan(format!("Failed to create socket: {e}")))?;
 
     socket
         .set_broadcast(true)
-        .map_err(|e| Error::WakeOnLan(format!("Failed to enable broadcast: {}", e)))?;
+        .map_err(|e| Error::WakeOnLan(format!("Failed to enable broadcast: {e}")))?;
 
     let dest = SocketAddr::V4(SocketAddrV4::new(options.broadcast_addr, options.port));
 
     socket
         .send_to(&packet, &dest.into())
-        .map_err(|e| Error::WakeOnLan(format!("Failed to send packet: {}", e)))?;
+        .map_err(|e| Error::WakeOnLan(format!("Failed to send packet: {e}")))?;
 
     tracing::debug!(
         mac = %mac,
@@ -313,6 +323,12 @@ mod tests {
             s in "[0-9A-Fa-f]{0,11}|[0-9A-Fa-f]{13,30}"
         ) {
             prop_assert!(MacAddress::parse(&s).is_err());
+        }
+        /// Any string, MACs from the TV included, parses or is refused
+        /// without panicking. Round-tripping is `mac_parse_display_roundtrip`'s.
+        #[test]
+        fn mac_parse_never_panics(s in any::<String>()) {
+            let _ = MacAddress::parse(&s);
         }
     }
 }

@@ -36,6 +36,7 @@ tracing = { workspace = true }
 parking_lot = { workspace = true, optional = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 # `test-util` gives `#[tokio::test(start_paused = true)]` so the
 # wake-and-connect verify loop's sleeps run in virtual time.
 tokio = { workspace = true, features = ["test-util"] }

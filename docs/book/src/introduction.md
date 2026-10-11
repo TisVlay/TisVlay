@@ -12,7 +12,7 @@
 ## ✨ Features
 - 📺 Control multiple TVs & projectors just like conventional displays
   - Power on/off with PC, Screen on/off with lock screen
-  - Easily adjust backlight, volume, ative input, and more
+  - Easily adjust backlight, volume, active input, and more
 - 🤖 Event driven automation driven via system and user events
   - System boot, reboot, shutdown, suspend, wake, DPMS
   - User lock/unlock, idle, remote session connect/disconnect

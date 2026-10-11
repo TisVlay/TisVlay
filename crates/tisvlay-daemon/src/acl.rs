@@ -22,6 +22,11 @@
 //! is exactly the reconcile-on-restart behavior the preserved runtime
 //! directory needs when a grant is turned off.
 
+#![expect(
+    unsafe_code,
+    reason = "libc xattr calls that read and write the socket's POSIX ACL, and getgrnam_r to resolve group names"
+)]
+
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::os::unix::fs::MetadataExt;
@@ -140,10 +145,10 @@ fn gid_of(name: &str) -> Option<u32> {
         let ret = unsafe {
             libc::getgrnam_r(
                 cname.as_ptr(),
-                &mut grp,
-                buf.as_mut_ptr() as *mut libc::c_char,
+                &raw mut grp,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
                 buflen,
-                &mut result,
+                &raw mut result,
             )
         };
         if ret == 0 {
@@ -238,8 +243,8 @@ fn setxattr(path: &Path, value: &[u8]) -> std::io::Result<()> {
     let ret = unsafe {
         libc::setxattr(
             cpath.as_ptr(),
-            ACL_XATTR.as_ptr() as *const libc::c_char,
-            value.as_ptr() as *const libc::c_void,
+            ACL_XATTR.as_ptr().cast::<libc::c_char>(),
+            value.as_ptr().cast::<libc::c_void>(),
             value.len(),
             0,
         )
@@ -255,7 +260,7 @@ fn removexattr(path: &Path) -> std::io::Result<()> {
     let cpath = cpath(path)?;
     // SAFETY: both pointers reference valid C strings for the duration.
     let ret =
-        unsafe { libc::removexattr(cpath.as_ptr(), ACL_XATTR.as_ptr() as *const libc::c_char) };
+        unsafe { libc::removexattr(cpath.as_ptr(), ACL_XATTR.as_ptr().cast::<libc::c_char>()) };
     if ret == 0 {
         Ok(())
     } else {
@@ -273,8 +278,8 @@ fn getxattr(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
         let n = unsafe {
             libc::getxattr(
                 cpath.as_ptr(),
-                ACL_XATTR.as_ptr() as *const libc::c_char,
-                buf.as_mut_ptr() as *mut libc::c_void,
+                ACL_XATTR.as_ptr().cast::<libc::c_char>(),
+                buf.as_mut_ptr().cast::<libc::c_void>(),
                 buf.len(),
             )
         };
@@ -402,18 +407,20 @@ mod tests {
     /// in-sync one as a no-op.
     #[test]
     fn kernel_accepts_and_round_trips_the_blob() {
-        let dir = std::env::temp_dir().join(format!("tisvlay-acl-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("acl-target");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acl-target");
         std::fs::write(&path, b"").unwrap();
         let uids = BTreeSet::from([12, 34]);
         let value = blob(0o660, Some(7), &uids);
         match setxattr(&path, &value) {
             Ok(()) => {}
-            // The Nix build sandbox seccomp-filters the setxattr family
-            // (ENOTSUP) to keep xattrs out of store paths — nothing to
-            // verify there; the layout stays covered by the blob tests.
-            Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => return,
+            // The environment refuses xattrs outright — nothing to verify
+            // there; the layout stays covered by the blob tests. The Nix
+            // build sandbox seccomp-filters the setxattr family (ENOTSUP)
+            // to keep xattrs out of store paths; a container seccomp
+            // policy may answer EPERM instead (we own the file, so EPERM
+            // is the environment, not the blob).
+            Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::EPERM)) => return,
             Err(e) => panic!("kernel rejected the ACL blob: {e}"),
         }
         assert_eq!(getxattr(&path).unwrap().as_deref(), Some(value.as_slice()));
@@ -426,6 +433,5 @@ mod tests {
         assert!(clear(&path));
         assert!(apply(&path, Some(7), &uids));
         assert!(!apply(&path, Some(7), &uids));
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

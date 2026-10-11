@@ -1,5 +1,5 @@
 # `slint-viewer` pinned to the same version as the workspace's `slint`
-# dependency (crates/tisvlay-gui/Cargo.toml → =1.18.1). nixpkgs ships
+# dependency (root Cargo.toml [workspace.dependencies] → =1.18.1). nixpkgs ships
 # slint-viewer 1.16.1 (behind slint-lsp's 1.17.0), and 1.17 is the first
 # release with `--check` / `--screenshot`, which the GUI QA workflow uses
 # for headless render + compile checks. Mirrors the nixpkgs recipe

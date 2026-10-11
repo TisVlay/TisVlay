@@ -4,7 +4,9 @@
 //! the reactor inbox.
 
 use std::sync::Arc;
-use tisvlay_core::{PairingError, PairingErrorCode, PairingSession, PairingState, TvConnector};
+use tisvlay_core::{
+    PairingError, PairingErrorCode, PairingSession, PairingState, TvConnector, VendorConfig,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -15,13 +17,16 @@ use crate::events::{BackendCmd, BackendEvent, InEvent, PairingUpdate};
 /// dial's connect and the pairing's `complete`.
 const LINK_MAC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a spawned task: one dial's inputs (the TV, its connector, config and policy flags) and the inbox it reports to, moved in once by its only caller"
+)]
 pub(crate) async fn connect_flow(
     tv: Uuid,
     dial: u64,
     pairing: bool,
     connector: Arc<dyn TvConnector>,
-    config: toml::Value,
+    config: VendorConfig,
     wake: bool,
     retry: tisvlay_core::RetryConfig,
     traits: crate::events::TransportInfo,
@@ -144,7 +149,7 @@ pub(crate) async fn connect_flow(
                     }
                     // Deferred rpc release: the caller hears back at device
                     // speed — the backpressure that keeps rapid absolute
-                    // writes (volume scroll) from queueing stale values.
+                    // writes (volume scroll) from queuing stale values.
                     if let Some(reply) = reply {
                         let _ = inbox.send(InEvent::Backend {
                             tv,

@@ -5,6 +5,16 @@
 //! active-source input switching (`Set Stream Path`). Everything else
 //! stays at the trait's `NotSupported` default.
 
+// External-input profile: this module handles CEC events from the TV, so
+// indexing, arithmetic, string slicing and narrowing casts must be checked
+// here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -243,7 +253,7 @@ impl TvConnection for CecConnection {
                             connected.store(false, Ordering::SeqCst);
                             break;
                         }
-                        consecutive_errors += 1;
+                        consecutive_errors = consecutive_errors.saturating_add(1);
                         if consecutive_errors >= MONITOR_MAX_ERRORS {
                             connected.store(false, Ordering::SeqCst);
                             break;
@@ -593,5 +603,18 @@ mod tests {
         let inputs = conn.list_inputs().await.expect("inputs");
         let ids: Vec<_> = inputs.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, ["HDMI_1", "HDMI_2", "HDMI_3", "HDMI_4"]);
+    }
+
+    /// Input ids arrive over the wire from any client; none may panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn parse_hdmi_input_never_panics(input_id in any::<String>()) {
+                let _ = parse_hdmi_input(&input_id);
+            }
+        }
     }
 }

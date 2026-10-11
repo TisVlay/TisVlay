@@ -82,8 +82,8 @@ fn parse_response(resp: &SsdpResponse) -> Option<DiscoveredTv> {
     let name = resp
         .extra_header("DLNADeviceName.lge.com")
         .and_then(|s| urlencoding::decode(s).ok())
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|| format!("LG TV ({})", ip));
+        .map(std::borrow::Cow::into_owned)
+        .unwrap_or_else(|| format!("LG TV ({ip})"));
 
     // LG's EDID PNPID is "GSM" — always fill it so downstream matching
     // (e.g. EDID cross-reference for display matching) has a
@@ -106,7 +106,7 @@ fn parse_response(resp: &SsdpResponse) -> Option<DiscoveredTv> {
         location: location.to_string(),
         // `source` tags how the TV was found (SSDP for LG's network scan)
         // so the wizard can show a discovery-source chip.
-        vendor_data: std::collections::HashMap::from([("source".to_string(), "ssdp".to_string())]),
+        vendor_data: HashMap::from([("source".to_string(), "ssdp".to_string())]),
     })
 }
 
@@ -138,7 +138,7 @@ fn parse_ip_from_url(location: &str) -> Option<String> {
     url::Url::parse(location)
         .ok()?
         .host_str()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
 }
 
 /// LG-specific network discovery — the [`TvDiscovery`] implementation.
@@ -157,7 +157,7 @@ impl LgDiscovery {
     /// (`0` lets the OS pick an ephemeral one). The socket binds lazily
     /// on the first `discover`. See `docs/firewall.md`.
     pub fn new(bind_port: u16) -> Self {
-        let targets = LG_TARGETS.iter().map(|t| t.to_string()).collect();
+        let targets = LG_TARGETS.iter().map(ToString::to_string).collect();
         Self {
             searcher: Arc::new(SharedSearcher::new(bind_port, targets)),
         }
@@ -214,7 +214,7 @@ mod tests {
             hardware_id: None,
             vendor: "lg".to_string(),
             location: String::new(),
-            vendor_data: std::collections::HashMap::new(),
+            vendor_data: HashMap::new(),
         };
         assert!(has_dlna_name(&with_dlna));
 

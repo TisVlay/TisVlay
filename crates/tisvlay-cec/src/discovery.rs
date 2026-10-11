@@ -165,7 +165,7 @@ fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
     tvs
 }
 
-/// The `N` in a `/dev/cecN` path, for numeric ordering. Unparseable paths
+/// The `N` in a `/dev/cecN` path, for numeric ordering. Unparsable paths
 /// sort last (they shouldn't occur — `is_cec_device` gates enumeration).
 fn cec_index(address: &str) -> u32 {
     address
@@ -216,7 +216,7 @@ mod tests {
         let addrs: Vec<String> = tvs
             .iter()
             .map(|t| {
-                std::path::Path::new(&t.address)
+                Path::new(&t.address)
                     .file_name()
                     .unwrap()
                     .to_string_lossy()

@@ -1,13 +1,13 @@
-//! GUI-facing client SDK: the root stack's `DaemonClient` /
-//! `SessionClient` / `TrayClient` / `StateWatcher` method surface,
-//! reimplemented over zenoh so the forked GUI ports with import swaps.
+//! Client SDK for the TisVlay services: [`DaemonClient`],
+//! [`SessionClient`] and [`TrayClient`], plus a [`StateWatcher`] merging
+//! their change events.
 //!
-//! Reads come from client-side mirrors (history subscribers over the
-//! cached keys — this stack's `GetManagedObjects` equivalent); writes
-//! are rpcs;
-//! change signals are the mirrors' own deltas. TV ids stay strings at
-//! this boundary, matching the root client the GUI was written against.
+//! Reads come from client-side mirrors: history subscribers over the
+//! services' cached keys. Writes are typed rpcs, and change events are
+//! the mirrors' own deltas. Failures are one [`Error`], named for what a
+//! caller can act on.
 
+mod error;
 mod mirror;
 
 use std::collections::HashMap;
@@ -15,18 +15,25 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tisvlay_core::{
     Capabilities, DesktopMapping, DiscoveredTv, HardwareId, PairingField, SystemProfileConfig,
     UserProfileConfig,
 };
 use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{
+    Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
+};
 use tisvlay_wire::{bootstrap, keys, rpc};
 
-pub use tisvlay_wire::caller::RpcError;
+pub use error::{BoxError, Error, Result, Service};
+pub use tisvlay_wire::error::ErrorCode;
 pub use tisvlay_wire::payload::{
-    LinkMacOutcome, LinkMacReport, RemoteSessionState, RemoteSource, RemoteSourceKind,
+    LinkMacOutcome, LinkMacReport, PairingProgress, RemoteSessionState, RemoteSource,
+    RemoteSourceKind,
+};
+pub use tisvlay_wire::rpc::{
+    NotificationSettings, NotificationSettingsPatch, PairStarted, TvConfigView, VendorEntry,
 };
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
@@ -37,54 +44,36 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use mirror::{SystemMirror, UserMirror};
 
-/// Body aliases: the wire carries the config structs verbatim (name +
-/// per-field options), so the D-Bus-era body wrappers collapse.
+/// Profile bodies: the wire carries the config structs verbatim (name
+/// plus per-field options).
 pub type SystemProfileBody = SystemProfileConfig;
 pub type UserProfileBody = UserProfileConfig;
-
-/// Pairing progress detail — field-compatible with the root core type,
-/// plus the attempt the sample belongs to.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PairingProgressDetail {
-    pub attempt: String,
-    pub message: String,
-    pub code: Option<String>,
-    pub path: Option<String>,
-    /// `complete` only: the device-reported link MAC and its outcome.
-    pub link_mac: Option<LinkMacReport>,
-}
-
-/// A started pairing session: the TV it enrolls and the attempt id its
-/// progress samples carry (the drain filter).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairStarted {
-    pub tv_id: String,
-    pub attempt: String,
-}
 
 /// Terminal pairing outcome, drained from the progress key.
 #[derive(Debug, Clone)]
 pub enum PairTerminal {
     Complete {
-        tv_id: String,
+        tv: Uuid,
         message: String,
+        /// The device-reported link MAC and what the daemon did with it.
         link_mac: Option<LinkMacReport>,
     },
     Failed {
-        tv_id: String,
-        detail: PairingProgressDetail,
+        tv: Uuid,
+        /// The `failed` sample: its message, reason `code` and `path`.
+        progress: PairingProgress,
     },
 }
 
-/// The first key in a change window — root parity for logging.
+/// The first key in a change window, for logging.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TvStateChange {
     pub key: String,
 }
 
-/// Change notifications the GUI's refresh dispatcher consumes. Variant
-/// set mirrors the root watcher, including the tray settings-service
-/// events (liveliness + settings republish).
+/// Change notifications from the clients' mirrors and liveliness, plus
+/// the tray settings service's events (liveliness and settings
+/// republish).
 #[derive(Debug, Clone)]
 pub enum StateEvent {
     DaemonStateChanged(TvStateChange),
@@ -106,28 +95,8 @@ pub enum StateEvent {
     FallbackPoll,
 }
 
-/// Root-compatible notification settings body — the partial-patch shape
-/// of the tray's get/update settings rpcs.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NotificationSettingsBody {
-    pub tv_connection: Option<bool>,
-    pub tv_pairing: Option<bool>,
-    pub tv_wake: Option<bool>,
-    pub daemon_offline: Option<bool>,
-}
-
-impl NotificationSettingsBody {
-    /// Factory defaults — every category at its default-on value.
-    pub fn defaults() -> Self {
-        let mut body = Self::default();
-        for category in NotificationCategory::ALL {
-            category.set(&mut body, category.default_enabled());
-        }
-        body
-    }
-}
-
-/// Root-compatible notification category vocabulary.
+/// The tray's notification categories, keyed by their settings field
+/// names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum NotificationCategory {
@@ -145,10 +114,6 @@ impl NotificationCategory {
         Self::DaemonOffline,
     ];
 
-    pub const fn bit(self) -> u8 {
-        1u8 << (self as u8)
-    }
-
     const fn key(self) -> &'static str {
         match self {
             Self::TvConnection => "tv_connection",
@@ -162,39 +127,31 @@ impl NotificationCategory {
         Self::ALL.into_iter().find(|category| category.key() == key)
     }
 
-    pub fn get(self, body: &NotificationSettingsBody) -> Option<bool> {
+    /// This category's switch in the full settings.
+    pub fn get(self, settings: &NotificationSettings) -> bool {
         match self {
-            Self::TvConnection => body.tv_connection,
-            Self::TvPairing => body.tv_pairing,
-            Self::TvWake => body.tv_wake,
-            Self::DaemonOffline => body.daemon_offline,
+            Self::TvConnection => settings.tv_connection,
+            Self::TvPairing => settings.tv_pairing,
+            Self::TvWake => settings.tv_wake,
+            Self::DaemonOffline => settings.daemon_offline,
         }
     }
 
-    pub fn set(self, body: &mut NotificationSettingsBody, value: bool) {
+    /// Set this category's switch in an update.
+    pub fn set(self, patch: &mut NotificationSettingsPatch, value: bool) {
         match self {
-            Self::TvConnection => body.tv_connection = Some(value),
-            Self::TvPairing => body.tv_pairing = Some(value),
-            Self::TvWake => body.tv_wake = Some(value),
-            Self::DaemonOffline => body.daemon_offline = Some(value),
-        }
-    }
-
-    pub const fn default_enabled(self) -> bool {
-        match self {
-            Self::TvConnection => true,
-            Self::TvPairing => true,
-            Self::TvWake => true,
-            Self::DaemonOffline => true,
+            Self::TvConnection => patch.tv_connection = Some(value),
+            Self::TvPairing => patch.tv_pairing = Some(value),
+            Self::TvWake => patch.tv_wake = Some(value),
+            Self::DaemonOffline => patch.daemon_offline = Some(value),
         }
     }
 }
 
-/// Everything `list_tvs` reports per TV — field set matches the root
-/// `TvInfo` so `state.rs` ports unchanged.
+/// Everything `list_tvs` reports per TV, projected from the mirror.
 #[derive(Debug, Clone, Default)]
 pub struct TvInfo {
-    pub uuid: String,
+    pub uuid: Uuid,
     pub name: String,
     pub vendor: String,
     pub brand: String,
@@ -205,7 +162,8 @@ pub struct TvInfo {
     /// Whether a remote session currently arms this TV — the read-only
     /// projection of the world's `remote_armed` gate.
     pub remote_armed: bool,
-    pub system_profile: String,
+    /// The assigned system profile; `None` uses the default.
+    pub system_profile: Option<Uuid>,
     pub primary_input: String,
     pub hardware_id: HardwareId,
     /// The vendor's primary identifying descriptor (LG: IP; CEC: device
@@ -246,9 +204,12 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Connect to the daemon socket and start mirroring.
     pub async fn connect(socket: &Path, site: &str) -> Result<Self> {
-        let session = zenoh::open(bootstrap::client_config_resilient(socket)?)
-            .await
-            .map_err(|e| anyhow!("connect to daemon socket {}: {e}", socket.display()))?;
+        let session = zenoh::open(
+            bootstrap::client_config_resilient(socket)
+                .map_err(|e| Error::transport("build the client config", e))?,
+        )
+        .await
+        .map_err(|e| Error::transport("connect to the daemon socket", e))?;
         let mirror = Arc::new(Mutex::new(SystemMirror::default()));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
 
@@ -257,7 +218,7 @@ impl DaemonClient {
                 .declare_subscriber(key.as_str())
                 .history(HistoryConfig::default().detect_late_publishers())
                 .await
-                .map_err(|e| anyhow!("subscribe {key}: {e}"))?;
+                .map_err(|e| Error::transport("subscribe to the daemon's keys", e))?;
             let mirror = Arc::clone(&mirror);
             let events = events.clone();
             let site = site.to_string();
@@ -275,7 +236,7 @@ impl DaemonClient {
             .declare_subscriber(keys::daemon_alive(site))
             .history(true)
             .await
-            .map_err(|e| anyhow!("subscribe daemon liveliness: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to the daemon's liveliness", e))?;
         {
             let mirror = Arc::clone(&mirror);
             let events = events.clone();
@@ -292,7 +253,7 @@ impl DaemonClient {
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session.clone())),
+            caller: Arc::new(Caller::new(session.clone(), site)),
             session,
             site: site.to_string(),
             mirror,
@@ -324,19 +285,13 @@ impl DaemonClient {
     }
 
     pub async fn version(&self) -> Result<String> {
-        let info = self
-            .fetch(&keys::manager_rpc(&self.site, "info"), Value::Null)
-            .await?;
-        Ok(info["version"].as_str().unwrap_or_default().to_string())
+        Ok(self.call::<manager::Info>(&(), &()).await?.version)
     }
 
     /// The daemon's state-store path (the zenoh stack has no config
     /// file; the store is what an admin would inspect).
     pub async fn config_path(&self) -> Result<String> {
-        let info = self
-            .fetch(&keys::manager_rpc(&self.site, "info"), Value::Null)
-            .await?;
-        Ok(info["state_path"].as_str().unwrap_or_default().to_string())
+        Ok(self.call::<manager::Info>(&(), &()).await?.state_path)
     }
 
     pub async fn reload_config(&self) -> Result<()> {
@@ -345,87 +300,56 @@ impl DaemonClient {
         Ok(())
     }
 
-    pub async fn get_supported_vendors(&self) -> Result<Vec<(String, String)>> {
-        let list = self.fetch(&keys::vendors(&self.site), Value::Null).await?;
-        Ok(list
-            .as_array()
-            .map(|vendors| {
-                vendors
-                    .iter()
-                    .filter_map(|vendor| {
-                        Some((
-                            vendor["id"].as_str()?.to_string(),
-                            vendor["name"].as_str()?.to_string(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default())
+    /// The daemon's vendor catalog.
+    pub async fn get_supported_vendors(&self) -> Result<Vec<VendorEntry>> {
+        self.call::<vendors::Catalog>(&(), &()).await
     }
 
     pub async fn get_pairing_schema(&self, vendor: &str) -> Result<Vec<PairingField>> {
-        let schema = self
-            .fetch(&keys::vendor_schema(&self.site, vendor), Value::Null)
-            .await?;
-        serde_json::from_value(schema).context("decode pairing schema")
+        self.call::<vendors::Schema>(vendor, &()).await
     }
 
     pub async fn pair_tv(
         &self,
         name: &str,
         vendor: &str,
-        config_json: &str,
+        config: serde_json::Map<String, Value>,
         managed: bool,
     ) -> Result<PairStarted> {
-        let config: Value = serde_json::from_str(config_json).context("pairing config JSON")?;
-        let body = serde_json::to_value(rpc::AddTv {
+        let request = rpc::AddTv {
             id: None,
             name: name.into(),
             vendor: vendor.into(),
             managed,
             config,
-        })?;
-        let ok = self
-            .call(&keys::manager_rpc(&self.site, "pair"), body)
-            .await?;
-        Ok(PairStarted {
-            tv_id: reply_str(&ok, "id")?,
-            attempt: reply_str(&ok, "attempt")?,
-        })
+        };
+        self.call::<manager::Pair>(&(), &request).await
     }
 
     /// Start a re-pair; returns the attempt id its progress samples carry.
-    pub async fn re_pair(&self, tv: &str) -> Result<String> {
-        let id = parse_tv(tv)?;
-        let ok = self
-            .call(&keys::tv_rpc(&self.site, &id, "re-pair"), Value::Null)
-            .await?;
-        reply_str(&ok, "attempt")
+    pub async fn re_pair(&self, tv: Uuid) -> Result<Uuid> {
+        let started = self.call::<tv::RePair>(&tv, &()).await?;
+        Ok(started.attempt)
     }
 
-    pub async fn cancel_pair(&self, tv: &str) -> Result<()> {
-        let id = parse_tv(tv)?;
-        self.call(
-            &keys::manager_rpc(&self.site, "cancel-pair"),
-            json!({ "id": id }),
-        )
-        .await
-        .map(|_| ())
+    pub async fn cancel_pair(&self, tv: Uuid) -> Result<()> {
+        self.call::<manager::CancelPair>(&(), &rpc::TvRef { id: tv })
+            .await
+            .map(|_| ())
     }
 
-    /// Bus-wide pairing progress (root shape): every session's samples
-    /// as `(tv_id, phase, detail)` tuples, hydrated from the deep
-    /// pairing caches so a re-opened wizard replays prior phases.
+    /// Every pairing session's progress samples as `(tv, sample)`,
+    /// hydrated from the deep pairing caches so a re-opened wizard
+    /// replays prior phases.
     pub async fn pairing_progress_stream(
         &self,
-    ) -> Result<impl futures_util::Stream<Item = (String, String, PairingProgressDetail)> + use<>>
-    {
+    ) -> Result<impl futures_util::Stream<Item = (Uuid, PairingProgress)> + use<>> {
         let sub = self
             .session
-            .declare_subscriber(format!("tisvlay/{}/pairing/*/progress", self.site))
+            .declare_subscriber(keys::pairing_progress_wild(&self.site))
             .history(HistoryConfig::default().detect_late_publishers())
             .await
-            .map_err(|e| anyhow!("subscribe pairing progress: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to pairing progress", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
         let site = self.site.clone();
         tokio::spawn(async move {
@@ -434,22 +358,13 @@ impl DaemonClient {
                 else {
                     continue;
                 };
-                let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes())
+                let Ok(progress) =
+                    serde_json::from_slice::<PairingProgress>(&sample.payload().to_bytes())
                 else {
+                    warn!(%tv, "undecodable pairing progress sample skipped");
                     continue;
                 };
-                let item = (
-                    tv.to_string(),
-                    progress["phase"].as_str().unwrap_or_default().to_string(),
-                    PairingProgressDetail {
-                        attempt: progress["attempt"].as_str().unwrap_or_default().to_string(),
-                        message: progress["message"].as_str().unwrap_or_default().to_string(),
-                        code: progress["code"].as_str().map(str::to_string),
-                        path: progress["path"].as_str().map(str::to_string),
-                        link_mac: serde_json::from_value(progress["link_mac"].clone()).ok(),
-                    },
-                );
-                if tx.send(item).is_err() {
+                if tx.send((tv, progress)).is_err() {
                     return;
                 }
             }
@@ -458,21 +373,20 @@ impl DaemonClient {
     }
 
     /// Drain a pairing-progress stream to `attempt`'s terminal phase on
-    /// `tv_id`, reporting its non-terminal phases through `on_progress`.
+    /// `tv`, reporting its non-terminal phases through `on_progress`.
     /// Other attempts' samples — earlier sessions replayed from the deep
     /// cache — are skipped, so a stale terminal can't end the drain.
     pub async fn drain_pair_to_terminal<S>(
         stream: S,
-        target_tv_id: &str,
-        attempt: &str,
+        tv: Uuid,
+        attempt: Uuid,
         on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
+        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
     {
         let mut stream = std::pin::pin!(stream);
-        Self::drain_pair_to_terminal_pinned(stream.as_mut(), target_tv_id, attempt, on_progress)
-            .await
+        Self::drain_pair_to_terminal_pinned(stream.as_mut(), tv, attempt, on_progress).await
     }
 
     /// Pinned-borrow workhorse for [`Self::drain_pair_to_terminal`] —
@@ -480,48 +394,48 @@ impl DaemonClient {
     /// for `awaiting_tv`, cancel, then drain the remainder).
     pub async fn drain_pair_to_terminal_pinned<S>(
         mut stream: std::pin::Pin<&mut S>,
-        target_tv_id: &str,
-        attempt: &str,
+        tv: Uuid,
+        attempt: Uuid,
         mut on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (String, String, PairingProgressDetail)>,
+        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
     {
         use futures_util::StreamExt;
-        while let Some((tv_id, phase, detail)) = stream.as_mut().next().await {
-            if tv_id != target_tv_id || detail.attempt != attempt {
+        while let Some((sample_tv, progress)) = stream.as_mut().next().await {
+            if sample_tv != tv || progress.attempt != attempt {
                 continue;
             }
-            match phase.as_str() {
+            match progress.phase.as_str() {
                 "complete" => {
                     return Ok(PairTerminal::Complete {
-                        tv_id,
-                        message: detail.message,
-                        link_mac: detail.link_mac,
+                        tv,
+                        message: progress.message,
+                        link_mac: progress.link_mac,
                     });
                 }
-                "failed" => return Ok(PairTerminal::Failed { tv_id, detail }),
-                _ => on_progress(&phase, &detail.message),
+                "failed" => return Ok(PairTerminal::Failed { tv, progress }),
+                _ => on_progress(&progress.phase, &progress.message),
             }
         }
-        bail!(
-            "PairingProgress stream ended before reaching a terminal phase for tv_id `{target_tv_id}`"
-        )
+        Err(Error::Transport {
+            what: "the pairing progress stream ended before a terminal phase",
+            source: None,
+        })
     }
 
-    /// One TV's `progress/power` phases (wake feedback), root item type.
+    /// One TV's `progress/power` phases (wake feedback).
     pub async fn power_cycle_progress_stream(
         &self,
-        tv: &str,
+        tv: Uuid,
     ) -> Result<impl futures_util::Stream<Item = tisvlay_core::PowerCyclePhase> + use<>> {
         use tisvlay_core::PowerCyclePhase as P;
-        let id = parse_tv(tv)?;
         let sub = self
             .session
-            .declare_subscriber(keys::tv_path(&self.site, &id, "progress/power"))
+            .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
             .history(HistoryConfig::default().detect_late_publishers())
             .await
-            .map_err(|e| anyhow!("subscribe power progress: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to power progress", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
@@ -548,69 +462,40 @@ impl DaemonClient {
         Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }
 
-    /// Open-ended discovery session. The wire scan runs its own cadence;
-    /// `timeout_ms` is accepted for root-signature parity but the
-    /// session lives until [`Self::stop_discovery`].
-    pub async fn start_discovery(&self, _timeout_ms: u32) -> Result<String> {
-        let body = serde_json::to_value(rpc::DiscoverStart { vendor: None })?;
-        let ok = self
-            .call(&keys::manager_rpc(&self.site, "discover-start"), body)
+    /// Open an open-ended discovery session; it scans on the daemon's
+    /// cadence until [`Self::stop_discovery`].
+    pub async fn start_discovery(&self) -> Result<Uuid> {
+        let started = self
+            .call::<manager::DiscoverStart>(&(), &rpc::DiscoverStart { vendor: None })
             .await?;
-        ok["session"]
-            .as_str()
-            .map(str::to_string)
-            .context("discover-start reply carries the session")
+        Ok(started.session)
     }
 
-    pub async fn stop_discovery(&self, session_id: &str) -> Result<()> {
-        let session: Uuid = session_id.parse().context("discovery session id")?;
-        self.call(
-            &keys::manager_rpc(&self.site, "discover-stop"),
-            json!({ "session": session }),
-        )
-        .await
-        .map(|_| ())
+    pub async fn stop_discovery(&self, session: Uuid) -> Result<()> {
+        self.call::<manager::DiscoverStop>(&(), &rpc::DiscoverStop { session })
+            .await
+            .map(|_| ())
     }
 
-    /// Bus-wide findings (root item shape): every discovery session.s
-    /// puts as `(id, name, address, hardware_id, vendor, vendor_data)`.
-    #[allow(clippy::type_complexity)]
+    /// Every discovery session's findings.
     pub async fn discovery_found_stream(
         &self,
-    ) -> Result<
-        impl futures_util::Stream<
-            Item = (
-                String,
-                String,
-                String,
-                HardwareId,
-                String,
-                HashMap<String, String>,
-            ),
-        > + use<>,
-    > {
+    ) -> Result<impl futures_util::Stream<Item = DiscoveredTv> + use<>> {
         let sub = self
             .session
-            .declare_subscriber(format!("tisvlay/{}/discovery/*/found/*", self.site))
+            .declare_subscriber(keys::discovery_found_wild(&self.site))
             .await
-            .map_err(|e| anyhow!("subscribe discovery findings: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to discovery findings", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
                 let Ok(found) =
                     serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes())
                 else {
+                    warn!("undecodable discovery finding skipped");
                     continue;
                 };
-                let item = (
-                    found.id,
-                    found.name,
-                    found.address,
-                    found.hardware_id.unwrap_or_default(),
-                    found.vendor,
-                    found.vendor_data,
-                );
-                if tx.send(item).is_err() {
+                if tx.send(found).is_err() {
                     return;
                 }
             }
@@ -619,157 +504,125 @@ impl DaemonClient {
     }
 
     /// Manual-entry hint: the daemon probes its ARP cache (after the
-    /// vendor primes it) so the wizard can show the device's MAC before
-    /// pairing. Pair-time enrichment daemon-side remains the safety net.
-    pub async fn enrich_manual_entry(
-        &self,
-        vendor: &str,
-        address: &str,
-    ) -> Result<HashMap<String, String>> {
-        let map = self
-            .fetch(
-                &keys::manager_rpc(&self.site, "enrich"),
-                json!({ "vendor": vendor, "ip": address }),
-            )
-            .await?;
-        Ok(map
-            .as_object()
-            .map(|object| {
-                object
-                    .iter()
-                    .filter_map(|(key, value)| value.as_str().map(|v| (key.clone(), v.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default())
-    }
-
-    pub async fn get_vendor_capabilities(&self, vendor: &str) -> Result<Capabilities> {
-        let list = self.fetch(&keys::vendors(&self.site), Value::Null).await?;
-        let names: Vec<String> = list
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|entry| entry["id"] == vendor)
-            .map(|entry| {
-                entry["capabilities"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|cap| cap.as_str().map(str::to_string))
-                    .collect()
-            })
-            .with_context(|| format!("no vendor '{vendor}'"))?;
-        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        Ok(Capabilities::from_strings(&refs))
-    }
-
-    pub async fn power_on(&self, tv: &str) -> Result<()> {
-        self.tv_call(tv, "power-on", Value::Null).await
-    }
-
-    pub async fn power_off(&self, tv: &str) -> Result<()> {
-        self.tv_call(tv, "power-off", Value::Null).await
-    }
-
-    pub async fn screen_on(&self, tv: &str) -> Result<()> {
-        self.tv_call(tv, "set-screen", json!({ "on": true })).await
-    }
-
-    pub async fn screen_off(&self, tv: &str) -> Result<()> {
-        self.tv_call(tv, "set-screen", json!({ "on": false })).await
-    }
-
-    pub async fn switch_input(&self, tv: &str, input: &str) -> Result<()> {
-        self.tv_call(tv, "switch-input", json!({ "input": input }))
-            .await
-    }
-
-    pub async fn set_volume(&self, tv: &str, level: u8) -> Result<()> {
-        self.tv_call(tv, "set-volume", json!({ "level": level }))
-            .await
-    }
-
-    pub async fn set_mute(&self, tv: &str, mute: bool) -> Result<()> {
-        self.tv_call(tv, "set-muted", json!({ "muted": mute }))
-            .await
-    }
-
-    pub async fn set_backlight(&self, tv: &str, level: u8) -> Result<()> {
-        self.tv_call(tv, "set-backlight", json!({ "level": level }))
-            .await
-    }
-
-    pub async fn set_name(&self, tv: &str, name: &str) -> Result<()> {
-        self.tv_call(tv, "set-name", json!({ "name": name })).await
-    }
-
-    pub async fn set_tv_managed(&self, tv: &str, managed: bool) -> Result<()> {
-        self.tv_call(tv, "set-managed", json!({ "managed": managed }))
-            .await
-    }
-
-    pub async fn set_tv_primary_input(&self, tv: &str, input: &str) -> Result<()> {
-        let input = (!input.is_empty()).then_some(input);
-        self.tv_call(tv, "set-primary-input", json!({ "input": input }))
-            .await
-    }
-
-    pub async fn set_tv_system_profile(&self, tv: &str, profile_uuid: &str) -> Result<()> {
-        let profile: Option<Uuid> = if profile_uuid.is_empty() {
-            None
-        } else {
-            Some(profile_uuid.parse().context("system profile uuid")?)
+    /// vendor primes it) for the device's MAC, so the wizard can show it
+    /// before pairing. Pair-time enrichment daemon-side remains the
+    /// safety net.
+    pub async fn enrich_manual_entry(&self, vendor: &str, address: &str) -> Result<Option<String>> {
+        let request = rpc::Enrich {
+            vendor: vendor.into(),
+            ip: address.into(),
         };
-        self.tv_call(tv, "set-system-profile", json!({ "profile": profile }))
+        Ok(self.call::<manager::Enrich>(&(), &request).await?.mac)
+    }
+
+    pub async fn power_on(&self, tv: Uuid) -> Result<()> {
+        self.tv_call::<tv::PowerOn>(tv, &rpc::PowerOn::default())
             .await
     }
 
-    pub async fn reconnect(&self, tv: &str) -> Result<()> {
-        self.tv_call(tv, "reconnect", Value::Null).await
+    pub async fn power_off(&self, tv: Uuid) -> Result<()> {
+        self.tv_call::<tv::PowerOff>(tv, &()).await
     }
 
-    pub async fn remove_tv(&self, tv: &str) -> Result<()> {
-        self.tv_call(tv, "remove", Value::Null).await
-    }
-
-    pub async fn get_tv_config(&self, tv: &str) -> Result<String> {
-        let config = self.get_tv_config_value(tv).await?;
-        serde_json::to_string(&config).context("encode config JSON")
-    }
-
-    async fn get_tv_config_value(&self, tv: &str) -> Result<Value> {
-        let id = parse_tv(tv)?;
-        self.fetch(&keys::tv_rpc(&self.site, &id, "get-config"), Value::Null)
+    pub async fn screen_on(&self, tv: Uuid) -> Result<()> {
+        self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(true))
             .await
     }
 
-    pub async fn update_tv_config(&self, tv: &str, patch_json: &str) -> Result<()> {
-        let id = parse_tv(tv)?;
-        let patch: Value = serde_json::from_str(patch_json).context("config patch JSON")?;
-        self.call(&keys::tv_rpc(&self.site, &id, "update-config"), patch)
+    pub async fn screen_off(&self, tv: Uuid) -> Result<()> {
+        self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(false))
+            .await
+    }
+
+    pub async fn switch_input(&self, tv: Uuid, input: &str) -> Result<()> {
+        self.tv_call::<tv::SwitchInput>(
+            tv,
+            &rpc::SwitchInput {
+                input: input.into(),
+            },
+        )
+        .await
+    }
+
+    pub async fn set_volume(&self, tv: Uuid, level: u8) -> Result<()> {
+        self.tv_call::<tv::SetVolume>(tv, &rpc::SetVolume { level })
+            .await
+    }
+
+    pub async fn set_muted(&self, tv: Uuid, muted: bool) -> Result<()> {
+        self.tv_call::<tv::SetMuted>(tv, &rpc::SetMuted { muted })
+            .await
+    }
+
+    pub async fn set_backlight(&self, tv: Uuid, level: u8) -> Result<()> {
+        self.tv_call::<tv::SetBacklight>(tv, &rpc::SetBacklight { level })
+            .await
+    }
+
+    pub async fn set_name(&self, tv: Uuid, name: &str) -> Result<()> {
+        self.tv_call::<tv::SetName>(tv, &rpc::SetName { name: name.into() })
+            .await
+    }
+
+    pub async fn set_tv_managed(&self, tv: Uuid, managed: bool) -> Result<()> {
+        self.tv_call::<tv::SetManaged>(tv, &rpc::SetManaged { managed })
+            .await
+    }
+
+    pub async fn set_tv_primary_input(&self, tv: Uuid, input: Option<&str>) -> Result<()> {
+        let input = input.map(str::to_string);
+        self.tv_call::<tv::SetPrimaryInput>(tv, &rpc::SetPrimaryInput { input })
+            .await
+    }
+
+    pub async fn set_tv_system_profile(&self, tv: Uuid, profile: Option<Uuid>) -> Result<()> {
+        self.tv_call::<tv::SetSystemProfile>(tv, &rpc::SetSystemProfile { profile })
+            .await
+    }
+
+    pub async fn reconnect(&self, tv: Uuid) -> Result<()> {
+        self.tv_call::<tv::Reconnect>(tv, &()).await
+    }
+
+    pub async fn remove_tv(&self, tv: Uuid) -> Result<()> {
+        self.tv_call::<tv::Remove>(tv, &()).await
+    }
+
+    /// The TV's config, schema-secret fields removed.
+    pub async fn get_tv_config(&self, tv: Uuid) -> Result<TvConfigView> {
+        self.call::<tv::GetConfig>(&tv, &()).await
+    }
+
+    /// Patch the TV's config: known top-level keys apply to its settings,
+    /// everything else merges into the vendor table.
+    pub async fn update_tv_config(
+        &self,
+        tv: Uuid,
+        patch: serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        self.call::<tv::UpdateConfig>(&tv, &rpc::UpdateConfig(patch))
             .await
             .map(|_| ())
     }
 
-    pub async fn get_system_profile(&self, profile: Uuid) -> Result<SystemProfileBody> {
+    /// A system profile's body, from the mirror.
+    pub async fn get_system_profile(&self, profile: Uuid) -> Option<SystemProfileBody> {
         self.mirror
             .lock()
             .expect("mirror lock")
             .profiles
             .get(&profile)
             .cloned()
-            .with_context(|| format!("no system profile {profile}"))
     }
 
-    pub async fn list_system_profile_bodies(&self) -> Result<HashMap<Uuid, SystemProfileBody>> {
-        Ok(self
-            .mirror
+    pub async fn list_system_profile_bodies(&self) -> HashMap<Uuid, SystemProfileBody> {
+        self.mirror
             .lock()
             .expect("mirror lock")
             .profiles
             .iter()
             .map(|(id, body)| (*id, body.clone()))
-            .collect())
+            .collect()
     }
 
     pub async fn create_system_profile(&self, name: &str) -> Result<Uuid> {
@@ -777,97 +630,70 @@ impl DaemonClient {
             name: name.into(),
             ..Default::default()
         };
-        let body = &body;
-        let ok = self
-            .call(
-                &keys::profile_rpc(&self.site, "create"),
-                json!({ "body": body }),
-            )
-            .await?;
-        ok["id"]
-            .as_str()
-            .and_then(|id| id.parse().ok())
-            .context("create reply carries the id")
+        let request = rpc::ProfileCreate { id: None, body };
+        Ok(self.call::<profile::Create>(&(), &request).await?.id)
     }
 
     pub async fn update_system_profile(
         &self,
         profile: Uuid,
-        body: &SystemProfileBody,
+        body: SystemProfileBody,
     ) -> Result<()> {
-        self.call(
-            &keys::profile_rpc(&self.site, "update"),
-            json!({ "id": profile, "body": body }),
-        )
-        .await
-        .map(|_| ())
+        let request = rpc::ProfileUpdate { id: profile, body };
+        self.call::<profile::Update>(&(), &request)
+            .await
+            .map(|_| ())
     }
 
     pub async fn delete_system_profile(&self, profile: Uuid) -> Result<()> {
-        self.call(
-            &keys::profile_rpc(&self.site, "delete"),
-            json!({ "id": profile }),
-        )
-        .await
-        .map(|_| ())
+        self.call::<profile::Delete>(&(), &rpc::TvRef { id: profile })
+            .await
+            .map(|_| ())
     }
 
     pub async fn duplicate_system_profile(&self, profile: Uuid, name: &str) -> Result<Uuid> {
-        let ok = self
-            .call(
-                &keys::profile_rpc(&self.site, "duplicate"),
-                json!({ "id": profile, "name": name }),
-            )
-            .await?;
-        ok["id"]
-            .as_str()
-            .and_then(|id| id.parse().ok())
-            .context("duplicate reply carries the id")
+        let request = rpc::ProfileDuplicate {
+            id: profile,
+            name: name.into(),
+        };
+        Ok(self.call::<profile::Duplicate>(&(), &request).await?.id)
     }
 
     /// The stock mapping as system-profile field values (JSON map).
     pub async fn get_resolved_system_profile_defaults(&self) -> Result<SystemProfileBody> {
-        let mut defaults = self
-            .fetch(&keys::profile_rpc(&self.site, "defaults"), Value::Null)
-            .await?;
-        defaults["name"] = Value::String("default".into());
-        serde_json::from_value(defaults).context("decode resolved system defaults")
+        let mut defaults = self.call::<profile::Defaults>(&(), &()).await?;
+        defaults.name = "default".into();
+        Ok(defaults)
     }
 
     /// One TV's resolved mapping (assigned profile over stock).
-    pub async fn get_effective_system_profile(&self, tv: &str) -> Result<Value> {
-        let id = parse_tv(tv)?;
-        self.fetch(
-            &keys::profile_rpc(&self.site, "effective"),
-            json!({ "id": id }),
-        )
-        .await
+    pub async fn get_effective_system_profile(&self, tv: Uuid) -> Result<SystemProfileConfig> {
+        self.call::<profile::Effective>(&(), &rpc::TvRef { id: tv })
+            .await
     }
 
     fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
         self.events.subscribe()
     }
 
-    async fn tv_call(&self, tv: &str, verb: &str, body: Value) -> Result<()> {
-        let id = parse_tv(tv)?;
-        self.call(&keys::tv_rpc(&self.site, &id, verb), body)
-            .await
-            .map(|_| ())
+    /// A per-TV rpc that only acknowledges.
+    async fn tv_call<R: Unary<Target = Uuid, Response = rpc::Ack>>(
+        &self,
+        tv: Uuid,
+        request: &R::Request,
+    ) -> Result<()> {
+        self.call::<R>(&tv, request).await.map(|_| ())
     }
 
-    async fn call(&self, key: &str, body: Value) -> Result<Value> {
+    async fn call<R: Unary>(
+        &self,
+        target: &R::Target,
+        request: &R::Request,
+    ) -> Result<R::Response> {
         self.caller
-            .call(key, body)
+            .call::<R>(target, request)
             .await
-            .map_err(anyhow::Error::new)
-    }
-
-    /// Idempotent read: rides the caller's re-issue-once path.
-    async fn fetch(&self, key: &str, body: Value) -> Result<Value> {
-        self.caller
-            .fetch(key, body)
-            .await
-            .map_err(anyhow::Error::new)
+            .map_err(|e| Error::from_rpc(Service::Daemon, e))
     }
 }
 
@@ -875,23 +701,25 @@ impl DaemonClient {
 #[derive(Debug, Clone)]
 pub struct SessionClient {
     caller: Arc<Caller>,
-    site: String,
     mirror: Arc<Mutex<UserMirror>>,
     events: broadcast::Sender<StateEvent>,
 }
 
 impl SessionClient {
     pub async fn connect(socket: &Path, site: &str) -> Result<Self> {
-        let session = zenoh::open(bootstrap::client_config_resilient(socket)?)
-            .await
-            .map_err(|e| anyhow!("connect to session socket {}: {e}", socket.display()))?;
+        let session = zenoh::open(
+            bootstrap::client_config_resilient(socket)
+                .map_err(|e| Error::transport("build the client config", e))?,
+        )
+        .await
+        .map_err(|e| Error::transport("connect to the session socket", e))?;
         let mirror = Arc::new(Mutex::new(UserMirror::default()));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let sub = session
             .declare_subscriber(keys::user_all(site))
             .history(HistoryConfig::default().detect_late_publishers())
             .await
-            .map_err(|e| anyhow!("subscribe user keys: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to the user keys", e))?;
         {
             let mirror = Arc::clone(&mirror);
             let events = events.clone();
@@ -910,7 +738,7 @@ impl SessionClient {
             .declare_subscriber(keys::user_alive_session(site))
             .history(true)
             .await
-            .map_err(|e| anyhow!("subscribe session liveliness: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to the session's liveliness", e))?;
         {
             let mirror = Arc::clone(&mirror);
             let events = events.clone();
@@ -927,8 +755,7 @@ impl SessionClient {
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session)),
-            site: site.to_string(),
+            caller: Arc::new(Caller::new(session, site)),
             mirror,
             events,
         })
@@ -939,17 +766,11 @@ impl SessionClient {
     }
 
     pub async fn version(&self) -> Result<String> {
-        let info = self
-            .fetch(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
-            .await?;
-        Ok(info["version"].as_str().unwrap_or_default().to_string())
+        Ok(self.call::<user_profile::Info>(&(), &()).await?.version)
     }
 
     pub async fn config_path(&self) -> Result<String> {
-        let info = self
-            .fetch(&keys::user_profile_rpc(&self.site, "info"), Value::Null)
-            .await?;
-        Ok(info["state_path"].as_str().unwrap_or_default().to_string())
+        Ok(self.call::<user_profile::Info>(&(), &()).await?.state_path)
     }
 
     pub async fn reload_config(&self) -> Result<()> {
@@ -957,54 +778,41 @@ impl SessionClient {
         Ok(())
     }
 
-    /// The TV's assigned user-profile uuid, empty string when unset —
-    /// root wire shape.
-    pub async fn get_tv_user_profile(&self, tv: &str) -> Result<String> {
-        let id = parse_tv(tv)?;
-        Ok(self
-            .mirror
+    /// The TV's assigned user-profile uuid, from the mirror; `None` when
+    /// it uses the default.
+    pub async fn get_tv_user_profile(&self, tv: Uuid) -> Option<Uuid> {
+        self.mirror
             .lock()
             .expect("mirror lock")
             .assignments
-            .get(&id)
-            .map(Uuid::to_string)
-            .unwrap_or_default())
+            .get(&tv)
+            .copied()
     }
 
-    pub async fn set_tv_user_profile(&self, tv: &str, profile: &str) -> Result<()> {
-        let tv = parse_tv(tv)?;
-        let profile: Option<Uuid> = if profile.is_empty() {
-            None
-        } else {
-            Some(profile.parse().context("user profile uuid")?)
-        };
-        self.call(
-            &keys::user_profile_rpc(&self.site, "assign"),
-            serde_json::to_value(rpc::UserAssign { tv, profile })?,
-        )
-        .await
-        .map(|_| ())
+    pub async fn set_tv_user_profile(&self, tv: Uuid, profile: Option<Uuid>) -> Result<()> {
+        self.call::<user_profile::Assign>(&(), &rpc::UserAssign { tv, profile })
+            .await
+            .map(|_| ())
     }
 
-    pub async fn list_user_profile_bodies(&self) -> Result<HashMap<Uuid, UserProfileBody>> {
-        Ok(self
-            .mirror
+    pub async fn list_user_profile_bodies(&self) -> HashMap<Uuid, UserProfileBody> {
+        self.mirror
             .lock()
             .expect("mirror lock")
             .profiles
             .iter()
             .map(|(id, body)| (*id, body.clone()))
-            .collect())
+            .collect()
     }
 
-    pub async fn get_user_profile(&self, profile: Uuid) -> Result<UserProfileBody> {
+    /// A user profile's body, from the mirror.
+    pub async fn get_user_profile(&self, profile: Uuid) -> Option<UserProfileBody> {
         self.mirror
             .lock()
             .expect("mirror lock")
             .profiles
             .get(&profile)
             .cloned()
-            .with_context(|| format!("no user profile {profile}"))
     }
 
     pub async fn create_user_profile(&self, name: &str) -> Result<Uuid> {
@@ -1012,78 +820,58 @@ impl SessionClient {
             name: name.into(),
             ..Default::default()
         };
-        let body = &body;
-        let ok = self
-            .call(
-                &keys::user_profile_rpc(&self.site, "create"),
-                json!({ "body": body }),
-            )
-            .await?;
-        ok["id"]
-            .as_str()
-            .and_then(|id| id.parse().ok())
-            .context("create reply carries the id")
+        let request = rpc::UserProfileCreate { id: None, body };
+        Ok(self.call::<user_profile::Create>(&(), &request).await?.id)
     }
 
-    pub async fn update_user_profile(&self, profile: Uuid, body: &UserProfileBody) -> Result<()> {
-        self.call(
-            &keys::user_profile_rpc(&self.site, "update"),
-            json!({ "id": profile, "body": body }),
-        )
-        .await
-        .map(|_| ())
+    pub async fn update_user_profile(&self, profile: Uuid, body: UserProfileBody) -> Result<()> {
+        let request = rpc::UserProfileUpdate { id: profile, body };
+        self.call::<user_profile::Update>(&(), &request)
+            .await
+            .map(|_| ())
     }
 
     pub async fn delete_user_profile(&self, profile: Uuid) -> Result<()> {
-        self.call(
-            &keys::user_profile_rpc(&self.site, "delete"),
-            json!({ "id": profile }),
-        )
-        .await
-        .map(|_| ())
+        self.call::<user_profile::Delete>(&(), &rpc::TvRef { id: profile })
+            .await
+            .map(|_| ())
     }
 
     pub async fn duplicate_user_profile(&self, profile: Uuid, name: &str) -> Result<Uuid> {
-        let ok = self
-            .call(
-                &keys::user_profile_rpc(&self.site, "duplicate"),
-                json!({ "id": profile, "name": name }),
-            )
-            .await?;
-        ok["id"]
-            .as_str()
-            .and_then(|id| id.parse().ok())
-            .context("duplicate reply carries the id")
+        let request = rpc::ProfileDuplicate {
+            id: profile,
+            name: name.into(),
+        };
+        Ok(self
+            .call::<user_profile::Duplicate>(&(), &request)
+            .await?
+            .id)
     }
 
     pub async fn get_resolved_user_profile_defaults(&self) -> Result<UserProfileBody> {
-        let mut defaults = self
-            .fetch(&keys::user_profile_rpc(&self.site, "defaults"), Value::Null)
-            .await?;
-        defaults["name"] = Value::String("default".into());
-        serde_json::from_value(defaults).context("decode resolved user defaults")
+        let mut defaults = self.call::<user_profile::Defaults>(&(), &()).await?;
+        defaults.name = "default".into();
+        Ok(defaults)
     }
 
     /// Arm or disarm a manual remote-session source through the session
     /// service's verb rpc — the same escape hatch the CLI and the
     /// Sunshine `global_prep_cmd` hook drive.
     pub async fn remote_session_set(&self, source: &str, active: bool) -> Result<()> {
-        self.call(
-            &keys::user_remote_rpc(&self.site, "set"),
-            json!({ "source": source, "active": active }),
-        )
-        .await
-        .map(|_| ())
+        let request = rpc::RemoteSet {
+            source: Some(source.into()),
+            active,
+        };
+        self.call::<user_remote::Set>(&(), &request)
+            .await
+            .map(|_| ())
     }
 
     /// The current remote-session fact: live sources plus the armed
     /// projection. Read from the session service directly (the cached
     /// mirror slot is the passive view).
     pub async fn remote_session_status(&self) -> Result<RemoteSessionState> {
-        let state = self
-            .fetch(&keys::user_remote_rpc(&self.site, "status"), Value::Null)
-            .await?;
-        serde_json::from_value(state).context("decode remote-session status")
+        self.call::<user_remote::Status>(&(), &()).await
     }
 
     /// The remote-session fact as last mirrored from the cached fact key
@@ -1101,19 +889,15 @@ impl SessionClient {
         self.events.subscribe()
     }
 
-    async fn call(&self, key: &str, body: Value) -> Result<Value> {
+    async fn call<R: Unary>(
+        &self,
+        target: &R::Target,
+        request: &R::Request,
+    ) -> Result<R::Response> {
         self.caller
-            .call(key, body)
+            .call::<R>(target, request)
             .await
-            .map_err(anyhow::Error::new)
-    }
-
-    /// Idempotent read: rides the caller's re-issue-once path.
-    async fn fetch(&self, key: &str, body: Value) -> Result<Value> {
-        self.caller
-            .fetch(key, body)
-            .await
-            .map_err(anyhow::Error::new)
+            .map_err(|e| Error::from_rpc(Service::Session, e))
     }
 }
 
@@ -1123,16 +907,18 @@ impl SessionClient {
 #[derive(Debug, Clone)]
 pub struct TrayClient {
     caller: Arc<Caller>,
-    site: String,
     alive: Arc<Mutex<bool>>,
     events: broadcast::Sender<StateEvent>,
 }
 
 impl TrayClient {
     pub async fn connect(socket: &Path, site: &str) -> Result<Self> {
-        let session = zenoh::open(bootstrap::client_config_resilient(socket)?)
-            .await
-            .map_err(|e| anyhow!("connect to tray socket {}: {e}", socket.display()))?;
+        let session = zenoh::open(
+            bootstrap::client_config_resilient(socket)
+                .map_err(|e| Error::transport("build the client config", e))?,
+        )
+        .await
+        .map_err(|e| Error::transport("connect to the tray socket", e))?;
         let alive = Arc::new(Mutex::new(false));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let liveliness = session
@@ -1140,7 +926,7 @@ impl TrayClient {
             .declare_subscriber(keys::user_alive_tray(site))
             .history(true)
             .await
-            .map_err(|e| anyhow!("subscribe tray liveliness: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to the tray's liveliness", e))?;
         {
             let alive = Arc::clone(&alive);
             let events = events.clone();
@@ -1160,7 +946,7 @@ impl TrayClient {
             .declare_subscriber(keys::user_tray_settings(site))
             .history(HistoryConfig::default().detect_late_publishers())
             .await
-            .map_err(|e| anyhow!("subscribe tray settings: {e}"))?;
+            .map_err(|e| Error::transport("subscribe to the tray settings", e))?;
         {
             let events = events.clone();
             tokio::spawn(async move {
@@ -1170,8 +956,7 @@ impl TrayClient {
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session)),
-            site: site.to_string(),
+            caller: Arc::new(Caller::new(session, site)),
             alive,
             events,
         })
@@ -1182,86 +967,54 @@ impl TrayClient {
     }
 
     pub async fn version(&self) -> Result<String> {
-        let info = self.fetch("info", Value::Null).await?;
-        Ok(info["version"].as_str().unwrap_or_default().to_string())
+        Ok(self.call::<user_tray::Info>(&()).await?.version)
     }
 
     pub async fn config_path(&self) -> Result<String> {
-        let info = self.fetch("info", Value::Null).await?;
-        Ok(info["state_path"].as_str().unwrap_or_default().to_string())
+        Ok(self.call::<user_tray::Info>(&()).await?.state_path)
     }
 
     pub async fn reload_config(&self) -> Result<()> {
         Ok(())
     }
 
-    pub async fn notification_settings(&self) -> Result<NotificationSettingsBody> {
-        let settings = self.fetch("get", Value::Null).await?;
-        Ok(NotificationSettingsBody {
-            tv_connection: settings["tv_connection"].as_bool(),
-            tv_pairing: settings["tv_pairing"].as_bool(),
-            tv_wake: settings["tv_wake"].as_bool(),
-            daemon_offline: settings["daemon_offline"].as_bool(),
-        })
+    pub async fn notification_settings(&self) -> Result<NotificationSettings> {
+        self.call::<user_tray::Get>(&()).await
     }
 
-    pub async fn update_notification_settings(&self, body: NotificationSettingsBody) -> Result<()> {
-        self.call("update", json!(body_map(&body)))
-            .await
-            .map(|_| ())
+    pub async fn update_notification_settings(
+        &self,
+        patch: NotificationSettingsPatch,
+    ) -> Result<()> {
+        self.call::<user_tray::Update>(&patch).await.map(|_| ())
     }
 
     pub async fn send_test_notification(&self) -> Result<()> {
-        self.call("test", Value::Null).await.map(|_| ())
+        self.call::<user_tray::Test>(&()).await.map(|_| ())
     }
 
     fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
         self.events.subscribe()
     }
 
-    async fn call(&self, verb: &str, body: Value) -> Result<Value> {
+    async fn call<R: Unary<Target = ()>>(&self, request: &R::Request) -> Result<R::Response> {
         self.caller
-            .call(&keys::user_tray_rpc(&self.site, verb), body)
+            .call::<R>(&(), request)
             .await
-            .map_err(anyhow::Error::new)
-    }
-
-    /// Idempotent read: rides the caller's re-issue-once path.
-    async fn fetch(&self, verb: &str, body: Value) -> Result<Value> {
-        self.caller
-            .fetch(&keys::user_tray_rpc(&self.site, verb), body)
-            .await
-            .map_err(anyhow::Error::new)
+            .map_err(|e| Error::from_rpc(Service::Tray, e))
     }
 }
 
-/// Partial update map: only the `Some` switches ride the patch.
-fn body_map(body: &NotificationSettingsBody) -> serde_json::Map<String, Value> {
-    let mut map = serde_json::Map::new();
-    let mut put = |key: &str, value: Option<bool>| {
-        if let Some(value) = value {
-            map.insert(key.into(), Value::Bool(value));
-        }
-    };
-    put("tv_connection", body.tv_connection);
-    put("tv_pairing", body.tv_pairing);
-    put("tv_wake", body.tv_wake);
-    put("daemon_offline", body.daemon_offline);
-    map
-}
-
-/// Root-compatible watcher config; the zenoh watcher forwards mirror
-/// deltas directly, so only the fallback interval is load-bearing.
+/// Watcher tuning: mirror deltas forward directly, so the one knob is
+/// the fallback poll interval.
 #[derive(Debug, Clone)]
 pub struct StateWatcherConfig {
-    pub signal_debounce: Duration,
     pub fallback_poll_interval: Duration,
 }
 
 impl Default for StateWatcherConfig {
     fn default() -> Self {
         Self {
-            signal_debounce: Duration::from_millis(100),
             fallback_poll_interval: Duration::from_secs(300),
         }
     }
@@ -1358,18 +1111,6 @@ fn forward(mut rx: broadcast::Receiver<StateEvent>, tx: mpsc::UnboundedSender<St
     });
 }
 
-fn parse_tv(tv: &str) -> Result<Uuid> {
-    tv.parse().with_context(|| format!("invalid TV id '{tv}'"))
-}
-
-/// A required string field of an rpc reply.
-fn reply_str(reply: &Value, field: &str) -> Result<String> {
-    reply[field]
-        .as_str()
-        .map(str::to_string)
-        .with_context(|| format!("reply carries no `{field}`"))
-}
-
 mod mirror_row {
     //! `TvRow` → `TvInfo` projection, kept next to the type it fills.
 
@@ -1387,8 +1128,8 @@ mod mirror_row {
         vendor: Option<payload::VendorRows>,
     }
 
-    impl From<&crate::mirror::TvRow> for Row {
-        fn from(row: &crate::mirror::TvRow) -> Self {
+    impl From<&mirror::TvRow> for Row {
+        fn from(row: &mirror::TvRow) -> Self {
             Self {
                 power: row.power.clone(),
                 volume: row.volume.clone(),
@@ -1420,7 +1161,7 @@ mod mirror_row {
                 })
                 .unwrap_or_else(|| "unknown".into());
             TvInfo {
-                uuid: id.to_string(),
+                uuid: id,
                 name: identity.name.clone(),
                 vendor: identity.vendor.clone(),
                 brand: identity
@@ -1432,11 +1173,8 @@ mod mirror_row {
                 managed: meta.managed,
                 automated: meta.automated,
                 remote_armed: meta.remote_armed,
-                system_profile: meta
-                    .system_profile
-                    .map(|p| p.to_string())
-                    .unwrap_or_default(),
-                primary_input: meta.primary_input.clone().unwrap_or_default(),
+                system_profile: meta.system_profile,
+                primary_input: meta.primary_input.unwrap_or_default(),
                 hardware_id: HardwareId {
                     manufacturer: identity.make.clone(),
                     model: identity.model.clone(),
@@ -1487,14 +1225,20 @@ mod mirror_row {
 mod tests {
     use super::*;
 
-    fn sample(tv: &str, phase: &str, attempt: &str) -> (String, String, PairingProgressDetail) {
+    fn uuid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn sample(tv: Uuid, phase: &str, attempt: Uuid) -> (Uuid, PairingProgress) {
         (
-            tv.into(),
-            phase.into(),
-            PairingProgressDetail {
-                attempt: attempt.into(),
+            tv,
+            PairingProgress {
+                attempt,
+                phase: phase.into(),
                 message: format!("{phase} ({attempt})"),
-                ..Default::default()
+                code: None,
+                path: None,
+                link_mac: None,
             },
         )
     }
@@ -1503,21 +1247,23 @@ mod tests {
     /// terminal; the drain must not mistake it for the current attempt's.
     #[tokio::test]
     async fn drain_skips_terminals_from_other_attempts() {
+        let (tv, other, old, new) = (uuid(1), uuid(2), uuid(10), uuid(11));
         let stream = futures_util::stream::iter([
-            sample("tv", "complete", "old"),
-            sample("other", "complete", "new"),
-            sample("tv", "awaiting_tv", "new"),
-            sample("tv", "failed", "old"),
-            sample("tv", "complete", "new"),
+            sample(tv, "complete", old),
+            sample(other, "complete", new),
+            sample(tv, "awaiting_tv", new),
+            sample(tv, "failed", old),
+            sample(tv, "complete", new),
         ]);
         let mut phases = Vec::new();
-        let terminal = DaemonClient::drain_pair_to_terminal(stream, "tv", "new", |phase, _| {
+        let terminal = DaemonClient::drain_pair_to_terminal(stream, tv, new, |phase, _| {
             phases.push(phase.to_string());
         })
         .await
         .unwrap();
+        let expected = format!("complete ({new})");
         assert!(
-            matches!(&terminal, PairTerminal::Complete { tv_id, message, .. } if tv_id == "tv" && message == "complete (new)"),
+            matches!(&terminal, PairTerminal::Complete { tv: t, message, .. } if *t == tv && *message == expected),
             "{terminal:?}"
         );
         assert_eq!(phases, ["awaiting_tv"]);
@@ -1532,10 +1278,10 @@ mod tests {
                 configured: "64:E4:A5:6C:AB:B4".into(),
             },
         };
-        let (tv, phase, mut detail) = sample("tv", "complete", "a");
-        detail.link_mac = Some(report.clone());
-        let stream = futures_util::stream::iter([(tv, phase, detail)]);
-        let terminal = DaemonClient::drain_pair_to_terminal(stream, "tv", "a", |_, _| {})
+        let (tv, mut progress) = sample(uuid(1), "complete", uuid(10));
+        progress.link_mac = Some(report.clone());
+        let stream = futures_util::stream::iter([(tv, progress)]);
+        let terminal = DaemonClient::drain_pair_to_terminal(stream, tv, uuid(10), |_, _| {})
             .await
             .unwrap();
         assert!(

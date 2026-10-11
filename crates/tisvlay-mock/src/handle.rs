@@ -10,16 +10,15 @@
 //! everything the mock backend does: publishing discoverable TVs,
 //! approving or rejecting pairing sessions, simulating timeouts.
 //!
-//! Handles are created by [`new_test_parts()`](crate::new_test_parts),
-//! typically via `tisvlay_backends::create_test_registry()` which wraps
-//! it in a ready-to-use `BackendRegistry`. Each test gets its own
-//! `(registry, handle)` pair sharing a single `Arc<Mutex<MockState>>`,
-//! so tests are fully parallel by construction — nothing is global.
+//! Handles are created by [`new_test_parts()`](crate::new_test_parts).
+//! Each test gets its own connector/discovery/handle triple sharing a
+//! single `Arc<Mutex<MockState>>`, so tests are fully parallel by
+//! construction — nothing is global.
 //!
-//! Production builds never surface the handle: [`new_production_parts()`]
-//! (which is what `create_registry()` uses) constructs a mock with a
-//! fresh state and drops its end of the handle immediately, so there
-//! is no way for production code to accidentally drive test hooks.
+//! Production builds never surface the handle: the daemon registers the
+//! mock from [`new_production_parts()`], which constructs a fresh state
+//! and never creates a handle, so there is no way for production code
+//! to accidentally drive test hooks.
 //!
 //! [`new_production_parts()`]: crate::new_production_parts
 //!
@@ -53,7 +52,8 @@ use crate::state::MockState;
 
 /// Test-driven control surface for the mock backend.
 ///
-/// See [the module documentation](crate::handle) for an overview.
+/// Created only by [`new_test_parts()`](crate::new_test_parts); production
+/// code never gets one, so it cannot drive test hooks.
 #[derive(Clone, Debug)]
 pub struct MockHandle {
     state: Arc<Mutex<MockState>>,
@@ -61,7 +61,7 @@ pub struct MockHandle {
 
 impl MockHandle {
     /// Wrap a shared state pointer. Only called by
-    /// [`create_test_registry`](crate::create_test_registry).
+    /// [`new_test_parts`](crate::new_test_parts).
     pub(crate) fn new(state: Arc<Mutex<MockState>>) -> Self {
         Self { state }
     }
@@ -368,10 +368,10 @@ mod tests {
     use tisvlay_core::TvConnector;
 
     /// Build a minimal mock vendor-config table for the given address.
-    fn vendor_config(address: &str) -> toml::Value {
-        let mut table = toml::value::Table::new();
-        table.insert("address".into(), toml::Value::String(address.to_string()));
-        toml::Value::Table(table)
+    fn vendor_config(address: &str) -> tisvlay_core::VendorConfig {
+        let mut config = tisvlay_core::VendorConfig::new();
+        config.insert("address", address);
+        config
     }
 
     /// `set_initial_power_state_override` applies at construct-time
@@ -497,13 +497,9 @@ mod tests {
         );
 
         // Poll-only config: subscription refused, but get_state works.
-        let mut table = toml::value::Table::new();
-        table.insert(
-            "address".into(),
-            toml::Value::String("mock://poll".to_string()),
-        );
-        table.insert("disable_subscription".into(), toml::Value::Boolean(true));
-        let cfg = toml::Value::Table(table);
+        let mut cfg = tisvlay_core::VendorConfig::new();
+        cfg.insert("address", "mock://poll");
+        cfg.insert("disable_subscription", true);
 
         let mut poll = connector.connect(&cfg).await.expect("connect poll");
         let err = poll

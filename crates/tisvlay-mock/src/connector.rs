@@ -2,7 +2,8 @@
 //!
 //! The connector shares a `MockState` with [`MockHandle`](crate::MockHandle)
 //! so test code can drive discovery and pairing outcomes out-of-band.
-//! Production builds use [`MockConnector::new()`], which creates a
+//! Production builds get theirs from
+//! [`new_production_parts()`](crate::new_production_parts), which creates a
 //! fresh state with no handle; the mock is registered but has an
 //! empty network and no pre-seeded pairing outcomes.
 
@@ -11,7 +12,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tisvlay_core::{
     Credentials, Error, PairingCommand, PairingError, PairingSession, PairingState, Result,
-    Transport, TvConnection, TvConnector,
+    Transport, TvConnection, TvConnector, VendorConfig,
 };
 use tracing::instrument;
 
@@ -22,7 +23,7 @@ use crate::state::MockState;
 
 /// Factory for mock TV connections.
 ///
-/// Holds a shared [`MockState`] used for discovery and pairing
+/// Holds a shared `MockState` used for discovery and pairing
 /// outcome lookup.
 #[derive(Debug)]
 pub struct MockConnector {
@@ -32,15 +33,15 @@ pub struct MockConnector {
 impl MockConnector {
     /// Create a new mock connector with a fresh, empty state.
     ///
-    /// Used by production `create_registry()` — the handle is
-    /// implicitly dropped, so test hooks are inaccessible.
+    /// No handle shares this state, so test hooks are inaccessible.
     pub fn new() -> Self {
         Self::from_state(Arc::new(Mutex::new(MockState::new())))
     }
 
     /// Wrap an existing shared state. Used by
-    /// [`create_test_registry`](crate::create_test_registry) so
-    /// the connector and handle share state.
+    /// [`new_test_parts`](crate::new_test_parts) so the connector
+    /// and handle share state, and by
+    /// [`new_production_parts`](crate::new_production_parts).
     pub(crate) fn from_state(state: Arc<Mutex<MockState>>) -> Self {
         Self { state }
     }
@@ -50,14 +51,6 @@ impl Default for MockConnector {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Parse a `toml::Value` into a [`MockVendorConfig`], with helpful errors.
-fn parse_config(value: &toml::Value) -> Result<MockVendorConfig> {
-    value
-        .clone()
-        .try_into::<MockVendorConfig>()
-        .map_err(|e| Error::backend(crate::VENDOR_ID, format!("invalid mock config: {e}")))
 }
 
 #[async_trait]
@@ -76,29 +69,31 @@ impl TvConnector for MockConnector {
         false
     }
 
-    fn reachable_in_standby(&self, vendor_config: &toml::Value) -> bool {
+    fn reachable_in_standby(&self, vendor_config: &VendorConfig) -> bool {
         // Test-configurable: models a CEC-style bus that stays reachable in
         // standby (the connection survives power-off). Default `false` so
         // existing network-shaped mock tests are unaffected.
-        parse_config(vendor_config)
+        vendor_config
+            .parse::<MockVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.reachable_in_standby)
             .unwrap_or(false)
     }
 
-    fn emulate_screen_via_power(&self, vendor_config: &toml::Value) -> bool {
+    fn emulate_screen_via_power(&self, vendor_config: &VendorConfig) -> bool {
         // Test-configurable: models a backend (CEC) with no discrete
         // screen-blank, so the daemon dispatches screen actions as power.
         // Default `false` so existing mock tests keep their real SCREEN.
-        parse_config(vendor_config)
+        vendor_config
+            .parse::<MockVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.emulate_screen_via_power)
             .unwrap_or(false)
     }
 
     #[instrument(skip(self, vendor_config))]
-    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
-        let config = parse_config(vendor_config)?;
+    async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
+        let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
 
-        // Honour any test-injected connect delay (simulates slow/unreachable TV),
+        // Honor any test-injected connect delay (simulates slow/unreachable TV),
         // pick up any test-seeded hardware identity keyed by address, and bump
         // the per-address connect counter so tests can assert an idempotent
         // `power_on` skipped the teardown/reconnect.
@@ -122,7 +117,7 @@ impl TvConnector for MockConnector {
         }
 
         if config.refuse_connect {
-            return Err(tisvlay_core::Error::backend(
+            return Err(Error::backend(
                 crate::VENDOR_ID,
                 "connect refused by test config",
             ));
@@ -135,26 +130,32 @@ impl TvConnector for MockConnector {
         )))
     }
 
-    fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
+    fn supports_wake(&self, vendor_config: &VendorConfig) -> bool {
         // Config-driven so tests can flip it via update-config; wake
         // itself stays a no-op either way.
-        parse_config(vendor_config).map(|c| c.wake).unwrap_or(true)
+        vendor_config
+            .parse::<MockVendorConfig>(crate::VENDOR_ID)
+            .map(|c| c.wake)
+            .unwrap_or(true)
     }
 
     #[instrument(skip(self, vendor_config))]
-    async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
-        let config = parse_config(vendor_config)?;
+    async fn wake(&self, vendor_config: &VendorConfig) -> Result<()> {
+        let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
         tracing::debug!(address = %config.address, "mock wake (no-op)");
         Ok(())
     }
 
-    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+    async fn wake_and_connect(
+        &self,
+        vendor_config: &VendorConfig,
+    ) -> Result<Box<dyn TvConnection>> {
         // Wake is a no-op for the mock, so this is just `connect`.
         self.connect(vendor_config).await
     }
 
     #[instrument(skip(self, vendor_config))]
-    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
+    fn start_pairing(&self, vendor_config: &VendorConfig) -> Result<PairingSession> {
         // Parse the config to validate it and extract the pairing-mode
         // shorthand. Pairing outcomes can come from two places:
         //
@@ -166,7 +167,7 @@ impl TvConnector for MockConnector {
         // If both are set, the handle wins: it's stored directly and the
         // shorthand's would-be-seeded value is overwritten only if no
         // outcome is already present.
-        let config = parse_config(vendor_config)?;
+        let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
         let address = config.address.clone();
 
         // Tv ID is derived from the address for mock TVs. In production
@@ -237,13 +238,13 @@ impl TvConnector for MockConnector {
 
     fn build_config_from_pairing(
         &self,
-        pairing_params: &toml::Value,
+        pairing_params: &VendorConfig,
         _credentials: &Credentials,
-    ) -> Result<toml::Value> {
+    ) -> Result<VendorConfig> {
         // Credentials are ignored — the mock has nothing to store.
         // Echo the pairing params back so the daemon saves a valid config.
-        let config = parse_config(pairing_params)?;
-        toml::Value::try_from(&config)
+        let config = pairing_params.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
+        VendorConfig::from_typed(&config)
             .map_err(|e| Error::backend(crate::VENDOR_ID, format!("serialize config: {e}")))
     }
 
@@ -322,20 +323,13 @@ mod tests {
 
         // `pairing = "accept"` so the spawned task terminates immediately
         // rather than hanging on cancel-receive (default `manual` mode).
-        let mut table = toml::value::Table::new();
-        table.insert(
-            "address".into(),
-            toml::Value::String("mock://repair_verify".into()),
-        );
-        table.insert("pairing".into(), toml::Value::String("accept".into()));
+        let mut vendor_config = VendorConfig::new();
+        vendor_config.insert("address", "mock://repair_verify");
+        vendor_config.insert("pairing", "accept");
         // Extra credentialing-shaped field that re-pair might carry through
         // from a prior pair; the mock's serde is lenient so this just gets
         // ignored on parse.
-        table.insert(
-            "client_key".into(),
-            toml::Value::String("preexisting-mock-key".into()),
-        );
-        let vendor_config = toml::Value::Table(table);
+        vendor_config.insert("client_key", "preexisting-mock-key");
 
         let session1 = connector.start_pairing(&vendor_config);
         assert!(

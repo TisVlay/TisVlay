@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::Value;
 use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::vendors;
 use tisvlay_wire::keys;
 use uuid::Uuid;
 use zenoh::sample::SampleKind;
@@ -361,7 +362,7 @@ fn vendor_candidates() -> Vec<CompletionCandidate> {
 /// one. Any failure (no daemon, wedged daemon, timeout) yields no
 /// candidates rather than blocking the prompt.
 fn blocking_candidates(
-    query: impl std::future::Future<Output = Option<Vec<CompletionCandidate>>>,
+    query: impl Future<Output = Option<Vec<CompletionCandidate>>>,
 ) -> Vec<CompletionCandidate> {
     let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -473,24 +474,18 @@ async fn collect_vendor_candidates(socket: &Path) -> Option<Vec<CompletionCandid
     let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
-    let vendors = Caller::new(session)
-        .fetch(&keys::vendors("main"), Value::Null)
+    let vendors = Caller::new(session, "main")
+        .call::<vendors::Catalog>(&(), &())
         .await
         .ok()?;
     Some(
         vendors
-            .as_array()?
-            .iter()
-            .filter_map(|vendor| {
-                let candidate = CompletionCandidate::new(vendor["id"].as_str()?.to_string());
-                Some(match vendor["name"].as_str() {
-                    Some(name) => candidate.help(Some(name.to_owned().into())),
-                    None => candidate,
-                })
-            })
+            .into_iter()
+            .map(|vendor| CompletionCandidate::new(vendor.id).help(Some(vendor.name.into())))
             .collect(),
     )
 }
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};

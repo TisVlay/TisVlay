@@ -22,7 +22,7 @@ Three things keep this from being a straightforward swap today:
 
 Single coherent commit if scoped tight:
 
-- `crates/tisvlay-gui/src/main.rs::load_themed_icon` (or equivalent) gets an `emblem-default-symbolic` entry. The existing `freedesktop-icons` plumbing already handles the cascade.
+- `crates/tisvlay-gui-app/src/main.rs::load_themed_icon` (or equivalent) gets an `emblem-default-symbolic` entry. The existing `freedesktop-icons` plumbing already handles the cascade.
 - `ProfileListRow` in `profiles_pane.slint`: trailing `Image { source: ...; visible: entry.is-default; accessible-label: @tr("Default profile") }` next to the name. Drop the `\u{2713}` suffix from `display_name` for surfaces that get the widget. The detail-header read-only Text gets the same trailing image.
 - `ThemedSelect` widget grows an optional per-row `image-source: image` slot, falling back to text-only rendering when unset. TVs-pane profile pickers switch from std `ComboBox` to `ThemedSelect` and bind `image-source: row.is-default ? @image-url(".../emblem-default-symbolic.svg") : @image-url("")`.
 - `display_profile_name` helper in `state.rs` collapses to just the localized name (no suffix), since every render site now has the widget-level icon. The `name` / `display_name` two-field split on `ProfileRow` may also collapse back to a single `name` if no caller still wants the suffix-text form.

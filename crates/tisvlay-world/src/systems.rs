@@ -9,7 +9,9 @@ use bevy_ecs::system::{EntityCommands, SystemParam};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
-use tisvlay_core::{PairingCommand, PairingState, TvState};
+use tisvlay_core::{PairingCommand, PairingState, TvState, VendorConfig};
+use tisvlay_wire::endpoint::Rpc;
+use tisvlay_wire::rpc::{Created, PairStarted, RePairStarted};
 use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
@@ -21,8 +23,8 @@ use crate::components::{
     RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
-    BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord, ReplyTo,
-    StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord,
+    Reply, StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.
@@ -77,25 +79,24 @@ pub(crate) fn build_schedule() -> Schedule {
     schedule
 }
 
-fn reply_ok(outbox: &mut Outbox, reply: Option<ReplyTo>) {
-    reply_value(outbox, reply, json!({}));
-}
-
-fn reply_value(outbox: &mut Outbox, reply: Option<ReplyTo>, value: serde_json::Value) {
-    if let Some(to) = reply {
-        outbox.0.push(Effect::Wire(WireEffect::Reply {
-            to,
-            result: Ok(value),
-        }));
+/// Answer an rpc with its typed response.
+fn respond<R: Rpc>(outbox: &mut Outbox, reply: Option<Reply<R>>, response: &R::Response) {
+    if let Some(reply) = reply {
+        outbox.0.push(Effect::Wire(reply.ok(response)));
     }
 }
 
-fn reply_err(outbox: &mut Outbox, reply: Option<ReplyTo>, error: WireError) {
-    if let Some(to) = reply {
-        outbox.0.push(Effect::Wire(WireEffect::Reply {
-            to,
-            result: Err(error),
-        }));
+/// Acknowledge an rpc that answers with [`Ack`](tisvlay_wire::rpc::Ack).
+fn reply_ok(outbox: &mut Outbox, reply: Option<impl Into<AckReply>>) {
+    if let Some(reply) = reply {
+        outbox.0.push(Effect::Wire(reply.into().ok()));
+    }
+}
+
+/// Refuse an rpc.
+fn reply_err(outbox: &mut Outbox, reply: Option<impl Into<AnyReply>>, error: WireError) {
+    if let Some(reply) = reply {
+        outbox.0.push(Effect::Wire(reply.into().err(error)));
     }
 }
 
@@ -245,7 +246,10 @@ fn arm_desired_input(
 
 /// Route a power-on request: in-band on a live handle, otherwise the wake
 /// dial for wake-capable transports.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "takes the calling system's queries and resources; bundling them would only rename the list"
+)]
 fn power_on_tv(
     commands: &mut Commands,
     outbox: &mut Outbox,
@@ -255,7 +259,7 @@ fn power_on_tv(
     handle: Option<&ConnectionHandle>,
     link: Option<&payload::Link>,
     restore_to: Option<String>,
-    reply: Option<ReplyTo>,
+    reply: Option<AckReply>,
 ) {
     match handle {
         Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOn).is_ok() => {
@@ -316,7 +320,10 @@ type ScreenRow<'a> = (
 /// Backends that emulate screen via power route straight to power actions.
 /// A wake-needy or disconnected `screen_on` rides the power path instead
 /// of erroring; a disconnected `screen_off` is a satisfied no-op.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "takes the calling system's queries and resources; bundling them would only rename the list"
+)]
 fn dispatch_screen(
     commands: &mut Commands,
     outbox: &mut Outbox,
@@ -326,7 +333,7 @@ fn dispatch_screen(
     on: bool,
     row: ScreenRow,
     restore_to: Option<String>,
-    reply: Option<ReplyTo>,
+    reply: Option<AckReply>,
 ) {
     let (handle, pending, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
@@ -425,7 +432,10 @@ fn dispatch_screen(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn handle_lifecycle_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -481,7 +491,14 @@ fn handle_lifecycle_commands(
                     vendor: vendor.clone(),
                     params: config.clone(),
                 });
-                reply_ok(&mut outbox, *reply);
+                respond(
+                    &mut outbox,
+                    *reply,
+                    &PairStarted {
+                        id: *id,
+                        attempt: *attempt,
+                    },
+                );
             }
             Command::RePair { id, attempt, reply } => {
                 let Some(&entity) = index.0.get(id) else {
@@ -512,7 +529,7 @@ fn handle_lifecycle_commands(
                     vendor: vendor_ref.vendor.clone(),
                     params: vendor_ref.config.clone(),
                 });
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &RePairStarted { attempt: *attempt });
             }
             Command::CancelPair { id, reply } => match pairing.index.0.get(id) {
                 Some(&entity) => {
@@ -541,7 +558,7 @@ fn handle_lifecycle_commands(
                 }
                 spawn_tv(&mut commands, &mut index, &mut outbox, record);
                 dirty.0 = true;
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &Created { id: record.id });
             }
             Command::RemoveTv { id, reply } => match index.0.get(id).copied() {
                 Some(entity) => {
@@ -600,7 +617,7 @@ fn handle_lifecycle_commands(
                     handle,
                     link,
                     restore_to,
-                    *reply,
+                    reply.map(AckReply::from),
                 );
             }
             _ => {}
@@ -617,7 +634,10 @@ struct SettingsWrites<'w, 's> {
 }
 
 /// Setters, backend passthrough commands, and config read/patch.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn handle_tv_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -652,16 +672,16 @@ fn handle_tv_commands(
             continue;
         };
         match cmd {
-            Command::SetName { name, .. } => {
+            Command::SetName { name, reply, .. } => {
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     if identity.name != *name {
                         identity.name = name.clone();
                         dirty.0 = true;
                     }
-                    reply_ok(&mut outbox, reply);
+                    reply_ok(&mut outbox, *reply);
                 }
             }
-            Command::SetManaged { managed, .. } => {
+            Command::SetManaged { managed, reply, .. } => {
                 let (handle, pending, ..) = q
                     .get(entity)
                     .unwrap_or((None, false, None, None, None, None));
@@ -672,27 +692,28 @@ fn handle_tv_commands(
                     meta.managed = *managed;
                     dirty.0 = true;
                 }
-                reply_ok(&mut outbox, reply);
+                reply_ok(&mut outbox, *reply);
             }
-            Command::SetSystemProfile { profile, .. } => {
+            Command::SetSystemProfile { profile, reply, .. } => {
                 if let Ok(mut meta) = writes.meta.get_mut(entity)
                     && meta.system_profile != *profile
                 {
                     meta.system_profile = *profile;
                     dirty.0 = true;
                 }
-                reply_ok(&mut outbox, reply);
+                reply_ok(&mut outbox, *reply);
             }
-            Command::SetPrimaryInput { input, .. } => {
+            Command::SetPrimaryInput { input, reply, .. } => {
                 if let Ok(mut meta) = writes.meta.get_mut(entity)
                     && meta.primary_input != *input
                 {
                     meta.primary_input = input.clone();
                     dirty.0 = true;
                 }
-                reply_ok(&mut outbox, reply);
+                reply_ok(&mut outbox, *reply);
             }
-            Command::SetVolume { level, .. } => {
+            Command::SetVolume { level, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -702,7 +723,8 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::SetMuted { muted, .. } => {
+            Command::SetMuted { muted, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -712,7 +734,8 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::SwitchInput { input, .. } => {
+            Command::SwitchInput { input, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 // A manual switch is authoritative — it cancels any
                 // pending restore intent instead of fighting it.
                 commands.entity(entity).remove::<DesiredInput>();
@@ -725,7 +748,8 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::SetBacklight { level, .. } => {
+            Command::SetBacklight { level, reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -736,7 +760,10 @@ fn handle_tv_commands(
                 );
             }
             Command::SetScreen {
-                on, restore_input, ..
+                on,
+                restore_input,
+                reply,
+                ..
             } => {
                 let row = q
                     .get(entity)
@@ -759,10 +786,11 @@ fn handle_tv_commands(
                     *on,
                     row,
                     restore_to,
-                    reply,
+                    reply.map(AckReply::from),
                 );
             }
-            Command::PowerOff { .. } => {
+            Command::PowerOff { reply, .. } => {
+                let reply = reply.map(AckReply::from);
                 send_backend(
                     &q,
                     &mut outbox,
@@ -772,13 +800,13 @@ fn handle_tv_commands(
                     reply,
                 );
             }
-            Command::GetConfig { .. } => {
-                let Some(to) = reply else { continue };
+            Command::GetConfig { reply, .. } => {
+                let Some(reply) = *reply else { continue };
                 if let Some(record) = build_record(entity, id, &writes) {
-                    outbox.0.push(Effect::RedactConfig { reply: to, record });
+                    outbox.0.push(Effect::RedactConfig { reply, record });
                 }
             }
-            Command::UpdateConfig { patch, .. } => {
+            Command::UpdateConfig { patch, reply, .. } => {
                 match apply_config_patch(
                     &mut commands,
                     entity,
@@ -790,9 +818,9 @@ fn handle_tv_commands(
                 ) {
                     Ok(()) => {
                         dirty.0 = true;
-                        reply_ok(&mut outbox, reply);
+                        reply_ok(&mut outbox, *reply);
                     }
-                    Err(error) => reply_err(&mut outbox, reply, error),
+                    Err(error) => reply_err(&mut outbox, *reply, error),
                 }
             }
             _ => {}
@@ -800,20 +828,22 @@ fn handle_tv_commands(
     }
 }
 
-fn command_reply(cmd: &Command) -> Option<ReplyTo> {
+/// The reply a per-TV command owes, erased: enough to refuse it before
+/// the command is dispatched.
+fn command_reply(cmd: &Command) -> Option<AnyReply> {
     match cmd {
-        Command::SetName { reply, .. }
-        | Command::SetManaged { reply, .. }
-        | Command::SetSystemProfile { reply, .. }
-        | Command::SetPrimaryInput { reply, .. }
-        | Command::SetVolume { reply, .. }
-        | Command::SetMuted { reply, .. }
-        | Command::SwitchInput { reply, .. }
-        | Command::SetBacklight { reply, .. }
-        | Command::SetScreen { reply, .. }
-        | Command::PowerOff { reply, .. }
-        | Command::GetConfig { reply, .. }
-        | Command::UpdateConfig { reply, .. } => *reply,
+        Command::SetName { reply, .. } => reply.map(AnyReply::from),
+        Command::SetManaged { reply, .. } => reply.map(AnyReply::from),
+        Command::SetSystemProfile { reply, .. } => reply.map(AnyReply::from),
+        Command::SetPrimaryInput { reply, .. } => reply.map(AnyReply::from),
+        Command::SetVolume { reply, .. } => reply.map(AnyReply::from),
+        Command::SetMuted { reply, .. } => reply.map(AnyReply::from),
+        Command::SwitchInput { reply, .. } => reply.map(AnyReply::from),
+        Command::SetBacklight { reply, .. } => reply.map(AnyReply::from),
+        Command::SetScreen { reply, .. } => reply.map(AnyReply::from),
+        Command::PowerOff { reply, .. } => reply.map(AnyReply::from),
+        Command::GetConfig { reply, .. } => reply.map(AnyReply::from),
+        Command::UpdateConfig { reply, .. } => reply.map(AnyReply::from),
         _ => None,
     }
 }
@@ -871,16 +901,15 @@ fn push_config_facts(outbox: &mut Outbox, tv: Uuid, vendor: &VendorRef) {
 /// alias the CLI may have written for the same field, is the configured
 /// value when present, and a fill never adds `mac` beside it (a second
 /// spelling would collide on parse). `None` when there's nothing to say:
-/// a non-table config, or a blank alias left alone.
+/// a blank alias left alone.
 fn reconcile_link_mac(
-    config: &mut toml::Value,
+    config: &mut VendorConfig,
     reported: tisvlay_core::MacAddress,
 ) -> Option<payload::LinkMacOutcome> {
-    let table = config.as_table_mut()?;
-    let alias = table.contains_key("wake_id");
-    let configured = match table
+    let alias = config.get("wake_id").is_some();
+    let configured = match config
         .get(tisvlay_core::MAC_CONFIG_KEY)
-        .or_else(|| table.get("wake_id"))
+        .or_else(|| config.get("wake_id"))
     {
         None => None,
         Some(toml::Value::String(value)) => {
@@ -891,10 +920,7 @@ fn reconcile_link_mac(
     match configured {
         None if alias => None,
         None => {
-            table.insert(
-                tisvlay_core::MAC_CONFIG_KEY.into(),
-                toml::Value::String(reported.to_string()),
-            );
+            config.insert(tisvlay_core::MAC_CONFIG_KEY, reported.to_string());
             Some(payload::LinkMacOutcome::Filled)
         }
         Some(configured) if tisvlay_core::MacAddress::parse(&configured).ok() == Some(reported) => {
@@ -907,7 +933,6 @@ fn reconcile_link_mac(
 /// Two-pass config patch: validate every key, then apply. Top-level keys
 /// map onto settings; everything else merges into the vendor table (a JSON
 /// `null` unsets the key), which forces a reconnect.
-#[allow(clippy::too_many_arguments)]
 fn apply_config_patch(
     commands: &mut Commands,
     entity: Entity,
@@ -915,11 +940,9 @@ fn apply_config_patch(
     q: &Query<LinkQuery>,
     writes: &mut SettingsWrites,
     outbox: &mut Outbox,
-    patch: &serde_json::Value,
+    patch: &tisvlay_wire::rpc::UpdateConfig,
 ) -> Result<(), WireError> {
-    let Some(object) = patch.as_object() else {
-        return Err(WireError::bad_request("config patch must be a JSON object"));
-    };
+    let object = &patch.0;
     // Validate.
     for (key, value) in object {
         match key.as_str() {
@@ -994,13 +1017,11 @@ fn apply_config_patch(
                 }
             }
             _ => {
-                if let Ok(mut vendor) = writes.vendor.get_mut(entity)
-                    && let Some(table) = vendor.config.as_table_mut()
-                {
+                if let Ok(mut vendor) = writes.vendor.get_mut(entity) {
                     if value.is_null() {
-                        table.remove(key);
+                        vendor.config.remove(key);
                     } else if let Ok(toml_value) = toml::Value::try_from(value) {
-                        table.insert(key.clone(), toml_value);
+                        vendor.config.insert(key.clone(), toml_value);
                     }
                     vendor_changed = true;
                 }
@@ -1038,7 +1059,7 @@ fn send_backend(
     entity: Entity,
     id: Uuid,
     cmd: BackendCmd,
-    reply: Option<ReplyTo>,
+    reply: Option<AckReply>,
 ) {
     match q.get(entity).ok().and_then(|(handle, ..)| handle) {
         // The reply rides inside the command and is answered from the
@@ -1052,7 +1073,10 @@ fn send_backend(
 /// Verify pending screen dispatches against the cached power state; retry
 /// within the backend's budget; escalate an unmet `screen_on` to the wake
 /// path (in place for standby-reachable transports, wake dial otherwise).
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn verify_dispatch(
     mut commands: Commands,
     clock: Res<Clock>,
@@ -1134,7 +1158,10 @@ fn verify_dispatch(
 /// verify budget, clear on first compliance, fail observably. A TV
 /// with no link waits through its dial; one with no dial left sheds
 /// the intent (the wake it rode already reported its own failure).
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn reconcile_input(
     mut commands: Commands,
     clock: Res<Clock>,
@@ -1228,7 +1255,10 @@ fn publish_profile(
 /// System-profile CRUD plus the two read projections (`defaults`,
 /// `effective`). Bodies live on entities (PUT/DELETE lifecycle on the
 /// wire); deletion is refused while any TV references the profile.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn handle_profile_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1256,7 +1286,7 @@ fn handle_profile_commands(
                         }
                         publish_profile(&mut outbox, &site, &record.id, &body);
                         dirty.0 = true;
-                        reply_ok(&mut outbox, *reply);
+                        respond(&mut outbox, *reply, &Created { id: record.id });
                         continue;
                     }
                 } else if index.0.contains_key(&record.id) {
@@ -1269,7 +1299,7 @@ fn handle_profile_commands(
                 index.0.insert(record.id, entity);
                 publish_profile(&mut outbox, &site, &record.id, &body);
                 dirty.0 = true;
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &Created { id: record.id });
             }
             Command::UpdateProfile { id, body, reply } => match index.0.get(id) {
                 Some(&entity) => {
@@ -1317,7 +1347,7 @@ fn handle_profile_commands(
                 index.0.insert(*new_id, entity);
                 publish_profile(&mut outbox, &site, new_id, &body);
                 dirty.0 = true;
-                reply_ok(&mut outbox, *reply);
+                respond(&mut outbox, *reply, &Created { id: *new_id });
             }
             Command::DeleteProfile { id, reply } => match index.0.get(id).copied() {
                 Some(entity) => {
@@ -1345,14 +1375,7 @@ fn handle_profile_commands(
                 // this and child profiles.
                 let mut floor = tisvlay_core::SystemProfileConfig::full_default();
                 floor.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-                match serde_json::to_value(&floor) {
-                    Ok(value) => reply_value(&mut outbox, *reply, value),
-                    Err(error) => reply_err(
-                        &mut outbox,
-                        *reply,
-                        WireError::bad_request(format!("encode defaults: {error}")),
-                    ),
-                }
+                respond(&mut outbox, *reply, &floor);
             }
             Command::EffectiveProfile { id, reply } => match tvs.0.get(id) {
                 Some(&entity) => {
@@ -1377,14 +1400,7 @@ fn handle_profile_commands(
                     if merged.name.trim().is_empty() {
                         merged.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
                     }
-                    match serde_json::to_value(&merged) {
-                        Ok(value) => reply_value(&mut outbox, *reply, value),
-                        Err(error) => reply_err(
-                            &mut outbox,
-                            *reply,
-                            WireError::bad_request(format!("encode effective: {error}")),
-                        ),
-                    }
+                    respond(&mut outbox, *reply, &merged);
                 }
                 None => reply_err(&mut outbox, *reply, WireError::tv_not_found(*id)),
             },
@@ -1407,7 +1423,10 @@ struct StateWrites<'w, 's> {
     monitored: Query<'w, 's, &'static MonitoredInterface>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn apply_backend_events(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1710,7 +1729,10 @@ fn publish_pairing_progress(
 
 /// Drive pairing sessions: progress publishes, terminal handling, and the
 /// spawn (or credential refresh) of the paired TV.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn apply_pairing_updates(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1852,7 +1874,10 @@ fn apply_pairing_updates(
 /// single dial gate). Events are scoped: only TVs whose route-resolved
 /// `MonitoredInterface` matches the transitioning NIC react — a wifi
 /// drop must not park a TV riding ethernet.
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn handle_carrier_events(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -1908,7 +1933,10 @@ fn handle_carrier_events(
 /// signal for it). Route back → unpark and redial. Route shifted to a
 /// different NIC → redial unless the protocol survives a source-IP
 /// change (WebSocket over TCP doesn't).
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn apply_route_resolutions(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
@@ -2081,8 +2109,14 @@ fn derive_remote_armed(armed: Res<RemoteArmed>, mut q: Query<(&TvId, &mut payloa
 /// dial. Connector-scoped events apply only to TVs matched to exactly
 /// that connector; global events (no connector) reach every automated
 /// TV.
-#[allow(clippy::type_complexity)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
+)]
 fn dispatch_system_events(
     mut reader: MessageReader<InEvent>,
     profile: Res<SystemProfile>,
@@ -2375,7 +2409,10 @@ fn session_action(spec: tisvlay_core::EventAction) -> Option<(ProfileAction, boo
 }
 
 /// Dial TVs with an outstanding connect request, respecting backoff.
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 fn reconcile_connections(
     mut commands: Commands,
     clock: Res<Clock>,
@@ -2521,16 +2558,15 @@ mod tests {
     use super::*;
     use tisvlay_core::{EventAction, SessionAction};
 
-    fn config(entries: &[(&str, toml::Value)]) -> toml::Value {
-        toml::Value::Table(
-            entries
-                .iter()
-                .map(|(k, v)| ((*k).to_string(), v.clone()))
-                .collect(),
-        )
+    fn config(entries: &[(&str, toml::Value)]) -> VendorConfig {
+        let mut config = VendorConfig::new();
+        for (key, value) in entries {
+            config.insert(*key, value.clone());
+        }
+        config
     }
 
-    fn mac_of(config: &toml::Value) -> Option<&str> {
+    fn mac_of(config: &VendorConfig) -> Option<&str> {
         config
             .get(tisvlay_core::MAC_CONFIG_KEY)
             .and_then(toml::Value::as_str)

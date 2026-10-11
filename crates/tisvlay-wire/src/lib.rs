@@ -5,6 +5,8 @@
 //! scouting discipline). Key-space reference: the "Key space" section of
 //! `docs/architecture.md`.
 
+pub mod endpoint;
+
 pub mod payload {
     //! Wire payload structs — the load-bearing design decision:
     //! each struct is simultaneously the bevy component, the serde wire
@@ -512,6 +514,10 @@ pub mod keys {
         format!("tisvlay/{site}/pairing/{tv}/progress")
     }
 
+    pub fn pairing_progress_wild(site: &str) -> String {
+        format!("tisvlay/{site}/pairing/*/progress")
+    }
+
     /// System-profile body: `tisvlay/<site>/profile/system/<uuid>`.
     pub fn profile_system(site: &str, id: &Uuid) -> String {
         format!("tisvlay/{site}/profile/system/{id}")
@@ -568,6 +574,11 @@ pub mod keys {
             chunk.push('_');
         }
         format!("tisvlay/{site}/discovery/{session}/found/{chunk}")
+    }
+
+    /// Every discovery session's findings.
+    pub fn discovery_found_wild(site: &str) -> String {
+        format!("tisvlay/{site}/discovery/*/found/*")
     }
 
     /// Liveliness token for a running discovery session.
@@ -766,67 +777,131 @@ pub mod error {
     use serde::{Deserialize, Serialize};
     use uuid::Uuid;
 
+    /// Declare the rpc-reply error codes: one line per code generates the
+    /// enum (serialized as the kebab-case string), `as_str` and `ALL`.
+    macro_rules! error_codes {
+        ($( $(#[$meta:meta])* $name:ident = $code:literal, )*) => {
+            /// Why a service refused an rpc: the `code` of every
+            /// [`WireError`]. Serialized as its kebab-case string.
+            #[non_exhaustive]
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+            pub enum ErrorCode {
+                $( $(#[$meta])* #[serde(rename = $code)] $name, )*
+            }
+
+            impl ErrorCode {
+                /// Every code, in declaration order.
+                pub const ALL: &[Self] = &[$(Self::$name),*];
+
+                /// The code as it travels on the wire.
+                pub const fn as_str(self) -> &'static str {
+                    match self {
+                        $( Self::$name => $code, )*
+                    }
+                }
+            }
+        };
+    }
+
+    error_codes! {
+        TvNotFound = "tv-not-found",
+        TvExists = "tv-exists",
+        NotConnected = "not-connected",
+        UnknownVendor = "unknown-vendor",
+        PairingExists = "pairing-exists",
+        PairingNotFound = "pairing-not-found",
+        WakeNotSupported = "wake-not-supported",
+        BadRequest = "bad-request",
+        /// A vendor field failed validation (see [`WireError::invalid_field`]).
+        InvalidField = "invalid-field",
+        ProfileReserved = "profile-reserved",
+        /// The TV refused or failed the command.
+        CommandFailed = "command-failed",
+        ProfileNotFound = "profile-not-found",
+        ProfileExists = "profile-exists",
+        ProfileInUse = "profile-in-use",
+        UnknownRpc = "unknown-rpc",
+        DiscoveryNotFound = "discovery-not-found",
+        DaemonShuttingDown = "daemon-shutting-down",
+    }
+
+    /// Split a [`WireError::invalid_field`] refusal back into its
+    /// `(field, reason)`; `None` for any other code.
+    pub fn invalid_field_parts(code: ErrorCode, message: &str) -> Option<(&str, &str)> {
+        if code != ErrorCode::InvalidField {
+            return None;
+        }
+        let (field, reason) = message.split_once(": ")?;
+        (!field.is_empty()).then_some((field, reason))
+    }
+
+    impl std::fmt::Display for ErrorCode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+
     /// Typed failure reason for a command reply — serialized into the
     /// zenoh `reply_err` payload.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct WireError {
-        pub code: String,
+        pub code: ErrorCode,
         pub message: String,
     }
 
     impl WireError {
         pub fn tv_not_found(id: Uuid) -> Self {
             Self {
-                code: "tv-not-found".into(),
+                code: ErrorCode::TvNotFound,
                 message: format!("no TV with id {id}"),
             }
         }
 
         pub fn tv_exists(id: Uuid) -> Self {
             Self {
-                code: "tv-exists".into(),
+                code: ErrorCode::TvExists,
                 message: format!("a TV with id {id} already exists"),
             }
         }
 
         pub fn not_connected(id: Uuid) -> Self {
             Self {
-                code: "not-connected".into(),
+                code: ErrorCode::NotConnected,
                 message: format!("TV {id} has no live connection"),
             }
         }
 
         pub fn unknown_vendor(vendor: &str) -> Self {
             Self {
-                code: "unknown-vendor".into(),
+                code: ErrorCode::UnknownVendor,
                 message: format!("no backend registered for vendor '{vendor}'"),
             }
         }
 
         pub fn pairing_exists(id: Uuid) -> Self {
             Self {
-                code: "pairing-exists".into(),
+                code: ErrorCode::PairingExists,
                 message: format!("a pairing session for {id} is already running"),
             }
         }
 
         pub fn pairing_not_found(id: Uuid) -> Self {
             Self {
-                code: "pairing-not-found".into(),
+                code: ErrorCode::PairingNotFound,
                 message: format!("no pairing session for {id}"),
             }
         }
 
         pub fn wake_not_supported(id: Uuid) -> Self {
             Self {
-                code: "wake-not-supported".into(),
+                code: ErrorCode::WakeNotSupported,
                 message: format!("TV {id} is disconnected and its transport cannot wake it"),
             }
         }
 
         pub fn bad_request(message: impl Into<String>) -> Self {
             Self {
-                code: "bad-request".into(),
+                code: ErrorCode::BadRequest,
                 message: message.into(),
             }
         }
@@ -834,10 +909,11 @@ pub mod error {
         /// A specific vendor-config field failed validation. The
         /// message's `"<field>: <reason>"` shape is load-bearing:
         /// clients route the reason back to the originating form row
-        /// by splitting on the first `": "`.
+        /// ([`invalid_field_parts`]) by splitting on the first `": "`,
+        /// since a reason may contain colons (an IPv6 address).
         pub fn invalid_field(field: &str, reason: impl std::fmt::Display) -> Self {
             Self {
-                code: "invalid-field".into(),
+                code: ErrorCode::InvalidField,
                 message: format!("{field}: {reason}"),
             }
         }
@@ -845,7 +921,7 @@ pub mod error {
         /// The reserved default profile cannot be deleted.
         pub fn profile_reserved(id: Uuid) -> Self {
             Self {
-                code: "profile-reserved".into(),
+                code: ErrorCode::ProfileReserved,
                 message: format!("profile {id} is the reserved default and cannot be deleted"),
             }
         }
@@ -853,30 +929,81 @@ pub mod error {
         /// The backend accepted the command but the device call failed.
         pub fn command_failed(message: impl Into<String>) -> Self {
             Self {
-                code: "command-failed".into(),
+                code: ErrorCode::CommandFailed,
                 message: message.into(),
             }
         }
 
         pub fn profile_not_found(id: Uuid) -> Self {
             Self {
-                code: "profile-not-found".into(),
+                code: ErrorCode::ProfileNotFound,
                 message: format!("no system profile with id {id}"),
             }
         }
 
         pub fn profile_exists(id: Uuid) -> Self {
             Self {
-                code: "profile-exists".into(),
+                code: ErrorCode::ProfileExists,
                 message: format!("a system profile with id {id} already exists"),
             }
         }
 
         pub fn profile_in_use(id: Uuid) -> Self {
             Self {
-                code: "profile-in-use".into(),
+                code: ErrorCode::ProfileInUse,
                 message: format!("system profile {id} is referenced by at least one TV"),
             }
+        }
+
+        pub fn unknown_rpc(verb: &str) -> Self {
+            Self {
+                code: ErrorCode::UnknownRpc,
+                message: format!("no such rpc: {verb}"),
+            }
+        }
+
+        pub fn discovery_not_found(session: Uuid) -> Self {
+            Self {
+                code: ErrorCode::DiscoveryNotFound,
+                message: format!("no discovery session {session}"),
+            }
+        }
+
+        pub fn daemon_shutting_down() -> Self {
+            Self {
+                code: ErrorCode::DaemonShuttingDown,
+                message: "world reactor is gone".into(),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn codes_round_trip_as_their_strings() {
+            for code in ErrorCode::ALL {
+                let json = serde_json::to_string(code).unwrap();
+                assert_eq!(json, format!("\"{}\"", code.as_str()));
+                assert_eq!(serde_json::from_str::<ErrorCode>(&json).unwrap(), *code);
+            }
+        }
+
+        #[test]
+        fn an_unknown_code_does_not_decode() {
+            let error = r#"{"code":"teleport-failed","message":"no"}"#;
+            assert!(serde_json::from_str::<WireError>(error).is_err());
+        }
+
+        #[test]
+        fn invalid_field_splits_on_the_first_separator() {
+            fn parts(error: &WireError) -> Option<(&str, &str)> {
+                invalid_field_parts(error.code, &error.message)
+            }
+            let error = WireError::invalid_field("ip", "not an IP address: ::1::bad");
+            assert_eq!(parts(&error), Some(("ip", "not an IP address: ::1::bad")));
+            assert_eq!(parts(&WireError::bad_request("ip: no")), None);
         }
     }
 }
@@ -891,10 +1018,21 @@ pub mod rpc {
         true
     }
 
+    /// `Debug` for a JSON object that can hold vendor config: its key names
+    /// only, since a vendor field can be a credential.
+    struct KeyNames<'a>(&'a serde_json::Map<String, serde_json::Value>);
+
+    impl std::fmt::Debug for KeyNames<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_set().entries(self.0.keys()).finish()
+        }
+    }
+
     /// Body for `manager/rpc/add-tv` and `manager/rpc/pair`. The `config`
-    /// is the vendor config (JSON on the wire, TOML at the backend seam).
-    /// Omitted `id` means "daemon generates one"; the reply carries it.
-    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    /// is the vendor config (JSON on the wire, a `VendorConfig` at the
+    /// backend seam), so `Debug` shows its key names only. Omitted `id`
+    /// means "daemon generates one"; the reply carries it.
+    #[derive(Serialize, Deserialize, Clone, PartialEq)]
     pub struct AddTv {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub id: Option<Uuid>,
@@ -902,7 +1040,19 @@ pub mod rpc {
         pub vendor: String,
         #[serde(default = "default_true")]
         pub managed: bool,
-        pub config: serde_json::Value,
+        pub config: serde_json::Map<String, serde_json::Value>,
+    }
+
+    impl std::fmt::Debug for AddTv {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("AddTv")
+                .field("id", &self.id)
+                .field("name", &self.name)
+                .field("vendor", &self.vendor)
+                .field("managed", &self.managed)
+                .field("config", &KeyNames(&self.config))
+                .finish()
+        }
     }
 
     /// Body for RPCs that only reference a TV / pairing session by id.
@@ -962,8 +1112,19 @@ pub mod rpc {
         pub restore_input: bool,
     }
 
-    /// Body for `tv/<id>/rpc/power-on` — optional; an absent or null
-    /// body is a plain manual power-on.
+    impl SetScreen {
+        /// A manual toggle: no restore intent.
+        pub fn manual(on: bool) -> Self {
+            Self {
+                on,
+                restore_input: false,
+            }
+        }
+    }
+
+    /// Body for `tv/<id>/rpc/power-on`; the default is a plain manual
+    /// power-on. Like every request, it decodes strictly: send `{}`, not
+    /// an empty body.
     #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
     pub struct PowerOn {
         /// See [`SetScreen::restore_input`].
@@ -1043,6 +1204,192 @@ pub mod rpc {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub timeout_ms: Option<u64>,
     }
+
+    /// Body for `manager/rpc/enrich`: hint a manually entered TV's MAC
+    /// from the ARP cache before pairing.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct Enrich {
+        pub vendor: String,
+        pub ip: String,
+    }
+
+    /// Body for `tv/<id>/rpc/update-config`: known top-level keys apply
+    /// to the TV's settings, everything else merges into the vendor table
+    /// (a `null` unsets the key). A vendor field can be a credential, so
+    /// `Debug` shows the key names only.
+    #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+    #[serde(transparent)]
+    pub struct UpdateConfig(pub serde_json::Map<String, serde_json::Value>);
+
+    impl std::fmt::Debug for UpdateConfig {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_tuple("UpdateConfig")
+                .field(&KeyNames(&self.0))
+                .finish()
+        }
+    }
+
+    /// Body for `user/remote/rpc/set`: toggle a manual remote-session
+    /// source (`manual` when omitted).
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct RemoteSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub source: Option<String>,
+        pub active: bool,
+    }
+
+    /// The tray's notification switches: the cached settings pub and the
+    /// `get`/`update` replies (field names are the category keys).
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct NotificationSettings {
+        pub tv_connection: bool,
+        pub tv_pairing: bool,
+        pub tv_wake: bool,
+        pub daemon_offline: bool,
+    }
+
+    impl Default for NotificationSettings {
+        fn default() -> Self {
+            // Every category documented default-on.
+            Self {
+                tv_connection: true,
+                tv_pairing: true,
+                tv_wake: true,
+                daemon_offline: true,
+            }
+        }
+    }
+
+    impl NotificationSettings {
+        /// Apply a partial update: absent fields keep their current value.
+        #[must_use]
+        pub fn merged_with(self, patch: &NotificationSettingsPatch) -> Self {
+            Self {
+                tv_connection: patch.tv_connection.unwrap_or(self.tv_connection),
+                tv_pairing: patch.tv_pairing.unwrap_or(self.tv_pairing),
+                tv_wake: patch.tv_wake.unwrap_or(self.tv_wake),
+                daemon_offline: patch.daemon_offline.unwrap_or(self.daemon_offline),
+            }
+        }
+    }
+
+    /// Body for `user/tray/rpc/update`: only the switches being changed.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct NotificationSettingsPatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tv_connection: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tv_pairing: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tv_wake: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub daemon_offline: Option<bool>,
+    }
+
+    /// Reply to an rpc that only acknowledges: `{}` on the wire.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Ack {}
+
+    /// Reply carrying the id the service minted (TV or profile creation).
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Created {
+        pub id: Uuid,
+    }
+
+    /// Reply to `manager/rpc/pair`: the TV id and this session's attempt
+    /// id, which stamps its progress samples.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PairStarted {
+        pub id: Uuid,
+        pub attempt: Uuid,
+    }
+
+    /// Reply to `tv/<id>/rpc/re-pair`: the new session's attempt id.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RePairStarted {
+        pub attempt: Uuid,
+    }
+
+    /// Reply to `manager/rpc/discover-start`: the scan session id.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct DiscoverySession {
+        pub session: Uuid,
+    }
+
+    /// Reply to every service's `info` rpc. `state_path` is empty when
+    /// the service runs without persistence.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct ServiceInfo {
+        pub version: String,
+        pub state_path: String,
+    }
+
+    /// One entry of the `manager/vendors` catalog.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct VendorEntry {
+        pub id: String,
+        pub name: String,
+        pub capabilities: Vec<String>,
+    }
+
+    /// Reply to `manager/rpc/enrich`: the MAC hint, when the ARP cache
+    /// had one.
+    #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct EnrichReply {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mac: Option<String>,
+    }
+
+    /// Reply to `tv/<id>/rpc/get-config`: the TV's settings plus its
+    /// vendor table with schema-`Secret` fields removed.
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    pub struct TvConfigView {
+        pub id: Uuid,
+        pub name: String,
+        pub vendor: String,
+        pub managed: bool,
+        pub system_profile: Option<Uuid>,
+        pub primary_input: Option<String>,
+        pub config: serde_json::Map<String, serde_json::Value>,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A request can carry the client key to the daemon; `Debug` (which
+        /// can reach logs) shows the vendor config's key names only.
+        #[test]
+        fn vendor_config_requests_debug_key_names_only() {
+            let config: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(serde_json::json!({
+                    "ip": "192.0.2.1",
+                    "client_key": "hunter2-key",
+                }))
+                .unwrap();
+            let add = AddTv {
+                id: None,
+                name: "Den".into(),
+                vendor: "lg".into(),
+                managed: true,
+                config: config.clone(),
+            };
+            let patch = UpdateConfig(config);
+            for shown in [
+                format!("{add:?}"),
+                format!("{add:#?}"),
+                format!("{patch:?}"),
+            ] {
+                assert!(shown.contains("client_key"), "{shown}");
+                assert!(!shown.contains("hunter2"), "{shown}");
+                assert!(!shown.contains("192.0.2.1"), "{shown}");
+            }
+            assert!(
+                format!("{add:?}").contains("Den"),
+                "non-vendor fields stay visible"
+            );
+        }
+    }
 }
 
 pub mod caller {
@@ -1051,130 +1398,148 @@ pub mod caller {
     //! declared querier per exact rpc key; every call awaits the querier's
     //! matching status before firing, so the zero-matching-queryables
     //! instant-no-reply race cannot happen: matching ⇒ routable. A
-    //! service absent past the deadline fails fast as `rpc.unavailable`,
-    //! and the liveliness token stays a *presence display* signal only —
-    //! rpc readiness is the querier's job.
+    //! service absent past the deadline fails fast as
+    //! [`RpcError::Unavailable`], and the liveliness token stays a
+    //! *presence display* signal only — rpc readiness is the querier's job.
 
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use serde_json::Value;
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
     use zenoh::Session;
     use zenoh::bytes::Encoding;
     use zenoh::query::{ConsolidationMode, Querier};
 
+    use crate::endpoint::{Streaming, Unary};
     use crate::error::WireError;
 
     /// Per-call timeout once a matched queryable holds the query.
     pub const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// How long a call waits for a matching queryable to become routable
-    /// before failing `rpc.unavailable`. Route propagation on a fresh
-    /// link completes in tens of milliseconds; the margin covers a
+    /// before failing [`RpcError::Unavailable`]. Route propagation on a
+    /// fresh link completes in tens of milliseconds; the margin covers a
     /// service that is mid-start.
     pub const MATCHING_DEADLINE: Duration = Duration::from_secs(2);
 
-    /// Typed rpc failure: the service's [`WireError`] code + message, or
-    /// one of the caller's own codes (`rpc.unavailable`, `rpc.timeout`,
-    /// `rpc.no-reply`). Callers route on `code` instead of parsing the
-    /// display string; displays as `"{message} ({code})"`.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct RpcError {
-        pub code: String,
-        pub message: String,
+    /// How an rpc call ended, when it didn't end in a typed reply.
+    #[derive(Debug)]
+    pub enum RpcError {
+        /// The service refused the request.
+        Service(WireError),
+        /// No service matched the key within [`MATCHING_DEADLINE`].
+        Unavailable { key: String },
+        /// A service held the query but didn't reply within [`RPC_TIMEOUT`].
+        Timeout { key: String },
+        /// The query closed without a reply after matching confirmed (the
+        /// service dropped mid-call). For a write, the outcome is unknown.
+        NoReply { key: String },
+        /// The local zenoh session failed the call.
+        Transport { key: String, source: zenoh::Error },
+        /// A reply that isn't the rpc's response type, or an error payload
+        /// that isn't a [`WireError`].
+        Undecodable {
+            key: String,
+            source: serde_json::Error,
+        },
     }
 
     impl std::fmt::Display for RpcError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{} ({})", self.message, self.code)
-        }
-    }
-
-    impl std::error::Error for RpcError {}
-
-    impl RpcError {
-        fn caller(code: &str, message: impl Into<String>) -> Self {
-            Self {
-                code: code.into(),
-                message: message.into(),
+            match self {
+                Self::Service(error) => write!(f, "{} ({})", error.message, error.code),
+                Self::Unavailable { key } => {
+                    write!(f, "no rpc service for {key} within {MATCHING_DEADLINE:?}")
+                }
+                Self::Timeout { key } => write!(f, "rpc {key}: timed out"),
+                Self::NoReply { key } => write!(f, "rpc {key}: no reply"),
+                Self::Transport { key, .. } => write!(f, "rpc {key}: transport failure"),
+                Self::Undecodable { key, .. } => write!(f, "rpc {key}: undecodable reply"),
             }
         }
     }
 
-    /// Matching-gated rpc caller over one zenoh session. Queriers are
-    /// cached per key, so repeat calls skip declaration and their
-    /// matching status is already resolved.
+    impl std::error::Error for RpcError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Transport { source, .. } => Some(source.as_ref()),
+                Self::Undecodable { source, .. } => Some(source),
+                _ => None,
+            }
+        }
+    }
+
+    /// Matching-gated rpc caller over one zenoh session, addressing one
+    /// site. Queriers are cached per key, so repeat calls skip
+    /// declaration and their matching status is already resolved.
     #[derive(Debug)]
     pub struct Caller {
         session: Session,
+        site: String,
         queriers: Mutex<HashMap<String, Arc<Querier<'static>>>>,
     }
 
     impl Caller {
-        pub fn new(session: Session) -> Self {
+        pub fn new(session: Session, site: impl Into<String>) -> Self {
             Self {
                 session,
+                site: site.into(),
                 queriers: Mutex::new(HashMap::new()),
             }
         }
 
-        /// Single-shot rpc: matching-gated, never re-issued. The shape
-        /// for writes — the daemon mints state (uuids, discovery
-        /// sessions) before its deferred ack, so a reply lost mid-flight
-        /// must surface as an error rather than a duplicate-minting
-        /// re-issue.
-        pub async fn call(&self, key: &str, body: Value) -> Result<Value, RpcError> {
-            let querier = self.querier(key).await?;
-            self.await_matching(&querier).await?;
-            issue(&querier, &body).await
-        }
-
-        /// Idempotent read: like [`call`](Self::call), plus one re-issue
-        /// when the reply channel closes empty after matching confirmed
-        /// (queryable dropped mid-call, reply lost mid-flight — safe to
-        /// re-ask for a read).
-        pub async fn fetch(&self, key: &str, body: Value) -> Result<Value, RpcError> {
-            let querier = self.querier(key).await?;
-            self.await_matching(&querier).await?;
-            match issue(&querier, &body).await {
-                Err(error) if error.code == "rpc.no-reply" => {
-                    self.await_matching(&querier).await?;
-                    issue(&querier, &body).await
-                }
-                outcome => outcome,
-            }
-        }
-
-        /// Multi-reply rpc (streaming discovery): consolidation off so
-        /// same-key replies survive; zero replies is a legitimate empty
-        /// result, never re-issued. `window` bounds the collection (scan
-        /// windows legitimately exceed [`RPC_TIMEOUT`]); the querier is
-        /// declared per call since timeout is declaration-time state and
-        /// multi-reply verbs are one-shot human actions.
-        pub async fn call_many(
+        /// One rpc, one typed reply. Matching-gated; re-issued once when
+        /// the reply channel closes empty only if `R::REISSUE` (reads) —
+        /// a write that minted state before a lost reply must surface as
+        /// an error rather than mint twice.
+        pub async fn call<R: Unary>(
             &self,
-            key: &str,
-            body: Value,
-            window: Duration,
-        ) -> Result<Vec<Value>, RpcError> {
+            target: &R::Target,
+            request: &R::Request,
+        ) -> Result<R::Response, RpcError> {
+            let key = R::key(&self.site, target);
+            let body = encode(request);
+            let querier = self.querier(&key).await?;
+            self.await_matching(&querier).await?;
+            let bytes = match issue(&querier, &body).await {
+                Err(RpcError::NoReply { .. }) if R::REISSUE => {
+                    self.await_matching(&querier).await?;
+                    issue(&querier, &body).await?
+                }
+                outcome => outcome?,
+            };
+            decode(&key, &bytes)
+        }
+
+        /// One rpc, one reply per finding, collected until `R::window`
+        /// closes. Consolidation is off so same-key replies survive; zero
+        /// replies is a legitimate empty result, never re-issued. The
+        /// querier is declared per call since its timeout is the window.
+        pub async fn call_many<R: Streaming>(
+            &self,
+            target: &R::Target,
+            request: &R::Request,
+        ) -> Result<Vec<R::Response>, RpcError> {
+            let key = R::key(&self.site, target);
             let querier = self
                 .session
-                .declare_querier(key.to_string())
-                .timeout(window)
+                .declare_querier(key.clone())
+                .timeout(R::window(request))
                 .consolidation(ConsolidationMode::None)
                 .await
-                .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+                .map_err(|source| transport(&key, source))?;
             self.await_matching(&querier).await?;
             let replies = querier
                 .get()
-                .payload(encode(&body)?)
+                .payload(encode(request))
                 .encoding(Encoding::APPLICATION_JSON)
                 .await
-                .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+                .map_err(|source| transport(&key, source))?;
             let mut out = Vec::new();
             while let Ok(reply) = replies.recv_async().await {
-                out.push(decode_reply(key, reply)?);
+                out.push(decode(&key, &reply_bytes(&key, reply)?)?);
             }
             Ok(out)
         }
@@ -1189,7 +1554,7 @@ pub mod caller {
                     .declare_querier(key.to_string())
                     .timeout(RPC_TIMEOUT)
                     .await
-                    .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?,
+                    .map_err(|source| transport(key, source))?,
             );
             // A concurrent first call may have raced us; keep whichever
             // landed first so the loser's querier undeclares on drop.
@@ -1206,10 +1571,14 @@ pub mod caller {
         /// queryable — the fact liveliness tokens cannot provide, since
         /// token arrival races queryable-route propagation.
         async fn await_matching(&self, querier: &Querier<'static>) -> Result<(), RpcError> {
+            let key = querier.key_expr().as_str();
             if status(querier).await?.matching() {
                 return Ok(());
             }
-            let listener = querier.matching_listener().await.map_err(transport)?;
+            let listener = querier
+                .matching_listener()
+                .await
+                .map_err(|source| transport(key, source))?;
             // Re-check after subscribing: the flip may have landed
             // between the status read and the listener declaration.
             if status(querier).await?.matching() {
@@ -1221,20 +1590,11 @@ pub mod caller {
                         return Ok(());
                     }
                 }
-                Err(RpcError::caller(
-                    "rpc.transport",
-                    "matching listener closed",
-                ))
+                Err(transport(key, "matching listener closed".into()))
             })
             .await
-            .map_err(|_| {
-                RpcError::caller(
-                    "rpc.unavailable",
-                    format!(
-                        "no rpc service for {} within {MATCHING_DEADLINE:?}",
-                        querier.key_expr()
-                    ),
-                )
+            .map_err(|_| RpcError::Unavailable {
+                key: key.to_string(),
             })?
         }
     }
@@ -1242,67 +1602,70 @@ pub mod caller {
     async fn status(
         querier: &Querier<'static>,
     ) -> Result<zenoh::matching::MatchingStatus, RpcError> {
-        querier.matching_status().await.map_err(transport)
+        querier
+            .matching_status()
+            .await
+            .map_err(|source| transport(querier.key_expr().as_str(), source))
     }
 
-    async fn issue(querier: &Querier<'static>, body: &Value) -> Result<Value, RpcError> {
+    /// Issue one query and take its first reply's payload.
+    async fn issue(querier: &Querier<'static>, body: &[u8]) -> Result<Vec<u8>, RpcError> {
         let key = querier.key_expr().as_str().to_string();
         let replies = querier
             .get()
-            .payload(encode(body)?)
+            .payload(body.to_vec())
             .encoding(Encoding::APPLICATION_JSON)
             .await
-            .map_err(|e| RpcError::caller("rpc.transport", format!("rpc {key}: {e}")))?;
+            .map_err(|source| transport(&key, source))?;
         match replies.recv_async().await {
-            Ok(reply) => decode_reply(&key, reply),
+            Ok(reply) => reply_bytes(&key, reply),
             // Empty channel close: the query finalized with zero replies.
             // With matching confirmed this is the rare dropped-mid-call
             // case, not the routing race.
-            Err(_) => Err(RpcError::caller(
-                "rpc.no-reply",
-                format!("rpc {key}: no reply"),
-            )),
+            Err(_) => Err(RpcError::NoReply { key }),
         }
     }
 
-    fn transport(e: impl std::fmt::Display) -> RpcError {
-        RpcError::caller("rpc.transport", e.to_string())
+    fn transport(key: &str, source: zenoh::Error) -> RpcError {
+        RpcError::Transport {
+            key: key.to_string(),
+            source,
+        }
     }
 
-    fn encode(body: &Value) -> Result<Vec<u8>, RpcError> {
-        serde_json::to_vec(body).map_err(|e| RpcError::caller("rpc.encode", e.to_string()))
+    fn encode<T: Serialize + ?Sized>(body: &T) -> Vec<u8> {
+        serde_json::to_vec(body)
+            .expect("rpc bodies are structs and string-keyed maps, which always encode as JSON")
     }
 
-    fn decode_reply(key: &str, reply: zenoh::query::Reply) -> Result<Value, RpcError> {
+    fn decode<T: DeserializeOwned>(key: &str, bytes: &[u8]) -> Result<T, RpcError> {
+        serde_json::from_slice(bytes).map_err(|source| RpcError::Undecodable {
+            key: key.to_string(),
+            source,
+        })
+    }
+
+    /// A reply's payload, or the call's failure: the service's
+    /// [`WireError`], or zenoh's synthetic timeout reply.
+    fn reply_bytes(key: &str, reply: zenoh::query::Reply) -> Result<Vec<u8>, RpcError> {
         match reply.result() {
-            Ok(sample) => {
-                Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
-            }
+            Ok(sample) => Ok(sample.payload().to_bytes().into_owned()),
             Err(err) => {
                 let bytes = err.payload().to_bytes();
                 match serde_json::from_slice::<WireError>(&bytes) {
-                    Ok(error) => Err(RpcError {
-                        code: error.code,
-                        message: error.message,
-                    }),
+                    Ok(error) => Err(RpcError::Service(error)),
                     // Zenoh's query timeout arrives as a synthetic
-                    // ReplyError("Timeout"), not a WireError — surface
-                    // it under its own code so "service slow" stays
-                    // distinguishable from a genuine service error.
-                    Err(_) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        if text.contains("Timeout") {
-                            Err(RpcError::caller(
-                                "rpc.timeout",
-                                format!("rpc {key}: timed out"),
-                            ))
-                        } else {
-                            Err(RpcError::caller(
-                                "unknown",
-                                format!("rpc {key}: undecodable error payload"),
-                            ))
-                        }
+                    // ReplyError("Timeout"), not a WireError — keep "service
+                    // slow" distinguishable from a genuine service error.
+                    Err(_) if String::from_utf8_lossy(&bytes).contains("Timeout") => {
+                        Err(RpcError::Timeout {
+                            key: key.to_string(),
+                        })
                     }
+                    Err(source) => Err(RpcError::Undecodable {
+                        key: key.to_string(),
+                        source,
+                    }),
                 }
             }
         }
@@ -1479,7 +1842,7 @@ pub mod bootstrap {
         /// missing packaged path leaves the dev default in place.
         #[test]
         fn stale_dev_socket_falls_through_to_the_packaged_path() {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tisvlay_test::socket_tempdir();
             let dev = dir.path().join("zenoh.sock");
             let packaged = dir.path().join("packaged.sock");
 
@@ -1507,6 +1870,147 @@ pub mod bootstrap {
         fn configs_build() {
             peer_config(Path::new("/tmp/tisvlay-test.sock")).unwrap();
             client_config(Path::new("/tmp/tisvlay-test.sock")).unwrap();
+        }
+    }
+}
+
+pub mod serve {
+    //! The server half of the endpoint contract: a query's body, the
+    //! typed [`Responder`] each decoded rpc carries, and refusals. Reply
+    //! failures (the querier gone) are logged, never fatal — the caller's
+    //! own timeout reports them.
+
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    use zenoh::bytes::Encoding;
+    use zenoh::query::Query;
+
+    use crate::endpoint::{Rpc, Streaming};
+    use crate::error::WireError;
+
+    /// The reply owed to one query of rpc `R`, handed out with the decoded
+    /// request. Answering consumes it, so a handler replies once and only
+    /// with `R`'s response type; one dropped unanswered logs a warning,
+    /// since its caller is left to time out.
+    pub struct Responder<R> {
+        query: Option<Query>,
+        rpc: PhantomData<fn() -> R>,
+    }
+
+    impl<R: Rpc> Responder<R> {
+        pub(crate) fn new(query: Query) -> Self {
+            Self {
+                query: Some(query),
+                rpc: PhantomData,
+            }
+        }
+
+        /// Answer with `R`'s response.
+        pub async fn ok(mut self, response: &R::Response) {
+            send(&self.take(), encode(response)).await;
+        }
+
+        /// Refuse the request.
+        pub async fn err(mut self, error: &WireError) {
+            reply_err(&self.take(), error).await;
+        }
+
+        /// Answer with a handler's outcome: the response, or the refusal.
+        pub async fn answer(self, outcome: Result<R::Response, WireError>) {
+            match outcome {
+                Ok(response) => self.ok(&response).await,
+                Err(error) => self.err(&error).await,
+            }
+        }
+
+        /// The query, for a server that answers later through its own
+        /// correlation (the daemon files it and replies from the world,
+        /// typed there by the same `R`); the caller takes over the reply.
+        pub fn into_query(mut self) -> Query {
+            self.take()
+        }
+
+        fn take(&mut self) -> Query {
+            self.query
+                .take()
+                .expect("a responder holds its query until answered, and answering consumes it")
+        }
+    }
+
+    impl<R: Streaming> Responder<R> {
+        /// One streamed reply; the query stays open until [`Self::finish`].
+        pub async fn send(&self, item: &R::Response) {
+            if let Some(query) = &self.query {
+                send(query, encode(item)).await;
+            }
+        }
+
+        /// Close the stream: the caller's collection ends with the replies
+        /// sent so far.
+        pub fn finish(mut self) {
+            drop(self.take());
+        }
+    }
+
+    impl<R> Drop for Responder<R> {
+        fn drop(&mut self) {
+            if let Some(query) = &self.query {
+                tracing::warn!(key = %query.key_expr(), "rpc dropped without a reply");
+            }
+        }
+    }
+
+    impl<R> fmt::Debug for Responder<R> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let key = self.query.as_ref().map(|query| query.key_expr().as_str());
+            f.debug_tuple("Responder").field(&key).finish()
+        }
+    }
+
+    fn encode<T: serde::Serialize>(response: &T) -> Vec<u8> {
+        serde_json::to_vec(response).expect(
+            "rpc responses are serde structs, string-keyed maps and lists of them, which always encode as JSON",
+        )
+    }
+
+    /// A query's body bytes, empty when it carried none.
+    pub fn payload(query: &Query) -> Vec<u8> {
+        query
+            .payload()
+            .map(|payload| payload.to_bytes().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Answer `query` with a response already encoded as JSON — the
+    /// daemon's world replies to the queries it filed with
+    /// [`Responder::into_query`], typed where the world built them.
+    pub async fn reply_json(query: &Query, response: &serde_json::Value) {
+        let bytes = serde_json::to_vec(response).expect("a JSON value always encodes as JSON");
+        send(query, bytes).await;
+    }
+
+    /// Refuse `query` with a typed error: a query no family decoded, or
+    /// one the daemon filed for the world.
+    pub async fn reply_err(query: &Query, error: &WireError) {
+        let bytes = serde_json::to_vec(error).expect("WireError always encodes as JSON");
+        if let Err(e) = query
+            .reply_err(bytes)
+            .encoding(Encoding::APPLICATION_JSON)
+            .await
+        {
+            tracing::warn!(key = %query.key_expr(), %e, "rpc refusal failed");
+        }
+    }
+
+    async fn send(query: &Query, bytes: Vec<u8>) {
+        let key = query.key_expr().clone().into_owned();
+        if let Err(e) = query
+            .reply(key, bytes)
+            .encoding(Encoding::APPLICATION_JSON)
+            .await
+        {
+            tracing::warn!(key = %query.key_expr(), %e, "rpc reply failed");
         }
     }
 }

@@ -7,40 +7,6 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[dependencies]
-anyhow = { workspace = true }
-clap = { workspace = true }
-directories = { workspace = true }
-edidkit = { workspace = true }
-futures-util = { workspace = true }
-libc = { workspace = true }
-netlink-packet-core = { workspace = true }
-netlink-packet-route = { workspace = true }
-rtnetlink = { workspace = true }
-zbus = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tisvlay-cec = { workspace = true }
-tisvlay-core = { workspace = true, features = ["logging"] }
-tisvlay-lg = { workspace = true, features = ["discovery"] }
-tisvlay-mock = { workspace = true }
-tokio = { workspace = true }
-toml = { workspace = true }
-tracing = { workspace = true }
-tisvlay-wire = { workspace = true }
-tisvlay-world = { workspace = true }
-uuid = { workspace = true }
-zenoh = { workspace = true }
-zenoh-ext = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
-tisvlay-cec = { workspace = true, features = ["test-link"] }
-tisvlay-test = { workspace = true }
-
-[lints]
-workspace = true
-
 [package.metadata.nfpm]
 name = "tisvlay"
 section = "utils"
@@ -152,3 +118,39 @@ suggests = ["gnome-shell-extension-appindicator"]
 # optdepend), so Arch GNOME users get the AppIndicator pointer from the
 # tray's journal log and packaging/README instead. Arch also ships no
 # runtime `depends` for the same reason.
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+directories = { workspace = true }
+edidkit = { workspace = true }
+futures-util = { workspace = true }
+libc = { workspace = true }
+netlink-packet-core = { workspace = true }
+netlink-packet-route = { workspace = true }
+rtnetlink = { workspace = true }
+zbus = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tisvlay-cec = { workspace = true }
+tisvlay-core = { workspace = true }
+tisvlay-runtime = { workspace = true, features = ["logging"] }
+tisvlay-lg = { workspace = true, features = ["discovery"] }
+tisvlay-mock = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tisvlay-wire = { workspace = true }
+tisvlay-world = { workspace = true }
+uuid = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tisvlay-cec = { workspace = true, features = ["test-link"] }
+tisvlay-test = { workspace = true }
+
+[lints]
+workspace = true

@@ -25,12 +25,12 @@
 //!
 //! The connector interface is fully transport-agnostic. All transport details
 //! (IP addresses, serial ports, CEC addresses, etc.) are encapsulated in the
-//! vendor config (`toml::Value`), which only the vendor crate knows how to
-//! interpret. The daemon and CLI never see transport-specific types.
+//! [`VendorConfig`], which only the vendor crate knows how to interpret. The
+//! daemon and CLI never see transport-specific types.
 
 use crate::{
     Capabilities, DiscoveredTv, Error, HardwareId, InputInfo, MacAddress, PairingSession,
-    PowerState, Result, TvState,
+    PowerState, Result, TvState, VendorConfig,
 };
 use async_trait::async_trait;
 use std::net::IpAddr;
@@ -392,8 +392,8 @@ pub trait TvConnection: Send + Sync {
 ///
 /// This trait is implemented by backends to provide connection creation, wake-up,
 /// pairing, and transport metadata functionality. All transport details (IP, MAC,
-/// serial port, CEC address, etc.) are encapsulated in the vendor config
-/// (`toml::Value`), which only the vendor crate knows how to interpret.
+/// serial port, CEC address, etc.) are encapsulated in the
+/// [`VendorConfig`], which only the vendor crate knows how to interpret.
 #[async_trait]
 pub trait TvConnector: Send + Sync {
     /// The communication transport used by this connector.
@@ -427,11 +427,11 @@ pub trait TvConnector: Send + Sync {
     /// whether a fresh connect succeeds. Network backends (LG) return the
     /// default `false`: the socket dies on power-off, so the daemon drops
     /// the connection and `Connected` tracks power.
-    fn reachable_in_standby(&self, _vendor_config: &toml::Value) -> bool {
+    fn reachable_in_standby(&self, _vendor_config: &VendorConfig) -> bool {
         false
     }
 
-    /// Whether this backend fulfils screen-blank actions by powering the
+    /// Whether this backend fulfills screen-blank actions by powering the
     /// device — i.e. emulates the `SCREEN` capability via `POWER`.
     ///
     /// For a device with `POWER` but no discrete screen-blank (HDMI-CEC: the
@@ -444,7 +444,7 @@ pub trait TvConnector: Send + Sync {
     /// (standby-cache synthesis, wake-in-place). Default `false`: a backend
     /// with a real screen-blank, or one that should simply ignore screen
     /// actions, leaves it off. Config-driven so it's opt-out per device.
-    fn emulate_screen_via_power(&self, _vendor_config: &toml::Value) -> bool {
+    fn emulate_screen_via_power(&self, _vendor_config: &VendorConfig) -> bool {
         false
     }
 
@@ -452,7 +452,7 @@ pub trait TvConnector: Send + Sync {
     ///
     /// The vendor config contains all transport and credential parameters.
     /// The connector deserializes it into its own config type internally.
-    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>>;
+    async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>>;
 
     /// Vendor-specific connection info for the GUI's INFO pane.
     ///
@@ -468,7 +468,7 @@ pub trait TvConnector: Send + Sync {
     /// Backends only need to override this when the schema-driven
     /// projection isn't enough (e.g. the field's wire form needs
     /// reformatting before display — `0xFFEE...` → `FF:EE:...`).
-    fn display_config(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+    fn display_config(&self, vendor_config: &VendorConfig) -> Vec<(String, String)> {
         display_rows_for_visibility(
             &self.config_schema(),
             vendor_config,
@@ -486,7 +486,7 @@ pub trait TvConnector: Send + Sync {
     ///
     /// Returns `None` when the backend declines to surface any
     /// editable info.
-    fn primary_descriptor(&self, vendor_config: &toml::Value) -> Option<String> {
+    fn primary_descriptor(&self, vendor_config: &VendorConfig) -> Option<String> {
         self.display_config(vendor_config)
             .into_iter()
             .next()
@@ -501,7 +501,7 @@ pub trait TvConnector: Send + Sync {
     ///
     /// **Default impl** walks `config_schema` and emits a row per
     /// `Diagnostic`-visibility field. Empty values are elided.
-    fn display_diagnostics(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+    fn display_diagnostics(&self, vendor_config: &VendorConfig) -> Vec<(String, String)> {
         display_rows_for_visibility(
             &self.config_schema(),
             vendor_config,
@@ -513,7 +513,7 @@ pub trait TvConnector: Send + Sync {
     ///
     /// For example, IP-based backends may support Wake-on-LAN if a MAC
     /// address is configured, while CEC backends might support power-on.
-    fn supports_wake(&self, vendor_config: &toml::Value) -> bool;
+    fn supports_wake(&self, vendor_config: &VendorConfig) -> bool;
 
     /// Wake the device from standby.
     ///
@@ -524,7 +524,7 @@ pub trait TvConnector: Send + Sync {
     /// Implementations should handle transport-specific retry logic internally.
     /// For example, after system resume the desktop's network interface may not
     /// be up yet, so WoL packets should be retried until the network is available.
-    async fn wake(&self, vendor_config: &toml::Value) -> Result<()>;
+    async fn wake(&self, vendor_config: &VendorConfig) -> Result<()>;
 
     /// Wake the device and establish a connection.
     ///
@@ -532,7 +532,8 @@ pub trait TvConnector: Send + Sync {
     /// count, wake packet resends, readiness probes, etc. The daemon does
     /// not provide any timing parameters — each backend knows its own
     /// transport characteristics.
-    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>>;
+    async fn wake_and_connect(&self, vendor_config: &VendorConfig)
+    -> Result<Box<dyn TvConnection>>;
 
     /// Start pairing with a new device.
     ///
@@ -541,19 +542,19 @@ pub trait TvConnector: Send + Sync {
     ///
     /// Returns a [`PairingSession`] that can be used to track pairing progress
     /// and submit user input if required by the backend's pairing flow.
-    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession>;
+    fn start_pairing(&self, vendor_config: &VendorConfig) -> Result<PairingSession>;
 
     /// Build vendor config from pairing results for persistence.
     ///
     /// After pairing completes with [`Credentials`](crate::Credentials), this
-    /// method constructs the full vendor config (as a TOML value) that can be
-    /// saved to the config file. `pairing_params` contains the initial
+    /// method constructs the full vendor config the daemon persists in its
+    /// store. `pairing_params` contains the initial
     /// parameters used to reach the device.
     fn build_config_from_pairing(
         &self,
-        pairing_params: &toml::Value,
+        pairing_params: &VendorConfig,
         credentials: &crate::Credentials,
-    ) -> Result<toml::Value>;
+    ) -> Result<VendorConfig>;
 
     /// Full persisted-config schema — every field that lives in
     /// the vendor's TOML config, with a
@@ -563,13 +564,14 @@ pub trait TvConnector: Send + Sync {
     /// The framework projects this into:
     /// - **Pairing wizard** ([`pairing_schema`](Self::pairing_schema)):
     ///   `UserInput` fields only.
-    /// - **INFO pane** ([`display_info`](Self::display_info)):
+    /// - **INFO pane** ([`display_config`](Self::display_config) +
+    ///   [`display_diagnostics`](Self::display_diagnostics)):
     ///   `UserInput + Diagnostic`, skips `Secret`.
     /// - **Edit pane** (future): `UserInput` only.
     ///
     /// Default impl returns an empty list — backends that haven't
     /// migrated to schema-driven config keep their previous
-    /// behavior (no display_info, no edit support). Override to
+    /// behavior (no INFO-pane rows, no edit support). Override to
     /// describe the full vendor-config shape and tag each field's
     /// visibility; the framework handles projection from there.
     fn config_schema(&self) -> Vec<crate::PairingField> {
@@ -582,8 +584,8 @@ pub trait TvConnector: Send + Sync {
     /// The daemon serves this as JSON from its
     /// `manager/vendors/<id>/schema` queryable; the GUI's
     /// pairing wizard renders the form dynamically from the
-    /// returned [`PairingField`] list. See
-    /// [`pairing_schema`](crate::pairing_schema) for the field
+    /// returned [`PairingField`](crate::PairingField) list. See
+    /// [`PairingFieldType`](crate::PairingFieldType) and [`FieldVisibility`](crate::FieldVisibility) for the field
     /// vocabulary.
     ///
     /// Default impl filters [`config_schema`](Self::config_schema)
@@ -606,7 +608,7 @@ pub trait TvConnector: Send + Sync {
     /// Default no-op. Vendors that talk to an IP-addressed device
     /// (LG, future Sony/Samsung) should override to send a single
     /// transport-layer datagram or open a TCP connection that
-    /// triggers the kernel's neighbour resolution on the way out.
+    /// triggers the kernel's neighbor resolution on the way out.
     ///
     /// IP family agnostic by signature — the daemon's family gate
     /// uses the vendor's `Capabilities::IPV4` / `IPV6` bits to decide
@@ -617,11 +619,6 @@ pub trait TvConnector: Send + Sync {
     }
 }
 
-/// Look up a field on a TOML table by name and stringify its
-/// scalar value. Returns `None` for missing keys, `null`, or
-/// container types (arrays / tables). Used by the default
-/// [`TvConnector::display_info`] impl to project values out of a
-/// `vendor_config` for display.
 /// Project a `(label, value)` row list out of a vendor schema,
 /// keeping only fields whose [`visibility`](crate::FieldVisibility)
 /// matches the requested filter and whose value is non-empty.
@@ -629,7 +626,7 @@ pub trait TvConnector: Send + Sync {
 /// [`TvConnector::display_diagnostics`].
 fn display_rows_for_visibility(
     schema: &[crate::PairingField],
-    vendor_config: &toml::Value,
+    vendor_config: &VendorConfig,
     visibility: crate::FieldVisibility,
 ) -> Vec<(String, String)> {
     schema
@@ -645,7 +642,7 @@ fn display_rows_for_visibility(
             // consistent. (Schema defaults are authored to match the serde
             // defaults, so this is the value actually in force.)
             let value =
-                toml_field_as_string(vendor_config, &f.name).unwrap_or_else(|| f.default.clone());
+                field_as_string(vendor_config, &f.name).unwrap_or_else(|| f.default.clone());
             if value.is_empty() {
                 return None;
             }
@@ -654,9 +651,10 @@ fn display_rows_for_visibility(
         .collect()
 }
 
-fn toml_field_as_string(value: &toml::Value, name: &str) -> Option<String> {
-    let table = value.as_table()?;
-    match table.get(name)? {
+/// Look up a vendor-config field by name and stringify its scalar value.
+/// Returns `None` for missing keys or container types (arrays / tables).
+fn field_as_string(config: &VendorConfig, name: &str) -> Option<String> {
+    match config.get(name)? {
         toml::Value::String(s) => Some(s.clone()),
         toml::Value::Integer(i) => Some(i.to_string()),
         toml::Value::Boolean(b) => Some(b.to_string()),
@@ -664,7 +662,7 @@ fn toml_field_as_string(value: &toml::Value, name: &str) -> Option<String> {
         toml::Value::Datetime(d) => Some(d.to_string()),
         // Arrays / tables aren't meaningful as a single display
         // row — skip silently. Backends needing structured
-        // display can override `display_info` directly.
+        // display can override `display_config` directly.
         toml::Value::Array(_) | toml::Value::Table(_) => None,
     }
 }
@@ -680,7 +678,7 @@ pub trait TvDiscovery: Send + Sync {
     fn discover(
         &self,
         timeout: std::time::Duration,
-    ) -> impl std::future::Future<Output = Result<Vec<DiscoveredTv>>> + Send;
+    ) -> impl Future<Output = Result<Vec<DiscoveredTv>>> + Send;
 }
 
 #[cfg(test)]

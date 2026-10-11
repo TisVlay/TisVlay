@@ -27,9 +27,26 @@ Configuration: `.config/nextest.toml` with two profiles:
 | Profile | Retries | Slow warning | Output |
 |---------|---------|--------------|--------|
 | `default` | 0 | 60s | terminal |
-| `ci` | 1 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
+| `ci` | 0 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
 
-**Process-per-test isolation** matters because wire tests each boot a full daemon (or daemon + session service) stack — a zenoh runtime listening on a per-test temp Unix socket, netlink sockets, and for the consumed-D-Bus adapters a private `dbus-daemon`. `cargo test`'s shared-process model would have those runtimes stepping on each other.
+**Process-per-test isolation** is nextest's default and the canonical runner, since wire tests each boot a full daemon (or daemon + session service) stack — a zenoh runtime on a per-test temp Unix socket, netlink sockets, and for the consumed-D-Bus adapters a private `dbus-daemon`. The suite doesn't *depend* on it, though: plain `cargo test --workspace --all-features` passes too, with each binary's tests concurrent in one process. That holds because every rig binds its own sockets, and tests that own well-known D-Bus names take a [`PrivateBus::isolated`](#privatebus) bus of their own. Keep it that way: a test that only passes alone in its process is relying on an accident.
+
+### One integration-test binary per crate
+
+Each crate compiles its integration tests into a single binary. Where a crate has several suites, they are modules of `tests/it/main.rs` (`tests/it/wire.rs`, `tests/it/profiles.rs`, …). A crate with one suite keeps a single `tests/<name>.rs`.
+
+- **Why:** every `tests/*.rs` file is a separate crate, and each one compiles and links the whole stack again. Folding the daemon's seven suites into one binary took its test binaries from 791 MB to about 125 MB, and the rebuild after a daemon edit from 2.4 s to 1.8 s. Across the workspace, 46 test binaries became 33.
+- **Shared helpers are plain modules** (`tests/it/support/mod.rs`, declared once in `main.rs` and imported with `use crate::support;`). Dead code in them is evaluated once, so they need no `dead_code` allow.
+- **Filtering:** a multi-suite crate's binary is named `it`; a single-suite crate's takes its file's name (`tisvlay-session::session`). Select one suite with a nextest filter such as `cargo nextest run --workspace --all-features -E 'binary_id(tisvlay-daemon::it) & test(/^wire::/)'`. Use `--workspace`, not `-p`: tokio's `test-util` only unifies across the workspace build.
+- **Add a new suite** as a module beside the others, not as a new `tests/*.rs` file.
+
+### Flaky tests are quarantined, never retried
+
+Both nextest profiles run with `retries = 0`; a retry hides a flaky test and lets it rot. When a test turns out to be flaky:
+
+1. File an issue with the failure output.
+2. Mark the test `#[ignore = "flaky: #N"]`, so the reason and the tracking issue sit on the test.
+3. Fix it or delete it. A quarantined test has no permanent home.
 
 ### Test execution pipeline
 
@@ -53,11 +70,10 @@ flowchart LR
 | Type | Location | Tool | When |
 |------|----------|------|------|
 | Unit | `#[cfg(test)] mod tests` in source | built-in | every change |
-| Integration | `crates/*/tests/*.rs` | built-in | every change |
+| Integration | `crates/*/tests/` (one binary per crate; `tests/it/` when there are several suites) | built-in | every change |
 | Doc | `///` examples in `pub` items | `cargo test --doc` | every change |
 | Parameterized | unit/integration | `rstest` | every change |
 | Property | unit/integration | `proptest` | every change |
-| Snapshot | `crates/*/tests/snapshots/` | `insta` | every change |
 | Mock backend | `tisvlay-world/tests/`, `tisvlay-daemon/tests/`, other binary crates' `tests/` | mock crate | every change |
 
 ### Parameterized tests (rstest)
@@ -93,18 +109,9 @@ proptest! {
 }
 ```
 
-When a proptest fails, it writes a `.proptest-regressions` file. **Commit these files** — they replay the failing seed on future runs.
+When a proptest fails, it writes a `.proptest-regressions` file. **Commit these files** — they replay the failing seed on future runs. Don't commit one produced by a deliberate mutation check: it records a bug that was never real.
 
-### Snapshot tests (insta)
-
-Compare generated output against saved reference files. Workflow:
-
-1. Write test: `insta::assert_json_snapshot!(value)`
-2. `just test` — new/changed snapshots fail, write `.snap.new`
-3. `just test-snapshot-review` — interactive diff TUI
-4. Commit updated `.snap` files
-
-Snapshots live in `crates/*/tests/snapshots/`.
+**Every parser of outside input has a "never panics" property.** Each feeds arbitrary input, shaped toward what the parser reads where that helps, and asserts only that it returns: the SSDP decoder, the EDID probe, the LG power-state payload, CEC input ids and OSD-name clamping, and MAC parsing. A sharper invariant goes in where one exists: the clamped OSD name always fits CEC's 14-byte operand. See `docs/build.md` § Lint policy, "Parsers of outside input".
 
 ## LG backend testing
 
@@ -129,6 +136,8 @@ just cov-ratchet  # fails if below baseline (CI uses this)
 ```
 
 The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Run `just cov` to see the current number.
+
+A failing test doesn't hide the report: the local `cov*` recipes run every test (`--no-fail-fast`), render the coverage of what ran, then exit with the test status ("tests failed … coverage reflects a failing run"). `cov-ratchet` checks that status first and fails before comparing, so partial coverage never passes or moves the baseline; `test-ci` stays fail-fast.
 
 CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. Every stage runs `--all-features`, same as local `just test`. Dev-only code is excluded from the coverage denominator via the `cov_exclude` regex in the justfile — `(tisvlay-(test|mock)/|test_server)` — so test infrastructure doesn't count against the ratchet. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
 
@@ -240,6 +249,25 @@ just daemon-start
 
 Boot-config entries are additive seeds; TVs already in the daemon's writable state file win, and anything paired at runtime (e.g., `tisvlay pair` with vendor `mock` and `pairing = "accept"`) persists to the state file regardless.
 
+## Hermetic tests: no host state
+
+A test's outcome must not depend on the machine it runs on: what's running (a dev box with Sunshine or Moonshine), the network (a Nix build sandbox or container with no multicast route, IPv6 off), the session bus, or `TMPDIR`. Production code that reads the host takes its source through a seam, and tests hand in a fake:
+
+| Host dependency | Seam | Test fake |
+|---|---|---|
+| Sunshine process + `/serverinfo` on loopback | `SessionOptions.sunshine: Arc<dyn SunshineProbe>` | `StaticProbe` (scripted observation) |
+| SSDP multicast send | `SearchOptions.destination`, `SharedSearcher::with_destination` | a loopback UDP stand-in |
+| Desktop notifications (session bus) | `Notifier::capturing` | the returned toast receiver |
+| LG reconnect's fixed SSAP ports | `LgConnection` test-only `reconnect_url` | `FakeSsapServer` |
+| TV network-state replies | `FakeSsapServer::set_command_payload` | scripted payloads |
+| Consumed D-Bus services | `PrivateBus` + `tisvlay-test` fakes | `FakeLogind`, … |
+
+Supporting rules:
+
+- **Unix sockets** go in `tisvlay_test::socket_tempdir()`, not `tempfile::tempdir()`: a long `TMPDIR` would push socket paths past `sun_path`'s 108 bytes. Other temp files get a private `tempfile::tempdir()`, never a fixed name in the shared temp dir.
+- **Tests whose point is the real kernel** (the netlink route lookup, the ACL xattr round trip) don't get a seam, which would test nothing. They derive their expectation from the host's capability (is `::1` bindable?) or skip an environment that refuses the operation outright (`ENOTSUP` / `EPERM` from a sandbox), and stay exact otherwise.
+- To check a change really is hermetic, run the test binary in a namespace with no network: `unshare -rn sh -c 'ip link set lo up; target/debug/deps/<test-binary>'`.
+
 ## Test infrastructure: two crates
 
 Test-only crates are `publish = false` and split by what they fake:
@@ -257,7 +285,7 @@ Each fake sits in a different *direction* relative to the code under test. The t
 
 ```mermaid
 flowchart TD
-    W["<b>crates/*/tests/*.rs</b><br/>wire tests: real zenoh clients<br/>over a per-test Unix socket"]
+    W["<b>crates/*/tests/</b><br/>wire tests: real zenoh clients<br/>over a per-test Unix socket"]
     D["<b>tisvlay-daemon / tisvlay-session</b><br/>the real serve() stack under test"]
     M["<b>tisvlay-mock</b><br/>fake TV (peer side)<br/><i>MockConnector · MockHandle</i>"]
     T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · FakeScreenSaver</i>"]
@@ -285,7 +313,7 @@ Dev-only crate providing shared infrastructure for the consumed-D-Bus adapters. 
 
 ### PrivateBus
 
-Spawns one private `dbus-daemon` per test binary via `LazyLock`.
+`PrivateBus::shared()` is one private `dbus-daemon` per test process (via `LazyLock`): one per test under nextest, one shared by a binary's tests under plain `cargo test`. Tests that own a well-known name (a `FakeLogind`, a fake ScreenSaver) use `PrivateBus::isolated()` instead — a bus of their own, ended when dropped — because name ownership is bus-wide.
 
 ```rust
 let bus = PrivateBus::shared();
@@ -293,10 +321,10 @@ let conn = bus.connect().await?;
 ```
 
 Key design:
-- `PR_SET_PDEATHSIG = SIGKILL` — kernel kills daemon on test crash
+- `PR_SET_PDEATHSIG = SIGKILL` — kernel kills daemon on test crash. The kernel ties it to the *thread* that forked the child, so the fork runs on a dedicated thread that lives as long as the process; forking from the first test's thread would kill the daemon when that test ends under `cargo test`
 - Env scrubbing (`DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS`, `DBUS_STARTER_*`) — isolates from user session
 - `Builder::address(...)` — bypasses zbus's `OnceCell` connection cache
-- Binary-level isolation via nextest's process-per-binary model
+- Needs `dbus-daemon` on `PATH` (the Nix dev shell provides it) and says so plainly when it's missing
 
 ### Fake D-Bus services
 
@@ -346,7 +374,7 @@ flowchart TD
     BUS --> WORLD
 ```
 
-The shared setup helper in `tisvlay-daemon/tests/wire.rs` is the template:
+The shared setup helper in `tisvlay-daemon/tests/it/wire.rs` is the template:
 
 ```rust
 async fn wire() -> Wire {
@@ -373,16 +401,17 @@ async fn wire() -> Wire {
 
 ### Test inventory
 
-- `tisvlay-world/tests/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `pairing_profiles.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
-- `tisvlay-daemon/tests/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
-- `tisvlay-daemon/tests/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
-- `tisvlay-daemon/tests/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
-- `tisvlay-daemon/tests/greeter.rs` — the greeter contract (timeout key + idle puts driving system-profile actions) and the `automate_when` gate.
-- `tisvlay-daemon/tests/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
-- `tisvlay-daemon/tests/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
+- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `pairing_profiles.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
+- `tisvlay-daemon/tests/it/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
+- `tisvlay-daemon/tests/it/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
+- `tisvlay-daemon/tests/it/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
+- `tisvlay-daemon/tests/it/greeter.rs` — the greeter contract (timeout key + idle puts driving system-profile actions) and the `automate_when` gate.
+- `tisvlay-daemon/tests/it/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
+- `tisvlay-daemon/tests/it/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
+- `tisvlay-daemon/tests/it/access.rs` — socket-permission flips against a live daemon: granting or revoking access mid-run, the kernel-level path a seat ACL change takes.
 - `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the ScreenSaver adapter (via `FakeScreenSaver`), user-store persistence, and the idle-timeout watch.
-- `tisvlay-tray/tests/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
-- `tisvlay-tray/tests/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
+- `tisvlay-tray/tests/it/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
+- `tisvlay-tray/tests/it/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
 - `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, and connect-before-daemon resilience.
 
 ### Zenoh testing gotchas
@@ -395,7 +424,7 @@ async fn wire() -> Wire {
 
 ## GUI testing (i-slint-backend-testing)
 
-`tisvlay-gui/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+`tisvlay-gui-app/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
 
 ```rust
 use slint::{ModelRc, SharedString, VecModel};
@@ -424,7 +453,7 @@ The repo sets this once in `.cargo/config.toml [env]`, which Cargo reads from th
 - `accessible-label` (translated via `@tr(...)`) — the screen-reader announcement; defaults to the visible text on button primitives. Tests query via `ElementHandle::find_by_accessible_label`.
 - `accessible-id` (literal, untranslated, `<pane>-<element>`) — the stable test selector. Tests query via `ElementQuery::match_predicate(|e| e.accessible_id() == ...)` until upstream adds a direct finder ([slint-ui/slint#9940](https://github.com/slint-ui/slint/pull/9940) shipped the property; finder remains TBD).
 
-Slint propagates accessibility properties to descendants, so an `accessible-id` query returns one hit per descendant of the target widget — see `tisvlay-gui/tests/about_pane.rs` for `find_by_accessible_id` (returns the first match) and `count_by_id` (renders-or-not check).
+Slint propagates accessibility properties to descendants, so an `accessible-id` query returns one hit per descendant of the target widget — see `tisvlay-gui-app/tests/it/about_pane.rs` for `find_by_accessible_id` (returns the first match) and `count_by_id` (renders-or-not check).
 
 ### What we deliberately don't do
 
@@ -482,7 +511,7 @@ fn publish_tv_emits_instrumented_debug_event() {
 
 ## Deterministic time
 
-`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test/tests/clock_spike.rs`).
+`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test/tests/it/clock_spike.rs`).
 
 Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
@@ -492,7 +521,7 @@ Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
 ### D-Bus name ownership is bus-global
 
-Each fake D-Bus service (`FakeLogind`, `FakeScreenSaver`) claims a well-known name, and only one owner can exist per bus. Tests within a single binary share one `PrivateBus`, so two tests that both register the same fake cannot run in parallel in that binary; nextest's process-per-binary model keeps separate binaries isolated for free.
+Each fake D-Bus service (`FakeLogind`, `FakeScreenSaver`) claims a well-known name, and only one owner can exist per bus. Plain `cargo test` runs a binary's tests concurrently in one process, so two tests registering the same fake on `PrivateBus::shared()` would claim each other's name. Any test that owns a name therefore takes `PrivateBus::isolated()`; `shared()` is for tests that only connect or use unique object paths.
 
 ### Real-time waits in wire tests
 

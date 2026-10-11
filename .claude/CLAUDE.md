@@ -25,8 +25,9 @@ tisvlay/
 ├── crates/
 │   ├── tisvlay-core/              # Core library (vendor-agnostic traits & types)
 │   │   └── src/                  # traits, capabilities, pairing, config (profiles),
-│   │                             # state, wol, wayland (feature), logging (feature),
-│   │                             # Coalescer/ReconcilerMap/RefreshTrigger
+│   │                             # state, wol, Coalescer/ReconcilerMap/RefreshTrigger
+│   ├── tisvlay-runtime/           # Binaries' process glue (unpublished): logging init,
+│   │                             # socket-group access, wayland + Mutter idle transports
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation (SSAP over wss)
 │   ├── tisvlay-cec/               # HDMI-CEC vendor implementation (linux-cec)
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)
@@ -52,7 +53,10 @@ tisvlay/
 │   ├── tisvlay/                   # Client SDK: DaemonClient/SessionClient/TrayClient +
 │   │                             # StateWatcher (root-D-Bus-client-compatible surface)
 │   ├── tisvlay-cli/               # CLI (binary name: tisvlay) — pure zenoh client
-│   └── tisvlay-gui/               # Slint settings window (ui/*.slint, lang/ gettext)
+│   ├── tisvlay-gui/               # Compiled Slint UI only (ui/*.slint, lang/ gettext;
+│   │                             # owns the gettext domain; lib name tisvlay_gui_ui)
+│   └── tisvlay-gui-app/           # Settings window: state, rpcs, tests, `tisvlay-gui`
+│                                 # binary (lib name tisvlay_gui)
 │
 ├── packaging/
 │   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM)
@@ -107,7 +111,7 @@ Vendor/protocol quirks (unchanged by the rewrite):
 
 Remote-session detection quirks (session-side detectors — see docs/remote/detection.md):
 
-- No first-class "remote session active" API on the Linux desktop — detection is side-effect observation (PipeWire capture node, portal `BecomeMonitor`, logind) plus app hooks. Sunshine's default NvFBC/KMS capture on Nvidia is invisible to the portal monitor *and* PipeWire; its only machine-readable signal is the unauthenticated `GET 127.0.0.1:47989/serverinfo` (`SUNSHINE_SERVER_BUSY|FREE`), polled as a level detector
+- No first-class "remote session active" API on the Linux desktop — detection is side-effect observation (PipeWire capture node, portal `BecomeMonitor`, logind) plus app hooks. Sunshine's default NvFBC/KMS capture on Nvidia is invisible to the portal monitor *and* PipeWire; its only machine-readable signal is the unauthenticated `GET 127.0.0.1:<base port>/serverinfo` (`SUNSHINE_SERVER_BUSY|FREE`; base port 47989 by default, `--sunshine-port` otherwise — a Sunshine moved aside for Moonshine leaves Moonshine answering on 47989), polled as a level detector
 - Portal `BecomeMonitor` connections are receive-only — resolve a caller's bus name → PID → exe on the *main* session-bus connection, not the monitor connection
 - InputCapture portal sessions must never arm (lan-mouse holds a standing one while the user is present); it shares the portal object path + `CreateSession` member with the capture interfaces, so exclude it by interface, not heuristic
 - logind mints `Remote=yes` for plain SSH shells too (`Type=tty`); the remote-*desktop* detector must require a graphical `Type` (`x11`/`wayland`)
@@ -187,12 +191,16 @@ All project commands live in the `justfile` at the repo root — it is the singl
 
 ```bash
 just              # list all recipes, grouped by purpose
-just check        # deny + licenses + fmt + build + clippy + test
+just check        # deny + shear + typos + licenses + fmt + build + clippy + doc + test
 just build        # cargo build --profile test --workspace --all-targets --all-features
-just clippy       # cargo clippy ... -- -D warnings
+just clippy       # cargo clippy (warnings denied via build.warnings)
+just doc          # cargo doc --workspace --no-deps (warnings denied)
+just shear        # unused / misplaced dependencies (cargo-shear)
+just typos        # spell check, American English (_typos.toml)
 just test         # cargo nextest run + cargo test --doc
 just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
 just cov          # coverage summary
+just msrv / hack / audit  # CI-only checks, reproducible locally (docs/build.md)
 just package-deb  # build the .deb package
 ```
 
@@ -208,7 +216,7 @@ just package-deb  # build the .deb package
 
 ## Linting & CI
 
-All checks are defined in `prek.toml`, which dispatches to `just` recipes. Hook ids match the corresponding `just` recipe names, ordered by priority: file checks → `fmt` → `build` → `clippy` → `test`. Build and clippy use `--profile test` so `cargo test` reuses all build artifacts.
+All checks are defined in `prek.toml`, which dispatches to `just` recipes. Hook ids match the corresponding `just` recipe names, ordered by priority: file checks → `fmt` → `build` → `clippy`/`doc` → `test`. Build and clippy use `--profile test` so `cargo test` reuses all build artifacts. The gate recipes deny warnings by exporting `CARGO_BUILD_WARNINGS=deny` — never set in `.cargo/config.toml`, which the Nix package build reads; the policy lives in `docs/build.md` § Lint policy.
 
 ```bash
 prek run -a                                          # all checks
@@ -216,6 +224,19 @@ prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt on
 ```
 
 CI runs file checks via prek, then a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`). Design notes: `docs/build.md`.
+
+### Code conventions
+
+Rules the lints can't fully express; the lint policy and its reasons are in `docs/build.md` § Lint policy.
+
+- **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
+- **Errors:** published crates and the client SDK expose `thiserror` types callers can match on. Binaries and binary-glue libraries (`tisvlay-runtime`, the service crates' library halves, wire's `bootstrap`) may use `anyhow`. The model is in `docs/architecture.md` § Error model.
+- **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
+- **Secrets never reach `Debug`.** A typed secret is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. The LG client key is one everywhere it's typed (`Credentials`, `LgVendorConfig`, the register payloads, `WebOsClient`); a new credential field uses it too. The untyped vendor config is a `tisvlay_core::VendorConfig`, and the wire requests that carry one (`AddTv`, `UpdateConfig`) are hand-written the same way: their `Debug` prints key names only. `Secret` wraps secrecy 0.10 (redacted `Debug`, zeroize on drop, `Serialize` opt-in); zenoh-config still pins 0.8, so `deny.toml` skips that duplicate.
+- **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
+- **A new rpc is declared once** in its family's table in `tisvlay-wire`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
+- **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
+- **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.
 
 ### Dead Code Detection
 
@@ -227,12 +248,11 @@ See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
 
 - `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters.
 - `tisvlay-mock` — fake vendor backend (implements `tisvlay-core` traits), always registered in the daemon.
-- Wire-level integration tests live in each binary crate's `tests/` (daemon: wire/profiles/cec/greeter/logind/liveliness; session; tray mirror + settings; SDK client) — they boot real daemon/session stacks on temp sockets, no fixture crate needed.
+- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; tray: mirror + settings), single-suite crates as one `tests/<name>.rs` (session, SDK client) — they boot real daemon/session stacks on temp sockets, no fixture crate needed.
 
 ```bash
 just test                   # cargo nextest run + doc tests
 just cov / cov-html / cov-ratchet
-just test-snapshot-review   # insta
 ```
 
 ## Reference Documentation

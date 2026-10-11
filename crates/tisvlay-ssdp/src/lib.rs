@@ -3,6 +3,19 @@
 //! See the crate-level [README](https://crates.io/crates/tisvlay-ssdp) for
 //! usage, scope, and firewall-bind rationale.
 
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
+// External-input profile: this module handles SSDP replies from the
+// network, so indexing, arithmetic, string slicing and narrowing casts
+// must be checked here (docs/build.md, Lint policy).
+#![warn(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -40,6 +53,16 @@ pub struct SearchOptions {
     /// Multicast TTL for the M-SEARCH packets. `None` uses the UPnP
     /// spec default of 2.
     pub ttl: Option<u32>,
+    /// Where M-SEARCH packets go. `None` is the SSDP multicast group
+    /// (`239.255.255.250:1900`); a unicast address searches one host
+    /// directly (UPnP's unicast M-SEARCH) — and lets tests aim at a
+    /// loopback stand-in instead of the network.
+    pub destination: Option<SocketAddr>,
+}
+
+/// The SSDP multicast group every device listens on.
+fn multicast_destination() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(SSDP_MULTICAST_V4), SSDP_PORT)
 }
 
 /// One device's reply to an M-SEARCH.
@@ -83,7 +106,8 @@ pub enum Error {
     /// Socket operation failed (bind, send, or recv).
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// A bind address that isn't IPv4 was passed in `SearchOptions`.
+    /// A bind address or destination that isn't IPv4 was passed in
+    /// `SearchOptions` or to [`SharedSearcher::with_destination`].
     ///
     /// Deliberate: every currently-supported vendor's SSDP profile is
     /// v4-only. LG specifically does not join the v6 SSDP multicast
@@ -92,8 +116,8 @@ pub enum Error {
     /// section). SSAP control over v6 works independently; discovery
     /// just isn't the v6 path. Lift this rejection when a vendor that
     /// actually answers on `ff02::c` is added.
-    #[error("only IPv4 bind addresses are supported")]
-    Ipv6BindUnsupported,
+    #[error("only IPv4 addresses are supported")]
+    Ipv6Unsupported,
     /// A response was received but couldn't be parsed.
     #[error("malformed response: {0}")]
     Parse(&'static str),
@@ -129,28 +153,33 @@ pub async fn search(
     let bind_addr = opts
         .bind_addr
         .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
-    if !bind_addr.is_ipv4() {
-        return Err(Error::Ipv6BindUnsupported);
+    let destination = opts.destination.unwrap_or_else(multicast_destination);
+    if !bind_addr.is_ipv4() || !destination.is_ipv4() {
+        return Err(Error::Ipv6Unsupported);
     }
     let mx = opts.mx.unwrap_or(DEFAULT_MX);
     let ttl = opts.ttl.unwrap_or(DEFAULT_TTL);
 
     let socket = UdpSocket::bind(bind_addr).await?;
     apply_multicast_ttl(&socket, ttl);
-    send_m_search_burst(&socket, targets, mx).await?;
+    send_m_search_burst(&socket, targets, mx, destination).await?;
 
     Ok(async_stream::stream! {
         let mut buf = [0u8; RECV_BUFFER_SIZE];
-        let deadline = tokio::time::Instant::now() + timeout;
+        // No deadline if the timeout overflows `Instant` (`Duration::MAX` as
+        // "wait forever"); `tokio::time::timeout` accepts `Duration::MAX`.
+        let deadline = tokio::time::Instant::now().checked_add(timeout);
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining = deadline.map_or(Duration::MAX, |deadline| {
+                deadline.saturating_duration_since(tokio::time::Instant::now())
+            });
             if remaining.is_zero() {
                 break;
             }
             match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
                 Err(_) => break,
                 Ok(Err(e)) => yield Err(Error::from(e)),
-                Ok(Ok((n, _src))) => yield decode_datagram(&buf[..n]),
+                Ok(Ok((n, _src))) => yield decode_datagram(buf.get(..n).unwrap_or_default()),
             }
         }
     })
@@ -183,6 +212,9 @@ pub struct SharedSearcher {
     bind_port: u16,
     /// `ST:` targets sent on every [`search`](Self::search) burst.
     targets: Vec<String>,
+    /// Where bursts go — the SSDP multicast group unless
+    /// [`with_destination`](Self::with_destination) aims elsewhere.
+    destination: SocketAddr,
     inner: OnceCell<SharedInner>,
 }
 
@@ -209,8 +241,17 @@ impl SharedSearcher {
         Self {
             bind_port,
             targets,
+            destination: multicast_destination(),
             inner: OnceCell::new(),
         }
+    }
+
+    /// Send bursts to `destination` instead of the multicast group — a
+    /// unicast search of one host, or a test's loopback stand-in.
+    #[must_use]
+    pub fn with_destination(mut self, destination: SocketAddr) -> Self {
+        self.destination = destination;
+        self
     }
 
     /// Bind the socket once and spawn the receive→broadcast loop.
@@ -247,14 +288,21 @@ impl SharedSearcher {
     /// reply is missed. Concurrent callers each get their own subscription
     /// and every one sees every response.
     pub async fn search(&self, timeout: Duration) -> Result<impl Stream<Item = SsdpResponse>> {
+        if !self.destination.is_ipv4() {
+            return Err(Error::Ipv6Unsupported);
+        }
         let inner = self.inner().await?;
         let mut rx = inner.tx.subscribe();
-        send_m_search_burst(&inner.socket, &self.targets, DEFAULT_MX).await?;
+        send_m_search_burst(&inner.socket, &self.targets, DEFAULT_MX, self.destination).await?;
 
         Ok(async_stream::stream! {
-            let deadline = tokio::time::Instant::now() + timeout;
+            // No deadline if the timeout overflows `Instant` (`Duration::MAX` as
+            // "wait forever"); `tokio::time::timeout` accepts `Duration::MAX`.
+            let deadline = tokio::time::Instant::now().checked_add(timeout);
             loop {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let remaining = deadline.map_or(Duration::MAX, |deadline| {
+                    deadline.saturating_duration_since(tokio::time::Instant::now())
+                });
                 if remaining.is_zero() {
                     break;
                 }
@@ -299,13 +347,13 @@ async fn recv_loop(socket: Arc<UdpSocket>, tx: broadcast::Sender<SsdpResponse>) 
     let mut buf = [0u8; RECV_BUFFER_SIZE];
     loop {
         match socket.recv_from(&mut buf).await {
-            Ok((n, _src)) => match decode_datagram(&buf[..n]) {
+            Ok((n, _src)) => match decode_datagram(buf.get(..n).unwrap_or_default()) {
                 // Ignore send errors: no subscribers is the normal idle
                 // state between searches.
                 Ok(resp) => {
                     let _ = tx.send(resp);
                 }
-                Err(e) => tracing::debug!(error = %e, "Dropping unparseable SSDP datagram"),
+                Err(e) => tracing::debug!(error = %e, "Dropping unparsable SSDP datagram"),
             },
             Err(e) => {
                 // A bound UDP socket rarely errors; surface it at warn (a
@@ -326,17 +374,17 @@ fn apply_multicast_ttl(socket: &UdpSocket, ttl: u32) {
     }
 }
 
-/// Send one M-SEARCH datagram per target to the SSDP multicast group.
-/// Returns `Err` on the first send failure.
+/// Send one M-SEARCH datagram per target to `destination` (normally the
+/// SSDP multicast group). Returns `Err` on the first send failure.
 async fn send_m_search_burst<S: AsRef<str>>(
     socket: &UdpSocket,
     targets: &[S],
     mx: u8,
+    destination: SocketAddr,
 ) -> Result<()> {
-    let multicast_addr = SocketAddr::new(IpAddr::V4(SSDP_MULTICAST_V4), SSDP_PORT);
     for target in targets {
-        let packet = build_m_search(target.as_ref(), mx);
-        socket.send_to(packet.as_bytes(), multicast_addr).await?;
+        let packet = build_m_search(target.as_ref(), mx, destination);
+        socket.send_to(packet.as_bytes(), destination).await?;
     }
     Ok(())
 }
@@ -347,10 +395,12 @@ fn decode_datagram(bytes: &[u8]) -> Result<SsdpResponse> {
     parse_response(body)
 }
 
-fn build_m_search(target: &str, mx: u8) -> String {
+/// The M-SEARCH datagram. `HOST:` names where it's sent — the multicast
+/// group, or the device itself for a unicast search, per UPnP.
+fn build_m_search(target: &str, mx: u8, host: SocketAddr) -> String {
     format!(
         "M-SEARCH * HTTP/1.1\r\n\
-         HOST: 239.255.255.250:1900\r\n\
+         HOST: {host}\r\n\
          MAN: \"ssdp:discover\"\r\n\
          ST: {target}\r\n\
          MX: {mx}\r\n\
@@ -481,11 +531,14 @@ mod tests {
 
     #[test]
     fn m_search_packet_shape() {
-        let pkt = build_m_search("upnp:rootdevice", 2);
+        let pkt = build_m_search("upnp:rootdevice", 2, multicast_destination());
         // Cheap structural assertions — exact byte equality would be
         // brittle to header-order changes that don't matter on the wire.
         assert!(pkt.starts_with("M-SEARCH * HTTP/1.1\r\n"));
         assert!(pkt.contains("HOST: 239.255.255.250:1900\r\n"));
+        // A unicast search names the device it's sent to.
+        let unicast = build_m_search("upnp:rootdevice", 2, (Ipv4Addr::LOCALHOST, 1900).into());
+        assert!(unicast.contains("HOST: 127.0.0.1:1900\r\n"));
         assert!(pkt.contains("MAN: \"ssdp:discover\"\r\n"));
         assert!(pkt.contains("ST: upnp:rootdevice\r\n"));
         assert!(pkt.contains("MX: 2\r\n"));
@@ -493,45 +546,128 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ipv6_bind_addr_is_rejected() {
-        let opts = SearchOptions {
-            bind_addr: Some(SocketAddr::new(
-                IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
-                0,
-            )),
+    async fn ipv6_addresses_are_rejected() {
+        let v6 = SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), SSDP_PORT);
+        let bind_v6 = SearchOptions {
+            bind_addr: Some(v6),
             ..Default::default()
         };
-        // `impl Stream` is not `Debug`, so unwrap-style helpers don't
-        // apply — match on the Result directly.
-        match search(&["upnp:rootdevice"], Duration::from_millis(10), opts).await {
-            Err(Error::Ipv6BindUnsupported) => {}
-            Err(other) => panic!("expected Ipv6BindUnsupported, got {other:?}"),
+        let aim_v6 = SearchOptions {
+            destination: Some(v6),
+            ..Default::default()
+        };
+        for opts in [bind_v6, aim_v6] {
+            // `impl Stream` is not `Debug`, so unwrap-style helpers don't
+            // apply — match on the Result directly.
+            match search(&["upnp:rootdevice"], Duration::from_millis(10), opts).await {
+                Err(Error::Ipv6Unsupported) => {}
+                Err(other) => panic!("expected Ipv6Unsupported, got {other:?}"),
+                Ok(_) => panic!("expected error, got Ok"),
+            }
+        }
+        let shared = SharedSearcher::new(0, vec!["upnp:rootdevice".into()]).with_destination(v6);
+        match shared.search(Duration::from_millis(10)).await {
+            Err(Error::Ipv6Unsupported) => {}
+            Err(other) => panic!("expected Ipv6Unsupported, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
         }
+        assert!(shared.local_addr().is_none(), "rejected before binding");
+    }
+
+    #[test]
+    fn searches_default_to_the_multicast_group() {
+        let group: SocketAddr = "239.255.255.250:1900".parse().unwrap();
+        assert_eq!(multicast_destination(), group);
+        assert_eq!(SharedSearcher::new(0, vec![]).destination, group);
+    }
+
+    /// A loopback stand-in for the searched device — tests aim M-SEARCH
+    /// here instead of the real multicast group, so they need no network.
+    async fn stand_in() -> (UdpSocket, SocketAddr) {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("stand-in socket");
+        let addr = socket.local_addr().expect("stand-in address");
+        (socket, addr)
     }
 
     #[tokio::test]
     async fn search_returns_empty_stream_on_timeout() {
         use futures_util::StreamExt;
-        // Bind to an ephemeral port and send to multicast. No real
-        // devices on the test host should reply — stream drains by
-        // timeout and yields nothing. This exercises the socket-bind
-        // and send paths end-to-end without needing a fake peer.
+        // A device that receives the M-SEARCH but never answers: the stream
+        // drains by timeout and yields nothing.
+        let (silent, addr) = stand_in().await;
+        let opts = SearchOptions {
+            destination: Some(addr),
+            ..Default::default()
+        };
         let stream = search(
             &["urn:tisvlay-test:never-matched:device:1"],
             Duration::from_millis(50),
-            SearchOptions::default(),
+            opts,
         )
         .await
         .expect("search setup");
         tokio::pin!(stream);
-        let collected: Vec<_> = stream.collect().await;
-        // Some hosts may have a UPnP router that replies; assert only
-        // that no parse error occurred — every item that did arrive
-        // parsed successfully.
-        for item in &collected {
-            assert!(item.is_ok(), "unexpected parse failure: {item:?}");
-        }
+        assert!(stream.collect::<Vec<_>>().await.is_empty());
+        // The burst did reach the device.
+        let mut buf = [0u8; RECV_BUFFER_SIZE];
+        let (n, _) = silent.recv_from(&mut buf).await.expect("M-SEARCH arrives");
+        assert!(buf[..n].starts_with(b"M-SEARCH * HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn search_accepts_an_unbounded_timeout() {
+        use futures_util::StreamExt;
+        // `Duration::MAX` means "no deadline": the stream keeps waiting for
+        // replies instead of panicking on `Instant` overflow.
+        let (_silent, addr) = stand_in().await;
+        let opts = SearchOptions {
+            destination: Some(addr),
+            ..Default::default()
+        };
+        let stream = search(
+            &["urn:tisvlay-test:never-matched:device:1"],
+            Duration::MAX,
+            opts,
+        )
+        .await
+        .expect("search setup");
+        tokio::pin!(stream);
+        let next = tokio::time::timeout(Duration::from_millis(50), stream.next()).await;
+        assert!(next.is_err(), "still waiting: {next:?}");
+    }
+
+    #[tokio::test]
+    async fn search_parses_the_searched_devices_reply() {
+        use futures_util::StreamExt;
+        let (device, addr) = stand_in().await;
+        tokio::spawn(async move {
+            let mut buf = [0u8; RECV_BUFFER_SIZE];
+            let (_, searcher) = device.recv_from(&mut buf).await.expect("M-SEARCH arrives");
+            device
+                .send_to(TYPICAL_LG_RESPONSE.as_bytes(), searcher)
+                .await
+                .expect("reply sent");
+        });
+        let opts = SearchOptions {
+            destination: Some(addr),
+            ..Default::default()
+        };
+        let stream = search(
+            &["urn:lge-com:service:webos-second-screen:1"],
+            Duration::from_millis(300),
+            opts,
+        )
+        .await
+        .expect("search setup");
+        tokio::pin!(stream);
+        let replies: Vec<_> = stream.collect().await;
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        assert_eq!(
+            replies[0].as_ref().expect("reply parses").usn(),
+            "uuid:abcd1234-1234-1234-1234-1234567890ab::urn:schemas-upnp-org:device:MediaRenderer:1"
+        );
     }
 
     #[tokio::test]
@@ -539,8 +675,11 @@ mod tests {
         use futures_util::StreamExt;
 
         // One shared searcher on an ephemeral port (0) so the test never
-        // collides with anything already on the host.
-        let searcher = SharedSearcher::new(0, vec!["urn:tisvlay-test:shared:1".to_string()]);
+        // collides with anything already on the host; its bursts go to a
+        // loopback sink rather than the network.
+        let (_sink, sink_addr) = stand_in().await;
+        let searcher = SharedSearcher::new(0, vec!["urn:tisvlay-test:shared:1".to_string()])
+            .with_destination(sink_addr);
 
         // First search binds the socket and starts the background reader;
         // a second, overlapping search reuses it — the concurrent case a
@@ -595,5 +734,32 @@ mod tests {
         let (got1, got2) = tokio::join!(saw1, saw2);
         assert!(got1, "first subscriber missed the shared response");
         assert!(got2, "second subscriber missed the shared response");
+    }
+
+    /// Replies arrive from anything on the network, so no input may panic.
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn decode_datagram_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+                let _ = decode_datagram(&bytes);
+            }
+
+            #[test]
+            fn parse_response_never_panics(text in any::<String>()) {
+                let _ = parse_response(&text);
+            }
+
+            /// A `200` status line, so every case reaches the header loop,
+            /// with the headers it extracts among the random ones.
+            #[test]
+            fn parse_response_never_panics_on_http_shapes(
+                text in "HTTP/1\\.1 200 OK\r\n((LOCATION|USN|SERVER|ST|[A-Za-z-]{0,12}):[^\r\n]{0,40}\r\n){0,8}(\r\n)?"
+            ) {
+                let _ = parse_response(&text);
+            }
+        }
     }
 }

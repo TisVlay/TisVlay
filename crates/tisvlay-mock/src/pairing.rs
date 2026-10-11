@@ -7,7 +7,7 @@
 //! `[tv.mock] pairing = "..."` config knob.) Don't copy the
 //! test-driving parts when cloning mock as a skeleton.
 //!
-//! Pairing is modelled as an explicit state transition
+//! Pairing is modeled as an explicit state transition
 //! `Idle → Prompted → {Accepted, Rejected, TimedOut}`. Real backends
 //! have much more complex flows (WebSocket handshake, capability
 //! exchange, credential persistence, etc.), but from the tisvlay
@@ -43,7 +43,7 @@ pub(crate) enum PairingOutcome {
 /// Vendor-config shorthand for the common pairing scenarios.
 ///
 /// Surfaced in `[tv.mock] pairing = "..."` and parsed by serde.
-/// The shorthand pre-seeds a [`PairingOutcome`] before the test
+/// The shorthand pre-seeds a `PairingOutcome` before the test
 /// starts, so simple tests don't need to drive the handle manually.
 ///
 /// Tests that need fine-grained control (e.g., a mix of accept and

@@ -14,6 +14,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "tisvlay"
 path = "src/main.rs"
+# The SDK library is also named `tisvlay`; documenting both writes the same
+# `target/doc/tisvlay/` page, and rustdoc warns on the collision. The CLI's
+# reference lives in its `--help` and the user guide, not in rustdoc.
+doc = false
 
 # The gen-cli-docs helper renders the clap tree (in this crate's lib
 # target) to Markdown for the CLI reference (`just docs-cli`). Gated
@@ -34,9 +38,10 @@ anyhow = { workspace = true }
 # maps to Arg::add, which is gated behind it.
 clap = { workspace = true, features = ["unstable-ext"] }
 clap_complete = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-tisvlay-core = { workspace = true, features = ["access"] }
+tisvlay-runtime = { workspace = true, features = ["access"] }
 tisvlay-wire = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }

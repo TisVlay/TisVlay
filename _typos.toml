@@ -1,0 +1,44 @@
+# typos-cli config (`just typos`). American English is the project rule;
+# `locale = "en-us"` makes British spellings errors rather than accepted
+# variants.
+#
+# The allow-lists below hold names this repo can't rename: identifiers and
+# tokens from other projects' APIs. A word we own is fixed, never added here.
+[default]
+locale = "en-us"
+# netlink-packet-route / rtnetlink API paths that keep the British spelling;
+# matched as code so prose "neighbour" still fails.
+extend-ignore-re = [
+    "netlink_packet_route::neighbour::",
+    "\\.neighbours\\(\\)",
+]
+
+[default.extend-identifiers]
+# netlink-packet-route's neighbor-table types (British spelling upstream).
+NeighbourAddress = "NeighbourAddress"
+NeighbourAttribute = "NeighbourAttribute"
+NeighbourState = "NeighbourState"
+# The protocol name and the products named after it; typos would split
+# them at "Pn".
+UPnP = "UPnP"
+GUPnP = "GUPnP"
+MiniUPnPd = "MiniUPnPd"
+# The deflate crate.
+flate2 = "flate2"
+
+[default.extend-words]
+# Route "output interface", netlink-packet-route's `RouteAttribute::Oif`.
+oif = "oif"
+# libei's Emulated Input Server, as in the portal's `ConnectToEIS`.
+EIS = "EIS"
+# `.sunshine-wrapp`: NixOS makeWrapper's comm truncated to 15 bytes.
+wrapp = "wrapp"
+
+[files]
+extend-exclude = [
+    # Translation catalogs: generated, and msgids mirror the sources.
+    "*.pot",
+    "*.po",
+    "Cargo.lock",
+    "target/",
+]

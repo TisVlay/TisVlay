@@ -28,7 +28,7 @@ pub enum Variant {
 /// Resolve a request to the first icon file that exists across the theme
 /// cascade — for a consumer that loads the file itself (the GUI loads it
 /// into a Slint image). Returns `None` when no theme ships any candidate.
-/// See [`find`] for the shared cascade walk.
+/// See `find` for the shared cascade walk.
 pub fn resolve(names: &[&str], prefer: Variant) -> Option<PathBuf> {
     find(names, prefer).map(|(_, path)| path)
 }
@@ -60,7 +60,7 @@ fn find(names: &[&str], prefer: Variant) -> Option<(String, PathBuf)> {
     type Memo = Mutex<HashMap<(Vec<String>, bool), Option<(String, PathBuf)>>>;
     static MEMO: OnceLock<Memo> = OnceLock::new();
     let key = (
-        names.iter().map(|s| s.to_string()).collect(),
+        names.iter().map(ToString::to_string).collect(),
         matches!(prefer, Variant::Symbolic),
     );
     let memo = MEMO.get_or_init(Memo::default);
@@ -162,7 +162,7 @@ fn icon_themes() -> &'static [String] {
 /// `[Icons] Theme=...`. Returns `None` when the file or key is absent.
 fn detect_kde_theme() -> Option<String> {
     let home = std::env::var_os("HOME")?;
-    let path = std::path::PathBuf::from(home).join(".config/kdeglobals");
+    let path = PathBuf::from(home).join(".config/kdeglobals");
     let content = std::fs::read_to_string(&path).ok()?;
     let mut in_icons_section = false;
     for line in content.lines() {

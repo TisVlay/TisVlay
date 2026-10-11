@@ -12,6 +12,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
+use tisvlay_core::VendorConfig;
 use uuid::Uuid;
 
 #[derive(Deserialize, Debug, Default)]
@@ -30,7 +31,7 @@ pub struct SeedTv {
     #[serde(default = "default_true")]
     pub managed: bool,
     /// Vendor config table, passed to the backend verbatim.
-    pub config: toml::Value,
+    pub config: VendorConfig,
 }
 
 impl SeedTv {
@@ -45,7 +46,9 @@ impl SeedTv {
         if let Some(id) = self.id {
             return id;
         }
-        let key = format!("tisvlay-seed:{}:{}:{}", self.name, self.vendor, self.config);
+        let config = toml::Value::try_from(&self.config)
+            .expect("a vendor config is a TOML table, which always serializes");
+        let key = format!("tisvlay-seed:{}:{}:{config}", self.name, self.vendor);
         Uuid::new_v5(&Uuid::NAMESPACE_OID, key.as_bytes())
     }
 }
