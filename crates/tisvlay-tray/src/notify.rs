@@ -159,10 +159,9 @@ pub fn load_settings(path: &Path) -> Result<NotificationSettings> {
 /// `tray.toml` as a reload sees it: a missing or unparsable file is
 /// refused rather than read as the defaults.
 fn read_for_reload(path: &Path) -> Result<NotificationSettings, WireError> {
-    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
-    toml::from_str::<PersistedSettings>(&text)
+    tisvlay_runtime::fs::read_toml::<PersistedSettings>(path)
         .map(|persisted| persisted.settings)
-        .map_err(|e| WireError::store_unreadable(path, e))
+        .map_err(WireError::store_unreadable)
 }
 
 /// Durably write `tray.toml`, keeping a hand edit's comments and layout

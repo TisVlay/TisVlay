@@ -1227,11 +1227,12 @@ pub mod error {
             }
         }
 
-        /// `path` couldn't be read or parsed, for `reason`.
-        pub fn store_unreadable(path: &std::path::Path, reason: impl std::fmt::Display) -> Self {
+        /// A state file couldn't be read or parsed; `report` says where
+        /// and why, for a person to read.
+        pub fn store_unreadable(report: impl Into<String>) -> Self {
             Self {
                 code: ErrorCode::StoreUnreadable,
-                message: format!("can't reload {}: {reason}", path.display()),
+                message: report.into(),
             }
         }
     }

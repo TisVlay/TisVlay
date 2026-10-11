@@ -6,6 +6,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 use tracing::warn;
 
@@ -63,6 +64,63 @@ pub fn set_aside(path: &Path) -> io::Result<PathBuf> {
     fs::rename(path, &aside)?;
     fs::set_permissions(&aside, fs::Permissions::from_mode(0o600))?;
     Ok(aside)
+}
+
+/// Read and parse the TOML file at `path`. A failure is described the way
+/// rustc describes a compile error, for a person to read in the CLI or
+/// the GUI: the reason, then `--> path:line:column`, then the offending
+/// line with a caret under the span.
+///
+/// ```text
+/// error: extra `=`, expected nothing
+///  --> /home/user/.config/tisvlay/tray.toml:6:11
+///   |
+/// 6 | tv_wake = = nope
+///   |           ^
+/// ```
+///
+/// A file that can't be read gets the reason and the path alone.
+///
+/// Blocking: async callers run it on `spawn_blocking`.
+pub fn read_toml<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("error: {e}\n --> {}", path.display()))?;
+    toml::from_str(&text).map_err(|e| {
+        let reason = e.message().trim_end();
+        e.span()
+            .and_then(|span| excerpt(path, &text, span))
+            .map_or_else(
+                || format!("error: {reason}\n --> {}", path.display()),
+                |excerpt| format!("error: {reason}\n{excerpt}"),
+            )
+    })
+}
+
+/// The location line and the caret-marked source line for `span`, or
+/// `None` when the span doesn't fall on character boundaries in `text`.
+fn excerpt(path: &Path, text: &str, span: std::ops::Range<usize>) -> Option<String> {
+    let before = text.get(..span.start)?;
+    let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+    let rest = text.get(span.start..)?;
+    let line_end = rest
+        .find('\n')
+        .map_or(text.len(), |newline| span.start + newline);
+    let line = text.get(line_start..line_end)?.trim_end_matches('\r');
+    let lead = text.get(line_start..span.start)?;
+    let marked = text.get(span.start..span.end.clamp(span.start, line_end))?;
+    let number = before.matches('\n').count() + 1;
+    let column = lead.chars().count() + 1;
+    // Mirror tabs in the lead so the caret lines up however tabs render.
+    let indent: String = lead
+        .chars()
+        .map(|c| if c == '\t' { '\t' } else { ' ' })
+        .collect();
+    let carets = "^".repeat(marked.chars().count().max(1));
+    let gutter = " ".repeat(number.to_string().len());
+    Some(format!(
+        "{gutter}--> {}:{number}:{column}\n{gutter} |\n{number} | {line}\n{gutter} | {indent}{carets}",
+        path.display()
+    ))
 }
 
 /// What [`write_toml`] did.
@@ -424,6 +482,52 @@ ip = "192.168.4.170"
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             toml::to_string_pretty(&value).unwrap()
+        );
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    #[expect(dead_code, reason = "parsed only to provoke errors")]
+    struct Settings {
+        version: u32,
+        tv_wake: bool,
+    }
+
+    #[test]
+    fn a_parse_error_reads_like_a_compiler_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tray.toml");
+        fs::write(&path, "version = 1\ntv_wake = = nope\n").unwrap();
+        let report = read_toml::<Settings>(&path).unwrap_err();
+        assert_eq!(
+            report,
+            format!(
+                "error: extra `=`, expected nothing\n --> {}:2:11\n  |\n2 | tv_wake = = nope\n  |           ^",
+                path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_wrong_type_marks_the_whole_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tray.toml");
+        fs::write(&path, "version = 1\ntv_wake = \"yes\"\n").unwrap();
+        let report = read_toml::<Settings>(&path).unwrap_err();
+        let lines: Vec<&str> = report.lines().collect();
+        assert!(lines[0].starts_with("error: "), "{report}");
+        assert!(lines[1].ends_with("tray.toml:2:11"), "{report}");
+        assert_eq!(lines[4], "  |           ^^^^^", "{report}");
+    }
+
+    #[test]
+    fn an_unreadable_file_names_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.toml");
+        let report = read_toml::<Settings>(&path).unwrap_err();
+        assert!(report.starts_with("error: "), "{report}");
+        assert!(
+            report.ends_with(&format!(" --> {}", path.display())),
+            "{report}"
         );
     }
 

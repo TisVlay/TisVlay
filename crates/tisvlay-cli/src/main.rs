@@ -1220,6 +1220,18 @@ async fn reload(
         for (service, outcome) in &outcomes {
             println!("{:<8} {}", format!("{service}:"), outcome.describe());
         }
+        // Each failure's report after the table: a file the service
+        // couldn't parse reads like a compiler error, path included.
+        for (service, outcome) in &outcomes {
+            if let ReloadOutcome::Failed(report) = outcome {
+                println!();
+                if report.starts_with("error: ") {
+                    println!("{report}");
+                } else {
+                    println!("error: {service}: {report}");
+                }
+            }
+        }
     }
     let failed: Vec<&str> = outcomes
         .iter()
@@ -1246,7 +1258,7 @@ impl ReloadOutcome {
             Self::Changed => "applied the file's edit".into(),
             Self::Unchanged => "the file is unchanged".into(),
             Self::NotRunning => "not running".into(),
-            Self::Failed(error) => error.clone(),
+            Self::Failed(_) => "failed".into(),
         }
     }
 
@@ -1269,6 +1281,7 @@ fn reload_outcome(
         None | Some(Err(RpcError::Unavailable { .. })) => ReloadOutcome::NotRunning,
         Some(Ok(rpc::ReloadReport { changed: true })) => ReloadOutcome::Changed,
         Some(Ok(rpc::ReloadReport { changed: false })) => ReloadOutcome::Unchanged,
+        Some(Err(RpcError::Service(e))) => ReloadOutcome::Failed(e.message),
         Some(Err(e)) => ReloadOutcome::Failed(e.to_string()),
     }
 }

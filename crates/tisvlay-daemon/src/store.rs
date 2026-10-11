@@ -30,8 +30,7 @@ pub fn load_store(path: &Path) -> Result<StoreSnapshot> {
 /// The store file as a reload sees it: unlike boot, a missing file is
 /// refused rather than read as empty, which would remove every TV.
 fn read_for_reload(path: &Path) -> Result<StoreSnapshot, WireError> {
-    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
-    toml::from_str(&text).map_err(|e| WireError::store_unreadable(path, e))
+    tisvlay_runtime::fs::read_toml(path).map_err(WireError::store_unreadable)
 }
 
 /// Debounce window between a snapshot arriving and the write landing.

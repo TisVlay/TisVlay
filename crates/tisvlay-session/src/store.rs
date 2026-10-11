@@ -95,8 +95,7 @@ pub(crate) struct ReloadRequest {
 /// The store file as a reload sees it: a missing file is refused rather
 /// than read as empty, which would drop every profile.
 fn read_for_reload(path: &Path) -> Result<UserStoreSnapshot, WireError> {
-    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
-    toml::from_str(&text).map_err(|e| WireError::store_unreadable(path, e))
+    tisvlay_runtime::fs::read_toml(path).map_err(WireError::store_unreadable)
 }
 
 /// Write the core's snapshots, coalescing bursts, and serve reloads.
