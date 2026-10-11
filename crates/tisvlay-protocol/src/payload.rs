@@ -328,8 +328,6 @@ pub struct PowerProgress {
 pub enum PowerPhase {
     /// The Wake-on-LAN packet has been (or is about to be) sent.
     WolSent,
-    /// The TV was reachable, so no wake: straight to connecting.
-    DirectConnect,
     /// The wake dial is in flight.
     Connecting,
     /// The dial is deferred until the TV's network route returns.
@@ -345,7 +343,6 @@ impl PowerPhase {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::WolSent => "wol_sent",
-            Self::DirectConnect => "direct_connect",
             Self::Connecting => "connecting",
             Self::AwaitingNetwork => "awaiting_network",
             Self::Connected => "connected",
@@ -596,7 +593,6 @@ mod tests {
     fn every_power_phase_decodes() {
         for phase in [
             PowerPhase::WolSent,
-            PowerPhase::DirectConnect,
             PowerPhase::Connecting,
             PowerPhase::AwaitingNetwork,
             PowerPhase::Connected,

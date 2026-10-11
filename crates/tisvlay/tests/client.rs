@@ -586,7 +586,11 @@ async fn the_session_and_tray_clients_refuse_another_release() {
             ..
         })
     ));
-    assert_eq!(session.version().await.unwrap(), "99.0.0", "version() is ungated");
+    assert_eq!(
+        session.version().await.unwrap(),
+        "99.0.0",
+        "version() is ungated"
+    );
     assert!(matches!(
         tray.reload_config().await,
         Err(tisvlay::Error::VersionMismatch {
