@@ -565,14 +565,14 @@ mod tests {
 /// A call takes its rpc's request type:
 ///
 /// ```no_run
-/// # use tisvlay_wire::{caller::Caller, endpoint::tv, rpc};
+/// # use tisvlay_protocol::{caller::Caller, endpoint::tv, rpc};
 /// async fn volume(caller: &Caller, id: uuid::Uuid) {
 ///     let _ = caller.call::<tv::SetVolume>(&id, &rpc::SetVolume { level: 20 }).await;
 /// }
 /// ```
 ///
 /// ```compile_fail,E0308
-/// # use tisvlay_wire::{caller::Caller, endpoint::tv, rpc};
+/// # use tisvlay_protocol::{caller::Caller, endpoint::tv, rpc};
 /// async fn volume(caller: &Caller, id: uuid::Uuid) {
 ///     let _ = caller.call::<tv::SetVolume>(&id, &rpc::SetMuted { muted: true }).await;
 /// }
@@ -581,7 +581,7 @@ mod tests {
 /// A streaming rpc is collected, never called for one reply:
 ///
 /// ```no_run
-/// # use tisvlay_wire::{caller::Caller, endpoint::manager, rpc};
+/// # use tisvlay_protocol::{caller::Caller, endpoint::manager, rpc};
 /// async fn scan(caller: &Caller) {
 ///     let request = rpc::Discover { vendor: None, timeout_ms: None };
 ///     let _ = caller.call_many::<manager::Discover>(&(), &request).await;
@@ -589,7 +589,7 @@ mod tests {
 /// ```
 ///
 /// ```compile_fail,E0277
-/// # use tisvlay_wire::{caller::Caller, endpoint::manager, rpc};
+/// # use tisvlay_protocol::{caller::Caller, endpoint::manager, rpc};
 /// async fn scan(caller: &Caller) {
 ///     let request = rpc::Discover { vendor: None, timeout_ms: None };
 ///     let _ = caller.call::<manager::Discover>(&(), &request).await;
@@ -599,21 +599,21 @@ mod tests {
 /// A server answers with its rpc's response type, and only once:
 ///
 /// ```no_run
-/// # use tisvlay_wire::{endpoint::manager, rpc, serve::Responder};
+/// # use tisvlay_protocol::{endpoint::manager, rpc, serve::Responder};
 /// async fn created(responder: Responder<manager::AddTv>) {
 ///     responder.ok(&rpc::Created { id: uuid::Uuid::nil() }).await;
 /// }
 /// ```
 ///
 /// ```compile_fail,E0308
-/// # use tisvlay_wire::{endpoint::manager, rpc, serve::Responder};
+/// # use tisvlay_protocol::{endpoint::manager, rpc, serve::Responder};
 /// async fn created(responder: Responder<manager::AddTv>) {
 ///     responder.ok(&rpc::Ack {}).await;
 /// }
 /// ```
 ///
 /// ```compile_fail,E0382
-/// # use tisvlay_wire::{endpoint::manager, rpc, serve::Responder};
+/// # use tisvlay_protocol::{endpoint::manager, rpc, serve::Responder};
 /// async fn created(responder: Responder<manager::AddTv>) {
 ///     responder.ok(&rpc::Created { id: uuid::Uuid::nil() }).await;
 ///     responder.ok(&rpc::Created { id: uuid::Uuid::nil() }).await;
@@ -623,7 +623,7 @@ mod tests {
 /// A server handles every rpc of its family:
 ///
 /// ```no_run
-/// # use tisvlay_wire::{endpoint::user_remote, payload::RemoteSessionState};
+/// # use tisvlay_protocol::{endpoint::user_remote, payload::RemoteSessionState};
 /// async fn serve(incoming: user_remote::Incoming, state: RemoteSessionState) {
 ///     match incoming {
 ///         user_remote::Incoming::Set(_, responder) => responder.ok(&state).await,
@@ -633,7 +633,7 @@ mod tests {
 /// ```
 ///
 /// ```compile_fail,E0004
-/// # use tisvlay_wire::{endpoint::user_remote, payload::RemoteSessionState};
+/// # use tisvlay_protocol::{endpoint::user_remote, payload::RemoteSessionState};
 /// async fn serve(incoming: user_remote::Incoming, state: RemoteSessionState) {
 ///     match incoming {
 ///         user_remote::Incoming::Status((), responder) => responder.ok(&state).await,

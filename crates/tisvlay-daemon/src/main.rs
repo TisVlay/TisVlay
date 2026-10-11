@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
     tisvlay_daemon::run(tisvlay_daemon::DaemonOptions {
         socket: args
             .socket
-            .unwrap_or_else(tisvlay_wire::bootstrap::default_socket_path),
+            .unwrap_or_else(tisvlay_protocol::bootstrap::default_socket_path),
         site: args.site,
         store,
         seed: args.seed,

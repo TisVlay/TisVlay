@@ -134,7 +134,7 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
     let seen = collect_until(&mut effects, |e| reply_to(e, 21)).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 21)),
-        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
+        Some(tisvlay_protocol::error::ErrorCode::TvNotFound)
     );
 }
 
@@ -198,7 +198,7 @@ async fn pair_reject_publishes_typed_failure_and_no_tv() {
     let seen = collect_until(&mut effects, |e| reply_to(e, 12)).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 12)),
-        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
+        Some(tisvlay_protocol::error::ErrorCode::TvNotFound)
     );
 }
 
@@ -691,7 +691,7 @@ async fn commands_apply_in_arrival_order() {
     );
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 3)),
-        Some(tisvlay_wire::error::ErrorCode::TvExists),
+        Some(tisvlay_protocol::error::ErrorCode::TvExists),
         "a second add of the same TV"
     );
 }

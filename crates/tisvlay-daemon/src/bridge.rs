@@ -12,10 +12,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tisvlay_core::VendorConfig;
-use tisvlay_wire::endpoint::Rpc;
-use tisvlay_wire::endpoint::{manager, profile, tv, vendors};
-use tisvlay_wire::serve::Responder;
-use tisvlay_wire::{keys, rpc, serve};
+use tisvlay_protocol::endpoint::Rpc;
+use tisvlay_protocol::endpoint::{manager, profile, tv, vendors};
+use tisvlay_protocol::serve::Responder;
+use tisvlay_protocol::{keys, rpc, serve};
 use tisvlay_world::{Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -233,7 +233,7 @@ impl Bridge {
         };
         let alive_key = keys::alive_pairing(&self.site, &tv);
         let terminal =
-            serde_json::from_value::<tisvlay_wire::payload::PairingProgress>(payload.clone())
+            serde_json::from_value::<tisvlay_protocol::payload::PairingProgress>(payload.clone())
                 .is_ok_and(|progress| progress.phase.is_terminal());
         if terminal {
             self.pairing_tokens.remove(&alive_key);

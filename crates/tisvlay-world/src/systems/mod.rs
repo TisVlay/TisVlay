@@ -24,8 +24,8 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tisvlay_core::{PairingCommand, PairingState, TvState, VendorConfig};
-use tisvlay_wire::rpc::{Ack, Created, PairStarted, RePairStarted};
-use tisvlay_wire::{keys, payload};
+use tisvlay_protocol::rpc::{Ack, Created, PairStarted, RePairStarted};
+use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
@@ -91,7 +91,7 @@ pub(crate) fn build_schedule() -> Schedule {
     schedule
 }
 
-/// Acknowledge an rpc that answers with [`Ack`](tisvlay_wire::rpc::Ack).
+/// Acknowledge an rpc that answers with [`Ack`](tisvlay_protocol::rpc::Ack).
 fn reply_ok(outbox: &mut Outbox, reply: Option<impl Into<AckReply>>) {
     if let Some(reply) = reply {
         outbox.0.push(Effect::Wire(reply.into().ok()));

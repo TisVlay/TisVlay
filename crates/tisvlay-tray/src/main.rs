@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     tisvlay_tray::run(tisvlay_tray::TrayOptions {
         system_socket: args
             .socket
-            .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path),
+            .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path),
         user_socket: args
             .user_socket
             .unwrap_or_else(tisvlay_tray::default_user_socket),

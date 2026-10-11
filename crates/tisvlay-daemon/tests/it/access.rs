@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tisvlay_mock::new_test_parts;
-use tisvlay_wire::{bootstrap, keys};
+use tisvlay_protocol::{bootstrap, keys};
 use zenoh::Session;
 
 /// Root bypasses DAC on the socket inode, so denial can't be simulated.

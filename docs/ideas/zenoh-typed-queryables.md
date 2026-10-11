@@ -1,6 +1,6 @@
 # Sit the rpc layer on zenoh-ext's typed queryables
 
-Every rpc is declared once in `tisvlay-wire`'s `endpoint` module, and the `Caller` and the servers' `Call` enums do the serde work at each end. zenoh has an open proposal, [eclipse-zenoh/zenoh#2510](https://github.com/eclipse-zenoh/zenoh/issues/2510) (opened 2026-03), for typed wrappers in zenoh-ext (`TypedPublisher<T>`, `TypedSubscriber<T>`, `TypedQueryable<Req, Resp>`) built on its own serializer. It's an application-layer extension with no protocol change, motivated by exactly the boilerplate our layer removes.
+Every rpc is declared once in `tisvlay-protocol`'s `endpoint` module, and the `Caller` and the servers' `Call` enums do the serde work at each end. zenoh has an open proposal, [eclipse-zenoh/zenoh#2510](https://github.com/eclipse-zenoh/zenoh/issues/2510) (opened 2026-03), for typed wrappers in zenoh-ext (`TypedPublisher<T>`, `TypedSubscriber<T>`, `TypedQueryable<Req, Resp>`) built on its own serializer. It's an application-layer extension with no protocol change, motivated by exactly the boilerplate our layer removes.
 
 ## If it lands
 

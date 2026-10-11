@@ -13,10 +13,10 @@ async fn daemon_liveliness_token_visible_to_client() -> anyhow::Result<()> {
     let socket = dir.path().join("m0.sock");
     let daemon = tisvlay_daemon::open(&socket, "spiketest").await?;
 
-    let client = zenoh::open(tisvlay_wire::bootstrap::client_config(&socket)?)
+    let client = zenoh::open(tisvlay_protocol::bootstrap::client_config(&socket)?)
         .await
         .map_err(|e| anyhow!("open client session: {e}"))?;
-    let key = tisvlay_wire::keys::daemon_alive("spiketest");
+    let key = tisvlay_protocol::keys::daemon_alive("spiketest");
     let replies = client
         .liveliness()
         .get(key.as_str())

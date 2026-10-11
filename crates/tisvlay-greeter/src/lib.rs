@@ -20,11 +20,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::json;
+use tisvlay_protocol::keys;
 use tisvlay_runtime::idle_mutter::IdleWatch;
 use tisvlay_runtime::wayland::{
     IdleNotification, IdleTransition, WatchHandle, WaylandIdleError, start_idle_watch_on_socket,
 };
-use tisvlay_wire::keys;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use zenoh_ext::{
@@ -71,7 +71,7 @@ pub async fn run(socket: &Path, site: &str) -> Result<()> {
     }
 
     let session = zenoh::open(
-        tisvlay_wire::bootstrap::client_config(socket).context("greeter session config")?,
+        tisvlay_protocol::bootstrap::client_config(socket).context("greeter session config")?,
     )
     .await
     .map_err(|e| anyhow!("connect to daemon socket {}: {e}", socket.display()))?;

@@ -343,7 +343,7 @@ pub(crate) fn get_config(
 }
 
 pub(crate) fn update_config(
-    In((id, patch)): In<(Uuid, tisvlay_wire::rpc::UpdateConfig)>,
+    In((id, patch)): In<(Uuid, tisvlay_protocol::rpc::UpdateConfig)>,
     mut commands: Commands,
     index: Res<TvIndex>,
     q: Query<LinkQuery>,
@@ -394,7 +394,7 @@ pub(super) fn apply_config_patch(
     q: &Query<LinkQuery>,
     writes: &mut SettingsWrites,
     outbox: &mut Outbox,
-    patch: &tisvlay_wire::rpc::UpdateConfig,
+    patch: &tisvlay_protocol::rpc::UpdateConfig,
 ) -> Result<(), WireError> {
     let object = &patch.0;
     // Validate.

@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 
 use tisvlay_core::ResolvedUserProfile;
-use tisvlay_wire::payload::{RemoteSource, RemoteSourceKind};
+use tisvlay_protocol::payload::{RemoteSource, RemoteSourceKind};
 use uuid::Uuid;
 
 /// One detector report: a source identified by `(kind, detail)` toggling

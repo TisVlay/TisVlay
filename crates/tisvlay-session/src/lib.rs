@@ -27,10 +27,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{tv, user_profile, user_remote};
-use tisvlay_wire::error::WireError;
-use tisvlay_wire::{keys, payload, rpc};
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{tv, user_profile, user_remote};
+use tisvlay_protocol::error::WireError;
+use tisvlay_protocol::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -184,7 +184,7 @@ pub struct SessionStack {
 /// run the core loop for the process lifetime.
 pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let system = zenoh::open(
-        tisvlay_wire::bootstrap::client_config_resilient(&options.system_socket)
+        tisvlay_protocol::bootstrap::client_config_resilient(&options.system_socket)
             .context("system session config")?,
     )
     .await
@@ -199,7 +199,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             .with_context(|| format!("create user socket dir {}", parent.display()))?;
     }
     let user = zenoh::open(
-        tisvlay_wire::bootstrap::router_config(&options.user_socket)
+        tisvlay_protocol::bootstrap::router_config(&options.user_socket)
             .context("user session config")?,
     )
     .await

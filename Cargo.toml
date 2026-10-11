@@ -7,7 +7,7 @@ members = [
     "crates/tisvlay-mock",
     "crates/tisvlay-cec",
     "crates/tisvlay-test",
-    "crates/tisvlay-wire",
+    "crates/tisvlay-protocol",
     "crates/tisvlay-world",
     "crates/tisvlay-icons",
     "crates/tisvlay-runtime",
@@ -218,7 +218,7 @@ tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.3.0" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
-tisvlay-wire = { path = "crates/tisvlay-wire" }
+tisvlay-protocol = { path = "crates/tisvlay-protocol" }
 tisvlay-world = { path = "crates/tisvlay-world" }
 tisvlay-icons = { path = "crates/tisvlay-icons" }
 tisvlay-runtime = { path = "crates/tisvlay-runtime" }

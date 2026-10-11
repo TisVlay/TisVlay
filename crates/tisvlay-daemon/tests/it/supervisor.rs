@@ -105,7 +105,7 @@ async fn shutdown_flushes_the_pending_store_write() {
     let states = stack
         .daemon
         .session()
-        .declare_subscriber(tisvlay_wire::keys::tv_all("t"))
+        .declare_subscriber(tisvlay_protocol::keys::tv_all("t"))
         .await
         .unwrap();
     let id = Uuid::new_v4();

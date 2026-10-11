@@ -216,9 +216,9 @@ pub(crate) fn make_about_components(
             // liveliness key (presence on the zenoh bus), except the
             // GUI, whose identity is its real D-Bus activation name.
             let identity = match *name {
-                "tisvlay-daemon" => tisvlay_wire::keys::daemon_alive(site),
-                "tisvlay-session" => tisvlay_wire::keys::user_alive_session(site),
-                "tisvlay-tray" => tisvlay_wire::keys::user_alive_tray(site),
+                "tisvlay-daemon" => tisvlay_protocol::keys::daemon_alive(site),
+                "tisvlay-session" => tisvlay_protocol::keys::user_alive_session(site),
+                "tisvlay-tray" => tisvlay_protocol::keys::user_alive_tray(site),
                 "tisvlay-gui" => "org.tisvlay.Gui".to_string(),
                 _ => String::new(),
             };

@@ -16,7 +16,7 @@ tisvlay-core = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = "0.1"
 tracing = { workspace = true }
-tisvlay-wire = { workspace = true }
+tisvlay-protocol = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }
 zenoh-ext = { workspace = true }

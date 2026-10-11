@@ -22,6 +22,6 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let socket = args
         .socket
-        .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path);
+        .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path);
     tisvlay_greeter::run(&socket, &args.site).await
 }
