@@ -139,7 +139,7 @@ struct ReloadOutcome {
     /// The service's state file by name (`tray.toml`), or the service's
     /// name when it didn't report a path.
     file: String,
-    /// `None` when the GUI isn't connected to the service.
+    /// `None` when the GUI holds no client for the service.
     result: Option<tisvlay::Result<tisvlay::ReloadReport>>,
 }
 
@@ -191,8 +191,9 @@ fn report_reload(app_weak: &slint::Weak<AppWindow>, outcomes: Vec<ReloadOutcome>
 
 /// The toast naming the files that held an edit, or, when any failed,
 /// the banner with each failure's report. A file the service couldn't
-/// parse reports like a compiler error (path, line, caret), so the
-/// reports stand on their own; the title names the files.
+/// parse reads like a compiler error (see `tisvlay_runtime::fs::read_toml`),
+/// so the reports stand on their own; the title names the files. A
+/// service that isn't running has nothing to reload: skipped, not failed.
 fn reload_summary(outcomes: Vec<ReloadOutcome>) -> ReloadSummary {
     let mut changed = Vec::new();
     let mut failed = Vec::new();
@@ -200,6 +201,8 @@ fn reload_summary(outcomes: Vec<ReloadOutcome>) -> ReloadSummary {
         match result {
             Some(Ok(report)) if report.changed => changed.push(file),
             Some(Err(tisvlay::Error::Rpc { message, .. })) => failed.push((file, message)),
+            // Not running: nothing to reload, as the CLI reports it.
+            Some(Err(tisvlay::Error::Unavailable { .. })) => {}
             Some(Err(e)) => failed.push((file, error_text(&e))),
             Some(Ok(_)) | None => {}
         }
@@ -1721,8 +1724,8 @@ fn register_callbacks(
             // The button lives in the sidebar, so its outcome reports at
             // window level, whichever pane is open: a toast naming the
             // files that changed, or the app-level banner for a file that
-            // couldn't apply. A service the GUI isn't connected to is
-            // skipped. Each file is named by the path its service reports.
+            // couldn't apply. A service that isn't running is skipped.
+            // Each file is named by the path its service reports.
             let mut outcomes = vec![ReloadOutcome {
                 file: file_label(d.config_path().await, gettext("daemon")),
                 result: Some(d.reload_config().await),
@@ -2703,6 +2706,23 @@ mod tests {
                 message: "error: bad\n --> /x/tray.toml:6:11".into(),
             },
             "no error code suffix, and the applied daemon.toml goes unmentioned"
+        );
+    }
+
+    #[test]
+    fn a_service_that_isnt_running_is_skipped() {
+        let summary = reload_summary(vec![
+            outcome("daemon.toml", reloaded(true)),
+            outcome(
+                "tray",
+                Some(Err(tisvlay::Error::Unavailable {
+                    service: tisvlay::Service::Tray,
+                })),
+            ),
+        ]);
+        assert_eq!(
+            summary,
+            ReloadSummary::Toast("Reloaded: daemon.toml".into())
         );
     }
 
