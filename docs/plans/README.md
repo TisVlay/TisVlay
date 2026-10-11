@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None currently._
+- [`bevy-polish.md`](bevy-polish.md) — world ECS polish after the bevy_ecs 0.20 review: reactor supervision, commands as one-shot systems, hook-maintained uuid maps, change-detected store snapshots.
 
 When a plan is in flight, list it here with
 a one-line summary of the work it covers:
