@@ -2160,6 +2160,9 @@ fn dispatch_system_events(
             {
                 continue;
             }
+            // Resolved here rather than read from `meta.automated`: dispatch
+            // runs before the derive pass, and must honor a profile edit or
+            // input change from this same batch.
             if !meta.is_none_or(|m| {
                 is_automated(m, input, resolve_automate_when(m, &profile_index, &bodies))
             }) {
@@ -2296,22 +2299,19 @@ fn derive_automated(
 
 /// Publish the shortest enabled greeter idle timeout across automated TVs
 /// (`{seconds}`, 0 = disabled) — the cached key `tisvlay-greeter` sizes its
-/// `ext-idle-notify` registration from.
+/// `ext-idle-notify` registration from. Runs after `derive_automated`, so
+/// `meta.automated` is this step's verdict.
 fn publish_greeter_timeout(
     mut outbox: ResMut<Outbox>,
     site: Res<Site>,
-    q: Query<(&payload::Meta, Option<&payload::Input>), With<Managed>>,
+    q: Query<&payload::Meta, With<Managed>>,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
     mut last: Local<Option<u64>>,
 ) {
     let mut timeout = 0u64;
-    for (meta, input) in &q {
-        if !is_automated(
-            meta,
-            input,
-            resolve_automate_when(meta, &profile_index, &bodies),
-        ) {
+    for meta in &q {
+        if !meta.automated {
             continue;
         }
         let assigned = meta
