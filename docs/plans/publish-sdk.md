@@ -150,6 +150,15 @@ Ordered so the conflict hotspot (wire's `lib.rs`) is split first and the later c
   - the session answers `BadRequest` for an internal failure ("the store writer is gone");
   - `tv::SetSystemProfile` doesn't check that the profile exists.
 
+*Decided during implementation (car 5):*
+- **zenoh-ext is pinned `~1.10`, not a caret range.** The SDK uses its `unstable` API, which pins zenoh exactly (`=`) and is free to break within 1.x; a caret range could resolve a breaking zenoh-ext into a user's build. § Review triggers says to move it deliberately.
+- **Both packages exclude `tests/`.** The suites boot in-repo services from unpublished crates, so they can't build from the package; the README doctests are the packaged crates' own examples.
+- **docs.rs builds Linux only** (`targets`), since both crates are Unix-socket clients.
+- **No release-plz note:** its header already explains the per-package `{{ package }}-v{{ version }}` tags beside the `v*` distro tag.
+- **The SDK's crate docs became its README:** the runtime, connecting and mirror-vs-rpc sections moved there, so crates.io and docs.rs show one page.
+- **The `anyhow` allowance for wire's `bootstrap` is gone** from CLAUDE.md and architecture.md: car 1c gave the config builders a typed `ConfigError`.
+- **The doc pass's follow-ups moved to `docs/bugs/profile-refusal-gaps.md`,** and the first-release CHANGELOG check became checklist step 8 in `docs/build.md`.
+
 **PR split** (stacked): 1a+1b, then 1c, then 2 and 3 in parallel, then 4 (on both), then 5 (last, since its doctests need the final API).
 
 ## Test plan
