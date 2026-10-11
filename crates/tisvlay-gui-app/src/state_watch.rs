@@ -4,12 +4,12 @@
 
 use std::sync::Arc;
 
-use crate::compat::{
-    DaemonClient, NotificationSettings, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
-    TrayClient,
-};
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use tisvlay::{
+    DaemonClient, NotificationSettings, SessionClient, StateEvent, StateWatcher, TrayClient,
+};
+use tisvlay_runtime::client::RefreshTrigger;
 use tokio::sync::RwLock;
 use tracing::debug;
 
@@ -241,7 +241,7 @@ async fn watch_state(
     // `invoke_from_event_loop` is cheap; the property tracker dedups
     // and only one paint per frame happens regardless of how many
     // updates feed in.
-    let watcher_config = crate::compat::StateWatcherConfig::default();
+    let watcher_config = tisvlay::StateWatcherConfig::default();
     // Session/tray events ride the clients built at startup (resilient
     // links, never replaced); the watcher synthesizes `*Appeared` for
     // peers already alive at construction, so the initial availability

@@ -30,9 +30,6 @@ bitflags = { workspace = true }
 # Stable per-TV identifiers (UUID v4)
 uuid = { workspace = true }
 
-# Sync mutex without poisoning (Reconciler, ReconcilerMap, Coalescer).
-parking_lot = { workspace = true }
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }

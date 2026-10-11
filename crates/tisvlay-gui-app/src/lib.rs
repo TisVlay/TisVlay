@@ -9,7 +9,6 @@
 
 mod about;
 mod accent;
-mod compat;
 mod dbus;
 mod diagnostic;
 mod edit_pane;
@@ -64,12 +63,13 @@ use clap::Parser;
 // Slint properties (e.g. wizard pair-flow messages) wrap their
 // literals with `gettext("…")` so the slint-tr-extractor and
 // xgettext both find the same source-of-truth in the .pot file.
-use crate::compat::{
-    Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
-    NotificationCategory, NotificationSettingsPatch, ReconcilerMap, SessionClient, TrayClient,
-};
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use tisvlay::{
+    DaemonClient, NotificationCategory, NotificationSettingsPatch, SessionClient, TrayClient,
+};
+use tisvlay_core::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
+use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 

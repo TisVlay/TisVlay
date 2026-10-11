@@ -38,6 +38,13 @@ rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
 # `fs`: crash-safe atomic file replacement for the services' state files
 # (no extra dependencies)
 
+# `client`: the GUI's and tray's shared helpers (dispatch coalescing,
+# optimistic-state reconciliation, deduplicated refreshes, the
+# profile-reference projection)
+tisvlay-core = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
+
 # `mutter-idle`: GNOME idle detection (org.gnome.Mutter.IdleMonitor), the
 # D-Bus fallback where Mutter lacks ext-idle-notify
 zbus = { workspace = true, optional = true }
@@ -47,6 +54,7 @@ futures-util = { workspace = true, optional = true }
 default = []
 access = ["dep:libc", "dep:socket2", "dep:anyhow"]
 fs = []
+client = ["dep:tisvlay-core", "dep:uuid", "dep:parking_lot", "dep:tokio"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
 wayland = ["dep:tokio", "dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]
 # The Mutter D-Bus idle transport shares the wayland idle vocabulary
