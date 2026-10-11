@@ -141,9 +141,10 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # PipeWire graph introspection (the session's screencast detector). Native
-# Rust protocol client — no libpipewire link. Git-pinned; the pin's
-# rationale + revert condition live at the deny.toml allow-git entry.
-pipewire-native = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "ee381fa2f482d3545d35dfc3e2061526bbe48fea" }
+# Rust protocol client — no libpipewire link. 0.2 is the floor: 0.1.4
+# aborts inside an FFI callback on a protocol decode error against
+# PipeWire ≥ 1.4.
+pipewire-native = "0.2"
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
 # `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
@@ -164,7 +165,7 @@ linux-cec = { version = "0.2", default-features = false, features = [
 libc = { version = "0.2", default-features = false }
 
 # ECS world engine (the daemon's state machines)
-bevy_ecs = "0.19"
+bevy_ecs = "0.20"
 
 # Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
 # API (caches, history, recovery) is behind `unstable` — an accepted
