@@ -16,7 +16,7 @@ use serde_json::Value;
 use tisvlay_core::{Coalescer, ReconcilerMap};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{Unary, tv, user_profile};
-use tisvlay_wire::payload::{self, StatePayload};
+use tisvlay_wire::payload::{self, PairingPhase, StatePayload};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -548,7 +548,9 @@ async fn spawn_pairing_toasts(
             let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str()) else {
                 continue;
             };
-            let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes()) else {
+            let Ok(progress) =
+                serde_json::from_slice::<payload::PairingProgress>(&sample.payload().to_bytes())
+            else {
                 continue;
             };
             let name = handle
@@ -556,20 +558,20 @@ async fn spawn_pairing_toasts(
                 .await
                 .flatten()
                 .unwrap_or_else(|| "TV".into());
-            match progress["phase"].as_str() {
-                Some("complete") => notifier.notify(
+            match progress.phase {
+                PairingPhase::Complete => notifier.notify(
                     notify::Category::TvPairing,
                     &format!("{name} paired"),
-                    progress["message"].as_str().unwrap_or_default(),
+                    &progress.message,
                     "security-high",
                 ),
-                Some("failed") => notifier.notify(
+                PairingPhase::Failed => notifier.notify(
                     notify::Category::TvPairing,
                     &format!("Pairing {name} failed"),
-                    progress["message"].as_str().unwrap_or_default(),
+                    &progress.message,
                     "dialog-error",
                 ),
-                _ => {}
+                PairingPhase::AwaitingTv | PairingPhase::AwaitingInput => {}
             }
         }
     });

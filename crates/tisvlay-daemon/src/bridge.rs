@@ -232,10 +232,9 @@ impl Bridge {
             return;
         };
         let alive_key = keys::alive_pairing(&self.site, &tv);
-        let terminal = matches!(
-            payload.get("phase").and_then(Value::as_str),
-            Some("complete" | "failed")
-        );
+        let terminal =
+            serde_json::from_value::<tisvlay_wire::payload::PairingProgress>(payload.clone())
+                .is_ok_and(|progress| progress.phase.is_terminal());
         if terminal {
             self.pairing_tokens.remove(&alive_key);
         } else if !self.pairing_tokens.contains_key(&alive_key) {

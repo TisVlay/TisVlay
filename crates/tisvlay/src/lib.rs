@@ -29,7 +29,7 @@ use tisvlay_wire::{bootstrap, keys, rpc};
 pub use error::{BoxError, Error, Result, Service};
 pub use tisvlay_wire::error::ErrorCode;
 pub use tisvlay_wire::payload::{
-    LinkMacOutcome, LinkMacReport, PairingProgress, RemoteSessionState, RemoteSource,
+    LinkMacOutcome, LinkMacReport, PairingPhase, PairingProgress, RemoteSessionState, RemoteSource,
     RemoteSourceKind,
 };
 pub use tisvlay_wire::rpc::{
@@ -383,7 +383,7 @@ impl DaemonClient {
         stream: S,
         tv: Uuid,
         attempt: Uuid,
-        on_progress: impl FnMut(&str, &str),
+        on_progress: impl FnMut(PairingPhase, &str),
     ) -> Result<PairTerminal>
     where
         S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
@@ -399,7 +399,7 @@ impl DaemonClient {
         mut stream: std::pin::Pin<&mut S>,
         tv: Uuid,
         attempt: Uuid,
-        mut on_progress: impl FnMut(&str, &str),
+        mut on_progress: impl FnMut(PairingPhase, &str),
     ) -> Result<PairTerminal>
     where
         S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
@@ -409,16 +409,16 @@ impl DaemonClient {
             if sample_tv != tv || progress.attempt != attempt {
                 continue;
             }
-            match progress.phase.as_str() {
-                "complete" => {
+            match progress.phase {
+                PairingPhase::Complete => {
                     return Ok(PairTerminal::Complete {
                         tv,
                         message: progress.message,
                         link_mac: progress.link_mac,
                     });
                 }
-                "failed" => return Ok(PairTerminal::Failed { tv, progress }),
-                _ => on_progress(&progress.phase, &progress.message),
+                PairingPhase::Failed => return Ok(PairTerminal::Failed { tv, progress }),
+                phase => on_progress(phase, &progress.message),
             }
         }
         Err(Error::Transport {
@@ -1237,12 +1237,12 @@ mod tests {
         Uuid::from_u128(n)
     }
 
-    fn sample(tv: Uuid, phase: &str, attempt: Uuid) -> (Uuid, PairingProgress) {
+    fn sample(tv: Uuid, phase: PairingPhase, attempt: Uuid) -> (Uuid, PairingProgress) {
         (
             tv,
             PairingProgress {
                 attempt,
-                phase: phase.into(),
+                phase,
                 message: format!("{phase} ({attempt})"),
                 code: None,
                 path: None,
@@ -1257,15 +1257,15 @@ mod tests {
     async fn drain_skips_terminals_from_other_attempts() {
         let (tv, other, old, new) = (uuid(1), uuid(2), uuid(10), uuid(11));
         let stream = futures_util::stream::iter([
-            sample(tv, "complete", old),
-            sample(other, "complete", new),
-            sample(tv, "awaiting_tv", new),
-            sample(tv, "failed", old),
-            sample(tv, "complete", new),
+            sample(tv, PairingPhase::Complete, old),
+            sample(other, PairingPhase::Complete, new),
+            sample(tv, PairingPhase::AwaitingTv, new),
+            sample(tv, PairingPhase::Failed, old),
+            sample(tv, PairingPhase::Complete, new),
         ]);
         let mut phases = Vec::new();
         let terminal = DaemonClient::drain_pair_to_terminal(stream, tv, new, |phase, _| {
-            phases.push(phase.to_string());
+            phases.push(phase);
         })
         .await
         .unwrap();
@@ -1274,7 +1274,7 @@ mod tests {
             matches!(&terminal, PairTerminal::Complete { tv: t, message, .. } if *t == tv && *message == expected),
             "{terminal:?}"
         );
-        assert_eq!(phases, ["awaiting_tv"]);
+        assert_eq!(phases, [PairingPhase::AwaitingTv]);
     }
 
     /// The terminal's link-MAC report reaches the caller.
@@ -1286,7 +1286,7 @@ mod tests {
                 configured: "64:E4:A5:6C:AB:B4".into(),
             },
         };
-        let (tv, mut progress) = sample(uuid(1), "complete", uuid(10));
+        let (tv, mut progress) = sample(uuid(1), PairingPhase::Complete, uuid(10));
         progress.link_mac = Some(report.clone());
         let stream = futures_util::stream::iter([(tv, progress)]);
         let terminal = DaemonClient::drain_pair_to_terminal(stream, tv, uuid(10), |_, _| {})

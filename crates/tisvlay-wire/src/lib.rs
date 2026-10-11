@@ -226,8 +226,7 @@ pub mod payload {
         /// live ones that isn't guaranteed — so a watcher drains only its
         /// own attempt.
         pub attempt: uuid::Uuid,
-        /// `awaiting_tv` | `awaiting_input` | `complete` | `failed`.
-        pub phase: String,
+        pub phase: PairingPhase,
         pub message: String,
         /// Namespaced failure reason (e.g. `pairing.rejected`,
         /// `device.permission-denied`), `failed` only.
@@ -267,12 +266,62 @@ pub mod payload {
         Differs { configured: String },
     }
 
+    /// Where a pairing attempt stands.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PairingPhase {
+        /// Waiting for the user to accept on the TV.
+        AwaitingTv,
+        /// Waiting for the user to enter a PIN or password.
+        AwaitingInput,
+        /// Paired, and the TV's first dial succeeded.
+        Complete,
+        Failed,
+    }
+
+    impl PairingPhase {
+        /// `complete` or `failed`: no further sample follows for the
+        /// attempt.
+        pub const fn is_terminal(self) -> bool {
+            matches!(self, Self::Complete | Self::Failed)
+        }
+
+        /// The wire token (`awaiting_tv`, ...), for display and the GUI's
+        /// string properties.
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::AwaitingTv => "awaiting_tv",
+                Self::AwaitingInput => "awaiting_input",
+                Self::Complete => "complete",
+                Self::Failed => "failed",
+            }
+        }
+    }
+
+    impl std::fmt::Display for PairingPhase {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+
+    impl From<&tisvlay_core::PairingState> for PairingPhase {
+        fn from(state: &tisvlay_core::PairingState) -> Self {
+            use tisvlay_core::PairingState;
+            match state {
+                PairingState::AwaitingTvPrompt { .. } => Self::AwaitingTv,
+                PairingState::AwaitingUserInput { .. } => Self::AwaitingInput,
+                PairingState::Complete { .. } => Self::Complete,
+                PairingState::Failed { .. } => Self::Failed,
+            }
+        }
+    }
+
     impl PairingProgress {
         /// Project a core pairing state onto `attempt`'s progress sample.
         pub fn from_state(attempt: uuid::Uuid, state: &tisvlay_core::PairingState) -> Self {
             Self {
                 attempt,
-                phase: state.to_dbus_state().into(),
+                phase: state.into(),
                 message: state.message().into(),
                 code: state.error().map(|e| e.code.as_str().into()),
                 // Handshake errors carry no device parameter; dial
@@ -321,6 +370,41 @@ pub mod payload {
         Portal,
         Screencast,
         Sunshine,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tisvlay_core::{Credentials, InputType, PairingError, PairingState};
+
+        #[test]
+        fn pairing_states_map_to_their_phases() {
+            let cases = [
+                (
+                    PairingState::awaiting_tv_prompt("accept"),
+                    PairingPhase::AwaitingTv,
+                ),
+                (
+                    PairingState::awaiting_user_input("pin", InputType::Pin),
+                    PairingPhase::AwaitingInput,
+                ),
+                (
+                    PairingState::complete(Credentials::new("key")),
+                    PairingPhase::Complete,
+                ),
+                (
+                    PairingState::failed(PairingError::rejected()),
+                    PairingPhase::Failed,
+                ),
+            ];
+            for (state, phase) in cases {
+                assert_eq!(PairingPhase::from(&state), phase);
+                assert_eq!(
+                    phase.is_terminal(),
+                    state.is_complete() || state.is_failed()
+                );
+            }
+        }
     }
 }
 

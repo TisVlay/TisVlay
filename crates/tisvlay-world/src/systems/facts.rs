@@ -144,7 +144,7 @@ pub(super) fn apply_backend_events(
                         tv,
                         &payload::PairingProgress {
                             attempt: pair.attempt,
-                            phase: "complete".into(),
+                            phase: payload::PairingPhase::Complete,
                             message: "Paired and connected".into(),
                             code: None,
                             path: None,
@@ -199,7 +199,7 @@ pub(super) fn apply_backend_events(
                         tv,
                         &payload::PairingProgress {
                             attempt: pair.attempt,
-                            phase: "failed".into(),
+                            phase: payload::PairingPhase::Failed,
                             message: reason.message.clone(),
                             code: Some(
                                 reason
@@ -468,7 +468,7 @@ pub(super) fn apply_pairing_updates(
                         id,
                         &payload::PairingProgress {
                             attempt: session.attempt,
-                            phase: "failed".into(),
+                            phase: payload::PairingPhase::Failed,
                             message: error.clone(),
                             code: Some("pairing.unknown".into()),
                             path: None,

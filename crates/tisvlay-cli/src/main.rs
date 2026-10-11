@@ -18,7 +18,7 @@ use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::{Value, json};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{Unary, manager, profile, tv, user_profile, user_remote, vendors};
-use tisvlay_wire::{keys, rpc};
+use tisvlay_wire::{keys, payload, rpc};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::sample::SampleKind;
@@ -1124,7 +1124,7 @@ async fn pair(
 }
 
 /// One line on what the pairing did with the device-reported link MAC.
-fn link_mac_line(id: Uuid, report: &tisvlay_wire::payload::LinkMacReport) -> String {
+fn link_mac_line(id: Uuid, report: &payload::LinkMacReport) -> String {
     use tisvlay_wire::payload::LinkMacOutcome;
     let reported = &report.reported;
     match &report.outcome {
@@ -1156,26 +1156,28 @@ async fn watch_pairing(
         tokio::select! {
             sample = subscriber.recv_async() => {
                 let Ok(sample) = sample else { bail!("progress stream closed") };
-                let value: Value =
-                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                if value["attempt"] != attempt.to_string() {
+                let Ok(progress) =
+                    serde_json::from_slice::<payload::PairingProgress>(&sample.payload().to_bytes())
+                else {
+                    continue;
+                };
+                if progress.attempt != attempt {
                     continue;
                 }
-                let phase = value["phase"].as_str().unwrap_or("?");
-                println!("[{phase}] {}", value["message"].as_str().unwrap_or(""));
-                match phase {
-                    "complete" => {
+                println!("[{}] {}", progress.phase, progress.message);
+                match progress.phase {
+                    payload::PairingPhase::Complete => {
                         println!("paired: {id}");
-                        if let Ok(report) = serde_json::from_value(value["link_mac"].clone()) {
-                            println!("{}", link_mac_line(id, &report));
+                        if let Some(report) = &progress.link_mac {
+                            println!("{}", link_mac_line(id, report));
                         }
                         return Ok(());
                     }
-                    "failed" => bail!(
+                    payload::PairingPhase::Failed => bail!(
                         "pairing failed: {}",
-                        value["code"].as_str().unwrap_or("unknown")
+                        progress.code.as_deref().unwrap_or("unknown")
                     ),
-                    _ => {}
+                    payload::PairingPhase::AwaitingTv | payload::PairingPhase::AwaitingInput => {}
                 }
             }
             _ = tokio::signal::ctrl_c() => {
