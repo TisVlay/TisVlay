@@ -163,6 +163,15 @@ The isolated-networks fix (generic mechanism in prose, vendor specifics in a per
 
 **Step 1 done (2026-10-10)** — `9a753f4a` Getting Started, `15156e01` User Guide, and the Operations/Reference commit: every R, H3–H10, V item and the G3 consolidation applied; hand-written words ~11.5k → ~10.5k with the NixOS option table and CEC device-access steps added. Found while consolidating: distro packages never documented CEC device access (the packaged unit's `PrivateDevices` hides `/dev/cec*`; the unit file's own drop-in + udev instructions are now in Installation), and Pairing pointed at a nonexistent `[tv.cec]` block. Next: step 2 (G1, G2, H1).
 
+**Step 2 design (maintainer decisions, 2026-10-10):**
+- **One docs crate.** A new unpublished `crates/tisvlay-docgen` with a single `gen-docs` bin writes every generated partial into `docs/book/src/generated/`. The CLI reference generator moves there from `tisvlay-cli`, which drops its `gen-docs` feature, `gen-cli-docs` bin and optional `clap-markdown` dependency. The crate depends on the `tisvlay-cli` lib (the clap tree) and `tisvlay-core` (the profile types), so the published core gains no binary glue.
+- **Recipes.** `just docs-gen` (regenerate every partial) and `just docs-gen-check` (regenerate, then fail on any diff or new untracked file under `generated/`) replace `docs-cli` / `docs-cli-check`; the CI `docs` job runs the new check.
+- **Partials.** `generated/cli.md` (the CLI reference, moved from `guide/cli-generated.md`); `generated/profile-defaults-system.md` and `generated/profile-defaults-user.md` (G1: one fenced TOML block per profile kind, rendered from `SystemProfileConfig::full_default()` / `UserProfileConfig::full_default()` in `*_PROFILE_FIELDS` order, each field preceded by its doc comment as a `#` line; an action renders as a bare token unless it carries a non-default modifier, then as an inline table naming only those); `generated/release-version.txt` (H1: `export VERSION=<workspace version>`, included into the install page's shell block).
+- **Doc comments** are read from `crates/tisvlay-core/src/config.rs` at build time (`include_str!` + a line scan of the two structs), so a field without a doc comment fails generation instead of rendering blank.
+- **G2.** cli.md's hand-written global-flags list goes; the generated reference renders them from their doc comments.
+- **Version source:** the workspace `Cargo.toml` version, which on main always equals the latest release (maintainer-confirmed).
+- **Correctness win:** the generated defaults are the real stock mappings, modifiers included (e.g. `on_startup` restores the input; the off-going events carry `while_remote = true`), which the hand-copied bare tokens had dropped.
+
 **Decisions (maintainer, 2026-10-10):**
 - H1 — generate the release version from `Cargo.toml` into a partial behind the docs drift gate (joins G1/G2 in step 2).
 - H2 — leave the crates.io badges as they are for now.
