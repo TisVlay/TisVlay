@@ -161,6 +161,12 @@ The isolated-networks fix (generic mechanism in prose, vendor specifics in a per
 3. **S1** link/anchor checker in CI, so the consolidated cross-links can't rot.
 4. **Maintainer decisions** first: H1 (version string), H2 (badges), H5 (glibc + tested-models), G3 (NixOS options page now or later).
 
+**Decisions (maintainer, 2026-10-10):**
+- H1 — generate the release version from `Cargo.toml` into a partial behind the docs drift gate (joins G1/G2 in step 2).
+- H2 — leave the crates.io badges as they are for now.
+- H5 — generalize: "a conservative glibc baseline"; drop the tested-model list from the book.
+- G3 — later: consolidate every option mention into Installation's NixOS section (adding the undocumented `settings` option by hand); other pages link there. Revisit a generated page if the option surface keeps growing or CI gains a Nix step for the drift gate.
+
 ## Context
 
 tisvlay has no user-facing docs site today — `docs/*.md` is ~95% developer-facing (design, testing, ideas, plans), and the `main` README is a 67-line stub. We want a published user guide (install / pair / CLI / config / firewall / troubleshooting) on **Read the Docs**.
