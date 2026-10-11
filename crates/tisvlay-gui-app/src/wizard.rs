@@ -15,8 +15,7 @@ use crate::compat::{
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay::PairingPhase;
-use tisvlay_core::errors::DeviceErrorCode;
+use tisvlay::{FailureCode, PairingPhase};
 use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;
@@ -672,7 +671,7 @@ enum PairError {
 /// falls back to the daemon's English `message`. The daemon stays
 /// locale-agnostic — the translated copy lives here in the GUI.
 fn localize_pair_failure(detail: &PairingProgress) -> String {
-    if detail.code.as_deref() == Some(DeviceErrorCode::PermissionDenied.as_str()) {
+    if detail.code == Some(FailureCode::DevicePermissionDenied) {
         // Name the actual node from the payload when present.
         let node = detail.path.as_deref().unwrap_or("/dev/cec*");
         return gettext(

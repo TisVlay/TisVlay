@@ -1175,7 +1175,7 @@ async fn watch_pairing(
                     }
                     payload::PairingPhase::Failed => bail!(
                         "pairing failed: {}",
-                        progress.code.as_deref().unwrap_or("unknown")
+                        progress.code.map_or("unknown", payload::FailureCode::as_str)
                     ),
                     payload::PairingPhase::AwaitingTv | payload::PairingPhase::AwaitingInput => {}
                 }

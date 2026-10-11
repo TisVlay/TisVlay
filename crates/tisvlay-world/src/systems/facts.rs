@@ -204,8 +204,7 @@ pub(super) fn apply_backend_events(
                             code: Some(
                                 reason
                                     .code
-                                    .clone()
-                                    .unwrap_or_else(|| "pairing.connection-failed".into()),
+                                    .unwrap_or(payload::FailureCode::PairingConnectionFailed),
                             ),
                             path: reason.path.clone(),
                             link_mac: None,
@@ -470,7 +469,7 @@ pub(super) fn apply_pairing_updates(
                             attempt: session.attempt,
                             phase: payload::PairingPhase::Failed,
                             message: error.clone(),
-                            code: Some("pairing.unknown".into()),
+                            code: Some(payload::FailureCode::PairingUnknown),
                             path: None,
                             link_mac: None,
                         },

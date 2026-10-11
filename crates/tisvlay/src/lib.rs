@@ -29,8 +29,8 @@ use tisvlay_wire::{bootstrap, keys, rpc};
 pub use error::{BoxError, Error, Result, Service};
 pub use tisvlay_wire::error::ErrorCode;
 pub use tisvlay_wire::payload::{
-    LinkMacOutcome, LinkMacReport, PairingPhase, PairingProgress, RemoteSessionState, RemoteSource,
-    RemoteSourceKind,
+    FailureCode, LinkMacOutcome, LinkMacReport, PairingPhase, PairingProgress, RemoteSessionState,
+    RemoteSource, RemoteSourceKind,
 };
 pub use tisvlay_wire::rpc::{
     NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, TvConfigView,

@@ -228,10 +228,9 @@ pub mod payload {
         pub attempt: uuid::Uuid,
         pub phase: PairingPhase,
         pub message: String,
-        /// Namespaced failure reason (e.g. `pairing.rejected`,
-        /// `device.permission-denied`), `failed` only.
+        /// Why the attempt failed; `failed` only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub code: Option<String>,
+        pub code: Option<FailureCode>,
         /// Reason-specific parameter — the device-node path on a
         /// permission-denied failure, so clients can name the node in
         /// the fix hint. Absent for reasons that carry none.
@@ -298,6 +297,76 @@ pub mod payload {
         }
     }
 
+    /// Why a pairing attempt failed: the handshake's `pairing.*` reasons
+    /// and the first dial's `device.*` access reasons, on the wire as
+    /// those namespaced tokens.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum FailureCode {
+        /// The user rejected pairing on the TV.
+        #[serde(rename = "pairing.rejected")]
+        PairingRejected,
+        #[serde(rename = "pairing.timeout")]
+        PairingTimeout,
+        /// The TV couldn't be reached.
+        #[serde(rename = "pairing.connection-failed")]
+        PairingConnectionFailed,
+        /// The PIN or password was wrong.
+        #[serde(rename = "pairing.invalid-input")]
+        PairingInvalidInput,
+        #[serde(rename = "pairing.cancelled")]
+        PairingCancelled,
+        #[serde(rename = "pairing.unknown")]
+        PairingUnknown,
+        /// The daemon may not open the device node (`path` names it).
+        #[serde(rename = "device.permission-denied")]
+        DevicePermissionDenied,
+    }
+
+    impl FailureCode {
+        /// The wire token, for display.
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::PairingRejected => "pairing.rejected",
+                Self::PairingTimeout => "pairing.timeout",
+                Self::PairingConnectionFailed => "pairing.connection-failed",
+                Self::PairingInvalidInput => "pairing.invalid-input",
+                Self::PairingCancelled => "pairing.cancelled",
+                Self::PairingUnknown => "pairing.unknown",
+                Self::DevicePermissionDenied => "device.permission-denied",
+            }
+        }
+    }
+
+    impl std::fmt::Display for FailureCode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+
+    impl From<tisvlay_core::PairingErrorCode> for FailureCode {
+        fn from(code: tisvlay_core::PairingErrorCode) -> Self {
+            use tisvlay_core::PairingErrorCode;
+            match code {
+                PairingErrorCode::Rejected => Self::PairingRejected,
+                PairingErrorCode::Timeout => Self::PairingTimeout,
+                PairingErrorCode::ConnectionFailed => Self::PairingConnectionFailed,
+                PairingErrorCode::InvalidInput => Self::PairingInvalidInput,
+                PairingErrorCode::Cancelled => Self::PairingCancelled,
+                PairingErrorCode::Unknown => Self::PairingUnknown,
+            }
+        }
+    }
+
+    impl From<tisvlay_core::errors::DeviceErrorCode> for FailureCode {
+        fn from(code: tisvlay_core::errors::DeviceErrorCode) -> Self {
+            match code {
+                tisvlay_core::errors::DeviceErrorCode::PermissionDenied => {
+                    Self::DevicePermissionDenied
+                }
+            }
+        }
+    }
+
     impl std::fmt::Display for PairingPhase {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str(self.as_str())
@@ -323,7 +392,7 @@ pub mod payload {
                 attempt,
                 phase: state.into(),
                 message: state.message().into(),
-                code: state.error().map(|e| e.code.as_str().into()),
+                code: state.error().map(|e| e.code.into()),
                 // Handshake errors carry no device parameter; dial
                 // failures (which do) are composed by the world from
                 // the typed dial reason, not through this projection.
@@ -376,6 +445,33 @@ pub mod payload {
     mod tests {
         use super::*;
         use tisvlay_core::{Credentials, InputType, PairingError, PairingState};
+
+        /// Each code's wire token is core's, so clients that print it
+        /// see the same reason names as before.
+        #[test]
+        fn failure_codes_keep_core_tokens() {
+            use tisvlay_core::PairingErrorCode as P;
+            for code in [
+                P::Rejected,
+                P::Timeout,
+                P::ConnectionFailed,
+                P::InvalidInput,
+                P::Cancelled,
+                P::Unknown,
+            ] {
+                assert_eq!(FailureCode::from(code).as_str(), code.as_str());
+            }
+            let device = tisvlay_core::errors::DeviceErrorCode::PermissionDenied;
+            assert_eq!(FailureCode::from(device).as_str(), device.as_str());
+            for code in [
+                FailureCode::PairingRejected,
+                FailureCode::DevicePermissionDenied,
+            ] {
+                let json = serde_json::to_value(code).unwrap();
+                assert_eq!(json, code.as_str());
+                assert_eq!(serde_json::from_value::<FailureCode>(json).unwrap(), code);
+            }
+        }
 
         #[test]
         fn pairing_states_map_to_their_phases() {
