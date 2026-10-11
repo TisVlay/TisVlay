@@ -99,6 +99,7 @@ Ordered so the conflict hotspot (wire's `lib.rs`) is split first and the later c
    - **Protocol:** `VERSION` and `compatible()`, with the services filling `ServiceInfo.version` from `VERSION`.
    - **SDK:** a per-service verdict cache, cleared on a liveliness DELETE; the gates on rpcs, writes, `list_tvs` and the `Option` reads; `Error::VersionMismatch`; `StateEvent::VersionMismatch`.
    - **CLI:** the mismatch check in `status` and before its rpcs.
+   - **GUI:** an app-level banner, beside the access and reload banners, naming the service and both versions ("TisVlay 0.4 can't talk to the daemon (0.3); restart the daemon or upgrade"). It shows above every pane until the versions match. Owner's ruling, 2026-10-11.
    - **Release:** `features_always_increment_minor = true` in `release-plz.toml`, and the wire-change commit rule in CLAUDE.md, next to "a new rpc is declared once".
 4. **API audit** of `tisvlay-protocol` and `tisvlay`, the #157 checks:
    - private by default (`unreachable_pub`, unused public items);
