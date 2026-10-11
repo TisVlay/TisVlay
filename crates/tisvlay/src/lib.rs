@@ -142,11 +142,14 @@ pub enum StateEvent {
     /// the watcher fell behind and dropped events.
     FallbackPoll,
     /// A service runs a release this client can't talk to: every rpc to
-    /// it fails until it's restarted on a matching release.
+    /// it fails until it's restarted on a matching release. Sent once per
+    /// service lifetime, after its `*Appeared`; a watcher built while the
+    /// mismatch is already known gets it on start, and may then see it
+    /// twice.
     VersionMismatch {
         /// The mismatched service.
         service: Service,
-        /// This SDK's release.
+        /// The protocol release this SDK speaks.
         ours: String,
         /// The service's release.
         theirs: String,
@@ -378,8 +381,7 @@ impl DaemonClient {
                         &caller,
                         Service::Daemon,
                         |caller| async move { caller.call::<manager::Info>(&(), &()).await },
-                    )
-                    .await;
+                    );
                 }
             });
         }
@@ -1018,8 +1020,7 @@ impl SessionClient {
                         &caller,
                         Service::Session,
                         |caller| async move { caller.call::<user_profile::Info>(&(), &()).await },
-                    )
-                    .await;
+                    );
                 }
             });
         }
@@ -1277,8 +1278,7 @@ impl TrayClient {
                         &caller,
                         Service::Tray,
                         |caller| async move { caller.call::<user_tray::Info>(&(), &()).await },
-                    )
-                    .await;
+                    );
                 }
             });
         }
@@ -1374,31 +1374,37 @@ impl TrayClient {
 /// Keep a client's verdict in step with its service's liveliness: a
 /// service that went away gets a fresh check in its next lifetime, and one
 /// that appeared is checked at once, so a mismatch reaches the watcher
-/// without waiting for a call.
-async fn check_on_liveliness<F, Fut>(
+/// without waiting for a call. The check runs on its own task, so a slow
+/// `info` never holds up the next liveliness edge.
+fn check_on_liveliness<F, Fut>(
     alive: bool,
-    handshake: &Handshake,
+    handshake: &Arc<Handshake>,
     events: &broadcast::Sender<StateEvent>,
     caller: &Arc<Caller>,
     service: Service,
     info: F,
 ) where
-    F: FnOnce(Arc<Caller>) -> Fut,
-    Fut: Future<Output = std::result::Result<rpc::ServiceInfo, tisvlay_protocol::caller::RpcError>>,
+    F: FnOnce(Arc<Caller>) -> Fut + Send + 'static,
+    Fut: Future<Output = std::result::Result<rpc::ServiceInfo, tisvlay_protocol::caller::RpcError>>
+        + Send,
 {
     if !alive {
-        handshake.reset().await;
+        handshake.reset();
         return;
     }
+    let handshake = Arc::clone(handshake);
+    let events = events.clone();
     let caller = Arc::clone(caller);
-    let _ = handshake
-        .ensure(events, || async move {
-            info(caller)
-                .await
-                .map(|info| info.version)
-                .map_err(|e| Error::from_rpc(service, e))
-        })
-        .await;
+    tokio::spawn(async move {
+        let _ = handshake
+            .ensure(&events, || async move {
+                info(caller)
+                    .await
+                    .map(|info| info.version)
+                    .map_err(|e| Error::from_rpc(service, e))
+            })
+            .await;
+    });
 }
 
 /// Watcher tuning: mirror deltas forward directly, so the one knob is
@@ -1447,14 +1453,14 @@ impl StateWatcher {
         if let Some(tray) = tray {
             forward(tray.subscribe_events(), tx.clone());
         }
-        // Synthesize `*Appeared` for peers already alive: their
-        // liveliness edge fired into the client's broadcast before this
-        // watcher subscribed (a tokio broadcast drops events sent with
-        // no receivers), so consumers relying on edges alone would
-        // never learn about a peer that came up between client
-        // construction and watcher construction. A level-triggered
-        // emit after subscription closes the window; consumers treat
-        // repeated `*Appeared` idempotently.
+        // Synthesize `*Appeared` for peers already alive, and
+        // `VersionMismatch` for mismatches already known: both fired into
+        // the client's broadcast before this watcher subscribed (a tokio
+        // broadcast drops events sent with no receivers), so consumers
+        // relying on edges alone would never learn of them. A
+        // level-triggered emit after subscription closes the window; a
+        // check finishing in between can announce twice, and consumers
+        // treat repeats idempotently.
         {
             let tx = tx.clone();
             let daemon = daemon.clone();
@@ -1464,15 +1470,24 @@ impl StateWatcher {
                 if daemon.is_available().await {
                     let _ = tx.send(StateEvent::DaemonAppeared);
                 }
-                if let Some(session) = session
-                    && session.is_available().await
-                {
-                    let _ = tx.send(StateEvent::SessionAppeared);
+                if let Some(event) = daemon.handshake.known_mismatch_event() {
+                    let _ = tx.send(event);
                 }
-                if let Some(tray) = tray
-                    && tray.is_available().await
-                {
-                    let _ = tx.send(StateEvent::TrayAppeared);
+                if let Some(session) = session {
+                    if session.is_available().await {
+                        let _ = tx.send(StateEvent::SessionAppeared);
+                    }
+                    if let Some(event) = session.handshake.known_mismatch_event() {
+                        let _ = tx.send(event);
+                    }
+                }
+                if let Some(tray) = tray {
+                    if tray.is_available().await {
+                        let _ = tx.send(StateEvent::TrayAppeared);
+                    }
+                    if let Some(event) = tray.handshake.known_mismatch_event() {
+                        let _ = tx.send(event);
+                    }
                 }
             });
         }

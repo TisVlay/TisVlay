@@ -547,6 +547,36 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     assert!(daemon.list_tvs().await.is_ok());
 }
 
+/// A watcher built after the mismatch is already known still hears of it:
+/// the announcement went out before it subscribed, so it replays it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watcher_built_late_still_hears_of_a_known_mismatch() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("sys.sock");
+    let _stub = stub_service!(
+        &socket,
+        tisvlay_protocol::keys::manager_rpc_wild("t"),
+        tisvlay_protocol::keys::daemon_alive("t"),
+        manager,
+        "99.0.0"
+    );
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    // A call settles the verdict before any watcher exists.
+    assert!(matches!(
+        daemon.reload_config().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
+    let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+    let event = next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::VersionMismatch { .. })
+    })
+    .await;
+    assert!(matches!(
+        event,
+        StateEvent::VersionMismatch { theirs, .. } if theirs == "99.0.0"
+    ));
+}
+
 /// The user-socket clients refuse a mismatched service the same way.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_session_and_tray_clients_refuse_another_release() {
