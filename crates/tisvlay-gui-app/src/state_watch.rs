@@ -414,6 +414,16 @@ async fn watch_state(
             } => {
                 mismatches.set(service, ours, theirs);
                 mismatches.publish(&app_weak);
+                // A refresh that ran before the verdict may have listed
+                // the incompatible daemon's TVs; its mirror is off limits
+                // from here, and later refreshes fail without touching
+                // the list.
+                if service == Service::Daemon {
+                    on_ui(&app_weak, move |app| {
+                        app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
+                        app.set_tvs_connected_count(0);
+                    });
+                }
             }
             StateEvent::DaemonDisappeared => {
                 // The daemon's next lifetime gets a fresh release check.
@@ -560,22 +570,23 @@ async fn publish_services(
         })
     }
 
-    // A failed probe on a live peer renders an online row with "—".
+    // Only a live peer is probed: an rpc to an absent one waits out the
+    // matching deadline, which would hold every indicator (and the watch
+    // loop) behind it. A failed probe on a live peer renders an online row
+    // with "—".
     let daemon_up = daemon.is_available().await;
-    let daemon_info = probe(daemon.version(), daemon.config_path()).await;
+    let daemon_info = if daemon_up {
+        probe(daemon.version(), daemon.config_path()).await
+    } else {
+        None
+    };
     let (session_up, session_info) = match session.read().await.as_ref() {
-        Some(s) => (
-            s.is_available().await,
-            probe(s.version(), s.config_path()).await,
-        ),
-        None => (false, None),
+        Some(s) if s.is_available().await => (true, probe(s.version(), s.config_path()).await),
+        _ => (false, None),
     };
     let (tray_up, tray_info) = match tray.read().await.as_ref() {
-        Some(t) => (
-            t.is_available().await,
-            probe(t.version(), t.config_path()).await,
-        ),
-        None => (false, None),
+        Some(t) if t.is_available().await => (true, probe(t.version(), t.config_path()).await),
+        _ => (false, None),
     };
     let cli_version = probe_cli_version().await;
     let daemon_health = service_health(daemon_up, daemon_info.as_ref());
