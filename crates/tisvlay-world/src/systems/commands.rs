@@ -142,9 +142,19 @@ pub(crate) fn remove_tv(
     mut pairing: PairingParams,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
+    despawn_tv(&mut commands, &mut pairing, id, entity);
+    Ok(Ack {})
+}
+
+/// Despawn TV `id`; a pairing session for it (a re-pair in flight) dies
+/// with it.
+pub(super) fn despawn_tv(
+    commands: &mut Commands,
+    pairing: &mut PairingParams,
+    id: Uuid,
+    entity: Entity,
+) {
     commands.entity(entity).despawn();
-    // A pairing session for the same uuid (re-pair in flight) dies with
-    // the TV.
     if let Some(session) = pairing.index.get(&id) {
         if let Ok(mut session_ref) = pairing.refs.get_mut(session)
             && let Some(tx) = &session_ref.cancel_tx
@@ -154,7 +164,6 @@ pub(crate) fn remove_tv(
         }
         commands.entity(session).despawn();
     }
-    Ok(Ack {})
 }
 
 pub(crate) fn reconnect(

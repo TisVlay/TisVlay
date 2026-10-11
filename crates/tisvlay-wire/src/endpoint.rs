@@ -202,6 +202,8 @@ pub mod manager {
         rpcs: {
             /// The daemon's version and state path.
             Info = "info" (()) -> rpc::ServiceInfo, read;
+            /// Apply a hand edit of the daemon's store file.
+            Reload = "reload" (()) -> rpc::ReloadReport, write;
             /// A MAC hint for a manually entered TV, from the ARP cache.
             Enrich = "enrich" (rpc::Enrich) -> rpc::EnrichReply, read;
             /// A bounded scan; each finding streams back as its own reply.

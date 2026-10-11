@@ -823,6 +823,12 @@ pub mod error {
         UnknownRpc = "unknown-rpc",
         DiscoveryNotFound = "discovery-not-found",
         DaemonShuttingDown = "daemon-shutting-down",
+        /// The service runs without a state file, so there's nothing to
+        /// reload.
+        NoStore = "no-store",
+        /// The state file couldn't be read or parsed; a reload applies
+        /// nothing.
+        StoreUnreadable = "store-unreadable",
     }
 
     /// Split a [`WireError::invalid_field`] refusal back into its
@@ -973,6 +979,21 @@ pub mod error {
             Self {
                 code: ErrorCode::DaemonShuttingDown,
                 message: "world reactor is gone".into(),
+            }
+        }
+
+        pub fn no_store() -> Self {
+            Self {
+                code: ErrorCode::NoStore,
+                message: "this service runs without a state file".into(),
+            }
+        }
+
+        /// `path` couldn't be read or parsed, for `reason`.
+        pub fn store_unreadable(path: &std::path::Path, reason: impl std::fmt::Display) -> Self {
+            Self {
+                code: ErrorCode::StoreUnreadable,
+                message: format!("can't reload {}: {reason}", path.display()),
             }
         }
     }
@@ -1289,6 +1310,14 @@ pub mod rpc {
     /// Reply to an rpc that only acknowledges: `{}` on the wire.
     #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Ack {}
+
+    /// Reply to a service's `reload` rpc.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct ReloadReport {
+        /// Whether the file differed from what the service last wrote,
+        /// so the reload applied an edit.
+        pub changed: bool,
+    }
 
     /// Reply carrying the id the service minted (TV or profile creation).
     #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

@@ -392,6 +392,34 @@ pub enum Command {
         id: Uuid,
         reply: Option<Reply<profile::Effective>>,
     },
+    /// Apply a hand edit of the store file. The store writer reads the
+    /// file and sends the edit, or the refusal (no file, unreadable,
+    /// unparsable) for the world to answer.
+    ReloadStore {
+        edit: Result<Box<StoreEdit>, WireError>,
+        reply: Option<Reply<manager::Reload>>,
+    },
+}
+
+/// A hand edit of the store file: the snapshot the store writer last
+/// wrote (or loaded at boot), and the file as it reads now. A reload
+/// applies exactly the difference between the two, so world changes still
+/// waiting on a write survive it.
+#[derive(Debug)]
+pub struct StoreEdit {
+    pub base: StoreSnapshot,
+    pub disk: StoreSnapshot,
+}
+
+/// What the world sends the store writer.
+#[derive(Debug)]
+pub enum StoreMsg {
+    /// The world's state changed: write it.
+    Persist(Box<StoreSnapshot>),
+    /// A reload finished. `Some` carries the file it applied, which is
+    /// now the writer's record of what's on disk; `None` means the world
+    /// refused it, so that record stands.
+    Reloaded(Option<Box<StoreSnapshot>>),
 }
 
 /// A dial failure with its typed reason preserved across the task

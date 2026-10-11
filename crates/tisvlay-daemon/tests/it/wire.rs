@@ -33,8 +33,15 @@ struct Wire {
 }
 
 async fn wire() -> Wire {
+    wire_with_store(false).await
+}
+
+/// [`wire`], persisting to `daemon.toml` in the fixture's directory when
+/// `store` is set.
+async fn wire_with_store(store: bool) -> Wire {
     let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("w.sock");
+    let store = store.then(|| dir.path().join("daemon.toml"));
     let (connector, discovery, handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(
         &socket,
@@ -43,7 +50,7 @@ async fn wire() -> Wire {
             tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
                 .with_discovery(Arc::new(discovery)),
         ],
-        None,
+        store.as_deref(),
     )
     .await
     .unwrap();
@@ -264,9 +271,9 @@ async fn remaining_rpcs_answer_typed() {
         .expect("reconnect ok");
 }
 
-/// P1's exit criterion: a daemon restart keeps its TVs. The store file is
-/// written debounced+atomic; a second stack replaying it (the `run()` boot
-/// path) hydrates the same TV for a late client.
+/// A daemon restart keeps its TVs. The store file is written
+/// debounced+atomic, and a second stack booted from it (`serve` applies the
+/// store before the world runs) hydrates the same TV for a late client.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_preserves_tvs_via_store() {
     let dir = tisvlay_test::socket_tempdir();
@@ -308,10 +315,10 @@ async fn restart_preserves_tvs_via_store() {
     drop(client1);
     stack1.daemon.close().await.unwrap();
 
-    // Second life: fresh stack + mock, same store, replayed like run() does.
+    // Second life: fresh stack + mock, same store.
     let socket2 = dir.path().join("b.sock");
     let (connector2, discovery2, _handle2) = new_test_parts();
-    let stack2 = tisvlay_daemon::serve(
+    let _stack2 = tisvlay_daemon::serve(
         &socket2,
         "t",
         vec![
@@ -322,12 +329,6 @@ async fn restart_preserves_tvs_via_store() {
     )
     .await
     .unwrap();
-    for record in tisvlay_daemon::load_store(&store).unwrap().tv {
-        stack2.world.command(tisvlay_world::Command::AddTv {
-            record: Box::new(record),
-            reply: None,
-        });
-    }
     let late = zenoh::open(bootstrap::client_config(&socket2).unwrap())
         .await
         .unwrap();
@@ -348,6 +349,70 @@ async fn restart_preserves_tvs_via_store() {
         name_seen && connected_seen
     })
     .await;
+}
+
+/// Wait until the daemon's store file mentions `needle`.
+async fn await_store_contains(store: &std::path::Path, needle: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_to_string(store).is_ok_and(|t| t.contains(needle)) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the store never mentioned {needle}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A hand edit of the store file applies on reload and reaches clients
+/// like any other change.
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_applies_a_hand_edited_store() {
+    let w = wire_with_store(true).await;
+    let store = w.socket.with_file_name("daemon.toml");
+    let id = call::<manager::AddTv>(&w.caller, &(), &add_body("Before", "mock://reload"))
+        .await
+        .expect("add-tv ok")
+        .id;
+    await_store_contains(&store, "Before").await;
+    let edited = std::fs::read_to_string(&store)
+        .unwrap()
+        .replace("\"Before\"", "\"After\"");
+    std::fs::write(&store, edited).unwrap();
+
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    let report = call::<manager::Reload>(&w.caller, &(), &())
+        .await
+        .expect("reload ok");
+    assert!(report.changed);
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "meta/identity")
+            && payload_json(s)["name"] == "After"
+    })
+    .await;
+    // Nothing changed since: a second reload applies nothing.
+    let again = call::<manager::Reload>(&w.caller, &(), &())
+        .await
+        .expect("reload ok");
+    assert!(!again.changed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_refuses_a_missing_store_and_an_ephemeral_daemon() {
+    let w = wire_with_store(true).await;
+    let store = w.socket.with_file_name("daemon.toml");
+    await_store_contains(&store, "version").await;
+    std::fs::remove_file(&store).unwrap();
+    let err = call::<manager::Reload>(&w.caller, &(), &())
+        .await
+        .expect_err("a missing store is refused, not read as empty");
+    assert_eq!(refusal(&err).code, ErrorCode::StoreUnreadable);
+
+    let ephemeral = wire().await;
+    let err = call::<manager::Reload>(&ephemeral.caller, &(), &())
+        .await
+        .expect_err("an ephemeral daemon has nothing to reload");
+    assert_eq!(refusal(&err).code, ErrorCode::NoStore);
 }
 
 #[tokio::test(flavor = "multi_thread")]

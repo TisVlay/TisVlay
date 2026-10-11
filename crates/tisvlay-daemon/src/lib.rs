@@ -363,18 +363,31 @@ pub async fn serve(
             .filter_map(|v| v.retry.map(|retry| (v.id.clone(), retry)))
             .collect(),
     );
-    let store = store_path.map(|path| {
-        let (tx, rx) = mpsc::unbounded_channel();
-        reactor.set_persist(tx);
-        tokio::spawn(store::store_task(path.to_path_buf(), rx))
-    });
+    let stored_snapshot = store_path.map(load_store).transpose()?;
+    // The store writer starts from the snapshot just loaded: its record of
+    // what's on disk, which a reload compares the file against.
+    let (store, reloads) = match (store_path, &stored_snapshot) {
+        (Some(path), Some(base)) => {
+            let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+            let (reload_tx, reload_rx) = mpsc::unbounded_channel();
+            reactor.set_persist(persist_tx);
+            let task = tokio::spawn(store::store_task(
+                path.to_path_buf(),
+                base.clone(),
+                persist_rx,
+                reload_rx,
+                world.clone(),
+            ));
+            (Some(task), Some(reload_tx))
+        }
+        _ => (None, None),
+    };
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
     // Boot state applies before the reactor runs. The editable default
     // profile comes first, so the catalog always has the inheritance
     // baseline; the store's rows follow and upsert over it, so user edits
     // to the default survive restarts.
-    let stored_snapshot = store_path.map(load_store).transpose()?;
     let mut default_profile = tisvlay_core::SystemProfileConfig::full_default();
     default_profile.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
     let mut boot = vec![Command::AddProfile {
@@ -453,6 +466,7 @@ pub async fn serve(
         discoveries,
         catalog,
         info,
+        reloads,
         bridge_ready,
     ));
     // Greeter idle transitions arrive as plain puts from `tisvlay-greeter`

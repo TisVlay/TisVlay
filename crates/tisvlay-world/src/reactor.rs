@@ -22,7 +22,7 @@ use crate::components::{
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, Reply,
-    RouteRequest, StoreSnapshot, TvRecord, WireEffect, WireError,
+    RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect, WireError,
 };
 use crate::systems::build_schedule;
 use crate::systems::commands as handle;
@@ -34,7 +34,7 @@ pub struct Reactor {
     inbox_tx: mpsc::UnboundedSender<InEvent>,
     connectors: HashMap<String, Arc<dyn TvConnector>>,
     effects_tx: mpsc::UnboundedSender<WireEffect>,
-    persist_tx: Option<mpsc::UnboundedSender<StoreSnapshot>>,
+    persist_tx: Option<mpsc::UnboundedSender<StoreMsg>>,
     routes_tx: Option<mpsc::UnboundedSender<RouteRequest>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
@@ -121,10 +121,10 @@ impl Reactor {
         )
     }
 
-    /// Attach the store outlet: `Persist` effects (full TV-table
-    /// snapshots) flow here. Without one they are dropped — fine for
+    /// Attach the store outlet: state snapshots to write, and reload
+    /// outcomes, flow here. Without one they are dropped — fine for
     /// ephemeral worlds like tests.
-    pub fn set_persist(&mut self, tx: mpsc::UnboundedSender<StoreSnapshot>) {
+    pub fn set_persist(&mut self, tx: mpsc::UnboundedSender<StoreMsg>) {
         self.persist_tx = Some(tx);
     }
 
@@ -321,10 +321,15 @@ impl Reactor {
                 }
                 Effect::Persist(snapshot) => match &self.persist_tx {
                     Some(tx) => {
-                        let _ = tx.send(*snapshot);
+                        let _ = tx.send(StoreMsg::Persist(snapshot));
                     }
                     None => tracing::debug!("no store attached, persist snapshot dropped"),
                 },
+                Effect::StoreReloaded(applied) => {
+                    if let Some(tx) = &self.persist_tx {
+                        let _ = tx.send(StoreMsg::Reloaded(applied));
+                    }
+                }
             }
         }
     }
@@ -482,6 +487,25 @@ impl Reactor {
             }
             Command::EffectiveProfile { id, reply } => {
                 let result = self.run_handler(handle::effective_profile, id);
+                self.answer(reply, result);
+            }
+            Command::ReloadStore { edit, reply } => {
+                let result = match edit {
+                    Ok(edit) => {
+                        let disk = edit.disk.clone();
+                        let result = self.run_handler(crate::systems::reload::reload_store, *edit);
+                        // The store writer holds its writes until it hears
+                        // the outcome; on success the file it read is its
+                        // new record of what's on disk.
+                        let applied = result.is_ok().then(|| Box::new(disk));
+                        self.world
+                            .resource_mut::<Outbox>()
+                            .0
+                            .push(Effect::StoreReloaded(applied));
+                        result
+                    }
+                    Err(error) => Err(error),
+                };
                 self.answer(reply, result);
             }
         }

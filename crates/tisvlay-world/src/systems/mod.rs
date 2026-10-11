@@ -9,6 +9,7 @@ mod dispatch;
 mod facts;
 mod profiles;
 mod publish;
+pub(crate) mod reload;
 
 use dispatch::*;
 use facts::*;
