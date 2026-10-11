@@ -271,6 +271,7 @@ pub async fn serve_settings(
                     changed
                 });
                 if reloaded == Ok(true) {
+                    info!("applied a hand edit of the tray settings");
                     publish(settings).await;
                 }
                 responder

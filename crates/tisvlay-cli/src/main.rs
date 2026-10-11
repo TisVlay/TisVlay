@@ -16,8 +16,10 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::CompleteEnv;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::{Value, json};
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{Unary, manager, profile, tv, user_profile, user_remote, vendors};
+use tisvlay_wire::caller::{Caller, RpcError};
+use tisvlay_wire::endpoint::{
+    Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
+};
 use tisvlay_wire::{keys, payload, rpc};
 use uuid::Uuid;
 use zenoh::Session;
@@ -57,8 +59,8 @@ enum Command {
     EnableAccess,
     /// Probe the daemon's liveliness token.
     Status,
-    /// Apply a hand edit of the daemon's store file (what `systemctl
-    /// reload` does).
+    /// Apply hand edits of the state files: the daemon's, the session's
+    /// and the tray's (what the GUI's Reload button does).
     Reload,
     /// List TVs with their current state (hydrates from publisher caches).
     List,
@@ -289,8 +291,6 @@ enum UserProfileCmd {
         #[arg(add = tv_completions())]
         tv: Uuid,
     },
-    /// Apply a hand edit of the session's store file.
-    Reload,
     /// Assign (or with no value clear) a TV's user profile.
     Assign {
         #[arg(add = tv_completions())]
@@ -360,10 +360,7 @@ async fn run() -> Result<()> {
         // Handled above, before the client opens (needs no connection).
         Command::EnableAccess => unreachable!(),
         Command::Status => status(&session, site, &socket, json_out).await,
-        Command::Reload => {
-            let report = call::<manager::Reload>(&caller, &(), &()).await?;
-            print_reload(report, json_out)
-        }
+        Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
         Command::Discover { vendor, timeout_ms } => {
@@ -902,10 +899,6 @@ async fn user_profile_cmd(
             let defaults = call::<user_profile::Defaults>(user_caller, &(), &()).await?;
             print_reply(&defaults, json_out)
         }
-        UserProfileCmd::Reload => {
-            let report = call::<user_profile::Reload>(user_caller, &(), &()).await?;
-            print_reload(report, json_out)
-        }
         UserProfileCmd::Effective { tv } => {
             let request = rpc::TvRef { id: tv };
             let effective = call::<user_profile::Effective>(user_caller, &(), &request).await?;
@@ -1188,20 +1181,96 @@ async fn watch_pairing(
     }
 }
 
-/// A reload's outcome: whether the file held an edit to apply.
-fn print_reload(report: rpc::ReloadReport, json_out: bool) -> Result<()> {
+/// Reload every service's state file, as the GUI's Reload button does:
+/// the daemon's, then the session's and the tray's over the user socket.
+/// A service that isn't running has nothing to reload, so it's reported
+/// rather than failed; any other error fails the command after the report.
+async fn reload(
+    caller: &Caller,
+    user_socket: Option<PathBuf>,
+    site: &str,
+    json_out: bool,
+) -> Result<()> {
+    let daemon = caller.call::<manager::Reload>(&(), &()).await;
+    let user_socket =
+        user_socket.unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
+    let user = match zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?).await {
+        Ok(user) => Some(Caller::new(user, site)),
+        Err(_) => None,
+    };
+    let (session, tray) = match &user {
+        Some(user) => (
+            Some(user.call::<user_profile::Reload>(&(), &()).await),
+            Some(user.call::<user_tray::Reload>(&(), &()).await),
+        ),
+        None => (None, None),
+    };
+    let outcomes = [
+        ("daemon", reload_outcome(Some(daemon))),
+        ("session", reload_outcome(session)),
+        ("tray", reload_outcome(tray)),
+    ];
     if json_out {
-        return print_reply(&report, true);
-    }
-    println!(
-        "{}",
-        if report.changed {
-            "applied the file's edit"
-        } else {
-            "the file is unchanged"
+        let report: serde_json::Map<String, Value> = outcomes
+            .iter()
+            .map(|(service, outcome)| ((*service).to_string(), outcome.to_json()))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        for (service, outcome) in &outcomes {
+            println!("{:<8} {}", format!("{service}:"), outcome.describe());
         }
-    );
+    }
+    let failed: Vec<&str> = outcomes
+        .iter()
+        .filter(|(_, outcome)| matches!(outcome, ReloadOutcome::Failed(_)))
+        .map(|(service, _)| *service)
+        .collect();
+    if !failed.is_empty() {
+        bail!("reload failed for {}", failed.join(", "));
+    }
     Ok(())
+}
+
+/// One service's part of a [`reload`].
+enum ReloadOutcome {
+    Changed,
+    Unchanged,
+    NotRunning,
+    Failed(String),
+}
+
+impl ReloadOutcome {
+    fn describe(&self) -> String {
+        match self {
+            Self::Changed => "applied the file's edit".into(),
+            Self::Unchanged => "the file is unchanged".into(),
+            Self::NotRunning => "not running".into(),
+            Self::Failed(error) => error.clone(),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        match self {
+            Self::Changed => json!({ "status": "changed" }),
+            Self::Unchanged => json!({ "status": "unchanged" }),
+            Self::NotRunning => json!({ "status": "not-running" }),
+            Self::Failed(error) => json!({ "status": "failed", "error": error }),
+        }
+    }
+}
+
+/// `None` (no user socket to reach) and an rpc no service answered both
+/// mean the service isn't running.
+fn reload_outcome(
+    result: Option<std::result::Result<rpc::ReloadReport, RpcError>>,
+) -> ReloadOutcome {
+    match result {
+        None | Some(Err(RpcError::Unavailable { .. })) => ReloadOutcome::NotRunning,
+        Some(Ok(rpc::ReloadReport { changed: true })) => ReloadOutcome::Changed,
+        Some(Ok(rpc::ReloadReport { changed: false })) => ReloadOutcome::Unchanged,
+        Some(Err(e)) => ReloadOutcome::Failed(e.to_string()),
+    }
 }
 
 async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) -> Result<()> {

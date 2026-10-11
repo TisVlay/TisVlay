@@ -1023,6 +1023,7 @@ impl Core {
             let _ = tx.send(store::StoreMsg::Reloaded(applied));
         }
         if result.as_ref().is_ok_and(|report| report.changed) {
+            info!("applied a hand edit of the user store");
             self.persist();
         }
         result
