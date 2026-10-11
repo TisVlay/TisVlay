@@ -31,6 +31,7 @@ pub const MATCHING_DEADLINE: Duration = Duration::from_secs(2);
 
 /// How an rpc call ended, when it didn't end in a typed reply.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RpcError {
     /// The service refused the request.
     Service(WireError),

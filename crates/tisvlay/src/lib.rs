@@ -72,6 +72,7 @@ pub enum PairTerminal {
 
 /// The first key in a change window, for logging.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TvStateChange {
     pub key: String,
 }
@@ -162,6 +163,7 @@ impl NotificationCategory {
 
 /// Everything `list_tvs` reports per TV, projected from the mirror.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct TvInfo {
     pub uuid: Uuid,
     pub name: String,
@@ -1144,6 +1146,7 @@ async fn check_on_liveliness<F, Fut>(
 /// Watcher tuning: mirror deltas forward directly, so the one knob is
 /// the fallback poll interval.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct StateWatcherConfig {
     pub fallback_poll_interval: Duration,
 }

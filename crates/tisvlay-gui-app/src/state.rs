@@ -560,40 +560,20 @@ impl HasName for UserProfileBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay::DesktopMapping;
     use tisvlay_core::{HardwareId, SessionAction};
 
-    /// Build a `TvInfo` with sensible defaults so each test only
-    /// names the fields it cares about. `TvInfo` doesn't derive
-    /// `Default` upstream.
+    /// A `TvInfo` with sensible defaults, so each test only names the
+    /// fields it cares about. It's `#[non_exhaustive]`, so the fields are
+    /// set on a default.
     fn sample_tv(uuid: &str, name: &str) -> TvInfo {
-        TvInfo {
-            uuid: Uuid::parse_str(uuid).unwrap(),
-            name: name.into(),
-            vendor: "lg".into(),
-            brand: "lg".into(),
-            capabilities: Capabilities::STOCK,
-            connected: false,
-            managed: false,
-            automated: false,
-            remote_armed: false,
-            system_profile: None,
-            primary_input: String::new(),
-            hardware_id: HardwareId::default(),
-            primary_descriptor: String::new(),
-            vendor_config: Vec::new(),
-            vendor_info: Vec::new(),
-            desktop: DesktopMapping::default(),
-            path: String::new(),
-            power_state: PowerState::Unknown,
-            supports_wake: false,
-            is_screen_on: false,
-            volume: 0,
-            muted: false,
-            current_input: String::new(),
-            backlight: 0,
-            inputs: Vec::new(),
-        }
+        let mut tv = TvInfo::default();
+        tv.uuid = Uuid::parse_str(uuid).unwrap();
+        tv.name = name.into();
+        tv.vendor = "lg".into();
+        tv.brand = "lg".into();
+        tv.capabilities = Capabilities::STOCK;
+        tv.power_state = PowerState::Unknown;
+        tv
     }
 
     fn empty_inputs() -> SnapshotInputs {

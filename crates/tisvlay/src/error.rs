@@ -115,6 +115,11 @@ impl Error {
                 service,
                 source: Box::new(error),
             },
+            // A failure the protocol added later: keep it as the source.
+            error => Self::Transport {
+                what: "rpc failure",
+                source: Some(Box::new(error)),
+            },
         }
     }
 }
