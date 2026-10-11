@@ -429,9 +429,9 @@ pub enum StoreMsg {
 /// on the way to clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialFailure {
-    /// Namespaced reason code when the error has one — today
-    /// `device.permission-denied`; `None` = generic connect failure.
-    pub code: Option<String>,
+    /// The reason when the error carries one (a device-access failure);
+    /// `None` is a generic connect failure.
+    pub code: Option<tisvlay_wire::payload::FailureCode>,
     /// Reason-specific parameter — the device-node path for the
     /// permission case.
     pub path: Option<String>,
@@ -444,11 +444,7 @@ impl DialFailure {
     pub fn from_error(error: &tisvlay_core::Error) -> Self {
         match error {
             tisvlay_core::Error::PermissionDenied { path } => Self {
-                code: Some(
-                    tisvlay_core::errors::DeviceErrorCode::PermissionDenied
-                        .as_str()
-                        .into(),
-                ),
+                code: Some(tisvlay_core::errors::DeviceErrorCode::PermissionDenied.into()),
                 path: Some(path.clone()),
                 message: error.to_string(),
             },
@@ -514,7 +510,7 @@ pub enum BackendEvent {
     Disconnected,
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
-    PowerPhase(&'static str),
+    PowerPhase(tisvlay_wire::payload::PowerPhase),
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
         reply: AckReply,

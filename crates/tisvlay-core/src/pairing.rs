@@ -301,16 +301,6 @@ impl PairingState {
         Self::Failed { error }
     }
 
-    /// Get the D-Bus state string.
-    pub fn to_dbus_state(&self) -> &'static str {
-        match self {
-            Self::AwaitingTvPrompt { .. } => "awaiting_tv",
-            Self::AwaitingUserInput { .. } => "awaiting_input",
-            Self::Complete { .. } => "complete",
-            Self::Failed { .. } => "failed",
-        }
-    }
-
     /// Get the human-readable message for this state.
     pub fn message(&self) -> &str {
         match self {
@@ -562,21 +552,17 @@ mod tests {
     }
 
     #[test]
-    fn test_pairing_state_dbus() {
+    fn test_pairing_state_accessors() {
         let state = PairingState::awaiting_tv_prompt("Accept on TV");
-        assert_eq!(state.to_dbus_state(), "awaiting_tv");
         assert_eq!(state.message(), "Accept on TV");
 
         let state = PairingState::awaiting_user_input("Enter PIN", InputType::Pin);
-        assert_eq!(state.to_dbus_state(), "awaiting_input");
         assert_eq!(state.input_type(), InputType::Pin);
 
         let state = PairingState::complete(Credentials::new("key123"));
-        assert_eq!(state.to_dbus_state(), "complete");
         assert!(state.is_complete());
 
         let state = PairingState::failed(PairingError::rejected());
-        assert_eq!(state.to_dbus_state(), "failed");
         assert!(state.is_failed());
     }
 

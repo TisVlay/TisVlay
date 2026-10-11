@@ -18,7 +18,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [WoL via raw socket (CAP_NET_RAW)](ideas/wol-raw-socket.md)
 - [Polkit gating for multi-user shared workstations](ideas/polkit-multi-user.md)
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
-- [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)
+- [Typed pairing-failure follow-ups (more dial codes, handshake device errors, GUI recovery actions)](ideas/typed-failed-reason-payload.md)
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
 - [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
 - [Eager remote-state refresh on gated events (world-side DPMS path)](ideas/eager-remote-state-refresh.md)

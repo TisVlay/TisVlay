@@ -166,7 +166,7 @@ pub mod payload {
         /// Read-only projection of the resolved profile-chain
         /// `automate_when` policy (assigned profile - default profile -
         /// always); the world's derive pass is the only writer.
-        pub automate_when: String,
+        pub automate_when: tisvlay_core::AutomateWhen,
         /// The evaluated automation gate: `managed` AND the resolved
         /// `automate_when` holds against the current input. Consumers
         /// (session service, tray) act only on automated TVs.
@@ -185,7 +185,7 @@ pub mod payload {
                 managed,
                 system_profile: None,
                 primary_input: None,
-                automate_when: "always".into(),
+                automate_when: tisvlay_core::AutomateWhen::Always,
                 // `should_automate` gives unknown inputs the benefit of
                 // the doubt, so a fresh managed TV starts automated.
                 automated: managed,
@@ -226,13 +226,11 @@ pub mod payload {
         /// live ones that isn't guaranteed — so a watcher drains only its
         /// own attempt.
         pub attempt: uuid::Uuid,
-        /// `awaiting_tv` | `awaiting_input` | `complete` | `failed`.
-        pub phase: String,
+        pub phase: PairingPhase,
         pub message: String,
-        /// Namespaced failure reason (e.g. `pairing.rejected`,
-        /// `device.permission-denied`), `failed` only.
+        /// Why the attempt failed; `failed` only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub code: Option<String>,
+        pub code: Option<FailureCode>,
         /// Reason-specific parameter — the device-node path on a
         /// permission-denied failure, so clients can name the node in
         /// the fix hint. Absent for reasons that carry none.
@@ -267,14 +265,170 @@ pub mod payload {
         Differs { configured: String },
     }
 
+    /// A wake-and-connect flow's progress, on a TV's `progress/power` key.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PowerProgress {
+        pub phase: PowerPhase,
+    }
+
+    /// The phases a wake-and-connect flow walks through, ending in
+    /// `connected` or `failed`.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PowerPhase {
+        /// The Wake-on-LAN packet has been (or is about to be) sent.
+        WolSent,
+        /// The TV was reachable, so no wake: straight to connecting.
+        DirectConnect,
+        Connecting,
+        /// The dial is deferred until the TV's network route returns.
+        AwaitingNetwork,
+        Connected,
+        Failed,
+    }
+
+    impl PowerPhase {
+        /// The wire token, for display and the GUI's string properties.
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::WolSent => "wol_sent",
+                Self::DirectConnect => "direct_connect",
+                Self::Connecting => "connecting",
+                Self::AwaitingNetwork => "awaiting_network",
+                Self::Connected => "connected",
+                Self::Failed => "failed",
+            }
+        }
+    }
+
+    /// Where a pairing attempt stands.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PairingPhase {
+        /// Waiting for the user to accept on the TV.
+        AwaitingTv,
+        /// Waiting for the user to enter a PIN or password.
+        AwaitingInput,
+        /// Paired, and the TV's first dial succeeded.
+        Complete,
+        Failed,
+    }
+
+    impl PairingPhase {
+        /// `complete` or `failed`: no further sample follows for the
+        /// attempt.
+        pub const fn is_terminal(self) -> bool {
+            matches!(self, Self::Complete | Self::Failed)
+        }
+
+        /// The wire token (`awaiting_tv`, ...), for display and the GUI's
+        /// string properties.
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::AwaitingTv => "awaiting_tv",
+                Self::AwaitingInput => "awaiting_input",
+                Self::Complete => "complete",
+                Self::Failed => "failed",
+            }
+        }
+    }
+
+    /// Why a pairing attempt failed: the handshake's `pairing.*` reasons
+    /// and the first dial's `device.*` access reasons, on the wire as
+    /// those namespaced tokens.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum FailureCode {
+        /// The user rejected pairing on the TV.
+        #[serde(rename = "pairing.rejected")]
+        PairingRejected,
+        #[serde(rename = "pairing.timeout")]
+        PairingTimeout,
+        /// The TV couldn't be reached.
+        #[serde(rename = "pairing.connection-failed")]
+        PairingConnectionFailed,
+        /// The PIN or password was wrong.
+        #[serde(rename = "pairing.invalid-input")]
+        PairingInvalidInput,
+        #[serde(rename = "pairing.cancelled")]
+        PairingCancelled,
+        #[serde(rename = "pairing.unknown")]
+        PairingUnknown,
+        /// The daemon may not open the device node (`path` names it).
+        #[serde(rename = "device.permission-denied")]
+        DevicePermissionDenied,
+    }
+
+    impl FailureCode {
+        /// The wire token, for display.
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::PairingRejected => "pairing.rejected",
+                Self::PairingTimeout => "pairing.timeout",
+                Self::PairingConnectionFailed => "pairing.connection-failed",
+                Self::PairingInvalidInput => "pairing.invalid-input",
+                Self::PairingCancelled => "pairing.cancelled",
+                Self::PairingUnknown => "pairing.unknown",
+                Self::DevicePermissionDenied => "device.permission-denied",
+            }
+        }
+    }
+
+    impl std::fmt::Display for FailureCode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+
+    impl From<tisvlay_core::PairingErrorCode> for FailureCode {
+        fn from(code: tisvlay_core::PairingErrorCode) -> Self {
+            use tisvlay_core::PairingErrorCode;
+            match code {
+                PairingErrorCode::Rejected => Self::PairingRejected,
+                PairingErrorCode::Timeout => Self::PairingTimeout,
+                PairingErrorCode::ConnectionFailed => Self::PairingConnectionFailed,
+                PairingErrorCode::InvalidInput => Self::PairingInvalidInput,
+                PairingErrorCode::Cancelled => Self::PairingCancelled,
+                PairingErrorCode::Unknown => Self::PairingUnknown,
+            }
+        }
+    }
+
+    impl From<tisvlay_core::errors::DeviceErrorCode> for FailureCode {
+        fn from(code: tisvlay_core::errors::DeviceErrorCode) -> Self {
+            match code {
+                tisvlay_core::errors::DeviceErrorCode::PermissionDenied => {
+                    Self::DevicePermissionDenied
+                }
+            }
+        }
+    }
+
+    impl std::fmt::Display for PairingPhase {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+
+    impl From<&tisvlay_core::PairingState> for PairingPhase {
+        fn from(state: &tisvlay_core::PairingState) -> Self {
+            use tisvlay_core::PairingState;
+            match state {
+                PairingState::AwaitingTvPrompt { .. } => Self::AwaitingTv,
+                PairingState::AwaitingUserInput { .. } => Self::AwaitingInput,
+                PairingState::Complete { .. } => Self::Complete,
+                PairingState::Failed { .. } => Self::Failed,
+            }
+        }
+    }
+
     impl PairingProgress {
         /// Project a core pairing state onto `attempt`'s progress sample.
         pub fn from_state(attempt: uuid::Uuid, state: &tisvlay_core::PairingState) -> Self {
             Self {
                 attempt,
-                phase: state.to_dbus_state().into(),
+                phase: state.into(),
                 message: state.message().into(),
-                code: state.error().map(|e| e.code.as_str().into()),
+                code: state.error().map(|e| e.code.into()),
                 // Handshake errors carry no device parameter; dial
                 // failures (which do) are composed by the world from
                 // the typed dial reason, not through this projection.
@@ -321,6 +475,86 @@ pub mod payload {
         Portal,
         Screencast,
         Sunshine,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tisvlay_core::{Credentials, InputType, PairingError, PairingState};
+
+        /// Each code's wire token is core's, so clients that print it
+        /// see the same reason names as before.
+        #[test]
+        fn failure_codes_keep_core_tokens() {
+            use tisvlay_core::PairingErrorCode as P;
+            for code in [
+                P::Rejected,
+                P::Timeout,
+                P::ConnectionFailed,
+                P::InvalidInput,
+                P::Cancelled,
+                P::Unknown,
+            ] {
+                assert_eq!(FailureCode::from(code).as_str(), code.as_str());
+            }
+            let device = tisvlay_core::errors::DeviceErrorCode::PermissionDenied;
+            assert_eq!(FailureCode::from(device).as_str(), device.as_str());
+            for code in [
+                FailureCode::PairingRejected,
+                FailureCode::DevicePermissionDenied,
+            ] {
+                let json = serde_json::to_value(code).unwrap();
+                assert_eq!(json, code.as_str());
+                assert_eq!(serde_json::from_value::<FailureCode>(json).unwrap(), code);
+            }
+        }
+
+        /// Every phase the world publishes decodes, `awaiting_network`
+        /// included (the SDK used to drop phases it didn't list).
+        #[test]
+        fn every_power_phase_decodes() {
+            for phase in [
+                PowerPhase::WolSent,
+                PowerPhase::DirectConnect,
+                PowerPhase::Connecting,
+                PowerPhase::AwaitingNetwork,
+                PowerPhase::Connected,
+                PowerPhase::Failed,
+            ] {
+                let sample = serde_json::json!({ "phase": phase.as_str() });
+                let progress: PowerProgress = serde_json::from_value(sample).unwrap();
+                assert_eq!(progress.phase, phase);
+            }
+        }
+
+        #[test]
+        fn pairing_states_map_to_their_phases() {
+            let cases = [
+                (
+                    PairingState::awaiting_tv_prompt("accept"),
+                    PairingPhase::AwaitingTv,
+                ),
+                (
+                    PairingState::awaiting_user_input("pin", InputType::Pin),
+                    PairingPhase::AwaitingInput,
+                ),
+                (
+                    PairingState::complete(Credentials::new("key")),
+                    PairingPhase::Complete,
+                ),
+                (
+                    PairingState::failed(PairingError::rejected()),
+                    PairingPhase::Failed,
+                ),
+            ];
+            for (state, phase) in cases {
+                assert_eq!(PairingPhase::from(&state), phase);
+                assert_eq!(
+                    phase.is_terminal(),
+                    state.is_complete() || state.is_failed()
+                );
+            }
+        }
     }
 }
 

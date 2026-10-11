@@ -12,11 +12,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
-use serde_json::Value;
 use tisvlay_core::{Coalescer, ReconcilerMap};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{Unary, tv, user_profile};
-use tisvlay_wire::payload::{self, StatePayload};
+use tisvlay_wire::payload::{self, PairingPhase, StatePayload};
 use tisvlay_wire::{bootstrap, keys, rpc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -548,7 +547,9 @@ async fn spawn_pairing_toasts(
             let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str()) else {
                 continue;
             };
-            let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes()) else {
+            let Ok(progress) =
+                serde_json::from_slice::<payload::PairingProgress>(&sample.payload().to_bytes())
+            else {
                 continue;
             };
             let name = handle
@@ -556,20 +557,20 @@ async fn spawn_pairing_toasts(
                 .await
                 .flatten()
                 .unwrap_or_else(|| "TV".into());
-            match progress["phase"].as_str() {
-                Some("complete") => notifier.notify(
+            match progress.phase {
+                PairingPhase::Complete => notifier.notify(
                     notify::Category::TvPairing,
                     &format!("{name} paired"),
-                    progress["message"].as_str().unwrap_or_default(),
+                    &progress.message,
                     "security-high",
                 ),
-                Some("failed") => notifier.notify(
+                PairingPhase::Failed => notifier.notify(
                     notify::Category::TvPairing,
                     &format!("Pairing {name} failed"),
-                    progress["message"].as_str().unwrap_or_default(),
+                    &progress.message,
                     "dialog-error",
                 ),
-                _ => {}
+                PairingPhase::AwaitingTv | PairingPhase::AwaitingInput => {}
             }
         }
     });
@@ -593,7 +594,9 @@ async fn spawn_power_cycle_toasts(
             let Some((tv, _)) = keys::parse_tv_path(&site, sample.key_expr().as_str()) else {
                 continue;
             };
-            let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes()) else {
+            let Ok(progress) =
+                serde_json::from_slice::<payload::PowerProgress>(&sample.payload().to_bytes())
+            else {
                 continue;
             };
             let name = handle
@@ -601,26 +604,28 @@ async fn spawn_power_cycle_toasts(
                 .await
                 .flatten()
                 .unwrap_or_else(|| "TV".into());
-            match progress["phase"].as_str() {
-                Some("wol_sent") => notifier.notify(
+            match progress.phase {
+                payload::PowerPhase::WolSent => notifier.notify(
                     notify::Category::TvWake,
                     &format!("Waking {name}…"),
                     "",
                     "system-run",
                 ),
-                Some("connected") => notifier.notify(
+                payload::PowerPhase::Connected => notifier.notify(
                     notify::Category::TvWake,
                     &format!("{name} is awake"),
                     "",
                     "video-display",
                 ),
-                Some("failed") => notifier.notify(
+                payload::PowerPhase::Failed => notifier.notify(
                     notify::Category::TvWake,
                     &format!("Waking {name} failed"),
                     "",
                     "dialog-error",
                 ),
-                _ => {}
+                payload::PowerPhase::DirectConnect
+                | payload::PowerPhase::Connecting
+                | payload::PowerPhase::AwaitingNetwork => {}
             }
         }
     });

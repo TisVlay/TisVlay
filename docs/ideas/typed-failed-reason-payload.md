@@ -1,28 +1,16 @@
-# Typed `Failed { reason }` payload across daemon error vocabulary
+# Typed pairing-failure follow-ups
 
-**Status: core landed; the architecture is in place.** The idea's whole
-premise — replacing the bare `(s)` reason string with a typed,
-variant-tagged wire payload that clients branch on by kind — shipped for
-the pairing flow. `Manager1.PairingProgress` now carries a typed
-`PairingProgressDetail` `a{sv}` (the variant-tagged dict this idea called
-for); on the `failed` phase it holds a namespaced reason `code`
-(`device.permission-denied`, `pairing.rejected`, …) and an optional `path`
-param. The GUI localizes/branches on the `code`; CLI/tray render the
-`message`. `PairingErrorCode` was retrofitted to namespaced `pairing.<kebab>`
-codes (matching `errors/power.rs` / `config.rs`), and a `device` error
-domain (`errors/device.rs`, `DeviceErrorCode`) was added for the
-transport-agnostic `Error::PermissionDenied`. The permission case is the
-first consumer. See [design.md](../design.md) (§ Signals — `PairingProgress`)
-and [cec/protocol.md](../cec/protocol.md).
+**Status: the payload is typed end to end.** `PairingProgress` on a TV's `pairing/<id>/progress` key carries:
+- a `PairingPhase`;
+- a `FailureCode` on `failed`: the handshake's `pairing.*` reasons (from core's `PairingErrorCode`) and the first dial's `device.*` access reasons (from `DeviceErrorCode`, through the world's `DialFailure`);
+- an optional `path` (the device node, for the permission case);
+- the `link_mac` report on `complete`.
 
-Remaining scope — **no architecture work left**; each item just extends the
-established projection (`tv_manager::failure_reason`) or vocabulary. All
-but the last are cheap; the last is the one genuinely feature-sized piece:
+The power-on flow's `progress/power` key is typed the same way (`PowerProgress`, `PowerPhase`), and `Meta.automate_when` is core's `AutomateWhen`. The GUI localizes the permission case; the CLI and tray render the `message`. See [cec/protocol.md](../cec/protocol.md) for the permission case.
 
-- **Retype `TvManagerError::PairingFailed(Box<dyn Error>)` to carry a typed `PairingError`** (cheap). Today `failure_reason` recovers the code via `downcast_ref::<PairingError>()`, which only works because the *permission* case travels as `ConnectionFailed { source }` (a plain match). If a future device-node backend opens its node *during* `start_pairing`/`build_config_from_pairing`, its `Error::PermissionDenied` boxes into `PairingFailed` and the downcast misses, degrading the code to `pairing.unknown`. Making the variant carry a typed error (mapping `core::Error` → a coded `PairingError` at the boxing sites) drops the downcast and lets every code survive.
-- **Broaden the vocabulary** to every terminal `TvManagerError` beyond what pairing already projects (cheap — add arms to `failure_reason`; handshake-native codes `pairing.rejected`/`timeout`/… already flow).
-- **More structured params** in the detail dict for other reason kinds (cheap — the `path` key is the template; e.g. `last_seen_at` for a future `TvUnreachable`).
-- **Typed codes on the wire** (cheap). The pairing-progress `code` and the dial-failure codes still travel as namespaced strings, while rpc refusals carry the typed `ErrorCode` enum from `tisvlay-wire`. Giving the progress detail a wire enum the same way (one table, kebab-case serde names, no unknown-code fallback) makes a typo'd code a compile error and lets the GUI match exhaustively instead of comparing `as_str()`.
-- **The pairing phase is stringly too** (cheap, pairs with the above). `PairingProgress.phase` is a `String`, so the SDK's `drain_pair_to_terminal`, the CLI's drain loop and the tray match `"complete"`/`"failed"` by text. A wire `PairingPhase` enum types it end to end.
-- **So is `Meta.automate_when`** (cheap, same shape). The world writes the resolved gate as a token string (`when.to_string()` every step, for every TV) and clients parse it back. Typing the field as `tisvlay_core::AutomateWhen`, which serializes to the same token, makes it end-to-end typed and drops the per-step allocation.
-- **Kind-based recovery actions in the GUI** ("Edit MAC", "Open CEC docs", "Open firewall settings") — a real feature: each action gated on the corresponding reason `code`. The typed payload already reaches the wizard's outcome sink (`publish_pair_outcome`), so the plumbing is done; what's left is the per-action UI + handlers.
+Remaining scope. Each item extends the vocabulary or the GUI; none needs architecture work:
+
+- **Codes for more dial failures** (cheap per reason). `DialFailure::from_error` keeps a code only for `PermissionDenied`; every other connect error reaches clients as `pairing.connection-failed` plus a message. Typed reasons for the common ones (unreachable, refused, TLS) would let clients branch, at one `FailureCode` variant each.
+- **Device errors during the handshake** (cheap). The pairing task sees only core's `PairingError`. A future device-node backend that opens its node in `start_pairing` or `build_config_from_pairing` would report a permission failure as a generic pairing failure. Mapping `core::Error::PermissionDenied` to `FailureCode::DevicePermissionDenied` at those sites keeps the code.
+- **More structured params** (cheap). `path` is the template; e.g. `last_seen_at` for a future unreachable reason.
+- **Kind-based recovery actions in the GUI** ("Edit MAC", "Open CEC docs", "Open firewall settings"). A real feature: each action gated on the corresponding `FailureCode`. The typed payload already reaches the wizard's outcome sink (`publish_pair_outcome`), so what's left is the per-action UI and handlers.

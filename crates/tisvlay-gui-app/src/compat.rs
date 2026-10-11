@@ -13,6 +13,6 @@ pub(crate) use tisvlay::{
 };
 pub(crate) use tisvlay_core::{
     AutomateWhen, Capabilities, Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
-    PairingField, PairingFieldType, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionAction,
-    TvAssignment, power_state_str_is_on, references_of, user_references_of,
+    PairingField, PairingFieldType, PowerState, ReconcilerMap, RefreshTrigger, SessionAction,
+    TvAssignment, references_of, user_references_of,
 };

@@ -14,9 +14,9 @@
 use std::collections::HashMap;
 
 use crate::compat::{
-    Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
-    SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, power_state_str_is_on,
-    references_of, user_references_of,
+    Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, PowerState,
+    SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, references_of,
+    user_references_of,
 };
 use anyhow::Result;
 use gettextrs::gettext;
@@ -220,6 +220,15 @@ pub(crate) async fn fetch_user_profile_body(
     session.get_user_profile(uuid).await
 }
 
+/// A power state's wire token (`active`, `standby`, ...), which the Slint
+/// side keys its labels on.
+fn power_state_token(state: PowerState) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|token| token.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 /// Pure renderer: shape `SnapshotInputs` into the `StateSnapshot` the
 /// GUI consumes. No IO; testable without an event loop.
 pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
@@ -268,8 +277,8 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             brand: SharedString::from(tv.brand.as_str()),
             primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
-            power_state: SharedString::from(tv.power_state.as_str()),
-            is_on: tv.connected && power_state_str_is_on(&tv.power_state),
+            power_state: SharedString::from(power_state_token(tv.power_state)),
+            is_on: tv.connected && tv.power_state.is_on(),
             supports_wake: tv.supports_wake,
             has_screen: tv.capabilities.contains(Capabilities::SCREEN),
             has_volume: tv.capabilities.contains(Capabilities::VOLUME),
@@ -575,7 +584,7 @@ mod tests {
             vendor_info: Vec::new(),
             desktop: DesktopMapping::default(),
             path: String::new(),
-            power_state: "unknown".into(),
+            power_state: PowerState::Unknown,
             supports_wake: false,
             is_screen_on: false,
             volume: 0,
@@ -626,7 +635,7 @@ mod tests {
         // "Power on" rather than a stuck "Power off".
         let mut tv = sample_tv("00000000-0000-0000-0000-000000000009", "CEC TV");
         tv.connected = true;
-        tv.power_state = "standby".into();
+        tv.power_state = PowerState::Standby;
 
         let snap = convert_snapshot(SnapshotInputs {
             tvs: vec![tv],
@@ -641,7 +650,7 @@ mod tests {
     fn single_tv_round_trips_through_conversion() {
         let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "Living Room");
         tv.connected = true;
-        tv.power_state = "active".into();
+        tv.power_state = PowerState::Active;
         tv.volume = 42;
         tv.backlight = 80;
         tv.muted = true;

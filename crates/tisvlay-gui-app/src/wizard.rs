@@ -15,7 +15,7 @@ use crate::compat::{
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::errors::DeviceErrorCode;
+use tisvlay::{FailureCode, PairingPhase};
 use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;
@@ -625,12 +625,12 @@ fn make_progress_callback(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
     captured_gen: u64,
-) -> impl FnMut(&str, &str) + Send + 'static {
-    move |phase: &str, message: &str| {
+) -> impl FnMut(PairingPhase, &str) + Send + 'static {
+    move |phase: PairingPhase, message: &str| {
         if wizard_gen.load(Ordering::SeqCst) != captured_gen {
             return;
         }
-        let phase = phase.to_string();
+        let phase = phase.as_str();
         let message = message.to_string();
         let app_weak = app_weak.clone();
         let wizard_gen = wizard_gen.clone();
@@ -671,7 +671,7 @@ enum PairError {
 /// falls back to the daemon's English `message`. The daemon stays
 /// locale-agnostic — the translated copy lives here in the GUI.
 fn localize_pair_failure(detail: &PairingProgress) -> String {
-    if detail.code.as_deref() == Some(DeviceErrorCode::PermissionDenied.as_str()) {
+    if detail.code == Some(FailureCode::DevicePermissionDenied) {
         // Name the actual node from the payload when present.
         let node = detail.path.as_deref().unwrap_or("/dev/cec*");
         return gettext(
@@ -750,7 +750,7 @@ fn publish_pair_outcome(
                 wizard.set_mac_reported(SharedString::from(reported));
                 wizard.set_mac_configured(SharedString::from(configured));
                 wizard.set_mac_error(SharedString::default());
-                wizard.set_pair_phase("complete".into());
+                wizard.set_pair_phase(PairingPhase::Complete.as_str().into());
                 if wizard.get_pair_message().is_empty() {
                     let msg = if had_progress_stream {
                         gettext("Client key stored.")
@@ -764,7 +764,7 @@ fn publish_pair_outcome(
             // by the code. A handshake failure is never an `invalid-field`
             // refusal, so no field routing.
             Err(PairError::Handshake(detail)) => {
-                wizard.set_pair_phase("failed".into());
+                wizard.set_pair_phase(PairingPhase::Failed.as_str().into());
                 wizard.set_pair_message(SharedString::from(localize_pair_failure(&detail)));
             }
             Err(PairError::Rpc(e)) => {
@@ -779,11 +779,11 @@ fn publish_pair_outcome(
                     wizard.set_pair_message(SharedString::default());
                     return;
                 }
-                wizard.set_pair_phase("failed".into());
+                wizard.set_pair_phase(PairingPhase::Failed.as_str().into());
                 wizard.set_pair_message(SharedString::from(error_text(&e)));
             }
             Err(PairError::Local(message)) => {
-                wizard.set_pair_phase("failed".into());
+                wizard.set_pair_phase(PairingPhase::Failed.as_str().into());
                 wizard.set_pair_message(SharedString::from(message));
             }
         }

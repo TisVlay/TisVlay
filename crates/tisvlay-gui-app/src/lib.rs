@@ -1952,8 +1952,8 @@ fn register_callbacks(
                     run_wizard_pair(d, app_weak, wg, name, vendor, config, managed).await;
                 });
             }
-            // Pair → Done. Only allowed when pair_phase == "complete".
-            3 if wizard.get_pair_phase() == "complete" => {
+            // Pair → Done. Only allowed once pairing completed.
+            3 if wizard.get_pair_phase() == tisvlay::PairingPhase::Complete.as_str() => {
                 wizard.set_step(4);
             }
             _ => {}
