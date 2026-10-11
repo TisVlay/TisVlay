@@ -151,7 +151,7 @@ cargo-deny 0.18+ also excludes dev-deps from `bans` and `licenses` by default â€
 
 ## First-publish checklist
 
-Five crates are `publish = true`: `tisvlay-core`, `-lg`, `-cec`, `-ssdp` and `-mock`. release-plz publishes their releases, and its `semver_check` runs cargo-semver-checks from the second release on. Its crates.io token carries only the `publish-update` scope, so it can't create a crate: the first publish of each one is done by hand, and that is when this checklist runs. It also runs whenever a crate flips to `publish = true`.
+Four crates are `publish = true`: `tisvlay-core`, `-lg`, `-cec` and `-ssdp`. The mock backend stays unpublished: its API is shaped around the workspace's tests, and new vendors copy it from the repo. release-plz publishes their releases, and its `semver_check` runs cargo-semver-checks from the second release on. Its crates.io token carries only the `publish-update` scope, so it can't create a crate: the first publish of each one is done by hand, and that is when this checklist runs. It also runs whenever a crate flips to `publish = true`.
 
 1. **`cargo package -p <crate> --list`, then a full `cargo package -p <crate>`.** The list shows exactly what ships, so read it for fixtures and stray files. The build compiles the packaged crate on its own, which catches path-only dependencies, and cargo warns about missing metadata (description, license, documentation, homepage or repository).
 2. **A `readme`.** Only `tisvlay-ssdp` sets one today; without it the crates.io page is empty.

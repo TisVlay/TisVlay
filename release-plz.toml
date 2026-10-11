@@ -3,7 +3,8 @@
 # and the per-crate CHANGELOGs (.github/workflows/release-plz.yml). Merging
 # that PR lands the bump; the publish of the publishable crates
 # (`publish = true`) to crates.io — in dependency order, skipping the
-# `publish = false` dev crates (tisvlay-test / tisvlay-harness) — runs from
+# `publish = false` crates (the binaries, their glue, the mock and the
+# test fakes) — runs from
 # .github/workflows/release.yml when you promote the GitHub release to a
 # full release, i.e. AFTER you've verified the distro artifacts (crates.io
 # is irreversible, so it comes last).
