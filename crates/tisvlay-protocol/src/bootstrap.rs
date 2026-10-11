@@ -1,11 +1,53 @@
-//! Session configuration for daemon (peer + UDS listener) and clients
-//! (connect-only). Multicast and gossip scouting are pinned off in both:
-//! the topology is explicit endpoints only, never LAN discovery.
+//! Session configuration for the services (a listener on a Unix socket)
+//! and their clients (connect-only). Multicast and gossip scouting are
+//! pinned off in every config: the topology is explicit endpoints only,
+//! never LAN discovery.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow};
 use zenoh::Config;
+
+/// A session config that couldn't be built.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ConfigError {
+    /// The socket path isn't valid UTF-8, which a zenoh endpoint needs.
+    NonUtf8Path(PathBuf),
+    /// zenoh refused a config value.
+    Rejected {
+        /// The config key.
+        key: String,
+        /// The value it refused.
+        value: String,
+        /// zenoh's reason.
+        source: zenoh::Error,
+    },
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonUtf8Path(path) => write!(
+                f,
+                "socket path {} isn't valid UTF-8, which a zenoh endpoint needs",
+                path.display()
+            ),
+            Self::Rejected { key, value, .. } => write!(f, "zenoh config {key} = {value}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NonUtf8Path(_) => None,
+            Self::Rejected { source, .. } => Some(source.as_ref()),
+        }
+    }
+}
+
+type Result<T> = std::result::Result<T, ConfigError>;
 
 /// Default daemon socket: `$XDG_RUNTIME_DIR/tisvlay/zenoh.sock`, falling
 /// back to the system temp dir when no runtime dir is available.
@@ -131,7 +173,11 @@ fn base_config() -> Result<Config> {
 fn insert(config: &mut Config, key: &str, value: &str) -> Result<()> {
     config
         .insert_json5(key, value)
-        .map_err(|e| anyhow!("zenoh config {key} = {value}: {e}"))
+        .map_err(|source| ConfigError::Rejected {
+            key: key.to_owned(),
+            value: value.to_owned(),
+            source,
+        })
 }
 
 /// JSON-encoded single-element endpoint list for `insert_json5`.
@@ -141,11 +187,12 @@ fn endpoint_list(sockets: &[&Path]) -> Result<String> {
         .map(|socket| {
             let path = socket
                 .to_str()
-                .context("socket path must be valid UTF-8 for a zenoh endpoint")?;
+                .ok_or_else(|| ConfigError::NonUtf8Path(socket.to_path_buf()))?;
             Ok(format!("unixsock-stream/{path}"))
         })
         .collect::<Result<Vec<_>>>()?;
-    serde_json::to_string(&endpoints).context("encode endpoint list")
+    Ok(serde_json::to_string(&endpoints)
+        .expect("a list of strings serializes, because JSON can encode any string"))
 }
 
 #[cfg(test)]
@@ -193,7 +240,20 @@ mod tests {
 
     #[test]
     fn configs_build() {
-        peer_config(Path::new("/tmp/tisvlay-test.sock")).unwrap();
-        client_config(Path::new("/tmp/tisvlay-test.sock")).unwrap();
+        let socket = Path::new("/tmp/tisvlay-test.sock");
+        peer_config(socket).unwrap();
+        router_config(socket).unwrap();
+        client_config(socket).unwrap();
+        client_config_resilient(socket).unwrap();
+    }
+
+    #[test]
+    fn a_non_utf8_socket_path_is_a_typed_error() {
+        use std::os::unix::ffi::OsStrExt;
+        let socket = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff.sock"));
+        assert!(matches!(
+            client_config(socket),
+            Err(ConfigError::NonUtf8Path(path)) if path == socket
+        ));
     }
 }
