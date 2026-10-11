@@ -60,7 +60,7 @@ Many routers ship an mDNS reflector. It only helps backends that discover over m
 With the reflector and firewall rules in place, the TV behaves almost like one on your own network:
 
 - **Discovery** finds the TV at its real address on the IoT VLAN. The TV's reply reaches your host through the reflector, so your host firewall rule for discovery replies applies unchanged (for SSDP, the [pinned source port](./firewall-discovery.md#open-the-pinned-source-port)).
-- **The MAC** won't be auto-filled when you enter the TV's IP by hand ("MAC not detected"), because the host's ARP cache only sees the router. If the backend can read the MAC from the TV (LG can), leave the field blank: tisvlay reads it once pairing completes and saves it. Otherwise, enter it by hand — it's in the TV's network settings.
+- **The MAC** won't be auto-filled when you enter the TV's IP by hand ("MAC not detected"), because the host's ARP cache only sees the router. If the backend can read it from the TV (LG can — see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac)), leave the field blank; otherwise enter it by hand — it's in the TV's network settings.
 - **Wake-on-LAN** works across the boundary. Expect the TV to answer a few seconds after the wake, a little later than one on your own network — tisvlay keeps retrying the connection while it boots, so nothing needs tuning. A TV on Wi-Fi still needs its wake-over-Wi-Fi setting turned on (on LG, **"TV On via Wi-Fi"**).
 - **Network awareness** follows the route through the router, so cable pulls and Wi-Fi drops on your side are still noticed straight away (see [Networking & Reliability](./networking-reliability.md)).
 
@@ -68,5 +68,5 @@ With the reflector and firewall rules in place, the TV behaves almost like one o
 
 If you can't run a reflector, tisvlay still works, with two limits:
 
-- **Pair by IP address**, since discovery can't see the TV — for an LG TV, `tisvlay pair "Living Room" --vendor lg --params '{"ip":"192.168.4.170"}'`. `tisvlay schema <vendor>` lists a backend's pairing fields.
+- **[Pair by IP address](../getting-started/pairing.md#pair-from-the-command-line)**, since discovery can't see the TV.
 - **tisvlay can't wake a TV from standby.** Once the TV is powered off, only its remote (or an [HDMI-CEC](../getting-started/pairing.md#hdmi-cec-no-pairing-needed) adapter, if you have one) can bring it back. The default lock and idle actions turn the screen off rather than powering the TV down, so day-to-day automation is unaffected. The system profile's `on_shutdown` and `on_sleep`, though, default to `power_off`; change those (and any other action that powers the TV off) to `screen_off`, so the TV is still reachable when the machine comes back. See [Profiles](../guide/profiles.md).

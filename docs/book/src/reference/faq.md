@@ -2,15 +2,15 @@
 
 ### Network or HDMI-CEC — which backend should I use?
 
-Both ship today. **LG WebOS over the network** needs no extra hardware, reaches any TV on the LAN (not just the one on the cable), and exposes the fullest feature set — power, screen-blank, input, volume, and backlight. It's the natural choice for an LG TV, and the only option where the GPU has no working CEC (as on Nvidia). **HDMI-CEC** drives the TV over the cable through the Linux CEC subsystem, so it works with any CEC-capable TV regardless of brand — but it needs a CEC adapter (a USB CEC dongle, or an amdgpu/i915 DisplayPort→HDMI adapter; most GPU HDMI ports, Nvidia's included, don't wire CEC), and it covers power plus screen-blank (emulated by powering the TV, since CEC can't blank a panel that stays on). Volume, backlight, and arbitrary input switching aren't reliable over CEC. See [Requirements & Compatibility](./requirements.md).
+For an LG TV, the **network** backend: it needs no extra hardware, reaches any TV on the LAN (not just the one on the cable), and has the fullest feature set. It's also the only option when the GPU has no working CEC (as on Nvidia). **HDMI-CEC** works with any CEC-capable TV regardless of brand, but needs a CEC adapter and covers only power and screen-blank. See [Requirements & Compatibility](./requirements.md).
 
 ### Which TVs are supported?
 
-LG webOS TVs over the network, and any TV reachable over **HDMI-CEC** (power and screen-blank) with a CEC adapter — see [Requirements & Compatibility](./requirements.md). There's also a built-in [mock vendor](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend) for testing. The core is vendor- and transport-agnostic by design, so additional brands can land as backends.
+LG webOS TVs over the network, and any CEC-capable TV over HDMI-CEC — see [Requirements & Compatibility](./requirements.md#supported-tvs). There's also a built-in [mock vendor](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend) for testing.
 
 ### Who can control the TVs?
 
-Whoever is **at the machine** — the daemon grants the active seat's logged-in user socket access automatically, the same presence model Linux uses for sound cards and cameras, so a fresh install works with zero account setup. Anyone else (SSH, scripts, a second account controlling TVs while not at the console) needs the durable grant: membership in the `tisvlay` group, added one-click by `tisvlay enable-access` (or declaratively via `services.tisvlay.users` on NixOS). The login screen's greeter client has its own scoped grant. And with fast user switching, only the *active* session's automation drives the TVs — a backgrounded account can't blank the panel out from under the person at the machine.
+Whoever is at the machine, automatically; anyone else (SSH, scripts) once they're in the `tisvlay` group. See [Access](../getting-started/installation.md#access).
 
 ### Do I need all the services?
 
@@ -18,19 +18,19 @@ No. The daemon plus the CLI is a complete remote control. Add `tisvlay-session` 
 
 ### Is `screen off` safe for an OLED?
 
-That's what it's for. `tisvlay screen <id> off` turns the panel off while the TV stays powered and connected — no burn-in exposure, instant resume — which is why it's the default lock/idle action. `power off` is deeper (standby): the TV refuses control connections (even if it still answers on the network) and needs Wake-on-LAN to return.
+That's what it's for. `tisvlay screen <id> off` turns the panel off while the TV stays powered and connected — no burn-in exposure, instant resume — which is why it's the default lock/idle action. `power off` is deeper (standby): a network TV then refuses control connections (even if it still answers on the network) and has to be woken to come back.
 
 ### Can I script tisvlay?
 
-Yes. Every CLI command takes `--json` for machine-readable output, and `tisvlay watch` streams every state key (history first, then live changes) — the event-stream surface for reacting to state without polling. The bundled tray and GUI ride the same interface, so anything they show is scriptable. See the [CLI Reference](../guide/cli.md) and the `watch` note under [Troubleshooting](../operations/troubleshooting.md#inspecting-the-daemon).
+Yes. Read verbs take `--json` for machine-readable output, and `tisvlay watch` streams every state change without polling. The bundled tray and GUI ride the same interface, so anything they show is scriptable. See the [CLI Reference](../guide/cli.md).
 
 ### Where does tisvlay keep its settings?
 
-A few TOML files — the daemon's `daemon.toml` (TVs + system profiles), your session's `session.toml` (user profiles), and the tray's `tray.toml` (notification preferences). Paths and schema in [Configuration](../guide/configuration.md).
+A few TOML files — the daemon's store (TVs + system profiles) and your per-user session and tray files. Paths and schema in [Configuration](../guide/configuration.md).
 
 ### Is the pairing key a secret?
 
-Moderately. The per-TV `client_key` lets any holder on your network control that TV (power, input, volume — it is not a system credential). It lives in the daemon's store at `/var/lib/tisvlay/daemon.toml`, readable only by the `tisvlay` service user, and the daemon never hands it out: `tisvlay config` and the GUI's configuration view leave it out, and it's redacted from the logs. Treat it like a Wi-Fi password: not catastrophic, not for pasting into bug reports.
+Moderately. An LG TV's pairing key (`client_key`) lets any holder on your network control that TV (power, input, volume — it is not a system credential). It lives in the daemon's store, readable only by the `tisvlay` service user, and the daemon never hands it out: `tisvlay config` and the GUI's configuration view leave it out, and it's redacted from the logs. Treat it like a Wi-Fi password: not catastrophic, not for pasting into bug reports.
 
 ### Can I control several TVs?
 

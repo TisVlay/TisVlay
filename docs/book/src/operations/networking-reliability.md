@@ -21,11 +21,11 @@ The upshot: "power the TV on when I resume the machine" works even if your NIC t
 Screen commands are **verify-and-retry**, not fire-and-forget:
 
 - After sending `screen_on`/`screen_off`, tisvlay confirms the panel actually changed and retries if it didn't.
-- A `screen_on` that finds the TV in standby **escalates to a full power-on** (Wake-on-LAN for LG, a bus wake for CEC) — capped at one wake, so a TV that reports itself dark can't trigger an endless wake loop.
+- A `screen_on` that finds the TV in standby **escalates to a full power-on** (Wake-on-LAN for network TVs, a bus wake for CEC) — capped at one wake, so a TV that reports itself dark can't trigger an endless wake loop.
 - The **desired screen state is latched**, so it survives a TV reconnect or the login-screen→session handoff: if the connection drops mid-command, the reconnect re-asserts what you asked for rather than losing it.
 
 Together these mean automation reaches the state you asked for from any starting point — TV off, TV on the wrong input, network still coming up — without per-case scripting.
 
 ## When something's off
 
-If a wake or screen action doesn't land, the usual causes are Wake-on-LAN prerequisites (the right MAC stored, "TV On via Wi-Fi" enabled, same L2 network) or the TV being on a different subnet with nothing relaying the wake broadcast to it ([TVs on an Isolated Network](./isolated-networks.md) covers that setup). Walk through [Troubleshooting → The TV won't power on](./troubleshooting.md#the-tv-wont-power-on), and use `tisvlay watch` to see the connection and power-cycle state change live.
+If a wake or screen action doesn't land, the usual cause is a Wake-on-LAN prerequisite; walk through [Troubleshooting → The TV won't power on](./troubleshooting.md#the-tv-wont-power-on), and use `tisvlay watch` to see the connection and power-cycle state change live.

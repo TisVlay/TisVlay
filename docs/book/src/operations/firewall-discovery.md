@@ -1,6 +1,6 @@
 # Firewall & Discovery
 
-tisvlay discovers TVs with SSDP (the same multicast protocol DLNA/UPnP use): it sends an `M-SEARCH` to the multicast group and listens for replies.
+Network backends find TVs by multicast discovery: tisvlay sends a search to a multicast group and listens for replies. The LG backend uses SSDP (the same protocol DLNA/UPnP use), which is what this page's firewall rules cover. HDMI-CEC TVs aren't discovered over the network at all — the host's CEC adapters are probed instead.
 
 ## The Linux gotcha
 
@@ -60,6 +60,6 @@ sudo firewall-cmd --reload
 - `tisvlay discover` — a bounded scan; found TVs stream back as they answer.
 - `tisvlay discover-session` — an open-ended discovery session that keeps streaming findings until you stop it (ctrl-c).
 - The **GUI wizard** does the same, live, and lists the host's CEC adapters alongside the network scan.
-- **Manual entry** — if discovery can't reach the TV, type its IP; the GUI auto-fills the MAC address for Wake-on-LAN from the kernel's ARP/NDP cache (an "Auto-detected" badge marks it, clearing if you edit). A TV on another subnet or VLAN is invisible to that cache, so the field stays blank ("MAC not detected") — leave it, and the MAC is read from the TV once pairing completes. For discovery itself across a VLAN, see [TVs on an Isolated Network](./isolated-networks.md).
+- **Manual entry** — if discovery can't reach the TV, type its IP; the GUI auto-fills the MAC address for Wake-on-LAN from the kernel's ARP/NDP cache (an "Auto-detected" badge marks it, clearing if you edit). A TV on another subnet or VLAN is invisible to that cache; see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac) and, for discovery across a VLAN, [TVs on an Isolated Network](./isolated-networks.md).
 
-Discovery is a convenience — you can always pair by IP address with `tisvlay pair "<name>" --vendor lg --params '{"ip":"192.168.1.100"}'`, no firewall changes required.
+Discovery is a convenience — you can always [pair by IP address](../getting-started/pairing.md#pair-from-the-command-line), no firewall changes required.
