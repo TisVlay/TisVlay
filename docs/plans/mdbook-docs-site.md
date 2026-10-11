@@ -92,6 +92,75 @@ A four-agent read-only audit (getting-started+reference / guide-behavioral / CLI
 
 **Remaining** (maintainer's, non-blocking): a field review of the rewritten commands/config against a live v0.3.0 stack, and the still-deferred GUI/Tray screenshots. *(The `cli.md` double-heading is resolved — `gen-cli-docs` now renders via `help_markdown_custom` with `show_footer(false)` and strips clap-markdown's title + preamble line, so the CLI Reference page carries a single content H1; the drift gate stays green.)*
 
+## Audit: repetition and sync-fragility (2026-10-10)
+
+The book has grown by accretion: four main syncs, two new chapters, each fact added where it was first needed and then restated wherever a reader might look for it. The result reads long, and a single behavior change now needs edits on up to seven pages, which is how pages fall out of step. One read of all 16 pages (~11.5k hand-written words), four lenses, chosen with the maintainer: repeated facts, hard-coded specifics, generated-vs-hand-written, and vendor-specific framing.
+
+**Principle for the fix:** every fact has exactly one canonical home. Other pages keep only the consequence the reader needs at that point, in a clause, plus a link. Values that live in code are generated from it, behind a drift gate, the way the CLI reference already is.
+
+### R — Repeated facts
+
+| # | Fact | Stated in | Canonical home | Elsewhere becomes |
+|---|------|-----------|----------------|-------------------|
+| R1 | Socket-access model (presence grant, `tisvlay` group, `enable-access`, reboot caveat) | installation (intro + packages), quick-start, gui-tray, troubleshooting, requirements ×2, faq | installation: one "Access" section with a stable anchor | one clause + link; troubleshooting keeps the two error messages and links for the fix |
+| R2 | Reliability (verify-and-retry, standby escalation, latched screen state, route-held wake) | networking-reliability, session-automation § Reliability (near-verbatim), session-automation § System events (the escalation property) | networking-reliability | session-automation's section shrinks to one sentence + link |
+| R3 | Remote-session suppress-by-default rule | remote-sessions, profiles § The remote-session gate, session-automation notes, configuration `while_remote`, gui-tray ×2, troubleshooting | remote-sessions | profiles keeps how the gate composes with `automate_when` (one paragraph); the rest link |
+| R4 | Profile field defaults | configuration (system + user blocks), session-automation event table, remote-sessions (connect/disconnect/return defaults), session-automation greeter paragraph (`0`/`screen_off`/`screen_on`) | configuration (generated — see G1) | the session-automation table keeps Event → Field and drops the Default column; prose stops quoting defaults |
+| R5 | Resolution chain + `automate_when` | configuration § Inheritance and § `automate_when`, profiles § Resolution order and § The automation gate | profiles | configuration keeps the schema, links to profiles for semantics |
+| R6 | CEC adapter requirements (USB Pulse-Eight / amdgpu-i915 DP→HDMI / not Nvidia) | installation § HDMI-CEC, requirements, faq | installation § HDMI-CEC | link |
+| R7 | CEC limitations (power + screen-blank only; blank emulated by power; volume/backlight/input unreliable) | requirements (supported table + limitations ×2), faq ×2, configuration (`emulate_screen_via_power`) | requirements § Limitations | faq answers in a sentence + link; configuration keeps only the key's effect |
+| R8 | Wake-on-LAN prerequisites (right MAC, "TV On via Wi-Fi", same L2 / relay, boot delay, pixel refresh) | troubleshooting, requirements ×3, networking-reliability, pairing, isolated-networks | troubleshooting § The TV won't power on (the checklist) | link; requirements keeps one row |
+| R9 | MAC read from the TV at pairing | pairing (canonical), quick-start, configuration comment, firewall-discovery, gui-tray, troubleshooting, isolated-networks | pairing § The Wake-on-LAN MAC | a clause + link; the LG/IPv4 qualifier lives only in pairing |
+| R10 | The pair-by-IP command line | quick-start, pairing, firewall-discovery, troubleshooting, isolated-networks | pairing (quick-start keeps its own as the walkthrough) | "pair by IP address (see Pairing)" |
+| R11 | `tisvlay watch` / `list` / `status` explanations | cli, quick-start, troubleshooting, faq, remote-sessions | cli (Observability intro) | link |
+| R12 | GNOME tray (AppIndicator) | gui-tray, troubleshooting | gui-tray | troubleshooting entry is one line + link |
+| R13 | Multi-user foreground-only dispatch | session-automation, troubleshooting, faq | session-automation | link |
+| R14 | Socket paths and defaults | cli global-flags list, requirements § What runs where, plus the generated reference | the generated CLI reference (G2) | requirements keeps the packaged path only |
+| R15 | SSDP source port 1901 / `bindPort` / `--ssdp-port` | firewall-discovery, configuration § Discovery, installation NixOS options | firewall-discovery | configuration keeps the key in the schema, links for why |
+
+### H — Hard-coded specifics that drift
+
+- H1 `export VERSION=0.3.0` in installation goes stale every release. Options: link to the releases page and use a `VERSION=<latest>` placeholder, or generate a version partial from `Cargo.toml` behind the drift gate.
+- H2 The introduction's crates.io badges point at `tisvlay`, which is `publish = false`; they can't resolve. Point them at a published crate (`tisvlay-core`), or drop them until a publish.
+- H3 Counts restated beside the list they count: "four categories" (gui-tray ×2), "one of five actions" (configuration). Drop the number; the table is the count.
+- H4 Implementation ids: the default profile ids (`…5159` / `…515a` in profiles, the full UUID in the configuration example). Say "the reserved `default` profile"; the example can use a placeholder.
+- H5 Release-engineering facts: glibc baseline 2.34 (installation), "tested on OLED C3 and G4" (requirements). Keep only if someone owns updating them; otherwise "a conservative glibc baseline" and drop the model list or move it to the field-review notes.
+- H6 Third-party UI labels: Sunshine's "Configuration → General → Command Preparations". Keep the config key (`global_prep_cmd`), drop the menu path.
+- H7 Historical framing: "replaces the old bus-monitor workflow" (troubleshooting) refers to the retired D-Bus stack, meaningless to a new reader. Remove.
+- H8 Timings stated two ways: "a 1–5 second delay" (troubleshooting) vs "a few seconds" (isolated-networks). One phrasing, in the canonical WoL checklist (R8).
+- H9 Quoted output that has its own source: the `mac:` line formats (pairing) and the two access error messages (troubleshooting). Acceptable (both are pinned by CLI tests), but quote each in exactly one place.
+- H10 Dead content: an HTML comment block in installation (the old Zenoh/socket paragraph). Remove.
+
+### G — Generate instead of hand-copy
+
+- G1 **Profile defaults partial.** A generator (the `gen-cli-docs` pattern: an optional-feature bin, a committed partial, a `just` drift gate in the docs CI job) renders `SystemProfileConfig::default()` / `UserProfileConfig::default()` as the TOML blocks configuration.md shows today, with each field's doc comment as its trailing comment. Removes the largest hand-copied surface (R4) and makes field renames and default flips self-updating.
+- G2 **Drop cli.md's hand-written global-flags list.** The generated reference already renders `--socket`, `--user-socket`, `--site`, `--json` from their doc comments; cli.md keeps the observability and tab-completion intro.
+- G3 *(optional, larger)* NixOS module options. installation, firewall-discovery, remote-sessions and isolated-networks each quote option names and defaults from `module.nix`. A generated options page (`nixosOptionsDoc`) would own them; the prose would then name the option and link. Worth it only if the option surface keeps growing.
+- G4 *(defer)* Per-vendor pairing fields and capabilities (`tisvlay schema` / the vendor catalog) could generate the backend tables. Hold until a second network backend exists; one LG row doesn't justify a generator.
+
+### V — Vendor-specific framing (book-wide)
+
+The isolated-networks fix (generic mechanism in prose, vendor specifics in a per-backend table or an explicit "for LG" clause), applied everywhere:
+
+- V1 firewall-discovery opens with "tisvlay discovers TVs with SSDP". Make it "network backends discover TVs by multicast; for LG that's SSDP", and keep the SSDP port material as the LG section of the page.
+- V2 troubleshooting: "Powering on uses Wake-on-LAN" → network backends (CEC wakes over the bus); "Pairing prompt never appears" is LG-only, so label it.
+- V3 session-automation: `on_wake` "wakes it via Wake-on-LAN", and the reliability escalation "to a Wake-on-LAN power-on" → "a power-on (Wake-on-LAN for network TVs)". Mostly resolved by R2.
+- V4 quick-start: `tisvlay power <id> on  # Wake-on-LAN` → generic comment; say up front that the walkthrough uses an LG TV and point CEC users to Pairing.
+- V5 faq: "the per-TV `client_key`" → "LG's pairing key"; `power off` "needs Wake-on-LAN to return" → network TVs.
+- V6 requirements: "Network reachability" applies to network backends only; the "TV On via Wi-Fi" paragraph is LG's and belongs in the LG row/notes.
+
+### S — Structural guards
+
+- S1 **Link and anchor checking in the docs CI job.** mdBook doesn't validate `#fragment` anchors, and this book cross-links heavily (every R item adds more). Add a checker that verifies fragments (e.g. lychee with `--include-fragments` over the built HTML, offline mode) to `just docs-build` or a sibling recipe.
+- S2 **A one-line authoring rule** in `docs/book/` (README or the plan): state a fact in its canonical page; elsewhere, a clause and a link. The R table above is the initial map of canonical homes.
+
+### Proposed sequencing
+
+1. **Consolidate** R1–R15, H3–H10, and V1–V6. Prose-only, page by page, no new tooling; `just docs-build` + the anchor spot-checks per commit.
+2. **G2** (trivial) and **G1** (profile-defaults generator + drift gate), with a test that the partial is byte-stable.
+3. **S1** link/anchor checker in CI, so the consolidated cross-links can't rot.
+4. **Maintainer decisions** first: H1 (version string), H2 (badges), H5 (glibc + tested-models), G3 (NixOS options page now or later).
+
 ## Context
 
 tisvlay has no user-facing docs site today — `docs/*.md` is ~95% developer-facing (design, testing, ideas, plans), and the `main` README is a 67-line stub. We want a published user guide (install / pair / CLI / config / firewall / troubleshooting) on **Read the Docs**.
