@@ -1,10 +1,10 @@
 //! The desktop's monospace face, for text whose characters must line up
-//! (MAC and IP fields, wire identities, a parse error's caret). Slint
-//! takes a `font-family` as one literal family name and never resolves
-//! the generic `monospace`, so the family is looked up here, through
-//! fontique (the font library Slint itself uses, so it sees the same
-//! fontconfig setup), and pushed into `Theme.mono-font`. Until it lands,
-//! or if no monospace face is found, that text uses the UI font.
+//! (MAC and IP fields, wire identities, a parse error's caret). The
+//! family the system maps `monospace` to is looked up through fontique
+//! (the font library Slint itself uses, so it sees the same fontconfig
+//! setup) and pushed into `Theme.mono-font`, which those texts name
+//! literally. Until it lands, or if no monospace face is found, that text
+//! uses the UI font.
 
 use slint::{ComponentHandle, SharedString};
 use tracing::debug;

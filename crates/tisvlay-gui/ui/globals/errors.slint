@@ -27,8 +27,6 @@ export global Errors {
     /// TVs pane — set/clear via Rust on every user-initiated
     /// `Daemon.X(...)` callback that returns an error
     /// (power_on/off, set_volume, set_managed, remove_tv, ...).
-    /// The sidebar's Reload reports in its own app-level slot
-    /// (`reload`), since it belongs to no pane.
     in-out property <ErrorState> tvs;
     /// Pairing wizard — reserved for non-step-3 wizard errors
     /// (the wizard's step 3 has its own retry / back-to-discovery
@@ -43,8 +41,8 @@ export global Errors {
     /// App-level reload banner — the sidebar's Reload belongs to no
     /// pane, so a file it couldn't apply shows above every pane, under
     /// the access banner, until dismissed or a later Reload succeeds.
-    /// The message is a compiler-style report (path, line, caret), so
-    /// it renders in the monospace face.
+    /// The message is a compiler-style report, so it renders in the
+    /// monospace face.
     in-out property <ErrorState> reload;
 
     /// Action callback for `tvs.kind` (e.g. "Retry"). Rust binds

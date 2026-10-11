@@ -1,6 +1,6 @@
 //! Kernel network monitor: route resolution (TV IP → NIC name) plus
-//! link-carrier monitoring via rtnetlink. Kernel-level — fires within milliseconds of
-//! a cable pull and needs no NetworkManager.
+//! link-carrier monitoring via rtnetlink. Kernel-level — fires within
+//! milliseconds of a cable pull and needs no NetworkManager.
 //!
 //! The reactor requests monitoring per network TV ([`RouteRequest`]);
 //! this module answers with `InEvent::RouteResolved` (at request time
