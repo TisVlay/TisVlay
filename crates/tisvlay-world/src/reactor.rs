@@ -1,6 +1,7 @@
 //! The reactor: single owner of the bevy world. Batches inbox events, runs
 //! the schedule at sync points, and executes drained effects.
 
+use bevy_ecs::error::{BevyError, ErrorContext, FallbackErrorHandler, match_severity};
 use bevy_ecs::message::Messages;
 use bevy_ecs::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -40,8 +41,8 @@ impl fmt::Debug for Reactor {
     }
 }
 
-/// Cloneable sender into the reactor inbox — the seam where zenoh RPC glue
-/// (M2), watchers, and tests inject events.
+/// Cloneable sender into the reactor inbox — the seam where the zenoh
+/// bridge, watchers, and tests inject events.
 #[derive(Clone, Debug)]
 pub struct WorldClient {
     tx: mpsc::UnboundedSender<InEvent>,
@@ -66,8 +67,8 @@ impl WorldClient {
 
 impl Reactor {
     /// Build a reactor for `site` with the given vendor → connector map.
-    /// Returns the wire-effects receiver (zenoh writer in M2, test tap
-    /// today) and a client for injecting events.
+    /// Returns the wire-effects receiver (the zenoh bridge, or a test
+    /// tap) and a client for injecting events.
     pub fn new(
         site: impl Into<String>,
         connectors: Vec<(&str, Arc<dyn TvConnector>)>,
@@ -94,6 +95,7 @@ impl Reactor {
         world.init_resource::<DialSeq>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
+        world.insert_resource(FallbackErrorHandler(log_world_error));
 
         let client = WorldClient {
             tx: inbox_tx.clone(),
@@ -343,6 +345,15 @@ fn transport_facts(
     }
 }
 
+/// The world's fallback error handler: log through tracing with the
+/// failing system's name, then defer to bevy's default. A caught panic
+/// still resumes its unwind, so the reactor task dies and the daemon's
+/// supervisor restarts the process.
+fn log_world_error(error: BevyError, ctx: ErrorContext) {
+    tracing::error!(kind = ctx.kind(), name = %ctx.name(), %error, "world error");
+    match_severity(error, ctx);
+}
+
 /// Project a TV record into its wire-safe config reply: top-level fields
 /// plus the vendor table minus `Secret`-visibility fields (per the vendor
 /// schema). Credentials never leave the process.
@@ -439,6 +450,20 @@ mod tests {
 
     #[derive(bevy_ecs::component::Component)]
     struct Marker;
+
+    #[test]
+    fn error_handler_resumes_a_caught_panic() {
+        let ctx = ErrorContext::System {
+            name: "test_system".into(),
+            last_run: bevy_ecs::change_detection::Tick::new(0),
+        };
+        let error = BevyError::panic("boom", Box::new("boom"));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            log_world_error(error, ctx);
+        }));
+        let payload = unwound.expect_err("a caught panic resumes unwinding");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
+    }
 
     /// Component removals are recorded for `RemovedComponents` readers;
     /// each step must age them out, or the record grows for the life of

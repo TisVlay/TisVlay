@@ -1,5 +1,5 @@
-//! Daemon library: zenoh session lifecycle (M0), and the full stack —
-//! world reactor + zenoh bridge (M2).
+//! Daemon library: the zenoh session lifecycle, and the full stack —
+//! world reactor + zenoh bridge — under a supervisor.
 
 mod acl;
 mod arp;
@@ -15,6 +15,7 @@ mod store;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +25,7 @@ use anyhow::{Context, Result, anyhow};
 use tisvlay_core::TvConnector;
 use tisvlay_world::{Command, InEvent, Reactor, SystemEvent, TvRecord, WorldClient};
 use tokio::sync::{Notify, mpsc};
+use tokio::task::JoinHandle;
 use tracing::info;
 
 pub use acl::GreeterAccess;
@@ -120,11 +122,79 @@ pub struct Stack {
     pub daemon: Daemon,
     pub world: WorldClient,
     /// Route-monitor requests from the reactor, awaiting the netlink
-    /// watcher (`run` hands them to `spawn_link_monitor`).
-    routes: mpsc::UnboundedReceiver<tisvlay_world::RouteRequest>,
+    /// watcher (`run` takes them for `spawn_link_monitor`).
+    routes: Option<mpsc::UnboundedReceiver<tisvlay_world::RouteRequest>>,
     /// Shared boot-`Startup` readiness, written by the remote-session
     /// subscribers; `run` awaits it before the WoL dispatch.
     startup_ready: Arc<StartupReadiness>,
+    tasks: Tasks,
+}
+
+/// The stack's core tasks: the daemon can't serve without any of them,
+/// so [`Stack::run_until`] treats one ending as fatal.
+#[derive(Debug)]
+struct Tasks {
+    reactor: JoinHandle<()>,
+    bridge: JoinHandle<Result<()>>,
+    /// The store writer; `None` for an ephemeral daemon.
+    store: Option<JoinHandle<()>>,
+}
+
+/// How long shutdown waits for the store writer to flush its last
+/// snapshot.
+const STORE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl Stack {
+    /// Serve until `shutdown` resolves or a core task ends, then shut down
+    /// in order: withdraw liveliness and close the session, stop the world
+    /// (which releases the store writer's channel), and wait for the store
+    /// to flush its pending snapshot.
+    ///
+    /// A core task ending is an error naming it. The world, bridge and
+    /// store can't be restarted in place, so the process exits and the
+    /// service manager restarts it from the store, instead of leaving a
+    /// daemon that looks alive but refuses every rpc.
+    pub async fn run_until(self, shutdown: impl Future<Output = ()>) -> Result<()> {
+        let Self {
+            daemon, mut tasks, ..
+        } = self;
+        let outcome = tokio::select! {
+            () = shutdown => Ok(()),
+            joined = &mut tasks.reactor => Err(match joined {
+                Ok(()) => anyhow!("world reactor stopped"),
+                Err(e) => anyhow::Error::new(e).context("world reactor ended"),
+            }),
+            joined = &mut tasks.bridge => Err(match joined {
+                Ok(Ok(())) => anyhow!("zenoh bridge stopped"),
+                Ok(Err(e)) => e.context("zenoh bridge failed"),
+                Err(e) => anyhow::Error::new(e).context("zenoh bridge ended"),
+            }),
+        };
+        match &outcome {
+            Ok(()) => info!("shutting down"),
+            Err(e) => tracing::error!(error = %format!("{e:#}"), "core task ended, shutting down"),
+        }
+        let closed = daemon.close().await;
+        // A handle that already completed in the select must not be polled
+        // again; the others are stopped here.
+        if !tasks.reactor.is_finished() {
+            tasks.reactor.abort();
+            // Awaiting the abort is what drops the world, and with it the
+            // store writer's sender.
+            let _ = tasks.reactor.await;
+        }
+        if !tasks.bridge.is_finished() {
+            tasks.bridge.abort();
+        }
+        if let Some(store) = tasks.store
+            && tokio::time::timeout(STORE_FLUSH_TIMEOUT, store)
+                .await
+                .is_err()
+        {
+            tracing::warn!("store writer didn't flush within the shutdown timeout");
+        }
+        outcome.and(closed)
+    }
 }
 
 /// How long the boot `Startup` wake waits for the armed state to settle
@@ -254,7 +324,8 @@ impl VendorReg {
 }
 
 /// Boot the stack on `socket` with the given vendor registrations. The
-/// reactor and bridge run as detached tasks for the process lifetime.
+/// reactor, bridge and store writer run as tasks the returned stack
+/// supervises ([`Stack::run_until`]).
 pub async fn serve(
     socket: &Path,
     site: &str,
@@ -273,14 +344,14 @@ pub async fn serve(
             .filter_map(|v| v.retry.map(|retry| (v.id.clone(), retry)))
             .collect(),
     );
-    if let Some(path) = store_path {
+    let store = store_path.map(|path| {
         let (tx, rx) = mpsc::unbounded_channel();
         reactor.set_persist(tx);
-        tokio::spawn(store::store_task(path.to_path_buf(), rx));
-    }
+        tokio::spawn(store::store_task(path.to_path_buf(), rx))
+    });
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
-    tokio::spawn(reactor.run());
+    let reactor = tokio::spawn(reactor.run());
     // Seed the editable default profile, so the catalog always has the
     // inheritance baseline.
     // AddTv-style replay from the store lands later and upserts over
@@ -335,22 +406,16 @@ pub async fn serve(
             .unwrap_or_default(),
     };
     let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        if let Err(e) = bridge::run(
-            bridge_session,
-            bridge_site,
-            effects,
-            bridge_world,
-            discoveries,
-            catalog,
-            info,
-            bridge_ready,
-        )
-        .await
-        {
-            tracing::error!(%e, "zenoh bridge exited");
-        }
-    });
+    let bridge = tokio::spawn(bridge::run(
+        bridge_session,
+        bridge_site,
+        effects,
+        bridge_world,
+        discoveries,
+        catalog,
+        info,
+        bridge_ready,
+    ));
     // Greeter idle transitions arrive as plain puts from `tisvlay-greeter`
     // (or any client standing in for it) — forward them into the world.
     // Declared before the spawn (and thus before the liveliness token
@@ -464,8 +529,13 @@ pub async fn serve(
     Ok(Stack {
         daemon,
         world,
-        routes: routes_rx,
+        routes: Some(routes_rx),
         startup_ready,
+        tasks: Tasks {
+            reactor,
+            bridge,
+            store,
+        },
     })
 }
 
@@ -500,7 +570,8 @@ pub struct DaemonOptions {
 
 /// Production-shaped entry: serve with the real vendor backends (plus the
 /// mock for play), replay the store, apply the seed config,
-/// optionally watch a DRM connector's DPMS state, run until ctrl-c.
+/// optionally watch a DRM connector's DPMS state, and run until ctrl-c,
+/// SIGTERM, or a core task ending.
 pub async fn run(options: DaemonOptions) -> Result<()> {
     use tisvlay_core::TvBackend;
     fn caps(backend: &dyn TvBackend) -> Vec<String> {
@@ -536,7 +607,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         .with_retry(tisvlay_cec::CecBackend.verify_retry_config())
         .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
-    let stack = serve(
+    let mut stack = serve(
         &options.socket,
         &options.site,
         vendors,
@@ -566,7 +637,13 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             stack.world.clone(),
         ));
     }
-    netlink::spawn_link_monitor(stack.world.clone(), stack.routes);
+    netlink::spawn_link_monitor(
+        stack.world.clone(),
+        stack
+            .routes
+            .take()
+            .expect("serve fills the route channel and only run takes it, once"),
+    );
     tokio::spawn(probe::probe_task(
         stack.daemon.session().clone(),
         options.site.clone(),
@@ -648,11 +725,21 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             });
         });
     }
-    tokio::signal::ctrl_c()
-        .await
-        .context("wait for shutdown signal")?;
-    info!("shutting down");
-    stack.daemon.close().await
+    // SIGTERM is what the service manager sends on stop; without a
+    // handler it kills the process before the store flushes.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("install the SIGTERM handler")?;
+    let shutdown = async move {
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(e) = result {
+                    tracing::error!(%e, "ctrl-c handler failed");
+                }
+            }
+            _ = terminate.recv() => {}
+        }
+    };
+    stack.run_until(shutdown).await
 }
 
 #[cfg(test)]
