@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, DialSeq, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, ProfileIndex,
+    Clock, DialSeq, Effect, KnownVendors, LastPersisted, Outbox, PairingIndex, ProfileIndex,
     RemoteArmed, Site, SystemProfile, TvIndex,
 };
 use crate::events::{
@@ -91,7 +91,7 @@ impl Reactor {
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
         world.init_resource::<ProfileIndex>();
-        world.init_resource::<DirtyStore>();
+        world.init_resource::<LastPersisted>();
         world.init_resource::<DialSeq>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
@@ -130,6 +130,18 @@ impl Reactor {
     /// monitoring — fine for worlds with no real network (tests).
     pub fn set_route_monitor(&mut self, tx: mpsc::UnboundedSender<RouteRequest>) {
         self.routes_tx = Some(tx);
+    }
+
+    /// Apply the boot state before [`run`](Self::run): `stored` (the
+    /// snapshot loaded from the store, if any) becomes the persist
+    /// baseline, then `commands` apply as one synchronous step. Replaying
+    /// the store writes nothing back, and no step ever runs against a
+    /// half-replayed table. Attach the store and route outlets first, so
+    /// a real difference (a migrated record, the default profile on a
+    /// fresh store) and the boot dials reach them.
+    pub fn seed(&mut self, stored: Option<StoreSnapshot>, commands: Vec<Command>) {
+        self.world.resource_mut::<LastPersisted>().0 = stored;
+        self.step(commands.into_iter().map(InEvent::Command).collect());
     }
 
     /// Per-vendor verify-retry tuning (from each backend's

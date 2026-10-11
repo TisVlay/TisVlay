@@ -101,10 +101,10 @@ Each fix lands with a regression test that fails before the fix.
   - With a handful of TVs, cloning their records a few times a second is trivial, and there's no wake list to get wrong.
 - **Boot.**
   - `serve()` takes the loaded store snapshot and the seed records.
-  - Before spawning the reactor, it runs one synchronous `reactor.step(..)` over the seed batch: the default `AddProfile`, the store profiles, the store TVs, then seed TVs not already stored.
-  - It sets the diff baseline to the loaded store snapshot, through a `Reactor` method that writes the `Local` or a resource the system reads.
-  - Replay therefore writes nothing. The first `Persist` is a real change, such as a new seed TV, matching today's "seed only adds" behavior.
-  - The async replay in `run` goes away, and the default-profile send in `serve` folds into the seed batch.
+  - `serve()` loads the store itself from the path it already takes. Before spawning the reactor, `Reactor::seed(stored, commands)` sets the diff baseline (a `LastPersisted` resource) and runs one synchronous step over the default `AddProfile`, the store profiles and the store TVs.
+  - Replay therefore writes nothing, and no step runs against a half-replayed table.
+  - *Decided during implementation:* seed-config TVs stay in `run`, sent as commands after `serve` returns (skipping the ids `serve` reports as stored). They're new TVs, so they persist as the real change they are, and keeping them out of `serve` leaves its signature alone for the ~10 test call sites. The hazard the boot seed fixes is the half-replayed store, which this already closes.
+  - The async store replay in `run` goes away, and the default-profile send in `serve` folds into the seed batch.
 - **New behavior to accept:** a blank TV name filled from the device model on an ordinary connect now persists, where today it never reaches the store.
 
 **Tests.** They go through a `spawn_reactor_with_store` support helper that exposes the persist channel. The existing helper has no tap.

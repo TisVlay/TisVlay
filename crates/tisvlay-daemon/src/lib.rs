@@ -127,6 +127,8 @@ pub struct Stack {
     /// Shared boot-`Startup` readiness, written by the remote-session
     /// subscribers; `run` awaits it before the WoL dispatch.
     startup_ready: Arc<StartupReadiness>,
+    /// TVs the store held at boot; `run`'s seed config skips them.
+    stored: HashSet<Uuid>,
     tasks: Tasks,
 }
 
@@ -339,8 +341,9 @@ impl VendorReg {
     }
 }
 
-/// Boot the stack on `socket` with the given vendor registrations. The
-/// reactor, bridge and store writer run as tasks the returned stack
+/// Boot the stack on `socket` with the given vendor registrations,
+/// applying the store at `store_path` (if any) before the world starts.
+/// The reactor, bridge and store writer run as tasks the returned stack
 /// supervises ([`Stack::run_until`]).
 pub async fn serve(
     socket: &Path,
@@ -367,20 +370,40 @@ pub async fn serve(
     });
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
-    let reactor = tokio::spawn(reactor.run());
-    // Seed the editable default profile, so the catalog always has the
-    // inheritance baseline.
-    // AddTv-style replay from the store lands later and upserts over
-    // this, so user edits to the default survive restarts.
+    // Boot state applies before the reactor runs. The editable default
+    // profile comes first, so the catalog always has the inheritance
+    // baseline; the store's rows follow and upsert over it, so user edits
+    // to the default survive restarts.
+    let stored_snapshot = store_path.map(load_store).transpose()?;
     let mut default_profile = tisvlay_core::SystemProfileConfig::full_default();
     default_profile.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-    world.command(Command::AddProfile {
+    let mut boot = vec![Command::AddProfile {
         record: Box::new(tisvlay_world::ProfileRecord {
             id: tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
             body: default_profile,
         }),
         reply: None,
-    });
+    }];
+    let mut stored = HashSet::new();
+    if let Some(snapshot) = &stored_snapshot {
+        for profile in &snapshot.system_profile {
+            info!(id = %profile.id, name = %profile.body.name, "store profile");
+            boot.push(Command::AddProfile {
+                record: Box::new(profile.clone()),
+                reply: None,
+            });
+        }
+        for record in &snapshot.tv {
+            info!(id = %record.id, name = %record.name, vendor = %record.vendor, "store TV");
+            stored.insert(record.id);
+            boot.push(Command::AddTv {
+                record: Box::new(record.clone()),
+                reply: None,
+            });
+        }
+    }
+    reactor.seed(stored_snapshot, boot);
+    let reactor = tokio::spawn(reactor.run());
     // Production tick source: drives verify timers and dial backoff. Tests
     // can still inject future instants — the world clock is monotonic.
     let ticker = world.clone();
@@ -547,6 +570,7 @@ pub async fn serve(
         world,
         routes: Some(routes_rx),
         startup_ready,
+        stored,
         tasks: Tasks {
             reactor,
             bridge,
@@ -585,7 +609,7 @@ pub struct DaemonOptions {
 }
 
 /// Production-shaped entry: serve with the real vendor backends (plus the
-/// mock for play), replay the store, apply the seed config,
+/// mock for play) from the store, apply the seed config,
 /// optionally watch a DRM connector's DPMS state, and run until ctrl-c,
 /// SIGTERM, or a core task ending.
 pub async fn run(options: DaemonOptions) -> Result<()> {
@@ -680,29 +704,12 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         Err(e) => tracing::warn!(%e, "no system bus, logind watcher disabled"),
     }
 
-    let mut seeded: HashSet<Uuid> = HashSet::new();
-    if let Some(path) = &options.store {
-        let snapshot = load_store(path)?;
-        for profile in snapshot.system_profile {
-            info!(id = %profile.id, name = %profile.body.name, "store profile");
-            stack.world.command(Command::AddProfile {
-                record: Box::new(profile),
-                reply: None,
-            });
-        }
-        for record in snapshot.tv {
-            info!(id = %record.id, name = %record.name, vendor = %record.vendor, "store TV");
-            seeded.insert(record.id);
-            stack.world.command(Command::AddTv {
-                record: Box::new(record),
-                reply: None,
-            });
-        }
-    }
+    // The store applied in `serve`; the seed config only adds TVs it
+    // didn't hold, so they persist as the real change they are.
     if let Some(path) = &options.seed {
         for tv in load_seed_config(path)?.tv {
             let id = tv.stable_id();
-            if seeded.contains(&id) {
+            if stack.stored.contains(&id) {
                 continue;
             }
             info!(%id, name = %tv.name, vendor = %tv.vendor, "seed TV");

@@ -50,6 +50,40 @@ pub(crate) fn spawn_reactor_with_store() -> (
     (effects, persist_rx, client, handle)
 }
 
+/// [`spawn_reactor_with_store`] booted the way the daemon boots: `stored`
+/// is the persist baseline and `commands` apply before the reactor runs.
+pub(crate) fn spawn_seeded_reactor(
+    stored: StoreSnapshot,
+    commands: Vec<Command>,
+) -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<StoreSnapshot>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (persist_tx, persist_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_persist(persist_tx);
+    reactor.seed(Some(stored), commands);
+    tokio::spawn(reactor.run());
+    (effects, persist_rx, client, handle)
+}
+
+/// Wait until every effect of the steps before now has gone out: a
+/// command sent now lands in a later step, so its reply comes after.
+pub(crate) async fn settle(
+    effects: &mut UnboundedReceiver<WireEffect>,
+    client: &WorldClient,
+    barrier: u64,
+) {
+    client.command(Command::SetVolume {
+        id: Uuid::new_v4(),
+        level: 0,
+        reply: Some(Reply::new(barrier)),
+    });
+    collect_until(effects, |e| reply_to(e, barrier)).await;
+}
+
 /// [`spawn_reactor`] with `queue` run before the reactor starts: what it
 /// sends lands in the reactor's first batch (up to 64 events), so
 /// same-batch interactions are deterministic.

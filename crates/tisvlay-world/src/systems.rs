@@ -16,8 +16,8 @@ use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DialSeq, DirtyStore,
-    DispatchRetry, DispatchVerify, Effect, KnownVendors, LatestDial, Managed, MirrorsConnector,
+    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DialSeq, DispatchRetry,
+    DispatchVerify, Effect, KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector,
     MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingIndex, PairingRef,
     PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed,
     RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
@@ -441,7 +441,6 @@ fn handle_lifecycle_commands(
     mut commands: Commands,
     mut index: ResMut<TvIndex>,
     mut outbox: ResMut<Outbox>,
-    mut dirty: ResMut<DirtyStore>,
     site: Res<Site>,
     vendors: Res<KnownVendors>,
     clock: Res<Clock>,
@@ -557,7 +556,6 @@ fn handle_lifecycle_commands(
                     continue;
                 }
                 spawn_tv(&mut commands, &mut index, &mut outbox, record);
-                dirty.0 = true;
                 respond(&mut outbox, *reply, &Created { id: record.id });
             }
             Command::RemoveTv { id, reply } => match index.0.get(id).copied() {
@@ -574,7 +572,6 @@ fn handle_lifecycle_commands(
                         }
                         commands.entity(session).despawn();
                     }
-                    dirty.0 = true;
                     reply_ok(&mut outbox, *reply);
                 }
                 None => reply_err(&mut outbox, *reply, WireError::tv_not_found(*id)),
@@ -634,17 +631,12 @@ struct SettingsWrites<'w, 's> {
 }
 
 /// Setters, backend passthrough commands, and config read/patch.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
-)]
 fn handle_tv_commands(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
     index: Res<TvIndex>,
     clock: Res<Clock>,
     mut outbox: ResMut<Outbox>,
-    mut dirty: ResMut<DirtyStore>,
     q: Query<LinkQuery>,
     mut writes: SettingsWrites,
 ) {
@@ -676,7 +668,6 @@ fn handle_tv_commands(
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     if identity.name != *name {
                         identity.name = name.clone();
-                        dirty.0 = true;
                     }
                     reply_ok(&mut outbox, *reply);
                 }
@@ -690,7 +681,6 @@ fn handle_tv_commands(
                     && meta.managed != *managed
                 {
                     meta.managed = *managed;
-                    dirty.0 = true;
                 }
                 reply_ok(&mut outbox, *reply);
             }
@@ -699,7 +689,6 @@ fn handle_tv_commands(
                     && meta.system_profile != *profile
                 {
                     meta.system_profile = *profile;
-                    dirty.0 = true;
                 }
                 reply_ok(&mut outbox, *reply);
             }
@@ -708,7 +697,6 @@ fn handle_tv_commands(
                     && meta.primary_input != *input
                 {
                     meta.primary_input = input.clone();
-                    dirty.0 = true;
                 }
                 reply_ok(&mut outbox, *reply);
             }
@@ -817,7 +805,6 @@ fn handle_tv_commands(
                     patch,
                 ) {
                     Ok(()) => {
-                        dirty.0 = true;
                         reply_ok(&mut outbox, *reply);
                     }
                     Err(error) => reply_err(&mut outbox, *reply, error),
@@ -1275,7 +1262,6 @@ fn handle_profile_commands(
     mut commands: Commands,
     mut index: ResMut<ProfileIndex>,
     mut outbox: ResMut<Outbox>,
-    mut dirty: ResMut<DirtyStore>,
     site: Res<Site>,
     tvs: Res<TvIndex>,
     bodies: Query<&ProfileBody>,
@@ -1294,7 +1280,6 @@ fn handle_profile_commands(
                     if let Some(&entity) = index.0.get(&record.id) {
                         set_profile_body(&mut commands, entity, body.clone());
                         publish_profile(&mut outbox, &site, &record.id, &body);
-                        dirty.0 = true;
                         respond(&mut outbox, *reply, &Created { id: record.id });
                         continue;
                     }
@@ -1307,7 +1292,6 @@ fn handle_profile_commands(
                     .id();
                 index.0.insert(record.id, entity);
                 publish_profile(&mut outbox, &site, &record.id, &body);
-                dirty.0 = true;
                 respond(&mut outbox, *reply, &Created { id: record.id });
             }
             Command::UpdateProfile { id, body, reply } => match index.0.get(id) {
@@ -1327,7 +1311,6 @@ fn handle_profile_commands(
                     }
                     set_profile_body(&mut commands, entity, (**body).clone());
                     publish_profile(&mut outbox, &site, id, body);
-                    dirty.0 = true;
                     reply_ok(&mut outbox, *reply);
                 }
                 None => reply_err(&mut outbox, *reply, WireError::profile_not_found(*id)),
@@ -1353,7 +1336,6 @@ fn handle_profile_commands(
                     .id();
                 index.0.insert(*new_id, entity);
                 publish_profile(&mut outbox, &site, new_id, &body);
-                dirty.0 = true;
                 respond(&mut outbox, *reply, &Created { id: *new_id });
             }
             Command::DeleteProfile { id, reply } => match index.0.get(id).copied() {
@@ -1371,7 +1353,6 @@ fn handle_profile_commands(
                     outbox.0.push(Effect::Wire(WireEffect::Delete {
                         key: keys::profile_system(&site.0, id),
                     }));
-                    dirty.0 = true;
                     reply_ok(&mut outbox, *reply);
                 }
                 None => reply_err(&mut outbox, *reply, WireError::profile_not_found(*id)),
@@ -1441,7 +1422,6 @@ fn apply_backend_events(
     clock: Res<Clock>,
     site: Res<Site>,
     mut outbox: ResMut<Outbox>,
-    mut dirty: ResMut<DirtyStore>,
     verifying: Query<&PairVerifying>,
     latest: Query<&LatestDial>,
     mut vendors: Query<&mut VendorRef>,
@@ -1545,7 +1525,6 @@ fn apply_backend_events(
                             link_mac: report,
                         },
                     );
-                    dirty.0 = true;
                 }
                 if wake_dial {
                     publish_power_phase(&mut outbox, &site, tv, "connected");
@@ -1736,17 +1715,12 @@ fn publish_pairing_progress(
 
 /// Drive pairing sessions: progress publishes, terminal handling, and the
 /// spawn (or credential refresh) of the paired TV.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
-)]
 fn apply_pairing_updates(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
     mut pairing: PairingParams,
     mut tv_index: ResMut<TvIndex>,
     mut outbox: ResMut<Outbox>,
-    mut dirty: ResMut<DirtyStore>,
     site: Res<Site>,
     mut writes: SettingsWrites,
 ) {
@@ -1844,7 +1818,6 @@ fn apply_pairing_updates(
                                     attempt: session.attempt,
                                 });
                             redial(&mut e, false);
-                            dirty.0 = true;
                         }
                         _ => tracing::warn!(%id, "pairing outcome had no home, dropped"),
                     }
@@ -2518,14 +2491,16 @@ fn publish_changed<T: payload::StatePayload>(
     }
 }
 
-/// Snapshot the whole TV table into a persist effect when anything
-/// config-shaped changed this frame. A fresh enrollment still verifying
+/// Snapshot the whole TV and profile table each step, and persist it when
+/// it differs from the last snapshot persisted (or loaded at boot). No
+/// mutation has to remember to mark the store: whatever reaches the
+/// world reaches the store. A fresh enrollment still verifying
 /// its pairing is excluded — it only reaches the store once its first
 /// dial succeeds, so a rolled-back enrollment leaves no trace. A
 /// re-pairing TV stays in: it was stored before and survives a failed
 /// verification.
 fn snapshot_store(
-    mut dirty: ResMut<DirtyStore>,
+    mut last: ResMut<LastPersisted>,
     q: Query<(
         &TvId,
         &VendorRef,
@@ -2536,10 +2511,6 @@ fn snapshot_store(
     profiles: Query<(&ProfileId, &ProfileBody)>,
     mut outbox: ResMut<Outbox>,
 ) {
-    if !dirty.0 {
-        return;
-    }
-    dirty.0 = false;
     let mut tv: Vec<TvRecord> = q
         .iter()
         .filter(|(.., verifying)| verifying.is_none_or(|v| !v.rollback))
@@ -2562,11 +2533,16 @@ fn snapshot_store(
         })
         .collect();
     system_profile.sort_by_key(|r| r.id);
-    outbox.0.push(Effect::Persist(Box::new(StoreSnapshot {
+    let snapshot = StoreSnapshot {
         version: crate::events::schema_v1(),
         tv,
         system_profile,
-    })));
+    };
+    if last.0.as_ref() == Some(&snapshot) {
+        return;
+    }
+    last.0 = Some(snapshot.clone());
+    outbox.0.push(Effect::Persist(Box::new(snapshot)));
 }
 
 #[cfg(test)]

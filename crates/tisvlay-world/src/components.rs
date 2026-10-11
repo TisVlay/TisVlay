@@ -281,10 +281,10 @@ pub(crate) struct ProfileIndex(pub HashMap<Uuid, Entity>);
 #[derive(Resource, Debug)]
 pub(crate) struct KnownVendors(pub HashSet<String>);
 
-/// Config-shaped state changed this frame — the persist system snapshots
-/// the whole TV table when set.
+/// The snapshot last handed to the store (or loaded from it at boot):
+/// `snapshot_store` persists only when the world's state differs.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct DirtyStore(pub bool);
+pub(crate) struct LastPersisted(pub Option<StoreSnapshot>);
 
 /// Deferred outbound work, drained by the reactor after each schedule run.
 #[derive(Resource, Debug, Default)]
