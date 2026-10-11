@@ -134,7 +134,8 @@ skip = [
     { crate = "toml_datetime@0.7.5", reason = "toml 0.9 counterpart (zenoh-config)" },
     { crate = "winnow@0.7.15", reason = "toml 0.9 counterpart (zenoh-config)" },
     { crate = "secrecy@0.8.0", reason = "zenoh-config pins secrecy 0.8 (public SecretValue); the workspace is on 0.10" },
-    { crate = "spin@0.9.9", reason = "flume 0.11 (zenoh's channel) pins spin 0.9; bevy/uhlc are on 0.10" },
+    { crate = "spin@0.9.9", reason = "flume 0.11 (zenoh's channel) pins spin 0.9; bevy_platform is on 0.12" },
+    { crate = "spin@0.10.1", reason = "uhlc 0.8 (zenoh's timestamps) pins spin 0.10; bevy_platform is on 0.12" },
     # zenoh-crypto's RustCrypto 0.10 stack (hmac/sha3/aes/cipher) vs
     # tungstenite's sha1 0.11.
     { crate = "digest@0.10.7", reason = "zenoh-crypto's hmac/sha3 are on digest 0.10; tungstenite's sha1 is on 0.11" },
@@ -150,6 +151,7 @@ skip = [
     { crate = "dirs@5.0.1", reason = "freedesktop-icons 0.4 pins dirs 5; shellexpand is on 6" },
     { crate = "downcast-rs@1.2.1", reason = "wayland-backend pins downcast-rs 1; bevy_reflect is on 2" },
     { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (Slint's image stack) pins miniz_oxide 0.8; flate2 is on 0.9" },
+    { crate = "rustc-hash@1.1.0", reason = "rowan 0.17 (Slint's compiler) pins rustc-hash 1; bevy's variadics_please (via unsynn) is on 2" },
 ]
 
 # RustSec advisory + yanked-crate gate. Run by the audit workflow
@@ -169,20 +171,10 @@ ignore = [
     { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
 ]
 
-# Code provenance: crates.io only, save for one deliberate git pin. Any
-# other git or alternate-registry dependency fails the gate — a tripwire
-# against an unvetted source sneaking in. Gated by `just deny`.
-#
-# The lone `allow-git` exception is `pipewire-native` (the session's
-# screencast detector): the crates.io 0.1.4 release aborts the process
-# inside an FFI callback on a protocol decode error against PipeWire ≥ 1.4,
-# and the fix is unreleased with upstream tagging rarely. Pinned to a
-# current upstream rev in the root Cargo.toml; revert to a crates.io pin
-# once 0.1.5+ ships (also drop the cargoLock.outputHashes in package.nix).
-# All three sibling crates from this URL are MIT — covered by the global
-# license allow-list, no per-crate exception needed.
+# Code provenance: crates.io only. Any git or alternate-registry
+# dependency fails the gate — a tripwire against an unvetted source
+# sneaking in. Gated by `just deny`.
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git"]
