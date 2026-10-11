@@ -176,6 +176,9 @@ impl Reactor {
         }
         self.schedule.run(&mut self.world);
         self.world.resource_mut::<Messages<InEvent>>().update();
+        // Ages out component-removal records, which otherwise accumulate
+        // for the world's lifetime: no App drives this here.
+        self.world.clear_trackers();
 
         let effects: Vec<Effect> = std::mem::take(&mut self.world.resource_mut::<Outbox>().0);
         for effect in effects {
@@ -432,6 +435,36 @@ mod tests {
                 },
             ]
         }
+    }
+
+    #[derive(bevy_ecs::component::Component)]
+    struct Marker;
+
+    /// Component removals are recorded for `RemovedComponents` readers;
+    /// each step must age them out, or the record grows for the life of
+    /// the daemon (markers come and go constantly).
+    #[test]
+    fn steps_age_out_removal_records() {
+        let (mut reactor, _effects, _client) = Reactor::new("test", Vec::new());
+        let entity = reactor.world.spawn_empty().id();
+        for _ in 0..10 {
+            reactor
+                .world
+                .entity_mut(entity)
+                .insert(Marker)
+                .remove::<Marker>();
+            reactor.step(Vec::new());
+        }
+        let marker = reactor
+            .world
+            .component_id::<Marker>()
+            .expect("inserting Marker registered it");
+        let recorded = reactor
+            .world
+            .removed_components()
+            .get(marker)
+            .map_or(0, Messages::len);
+        assert!(recorded <= 2, "{recorded} removal records retained");
     }
 
     #[test]
