@@ -205,9 +205,7 @@ Settled in review, where all three reviewers converged:
   - **Error enums and their code enums:** core's `Error`, `PairingErrorCode` and `DeviceErrorCode`, and ssdp's `Error`.
   - **Options structs:** ssdp's `SearchOptions`.
   - **Stay exhaustive:** enums the world and GUI match exhaustively (`AutomateWhen`, `SessionAction`, `EventAction`, `PairingState`, `PairingCommand`, `Transport`), because the "compiler demands the arm" property matters more than additive evolution at 0.x.
-- **Vendor-constructed structs:** see the open questions.
-  - `TvState` and `Credentials` have no struct literals outside core, so `#[non_exhaustive]` costs nothing there.
-  - `InputInfo` has 4 literal sites, `DiscoveredTv` 6, and `PairingField` about 17.
+- **Vendor-constructed structs:** `TvState` and `Credentials` go `#[non_exhaustive]` (no struct literals outside core). `InputInfo`, `DiscoveredTv` and `PairingField` stay exhaustive; see Resolved after review.
 - **Unit structs** (`LgBackend`, `LgConnector`, `CecBackend`): add a private field plus `new()`/`Default`, so adding state later isn't breaking.
 - **`tisvlay-cec`:** a `PhysicalAddress` newtype with parse, display and a crate-private conversion. The test-link feature's `PowerStatus` re-export is documented as test-only.
 - **Async trait style:** document the mix in `traits.rs`.
@@ -225,10 +223,12 @@ Settled in review, where all three reviewers converged:
   - A "Public dependencies" section in each crate's docs: tokio, uuid, bitflags, serde, toml and serde_json for core; serde for lg and cec; futures-core for ssdp.
   - Update the crate-structure lines in `.claude/CLAUDE.md` for core, runtime and mock.
 
-## Open questions
-- **Vendor-constructed structs:** `#[non_exhaustive]` plus constructors (`new(required…)` and `with_*`) for `InputInfo`, `DiscoveredTv` and `PairingField`, about 27 literal sites to convert; or leave those three exhaustive and accept that adding a field is a breaking minor at 0.x? `TvState` and `Credentials` go non-exhaustive either way.
-- **Versioning:** keep the published libraries on the shared lockstep `version.workspace`, which release-plz bumps for every crate together, or version them independently from the first publish?
-- **Reload conflicts:** a field changed both by a pending world change and by the hand edit takes the disk value (proposed). Or refuse the reload, naming the conflicting field?
+## Resolved after review
+
+Owner's rulings, 2026-10-11:
+- **Vendor-constructed structs:** `InputInfo`, `DiscoveredTv` and `PairingField` stay exhaustive. At 0.x with lockstep versions, adding a field is a minor bump release-plz already handles. `TvState` and `Credentials`, which have no outside literals, go non-exhaustive.
+- **Versioning:** the published libraries keep the shared lockstep `version.workspace`.
+- **Reload conflicts:** a field changed both by a pending world change and by the hand edit takes the disk value. Pressing Reload means "use my edit".
 
 ## Retirement
 When the last car merges:
