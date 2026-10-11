@@ -1201,7 +1201,7 @@ impl Core {
             }
             user_profile::Incoming::Info((), responder) => {
                 let info = rpc::ServiceInfo {
-                    version: env!("CARGO_PKG_VERSION").into(),
+                    version: tisvlay_protocol::VERSION.into(),
                     state_path: self.state_path.clone(),
                 };
                 responder.ok(&info).await;

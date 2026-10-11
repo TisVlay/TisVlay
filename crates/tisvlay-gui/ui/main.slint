@@ -390,6 +390,20 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // App-level version banner: a service on a release this
+                // GUI can't talk to. Above every pane, like the access
+                // banner; it clears when the service restarts.
+                if Errors.version.title != "" || Errors.version.message != "": VerticalLayout {
+                    padding: Design.gap-stack;
+                    padding-bottom: 0;
+                    InlineError {
+                        tone: "error";
+                        title: Errors.version.title;
+                        message: Errors.version.message;
+                        dismissable: false;
+                    }
+                }
+
                 // App-level reload banner: a state file the sidebar's
                 // Reload couldn't apply. Above every pane, like the access
                 // banner, since the button belongs to no pane.

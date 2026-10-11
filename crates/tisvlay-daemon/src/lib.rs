@@ -455,7 +455,7 @@ pub async fn serve(
     let bridge_world = world.clone();
     // Introspection served by the bridge (About pane rows).
     let info = tisvlay_protocol::rpc::ServiceInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: tisvlay_protocol::VERSION.into(),
         state_path: store_path
             .map(|p| p.display().to_string())
             .unwrap_or_default(),

@@ -279,7 +279,7 @@ pub async fn serve_settings(
             }
             user_tray::Incoming::Info((), responder) => {
                 let info = rpc::ServiceInfo {
-                    version: env!("CARGO_PKG_VERSION").into(),
+                    version: tisvlay_protocol::VERSION.into(),
                     state_path: config_path.display().to_string(),
                 };
                 responder.ok(&info).await;
