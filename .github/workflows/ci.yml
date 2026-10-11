@@ -195,8 +195,9 @@ jobs:
         run: just hack
 
   # User-facing docs site (docs/book → Read the Docs). Kept off the
-  # tuned `ci` job's cache/critical path: it only compiles tisvlay-cli
-  # (for the CLI-reference freshness gate) plus mdbook.
+  # tuned `ci` job's cache/critical path: it only compiles tisvlay-docgen
+  # (the CLI and core it renders, for the generated-partials freshness
+  # gate) plus mdbook.
   docs:
     runs-on: ubuntu-latest
     permissions:
@@ -221,12 +222,12 @@ jobs:
         with:
           cache-on-failure: true
 
-      # Regenerate the CLI-reference partial from the clap tree and fail
-      # if it differs from what's committed — Read the Docs serves the
-      # committed copy via a plain `mdbook build`, so a stale partial
-      # would silently ship outdated CLI docs.
-      - name: CLI reference freshness
-        run: just docs-cli-check
+      # Regenerate the book's generated partials (CLI reference, profile
+      # defaults, release version) and fail if they differ from what's
+      # committed — Read the Docs serves the committed copies via a plain
+      # `mdbook build`, so a stale partial would silently ship outdated docs.
+      - name: Generated partials freshness
+        run: just docs-gen-check
 
       - name: Build book
         run: just docs-build

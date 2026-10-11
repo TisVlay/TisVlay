@@ -99,37 +99,15 @@ on_session_unlock = { action = "screen_on", restore_input = true, while_remote =
 
 ### System profile
 
-Fields and their stock defaults:
+Every field with its stock default (generated from the code, so it's always current):
 
-```toml
-on_startup = "power_on"
-on_shutdown = "power_off"
-on_reboot = "none"
-on_sleep = "power_off"
-on_wake = "power_on"
-on_dpms_off = "screen_off"       # matched host display blanked (DPMS off)
-on_dpms_on = "screen_on"         # matched host display woke (DPMS on)
-idle_timeout_seconds = 0         # login-screen (greeter) idle timer; 0 disables it
-on_idle_timeout = "screen_off"
-on_idle_resume = "screen_on"
-automate_when = "always"         # always | on_primary | off_primary (see Profiles → The automation gate)
-```
+{{#include ../generated/profile-defaults-system.md}}
+
+`automate_when` gates automation on the TV's current input; see [Profiles → The automation gate](./profiles.md#the-automation-gate).
 
 ### User profile
 
-```toml
-on_session_lock = "screen_off"
-on_session_unlock = "screen_on"
-on_lock_wake = "screen_on"              # you touch the lock screen (before typing)
-locked_idle_timeout_seconds = 0         # idle timer while the session is locked; 0 disables
-unlocked_idle_timeout_seconds = 0       # idle timer while unlocked; 0 disables
-on_idle_timeout = "screen_off"
-on_idle_resume = "screen_on"
-on_remote_connect = "screen_off"        # a remote session armed the TV
-on_remote_disconnect = "screen_off"     # the remote session ended
-on_local_return = { action = "screen_on", restore_input = true }  # first local input after a remote disconnect
-remote_screencast_arms = false          # let an unattributed screen capture arm the TV
-```
+{{#include ../generated/profile-defaults-user.md}}
 
 The two idle timers set **how long** to wait in each lock state; the shared `on_idle_timeout`/`on_idle_resume` actions decide **what** happens. A `0` timer disables idle for that lock state.
 

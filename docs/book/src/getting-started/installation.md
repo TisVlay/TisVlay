@@ -28,7 +28,7 @@ On NixOS, list accounts in `services.tisvlay.users` instead (see [below](#nixos-
 Pre-built packages are published on the [releases page](https://github.com/ruffsl/tisvlay/releases) for each tagged version. They are built against a conservative glibc baseline, so one package runs on every in-support desktop and enterprise distro, immutable-root variants included.
 
 ```sh
-export VERSION=0.3.0
+{{#include ../generated/release-version.txt}}
 export BASE=https://github.com/ruffsl/tisvlay/releases/download/v${VERSION}
 ```
 

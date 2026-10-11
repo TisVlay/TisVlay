@@ -19,6 +19,7 @@ members = [
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",
     "crates/tisvlay-gui-app",
+    "crates/tisvlay-docgen",
 ]
 
 # `default-members` = the shipping binary crates. Bare `cargo build` /
@@ -224,9 +225,11 @@ tisvlay-icons = { path = "crates/tisvlay-icons" }
 tisvlay-runtime = { path = "crates/tisvlay-runtime" }
 tisvlay-gui = { path = "crates/tisvlay-gui" }
 tisvlay = { path = "crates/tisvlay" }
-# Binary crates exposed as libs for cross-crate integration tests.
+# Binary crates exposed as libs: the daemon and session for cross-crate
+# integration tests, the CLI for the user-guide generator (tisvlay-docgen).
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }
 tisvlay-session = { path = "crates/tisvlay-session" }
+tisvlay-cli = { path = "crates/tisvlay-cli" }
 
 # Testing
 proptest = "1"

@@ -87,9 +87,9 @@ TisVlay TV control
 
 ###### **Options:**
 
-* `--socket <SOCKET>` — Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
-* `--user-socket <USER_SOCKET>` — Session-service user socket for `user-profile` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
-* `--site <SITE>` — Site chunk used in all key expressions
+* `--socket <SOCKET>` — Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
+* `--user-socket <USER_SOCKET>` — Session-service user socket for the `user-profile` and `remote-session` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
+* `--site <SITE>` — Site chunk used in all key expressions; leave it unless you run more than one daemon
 
   Default value: `main`
 * `--json` — Machine-readable JSON output on read verbs

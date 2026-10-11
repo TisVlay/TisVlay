@@ -6611,7 +6611,6 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
- "clap-markdown",
  "clap_complete",
  "serde",
  "serde_json",
@@ -6674,6 +6673,18 @@ dependencies = [
  "zbus",
  "zenoh",
  "zenoh-ext",
+]
+
+[[package]]
+name = "tisvlay-docgen"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap-markdown",
+ "serde",
+ "tisvlay-cli",
+ "tisvlay-core",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]

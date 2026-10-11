@@ -1,6 +1,6 @@
 //! Clap command tree for the `tisvlay` CLI, exposed as a library so the
-//! `gen-cli-docs` binary can render it to Markdown for the mdBook user
-//! guide (`just docs-cli`). `main.rs` parses and dispatches these types;
+//! `tisvlay-docgen` crate can render it to Markdown for the mdBook user
+//! guide (`just docs-gen`). `main.rs` parses and dispatches these types;
 //! keeping them here is the reason this crate has a lib target. The
 //! dynamic-completion value sources live here too, because the derive
 //! attributes (`#[arg(add = …)]`) reference them.
@@ -23,16 +23,19 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 #[command(name = "tisvlay", author, version, about = "TisVlay TV control")]
 #[command(propagate_version = true)]
 pub struct Cli {
-    /// Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
+    /// Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock,
+    /// falling back to the packaged /run/tisvlay/zenoh.sock).
     #[arg(long)]
     pub socket: Option<PathBuf>,
 
-    /// Session-service user socket for `user-profile` verbs (default:
+    /// Session-service user socket for the `user-profile` and
+    /// `remote-session` verbs (default:
     /// $XDG_RUNTIME_DIR/tisvlay/session.sock).
     #[arg(long)]
     pub user_socket: Option<PathBuf>,
 
-    /// Site chunk used in all key expressions.
+    /// Site chunk used in all key expressions; leave it unless you run
+    /// more than one daemon.
     #[arg(long, default_value = "main")]
     pub site: String,
 

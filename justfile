@@ -241,13 +241,14 @@ i18n-update: i18n-extract
 # --- Documentation site (mdBook → Read the Docs) ------------------------
 #
 # User-facing docs live in docs/book/ (book.toml + src/), separate from
-# the developer-facing docs/*.md. The CLI-reference partial
-# (src/guide/cli-generated.md) is generated from the clap definitions
-# and committed; Read the Docs builds a plain `mdbook build`, so it never
-# runs cargo — CI gates the partial's freshness instead.
+# the developer-facing docs/*.md. The partials under src/generated/ (the
+# CLI reference, the stock profile defaults, the release version) are
+# rendered from the code by the tisvlay-docgen crate and committed; Read
+# the Docs builds a plain `mdbook build`, so it never runs cargo — CI
+# gates the partials' freshness instead.
 
-# Generated CLI-reference include partial.
-cli_doc := "docs/book/src/guide/cli-generated.md"
+# Generated include partials.
+generated_docs := "docs/book/src/generated"
 
 # Build the docs site into docs/book/book/ (gitignored). Installs the
 # mdbook-mermaid JS assets first (gitignored, regenerated each build).
@@ -262,16 +263,18 @@ docs-serve:
     mdbook-mermaid install docs/book
     mdbook serve docs/book --open
 
-# Regenerate the CLI-reference partial from the clap definitions.
+# Regenerate every generated partial from the code it documents.
 [group('docs')]
-docs-cli:
-    cargo run -q -p tisvlay-cli --bin gen-cli-docs --features gen-docs > {{ cli_doc }}
-    @echo "Wrote {{ cli_doc }} — review and commit."
+docs-gen:
+    cargo run -q -p tisvlay-docgen -- {{ generated_docs }}
+    @echo "Wrote {{ generated_docs }}/ — review and commit."
 
-# Fail if the committed CLI-reference partial is stale (CI drift gate).
+# Fail if a committed partial is stale or a new one is uncommitted (CI
+# drift gate).
 [group('docs')]
-docs-cli-check: docs-cli
-    git diff --exit-code -- {{ cli_doc }}
+docs-gen-check: docs-gen
+    git diff --exit-code -- {{ generated_docs }}
+    test -z "$(git ls-files --others --exclude-standard -- {{ generated_docs }})"
 
 # --- Coverage -----------------------------------------------------------
 
