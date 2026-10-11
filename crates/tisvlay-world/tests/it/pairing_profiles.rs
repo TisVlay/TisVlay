@@ -6,8 +6,8 @@ use crate::support;
 use std::time::Duration;
 
 use support::*;
-use tisvlay_core::VendorConfig;
-use tisvlay_world::{Command, InEvent, Reply, SystemEvent, WireEffect};
+use tisvlay_core::{SystemProfileConfig, VendorConfig};
+use tisvlay_world::{Command, InEvent, ProfileRecord, Reply, SystemEvent, WireEffect};
 use uuid::Uuid;
 
 fn pairing_config(address: &str, mode: &str) -> VendorConfig {
@@ -413,6 +413,104 @@ async fn re_pair_supersedes_an_in_flight_dial() {
     .await;
 }
 
+/// A re-pair keeps the TV in the store throughout: while the
+/// verification dial runs, and after it fails. Only a fresh enrollment
+/// is withheld from the store until verified.
+#[tokio::test]
+async fn failed_re_pair_keeps_the_tv_in_the_store() {
+    let (mut effects, mut store, client, _handle) = spawn_reactor_with_store();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(
+            id,
+            "Den",
+            pairing_config("mock://repair-fails", "accept"),
+        )),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    // The verification dial will be refused.
+    client.command(Command::UpdateConfig {
+        id,
+        patch: serde_json::from_value(serde_json::json!({ "refuse_connect": true })).unwrap(),
+        reply: Some(Reply::new(2)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 2)).await;
+    let mut last = drain_snapshots(&mut store).pop();
+
+    client.command(Command::RePair {
+        id,
+        attempt: Uuid::new_v4(),
+        reply: Some(Reply::new(3)),
+    });
+    collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "failed").is_some()
+    })
+    .await;
+    // A later step's reply proves the failure step's effects all went out.
+    client.command(Command::SetVolume {
+        id: Uuid::new_v4(),
+        level: 1,
+        reply: Some(Reply::new(4)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 4)).await;
+
+    let since = drain_snapshots(&mut store);
+    for snapshot in &since {
+        assert!(
+            snapshot.tv.iter().any(|tv| tv.id == id),
+            "a snapshot taken during the re-pair dropped the TV"
+        );
+    }
+    last = since.into_iter().last().or(last);
+    assert!(
+        last.expect("adding the TV persisted it")
+            .tv
+            .iter()
+            .any(|tv| tv.id == id),
+        "the store no longer holds the TV after a failed re-pair"
+    );
+}
+
+/// An update in the same batch as the create it follows applies: the
+/// body published last is the updated one.
+#[tokio::test]
+async fn update_profile_in_the_create_batch_applies() {
+    let id = Uuid::new_v4();
+    let mut created = SystemProfileConfig::full_default();
+    created.name = "Created".into();
+    let mut updated = created.clone();
+    updated.name = "Updated".into();
+    let (mut effects, _client, _handle) = spawn_reactor_after(|client| {
+        client.command(Command::AddProfile {
+            record: Box::new(ProfileRecord { id, body: created }),
+            reply: Some(Reply::new(1)),
+        });
+        client.command(Command::UpdateProfile {
+            id,
+            body: Box::new(updated),
+            reply: Some(Reply::new(2)),
+        });
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 2)).await;
+    assert!(
+        seen.iter()
+            .all(|e| reply_err_code(e, 1).is_none() && reply_err_code(e, 2).is_none()),
+        "both commands succeed: {seen:#?}"
+    );
+    let key = format!("tisvlay/test/profile/system/{id}");
+    let last_name = seen
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            WireEffect::Publish { key: k, payload } if *k == key => Some(payload["name"].clone()),
+            _ => None,
+        })
+        .expect("the profile was published");
+    assert_eq!(last_name, "Updated");
+}
+
 fn with(mut config: VendorConfig, key: &str, value: &str) -> VendorConfig {
     config.insert(key, value);
     config
@@ -534,4 +632,94 @@ async fn plain_dial_never_reads_the_link_mac() {
     });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
     assert_eq!(handle.link_mac_call_count("mock://plain"), 0);
+}
+
+/// Commands apply in arrival order across families, each seeing the
+/// ones before it: a profile deleted ahead of an assignment is gone by
+/// the time the assignment runs, so the delete isn't refused as in use.
+#[tokio::test]
+async fn commands_apply_in_arrival_order() {
+    let tv = Uuid::new_v4();
+    let profile = Uuid::new_v4();
+    let mut body = SystemProfileConfig::full_default();
+    body.name = "Evening".into();
+    let record = tv_record(tv, "Den", mock_config("mock://ordered"));
+    let mut stored = tisvlay_world::StoreSnapshot::default();
+    stored.tv.push(record.clone());
+    stored.system_profile.push(ProfileRecord {
+        id: profile,
+        body: body.clone(),
+    });
+    let (mut effects, _store, _client, _handle) = spawn_seeded_reactor(
+        stored,
+        vec![
+            Command::AddProfile {
+                record: Box::new(ProfileRecord { id: profile, body }),
+                reply: None,
+            },
+            Command::AddTv {
+                record: Box::new(record.clone()),
+                reply: None,
+            },
+        ],
+        |client| {
+            client.command(Command::DeleteProfile {
+                id: profile,
+                reply: Some(Reply::new(1)),
+            });
+            client.command(Command::SetSystemProfile {
+                id: tv,
+                profile: Some(profile),
+                reply: Some(Reply::new(2)),
+            });
+            client.command(Command::AddTv {
+                record: Box::new(record),
+                reply: Some(Reply::new(3)),
+            });
+        },
+    );
+    let seen = collect_until(&mut effects, |e| reply_to(e, 3)).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 1)),
+        None,
+        "delete"
+    );
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 2)),
+        None,
+        "assign"
+    );
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 3)),
+        Some(tisvlay_wire::error::ErrorCode::TvExists),
+        "a second add of the same TV"
+    );
+}
+
+/// A fresh pairing whose verification dial fails rolls the TV back, and
+/// the rollback releases the TV's route monitoring with its keys.
+#[tokio::test]
+async fn a_rolled_back_pairing_releases_its_route() {
+    let (mut effects, mut routes, client, _handle) = spawn_reactor_with_routes();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    let mut config = pairing_config("mock://rolled-back", "accept");
+    config.insert("refuse_connect", true);
+    client.command(Command::Pair {
+        id,
+        attempt: Uuid::new_v4(),
+        name: "Office".into(),
+        vendor: "mock".into(),
+        config,
+        managed: true,
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "failed").is_some()
+    })
+    .await;
+    settle(&mut effects, &client, 2).await;
+    let released = std::iter::from_fn(|| routes.try_recv().ok())
+        .any(|request| matches!(request, tisvlay_world::RouteRequest::Forget { tv } if tv == id));
+    assert!(released, "the rollback released the TV's route");
 }

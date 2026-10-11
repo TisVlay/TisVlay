@@ -2,20 +2,132 @@
 //! in `tisvlay_wire::payload` (component = key = payload); everything here is
 //! internal structure.
 
+use bevy_ecs::lifecycle::HookContext;
 use bevy_ecs::prelude::*;
+use bevy_ecs::world::DeferredWorld;
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::time::Instant;
 use tisvlay_core::VendorConfig;
+use tisvlay_wire::{keys, payload};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{
-    BackendCmd, Reply, StoreSnapshot, SystemEvent, TransportInfo, TvRecord, WireEffect,
-};
+use crate::events::{BackendCmd, StoreSnapshot, SystemEvent, TransportInfo, WireEffect};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
+///
+/// Immutable, and its hooks keep [`TvIndex`] in step with the live TV
+/// entities: inserting it indexes the TV, and removing it (despawn
+/// included) unindexes it, deletes every key the TV published, and
+/// releases its route monitoring. No spawn or despawn path can forget
+/// either. Hooks run when `Commands` flush, so within one system the
+/// index lags that system's own spawns and despawns.
 #[derive(Component, Debug)]
+#[component(immutable, on_insert = index_tv, on_discard = unindex_tv, on_remove = retire_tv)]
 pub(crate) struct TvId(pub Uuid);
+
+fn index_tv(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<TvId>(ctx.entity)
+        .expect("on_insert runs with TvId in place")
+        .0;
+    world.resource_mut::<TvIndex>().0.insert(id, ctx.entity);
+}
+
+fn unindex_tv(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<TvId>(ctx.entity)
+        .expect("on_discard runs with TvId in place")
+        .0;
+    world.resource_mut::<TvIndex>().0.remove(id, ctx.entity);
+}
+
+fn retire_tv(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<TvId>(ctx.entity)
+        .expect("on_remove runs with TvId in place")
+        .0;
+    // A live twin under the same id (a collision `index_tv` logged) keeps
+    // its keys.
+    if world.resource::<TvIndex>().get(&id).is_some() {
+        return;
+    }
+    let site = world.resource::<Site>().0.clone();
+    let mut outbox = world.resource_mut::<Outbox>();
+    for path in payload::TV_PATHS
+        .iter()
+        .chain(payload::TV_EXTRA_PATHS.iter())
+    {
+        outbox.0.push(Effect::Wire(WireEffect::Delete {
+            key: keys::tv_path(&site, &id, path),
+        }));
+    }
+    outbox.0.push(Effect::ForgetRoute { tv: id });
+}
+
+/// A uuid → entity map kept by component hooks. Readable anywhere; only
+/// the hooks in this module write it.
+#[derive(Debug, Default)]
+pub(crate) struct UuidMap(HashMap<Uuid, Entity>);
+
+impl UuidMap {
+    pub(crate) fn get(&self, id: &Uuid) -> Option<Entity> {
+        self.0.get(id).copied()
+    }
+
+    pub(crate) fn contains(&self, id: &Uuid) -> bool {
+        self.0.contains_key(id)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn snapshot(&self) -> HashMap<Uuid, Entity> {
+        self.0.clone()
+    }
+
+    fn insert(&mut self, id: Uuid, entity: Entity) {
+        if let Some(previous) = self.0.insert(id, entity)
+            && previous != entity
+        {
+            tracing::error!(%id, ?previous, ?entity, "two entities claim one id; the newer wins the index");
+        }
+    }
+
+    /// Unindex `id` if it still names `entity`: a collision's loser
+    /// leaving must not unindex the winner.
+    fn remove(&mut self, id: Uuid, entity: Entity) {
+        if self.0.get(&id) == Some(&entity) {
+            self.0.remove(&id);
+        }
+    }
+}
+
+/// A component that keys its entity in a [`UuidMap`] index.
+#[cfg(debug_assertions)]
+pub(crate) trait Keyed: Component {
+    fn key(&self) -> Uuid;
+}
+
+#[cfg(debug_assertions)]
+impl Keyed for TvId {
+    fn key(&self) -> Uuid {
+        self.0
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Keyed for ProfileId {
+    fn key(&self) -> Uuid {
+        self.0
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Keyed for PairingFor {
+    fn key(&self) -> Uuid {
+        self.0
+    }
+}
 
 /// Which backend dials this TV, and with what vendor config.
 #[derive(Component, Debug)]
@@ -163,9 +275,44 @@ pub(crate) struct PairingEnroll {
     pub managed: bool,
 }
 
-/// Uuid → pairing-session entity index.
+/// The TV a pairing session is for. Immutable, and its hooks keep
+/// [`PairingIndex`] in step with the live sessions (see [`TvId`]).
+#[derive(Component, Debug)]
+#[component(immutable, on_insert = index_pairing, on_discard = unindex_pairing)]
+pub(crate) struct PairingFor(pub Uuid);
+
+fn index_pairing(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<PairingFor>(ctx.entity)
+        .expect("on_insert runs with PairingFor in place")
+        .0;
+    world
+        .resource_mut::<PairingIndex>()
+        .0
+        .insert(id, ctx.entity);
+}
+
+fn unindex_pairing(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<PairingFor>(ctx.entity)
+        .expect("on_discard runs with PairingFor in place")
+        .0;
+    world
+        .resource_mut::<PairingIndex>()
+        .0
+        .remove(id, ctx.entity);
+}
+
+/// TV uuid → pairing-session entity, kept by [`PairingFor`]'s hooks.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct PairingIndex(pub HashMap<Uuid, Entity>);
+pub(crate) struct PairingIndex(UuidMap);
+
+impl Deref for PairingIndex {
+    type Target = UuidMap;
+    fn deref(&self) -> &UuidMap {
+        &self.0
+    }
+}
 
 /// The input this TV should land on once a connection is live —
 /// recorded at dispatch time by restore-flagged on-ish actions,
@@ -260,31 +407,87 @@ pub(crate) struct Site(pub String);
 #[derive(Resource, Debug)]
 pub(crate) struct Clock(pub Instant);
 
-/// Uuid → entity index for O(1) command routing.
+/// TV uuid → entity, for O(1) command routing; kept by [`TvId`]'s hooks.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct TvIndex(pub HashMap<Uuid, Entity>);
+pub(crate) struct TvIndex(UuidMap);
 
-/// A system profile's stable identity.
+impl Deref for TvIndex {
+    type Target = UuidMap;
+    fn deref(&self) -> &UuidMap {
+        &self.0
+    }
+}
+
+/// A system profile's stable identity. Immutable, and its hooks keep
+/// [`ProfileIndex`] in step and delete the profile's key on removal (see
+/// [`TvId`]).
 #[derive(Component, Debug)]
+#[component(immutable, on_insert = index_profile, on_discard = unindex_profile, on_remove = retire_profile)]
 pub(crate) struct ProfileId(pub Uuid);
+
+fn index_profile(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<ProfileId>(ctx.entity)
+        .expect("on_insert runs with ProfileId in place")
+        .0;
+    world
+        .resource_mut::<ProfileIndex>()
+        .0
+        .insert(id, ctx.entity);
+}
+
+fn unindex_profile(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<ProfileId>(ctx.entity)
+        .expect("on_discard runs with ProfileId in place")
+        .0;
+    world
+        .resource_mut::<ProfileIndex>()
+        .0
+        .remove(id, ctx.entity);
+}
+
+fn retire_profile(mut world: DeferredWorld, ctx: HookContext) {
+    let id = world
+        .get::<ProfileId>(ctx.entity)
+        .expect("on_remove runs with ProfileId in place")
+        .0;
+    if world.resource::<ProfileIndex>().get(&id).is_some() {
+        return;
+    }
+    let site = world.resource::<Site>().0.clone();
+    world
+        .resource_mut::<Outbox>()
+        .0
+        .push(Effect::Wire(WireEffect::Delete {
+            key: keys::profile_system(&site, &id),
+        }));
+}
 
 /// A system profile's body (name + event→action mapping) — the wire
 /// payload at `profile/system/<uuid>` verbatim.
 #[derive(Component, Debug)]
 pub(crate) struct ProfileBody(pub tisvlay_core::SystemProfileConfig);
 
-/// Uuid → profile entity index.
+/// Profile uuid → entity, kept by [`ProfileId`]'s hooks.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct ProfileIndex(pub HashMap<Uuid, Entity>);
+pub(crate) struct ProfileIndex(UuidMap);
+
+impl Deref for ProfileIndex {
+    type Target = UuidMap;
+    fn deref(&self) -> &UuidMap {
+        &self.0
+    }
+}
 
 /// Vendors the reactor has connectors for — AddTv validation.
 #[derive(Resource, Debug)]
 pub(crate) struct KnownVendors(pub HashSet<String>);
 
-/// Config-shaped state changed this frame — the persist system snapshots
-/// the whole TV table when set.
+/// The snapshot last handed to the store (or loaded from it at boot):
+/// `snapshot_store` persists only when the world's state differs.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct DirtyStore(pub bool);
+pub(crate) struct LastPersisted(pub Option<StoreSnapshot>);
 
 /// Deferred outbound work, drained by the reactor after each schedule run.
 #[derive(Resource, Debug, Default)]
@@ -292,8 +495,10 @@ pub(crate) struct Outbox(pub Vec<Effect>);
 
 #[derive(Debug)]
 pub(crate) enum Effect {
-    /// Forward to the wire (zenoh in M2, effects channel today).
+    /// Forward to the wire (the zenoh bridge).
     Wire(WireEffect),
+    /// Stop route-monitoring a removed TV's address.
+    ForgetRoute { tv: Uuid },
     /// Spawn a dial task for this TV.
     SpawnConnect {
         tv: Uuid,
@@ -332,11 +537,4 @@ pub(crate) enum Effect {
     /// Persist the full state snapshot (reactor debounces and writes
     /// atomically).
     Persist(Box<StoreSnapshot>),
-    /// Redact a TV's config against its vendor schema and reply — the
-    /// reactor owns the connectors (and thus the schemas), so the Secret
-    /// filtering happens there and credentials never reach the bridge.
-    RedactConfig {
-        reply: Reply<tisvlay_wire::endpoint::tv::GetConfig>,
-        record: TvRecord,
-    },
 }

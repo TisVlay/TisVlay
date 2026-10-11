@@ -13,5 +13,6 @@ mod greeter;
 mod liveliness;
 mod logind;
 mod profiles;
+mod supervisor;
 mod support;
 mod wire;

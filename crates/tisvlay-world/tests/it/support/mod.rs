@@ -7,7 +7,9 @@ use std::time::Duration;
 use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_wire::error::ErrorCode;
-use tisvlay_world::{Command, Reactor, Reply, TvRecord, WireEffect, WorldClient};
+use tisvlay_world::{
+    Command, Reactor, Reply, RouteRequest, StoreSnapshot, TvRecord, WireEffect, WorldClient,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
@@ -30,14 +32,107 @@ pub(crate) fn tv_record(id: Uuid, name: &str, config: VendorConfig) -> TvRecord 
 }
 
 pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
+    let (reactor, effects, client, handle) = new_reactor();
+    tokio::spawn(reactor.run());
+    (effects, client, handle)
+}
+
+/// [`spawn_reactor`] with the store outlet tapped: every `Persist`
+/// snapshot arrives on the returned receiver.
+pub(crate) fn spawn_reactor_with_store() -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<StoreSnapshot>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (persist_tx, persist_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_persist(persist_tx);
+    tokio::spawn(reactor.run());
+    (effects, persist_rx, client, handle)
+}
+
+/// [`spawn_reactor_with_store`] booted the way the daemon boots: `stored`
+/// is the persist baseline and `commands` apply before the reactor runs;
+/// what `queue` sends then lands in the reactor's first batch.
+pub(crate) fn spawn_seeded_reactor(
+    stored: StoreSnapshot,
+    commands: Vec<Command>,
+    queue: impl FnOnce(&WorldClient),
+) -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<StoreSnapshot>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (persist_tx, persist_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_persist(persist_tx);
+    reactor.seed(Some(stored), commands);
+    queue(&client);
+    tokio::spawn(reactor.run());
+    (effects, persist_rx, client, handle)
+}
+
+/// Wait until every effect of the steps before now has gone out: a
+/// command sent now lands in a later step, so its reply comes after.
+pub(crate) async fn settle(
+    effects: &mut UnboundedReceiver<WireEffect>,
+    client: &WorldClient,
+    barrier: u64,
+) {
+    client.command(Command::SetVolume {
+        id: Uuid::new_v4(),
+        level: 0,
+        reply: Some(Reply::new(barrier)),
+    });
+    collect_until(effects, |e| reply_to(e, barrier)).await;
+}
+
+/// [`spawn_reactor`] with the route-monitor outlet tapped.
+pub(crate) fn spawn_reactor_with_routes() -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<RouteRequest>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (routes_tx, routes_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_route_monitor(routes_tx);
+    tokio::spawn(reactor.run());
+    (effects, routes_rx, client, handle)
+}
+
+/// [`spawn_reactor`] with `queue` run before the reactor starts: what it
+/// sends lands in the reactor's first batch (up to 64 events), so
+/// same-batch interactions are deterministic.
+pub(crate) fn spawn_reactor_after(
+    queue: impl FnOnce(&WorldClient),
+) -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
+    let (reactor, effects, client, handle) = new_reactor();
+    queue(&client);
+    tokio::spawn(reactor.run());
+    (effects, client, handle)
+}
+
+fn new_reactor() -> (
+    Reactor,
+    UnboundedReceiver<WireEffect>,
+    WorldClient,
+    MockHandle,
+) {
     // RUST_LOG-driven diagnostics for failing runs; idempotent.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
     let (connector, _discovery, handle) = new_test_parts();
     let (reactor, effects, client) = Reactor::new("test", vec![("mock", Arc::new(connector))]);
-    tokio::spawn(reactor.run());
-    (effects, client, handle)
+    (reactor, effects, client, handle)
+}
+
+/// Every snapshot persisted so far, without waiting for more.
+pub(crate) fn drain_snapshots(rx: &mut UnboundedReceiver<StoreSnapshot>) -> Vec<StoreSnapshot> {
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
 }
 
 /// Receive effects until `stop` matches, returning everything seen
