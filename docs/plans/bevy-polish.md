@@ -200,7 +200,7 @@ No logic changes, so it's reviewable with `git diff --color-moved`.
 - **New:**
   - a fresh-pair rollback emits `ForgetRoute`;
   - a fresh pair still verifies before persisting, which pins the `spawn_tv` entity fix;
-  - a batch with a pairing terminal followed by a late backend event for the same TV doesn't panic.
+  - a batch with a pairing terminal followed by a late backend event for the same TV doesn't panic. *Decided during implementation:* not written. Building that batch means fabricating dial-numbered backend events against a verifying TV. The guard is a per-system `HashSet` of rolled-back ids, and the per-step index assertion runs in every world and daemon test.
 
 ### 6. Docs and ideas
 

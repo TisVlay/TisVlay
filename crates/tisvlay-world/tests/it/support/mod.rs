@@ -7,7 +7,9 @@ use std::time::Duration;
 use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_wire::error::ErrorCode;
-use tisvlay_world::{Command, Reactor, Reply, StoreSnapshot, TvRecord, WireEffect, WorldClient};
+use tisvlay_world::{
+    Command, Reactor, Reply, RouteRequest, StoreSnapshot, TvRecord, WireEffect, WorldClient,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
@@ -85,6 +87,20 @@ pub(crate) async fn settle(
         reply: Some(Reply::new(barrier)),
     });
     collect_until(effects, |e| reply_to(e, barrier)).await;
+}
+
+/// [`spawn_reactor`] with the route-monitor outlet tapped.
+pub(crate) fn spawn_reactor_with_routes() -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<RouteRequest>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (routes_tx, routes_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_route_monitor(routes_tx);
+    tokio::spawn(reactor.run());
+    (effects, routes_rx, client, handle)
 }
 
 /// [`spawn_reactor`] with `queue` run before the reactor starts: what it

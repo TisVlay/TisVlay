@@ -195,12 +195,19 @@ impl Reactor {
         // Ages out component-removal records, which otherwise accumulate
         // for the world's lifetime: no App drives this here.
         self.world.clear_trackers();
+        #[cfg(debug_assertions)]
+        assert_indexes_match(&mut self.world);
 
         let effects: Vec<Effect> = std::mem::take(&mut self.world.resource_mut::<Outbox>().0);
         for effect in effects {
             match effect {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
+                }
+                Effect::ForgetRoute { tv } => {
+                    if let Some(tx) = &self.routes_tx {
+                        let _ = tx.send(RouteRequest::Forget { tv });
+                    }
                 }
                 Effect::SpawnConnect {
                     tv,
@@ -362,12 +369,6 @@ impl Reactor {
             }
             Command::RemoveTv { id, reply } => {
                 let result = self.run_handler(handle::remove_tv, id);
-                // Removal also ends route monitoring for the TV's address.
-                if result.is_ok()
-                    && let Some(tx) = &self.routes_tx
-                {
-                    let _ = tx.send(RouteRequest::Forget { tv: id });
-                }
                 self.answer(reply, result);
             }
             Command::Reconnect { id, reply } => {
@@ -568,6 +569,33 @@ fn transport_facts(
         survives_ip_change: connector.survives_source_ip_change(),
         emulate_screen_via_power: connector.emulate_screen_via_power(config),
     }
+}
+
+/// Every hook-kept index maps exactly the live entities carrying its key
+/// component, both ways. Checked after every step in debug builds (the
+/// test suites included): a drifted index would misroute commands.
+#[cfg(debug_assertions)]
+fn assert_indexes_match(world: &mut World) {
+    use crate::components::{Keyed, PairingFor, ProfileId, TvId, UuidMap};
+    use std::ops::Deref;
+    fn check<K: Keyed, I: Resource + Deref<Target = UuidMap>>(world: &mut World) {
+        let live: HashMap<uuid::Uuid, Entity> = world
+            .query::<(Entity, &K)>()
+            .iter(world)
+            .map(|(entity, key)| (key.key(), entity))
+            .collect();
+        let indexed = world.resource::<I>().snapshot();
+        assert_eq!(
+            indexed,
+            live,
+            "{} must index exactly the live {} entities",
+            std::any::type_name::<I>(),
+            std::any::type_name::<K>(),
+        );
+    }
+    check::<TvId, TvIndex>(world);
+    check::<ProfileId, ProfileIndex>(world);
+    check::<PairingFor, PairingIndex>(world);
 }
 
 /// The world's fallback error handler: log through tracing with the

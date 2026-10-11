@@ -695,3 +695,31 @@ async fn commands_apply_in_arrival_order() {
         "a second add of the same TV"
     );
 }
+
+/// A fresh pairing whose verification dial fails rolls the TV back, and
+/// the rollback releases the TV's route monitoring with its keys.
+#[tokio::test]
+async fn a_rolled_back_pairing_releases_its_route() {
+    let (mut effects, mut routes, client, _handle) = spawn_reactor_with_routes();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    let mut config = pairing_config("mock://rolled-back", "accept");
+    config.insert("refuse_connect", true);
+    client.command(Command::Pair {
+        id,
+        attempt: Uuid::new_v4(),
+        name: "Office".into(),
+        vendor: "mock".into(),
+        config,
+        managed: true,
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "failed").is_some()
+    })
+    .await;
+    settle(&mut effects, &client, 2).await;
+    let released = std::iter::from_fn(|| routes.try_recv().ok())
+        .any(|request| matches!(request, tisvlay_world::RouteRequest::Forget { tv } if tv == id));
+    assert!(released, "the rollback released the TV's route");
+}

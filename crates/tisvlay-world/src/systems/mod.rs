@@ -20,7 +20,7 @@ use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::{EntityCommands, SystemParam};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tisvlay_core::{PairingCommand, PairingState, TvState, VendorConfig};
 use tisvlay_wire::rpc::{Ack, Created, PairStarted, RePairStarted};
@@ -30,7 +30,7 @@ use uuid::Uuid;
 use crate::components::{
     AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DialSeq, DispatchRetry,
     DispatchVerify, Effect, KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector,
-    MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingIndex, PairingRef,
+    MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef,
     PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed,
     RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
@@ -111,29 +111,6 @@ fn redial(e: &mut EntityCommands, wake: bool) {
     e.insert(PendingConnect { attempts: 0, wake });
 }
 
-/// Remove a TV from the world and the wire: despawn, drop the index
-/// entry, delete every published key. Shared by lifecycle removal and
-/// the fresh-pairing rollback.
-fn despawn_tv(
-    commands: &mut Commands,
-    index: &mut TvIndex,
-    outbox: &mut Outbox,
-    site: &Site,
-    id: &Uuid,
-    entity: Entity,
-) {
-    commands.entity(entity).despawn();
-    index.0.remove(id);
-    for path in payload::TV_PATHS
-        .iter()
-        .chain(payload::TV_EXTRA_PATHS.iter())
-    {
-        outbox.0.push(Effect::Wire(WireEffect::Delete {
-            key: keys::tv_path(&site.0, id, path),
-        }));
-    }
-}
-
 /// Spawn a TV entity from its store row. Every TV dials — managed
 /// gates automation (profile actions), not connectivity, so state
 /// stays live and manual control keeps working on unmanaged TVs.
@@ -141,8 +118,9 @@ fn despawn_tv(
 /// Emits `Effect::Facts` so the reactor evaluates the connector-derived
 /// statics (wake support, primary descriptor, display rows) at
 /// enrollment — a deferred-dial (routeless) TV still publishes them
-/// without waiting for its first dial spawn.
-fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, outbox: &mut Outbox, record: &TvRecord) {
+/// without waiting for its first dial spawn. Returns the new entity: the
+/// index only learns it when `Commands` flush.
+fn spawn_tv(commands: &mut Commands, outbox: &mut Outbox, record: &TvRecord) -> Entity {
     outbox.0.push(Effect::Facts {
         tv: record.id,
         vendor: record.vendor.clone(),
@@ -183,13 +161,13 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, outbox: &mut Outbox, r
     if record.managed {
         entity.insert(Managed);
     }
-    index.0.insert(record.id, entity.id());
+    entity.id()
 }
 
 /// Pairing-session state shared by the command and update handlers.
 #[derive(SystemParam)]
 pub(crate) struct PairingParams<'w, 's> {
-    index: ResMut<'w, PairingIndex>,
+    index: Res<'w, PairingIndex>,
     refs: Query<'w, 's, &'static mut PairingRef>,
 }
 

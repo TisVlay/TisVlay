@@ -41,7 +41,7 @@ pub(super) struct StateWrites<'w, 's> {
 pub(super) fn apply_backend_events(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
-    mut index: ResMut<TvIndex>,
+    index: Res<TvIndex>,
     clock: Res<Clock>,
     site: Res<Site>,
     mut outbox: ResMut<Outbox>,
@@ -50,11 +50,14 @@ pub(super) fn apply_backend_events(
     mut vendors: Query<&mut VendorRef>,
     mut writes: StateWrites,
 ) {
+    // TVs this run rolled back: the index keeps them until `Commands`
+    // flush, but later events of the batch must not touch them.
+    let mut rolled_back = HashSet::new();
     for msg in reader.read() {
         let InEvent::Backend { tv, dial, event } = msg else {
             continue;
         };
-        let Some(&entity) = index.0.get(tv) else {
+        let Some(entity) = index.get(tv).filter(|_| !rolled_back.contains(tv)) else {
             // The boring resolution of remove-during-in-flight: a late
             // event for a despawned TV simply has nowhere to land.
             tracing::debug!(%tv, ?event, "backend event for unknown TV dropped");
@@ -209,7 +212,10 @@ pub(super) fn apply_backend_events(
                         },
                     );
                     if pair.rollback {
-                        despawn_tv(&mut commands, &mut index, &mut outbox, &site, tv, entity);
+                        // Despawning deletes its keys and releases its
+                        // route (`TvId`'s hooks).
+                        commands.entity(entity).despawn();
+                        rolled_back.insert(*tv);
                         continue;
                     }
                     commands.entity(entity).remove::<PairVerifying>();
@@ -347,16 +353,19 @@ pub(super) fn apply_pairing_updates(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
     mut pairing: PairingParams,
-    mut tv_index: ResMut<TvIndex>,
+    tv_index: Res<TvIndex>,
     mut outbox: ResMut<Outbox>,
     site: Res<Site>,
     mut writes: SettingsWrites,
 ) {
+    // Sessions this run ended: the index keeps them until `Commands`
+    // flush, but later updates of the batch must not reach them.
+    let mut ended = HashSet::new();
     for msg in reader.read() {
         let InEvent::PairingUpdate { id, update } = msg else {
             continue;
         };
-        let Some(&entity) = pairing.index.0.get(id) else {
+        let Some(entity) = pairing.index.get(id).filter(|_| !ended.contains(id)) else {
             tracing::debug!(%id, ?update, "pairing update for unknown session dropped");
             continue;
         };
@@ -398,14 +407,14 @@ pub(super) fn apply_pairing_updates(
                     }
                     PairingState::Failed { .. } => {
                         commands.entity(entity).despawn();
-                        pairing.index.0.remove(id);
+                        ended.insert(*id);
                     }
                     _ => {}
                 }
             }
             PairingUpdate::ConfigReady(config) => {
                 if let Ok(session) = pairing.refs.get(entity) {
-                    match (&session.enroll, tv_index.0.get(id).copied()) {
+                    match (&session.enroll, tv_index.get(id)) {
                         // Fresh pairing: spawn the TV, terminal gated on
                         // its first dial. Not persisted (and no store
                         // write) until that dial verifies — a rollback
@@ -420,13 +429,11 @@ pub(super) fn apply_pairing_updates(
                                 primary_input: None,
                                 config: config.clone(),
                             };
-                            spawn_tv(&mut commands, &mut tv_index, &mut outbox, &record);
-                            if let Some(&tv_entity) = tv_index.0.get(id) {
-                                commands.entity(tv_entity).insert(PairVerifying {
-                                    rollback: true,
-                                    attempt: session.attempt,
-                                });
-                            }
+                            let tv_entity = spawn_tv(&mut commands, &mut outbox, &record);
+                            commands.entity(tv_entity).insert(PairVerifying {
+                                rollback: true,
+                                attempt: session.attempt,
+                            });
                         }
                         // Re-pair: refresh credentials and reconnect. The
                         // terminal is likewise gated on the reconnect, but
@@ -451,7 +458,7 @@ pub(super) fn apply_pairing_updates(
                     }
                 }
                 commands.entity(entity).despawn();
-                pairing.index.0.remove(id);
+                ended.insert(*id);
             }
             PairingUpdate::ConfigFailed(error) => {
                 if let Ok(session) = pairing.refs.get(entity) {
@@ -470,7 +477,7 @@ pub(super) fn apply_pairing_updates(
                     );
                 }
                 commands.entity(entity).despawn();
-                pairing.index.0.remove(id);
+                ended.insert(*id);
             }
         }
     }
@@ -568,7 +575,7 @@ pub(super) fn apply_route_resolutions(
         }
     }
     for (tv, interface) in latest {
-        let Some(&entity) = index.0.get(&tv) else {
+        let Some(entity) = index.get(&tv) else {
             continue;
         };
         let Ok((id, traits, monitored, connected, parked, pending)) = q.get(entity) else {
@@ -618,7 +625,7 @@ pub(super) fn apply_connector_matches(
         let InEvent::ConnectorMatched { tv, connector } = msg else {
             continue;
         };
-        let Some(&entity) = index.0.get(tv) else {
+        let Some(entity) = index.get(tv) else {
             continue;
         };
         if let Ok(mut identity) = identities.get_mut(entity)
@@ -657,7 +664,7 @@ pub(super) fn apply_transport_facts(
         else {
             continue;
         };
-        let Some(&entity) = index.0.get(tv) else {
+        let Some(entity) = index.get(tv) else {
             continue;
         };
         if let Ok(mut link) = links.get_mut(entity)
@@ -697,7 +704,7 @@ pub(super) fn apply_remote_session(
         let InEvent::RemoteSession { armed: set } = msg else {
             continue;
         };
-        let next: std::collections::HashSet<Uuid> = set.iter().copied().collect();
+        let next: HashSet<Uuid> = set.iter().copied().collect();
         armed.set_if_neq(RemoteArmed(next));
     }
 }

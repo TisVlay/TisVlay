@@ -8,11 +8,7 @@ use super::*;
 
 /// The entity of TV `id`, or the refusal for an unknown one.
 fn tv_entity(index: &TvIndex, id: Uuid) -> Result<Entity, WireError> {
-    index
-        .0
-        .get(&id)
-        .copied()
-        .ok_or_else(|| WireError::tv_not_found(id))
+    index.get(&id).ok_or_else(|| WireError::tv_not_found(id))
 }
 
 /// A pair request's fields, as the handler takes them.
@@ -31,7 +27,7 @@ pub(crate) fn pair(
     mut commands: Commands,
     tvs: Res<TvIndex>,
     vendors: Res<KnownVendors>,
-    mut pairing: PairingParams,
+    pairing: PairingParams,
     mut outbox: ResMut<Outbox>,
 ) -> Result<PairStarted, WireError> {
     let PairInput {
@@ -42,26 +38,26 @@ pub(crate) fn pair(
         config,
         managed,
     } = input;
-    if tvs.0.contains_key(&id) {
+    if tvs.contains(&id) {
         return Err(WireError::tv_exists(id));
     }
-    if pairing.index.0.contains_key(&id) {
+    if pairing.index.contains(&id) {
         return Err(WireError::pairing_exists(id));
     }
     if !vendors.0.contains(&vendor) {
         return Err(WireError::unknown_vendor(&vendor));
     }
-    let entity = commands
-        .spawn(PairingRef {
+    commands.spawn((
+        PairingFor(id),
+        PairingRef {
             attempt,
             vendor: vendor.clone(),
             params: config.clone(),
             enroll: Some(PairingEnroll { name, managed }),
             cancel_tx: None,
             cancel_requested: false,
-        })
-        .id();
-    pairing.index.0.insert(id, entity);
+        },
+    ));
     outbox.0.push(Effect::StartPairing {
         tv: id,
         vendor,
@@ -74,12 +70,12 @@ pub(crate) fn re_pair(
     In((id, attempt)): In<(Uuid, Uuid)>,
     mut commands: Commands,
     tvs: Res<TvIndex>,
-    mut pairing: PairingParams,
+    pairing: PairingParams,
     q: Query<TvQuery>,
     mut outbox: ResMut<Outbox>,
 ) -> Result<RePairStarted, WireError> {
     let entity = tv_entity(&tvs, id)?;
-    if pairing.index.0.contains_key(&id) {
+    if pairing.index.contains(&id) {
         return Err(WireError::pairing_exists(id));
     }
     let vendor_ref = q
@@ -87,17 +83,17 @@ pub(crate) fn re_pair(
         .ok()
         .and_then(|(_, _, _, v, _)| v)
         .ok_or_else(|| WireError::tv_not_found(id))?;
-    let session = commands
-        .spawn(PairingRef {
+    commands.spawn((
+        PairingFor(id),
+        PairingRef {
             attempt,
             vendor: vendor_ref.vendor.clone(),
             params: vendor_ref.config.clone(),
             enroll: None,
             cancel_tx: None,
             cancel_requested: false,
-        })
-        .id();
-    pairing.index.0.insert(id, session);
+        },
+    ));
     outbox.0.push(Effect::StartPairing {
         tv: id,
         vendor: vendor_ref.vendor.clone(),
@@ -107,9 +103,8 @@ pub(crate) fn re_pair(
 }
 
 pub(crate) fn cancel_pair(In(id): In<Uuid>, mut pairing: PairingParams) -> Result<Ack, WireError> {
-    let &entity = pairing
+    let entity = pairing
         .index
-        .0
         .get(&id)
         .ok_or_else(|| WireError::pairing_not_found(id))?;
     if let Ok(mut session) = pairing.refs.get_mut(entity) {
@@ -124,33 +119,33 @@ pub(crate) fn cancel_pair(In(id): In<Uuid>, mut pairing: PairingParams) -> Resul
 pub(crate) fn add_tv(
     In(record): In<TvRecord>,
     mut commands: Commands,
-    mut index: ResMut<TvIndex>,
+    index: Res<TvIndex>,
     vendors: Res<KnownVendors>,
     mut outbox: ResMut<Outbox>,
 ) -> Result<Created, WireError> {
-    if index.0.contains_key(&record.id) {
+    if index.contains(&record.id) {
         return Err(WireError::tv_exists(record.id));
     }
     if !vendors.0.contains(&record.vendor) {
         return Err(WireError::unknown_vendor(&record.vendor));
     }
-    spawn_tv(&mut commands, &mut index, &mut outbox, &record);
+    spawn_tv(&mut commands, &mut outbox, &record);
     Ok(Created { id: record.id })
 }
 
+/// Remove a TV. Despawning it unindexes it, deletes its keys, and
+/// releases its route monitoring (`TvId`'s hooks).
 pub(crate) fn remove_tv(
     In(id): In<Uuid>,
     mut commands: Commands,
-    mut index: ResMut<TvIndex>,
-    mut outbox: ResMut<Outbox>,
-    site: Res<Site>,
+    index: Res<TvIndex>,
     mut pairing: PairingParams,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
-    despawn_tv(&mut commands, &mut index, &mut outbox, &site, &id, entity);
+    commands.entity(entity).despawn();
     // A pairing session for the same uuid (re-pair in flight) dies with
     // the TV.
-    if let Some(session) = pairing.index.0.remove(&id) {
+    if let Some(session) = pairing.index.get(&id) {
         if let Ok(mut session_ref) = pairing.refs.get_mut(session)
             && let Some(tx) = &session_ref.cancel_tx
         {
@@ -521,7 +516,7 @@ pub(super) fn publish_profile(
 pub(crate) fn add_profile(
     In(record): In<ProfileRecord>,
     mut commands: Commands,
-    mut index: ResMut<ProfileIndex>,
+    index: Res<ProfileIndex>,
     mut bodies: Query<&mut ProfileBody>,
     mut outbox: ResMut<Outbox>,
     site: Res<Site>,
@@ -529,19 +524,18 @@ pub(crate) fn add_profile(
     let ProfileRecord { id, mut body } = record;
     if id == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID {
         body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-        if let Some(&entity) = index.0.get(&id)
+        if let Some(entity) = index.get(&id)
             && let Ok(mut current) = bodies.get_mut(entity)
         {
             current.0 = body.clone();
             publish_profile(&mut outbox, &site, &id, &body);
             return Ok(Created { id });
         }
-    } else if index.0.contains_key(&id) {
+    } else if index.contains(&id) {
         return Err(WireError::profile_exists(id));
     }
     publish_profile(&mut outbox, &site, &id, &body);
-    let entity = commands.spawn((ProfileId(id), ProfileBody(body))).id();
-    index.0.insert(id, entity);
+    commands.spawn((ProfileId(id), ProfileBody(body)));
     Ok(Created { id })
 }
 
@@ -553,9 +547,8 @@ pub(crate) fn update_profile(
     site: Res<Site>,
 ) -> Result<Ack, WireError> {
     let mut current = index
-        .0
         .get(&id)
-        .and_then(|&entity| bodies.get_mut(entity).ok())
+        .and_then(|entity| bodies.get_mut(entity).ok())
         .ok_or_else(|| WireError::profile_not_found(id))?;
     if id == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
         && body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
@@ -573,39 +566,35 @@ pub(crate) fn update_profile(
 pub(crate) fn duplicate_profile(
     In((id, new_id, name)): In<(Uuid, Uuid, String)>,
     mut commands: Commands,
-    mut index: ResMut<ProfileIndex>,
+    index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
     mut outbox: ResMut<Outbox>,
     site: Res<Site>,
 ) -> Result<Created, WireError> {
-    if index.0.contains_key(&new_id) {
+    if index.contains(&new_id) {
         return Err(WireError::profile_exists(new_id));
     }
     let source = index
-        .0
         .get(&id)
-        .and_then(|&entity| bodies.get(entity).ok())
+        .and_then(|entity| bodies.get(entity).ok())
         .ok_or_else(|| WireError::profile_not_found(id))?;
     let mut body = source.0.clone();
     body.name = name;
     publish_profile(&mut outbox, &site, &new_id, &body);
-    let entity = commands.spawn((ProfileId(new_id), ProfileBody(body))).id();
-    index.0.insert(new_id, entity);
+    commands.spawn((ProfileId(new_id), ProfileBody(body)));
     Ok(Created { id: new_id })
 }
 
 /// Delete a system profile; refused for the reserved default and while
-/// any TV references it.
+/// any TV references it. Despawning it unindexes it and deletes its key
+/// (`ProfileId`'s hooks).
 pub(crate) fn delete_profile(
     In(id): In<Uuid>,
     mut commands: Commands,
-    mut index: ResMut<ProfileIndex>,
+    index: Res<ProfileIndex>,
     metas: Query<&payload::Meta>,
-    mut outbox: ResMut<Outbox>,
-    site: Res<Site>,
 ) -> Result<Ack, WireError> {
-    let &entity = index
-        .0
+    let entity = index
         .get(&id)
         .ok_or_else(|| WireError::profile_not_found(id))?;
     if id == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID {
@@ -615,10 +604,6 @@ pub(crate) fn delete_profile(
         return Err(WireError::profile_in_use(id));
     }
     commands.entity(entity).despawn();
-    index.0.remove(&id);
-    outbox.0.push(Effect::Wire(WireEffect::Delete {
-        key: keys::profile_system(&site.0, &id),
-    }));
     Ok(Ack {})
 }
 

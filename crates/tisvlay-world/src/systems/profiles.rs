@@ -85,9 +85,8 @@ pub(super) fn profile_body<'a>(
     bodies: &'a Query<&ProfileBody>,
 ) -> Option<&'a tisvlay_core::SystemProfileConfig> {
     index
-        .0
         .get(&id)
-        .and_then(|&entity| bodies.get(entity).ok())
+        .and_then(|entity| bodies.get(entity).ok())
         .map(|body| &body.0)
 }
 
