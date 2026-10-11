@@ -129,6 +129,9 @@ pub struct Stack {
     startup_ready: Arc<StartupReadiness>,
     /// TVs the store held at boot; `run`'s seed config skips them.
     stored: HashSet<Uuid>,
+    /// The store writer's reload requests (SIGHUP's path); `None` for an
+    /// ephemeral daemon.
+    reloads: Option<mpsc::UnboundedSender<store::ReloadRequest>>,
     tasks: Tasks,
 }
 
@@ -466,7 +469,7 @@ pub async fn serve(
         discoveries,
         catalog,
         info,
-        reloads,
+        reloads.clone(),
         bridge_ready,
     ));
     // Greeter idle transitions arrive as plain puts from `tisvlay-greeter`
@@ -585,6 +588,7 @@ pub async fn serve(
         routes: Some(routes_rx),
         startup_ready,
         stored,
+        reloads,
         tasks: Tasks {
             reactor,
             bridge,
@@ -627,6 +631,10 @@ pub struct DaemonOptions {
 /// optionally watch a DRM connector's DPMS state, and run until ctrl-c,
 /// SIGTERM, or a core task ending.
 pub async fn run(options: DaemonOptions) -> Result<()> {
+    // SIGHUP is `systemctl reload`. Its default action kills the process,
+    // so the handler goes in before anything else can be signaled.
+    let hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .context("install the SIGHUP handler")?;
     use tisvlay_core::TvBackend;
     fn caps(backend: &dyn TvBackend) -> Vec<String> {
         backend
@@ -762,6 +770,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             });
         });
     }
+    tokio::spawn(reload_on_hangup(hangup, stack.reloads.clone()));
     // SIGTERM is what the service manager sends on stop; without a
     // handler it kills the process before the store flushes.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -779,9 +788,52 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
     stack.run_until(shutdown).await
 }
 
+/// Turn each SIGHUP into a store reload, the same path as the reload rpc.
+/// `systemctl reload` reports success as soon as the signal is sent, so
+/// the outcome is logged: the world logs an applied edit, and a refusal
+/// (with no caller to answer) at warn.
+async fn reload_on_hangup(
+    mut hangup: tokio::signal::unix::Signal,
+    reloads: Option<mpsc::UnboundedSender<store::ReloadRequest>>,
+) {
+    while hangup.recv().await.is_some() {
+        match &reloads {
+            Some(reloads) => {
+                info!("SIGHUP: reloading the store");
+                if reloads.send(store::ReloadRequest { reply: None }).is_err() {
+                    return;
+                }
+            }
+            None => tracing::warn!("SIGHUP: this daemon runs without a store, nothing to reload"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SIGHUP takes the reload rpc's path, with no caller to answer.
+    /// Nextest runs each test in its own process, so the signal reaches
+    /// only this one.
+    #[tokio::test]
+    async fn sighup_requests_a_store_reload() {
+        let hangup =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(reload_on_hangup(hangup, Some(tx)));
+        let sent = std::process::Command::new("kill")
+            .args(["-HUP", &std::process::id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        let request = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("SIGHUP requested a reload")
+            .expect("the request channel is open");
+        assert!(request.reply.is_none());
+        task.abort();
+    }
 
     #[test]
     fn startup_ready_truth_table() {

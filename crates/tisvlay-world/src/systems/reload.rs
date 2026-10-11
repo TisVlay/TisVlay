@@ -223,6 +223,15 @@ pub(crate) fn reload_store(
             commands.entity(entity).despawn();
         }
     }
+    tracing::info!(
+        tvs_added = diff.tvs_added.len(),
+        tvs_changed = diff.tvs_changed.len(),
+        tvs_removed = diff.tvs_removed.len(),
+        profiles_added = diff.profiles_added.len(),
+        profiles_changed = diff.profiles_changed.len(),
+        profiles_removed = diff.profiles_removed.len(),
+        "applied a hand edit of the store"
+    );
     Ok(ReloadReport { changed: true })
 }
 

@@ -228,6 +228,14 @@ Field-validated on Fedora 44 and Ubuntu 26.04 (both GNOME/GDM 50 with dynamic us
 - **A printed instruction in a scriptlet reaches no one under an app-store install.** Twice bitten: the old "now run `usermod`" hint (replaced by `enable-access` + the presence layer) and the old "now start the daemon" hint (replaced by the fresh-install start above).
 - **EACCES poisons path resolution before it ever reaches `connect()`.** A user locked out of `/run/tisvlay/` can't even `stat` the socket, so `Path::exists()` reads EACCES as absent and the CLI's connect-side resolution falls back to the (absent) dev socket — producing a misleading "daemon unreachable at `/run/user/…`" error for what is really an access problem. The CLI's no-access hint and the clients' nonblocking connect-probe classification (`EACCES` ⇒ no access; `ECONNREFUSED` ⇒ daemon down) exist because of this.
 
+## Hand-editing the daemon's store
+
+The daemon keeps its TVs (credentials included) and system profiles in `/var/lib/tisvlay/daemon.toml`. To apply a hand edit while it runs, use `systemctl reload tisvlay-daemon`, the GUI's Reload button, or `tisvlay reload`. The daemon treats SIGHUP as its reload rpc, and the units' `ExecReload` sends it.
+
+- **Only the edit applies.** The daemon compares the file with what it last wrote and applies just that difference, so changes made through clients but not yet written survive. Where both changed the same field, the file wins.
+- **A bad edit is refused whole.** That covers a missing or unparsable file (never read as empty), a changed vendor, removing the default profile, or deleting a profile a TV still uses. `systemctl reload` reports success as soon as the signal is sent, so the outcome is in the daemon's journal.
+- **Reload before the daemon writes again.** Any client change makes the daemon rewrite the file. Edits made in the meantime need a reload first.
+
 ## Testing the result
 
 The build host produces the package, but only the target distro proves it installs and runs.
