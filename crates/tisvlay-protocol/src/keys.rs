@@ -65,10 +65,13 @@ pub fn user_profile_rpc(site: &str, verb: &str) -> String {
     format!("tisvlay/{site}/user/profile/rpc/{verb}")
 }
 
+/// Wildcard the session's user-profile rpc queryable is declared on.
 pub fn user_profile_rpc_wild(site: &str) -> String {
     format!("tisvlay/{site}/user/profile/rpc/*")
 }
 
+/// Parse a [`user_profile_rpc`] key into its verb (the rest of `key` after
+/// the family's prefix); `None` when `key` lacks that prefix.
 pub fn parse_user_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
@@ -90,10 +93,13 @@ pub fn user_tray_rpc(site: &str, verb: &str) -> String {
     format!("tisvlay/{site}/user/tray/rpc/{verb}")
 }
 
+/// Wildcard the tray's settings rpc queryable is declared on.
 pub fn user_tray_rpc_wild(site: &str) -> String {
     format!("tisvlay/{site}/user/tray/rpc/*")
 }
 
+/// Parse a [`user_tray_rpc`] key into its verb (the rest of `key` after
+/// the family's prefix); `None` when `key` lacks that prefix.
 pub fn parse_user_tray_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
@@ -128,10 +134,13 @@ pub fn user_remote_rpc(site: &str, verb: &str) -> String {
     format!("tisvlay/{site}/user/remote/rpc/{verb}")
 }
 
+/// Wildcard the session's remote-session rpc queryable is declared on.
 pub fn user_remote_rpc_wild(site: &str) -> String {
     format!("tisvlay/{site}/user/remote/rpc/*")
 }
 
+/// Parse a [`user_remote_rpc`] key into its verb (the rest of `key` after
+/// the family's prefix); `None` when `key` lacks that prefix.
 pub fn parse_user_remote_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
@@ -160,6 +169,8 @@ pub fn profile_system_wild(site: &str) -> String {
     format!("tisvlay/{site}/profile/system/*")
 }
 
+/// The profile id in a [`profile_system`] key; `None` for any other
+/// key, or one whose id chunk isn't a UUID.
 pub fn parse_profile_system(site: &str, key: &str) -> Option<Uuid> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
@@ -167,6 +178,8 @@ pub fn parse_profile_system(site: &str, key: &str) -> Option<Uuid> {
         .and_then(|id| Uuid::parse_str(id).ok())
 }
 
+/// The profile id in a [`user_profile`] key; `None` for any other key,
+/// or one whose id chunk isn't a UUID (an rpc key, say).
 pub fn parse_user_profile(site: &str, key: &str) -> Option<Uuid> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
@@ -174,6 +187,8 @@ pub fn parse_user_profile(site: &str, key: &str) -> Option<Uuid> {
         .and_then(|id| Uuid::parse_str(id).ok())
 }
 
+/// The TV id in a [`user_tv_profile`] key; `None` for any other key,
+/// or one whose id chunk isn't a UUID.
 pub fn parse_user_tv_profile(site: &str, key: &str) -> Option<Uuid> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
@@ -187,6 +202,7 @@ pub fn pairing_progress(site: &str, tv: &Uuid) -> String {
     format!("tisvlay/{site}/pairing/{tv}/progress")
 }
 
+/// Every TV's [`pairing_progress`] key — client pairing watchers.
 pub fn pairing_progress_wild(site: &str) -> String {
     format!("tisvlay/{site}/pairing/*/progress")
 }
@@ -201,10 +217,13 @@ pub fn profile_rpc(site: &str, verb: &str) -> String {
     format!("tisvlay/{site}/profile/rpc/{verb}")
 }
 
+/// Wildcard the daemon's system-profile rpc queryable is declared on.
 pub fn profile_rpc_wild(site: &str) -> String {
     format!("tisvlay/{site}/profile/rpc/*")
 }
 
+/// Parse a [`profile_rpc`] key into its verb (the rest of `key` after
+/// the family's prefix); `None` when `key` lacks that prefix.
 pub fn parse_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
@@ -217,10 +236,14 @@ pub fn vendors(site: &str) -> String {
     format!("tisvlay/{site}/manager/vendors")
 }
 
+/// One vendor's pairing-form key, under the [`vendors`] key.
 pub fn vendor_schema(site: &str, vendor: &str) -> String {
     format!("tisvlay/{site}/manager/vendors/{vendor}/schema")
 }
 
+/// Wildcard the daemon's vendor-catalog queryable is declared on;
+/// `**` spans zero chunks too, so it matches the bare [`vendors`] key
+/// as well as every [`vendor_schema`] key.
 pub fn vendors_wild(site: &str) -> String {
     format!("tisvlay/{site}/manager/vendors/**")
 }

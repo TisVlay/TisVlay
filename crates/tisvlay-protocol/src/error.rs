@@ -31,24 +31,45 @@ macro_rules! error_codes {
     }
 
 error_codes! {
+    /// A per-TV rpc names a TV the daemon doesn't hold.
     TvNotFound = "tv-not-found",
+    /// Enrolling, pairing, or a store reload would add a TV under an id
+    /// the daemon already holds.
     TvExists = "tv-exists",
+    /// The TV has no live connection to carry the command.
     NotConnected = "not-connected",
+    /// The request names a vendor with no registered backend.
     UnknownVendor = "unknown-vendor",
+    /// A pairing session for the TV is already running.
     PairingExists = "pairing-exists",
+    /// A cancel names a TV with no pairing session running.
     PairingNotFound = "pairing-not-found",
+    /// A power-on for a disconnected TV whose transport can't wake it.
     WakeNotSupported = "wake-not-supported",
+    /// The request body doesn't decode as the rpc's request type, or a
+    /// value in it is refused (an immutable config key, a renamed
+    /// default profile, a store file listing an id twice).
     BadRequest = "bad-request",
     /// A vendor field failed validation (see [`WireError::invalid_field`]).
     InvalidField = "invalid-field",
+    /// A delete, by rpc or by a store reload, targets the reserved
+    /// default profile.
     ProfileReserved = "profile-reserved",
     /// The TV refused or failed the command.
     CommandFailed = "command-failed",
+    /// The request names a profile the service doesn't hold.
     ProfileNotFound = "profile-not-found",
+    /// A create, duplicate, or store reload would add a profile under an
+    /// id already in use.
     ProfileExists = "profile-exists",
+    /// A delete, by rpc or by a store reload, targets a profile some TV
+    /// still references.
     ProfileInUse = "profile-in-use",
+    /// The query's key names no rpc of the family it reached.
     UnknownRpc = "unknown-rpc",
+    /// A stop names a discovery session that isn't running.
     DiscoveryNotFound = "discovery-not-found",
+    /// The daemon's world stopped before it could answer.
     DaemonShuttingDown = "daemon-shutting-down",
     /// The service runs without a state file, so there's nothing to
     /// reload.
@@ -78,11 +99,15 @@ impl std::fmt::Display for ErrorCode {
 /// zenoh `reply_err` payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireError {
+    /// Why the service refused; clients branch on this.
     pub code: ErrorCode,
+    /// The refusal for a person to read. Only an
+    /// [`ErrorCode::InvalidField`] message has a shape to parse.
     pub message: String,
 }
 
 impl WireError {
+    /// No TV has id `id`.
     pub fn tv_not_found(id: Uuid) -> Self {
         Self {
             code: ErrorCode::TvNotFound,
@@ -90,6 +115,7 @@ impl WireError {
         }
     }
 
+    /// A TV with id `id` is already enrolled.
     pub fn tv_exists(id: Uuid) -> Self {
         Self {
             code: ErrorCode::TvExists,
@@ -97,6 +123,7 @@ impl WireError {
         }
     }
 
+    /// TV `id` has no live connection to send the command over.
     pub fn not_connected(id: Uuid) -> Self {
         Self {
             code: ErrorCode::NotConnected,
@@ -104,6 +131,7 @@ impl WireError {
         }
     }
 
+    /// No backend is registered under `vendor`.
     pub fn unknown_vendor(vendor: &str) -> Self {
         Self {
             code: ErrorCode::UnknownVendor,
@@ -111,6 +139,7 @@ impl WireError {
         }
     }
 
+    /// A pairing session for TV `id` is already running.
     pub fn pairing_exists(id: Uuid) -> Self {
         Self {
             code: ErrorCode::PairingExists,
@@ -118,6 +147,7 @@ impl WireError {
         }
     }
 
+    /// No pairing session is running for TV `id`.
     pub fn pairing_not_found(id: Uuid) -> Self {
         Self {
             code: ErrorCode::PairingNotFound,
@@ -125,6 +155,7 @@ impl WireError {
         }
     }
 
+    /// TV `id` is disconnected and its transport can't wake it.
     pub fn wake_not_supported(id: Uuid) -> Self {
         Self {
             code: ErrorCode::WakeNotSupported,
@@ -132,6 +163,8 @@ impl WireError {
         }
     }
 
+    /// The request is malformed or names a refused value; `message`
+    /// says which, for a person to read.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::BadRequest,
@@ -167,6 +200,7 @@ impl WireError {
         }
     }
 
+    /// No profile has id `id`.
     pub fn profile_not_found(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileNotFound,
@@ -174,6 +208,7 @@ impl WireError {
         }
     }
 
+    /// A profile with id `id` already exists.
     pub fn profile_exists(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileExists,
@@ -181,6 +216,7 @@ impl WireError {
         }
     }
 
+    /// At least one TV references profile `id`.
     pub fn profile_in_use(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileInUse,
@@ -188,6 +224,8 @@ impl WireError {
         }
     }
 
+    /// No rpc of the family answers to `verb`: a query's verb, or its
+    /// whole key when no verb splits out of it.
     pub fn unknown_rpc(verb: &str) -> Self {
         Self {
             code: ErrorCode::UnknownRpc,
@@ -195,6 +233,7 @@ impl WireError {
         }
     }
 
+    /// No discovery session `session` is running.
     pub fn discovery_not_found(session: Uuid) -> Self {
         Self {
             code: ErrorCode::DiscoveryNotFound,
@@ -202,6 +241,8 @@ impl WireError {
         }
     }
 
+    /// The daemon's world has stopped, so a filed rpc will never be
+    /// answered.
     pub fn daemon_shutting_down() -> Self {
         Self {
             code: ErrorCode::DaemonShuttingDown,
@@ -209,6 +250,7 @@ impl WireError {
         }
     }
 
+    /// A reload asked of a service running without a state file.
     pub fn no_store() -> Self {
         Self {
             code: ErrorCode::NoStore,

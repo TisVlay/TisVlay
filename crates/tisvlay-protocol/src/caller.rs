@@ -36,18 +36,35 @@ pub enum RpcError {
     /// The service refused the request.
     Service(WireError),
     /// No service matched the key within [`MATCHING_DEADLINE`].
-    Unavailable { key: String },
+    Unavailable {
+        /// The rpc key no queryable matched.
+        key: String,
+    },
     /// A service held the query but didn't reply within [`RPC_TIMEOUT`].
-    Timeout { key: String },
+    Timeout {
+        /// The rpc key the query was sent on.
+        key: String,
+    },
     /// The query closed without a reply after matching confirmed (the
     /// service dropped mid-call). For a write, the outcome is unknown.
-    NoReply { key: String },
+    NoReply {
+        /// The rpc key the query was sent on.
+        key: String,
+    },
     /// The local zenoh session failed the call.
-    Transport { key: String, source: zenoh::Error },
+    Transport {
+        /// The rpc key the call addressed.
+        key: String,
+        /// The zenoh failure: declaring the querier, tracking its
+        /// matching status, or sending the query.
+        source: zenoh::Error,
+    },
     /// A reply that isn't the rpc's response type, or an error payload
     /// that isn't a [`WireError`].
     Undecodable {
+        /// The rpc key the reply came from.
         key: String,
+        /// The JSON decode failure.
         source: serde_json::Error,
     },
 }
@@ -88,6 +105,8 @@ pub struct Caller {
 }
 
 impl Caller {
+    /// A caller for `site`'s rpc keys over `session`. Declares nothing
+    /// up front: each key's querier is declared on its first call.
     pub fn new(session: Session, site: impl Into<String>) -> Self {
         Self {
             session,

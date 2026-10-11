@@ -8,14 +8,19 @@ use serde::{Deserialize, Serialize};
 /// A payload that lives at one per-TV key. `PATH` is the key tail under
 /// `tisvlay/<site>/tv/<uuid>/`.
 pub trait StatePayload: Serialize + Clone + PartialEq + Send + Sync + 'static {
+    /// The key tail, e.g. `state/power`.
     const PATH: &'static str;
 }
 
 /// Power state, projected from the vendor-reported substate.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Power {
+    /// The vendor-reported substate, which keeps distinctions (active
+    /// standby vs screen off) the two booleans collapse.
     pub state: tisvlay_core::PowerState,
+    /// Whether the TV is powered on.
     pub is_on: bool,
+    /// Whether the panel shows a picture; `false` while blanked.
     pub is_screen_on: bool,
 }
 
@@ -33,9 +38,14 @@ impl From<&tisvlay_core::TvState> for Power {
     }
 }
 
+/// Audio state. Published once the backend reports a volume, so a TV
+/// whose backend reports none has no value at this key.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Volume {
+    /// Volume, 0–100.
     pub level: u8,
+    /// Whether audio is muted; `false` when the backend doesn't
+    /// report mute.
     pub muted: bool,
 }
 
@@ -47,8 +57,13 @@ impl StatePayload for Volume {
 /// connection task is `connected`; one mid-dial is `reconnecting`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Link {
+    /// A live connection serves commands.
     pub connected: bool,
+    /// A dial is in flight right now.
     pub reconnecting: bool,
+    /// Whether the TV can be woken from standby with its current
+    /// config (for LG, a configured MAC for Wake-on-LAN). Known before
+    /// the first dial.
     pub supports_wake: bool,
 }
 
@@ -59,14 +74,22 @@ impl StatePayload for Link {
 /// Current + available inputs.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Input {
+    /// The active input's id, in the same id space as `available`;
+    /// `None` when the TV doesn't report it.
     pub current: Option<String>,
+    /// The TV's inputs; empty when the backend doesn't list them.
     pub available: Vec<InputEntry>,
 }
 
+/// One of a TV's inputs.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct InputEntry {
+    /// Backend input id (LG: `HDMI_1`), as `switch-input` and
+    /// `set-primary-input` take it.
     pub id: String,
+    /// Display label (`HDMI 1`, `PC`).
     pub label: String,
+    /// Whether a device is plugged into the input.
     pub connected: bool,
 }
 
@@ -74,8 +97,12 @@ impl StatePayload for Input {
     const PATH: &'static str = "state/input";
 }
 
+/// Backlight (OLED pixel brightness). Published once the backend
+/// reports one, so a TV whose backend reports none has no value at
+/// this key.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Backlight {
+    /// Backlight, 0–100.
     pub level: u8,
 }
 
@@ -83,19 +110,31 @@ impl StatePayload for Backlight {
     const PATH: &'static str = "state/backlight";
 }
 
+/// Who the TV is: its name, backend, and what the device reported
+/// about itself on connect.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
+    /// Display name. A blank one takes the device-reported `model` on
+    /// connect.
     pub name: String,
+    /// Backend vendor id from the `manager/vendors` catalog.
     pub vendor: String,
     /// Canonical device brand when the backend can resolve it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brand: Option<String>,
+    /// EDID-style three-letter manufacturer code (`GSM` for LG), as
+    /// the device reports it on connect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub make: Option<String>,
+    /// Model name or product code (`OLED65G4SUB`), as the device
+    /// reports it on connect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Unit serial number, as the device reports it on connect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
+    /// The connected backend's lowercase capability names (`power`,
+    /// `volume`, ...); empty until the first connect.
     pub capabilities: Vec<String>,
     /// DRM connector this TV mirrors, once the desktop probe matches it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,7 +176,9 @@ impl StatePayload for Identity {
 /// only shape row order survives in.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct VendorRows {
+    /// Rows for the vendor's editable config fields.
     pub config: Vec<(String, String)>,
+    /// Rows for what the vendor captured at pairing time.
     pub diagnostics: Vec<(String, String)>,
 }
 
@@ -145,11 +186,18 @@ impl StatePayload for VendorRows {
     const PATH: &'static str = "meta/vendor";
 }
 
+/// The TV's settings and the automation state derived from them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
+    /// Whether profiles automate the TV. An unmanaged TV stays
+    /// connected for manual control.
     pub managed: bool,
+    /// The assigned system profile; absent follows the default
+    /// profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_profile: Option<uuid::Uuid>,
+    /// The input restore intents land on and `automate_when` compares
+    /// against, an id from `state/input`; absent when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_input: Option<String>,
     /// Read-only projection of the resolved profile-chain
@@ -169,6 +217,8 @@ pub struct Meta {
 }
 
 impl Meta {
+    /// A fresh TV's settings: no profile or primary input assigned,
+    /// the `always` policy, and automated exactly when managed.
     pub fn new(managed: bool) -> Self {
         Self {
             managed,
@@ -215,7 +265,11 @@ pub struct PairingProgress {
     /// live ones that isn't guaranteed — so a watcher drains only its
     /// own attempt.
     pub attempt: uuid::Uuid,
+    /// Where the attempt stands.
     pub phase: PairingPhase,
+    /// Human-readable status in English: the vendor's prompt while
+    /// awaiting, the error text on failure. Clients localize from
+    /// `phase` and `code` instead.
     pub message: String,
     /// Why the attempt failed; `failed` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,9 +294,12 @@ pub struct PairingProgress {
 pub struct LinkMacReport {
     /// The device-reported MAC, canonical form.
     pub reported: String,
+    /// How it compared to the configured `mac`.
     pub outcome: LinkMacOutcome,
 }
 
+/// What the daemon did with a device-reported link MAC, tagged by
+/// `kind` on the wire. The daemon never overwrites a configured MAC.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LinkMacOutcome {
@@ -251,12 +308,16 @@ pub enum LinkMacOutcome {
     /// The configured `mac` already equals `reported`.
     Matches,
     /// The configured `mac` differs and was kept.
-    Differs { configured: String },
+    Differs {
+        /// The configured value as written, not canonicalized.
+        configured: String,
+    },
 }
 
 /// A wake-and-connect flow's progress, on a TV's `progress/power` key.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerProgress {
+    /// The step the flow just reached.
     pub phase: PowerPhase,
 }
 
@@ -269,10 +330,13 @@ pub enum PowerPhase {
     WolSent,
     /// The TV was reachable, so no wake: straight to connecting.
     DirectConnect,
+    /// The wake dial is in flight.
     Connecting,
     /// The dial is deferred until the TV's network route returns.
     AwaitingNetwork,
+    /// The wake dial connected: the TV is up and serving commands.
     Connected,
+    /// The wake dial ran out of attempts.
     Failed,
 }
 
@@ -300,6 +364,7 @@ pub enum PairingPhase {
     AwaitingInput,
     /// Paired, and the TV's first dial succeeded.
     Complete,
+    /// The attempt ended without pairing; `code` says why.
     Failed,
 }
 
@@ -330,6 +395,7 @@ pub enum FailureCode {
     /// The user rejected pairing on the TV.
     #[serde(rename = "pairing.rejected")]
     PairingRejected,
+    /// No response from the TV or the user in time.
     #[serde(rename = "pairing.timeout")]
     PairingTimeout,
     /// The TV couldn't be reached.
@@ -338,8 +404,11 @@ pub enum FailureCode {
     /// The PIN or password was wrong.
     #[serde(rename = "pairing.invalid-input")]
     PairingInvalidInput,
+    /// The attempt was cancelled (`manager/rpc/cancel-pair`).
     #[serde(rename = "pairing.cancelled")]
     PairingCancelled,
+    /// A handshake failure this wire has no code for, or an internal
+    /// error.
     #[serde(rename = "pairing.unknown")]
     PairingUnknown,
     /// The daemon may not open the device node (`path` names it).
@@ -441,7 +510,9 @@ impl PairingProgress {
 /// arming-policy-free.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct RemoteSessionState {
+    /// Every live source; empty when no remote session is detected.
     pub sources: Vec<RemoteSource>,
+    /// The TVs a live source currently arms, sorted by id.
     pub armed: Vec<uuid::Uuid>,
 }
 
@@ -450,7 +521,10 @@ pub struct RemoteSessionState {
 /// carried for display and attribution, not routing.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RemoteSource {
+    /// How the source was detected.
     pub kind: RemoteSourceKind,
+    /// The specific origin; a source is unique per `(kind, detail)`.
+    /// Each [`RemoteSourceKind`] says what it puts here.
     pub detail: String,
 }
 
@@ -466,10 +540,20 @@ pub struct RemoteSource {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteSourceKind {
+    /// Toggled through `user/remote/rpc/set`; `detail` is the
+    /// caller's source label.
     Manual,
+    /// A remote graphical logind session of this user; `detail` is
+    /// the remote host, or `session <id>` when it names none.
     Logind,
+    /// A desktop-portal screencast or remote-desktop session;
+    /// `detail` is the calling app's resolved executable.
     Portal,
+    /// A screen capture seen in the PipeWire graph, with no app
+    /// attribution; `detail` summarizes the capture nodes.
     Screencast,
+    /// Sunshine's `/serverinfo` reports a stream in progress;
+    /// `detail` is `serverinfo`.
     Sunshine,
 }
 
