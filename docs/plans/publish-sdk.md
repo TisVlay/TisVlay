@@ -134,6 +134,12 @@ Ordered so the conflict hotspot (wire's `lib.rs`) is split first and the later c
 - **No `__private` module was needed.** `family!` isn't exported, so its expansions live in the protocol crate. Its helpers (`serve::payload`, `serve::reply_err`, the generated `Call::decode`) went `pub(crate)`.
 - **The escape hatches became `ParkedReply`.** `Responder::park()` returns a type-erased reply the daemon bridge can keep in one map across rpcs and answer later with the world's JSON. It keeps a responder's guarantees: answering consumes it, and one dropped unanswered logs a warning. `into_query` and `reply_json` are gone.
 
+*Decided during implementation (car 3):*
+- **Mirror reads respect a known mismatch but don't trigger a check.** Otherwise `list_tvs` would fail whenever a service is merely offline, where it shows an empty list today. Each client checks as soon as its service's liveliness token appears, so a mismatch is known within moments of the service starting.
+- **The check is `Handshake` in the SDK:** an async mutex around the verdict, so calls wait for a check in flight. A failure to ask (the service down) isn't remembered. `version()` and `config_path()` go around it. The CLI gates every daemon command except `status` (which reports the release) and `watch` (a passive view). The user-socket commands check the session service, and `reload` checks each user service it reloads.
+- **The GUI's version banner isn't dismissible.** It clears itself when the mismatched service goes away, and its next lifetime gets a fresh check.
+- **The stack runs linearly:** car 3 stacks on car 2 instead of running in parallel. It's simpler to merge, and costs nothing.
+
 **PR split** (stacked): 1a+1b, then 1c, then 2 and 3 in parallel, then 4 (on both), then 5 (last, since its doctests need the final API).
 
 ## Test plan
