@@ -142,7 +142,7 @@ fn spawn_tv(commands: &mut Commands, outbox: &mut Outbox, record: &TvRecord) -> 
             primary_input: record.primary_input.clone(),
             // Read-only projection of the resolved profile policy;
             // derive_automated overwrites it every frame.
-            automate_when: "always".into(),
+            automate_when: tisvlay_core::AutomateWhen::Always,
             // derive_automated refines this once input state exists.
             automated: record.managed,
             // derive_remote_armed sets this once a mirror update lands.

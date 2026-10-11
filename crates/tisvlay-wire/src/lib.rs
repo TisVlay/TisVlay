@@ -166,7 +166,7 @@ pub mod payload {
         /// Read-only projection of the resolved profile-chain
         /// `automate_when` policy (assigned profile - default profile -
         /// always); the world's derive pass is the only writer.
-        pub automate_when: String,
+        pub automate_when: tisvlay_core::AutomateWhen,
         /// The evaluated automation gate: `managed` AND the resolved
         /// `automate_when` holds against the current input. Consumers
         /// (session service, tray) act only on automated TVs.
@@ -185,7 +185,7 @@ pub mod payload {
                 managed,
                 system_profile: None,
                 primary_input: None,
-                automate_when: "always".into(),
+                automate_when: tisvlay_core::AutomateWhen::Always,
                 // `should_automate` gives unknown inputs the benefit of
                 // the doubt, so a fresh managed TV starts automated.
                 automated: managed,
@@ -263,6 +263,42 @@ pub mod payload {
         Matches,
         /// The configured `mac` differs and was kept.
         Differs { configured: String },
+    }
+
+    /// A wake-and-connect flow's progress, on a TV's `progress/power` key.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PowerProgress {
+        pub phase: PowerPhase,
+    }
+
+    /// The phases a wake-and-connect flow walks through, ending in
+    /// `connected` or `failed`.
+    #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PowerPhase {
+        /// The Wake-on-LAN packet has been (or is about to be) sent.
+        WolSent,
+        /// The TV was reachable, so no wake: straight to connecting.
+        DirectConnect,
+        Connecting,
+        /// The dial is deferred until the TV's network route returns.
+        AwaitingNetwork,
+        Connected,
+        Failed,
+    }
+
+    impl PowerPhase {
+        /// The wire token, for display and the GUI's string properties.
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::WolSent => "wol_sent",
+                Self::DirectConnect => "direct_connect",
+                Self::Connecting => "connecting",
+                Self::AwaitingNetwork => "awaiting_network",
+                Self::Connected => "connected",
+                Self::Failed => "failed",
+            }
+        }
     }
 
     /// Where a pairing attempt stands.
@@ -470,6 +506,24 @@ pub mod payload {
                 let json = serde_json::to_value(code).unwrap();
                 assert_eq!(json, code.as_str());
                 assert_eq!(serde_json::from_value::<FailureCode>(json).unwrap(), code);
+            }
+        }
+
+        /// Every phase the world publishes decodes, `awaiting_network`
+        /// included (the SDK used to drop phases it didn't list).
+        #[test]
+        fn every_power_phase_decodes() {
+            for phase in [
+                PowerPhase::WolSent,
+                PowerPhase::DirectConnect,
+                PowerPhase::Connecting,
+                PowerPhase::AwaitingNetwork,
+                PowerPhase::Connected,
+                PowerPhase::Failed,
+            ] {
+                let sample = serde_json::json!({ "phase": phase.as_str() });
+                let progress: PowerProgress = serde_json::from_value(sample).unwrap();
+                assert_eq!(progress.phase, phase);
             }
         }
 

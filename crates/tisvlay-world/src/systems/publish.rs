@@ -28,9 +28,8 @@ pub(super) fn derive_automated(
     for (mut meta, input) in &mut q {
         let when = resolve_automate_when(&meta, &profile_index, &bodies);
         let automated = is_automated(&meta, input, when);
-        let token = when.to_string();
-        if meta.automate_when != token {
-            meta.automate_when = token;
+        if meta.automate_when != when {
+            meta.automate_when = when;
         }
         if meta.automated != automated {
             meta.automated = automated;

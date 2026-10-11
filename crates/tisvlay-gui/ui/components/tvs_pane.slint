@@ -102,8 +102,8 @@ export struct TvViewModel {
     /// schema fields.
     vendor-info: [VendorInfoRow],
     /// Empty when no power-on is in flight; otherwise the latest
-    /// phase string from `Tv1.Power.PowerCycleProgress`
-    /// ("wol_sent" / "direct_connect" / "connecting" / "connected"
+    /// phase string from the TV's `progress/power` key
+    /// ("wol_sent" / "direct_connect" / "connecting" / "awaiting_network" / "connected"
     /// / "failed").
     power-cycle-phase: string,
 }
@@ -676,6 +676,7 @@ component TvDetail inherits Rectangle {
                                 text: root.tv.power-cycle-phase == "wol_sent" ? @tr("Sending wake-up…")
                                     : root.tv.power-cycle-phase == "direct_connect" ? @tr("Reconnecting…")
                                     : root.tv.power-cycle-phase == "connecting" ? @tr("Connecting…")
+                                    : root.tv.power-cycle-phase == "awaiting_network" ? @tr("Waiting for the network…")
                                     : root.tv.power-cycle-phase == "connected" ? @tr("Connected")
                                     : root.tv.power-cycle-phase == "failed" ? @tr("Wake failed")
                                     : root.tv.connected

@@ -598,7 +598,7 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
             .on_idle_resume
             .map(|a| session_action_token(a.action())),
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
-        "automate_when" => body.automate_when.map(automate_when_token),
+        "automate_when" => body.automate_when.map(|when| when.to_string()),
         _ => None,
     }
 }
@@ -648,15 +648,6 @@ fn session_action_token(action: SessionAction) -> String {
         SessionAction::ScreenOn => "screen_on",
         SessionAction::PowerOff => "power_off",
         SessionAction::PowerOn => "power_on",
-    }
-    .to_string()
-}
-
-fn automate_when_token(when: AutomateWhen) -> String {
-    match when {
-        AutomateWhen::Always => "always",
-        AutomateWhen::OnPrimary => "on_primary",
-        AutomateWhen::OffPrimary => "off_primary",
     }
     .to_string()
 }
@@ -1509,12 +1500,9 @@ fn parse_session_action(token: &str) -> anyhow::Result<SessionAction> {
 }
 
 fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
-    match token {
-        "always" => Ok(AutomateWhen::Always),
-        "on_primary" => Ok(AutomateWhen::OnPrimary),
-        "off_primary" => Ok(AutomateWhen::OffPrimary),
-        other => Err(anyhow::anyhow!("Unknown AutomateWhen variant: {other}")),
-    }
+    token
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Unknown AutomateWhen variant: {token}"))
 }
 
 /// Mutate one field on a `SystemProfileBody`. The patch's variant
@@ -3076,7 +3064,7 @@ mod tests {
             AutomateWhen::OnPrimary,
             AutomateWhen::OffPrimary,
         ] {
-            let token = automate_when_token(when);
+            let token = when.to_string();
             let parsed = parse_automate_when(&token).expect("known token");
             assert_eq!(parsed, when);
         }

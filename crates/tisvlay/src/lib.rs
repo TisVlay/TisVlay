@@ -29,8 +29,8 @@ use tisvlay_wire::{bootstrap, keys, rpc};
 pub use error::{BoxError, Error, Result, Service};
 pub use tisvlay_wire::error::ErrorCode;
 pub use tisvlay_wire::payload::{
-    FailureCode, LinkMacOutcome, LinkMacReport, PairingPhase, PairingProgress, RemoteSessionState,
-    RemoteSource, RemoteSourceKind,
+    FailureCode, LinkMacOutcome, LinkMacReport, PairingPhase, PairingProgress, PowerPhase,
+    RemoteSessionState, RemoteSource, RemoteSourceKind,
 };
 pub use tisvlay_wire::rpc::{
     NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, TvConfigView,
@@ -180,7 +180,7 @@ pub struct TvInfo {
     pub vendor_info: Vec<(String, String)>,
     pub desktop: DesktopMapping,
     pub path: String,
-    pub power_state: String,
+    pub power_state: tisvlay_core::PowerState,
     pub supports_wake: bool,
     pub is_screen_on: bool,
     pub volume: u8,
@@ -431,8 +431,7 @@ impl DaemonClient {
     pub async fn power_cycle_progress_stream(
         &self,
         tv: Uuid,
-    ) -> Result<impl futures_util::Stream<Item = tisvlay_core::PowerCyclePhase> + use<>> {
-        use tisvlay_core::PowerCyclePhase as P;
+    ) -> Result<impl futures_util::Stream<Item = PowerPhase> + use<>> {
         let sub = self
             .session
             .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
@@ -442,22 +441,12 @@ impl DaemonClient {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
-                let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes())
-                else {
+                let Ok(progress) = serde_json::from_slice::<tisvlay_wire::payload::PowerProgress>(
+                    &sample.payload().to_bytes(),
+                ) else {
                     continue;
                 };
-                let phase = [
-                    P::WolSent,
-                    P::DirectConnect,
-                    P::Connecting,
-                    P::Connected,
-                    P::Failed,
-                ]
-                .into_iter()
-                .find(|phase| Some(phase.as_str()) == progress["phase"].as_str());
-                if let Some(phase) = phase
-                    && tx.send(phase).is_err()
-                {
+                if tx.send(progress.phase).is_err() {
                     return;
                 }
             }
@@ -1158,16 +1147,7 @@ mod mirror_row {
                 .unwrap_or_else(|| payload::Identity::new(String::new(), String::new()));
             let meta = self.meta.unwrap_or_else(|| payload::Meta::new(false));
             let caps: Vec<&str> = identity.capabilities.iter().map(String::as_str).collect();
-            let power_state = self
-                .power
-                .as_ref()
-                .map(|p| {
-                    serde_json::to_value(p.state)
-                        .ok()
-                        .and_then(|v| v.as_str().map(str::to_string))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_else(|| "unknown".into());
+            let power_state = self.power.as_ref().map(|p| p.state).unwrap_or_default();
             TvInfo {
                 uuid: id,
                 name: identity.name.clone(),

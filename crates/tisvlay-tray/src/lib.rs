@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
-use serde_json::Value;
 use tisvlay_core::{Coalescer, ReconcilerMap};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{Unary, tv, user_profile};
@@ -595,7 +594,9 @@ async fn spawn_power_cycle_toasts(
             let Some((tv, _)) = keys::parse_tv_path(&site, sample.key_expr().as_str()) else {
                 continue;
             };
-            let Ok(progress) = serde_json::from_slice::<Value>(&sample.payload().to_bytes()) else {
+            let Ok(progress) =
+                serde_json::from_slice::<payload::PowerProgress>(&sample.payload().to_bytes())
+            else {
                 continue;
             };
             let name = handle
@@ -603,26 +604,28 @@ async fn spawn_power_cycle_toasts(
                 .await
                 .flatten()
                 .unwrap_or_else(|| "TV".into());
-            match progress["phase"].as_str() {
-                Some("wol_sent") => notifier.notify(
+            match progress.phase {
+                payload::PowerPhase::WolSent => notifier.notify(
                     notify::Category::TvWake,
                     &format!("Waking {name}…"),
                     "",
                     "system-run",
                 ),
-                Some("connected") => notifier.notify(
+                payload::PowerPhase::Connected => notifier.notify(
                     notify::Category::TvWake,
                     &format!("{name} is awake"),
                     "",
                     "video-display",
                 ),
-                Some("failed") => notifier.notify(
+                payload::PowerPhase::Failed => notifier.notify(
                     notify::Category::TvWake,
                     &format!("Waking {name} failed"),
                     "",
                     "dialog-error",
                 ),
-                _ => {}
+                payload::PowerPhase::DirectConnect
+                | payload::PowerPhase::Connecting
+                | payload::PowerPhase::AwaitingNetwork => {}
             }
         }
     });

@@ -510,7 +510,7 @@ pub enum BackendEvent {
     Disconnected,
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
-    PowerPhase(&'static str),
+    PowerPhase(tisvlay_wire::payload::PowerPhase),
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
         reply: AckReply,

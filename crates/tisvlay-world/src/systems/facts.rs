@@ -153,7 +153,7 @@ pub(super) fn apply_backend_events(
                     );
                 }
                 if wake_dial {
-                    publish_power_phase(&mut outbox, &site, tv, "connected");
+                    publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Connected);
                 }
                 // A screen intent that survived the dial (elevation or
                 // wake escalation) re-asserts over the fresh link:
@@ -249,7 +249,7 @@ pub(super) fn apply_backend_events(
                 if attempts >= CONNECT_MAX_ATTEMPTS {
                     e.remove::<(PendingConnect, AwaitingRoute)>();
                     if wake_dial {
-                        publish_power_phase(&mut outbox, &site, tv, "failed");
+                        publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
                     }
                 } else {
                     e.insert(RetryAt(clock.0 + CONNECT_BACKOFF));
@@ -266,7 +266,7 @@ pub(super) fn apply_backend_events(
                 }));
             }
             BackendEvent::PowerPhase(phase) => {
-                publish_power_phase(&mut outbox, &site, tv, phase);
+                publish_power_phase(&mut outbox, &site, tv, *phase);
             }
             BackendEvent::CommandDone { reply, result } => match result {
                 Ok(()) => reply_ok(&mut outbox, Some(*reply)),
@@ -280,10 +280,15 @@ pub(super) fn apply_backend_events(
     }
 }
 
-pub(super) fn publish_power_phase(outbox: &mut Outbox, site: &Site, tv: &Uuid, phase: &str) {
+pub(super) fn publish_power_phase(
+    outbox: &mut Outbox,
+    site: &Site,
+    tv: &Uuid,
+    phase: payload::PowerPhase,
+) {
     outbox.0.push(Effect::Wire(WireEffect::Publish {
         key: keys::tv_path(&site.0, tv, "progress/power"),
-        payload: json!({ "phase": phase }),
+        payload: json!(payload::PowerProgress { phase }),
     }));
 }
 
@@ -754,7 +759,12 @@ pub(super) fn reconcile_connections(
                 tracing::debug!(tv = %id.0, wake = pending.wake, "dial deferred: no route");
                 commands.entity(entity).insert(AwaitingRoute);
                 if pending.wake {
-                    publish_power_phase(&mut outbox, &site, &id.0, "awaiting_network");
+                    publish_power_phase(
+                        &mut outbox,
+                        &site,
+                        &id.0,
+                        payload::PowerPhase::AwaitingNetwork,
+                    );
                 }
             }
             continue;
