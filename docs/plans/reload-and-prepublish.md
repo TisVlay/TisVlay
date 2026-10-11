@@ -216,6 +216,12 @@ Settled in review, where all three reviewers converged:
 - **`tisvlay-cec`:** a `PhysicalAddress` newtype with parse, display and a crate-private conversion. The test-link feature's `PowerStatus` re-export is documented as test-only.
 - **Async trait style:** document the mix in `traits.rs`.
 
+*Decided during implementation:*
+- **lg's surface** is `LgBackend`, `LgConnector`, `LgDiscovery`, `LgVendorConfig` and the vendor constants. `LgConnection` went private too: the daemon only sees it as a `Box<dyn TvConnection>`. Going private surfaced dead endpoints, client methods and response fields, which were deleted rather than kept for later.
+- **Unit structs** got `#[non_exhaustive]` instead of a private field. Outside the crate the effect is the same (construction only through `new()`/`Default`), while the derives and in-crate literals keep working unchanged.
+- **Wire conversions:** with core's code enums non-exhaustive, the wire maps a code it doesn't know yet to `pairing.unknown`, so a core release that adds a code doesn't break the wire's build.
+- **`PhysicalAddress`:** `new`/`get` const fns plus `From<u16>` both ways. Parse and display delegate to linux-cec, so there's one grammar (dotted, or four hex digits with an optional `0x`). Serde is tisvlay-cec's own (writes the dotted string, reads a string or the packed `u16`), which drops linux-cec's `serde` feature. `ParsePhysicalAddressError` carries the rejected input. Stored configs read unchanged.
+
 ### PR (iii): checklist mechanics (4e, `docs/build.md` § First-publish checklist)
 - **Packaging:**
   - Package all four crates in one invocation (`cargo package -p tisvlay-core -p tisvlay-ssdp -p tisvlay-lg -p tisvlay-cec`), so cargo's local-registry overlay resolves the path dependencies. Per-crate `cargo package -p tisvlay-lg` fails, because `tisvlay-core` isn't on crates.io yet.
