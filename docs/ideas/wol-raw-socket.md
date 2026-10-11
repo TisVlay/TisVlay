@@ -1,6 +1,6 @@
 # WoL via raw socket (CAP_NET_RAW)
 
-The daemon's WoL story keeps `WakeOptions.broadcast_addr: Ipv4Addr` because IEEE Wake-on-LAN has no IPv6 protocol-level equivalent — v4 magic packet via UDP broadcast remains the only standardized wake path. This works for the common home-LAN case (TV reachable via v4 broadcast on the daemon's local subnet), but degrades in a few specific topologies where granting tisvlayd `CAP_NET_RAW` would unlock more flexible packet construction.
+The daemon's WoL sends its magic packet to the IPv4 broadcast address (`tisvlay_core::wol`) because IEEE Wake-on-LAN has no IPv6 protocol-level equivalent — v4 magic packet via UDP broadcast remains the only standardized wake path. This works for the common home-LAN case (TV reachable via v4 broadcast on the daemon's local subnet), but degrades in a few specific topologies where granting tisvlayd `CAP_NET_RAW` would unlock more flexible packet construction.
 
 ## What it would add
 

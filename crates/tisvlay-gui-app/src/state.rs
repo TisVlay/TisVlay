@@ -41,7 +41,7 @@ pub(crate) struct TvViewRaw {
     pub primary_descriptor: SharedString,
     pub connected: bool,
     pub power_state: SharedString,
-    /// Connected *and* powered on (via `power_state_str_is_on`). The power
+    /// Connected *and* powered on (via `PowerState::is_on`). The power
     /// button keys on this rather than `connected` so a connected-in-standby
     /// CEC TV still offers "Power on".
     pub is_on: bool,

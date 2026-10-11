@@ -25,7 +25,6 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](ideas/remote-session-followups.md)
 - [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](ideas/zenoh-typed-queryables.md)
 - [SDK methods for the rpcs only the CLI reaches (add-tv, discover, user effective)](ideas/sdk-cli-only-rpcs.md)
-- [Prune core's unused error vocabularies (`PowerError`, `PowerErrorCode`, `ConfigErrorCode`)](ideas/core-error-vocabulary-pruning.md)
 - [A typed `update-config` request (settings fields + flattened vendor map)](ideas/typed-update-config.md)
 
 ## Operational

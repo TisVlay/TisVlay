@@ -7,39 +7,9 @@
 //! label alongside the reason — keeping the daemon
 //! locale-agnostic.
 
-use std::fmt;
-
-/// Stable machine-readable code for a [`ConfigError`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ConfigErrorCode {
-    /// A schema-validated field has an invalid or missing value.
-    InvalidVendorConfig,
-    /// Attempted to add a TV whose id collides with an existing one.
-    DuplicateTvId,
-    /// A TV references a profile that doesn't exist.
-    InvalidProfileReference,
-}
-
-impl ConfigErrorCode {
-    /// Stable identifier for routing on clients (kebab-case under
-    /// the `config.` namespace).
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::InvalidVendorConfig => "config.invalid-vendor-config",
-            Self::DuplicateTvId => "config.duplicate-tv-id",
-            Self::InvalidProfileReference => "config.invalid-profile-reference",
-        }
-    }
-}
-
-impl fmt::Display for ConfigErrorCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Configuration validation errors.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// A schema-validated pairing/config field has an invalid or
     /// missing value. `field` carries the schema's `name`
@@ -54,26 +24,6 @@ pub enum ConfigError {
         /// Human-readable failure reason.
         reason: String,
     },
-
-    /// A new TV's id collides with an existing one in the daemon
-    /// config.
-    #[error("TV id `{0}` is already in use")]
-    DuplicateTvId(String),
-
-    /// A TV references a profile name that doesn't exist.
-    #[error("unknown profile reference `{0}`")]
-    InvalidProfileReference(String),
-}
-
-impl ConfigError {
-    /// Stable machine-readable identifier — see [`ConfigErrorCode`].
-    pub const fn code(&self) -> ConfigErrorCode {
-        match self {
-            Self::InvalidVendorConfig { .. } => ConfigErrorCode::InvalidVendorConfig,
-            Self::DuplicateTvId(_) => ConfigErrorCode::DuplicateTvId,
-            Self::InvalidProfileReference(_) => ConfigErrorCode::InvalidProfileReference,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -89,6 +39,5 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains("mac"));
         assert!(s.contains("six hex pairs"));
-        assert_eq!(e.code(), ConfigErrorCode::InvalidVendorConfig);
     }
 }

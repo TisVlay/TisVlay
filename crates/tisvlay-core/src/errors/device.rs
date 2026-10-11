@@ -10,9 +10,8 @@
 
 use std::fmt;
 
-/// Stable machine-readable code for a device-access failure. Format
-/// mirrors the `<domain>.<kebab-case-variant>` convention shared with
-/// [`super::power::PowerErrorCode`] and [`super::config::ConfigErrorCode`].
+/// Stable machine-readable code for a device-access failure, in the
+/// `<domain>.<kebab-case-variant>` form pairing codes use too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceErrorCode {
     /// The process lacks permission to open the device node (e.g. the

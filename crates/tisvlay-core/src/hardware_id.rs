@@ -60,63 +60,11 @@ impl HardwareId {
     pub fn is_empty(&self) -> bool {
         self.manufacturer.is_none() && self.model.is_none() && self.serial.is_none()
     }
-
-    /// Convert to the `(sss)` D-Bus wire representation with empty
-    /// strings for unknown fields.
-    pub fn to_dbus_tuple(&self) -> (String, String, String) {
-        (
-            self.manufacturer.clone().unwrap_or_default(),
-            self.model.clone().unwrap_or_default(),
-            self.serial.clone().unwrap_or_default(),
-        )
-    }
-
-    /// Parse from the `(sss)` D-Bus wire representation. Empty strings
-    /// become `None`.
-    pub fn from_dbus_tuple(tuple: (String, String, String)) -> Self {
-        let (manufacturer, model, serial) = tuple;
-        Self {
-            manufacturer: (!manufacturer.is_empty()).then_some(manufacturer),
-            model: (!model.is_empty()).then_some(model),
-            serial: (!serial.is_empty()).then_some(serial),
-        }
-    }
-}
-
-impl From<HardwareId> for (String, String, String) {
-    fn from(id: HardwareId) -> Self {
-        id.to_dbus_tuple()
-    }
-}
-
-impl From<(String, String, String)> for HardwareId {
-    fn from(tuple: (String, String, String)) -> Self {
-        Self::from_dbus_tuple(tuple)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn roundtrip_through_dbus_tuple() {
-        let id = HardwareId::new(Some("GSM"), Some("OLED65G4SUB"), Some("abcd1234"));
-        let tuple = id.to_dbus_tuple();
-        assert_eq!(
-            tuple,
-            ("GSM".into(), "OLED65G4SUB".into(), "abcd1234".into())
-        );
-        assert_eq!(HardwareId::from_dbus_tuple(tuple), id);
-    }
-
-    #[test]
-    fn empty_strings_roundtrip_to_none() {
-        let id = HardwareId::new(Some("GSM"), None::<String>, None::<String>);
-        let tuple = id.to_dbus_tuple();
-        assert_eq!(tuple, ("GSM".into(), String::new(), String::new()));
-        assert_eq!(HardwareId::from_dbus_tuple(tuple), id);
-    }
 
     #[test]
     fn is_empty_detects_all_none() {

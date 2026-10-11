@@ -79,9 +79,7 @@ pub use config::{
 pub use profile_refs::{TvAssignment, references_of, user_references_of};
 
 // State
-pub use state::{
-    DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState, power_state_str_is_on,
-};
+pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
 
 // Errors
 pub use error::{Error, Result};
@@ -93,7 +91,7 @@ pub use secret::Secret;
 pub use vendor_config::VendorConfig;
 
 // Wake-on-LAN
-pub use wol::{MAC_CONFIG_KEY, MacAddress, WakeOptions, wake, wake_with_options};
+pub use wol::{MAC_CONFIG_KEY, MacAddress};
 
 // Concurrency helpers (async tokio utilities)
 pub use coalescer::Coalescer;
