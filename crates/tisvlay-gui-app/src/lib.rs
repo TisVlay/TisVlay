@@ -1651,7 +1651,7 @@ fn register_callbacks(
             // Reload affects both TVs and profiles — dual-route the
             // banner so the user sees it on whichever pane they're on.
             // Per-pane dismiss clears each slot independently. The
-            // daemon and session arms report failures identically, so
+            // daemon, session and tray arms report failures identically, so
             // share the warn + dual-banner push.
             let report_reload_err = |label: &str, title: String, msg: String| {
                 warn!(error = %msg, "{label}");
@@ -1684,7 +1684,11 @@ fn register_callbacks(
             if let Some(client) = tray_ref.as_ref()
                 && let Err(e) = client.reload_config().await
             {
-                warn!(error = %error_text(&e), "tray reload_config failed");
+                report_reload_err(
+                    "tray reload_config failed",
+                    gettext("Reload tray config failed"),
+                    error_text(&e),
+                );
             }
             drop(tray_ref);
             state_watch::refresh_tray_notifications(&tr, &app_weak).await;

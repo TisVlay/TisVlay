@@ -57,6 +57,9 @@ enum Command {
     EnableAccess,
     /// Probe the daemon's liveliness token.
     Status,
+    /// Apply a hand edit of the daemon's store file (what `systemctl
+    /// reload` does).
+    Reload,
     /// List TVs with their current state (hydrates from publisher caches).
     List,
     /// Stream every data key: history first, then live samples.
@@ -286,6 +289,8 @@ enum UserProfileCmd {
         #[arg(add = tv_completions())]
         tv: Uuid,
     },
+    /// Apply a hand edit of the session's store file.
+    Reload,
     /// Assign (or with no value clear) a TV's user profile.
     Assign {
         #[arg(add = tv_completions())]
@@ -355,6 +360,10 @@ async fn run() -> Result<()> {
         // Handled above, before the client opens (needs no connection).
         Command::EnableAccess => unreachable!(),
         Command::Status => status(&session, site, &socket, json_out).await,
+        Command::Reload => {
+            let report = call::<manager::Reload>(&caller, &(), &()).await?;
+            print_reload(report, json_out)
+        }
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
         Command::Discover { vendor, timeout_ms } => {
@@ -893,6 +902,10 @@ async fn user_profile_cmd(
             let defaults = call::<user_profile::Defaults>(user_caller, &(), &()).await?;
             print_reply(&defaults, json_out)
         }
+        UserProfileCmd::Reload => {
+            let report = call::<user_profile::Reload>(user_caller, &(), &()).await?;
+            print_reload(report, json_out)
+        }
         UserProfileCmd::Effective { tv } => {
             let request = rpc::TvRef { id: tv };
             let effective = call::<user_profile::Effective>(user_caller, &(), &request).await?;
@@ -1171,6 +1184,22 @@ async fn watch_pairing(
             }
         }
     }
+}
+
+/// A reload's outcome: whether the file held an edit to apply.
+fn print_reload(report: rpc::ReloadReport, json_out: bool) -> Result<()> {
+    if json_out {
+        return print_reply(&report, true);
+    }
+    println!(
+        "{}",
+        if report.changed {
+            "applied the file's edit"
+        } else {
+            "the file is unchanged"
+        }
+    );
+    Ok(())
 }
 
 async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) -> Result<()> {
