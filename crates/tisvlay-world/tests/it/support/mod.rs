@@ -7,7 +7,7 @@ use std::time::Duration;
 use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_wire::error::ErrorCode;
-use tisvlay_world::{Command, Reactor, Reply, TvRecord, WireEffect, WorldClient};
+use tisvlay_world::{Command, Reactor, Reply, StoreSnapshot, TvRecord, WireEffect, WorldClient};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
@@ -30,14 +30,44 @@ pub(crate) fn tv_record(id: Uuid, name: &str, config: VendorConfig) -> TvRecord 
 }
 
 pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
+    let (reactor, effects, client, handle) = new_reactor();
+    tokio::spawn(reactor.run());
+    (effects, client, handle)
+}
+
+/// [`spawn_reactor`] with the store outlet tapped: every `Persist`
+/// snapshot arrives on the returned receiver.
+pub(crate) fn spawn_reactor_with_store() -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<StoreSnapshot>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (persist_tx, persist_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_persist(persist_tx);
+    tokio::spawn(reactor.run());
+    (effects, persist_rx, client, handle)
+}
+
+fn new_reactor() -> (
+    Reactor,
+    UnboundedReceiver<WireEffect>,
+    WorldClient,
+    MockHandle,
+) {
     // RUST_LOG-driven diagnostics for failing runs; idempotent.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
     let (connector, _discovery, handle) = new_test_parts();
     let (reactor, effects, client) = Reactor::new("test", vec![("mock", Arc::new(connector))]);
-    tokio::spawn(reactor.run());
-    (effects, client, handle)
+    (reactor, effects, client, handle)
+}
+
+/// Every snapshot persisted so far, without waiting for more.
+pub(crate) fn drain_snapshots(rx: &mut UnboundedReceiver<StoreSnapshot>) -> Vec<StoreSnapshot> {
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
 }
 
 /// Receive effects until `stop` matches, returning everything seen

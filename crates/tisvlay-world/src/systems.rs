@@ -2512,12 +2512,20 @@ fn publish_changed<T: payload::StatePayload>(
 }
 
 /// Snapshot the whole TV table into a persist effect when anything
-/// config-shaped changed this frame. TVs still verifying their pairing
-/// are excluded — they only reach the store once their first dial
-/// succeeds, so a rolled-back enrollment leaves no trace.
+/// config-shaped changed this frame. A fresh enrollment still verifying
+/// its pairing is excluded — it only reaches the store once its first
+/// dial succeeds, so a rolled-back enrollment leaves no trace. A
+/// re-pairing TV stays in: it was stored before and survives a failed
+/// verification.
 fn snapshot_store(
     mut dirty: ResMut<DirtyStore>,
-    q: Query<(&TvId, &VendorRef, &payload::Identity, &payload::Meta), Without<PairVerifying>>,
+    q: Query<(
+        &TvId,
+        &VendorRef,
+        &payload::Identity,
+        &payload::Meta,
+        Option<&PairVerifying>,
+    )>,
     profiles: Query<(&ProfileId, &ProfileBody)>,
     mut outbox: ResMut<Outbox>,
 ) {
@@ -2527,7 +2535,8 @@ fn snapshot_store(
     dirty.0 = false;
     let mut tv: Vec<TvRecord> = q
         .iter()
-        .map(|(id, vendor, identity, meta)| TvRecord {
+        .filter(|(.., verifying)| verifying.is_none_or(|v| !v.rollback))
+        .map(|(id, vendor, identity, meta, _)| TvRecord {
             id: id.0,
             name: identity.name.clone(),
             vendor: vendor.vendor.clone(),

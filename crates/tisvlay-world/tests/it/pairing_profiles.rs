@@ -413,6 +413,66 @@ async fn re_pair_supersedes_an_in_flight_dial() {
     .await;
 }
 
+/// A re-pair keeps the TV in the store throughout: while the
+/// verification dial runs, and after it fails. Only a fresh enrollment
+/// is withheld from the store until verified.
+#[tokio::test]
+async fn failed_re_pair_keeps_the_tv_in_the_store() {
+    let (mut effects, mut store, client, _handle) = spawn_reactor_with_store();
+    let id = Uuid::new_v4();
+    let progress_key = format!("tisvlay/test/pairing/{id}/progress");
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(
+            id,
+            "Den",
+            pairing_config("mock://repair-fails", "accept"),
+        )),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    // The verification dial will be refused.
+    client.command(Command::UpdateConfig {
+        id,
+        patch: serde_json::from_value(serde_json::json!({ "refuse_connect": true })).unwrap(),
+        reply: Some(Reply::new(2)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 2)).await;
+    let mut last = drain_snapshots(&mut store).pop();
+
+    client.command(Command::RePair {
+        id,
+        attempt: Uuid::new_v4(),
+        reply: Some(Reply::new(3)),
+    });
+    collect_until(&mut effects, |e| {
+        progress_on(e, &progress_key, "failed").is_some()
+    })
+    .await;
+    // A later step's reply proves the failure step's effects all went out.
+    client.command(Command::SetVolume {
+        id: Uuid::new_v4(),
+        level: 1,
+        reply: Some(Reply::new(4)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 4)).await;
+
+    let since = drain_snapshots(&mut store);
+    for snapshot in &since {
+        assert!(
+            snapshot.tv.iter().any(|tv| tv.id == id),
+            "a snapshot taken during the re-pair dropped the TV"
+        );
+    }
+    last = since.into_iter().last().or(last);
+    assert!(
+        last.expect("adding the TV persisted it")
+            .tv
+            .iter()
+            .any(|tv| tv.id == id),
+        "the store no longer holds the TV after a failed re-pair"
+    );
+}
+
 fn with(mut config: VendorConfig, key: &str, value: &str) -> VendorConfig {
     config.insert(key, value);
     config
