@@ -10,11 +10,11 @@ Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single
 
 - Live controls: power, screen on/off, volume, mute, backlight, input switching — with connection state, the active power state (including transitional states like *Warming up…*), and the TV's vendor-reported details (make, model, and similar identity rows) as live state.
 - The pencil toggles edit mode for the TV's configuration: name, managed flag, profile assignments, primary input, and the vendor-specific settings (IP, MAC, …). Optional fields show their effective default — **clearing one reverts it to that default** rather than storing an empty value.
-- **Add TV** opens the pairing wizard: discovered TVs stream into the list as they answer; or switch to manual entry, pick a vendor, and fill the vendor's form (the *Mock (testing)* vendor lives here too — see [the troubleshooting page](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend)). Pairing progress and the TV's accept prompt are narrated step by step. Leave the MAC blank if it wasn't auto-detected: the final step reports the MAC read from the TV, or offers **Use reported** / **Keep mine** if it differs from the one you entered (see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac)).
+- **Add TV** opens the pairing wizard: discovered TVs stream into the list as they answer; or switch to manual entry, pick a vendor, and fill the vendor's form (the *Mock (testing)* vendor lives here too — see [the troubleshooting page](../operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend)). Pairing progress and the TV's accept prompt are narrated step by step, and the final step reports the MAC address read from the TV (see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac)).
 
 **Profiles** — the full profile catalog editor: create, rename, duplicate, delete, and a per-field editor showing whether each field is set or inherited. Each action row also carries two small icon toggles: **restore input** (switch the TV back to its primary input after this action) and the **while-remote** gate (a network toggle — whether the action still fires while a remote session has the TV armed). A user profile additionally has a **REMOTE SESSION** card with the *Screen capture arms* switch (whether an unattributed screen capture should arm the TV). See [Profiles](./profiles.md) and [Remote-Session Awareness](./remote-sessions.md).
 
-**Settings** — the tray's notification preferences (the four categories below) and a test-notification button to verify your desktop's notification stack.
+**Settings** — the tray's [notification](#notifications) preferences and a test-notification button to verify your desktop's notification stack.
 
 **About** — version, component, and license information.
 
@@ -22,7 +22,7 @@ Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single
 
 **Contextual help** — an info (**ⓘ**) button reveals a longer explanation of the option beside it; icon-only buttons and chips show a short tip on hover. KDE-style, so the help stays out of the way until you ask for it.
 
-**No socket access?** If the app can't reach the daemon because your account lacks access (possible over SSH forwarding or unusual setups — at the console access is automatic), a banner appears with an **Enable TV control** button: one polkit authentication enrolls you in the `tisvlay` group, then log out and back in (a reboot is the most reliable) to finish.
+**No socket access?** If your account can't reach the daemon, a banner offers an **Enable TV control** button — the GUI's `tisvlay enable-access`; see [Access](../getting-started/installation.md#access).
 
 ## Tray applet (`tisvlay-tray`)
 
@@ -38,7 +38,7 @@ While a remote session has any TV armed, the tray shows a read-only **Remote ses
 
 ## Notifications
 
-The tray owns desktop notifications, in four categories (all on by default, toggled from the GUI's Settings pane):
+The tray owns desktop notifications, by category (all on by default, toggled from the GUI's Settings pane):
 
 | Category | Fires when |
 |----------|-----------|

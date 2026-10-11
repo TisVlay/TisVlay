@@ -10,7 +10,7 @@ tisvlay is configured with TOML, spread across a few files:
 
 `daemon.toml` is the daemon's own store: it reads it at startup and **rewrites it** as state changes, so hand-editing it while the daemon runs will be overwritten. Change TVs and profiles through the CLI (`tisvlay pair`, `tisvlay config-set`, `tisvlay assign`, `tisvlay profile …`, `tisvlay user-profile …`) or the GUI, which persist for you.
 
-To declare TVs **declaratively** — for a reproducible or headless setup — give the daemon a **seed file** with `tisvlay-daemon --seed <file>`. The seed is re-applied on every start, but only for TVs whose `id` is absent from `daemon.toml`, so runtime edits stick and a still-declared TV that you removed at runtime comes back (drop the seed entry to drop it). Omit an entry's `id` and it is derived deterministically from the entry's content.
+To declare TVs **declaratively** — for a reproducible or headless setup — give the daemon a **seed file** with `tisvlay-daemon --seed <file>` (on NixOS, the module's `settings` option writes it for you). The seed is re-applied on every start, but only for TVs whose `id` is absent from `daemon.toml`, so runtime edits stick and a still-declared TV that you removed at runtime comes back (drop the seed entry to drop it). Omit an entry's `id` and it is derived deterministically from the entry's content.
 
 ## TV definitions
 
@@ -27,7 +27,7 @@ primary_input = "HDMI_1"   # the input this PC uses (for input-aware automation)
 managed = true             # participate in automation
 
 [tv.profile]
-system = "00000000-0000-0000-0000-000000005159"   # assigned system profile (by id)
+system = "…"               # assigned system profile, by id (see `tisvlay profile list`)
 
 [tv.config]
 ip = "192.168.1.170"
@@ -53,7 +53,7 @@ osd_name = "TisVlay"            # the label the TV shows for the input (14 chara
 
 In a **seed file** the vendor block can also be written inline: `config = { ip = "192.168.1.170", mac = "84:90:0a:63:a9:94" }`.
 
-CEC has no discrete screen-blank, so with `emulate_screen_via_power` (default `true`) the daemon fulfills the stock `screen_off`/`screen_on` actions by powering the TV off/on; set it `false` to have the TV ignore screen actions instead.
+With `emulate_screen_via_power` (default `true`), the daemon fulfills `screen_off`/`screen_on` on a CEC TV by powering it off/on, since CEC can't blank a panel that stays on; set it `false` to have the TV ignore screen actions instead.
 
 With `advertise_osd_name` (default `true`), tisvlay answers the TV's name poll on the CEC bus, so the TV labels the PC's HDMI input `osd_name` in its input picker — the way a Chromecast names its own input. Set it `false` to stay silent and keep the TV's generic input label.
 
@@ -61,11 +61,11 @@ With `advertise_osd_name` (default `true`), tisvlay answers the TV's name poll o
 
 ```toml
 [discovery]
-bind_port = 1901           # SSDP source port (the default; 0 = OS-chosen ephemeral)
+bind_port = 1901           # SSDP source port (0 = OS-chosen ephemeral)
 poll_interval_ms = 8000    # streaming-discovery loop period
 ```
 
-The source port can also be set with the daemon flag `tisvlay-daemon --ssdp-port 1901`, or on NixOS with `services.tisvlay.bindPort`. See [Firewall & Discovery](../operations/firewall-discovery.md) for why it matters.
+[Firewall & Discovery](../operations/firewall-discovery.md#open-the-pinned-source-port) explains the source port and its other ways to set it.
 
 ## Profiles
 
@@ -74,11 +74,11 @@ Profiles map **events** to **actions**. There are two kinds:
 - **System profiles** (daemon-wide lifecycle): boot, shutdown, reboot, suspend/resume, host-display DPMS blank/wake, and the login-screen (greeter) idle timer.
 - **User profiles** (per desktop session): lock, unlock, lock-screen wake, idle timeout/resume, remote-session connect/disconnect, and the local return after a remote session.
 
-Manage them with `tisvlay profile …` (system) and `tisvlay user-profile …` (user), or the GUI's profile editor. A deeper walkthrough of how profiles resolve lives in [Profiles](./profiles.md).
+Manage them with `tisvlay profile …` (system) and `tisvlay user-profile …` (user), or the GUI's profile editor. This page is the schema; how profiles inherit from each other and which TVs they act on is in [Profiles](./profiles.md).
 
 ### Action vocabulary
 
-Every event resolves to one of five actions:
+Every event resolves to one of these actions:
 
 | Action | Effect |
 |--------|--------|
@@ -86,7 +86,7 @@ Every event resolves to one of five actions:
 | `screen_off` | OLED-safe blank (TV stays powered) |
 | `screen_on` | unblank |
 | `power_off` | standby |
-| `power_on` | Wake-on-LAN (a CEC bus wake for the HDMI-CEC backend) |
+| `power_on` | wake from standby (Wake-on-LAN for network TVs, a bus wake for HDMI-CEC) |
 
 An event value is either the bare action token, or a **table** that adds modifiers:
 
@@ -94,8 +94,8 @@ An event value is either the bare action token, or a **table** that adds modifie
 on_session_unlock = { action = "screen_on", restore_input = true, while_remote = false }
 ```
 
-- `restore_input` (default `false`) — after an on-ish action completes, switch the TV to its `primary_input`. Stock-on for the session-start wakes, so a wake lands you back on the PC. Needs a backend that advertises input (LG); inert on CEC. See [Session Automation](./session-automation.md).
-- `while_remote` (default `false`) — whether this event's action still fires while the TV is **armed by a remote session**. `false` suppresses it (the suppress-by-default rule); `true` opts the event back into firing while remoted. See [Remote-Session Awareness](./remote-sessions.md).
+- `restore_input` (default `false`) — after an on-ish action completes, switch the TV to its `primary_input`. Needs a backend that can switch inputs (LG; not CEC).
+- `while_remote` (default `false`) — `true` lets the action fire even while a remote session has the TV armed; see [Remote-Session Awareness](./remote-sessions.md#what-it-does-when-armed).
 
 ### System profile
 
@@ -112,7 +112,7 @@ on_dpms_on = "screen_on"         # matched host display woke (DPMS on)
 idle_timeout_seconds = 0         # login-screen (greeter) idle timer; 0 disables it
 on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"
-automate_when = "always"         # always | on_primary | off_primary
+automate_when = "always"         # always | on_primary | off_primary (see Profiles → The automation gate)
 ```
 
 ### User profile
@@ -133,10 +133,4 @@ remote_screencast_arms = false          # let an unattributed screen capture arm
 
 The two idle timers set **how long** to wait in each lock state; the shared `on_idle_timeout`/`on_idle_resume` actions decide **what** happens. A `0` timer disables idle for that lock state.
 
-### Inheritance
-
-Any profile field may be omitted; omitted fields inherit through the chain (a TV's assigned profile → the `default` profile → built-in defaults). A profile only needs to spell out what it changes. Setting an event replaces its whole value, so re-gating an inherited action means restating the action too (the GUI does this for you).
-
-### `automate_when`
-
-Gates automation on whether the TV is currently showing the PC. With `on_primary`, automation only fires when the TV is on its `primary_input`; with `off_primary`, only when it is **not** (e.g. don't blank a TV that's showing a game console). `always` ignores the input. This composes with `managed` and with the remote-session gate — see [Profiles](./profiles.md).
+Any field may be omitted from a profile; it then inherits (see [Profiles → Resolution order](./profiles.md#resolution-order)). Setting an event replaces its whole value, so re-gating an inherited action means restating the action too (the GUI does this for you).

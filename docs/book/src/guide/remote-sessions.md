@@ -37,7 +37,7 @@ That endpoint sits on Sunshine's base port, 47989 by default. If you've moved Su
 - **NixOS:** `services.tisvlay.sunshinePort = 48989;` (Sunshine's configured `port`).
 - **Other distros:** add `--sunshine-port 48989` to the session service's command line with `systemctl --user edit --full tisvlay-session`, then `systemctl --user restart tisvlay-session`.
 
-If you want the TV armed the *instant* Sunshine launches (a second or two ahead of the status poll), add a prep-command hook to Sunshine (`sunshine.conf` → **Configuration → General → Command Preparations**, or the raw config):
+If you want the TV armed the *instant* Sunshine launches (a second or two ahead of the status poll), add a prep-command hook to Sunshine's `global_prep_cmd` setting:
 
 ```json
 {

@@ -4,7 +4,7 @@ Profiles map **events** to **actions** — they are the entire automation vocabu
 
 ## The reserved default profiles
 
-Every install has one reserved profile per kind, both named `default` (system profile id ending `…5159`, user profile id ending `…515a`). They are special in three ways:
+Every install has one reserved profile per kind, both named `default`. They are special in three ways:
 
 - A TV with no explicit assignment uses the default — so the defaults alone already give working automation.
 - Every other profile inherits from them.
@@ -60,7 +60,7 @@ Manual actions — tray, GUI, CLI — always execute regardless of the gate.
 
 ## The remote-session gate
 
-A second, independent gate rides on top: while a TV is **armed by a remote session** (you streamed in via Sunshine, RustDesk, or RDP), an event whose action has `while_remote = false` is suppressed. This is the suppress-by-default rule — a plain action is quiet while armed, so a remote session's injected input doesn't wake the physical TV for an empty room, while blanks and power-offs still fire. It is per-event invertible, and orthogonal to `automate_when`. See [Remote-Session Awareness](./remote-sessions.md).
+A second, independent gate rides on top: while a remote session has a TV armed, wake actions are suppressed unless the event sets `while_remote = true`. It applies after the automation gate above and is independent of `automate_when`; [Remote-Session Awareness](./remote-sessions.md#what-it-does-when-armed) has the rules.
 
 ## Patterns
 

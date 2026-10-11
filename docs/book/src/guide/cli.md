@@ -9,7 +9,11 @@ A few global flags apply to any verb:
 - `--site <name>` — the site key namespace (default `main`); leave it unless you run more than one daemon.
 - `--json` — machine-readable output on read verbs.
 
-`tisvlay watch` streams every state key (history first, then live) — the go-to for scripting and for watching automation happen.
+To see what's going on:
+
+- `tisvlay list` — every TV and its current state (connection, power, input, …).
+- `tisvlay status` — a quick check that the daemon itself is up.
+- `tisvlay watch` — streams every state key (history first, then live) — the go-to for scripting and for watching automation happen.
 
 **Tab completion** ships for bash, zsh, and fish (installed by the packages; see [Installation](../getting-started/installation.md)). It's live: `<TAB>` completes not just verbs and flags but TV UUIDs, profile UUIDs, and vendor ids, queried from the running daemon and annotated with their names — so you never type a UUID by hand.
 
