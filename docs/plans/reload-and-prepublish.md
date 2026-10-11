@@ -180,7 +180,7 @@ Settled in review, where all three reviewers converged:
 
 **Tests.**
 - `MonitorState` unit tests: carrier transitions, a resync after missed messages, and re-resolution emitting only changes.
-- The reconnect loop gets one opener closure; a test drives it with an opener that fails once, then succeeds.
+- The reconnect loop gets one opener closure; a test drives it with an opener that fails once, then succeeds. *Decided during implementation:* not written. A fake opener would have to produce rtnetlink's `Connection` and message-receiver types, or the loop would need a trait seam bigger than the loop itself. The loop stays thin, and its decisions (report on change, report everything after a reset) are `MonitorState` unit tests. The field check covers the reconnect itself.
 - Field check: provoke an overrun with interface churn (e.g. creating and deleting a few hundred veth pairs) and confirm a parked TV still redials. Restarting NetworkManager doesn't close the kernel socket, so it doesn't exercise the restart path.
 
 ## Car 4: pre-publish

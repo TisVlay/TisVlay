@@ -18,6 +18,15 @@ A single `rtnetlink` multicast connection subscribes to five groups:
 
 This is kernel-level, fires within milliseconds of a state change, and works without NetworkManager.
 
+### Staying connected
+
+The monitor restarts in place. Its view (each link's usability, each monitored TV's address and resolved interface) lives in a `MonitorState` that outlives any one kernel connection.
+- **Each connection** subscribes first, then resyncs: a link dump (`RTM_GETLINK`, on a short-lived connection of its own) reports every link afresh, and every monitored TV is re-resolved. The world's carrier handling is idempotent, so resending unchanged links is harmless.
+- **Dropped notifications.** In a burst of interface churn the kernel can overrun the socket buffer (ENOBUFS), which netlink-proto surfaces as a `NetlinkPayload::Overrun` message. The monitor resyncs on it, since lost link and route events would otherwise leave its view stale.
+- **A failed connection** (the open, the dump, or the message stream ending) is logged and reopened with a capped backoff (1 s doubling to 60 s), while route requests are still served. The monitor ends only when the world does.
+
+Without this, a dead connection silently ended carrier and route monitoring for the daemon's lifetime, and a TV parked during a network blip never redialed.
+
 ## Route-Based Device Resolution
 
 For every network-transport TV, the daemon resolves which NIC carries traffic to its IP via `RTM_GETROUTE` (equivalent to `ip route get <IP>`):
