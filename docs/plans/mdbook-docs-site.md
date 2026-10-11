@@ -172,6 +172,8 @@ The isolated-networks fix (generic mechanism in prose, vendor specifics in a per
 - **Version source:** the workspace `Cargo.toml` version, which on main always equals the latest release (maintainer-confirmed).
 - **Correctness win:** the generated defaults are the real stock mappings, modifiers included (e.g. `on_startup` restores the input; the off-going events carry `while_remote = true`), which the hand-copied bare tokens had dropped.
 
+**Step 2 done (2026-10-10)** — tisvlay-docgen + the four partials, `just docs-gen`/`docs-gen-check` wired into CI; `just check` (640 tests), the drift gate, the book build and prek all green. The global-flag details cli.md carried moved into the clap doc comments, so `--help` and the book share them. Next: step 3 (S1 fragment-aware link checker in the docs CI job).
+
 **Decisions (maintainer, 2026-10-10):**
 - H1 — generate the release version from `Cargo.toml` into a partial behind the docs drift gate (joins G1/G2 in step 2).
 - H2 — leave the crates.io badges as they are for now.
