@@ -23,9 +23,8 @@ import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
-import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox } from "../widgets.slint";
+import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
@@ -1387,33 +1386,6 @@ export component ProfilesPane {
         width: 100%;
         height: 100%;
         spacing: 0;
-
-        // Pane-level inline error surface (Kirigami inline-message
-        // pattern, same as the TVs pane). Reload-config failures
-        // dual-route here from Rust; per-action failures
-        // (create / delete / rename / field-edit / reset) stay on
-        // the transient-toast path since the user can retry
-        // immediately.
-        if Errors.profiles.title != "" || Errors.profiles.message != "": Rectangle {
-            background: Theme.surface-alt;
-            HorizontalLayout {
-                width: 100%;
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-top: 12px;
-                padding-bottom: 0;
-                InlineError {
-                    tone: Errors.profiles.tone == "" ? "error" : Errors.profiles.tone;
-                    title: Errors.profiles.title;
-                    message: Errors.profiles.message;
-                    action-label: Errors.profiles.action-label;
-                    action-clicked => { Errors.profiles-action(); }
-                    dismissed => {
-                        Errors.profiles = { kind: "", tone: "", title: "", message: "", action-label: "" };
-                    }
-                }
-            }
-        }
 
         HorizontalLayout {
             width: 100%;

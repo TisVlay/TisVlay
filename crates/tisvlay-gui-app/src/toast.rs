@@ -1,6 +1,7 @@
 //! Top-center toast banner. Auto-clears after a short timeout;
 //! coalesces across rapid calls so only the most recent message
-//! stays visible.
+//! stays visible. Beside it, the sticky failure notice for actions no
+//! pane owns.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -38,5 +39,16 @@ pub(crate) fn show_toast(app_weak: slint::Weak<AppWindow>, message: &str) {
                 app.global::<Toast>().set_message(SharedString::default());
             });
         }
+    });
+}
+
+/// Show the sticky window-level failure notice, replacing any earlier
+/// one. It stays until the user dismisses it. Safe to call from any
+/// thread.
+pub(crate) fn show_notice(app_weak: &slint::Weak<AppWindow>, title: String, message: String) {
+    on_ui(app_weak, move |app| {
+        let toast = app.global::<Toast>();
+        toast.set_notice_title(SharedString::from(title));
+        toast.set_notice_message(SharedString::from(message));
     });
 }

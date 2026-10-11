@@ -27,19 +27,9 @@ export global Errors {
     /// TVs pane — set/clear via Rust on every user-initiated
     /// `Daemon.X(...)` callback that returns an error
     /// (power_on/off, set_volume, set_managed, remove_tv, ...).
-    /// Reload-config errors land here as well (dual-routed with
-    /// `profiles`) so the user sees the banner regardless of which
-    /// pane they're on when they hit reload.
+    /// The sidebar's Reload reports through the window-level notice
+    /// instead (`Toast.notice-*`), since it belongs to no pane.
     in-out property <ErrorState> tvs;
-    /// Profiles pane — sticky banner for state-level failures that
-    /// persist until acknowledged. Reload-config errors land here
-    /// alongside `tvs` (the reload button is sidebar-global; the
-    /// user may be on either pane). Per-action failures
-    /// (create / delete / rename / field-edit / reset) stay as
-    /// transient toasts since the user can retry immediately —
-    /// banners are reserved for state that needs attention until
-    /// the underlying problem is fixed.
-    in-out property <ErrorState> profiles;
     /// Pairing wizard — reserved for non-step-3 wizard errors
     /// (the wizard's step 3 has its own retry / back-to-discovery
     /// surface; field-level errors land inline via
@@ -55,7 +45,6 @@ export global Errors {
     /// this and routes per-kind. Empty action-label hides the
     /// button entirely; the callback never fires in that case.
     callback tvs-action();
-    callback profiles-action();
     callback pairing-action();
     callback access-action();
 }

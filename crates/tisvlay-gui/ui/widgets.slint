@@ -686,6 +686,8 @@ export component InlineError inherits Rectangle {
     in property <string> title;
     /// Detail text (the underlying typed reason).
     in property <string> message;
+    /// Font family for `message`; empty is the default font.
+    in property <string> message-font-family;
     /// Optional action label (e.g. "Retry", "Edit MAC"). Empty
     /// hides the action button.
     in property <string> action-label;
@@ -781,6 +783,7 @@ export component InlineError inherits Rectangle {
                 text: root.message;
                 color: Theme.text;
                 font-size: Design.font-helper;
+                font-family: root.message-font-family;
                 wrap: word-wrap;
             }
         }

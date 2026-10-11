@@ -3,3 +3,4 @@
 
 mod about_pane;
 mod contextual_help;
+mod notice;
