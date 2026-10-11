@@ -27,6 +27,8 @@ The monitor restarts in place. Its view (each link's usability, each monitored T
 
 Without this, a dead connection silently ended carrier and route monitoring for the daemon's lifetime, and a TV parked during a network blip never redialed.
 
+**Testing.** The reconnect loop itself has no unit test: a fake opener would have to produce rtnetlink's `Connection` and message-receiver types, or the loop would need a trait seam bigger than the loop. So the loop stays thin, and its decisions (report on change, report everything after a reset) are `MonitorState` unit tests. The restart is checked in the field: provoke an overrun with interface churn (create and delete a few hundred veth pairs) and confirm a parked TV still redials. Restarting NetworkManager doesn't close the kernel socket, so it doesn't exercise the restart path.
+
 ## Route-Based Device Resolution
 
 For every network-transport TV, the daemon resolves which NIC carries traffic to its IP via `RTM_GETROUTE` (equivalent to `ip route get <IP>`):
