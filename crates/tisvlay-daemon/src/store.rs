@@ -240,7 +240,9 @@ mod tests {
         // Past the stale snapshot's deadline while the reload is out.
         tokio::time::sleep(DEBOUNCE * 2).await;
 
+        // The hand edit the reload read, then applied.
         let disk = one_tv("Hand edit");
+        assert!(write_store(&path, &disk));
         persist_tx
             .send(StoreMsg::Reloaded(Some(Box::new(disk.clone()))))
             .unwrap();
