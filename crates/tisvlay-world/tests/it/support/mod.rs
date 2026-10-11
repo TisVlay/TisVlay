@@ -50,6 +50,18 @@ pub(crate) fn spawn_reactor_with_store() -> (
     (effects, persist_rx, client, handle)
 }
 
+/// [`spawn_reactor`] with `queue` run before the reactor starts: what it
+/// sends lands in the reactor's first batch (up to 64 events), so
+/// same-batch interactions are deterministic.
+pub(crate) fn spawn_reactor_after(
+    queue: impl FnOnce(&WorldClient),
+) -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
+    let (reactor, effects, client, handle) = new_reactor();
+    queue(&client);
+    tokio::spawn(reactor.run());
+    (effects, client, handle)
+}
+
 fn new_reactor() -> (
     Reactor,
     UnboundedReceiver<WireEffect>,

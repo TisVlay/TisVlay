@@ -6,8 +6,8 @@ use crate::support;
 use std::time::Duration;
 
 use support::*;
-use tisvlay_core::VendorConfig;
-use tisvlay_world::{Command, InEvent, Reply, SystemEvent, WireEffect};
+use tisvlay_core::{SystemProfileConfig, VendorConfig};
+use tisvlay_world::{Command, InEvent, ProfileRecord, Reply, SystemEvent, WireEffect};
 use uuid::Uuid;
 
 fn pairing_config(address: &str, mode: &str) -> VendorConfig {
@@ -471,6 +471,44 @@ async fn failed_re_pair_keeps_the_tv_in_the_store() {
             .any(|tv| tv.id == id),
         "the store no longer holds the TV after a failed re-pair"
     );
+}
+
+/// An update in the same batch as the create it follows applies: the
+/// body published last is the updated one.
+#[tokio::test]
+async fn update_profile_in_the_create_batch_applies() {
+    let id = Uuid::new_v4();
+    let mut created = SystemProfileConfig::full_default();
+    created.name = "Created".into();
+    let mut updated = created.clone();
+    updated.name = "Updated".into();
+    let (mut effects, _client, _handle) = spawn_reactor_after(|client| {
+        client.command(Command::AddProfile {
+            record: Box::new(ProfileRecord { id, body: created }),
+            reply: Some(Reply::new(1)),
+        });
+        client.command(Command::UpdateProfile {
+            id,
+            body: Box::new(updated),
+            reply: Some(Reply::new(2)),
+        });
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 2)).await;
+    assert!(
+        seen.iter()
+            .all(|e| reply_err_code(e, 1).is_none() && reply_err_code(e, 2).is_none()),
+        "both commands succeed: {seen:#?}"
+    );
+    let key = format!("tisvlay/test/profile/system/{id}");
+    let last_name = seen
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            WireEffect::Publish { key: k, payload } if *k == key => Some(payload["name"].clone()),
+            _ => None,
+        })
+        .expect("the profile was published");
+    assert_eq!(last_name, "Updated");
 }
 
 fn with(mut config: VendorConfig, key: &str, value: &str) -> VendorConfig {

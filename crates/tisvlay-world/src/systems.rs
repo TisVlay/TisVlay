@@ -1252,6 +1252,17 @@ fn publish_profile(
     }
 }
 
+/// Replace a profile's body through `Commands`, not a query write: the
+/// entity may be one this batch spawned, which a query can't see until
+/// the flush, and queued commands apply in order behind the spawn.
+fn set_profile_body(
+    commands: &mut Commands,
+    entity: Entity,
+    body: tisvlay_core::SystemProfileConfig,
+) {
+    commands.entity(entity).insert(ProfileBody(body));
+}
+
 /// System-profile CRUD plus the two read projections (`defaults`,
 /// `effective`). Bodies live on entities (PUT/DELETE lifecycle on the
 /// wire); deletion is refused while any TV references the profile.
@@ -1267,7 +1278,7 @@ fn handle_profile_commands(
     mut dirty: ResMut<DirtyStore>,
     site: Res<Site>,
     tvs: Res<TvIndex>,
-    mut bodies: Query<&mut ProfileBody>,
+    bodies: Query<&ProfileBody>,
     metas: Query<&payload::Meta>,
 ) {
     for msg in reader.read() {
@@ -1281,9 +1292,7 @@ fn handle_profile_commands(
                     // whichever lands second) is an upsert, not a conflict.
                     body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
                     if let Some(&entity) = index.0.get(&record.id) {
-                        if let Ok(mut current) = bodies.get_mut(entity) {
-                            current.0 = body.clone();
-                        }
+                        set_profile_body(&mut commands, entity, body.clone());
                         publish_profile(&mut outbox, &site, &record.id, &body);
                         dirty.0 = true;
                         respond(&mut outbox, *reply, &Created { id: record.id });
@@ -1316,11 +1325,9 @@ fn handle_profile_commands(
                         );
                         continue;
                     }
-                    if let Ok(mut current) = bodies.get_mut(entity) {
-                        current.0 = (**body).clone();
-                        publish_profile(&mut outbox, &site, id, &current.0);
-                        dirty.0 = true;
-                    }
+                    set_profile_body(&mut commands, entity, (**body).clone());
+                    publish_profile(&mut outbox, &site, id, body);
+                    dirty.0 = true;
                     reply_ok(&mut outbox, *reply);
                 }
                 None => reply_err(&mut outbox, *reply, WireError::profile_not_found(*id)),
