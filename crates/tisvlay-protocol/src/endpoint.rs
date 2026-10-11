@@ -125,7 +125,7 @@ macro_rules! family {
 
         impl Call {
             /// Decode a query's verb and body into the rpc it names.
-            pub fn decode(verb: &str, payload: &[u8]) -> Result<Self, $crate::error::WireError> {
+            pub(crate) fn decode(verb: &str, payload: &[u8]) -> Result<Self, $crate::error::WireError> {
                 match verb {
                     $( $verb_str => $crate::endpoint::decode_body(payload).map(Self::$name), )*
                     other => Err($crate::error::WireError::unknown_rpc(other)),
@@ -231,7 +231,10 @@ pub mod manager {
     pub(super) const DISCOVER_MAX_MS: u64 = 8000;
 
     /// How long the daemon scans for a bounded discover: the requested
-    /// window (or the default), clamped under the query timeout.
+    /// window (or the default), clamped under the query timeout. Both
+    /// sides use it: the daemon scans this long, and a client's query
+    /// window is this plus a margin, so the reply stream ends before the
+    /// query does.
     pub fn discover_scan(request: &rpc::Discover) -> Duration {
         let scan = request
             .timeout_ms
@@ -425,7 +428,7 @@ pub mod vendors {
 
     impl Call {
         /// Decode a query on the vendors family from its full key.
-        pub fn decode(site: &str, key: &str, payload: &[u8]) -> Result<Self, WireError> {
+        pub(crate) fn decode(site: &str, key: &str, payload: &[u8]) -> Result<Self, WireError> {
             if key == keys::vendors(site) {
                 return decode_body(payload).map(Self::Catalog);
             }

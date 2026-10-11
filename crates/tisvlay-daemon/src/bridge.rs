@@ -14,8 +14,8 @@ use serde_json::Value;
 use tisvlay_core::VendorConfig;
 use tisvlay_protocol::endpoint::Rpc;
 use tisvlay_protocol::endpoint::{manager, profile, tv, vendors};
-use tisvlay_protocol::serve::Responder;
-use tisvlay_protocol::{keys, rpc, serve};
+use tisvlay_protocol::serve::{ParkedReply, Responder};
+use tisvlay_protocol::{keys, rpc};
 use tisvlay_world::{Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -134,7 +134,7 @@ struct Bridge {
     reloads: Option<mpsc::UnboundedSender<ReloadRequest>>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
     /// Queries the world owes a reply, by correlation id.
-    pending: HashMap<ReplyTo, Query>,
+    pending: HashMap<ReplyTo, ParkedReply>,
     next_reply: ReplyTo,
     pairing_tokens: HashMap<String, LivelinessToken>,
     discovery_sessions: HashMap<Uuid, tokio::task::JoinHandle<()>>,
@@ -176,14 +176,11 @@ impl Bridge {
                 }
             }
             WireEffect::Reply { to, result } => {
-                let Some(query) = self.pending.remove(&to) else {
+                let Some(parked) = self.pending.remove(&to) else {
                     warn!(to, "reply for unknown query dropped");
                     return;
                 };
-                match result {
-                    Ok(value) => serve::reply_json(&query, &value).await,
-                    Err(error) => serve::reply_err(&query, &error).await,
-                }
+                parked.answer(result).await;
             }
         }
     }
@@ -277,8 +274,8 @@ impl Bridge {
             && !self.world.command(command)
         {
             // The world has stopped: nothing filed will be answered.
-            for (_, query) in self.pending.drain() {
-                serve::reply_err(&query, &WireError::daemon_shutting_down()).await;
+            for (_, parked) in self.pending.drain() {
+                parked.answer(Err(WireError::daemon_shutting_down())).await;
             }
         }
     }
@@ -288,7 +285,7 @@ impl Bridge {
     fn file<R: Rpc>(&mut self, responder: Responder<R>) -> Option<Reply<R>> {
         let to = self.next_reply;
         self.next_reply += 1;
-        self.pending.insert(to, responder.into_query());
+        self.pending.insert(to, responder.park());
         debug!(rpc = R::NAME, reply = to, "rpc routed");
         Some(Reply::new(to))
     }
