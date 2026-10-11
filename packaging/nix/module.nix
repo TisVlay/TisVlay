@@ -457,6 +457,9 @@ in
           ++ lib.optionals (!cfg.seatAccess) [ "--seat-access=false" ]
           ++ cfg.extraArgs
         );
+        # `systemctl reload` applies a hand edit of the store file (the
+        # daemon treats SIGHUP as its reload rpc).
+        ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
         User = cfg.user;
         Group = cfg.group;
         StateDirectory = "tisvlay";

@@ -6,7 +6,7 @@ use crate::support;
 use support::*;
 use tisvlay_core::SystemProfileConfig;
 use tisvlay_world::{
-    Command, InEvent, ProfileRecord, Reply, StoreSnapshot, WireEffect, WorldClient,
+    Command, InEvent, ProfileRecord, Reply, StoreMsg, StoreSnapshot, WireEffect, WorldClient,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
@@ -16,7 +16,7 @@ type BuildCommand = Box<dyn FnOnce(u64) -> Command>;
 
 struct Harness {
     effects: UnboundedReceiver<WireEffect>,
-    store: UnboundedReceiver<StoreSnapshot>,
+    store: UnboundedReceiver<StoreMsg>,
     client: WorldClient,
     next: u64,
 }

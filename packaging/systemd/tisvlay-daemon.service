@@ -14,6 +14,9 @@ Type=simple
 # login-screen greeter client can reach the socket; it is a quiet no-op
 # on non-GDM desktops where no such group exists.
 ExecStart=/usr/bin/tisvlay-daemon --socket /run/tisvlay/zenoh.sock --config /var/lib/tisvlay/daemon.toml --greeter-access
+# `systemctl reload` applies a hand edit of the store file (the daemon
+# treats SIGHUP as its reload rpc).
+ExecReload=/bin/kill -HUP $MAINPID
 User=tisvlay
 Group=tisvlay
 Restart=on-failure

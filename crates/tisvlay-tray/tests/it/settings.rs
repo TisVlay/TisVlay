@@ -80,6 +80,33 @@ async fn settings_round_trip_and_persistence() {
     let on_disk = load_settings(&config_path).unwrap();
     assert!(!on_disk.tv_wake && on_disk.tv_pairing);
 
+    // A hand edit of the file applies on reload; with nothing new, a
+    // second reload changes nothing; a missing file is refused.
+    let edited = std::fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("tv_pairing = true", "tv_pairing = false");
+    std::fs::write(&config_path, edited).unwrap();
+    assert!(client.reload_config().await.unwrap().changed);
+    assert!(!client.notification_settings().await.unwrap().tv_pairing);
+    assert!(!client.reload_config().await.unwrap().changed);
+    let kept = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::remove_file(&config_path).unwrap();
+    let err = client
+        .reload_config()
+        .await
+        .expect_err("a missing file is refused, not defaulted");
+    assert!(
+        matches!(
+            err,
+            tisvlay::Error::Rpc {
+                code: tisvlay_wire::error::ErrorCode::StoreUnreadable,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    std::fs::write(&config_path, kept).unwrap();
+
     // The test toast rpc acks and queues the toast (bypassing the category
     // gate); the info rpc reports the config location.
     client.send_test_notification().await.unwrap();

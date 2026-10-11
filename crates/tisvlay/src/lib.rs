@@ -33,7 +33,8 @@ pub use tisvlay_wire::payload::{
     RemoteSourceKind,
 };
 pub use tisvlay_wire::rpc::{
-    NotificationSettings, NotificationSettingsPatch, PairStarted, TvConfigView, VendorEntry,
+    NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, TvConfigView,
+    VendorEntry,
 };
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
@@ -294,10 +295,12 @@ impl DaemonClient {
         Ok(self.call::<manager::Info>(&(), &()).await?.state_path)
     }
 
-    pub async fn reload_config(&self) -> Result<()> {
-        // The zenoh daemon has no reloadable config file; the mirror is
-        // already live.
-        Ok(())
+    /// Apply a hand edit of the daemon's store file: only what changed
+    /// since the daemon last wrote it applies, and the report says whether
+    /// anything did. Refused when the file is missing or unparsable, or
+    /// the daemon runs without one.
+    pub async fn reload_config(&self) -> Result<ReloadReport> {
+        self.call::<manager::Reload>(&(), &()).await
     }
 
     /// The daemon's vendor catalog.
@@ -773,9 +776,12 @@ impl SessionClient {
         Ok(self.call::<user_profile::Info>(&(), &()).await?.state_path)
     }
 
-    pub async fn reload_config(&self) -> Result<()> {
-        // The session store is wire-mutated; there is no file to reload.
-        Ok(())
+    /// Apply a hand edit of the session's store file (user profiles and
+    /// assignments): only what changed since the session last wrote it
+    /// applies. Refused when the file is missing or unparsable, or the
+    /// session runs without one.
+    pub async fn reload_config(&self) -> Result<ReloadReport> {
+        self.call::<user_profile::Reload>(&(), &()).await
     }
 
     /// The TV's assigned user-profile uuid, from the mirror; `None` when
@@ -974,8 +980,10 @@ impl TrayClient {
         Ok(self.call::<user_tray::Info>(&()).await?.state_path)
     }
 
-    pub async fn reload_config(&self) -> Result<()> {
-        Ok(())
+    /// Apply a hand edit of the tray's settings file. Refused when the
+    /// file is missing or unparsable.
+    pub async fn reload_config(&self) -> Result<ReloadReport> {
+        self.call::<user_tray::Reload>(&()).await
     }
 
     pub async fn notification_settings(&self) -> Result<NotificationSettings> {

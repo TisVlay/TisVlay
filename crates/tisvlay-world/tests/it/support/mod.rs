@@ -8,7 +8,8 @@ use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_wire::error::ErrorCode;
 use tisvlay_world::{
-    Command, Reactor, Reply, RouteRequest, StoreSnapshot, TvRecord, WireEffect, WorldClient,
+    Command, Reactor, Reply, RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect,
+    WorldClient,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
@@ -41,7 +42,7 @@ pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, Mo
 /// snapshot arrives on the returned receiver.
 pub(crate) fn spawn_reactor_with_store() -> (
     UnboundedReceiver<WireEffect>,
-    UnboundedReceiver<StoreSnapshot>,
+    UnboundedReceiver<StoreMsg>,
     WorldClient,
     MockHandle,
 ) {
@@ -61,7 +62,7 @@ pub(crate) fn spawn_seeded_reactor(
     queue: impl FnOnce(&WorldClient),
 ) -> (
     UnboundedReceiver<WireEffect>,
-    UnboundedReceiver<StoreSnapshot>,
+    UnboundedReceiver<StoreMsg>,
     WorldClient,
     MockHandle,
 ) {
@@ -131,8 +132,13 @@ fn new_reactor() -> (
 }
 
 /// Every snapshot persisted so far, without waiting for more.
-pub(crate) fn drain_snapshots(rx: &mut UnboundedReceiver<StoreSnapshot>) -> Vec<StoreSnapshot> {
-    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+pub(crate) fn drain_snapshots(rx: &mut UnboundedReceiver<StoreMsg>) -> Vec<StoreSnapshot> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|msg| match msg {
+            StoreMsg::Persist(snapshot) => Some(*snapshot),
+            StoreMsg::Reloaded(_) => None,
+        })
+        .collect()
 }
 
 /// Receive effects until `stop` matches, returning everything seen

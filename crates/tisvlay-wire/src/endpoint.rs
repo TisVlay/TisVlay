@@ -202,6 +202,8 @@ pub mod manager {
         rpcs: {
             /// The daemon's version and state path.
             Info = "info" (()) -> rpc::ServiceInfo, read;
+            /// Apply a hand edit of the daemon's store file.
+            Reload = "reload" (()) -> rpc::ReloadReport, write;
             /// A MAC hint for a manually entered TV, from the ARP cache.
             Enrich = "enrich" (rpc::Enrich) -> rpc::EnrichReply, read;
             /// A bounded scan; each finding streams back as its own reply.
@@ -324,6 +326,8 @@ pub mod user_profile {
             Effective = "effective" (rpc::TvRef) -> tisvlay_core::ResolvedUserProfile, read;
             /// Assign (or unassign) a user profile to a TV.
             Assign = "assign" (rpc::UserAssign) -> rpc::Ack, write;
+            /// Apply a hand edit of the session's store file.
+            Reload = "reload" (()) -> rpc::ReloadReport, write;
         }
     }
 }
@@ -364,6 +368,8 @@ pub mod user_tray {
             Test = "test" (()) -> rpc::Ack, write;
             /// The tray's version and state path.
             Info = "info" (()) -> rpc::ServiceInfo, read;
+            /// Apply a hand edit of the tray's settings file.
+            Reload = "reload" (()) -> rpc::ReloadReport, write;
         }
     }
 }

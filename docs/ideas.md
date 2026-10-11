@@ -26,13 +26,11 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](ideas/zenoh-typed-queryables.md)
 - [SDK methods for the rpcs only the CLI reaches (add-tv, discover, user effective)](ideas/sdk-cli-only-rpcs.md)
 - [Prune core's unused error vocabularies (`PowerError`, `PowerErrorCode`, `ConfigErrorCode`)](ideas/core-error-vocabulary-pruning.md)
-- [Reload config from disk (daemon, session, tray): the dead "Reload config" button](ideas/reload-config.md)
 - [A typed `update-config` request (settings fields + flattened vendor map)](ideas/typed-update-config.md)
 
 ## Operational
 
 - [User service auto-start after `nixos-rebuild switch`](ideas/nixos-user-service-auto-start.md)
-- [Atomic config writes (tempfile + rename)](ideas/atomic-config-writes.md)
 
 ## CLI
 

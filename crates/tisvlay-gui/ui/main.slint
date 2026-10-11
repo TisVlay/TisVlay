@@ -260,11 +260,11 @@ export component AppWindow inherits Window {
                     // Spacer pushes status to bottom
                     Rectangle { vertical-stretch: 1; }
 
-                    // Reload daemon config — power-user action. The daemon
-                    // re-reads `~/.config/tisvlay/config.toml` from disk;
-                    // useful only when someone edited the file outside the
-                    // GUI. Sits above the daemon/session status because
-                    // it's a daemon-scoped action.
+                    // Reload config — power-user action. The daemon, session
+                    // and tray each apply a hand edit of their state file
+                    // (daemon.toml, session.toml, tray.toml); useful only
+                    // when someone edited one outside the GUI. Sits above
+                    // the service status block it acts on.
                     Rectangle {
                         height: 28px;
                         background: reload-touch.has-hover && root.daemon-available
@@ -274,7 +274,7 @@ export component AppWindow inherits Window {
                         animate background { duration: 150ms; }
 
                         accessible-role: button;
-                        accessible-label: @tr("Reload daemon config");
+                        accessible-label: @tr("Reload config files");
                         accessible-enabled: root.daemon-available;
                         accessible-id: "sidebar-reload";
                         accessible-action-default => {
@@ -316,7 +316,7 @@ export component AppWindow inherits Window {
                         reload-help := HelpTrigger {
                             width: 100%;
                             height: 100%;
-                            text: @tr("Reload the daemon's config from disk — picks up edits made outside the app.");
+                            text: @tr("Reload the daemon, session and tray config files from disk — applies edits made outside the app.");
                         }
                         reload-touch := TouchArea {
                             enabled: root.daemon-available;

@@ -111,7 +111,16 @@ Vendor backends implement four `tisvlay-core` traits and register as one `Vendor
 
 ## Persistence
 
-The daemon's store is one TOML file (`/var/lib/tisvlay/daemon.toml` packaged, `--config` in dev) holding TVs (with credentials), settings, and system profiles. `snapshot_store` rebuilds the TV and profile table every step and emits a `Persist` effect only when it differs from the last snapshot persisted, so whatever reaches the world reaches the store and derived-only changes never write; the store task debounces and writes atomically (tmp + rename). A fresh enrollment still verifying its pairing stays out of the store, while a re-pairing TV stays in. Boot applies the store before the reactor runs: `serve` loads it, and `Reactor::seed` makes the loaded snapshot the diff baseline and replays its rows in one synchronous step, so replay writes nothing back and no step ever runs against a half-replayed table. `--seed` applies a bottom-layer config only when the daemon has none, with UUIDv5 content-derived identity so re-seeding never duplicates TVs. The session service persists user profiles the same way under `~/.config/tisvlay/session.toml`.
+The daemon's store is one TOML file (`/var/lib/tisvlay/daemon.toml` packaged, `--config` in dev) holding TVs (with credentials), settings, and system profiles. `snapshot_store` rebuilds the TV and profile table every step and emits a `Persist` effect only when it differs from the last snapshot persisted, so whatever reaches the world reaches the store and derived-only changes never write; the store task debounces and writes durably (`tisvlay_runtime::fs::write_atomic`: a 0600 temp file, fsync, rename, then a directory fsync). A fresh enrollment still verifying its pairing stays out of the store, while a re-pairing TV stays in. Boot applies the store before the reactor runs: `serve` loads it, and `Reactor::seed` makes the loaded snapshot the diff baseline and replays its rows in one synchronous step, so replay writes nothing back and no step ever runs against a half-replayed table. `--seed` applies a bottom-layer config only when the daemon has none, with UUIDv5 content-derived identity so re-seeding never duplicates TVs. The session service persists user profiles the same way under `~/.config/tisvlay/session.toml`.
+
+A hand edit of a state file applies on reload: the `reload` rpc of the daemon, session or tray (the GUI's Reload button, `tisvlay reload`), or SIGHUP for the daemon (`systemctl reload`). The store writer owns the record of what's on disk, meaning the snapshot it last wrote or loaded at boot. `LastPersisted` can't serve, because it holds what the world *sent*, which may still be waiting out the debounce. A reload is a three-way merge:
+- the writer reads the file, refusing a missing or unparsable one (never read as empty), and hands over the edit since its record;
+- the world (or the session's core) applies only that difference, so changes still awaiting their write survive, and the file wins where both changed a field;
+- the edit is validated whole first, then applied through the client commands' helpers;
+- the writer holds its writes until the outcome arrives, and a successful reload makes the file its new record;
+- before any write, a file that no longer holds the writer's record (an edit nobody reloaded) is moved to `<file>.edited` with a warning instead of being overwritten.
+
+The tray writes every update before answering, so its file only differs after a hand edit, which applies whole.
 
 ## Watchers
 

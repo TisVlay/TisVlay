@@ -16,6 +16,7 @@ use anyhow::{Context, Result, anyhow};
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
 use tisvlay_wire::endpoint::user_tray;
+use tisvlay_wire::error::WireError;
 use tisvlay_wire::{keys, rpc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -155,25 +156,38 @@ pub fn load_settings(path: &Path) -> Result<NotificationSettings> {
     }
 }
 
-fn save_settings(path: &Path, settings: &NotificationSettings) {
+/// `tray.toml` as a reload sees it: a missing or unparsable file is
+/// refused rather than read as the defaults.
+fn read_for_reload(path: &Path) -> Result<NotificationSettings, WireError> {
+    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
+    toml::from_str::<PersistedSettings>(&text)
+        .map(|persisted| persisted.settings)
+        .map_err(|e| WireError::store_unreadable(path, e))
+}
+
+/// Durably replace `tray.toml` (`write_atomic`: temp file, fsync,
+/// rename), off the async runtime since the fsyncs block.
+async fn save_settings(path: &Path, settings: &NotificationSettings) {
     let persisted = PersistedSettings {
         version: schema_v1(),
         settings: *settings,
     };
-    let Ok(text) = toml::to_string_pretty(&persisted) else {
-        return;
+    let text = match toml::to_string_pretty(&persisted) {
+        Ok(text) => text,
+        Err(e) => {
+            warn!(%e, "tray config serialize failed");
+            return;
+        }
     };
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        warn!(%e, "tray config dir create failed");
-        return;
-    }
-    let tmp = path.with_extension("toml.tmp");
-    if std::fs::write(&tmp, text).is_ok()
-        && let Err(e) = std::fs::rename(&tmp, path)
-    {
-        warn!(%e, "tray config write failed");
+    let path = path.to_path_buf();
+    let written = tokio::task::spawn_blocking(move || {
+        tisvlay_runtime::fs::write_atomic(&path, text.as_bytes())
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!(%e, "tray config write failed"),
+        Err(e) => warn!(%e, "tray config write task failed"),
     }
 }
 
@@ -236,7 +250,7 @@ pub async fn serve_settings(
             user_tray::Incoming::Update(patch, responder) => {
                 settings = settings.merged_with(&patch);
                 notifier.set_enabled(settings);
-                save_settings(&config_path, &settings);
+                save_settings(&config_path, &settings).await;
                 publish(settings).await;
                 responder.ok(&settings).await;
             }
@@ -250,6 +264,26 @@ pub async fn serve_settings(
                     state_path: config_path.display().to_string(),
                 };
                 responder.ok(&info).await;
+            }
+            user_tray::Incoming::Reload((), responder) => {
+                // Every update is written before it's answered, so the
+                // file only differs from `settings` after a hand edit,
+                // which then applies whole. Unlike boot, a missing or
+                // unparsable file is refused rather than defaulted.
+                let reloaded = read_for_reload(&config_path).map(|disk| {
+                    let changed = disk != settings;
+                    if changed {
+                        settings = disk;
+                        notifier.set_enabled(settings);
+                    }
+                    changed
+                });
+                if reloaded == Ok(true) {
+                    publish(settings).await;
+                }
+                responder
+                    .answer(reloaded.map(|changed| rpc::ReloadReport { changed }))
+                    .await;
             }
         }
     }
