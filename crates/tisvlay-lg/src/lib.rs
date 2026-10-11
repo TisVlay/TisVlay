@@ -25,7 +25,7 @@ pub(crate) mod test_server;
 // endpoint constants stay private, so protocol changes (LG firmware moves)
 // never ripple into this crate's semver.
 pub use backend::LgBackend;
-pub use config::LgVendorConfig;
+pub use config::{LgVendorConfig, WebOsScheme};
 pub use connector::LgConnector;
 
 #[cfg(feature = "discovery")]

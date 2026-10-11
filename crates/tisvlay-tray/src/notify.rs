@@ -156,39 +156,52 @@ pub fn load_settings(path: &Path) -> Result<NotificationSettings> {
     }
 }
 
-/// `tray.toml` as a reload sees it: a missing or unparsable file is
-/// refused rather than read as the defaults.
-fn read_for_reload(path: &Path) -> Result<NotificationSettings, WireError> {
-    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
-    toml::from_str::<PersistedSettings>(&text)
+/// `tray.toml` as a reload sees it. A missing or unparsable file is
+/// refused rather than read as the defaults, unless `record` (what the
+/// tray last wrote or loaded) is still the defaults: nothing has been
+/// written yet (a fresh install), so there's no file to have edited.
+fn read_for_reload(
+    path: &Path,
+    record: NotificationSettings,
+) -> Result<NotificationSettings, WireError> {
+    if matches!(path.try_exists(), Ok(false)) && record == NotificationSettings::default() {
+        return Ok(record);
+    }
+    tisvlay_runtime::fs::read_toml::<PersistedSettings>(path)
         .map(|persisted| persisted.settings)
-        .map_err(|e| WireError::store_unreadable(path, e))
+        .map_err(WireError::store_unreadable)
 }
 
-/// Durably replace `tray.toml` (`write_atomic`: temp file, fsync,
-/// rename), off the async runtime since the fsyncs block.
-async fn save_settings(path: &Path, settings: &NotificationSettings) {
+/// Durably write `tray.toml`, keeping a hand edit's comments and layout
+/// (`write_toml`), off the async runtime since the fsyncs block. A file
+/// that no longer holds `record`, what the tray last wrote, carries an
+/// edit nobody reloaded: it's kept aside first, as the daemon and session
+/// do. Returns whether the file now holds `settings`.
+async fn save_settings(
+    path: &Path,
+    settings: NotificationSettings,
+    record: NotificationSettings,
+) -> bool {
     let persisted = PersistedSettings {
         version: schema_v1(),
-        settings: *settings,
-    };
-    let text = match toml::to_string_pretty(&persisted) {
-        Ok(text) => text,
-        Err(e) => {
-            warn!(%e, "tray config serialize failed");
-            return;
-        }
+        settings,
     };
     let path = path.to_path_buf();
     let written = tokio::task::spawn_blocking(move || {
-        tisvlay_runtime::fs::write_atomic(&path, text.as_bytes())
+        let may_write =
+            tisvlay_runtime::fs::keep_unreloaded_edit::<PersistedSettings>(&path, |disk| {
+                disk.settings == record
+            });
+        may_write
+            && tisvlay_runtime::fs::write_toml(&path, &persisted)
+                .map_err(|e| warn!(%e, "tray config write failed"))
+                .is_ok()
     })
     .await;
-    match written {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!(%e, "tray config write failed"),
-        Err(e) => warn!(%e, "tray config write task failed"),
-    }
+    written.unwrap_or_else(|e| {
+        warn!(%e, "tray config write task failed");
+        false
+    })
 }
 
 /// Serve the settings on the user socket: cached pub + rpcs +
@@ -201,6 +214,10 @@ pub async fn serve_settings(
     notifier: Notifier,
 ) -> Result<()> {
     let mut settings = load_settings(&config_path).unwrap_or_default();
+    // What the file holds, as far as the tray knows: the base for its
+    // set-aside and its reloads. It trails `settings` only after a failed
+    // write.
+    let mut record = settings;
     notifier.set_enabled(settings);
 
     let publisher = user
@@ -250,7 +267,9 @@ pub async fn serve_settings(
             user_tray::Incoming::Update(patch, responder) => {
                 settings = settings.merged_with(&patch);
                 notifier.set_enabled(settings);
-                save_settings(&config_path, &settings).await;
+                if save_settings(&config_path, settings, record).await {
+                    record = settings;
+                }
                 publish(settings).await;
                 responder.ok(&settings).await;
             }
@@ -270,7 +289,8 @@ pub async fn serve_settings(
                 // file only differs from `settings` after a hand edit,
                 // which then applies whole. Unlike boot, a missing or
                 // unparsable file is refused rather than defaulted.
-                let reloaded = read_for_reload(&config_path).map(|disk| {
+                let reloaded = read_for_reload(&config_path, record).map(|disk| {
+                    record = disk;
                     let changed = disk != settings;
                     if changed {
                         settings = disk;
@@ -279,6 +299,7 @@ pub async fn serve_settings(
                     changed
                 });
                 if reloaded == Ok(true) {
+                    info!("applied a hand edit of the tray settings");
                     publish(settings).await;
                 }
                 responder

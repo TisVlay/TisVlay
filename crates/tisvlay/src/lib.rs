@@ -7,6 +7,7 @@
 //! the mirrors' own deltas. Failures are one [`Error`], named for what a
 //! caller can act on.
 
+mod desktop;
 mod error;
 mod mirror;
 
@@ -17,8 +18,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tisvlay_core::{
-    Capabilities, DesktopMapping, DiscoveredTv, HardwareId, PairingField, SystemProfileConfig,
-    UserProfileConfig,
+    Capabilities, DiscoveredTv, HardwareId, PairingField, SystemProfileConfig, UserProfileConfig,
 };
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{
@@ -26,6 +26,7 @@ use tisvlay_wire::endpoint::{
 };
 use tisvlay_wire::{bootstrap, keys, rpc};
 
+pub use desktop::DesktopMapping;
 pub use error::{BoxError, Error, Result, Service};
 pub use tisvlay_wire::error::ErrorCode;
 pub use tisvlay_wire::payload::{

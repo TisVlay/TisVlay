@@ -560,7 +560,8 @@ impl HasName for UserProfileBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay_core::{DesktopMapping, HardwareId, SessionAction};
+    use tisvlay::DesktopMapping;
+    use tisvlay_core::{HardwareId, SessionAction};
 
     /// Build a `TvInfo` with sensible defaults so each test only
     /// names the fields it cares about. `TvInfo` doesn't derive

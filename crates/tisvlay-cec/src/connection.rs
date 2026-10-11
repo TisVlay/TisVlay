@@ -36,7 +36,7 @@ const MONITOR_ERROR_BACKOFF: Duration = Duration::from_millis(500);
 
 /// A live CEC control handle for one TV.
 #[derive(Debug)]
-pub struct CecConnection {
+pub(crate) struct CecConnection {
     link: Box<dyn CecLink>,
     /// Shared with the `subscribe_state` monitor task so it can flip us to
     /// disconnected when its receive loop hits a real adapter disconnect —

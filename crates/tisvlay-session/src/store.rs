@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tisvlay_core::UserProfileConfig;
+use tisvlay_runtime::fs::TomlWrite;
 use tisvlay_wire::error::WireError;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -91,11 +92,15 @@ pub(crate) struct ReloadRequest {
     pub reply: oneshot::Sender<Result<UserStoreEdit, WireError>>,
 }
 
-/// The store file as a reload sees it: a missing file is refused rather
-/// than read as empty, which would drop every profile.
-fn read_for_reload(path: &Path) -> Result<UserStoreSnapshot, WireError> {
-    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
-    toml::from_str(&text).map_err(|e| WireError::store_unreadable(path, e))
+/// The store file as a reload sees it. A missing file is refused rather
+/// than read as empty, which would drop every profile, unless the
+/// writer's record is still the empty store: nothing has been written
+/// yet (a fresh install), so there's no file to have edited.
+fn read_for_reload(path: &Path, base: &UserStoreSnapshot) -> Result<UserStoreSnapshot, WireError> {
+    if matches!(path.try_exists(), Ok(false)) && same_content(base, &UserStoreSnapshot::default()) {
+        return Ok(base.clone());
+    }
+    tisvlay_runtime::fs::read_toml(path).map_err(WireError::store_unreadable)
 }
 
 /// Write the core's snapshots, coalescing bursts, and serve reloads.
@@ -123,6 +128,13 @@ pub(crate) async fn store_task(
                     if let Some(disk) = applied {
                         base = disk;
                     }
+                    // A snapshot held through the reload predates the
+                    // edit. Give it a fresh debounce, so the core's next
+                    // snapshot (the edit applied) replaces it rather than
+                    // racing it; it's still written if none comes.
+                    if pending.is_some() {
+                        due = Instant::now().checked_add(DEBOUNCE);
+                    }
                 }
                 None => {
                     if let Some(snapshot) = pending.take() {
@@ -132,7 +144,7 @@ pub(crate) async fn store_task(
                 }
             },
             Some(request) = reloads.recv(), if !reloading => {
-                let edit = read_for_reload(&path).map(|disk| UserStoreEdit {
+                let edit = read_for_reload(&path, &base).map(|disk| UserStoreEdit {
                     base: base.clone(),
                     disk,
                 });
@@ -154,7 +166,7 @@ pub(crate) async fn store_task(
     }
 }
 
-/// [`write_atomic`] off the async runtime, since the fsyncs block, after
+/// [`write_store`] off the async runtime, since the fsyncs block, after
 /// keeping aside a hand edit nobody reloaded (the file no longer holds
 /// `base`, what the writer last wrote). Returns the snapshot once it's on
 /// disk.
@@ -165,8 +177,11 @@ async fn write_blocking(
 ) -> Option<UserStoreSnapshot> {
     let path = path.to_path_buf();
     match tokio::task::spawn_blocking(move || {
-        keep_unreloaded_edit(&path, &base);
-        write_atomic(&path, &snapshot).then_some(snapshot)
+        let may_write =
+            tisvlay_runtime::fs::keep_unreloaded_edit::<UserStoreSnapshot>(&path, |disk| {
+                same_content(disk, &base)
+            });
+        (may_write && write_store(&path, &snapshot)).then_some(snapshot)
     })
     .await
     {
@@ -174,29 +189,6 @@ async fn write_blocking(
         Err(e) => {
             error!(%e, "user store write task failed");
             None
-        }
-    }
-}
-
-/// If the file no longer holds what the writer last wrote, someone edited
-/// it and never reloaded: move it aside to `<path>.edited` (with a
-/// warning) rather than overwrite the edit. A missing file has nothing to
-/// keep.
-fn keep_unreloaded_edit(path: &Path, base: &UserStoreSnapshot) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return;
-    };
-    if toml::from_str::<UserStoreSnapshot>(&text).is_ok_and(|disk| same_content(&disk, base)) {
-        return;
-    }
-    match tisvlay_runtime::fs::set_aside(path) {
-        Ok(aside) => warn!(
-            store = %path.display(),
-            aside = %aside.display(),
-            "the user store held an edit nobody reloaded; kept it aside before writing"
-        ),
-        Err(e) => {
-            error!(%e, store = %path.display(), "setting aside an unreloaded user store edit failed");
         }
     }
 }
@@ -212,22 +204,16 @@ fn same_content(a: &UserStoreSnapshot, b: &UserStoreSnapshot) -> bool {
         && sorted(&a.assignment, |a| a.tv) == sorted(&b.assignment, |a| a.tv)
 }
 
-/// Serialize and durably replace the store file (`write_atomic`:
-/// temp file, fsync, rename). Blocking; the store task runs it on
-/// `spawn_blocking`. Returns whether the file was written.
-fn write_atomic(path: &Path, snapshot: &UserStoreSnapshot) -> bool {
-    let text = match toml::to_string_pretty(snapshot) {
-        Ok(text) => text,
-        Err(e) => {
-            error!(%e, "user store serialize failed");
-            return false;
-        }
-    };
-    match tisvlay_runtime::fs::write_atomic(path, text.as_bytes()) {
-        Ok(()) => {
+/// Durably write the store file, keeping a hand edit's comments and
+/// layout (`write_toml`). Blocking; the store task runs it on
+/// `spawn_blocking`. Returns whether the file holds `snapshot`.
+fn write_store(path: &Path, snapshot: &UserStoreSnapshot) -> bool {
+    match tisvlay_runtime::fs::write_toml(path, snapshot) {
+        Ok(TomlWrite::Written) => {
             debug!(store = %path.display(), profiles = snapshot.profile.len(), assignments = snapshot.assignment.len(), "user store written");
             true
         }
+        Ok(TomlWrite::Unchanged) => true,
         Err(e) => {
             error!(%e, store = %path.display(), "user store write failed");
             false
@@ -259,9 +245,35 @@ mod tests {
                 profile,
             }],
         };
-        write_atomic(&path, &snapshot);
+        write_store(&path, &snapshot);
         assert_eq!(load_user_store(&path).unwrap(), snapshot);
         assert!(!path.with_extension("toml.tmp").exists(), "tmp cleaned up");
+    }
+
+    /// Nothing written yet (a fresh install): the missing file is the
+    /// writer's record, so a reload finds no edit rather than failing.
+    #[test]
+    fn a_reload_before_the_first_write_finds_no_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.toml");
+        let base = UserStoreSnapshot::default();
+        assert_eq!(read_for_reload(&path, &base).unwrap(), base);
+    }
+
+    /// A file the writer did write, then deleted, is refused: reading it
+    /// as empty would drop every profile.
+    #[test]
+    fn a_deleted_store_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.toml");
+        let base = UserStoreSnapshot {
+            profile: vec![UserProfileRecord {
+                id: Uuid::new_v4(),
+                body: UserProfileConfig::default(),
+            }],
+            ..UserStoreSnapshot::default()
+        };
+        assert!(read_for_reload(&path, &base).is_err());
     }
 
     #[test]

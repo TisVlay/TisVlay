@@ -356,6 +356,9 @@ pub mod payload {
         /// The daemon may not open the device node (`path` names it).
         #[serde(rename = "device.permission-denied")]
         DevicePermissionDenied,
+        /// A device failure this wire has no code for yet.
+        #[serde(rename = "device.unknown")]
+        DeviceUnknown,
     }
 
     impl FailureCode {
@@ -369,6 +372,7 @@ pub mod payload {
                 Self::PairingCancelled => "pairing.cancelled",
                 Self::PairingUnknown => "pairing.unknown",
                 Self::DevicePermissionDenied => "device.permission-denied",
+                Self::DeviceUnknown => "device.unknown",
             }
         }
     }
@@ -401,8 +405,9 @@ pub mod payload {
                 tisvlay_core::errors::DeviceErrorCode::PermissionDenied => {
                     Self::DevicePermissionDenied
                 }
-                // As above: a device code this wire doesn't know yet.
-                _ => Self::PairingUnknown,
+                // As above, in the device family: a code this wire
+                // doesn't know yet.
+                _ => Self::DeviceUnknown,
             }
         }
     }
@@ -486,8 +491,8 @@ pub mod payload {
         use super::*;
         use tisvlay_core::{Credentials, InputType, PairingError, PairingState};
 
-        /// Each code's wire token is core's, so clients that print it
-        /// see the same reason names as before.
+        /// Each code's wire token matches core's `as_str()`, so clients
+        /// print the reason names core defines.
         #[test]
         fn failure_codes_keep_core_tokens() {
             use tisvlay_core::PairingErrorCode as P;
@@ -506,6 +511,7 @@ pub mod payload {
             for code in [
                 FailureCode::PairingRejected,
                 FailureCode::DevicePermissionDenied,
+                FailureCode::DeviceUnknown,
             ] {
                 let json = serde_json::to_value(code).unwrap();
                 assert_eq!(json, code.as_str());
@@ -514,7 +520,7 @@ pub mod payload {
         }
 
         /// Every phase the world publishes decodes, `awaiting_network`
-        /// included (the SDK used to drop phases it didn't list).
+        /// included.
         #[test]
         fn every_power_phase_decodes() {
             for phase in [
@@ -1227,11 +1233,12 @@ pub mod error {
             }
         }
 
-        /// `path` couldn't be read or parsed, for `reason`.
-        pub fn store_unreadable(path: &std::path::Path, reason: impl std::fmt::Display) -> Self {
+        /// A state file couldn't be read or parsed; `report` says where
+        /// and why, for a person to read.
+        pub fn store_unreadable(report: impl Into<String>) -> Self {
             Self {
                 code: ErrorCode::StoreUnreadable,
-                message: format!("can't reload {}: {reason}", path.display()),
+                message: report.into(),
             }
         }
     }

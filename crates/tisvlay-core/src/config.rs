@@ -263,6 +263,27 @@ macro_rules! profile_plumbing {
                 }
             }
 
+            /// Merge a hand edit of the store file into `self`, the
+            /// current profile: each field (and the name) takes `disk`'s
+            /// value where it differs from `base`, the profile as last
+            /// written, and keeps `self`'s otherwise. A change still
+            /// waiting to be written survives an edit to another field.
+            #[must_use]
+            pub fn merge_edit(&self, base: &$config, disk: &$config) -> $config {
+                $config {
+                    name: if disk.name == base.name {
+                        self.name.clone()
+                    } else {
+                        disk.name.clone()
+                    },
+                    $($field: if disk.$field == base.$field {
+                        self.$field
+                    } else {
+                        disk.$field
+                    },)+
+                }
+            }
+
             /// Resolve to concrete values, filling `None` fields from
             /// `$resolved::default()`.
             pub fn resolve(&self) -> $resolved {
@@ -626,6 +647,27 @@ pub const DEFAULT_PROFILE_NAME: &str = "default";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hand_edit_merges_into_a_profile_field_by_field() {
+        let base = SystemProfileConfig::full_default();
+        let mut current = base.clone();
+        current.on_sleep = Some(EventAction::from(SessionAction::ScreenOff));
+        let mut disk = base.clone();
+        disk.idle_timeout_seconds = Some(42);
+        disk.name = "Edited".into();
+        let merged = current.merge_edit(&base, &disk);
+        assert_eq!(
+            merged.on_sleep, current.on_sleep,
+            "a pending change survives"
+        );
+        assert_eq!(merged.idle_timeout_seconds, Some(42), "the edit applies");
+        assert_eq!(merged.name, "Edited");
+        // Both changed the same field: the file wins.
+        let mut both = base.clone();
+        both.on_sleep = Some(EventAction::from(SessionAction::None));
+        assert_eq!(current.merge_edit(&base, &both).on_sleep, both.on_sleep);
+    }
 
     #[test]
     fn event_action_while_remote_gate_serde_shapes() {

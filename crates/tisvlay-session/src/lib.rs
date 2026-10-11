@@ -974,25 +974,32 @@ impl Core {
         });
     }
 
+    /// The persisted form, sorted by id: the maps iterate in no fixed
+    /// order, and a stable one keeps unchanged writes skipped and a hand
+    /// comment next to its entry.
     fn snapshot(&self) -> UserStoreSnapshot {
+        let mut profile: Vec<UserProfileRecord> = self
+            .profiles
+            .iter()
+            .map(|(id, body)| UserProfileRecord {
+                id: *id,
+                body: body.clone(),
+            })
+            .collect();
+        profile.sort_by_key(|record| record.id);
+        let mut assignment: Vec<Assignment> = self
+            .assignments
+            .iter()
+            .map(|(tv, profile)| Assignment {
+                tv: *tv,
+                profile: *profile,
+            })
+            .collect();
+        assignment.sort_by_key(|assignment| assignment.tv);
         UserStoreSnapshot {
             version: UserStoreSnapshot::default().version,
-            profile: self
-                .profiles
-                .iter()
-                .map(|(id, body)| UserProfileRecord {
-                    id: *id,
-                    body: body.clone(),
-                })
-                .collect(),
-            assignment: self
-                .assignments
-                .iter()
-                .map(|(tv, profile)| Assignment {
-                    tv: *tv,
-                    profile: *profile,
-                })
-                .collect(),
+            profile,
+            assignment,
         }
     }
 
@@ -1023,6 +1030,7 @@ impl Core {
             let _ = tx.send(store::StoreMsg::Reloaded(applied));
         }
         if result.as_ref().is_ok_and(|report| report.changed) {
+            info!("applied a hand edit of the user store");
             self.persist();
         }
         result
@@ -1032,6 +1040,23 @@ impl Core {
         &mut self,
         edit: &store::UserStoreEdit,
     ) -> Result<rpc::ReloadReport, WireError> {
+        // Ids key the merge, so a file that repeats one is ambiguous.
+        fn first_duplicate(ids: impl IntoIterator<Item = Uuid>) -> Option<Uuid> {
+            let mut seen = HashSet::new();
+            ids.into_iter().find(|&id| !seen.insert(id))
+        }
+        if let Some(id) = first_duplicate(edit.disk.profile.iter().map(|record| record.id)) {
+            return Err(WireError::bad_request(format!(
+                "the file lists profile {id} twice"
+            )));
+        }
+        if let Some(tv) =
+            first_duplicate(edit.disk.assignment.iter().map(|assignment| assignment.tv))
+        {
+            return Err(WireError::bad_request(format!(
+                "the file assigns TV {tv} twice"
+            )));
+        }
         let index_profiles = |snapshot: &UserStoreSnapshot| -> HashMap<Uuid, UserProfileConfig> {
             snapshot
                 .profile
@@ -1050,10 +1075,19 @@ impl Core {
             (index_profiles(&edit.base), index_profiles(&edit.disk));
         let (base_assigned, disk_assigned) =
             (index_assignments(&edit.base), index_assignments(&edit.disk));
-        let changed_profiles: Vec<(Uuid, &UserProfileConfig)> = disk_profiles
+        // Per field: a client change to another field of the same profile,
+        // still waiting to be written, survives. A profile the file adds
+        // (or one the session no longer holds) takes the file's body.
+        let changed_profiles: Vec<(Uuid, UserProfileConfig)> = disk_profiles
             .iter()
             .filter(|(id, body)| base_profiles.get(id) != Some(*body))
-            .map(|(id, body)| (*id, body))
+            .map(|(id, disk)| {
+                let body = match (base_profiles.get(id), self.profiles.get(id)) {
+                    (Some(base), Some(current)) => current.merge_edit(base, disk),
+                    _ => disk.clone(),
+                };
+                (*id, body)
+            })
             .collect();
         let removed_profiles: Vec<Uuid> = base_profiles
             .keys()
@@ -1096,7 +1130,7 @@ impl Core {
         }
         let mut profiles_after = self.profiles.clone();
         for (id, body) in &changed_profiles {
-            profiles_after.insert(*id, (*body).clone());
+            profiles_after.insert(*id, body.clone());
         }
         for id in &removed_profiles {
             profiles_after.remove(id);
@@ -1121,7 +1155,7 @@ impl Core {
 
         // Apply: profiles first, so assignments name existing ones.
         for (id, body) in &changed_profiles {
-            self.profiles.insert(*id, (*body).clone());
+            self.profiles.insert(*id, body.clone());
             self.publish_profile(id, body).await;
         }
         for (tv, profile) in &changed_assignments {

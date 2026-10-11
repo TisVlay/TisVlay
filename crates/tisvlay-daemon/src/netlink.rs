@@ -1,6 +1,6 @@
 //! Kernel network monitor: route resolution (TV IP → NIC name) plus
-//! link-carrier monitoring via rtnetlink. Kernel-level — fires within milliseconds of
-//! a cable pull and needs no NetworkManager.
+//! link-carrier monitoring via rtnetlink. Kernel-level — fires within
+//! milliseconds of a cable pull and needs no NetworkManager.
 //!
 //! The reactor requests monitoring per network TV ([`RouteRequest`]);
 //! this module answers with `InEvent::RouteResolved` (at request time
@@ -42,7 +42,9 @@ use uuid::Uuid;
 const ROUTE_SETTLE: Duration = Duration::from_millis(100);
 
 /// Reconnect backoff after the kernel connection fails: doubling from the
-/// first bound up to the second.
+/// first bound up to the second. It starts over only after a connection
+/// stayed up for the second bound, so one that opens and dies at once
+/// backs off instead of retrying every second.
 const RECONNECT_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
 
@@ -64,10 +66,14 @@ async fn supervise(world: WorldClient, mut routes: mpsc::UnboundedReceiver<Route
     let mut state = MonitorState::default();
     let mut backoff = RECONNECT_MIN;
     loop {
-        let error = match watch_network(&world, &mut routes, &mut state, &mut backoff).await {
+        let started = tokio::time::Instant::now();
+        let error = match watch_network(&world, &mut routes, &mut state).await {
             Ok(()) => return,
             Err(error) => error,
         };
+        if started.elapsed() >= RECONNECT_MAX {
+            backoff = RECONNECT_MIN;
+        }
         warn!(error = %format!("{error:#}"), retry_in = ?backoff, "network monitor lost its kernel connection; reconnecting");
         let pause = tokio::time::sleep(backoff);
         tokio::pin!(pause);
@@ -137,21 +143,30 @@ impl MonitorState {
 }
 
 /// A link message's index, name and usability: physical carrier (cable)
-/// AND operational state (software up), the same rule as the root
-/// watcher. `None` for a link without a name.
+/// AND operational state (software up). An `UNKNOWN` operational state
+/// means the driver doesn't report one (loopback, tun, WireGuard,
+/// Tailscale), and the kernel's operstate documentation says to treat
+/// such an interface as usable, so it falls back to the flags: carrier
+/// and not dormant, the same fallback systemd-networkd uses. `None` for a
+/// link without a name.
 fn link_status(link: &LinkMessage) -> Option<(u32, String, bool)> {
-    let physical = link.header.flags.contains(LinkFlags::LowerUp);
-    let oper_up = link.attributes.iter().any(|attr| {
-        matches!(
-            attr,
-            LinkAttribute::OperState(netlink_packet_route::link::State::Up)
-        )
+    use netlink_packet_route::link::State;
+    let flags = link.header.flags;
+    let carrier = flags.contains(LinkFlags::LowerUp);
+    let oper = link.attributes.iter().find_map(|attr| match attr {
+        LinkAttribute::OperState(state) => Some(*state),
+        _ => None,
     });
+    let usable = match oper {
+        Some(State::Up) => carrier,
+        Some(State::Unknown) => carrier && !flags.contains(LinkFlags::Dormant),
+        _ => false,
+    };
     let name = link.attributes.iter().find_map(|attr| match attr {
         LinkAttribute::IfName(name) => Some(name.clone()),
         _ => None,
     })?;
-    Some((link.header.index, name, physical && oper_up))
+    Some((link.header.index, name, usable))
 }
 
 /// Forward an event to the world, logging it; false once the world is
@@ -173,7 +188,6 @@ async fn watch_network(
     world: &WorldClient,
     routes: &mut mpsc::UnboundedReceiver<RouteRequest>,
     state: &mut MonitorState,
-    backoff: &mut Duration,
 ) -> anyhow::Result<()> {
     // Subscribe before the resync dump, so no change falls between them.
     let (conn, _handle, mut messages) = new_multicast_connection(&[
@@ -189,7 +203,6 @@ async fn watch_network(
         if !resync(world, state).await? {
             return Ok(());
         }
-        *backoff = RECONNECT_MIN;
         info!("network monitor started");
         let mut settle_at: Option<tokio::time::Instant> = None;
         loop {
@@ -431,6 +444,40 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn link(flags: LinkFlags, oper: netlink_packet_route::link::State) -> LinkMessage {
+        let mut link = LinkMessage::default();
+        link.header.index = 7;
+        link.header.flags = flags;
+        link.attributes = vec![
+            LinkAttribute::IfName("if7".into()),
+            LinkAttribute::OperState(oper),
+        ];
+        link
+    }
+
+    #[test]
+    fn a_link_is_usable_with_carrier_and_an_up_or_unreported_state() {
+        use netlink_packet_route::link::State;
+        let usable = |flags, oper| link_status(&link(flags, oper)).map(|(_, _, usable)| usable);
+        let carrier = LinkFlags::Up | LinkFlags::LowerUp;
+        assert_eq!(usable(carrier, State::Up), Some(true));
+        // Loopback, tun and Tailscale report UNKNOWN while carrying
+        // traffic; reading them as down would park their TVs.
+        assert_eq!(usable(carrier, State::Unknown), Some(true));
+        assert_eq!(
+            usable(carrier | LinkFlags::Dormant, State::Unknown),
+            Some(false)
+        );
+        assert_eq!(usable(LinkFlags::Up, State::Up), Some(false), "no carrier");
+        assert_eq!(
+            usable(LinkFlags::Up, State::Unknown),
+            Some(false),
+            "no carrier"
+        );
+        assert_eq!(usable(carrier, State::Down), Some(false));
+        assert_eq!(usable(carrier, State::Dormant), Some(false));
+    }
 
     #[test]
     fn carrier_events_fire_on_changes_only() {

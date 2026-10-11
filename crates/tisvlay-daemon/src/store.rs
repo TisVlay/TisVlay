@@ -9,11 +9,12 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tisvlay_runtime::fs::TomlWrite;
 use tisvlay_wire::endpoint::manager;
 use tisvlay_world::{Command, Reply, StoreEdit, StoreMsg, StoreSnapshot, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 /// Load the store; a missing file is an empty store.
 pub fn load_store(path: &Path) -> Result<StoreSnapshot> {
@@ -29,8 +30,7 @@ pub fn load_store(path: &Path) -> Result<StoreSnapshot> {
 /// The store file as a reload sees it: unlike boot, a missing file is
 /// refused rather than read as empty, which would remove every TV.
 fn read_for_reload(path: &Path) -> Result<StoreSnapshot, WireError> {
-    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
-    toml::from_str(&text).map_err(|e| WireError::store_unreadable(path, e))
+    tisvlay_runtime::fs::read_toml(path).map_err(WireError::store_unreadable)
 }
 
 /// Debounce window between a snapshot arriving and the write landing.
@@ -72,6 +72,13 @@ pub(crate) async fn store_task(
                     if let Some(disk) = applied {
                         base = *disk;
                     }
+                    // A snapshot held through the reload predates the
+                    // edit. Give it a fresh debounce, so the world's next
+                    // snapshot (the edit applied) replaces it rather than
+                    // racing it; it's still written if none comes.
+                    if pending.is_some() {
+                        due = Instant::now().checked_add(DEBOUNCE);
+                    }
                 }
                 None => {
                     if let Some(snapshot) = pending.take() {
@@ -101,7 +108,7 @@ pub(crate) async fn store_task(
     }
 }
 
-/// [`write_atomic`] off the async runtime, since the fsyncs block, after
+/// [`write_store`] off the async runtime, since the fsyncs block, after
 /// keeping aside a hand edit nobody reloaded (the file no longer holds
 /// `base`, what the writer last wrote). Returns the snapshot once it's on
 /// disk.
@@ -112,8 +119,10 @@ async fn write_blocking(
 ) -> Option<StoreSnapshot> {
     let path = path.to_path_buf();
     match tokio::task::spawn_blocking(move || {
-        keep_unreloaded_edit(&path, &base);
-        write_atomic(&path, &snapshot).then_some(snapshot)
+        let may_write = tisvlay_runtime::fs::keep_unreloaded_edit::<StoreSnapshot>(&path, |disk| {
+            same_content(disk, &base)
+        });
+        (may_write && write_store(&path, &snapshot)).then_some(snapshot)
     })
     .await
     {
@@ -121,29 +130,6 @@ async fn write_blocking(
         Err(e) => {
             error!(%e, "store write task failed");
             None
-        }
-    }
-}
-
-/// If the file no longer holds what the writer last wrote, someone edited
-/// it and never reloaded: move it aside to `<path>.edited` (with a
-/// warning) rather than overwrite the edit. A missing file has nothing to
-/// keep.
-fn keep_unreloaded_edit(path: &Path, base: &StoreSnapshot) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return;
-    };
-    if toml::from_str::<StoreSnapshot>(&text).is_ok_and(|disk| same_content(&disk, base)) {
-        return;
-    }
-    match tisvlay_runtime::fs::set_aside(path) {
-        Ok(aside) => warn!(
-            store = %path.display(),
-            aside = %aside.display(),
-            "the store held an edit nobody reloaded; kept it aside before writing"
-        ),
-        Err(e) => {
-            error!(%e, store = %path.display(), "setting aside an unreloaded store edit failed");
         }
     }
 }
@@ -159,22 +145,16 @@ fn same_content(a: &StoreSnapshot, b: &StoreSnapshot) -> bool {
         && sorted(&a.system_profile, |p| p.id) == sorted(&b.system_profile, |p| p.id)
 }
 
-/// Serialize and durably replace the store file (`write_atomic`:
-/// temp file, fsync, rename). Blocking; the store task runs it on
-/// `spawn_blocking`. Returns whether the file was written.
-fn write_atomic(path: &Path, snapshot: &StoreSnapshot) -> bool {
-    let text = match toml::to_string_pretty(snapshot) {
-        Ok(text) => text,
-        Err(e) => {
-            error!(%e, "store serialize failed");
-            return false;
-        }
-    };
-    match tisvlay_runtime::fs::write_atomic(path, text.as_bytes()) {
-        Ok(()) => {
+/// Durably write the store file, keeping a hand edit's comments and
+/// layout (`write_toml`). Blocking; the store task runs it on
+/// `spawn_blocking`. Returns whether the file holds `snapshot`.
+fn write_store(path: &Path, snapshot: &StoreSnapshot) -> bool {
+    match tisvlay_runtime::fs::write_toml(path, snapshot) {
+        Ok(TomlWrite::Written) => {
             debug!(store = %path.display(), tvs = snapshot.tv.len(), profiles = snapshot.system_profile.len(), "store written");
             true
         }
+        Ok(TomlWrite::Unchanged) => true,
         Err(e) => {
             error!(%e, store = %path.display(), "store write failed");
             false
@@ -195,7 +175,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("daemon.toml");
         let base = StoreSnapshot::default();
-        assert!(write_atomic(&path, &base));
+        assert!(write_store(&path, &base));
         let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
         let (persist_tx, persist_rx) = mpsc::unbounded_channel();
         let (reload_tx, reload_rx) = mpsc::unbounded_channel();
@@ -234,6 +214,52 @@ mod tests {
         assert!(std::fs::read_to_string(&path).unwrap().contains("Pending"));
     }
 
+    /// A snapshot that waited out a reload predates its edit; the world's
+    /// next snapshot, the edit applied, must replace it rather than race
+    /// it to the file.
+    #[tokio::test]
+    async fn a_snapshot_held_through_a_reload_never_overwrites_the_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.toml");
+        let base = StoreSnapshot::default();
+        assert!(write_store(&path, &base));
+        let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
+        let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+        let (reload_tx, reload_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(store_task(
+            path.clone(),
+            base.clone(),
+            persist_rx,
+            reload_rx,
+            world,
+        ));
+        reload_tx.send(ReloadRequest { reply: None }).unwrap();
+        persist_tx
+            .send(StoreMsg::Persist(Box::new(one_tv("Stale"))))
+            .unwrap();
+        // Past the stale snapshot's deadline while the reload is out.
+        tokio::time::sleep(DEBOUNCE * 2).await;
+
+        // The hand edit the reload read, then applied.
+        let disk = one_tv("Hand edit");
+        assert!(write_store(&path, &disk));
+        persist_tx
+            .send(StoreMsg::Reloaded(Some(Box::new(disk.clone()))))
+            .unwrap();
+        persist_tx.send(StoreMsg::Persist(Box::new(disk))).unwrap();
+        let deadline = Instant::now() + DEBOUNCE * 3;
+        while Instant::now() < deadline {
+            assert!(
+                !std::fs::read_to_string(&path).unwrap().contains("Stale"),
+                "the stale snapshot reached the file"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        await_contains(&path, "Hand edit").await;
+        drop(persist_tx);
+        task.await.unwrap();
+    }
+
     fn one_tv(name: &str) -> StoreSnapshot {
         let mut snapshot = StoreSnapshot::default();
         snapshot.tv.push(TvRecord {
@@ -268,13 +294,13 @@ mod tests {
         let path = dir.path().join("daemon.toml");
         let aside = dir.path().join("daemon.toml.edited");
         let base = StoreSnapshot::default();
-        assert!(write_atomic(&path, &base));
+        assert!(write_store(&path, &base));
         let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
         let (persist_tx, persist_rx) = mpsc::unbounded_channel();
         let (_reload_tx, reload_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(store_task(path.clone(), base, persist_rx, reload_rx, world));
 
-        assert!(write_atomic(&path, &one_tv("Hand edit")));
+        assert!(write_store(&path, &one_tv("Hand edit")));
         persist_tx
             .send(StoreMsg::Persist(Box::new(one_tv("World"))))
             .unwrap();
@@ -287,7 +313,7 @@ mod tests {
 
         std::fs::remove_file(&aside).unwrap();
         let reloaded = one_tv("Reloaded edit");
-        assert!(write_atomic(&path, &reloaded));
+        assert!(write_store(&path, &reloaded));
         persist_tx
             .send(StoreMsg::Reloaded(Some(Box::new(reloaded))))
             .unwrap();
@@ -327,7 +353,7 @@ mod tests {
                 },
             }],
         };
-        write_atomic(&path, &snapshot);
+        write_store(&path, &snapshot);
         let loaded = load_store(&path).unwrap();
         assert_eq!(loaded, snapshot);
         assert!(!path.with_extension("toml.tmp").exists(), "tmp cleaned up");
@@ -362,7 +388,7 @@ scheme = "wss"
         assert!(shown.contains("client_key"), "{shown}");
         assert!(!shown.contains("lg-client-key-1234"), "{shown}");
 
-        write_atomic(&path, &loaded);
+        write_store(&path, &loaded);
         let reloaded = load_store(&path).unwrap();
         let lg: tisvlay_lg::LgVendorConfig = reloaded.tv[0].config.parse("lg").unwrap();
         assert_eq!(

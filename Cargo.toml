@@ -71,6 +71,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 secrecy = { version = "0.10", features = ["serde"] }
 toml = "1.1"
+# Format-preserving TOML: the state writers keep a hand edit's comments and
+# layout across their writes.
+toml_edit = "0.25"
+
+# The system's monospace family for the GUI (the font library Slint uses;
+# kept on the version Slint pins so the graph holds one copy).
+fontique = "0.11"
 
 # Error handling
 thiserror = "2"
@@ -145,9 +152,10 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 pipewire-native = "0.2"
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
-# `async` enables the tokio `AsyncDevice` wrapper. Default features (`cectool`, `tracing`) are dropped to avoid the
-# clap pull and the bundled CLI binary. LGPL-2.1 — carried via a per-crate
-# exception in packaging/licensing.
+# `async` enables the tokio `AsyncDevice` wrapper. Default features
+# (`cectool`, `tracing`) are dropped to avoid the clap pull and the bundled
+# CLI binary. LGPL-2.1 — carried via a per-crate exception in
+# packaging/licensing.
 linux-cec = { version = "0.2", default-features = false, features = ["async"] }
 
 # ABI-stable `EACCES` / `EPERM` constants to classify a `/dev/cecN` open

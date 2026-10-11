@@ -154,6 +154,70 @@ async fn a_reload_applies_the_hand_edit() {
     );
 }
 
+/// A profile merges per field like a TV: a client change to one field,
+/// still waiting to be written, survives a hand edit of another.
+#[tokio::test]
+async fn a_profile_change_awaiting_its_write_survives_a_reload() {
+    let id = Uuid::new_v4();
+    let base = snapshot(Vec::new(), vec![profile(id, "Evening")]);
+    let mut w = boot(&base).await;
+    let mut pending = profile(id, "Evening").body;
+    pending.on_sleep = Some(tisvlay_core::EventAction::from(
+        tisvlay_core::SessionAction::ScreenOff,
+    ));
+    w.client.command(Command::UpdateProfile {
+        id,
+        body: Box::new(pending.clone()),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut w.effects, |e| reply_to(e, 1)).await;
+    let mut edited = profile(id, "Evening");
+    edited.body.idle_timeout_seconds = Some(42);
+    w.reload(&base, &snapshot(Vec::new(), vec![edited])).await;
+
+    let persisted = std::iter::from_fn(|| w.store.try_recv().ok())
+        .filter_map(|msg| match msg {
+            StoreMsg::Persist(snapshot) => Some(snapshot),
+            StoreMsg::Reloaded(_) => None,
+        })
+        .last()
+        .expect("the reload persists");
+    let body = &persisted
+        .system_profile
+        .iter()
+        .find(|p| p.id == id)
+        .expect("the profile is kept")
+        .body;
+    assert_eq!(
+        body.on_sleep, pending.on_sleep,
+        "the pending change survives"
+    );
+    assert_eq!(body.idle_timeout_seconds, Some(42), "the hand edit applies");
+}
+
+/// Ids key the merge, so a file that repeats one is refused whole
+/// rather than spawning the TV twice.
+#[tokio::test]
+async fn a_file_that_repeats_an_id_is_refused() {
+    let base = snapshot(Vec::new(), Vec::new());
+    let mut w = boot(&base).await;
+    let id = Uuid::new_v4();
+    let disk = snapshot(
+        vec![
+            tv_record(id, "Hall", mock_config("mock://hall")),
+            tv_record(id, "Hall again", mock_config("mock://hall")),
+        ],
+        Vec::new(),
+    );
+    let seen = w.reload(&base, &disk).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 100)),
+        Some(ErrorCode::BadRequest),
+        "{seen:#?}"
+    );
+    assert_eq!(w.reloaded(), Some(false), "nothing applied");
+}
+
 #[tokio::test]
 async fn a_world_change_awaiting_its_write_survives_a_reload() {
     let id = Uuid::new_v4();

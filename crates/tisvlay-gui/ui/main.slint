@@ -7,7 +7,7 @@
 //   - Theming follows `Palette.color-scheme` (live xdg-desktop-portal),
 //     no app-level appearance toggle.
 //   - Convergence gating for slider values lives in Rust
-//     (`tisvlay-core::ReconcilerMap`); Slint stays a thin view.
+//     (`tisvlay_runtime::client::ReconcilerMap`); Slint stays a thin view.
 //   - Animations: see `widgets.slint` (`PulseDot`, `SpinnerArc`,
 //     `ScanLine`) and the per-call-site `animate background { ... }`
 //     hover transitions, all aligned with
@@ -386,6 +386,23 @@ export component AppWindow inherits Window {
                         }
                         dismissed => {
                             Errors.access = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                        }
+                    }
+                }
+
+                // App-level reload banner: a state file the sidebar's
+                // Reload couldn't apply. Above every pane, like the access
+                // banner, since the button belongs to no pane.
+                if Errors.reload.title != "" || Errors.reload.message != "": VerticalLayout {
+                    padding: Design.gap-stack;
+                    padding-bottom: 0;
+                    InlineError {
+                        tone: "error";
+                        title: Errors.reload.title;
+                        message: Errors.reload.message;
+                        message-font-family: Theme.mono-font;
+                        dismissed => {
+                            Errors.reload = { kind: "", tone: "", title: "", message: "", action-label: "" };
                         }
                     }
                 }

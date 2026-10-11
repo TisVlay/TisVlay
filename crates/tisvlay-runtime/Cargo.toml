@@ -35,8 +35,11 @@ wayland-protocols = { workspace = true, optional = true }
 # `poll`) wayland-backend itself uses to read events.
 rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
 
-# `fs`: crash-safe atomic file replacement for the services' state files
-# (no extra dependencies)
+# `fs`: crash-safe atomic file replacement for the services' state files,
+# and TOML writes that keep a hand edit's comments and layout
+serde = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+toml_edit = { workspace = true, optional = true }
 
 # `client`: the GUI's and tray's shared helpers (dispatch coalescing,
 # optimistic-state reconciliation, deduplicated refreshes, the
@@ -53,7 +56,7 @@ futures-util = { workspace = true, optional = true }
 [features]
 default = []
 access = ["dep:libc", "dep:socket2", "dep:anyhow"]
-fs = []
+fs = ["dep:serde", "dep:toml", "dep:toml_edit"]
 client = ["dep:tisvlay-core", "dep:uuid", "dep:parking_lot", "dep:tokio"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
 wayland = ["dep:tokio", "dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]

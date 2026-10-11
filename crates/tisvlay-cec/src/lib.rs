@@ -15,7 +15,6 @@ mod link;
 pub use address::{ParsePhysicalAddressError, PhysicalAddress};
 pub use backend::CecBackend;
 pub use config::CecVendorConfig;
-pub use connection::CecConnection;
 pub use connector::CecConnector;
 pub use discovery::CecDiscovery;
 
@@ -26,12 +25,13 @@ pub const VENDOR_ID: &str = "cec";
 pub const VENDOR_NAME: &str = "HDMI CEC";
 
 /// Out-of-crate test seam (`test-link` feature): the scripted CEC link
-/// doubles and the power vocabulary they speak.
+/// doubles and the vocabulary they speak.
 ///
-/// Test-only: `PowerStatus` is linux-cec's type, re-exported so a test can
-/// script a fake without depending on linux-cec. The feature is outside the
-/// crate's semver surface and follows linux-cec's releases.
+/// Test-only: `PowerStatus` and `VendorId` are linux-cec's types,
+/// re-exported so a test can script a fake without depending on
+/// linux-cec. The feature is outside the crate's semver surface and
+/// follows linux-cec's releases.
 #[cfg(any(test, feature = "test-link"))]
 pub use link::{FakeCecLink, FakeCecLinkOpener};
 #[cfg(any(test, feature = "test-link"))]
-pub use linux_cec::operand::PowerStatus;
+pub use linux_cec::{VendorId, operand::PowerStatus};

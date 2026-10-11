@@ -56,7 +56,7 @@ export component FieldRenderer {
         if root.is-line-edit: LineEditField {
             placeholder-text: root.field.placeholder;
             text: root.field.value;
-            font-family: root.is-mono ? "ui-monospace, monospace" : "";
+            font-family: root.is-mono ? Theme.mono-font : "";
             edited(v) => { root.value-edited(v); }
         }
         if root.field.field-type == "password": LineEdit {

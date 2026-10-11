@@ -39,6 +39,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 parking_lot = "0.12"
+fontique = { workspace = true }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 wl-clipboard-rs = "0.9"
 gettext-rs = "0.8"

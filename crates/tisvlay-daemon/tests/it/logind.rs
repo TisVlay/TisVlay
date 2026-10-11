@@ -1,8 +1,9 @@
 //! Consumed-D-Bus adapter test: a fake logind on a private bus drives the
 //! world's sleep/resume actions end to end (signal → system event → stock
-//! profile → mock backend → state publish on the wire).
+//! profile → mock backend → state publish on the wire), including after
+//! the watcher's bus connection is dropped.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -15,8 +16,23 @@ use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
-#[tokio::test(flavor = "multi_thread")]
-async fn logind_sleep_resume_drive_profile_actions() {
+type PowerSub =
+    zenoh_ext::AdvancedSubscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
+
+/// A daemon with one managed mock TV, already active, plus a fake logind
+/// on a private bus. The watcher is the test's to start.
+struct Fixture {
+    bus: PrivateBus,
+    fake: FakeLogind,
+    stack: tisvlay_daemon::Stack,
+    sub: PowerSub,
+    id: Uuid,
+    _client: zenoh::Session,
+    _dir: tempfile::TempDir,
+    _service_conn: zbus::Connection,
+}
+
+async fn fixture() -> Fixture {
     let bus = PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = FakeLogind::register(&service_conn)
@@ -37,11 +53,6 @@ async fn logind_sleep_resume_drive_profile_actions() {
     )
     .await
     .unwrap();
-    let watcher_conn = bus.connect().await.expect("watcher conn");
-    let world = stack.world.clone();
-    tokio::spawn(async move {
-        let _ = tisvlay_daemon::watch_logind(watcher_conn, world).await;
-    });
 
     let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
         .await
@@ -86,23 +97,93 @@ async fn logind_sleep_resume_drive_profile_actions() {
         .await
         .unwrap();
     wait_power(&sub, id, "active").await;
+    Fixture {
+        bus,
+        fake,
+        stack,
+        sub,
+        id,
+        _client: client,
+        _dir: dir,
+        _service_conn: service_conn,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logind_sleep_resume_drive_profile_actions() {
+    let f = fixture().await;
+    let watcher_conn = f.bus.connect().await.expect("watcher conn");
+    let world = f.stack.world.clone();
+    tokio::spawn(async move {
+        let _ = tisvlay_daemon::watch_logind(watcher_conn, world).await;
+    });
 
     // Give the watcher a beat to be subscribed before emitting.
     tokio::time::sleep(Duration::from_millis(300)).await;
     // Stock mapping (root-parity): sleep powers the TV off, resume wakes
     // it back through the wake dial.
-    fake.emit_prepare_for_sleep(true).await.unwrap();
-    wait_power(&sub, id, "standby").await;
+    f.fake.emit_prepare_for_sleep(true).await.unwrap();
+    wait_power(&f.sub, f.id, "standby").await;
 
-    fake.emit_prepare_for_sleep(false).await.unwrap();
-    wait_power(&sub, id, "active").await;
+    f.fake.emit_prepare_for_sleep(false).await.unwrap();
+    wait_power(&f.sub, f.id, "active").await;
 }
 
-async fn wait_power(
-    sub: &zenoh_ext::AdvancedSubscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
-    id: Uuid,
-    want: &str,
-) {
+/// The bus dropping the watcher's connection (as dbus-broker does to a
+/// peer whose user is over quota) must not end sleep handling: the
+/// supervisor reconnects and the next sleep still powers the TV off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_bus_connection_reconnects() {
+    let f = fixture().await;
+    let address = f.bus.address().to_owned();
+    let opened: Arc<Mutex<Vec<zbus::Connection>>> = Arc::default();
+    let connect = {
+        let opened = opened.clone();
+        move || {
+            let address = address.clone();
+            let opened = opened.clone();
+            async move {
+                let connection = zbus::connection::Builder::address(address.as_str())?
+                    .build()
+                    .await?;
+                opened.lock().unwrap().push(connection.clone());
+                Ok(connection)
+            }
+        }
+    };
+    tokio::spawn(tisvlay_daemon::supervise_logind(
+        f.stack.world.clone(),
+        connect,
+        Duration::from_millis(50),
+    ));
+
+    let first = wait_connections(&opened, 1).await;
+    first.close().await.expect("close the watcher's connection");
+    let _reconnected = wait_connections(&opened, 2).await;
+
+    // Give the new watch a beat to subscribe before emitting.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    f.fake.emit_prepare_for_sleep(true).await.unwrap();
+    wait_power(&f.sub, f.id, "standby").await;
+}
+
+/// The `n`th connection the supervisor opened, once it has opened that
+/// many.
+async fn wait_connections(opened: &Mutex<Vec<zbus::Connection>>, n: usize) -> zbus::Connection {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(connection) = opened.lock().unwrap().get(n - 1) {
+            return connection.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the supervisor never opened connection {n}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_power(sub: &PowerSub, id: Uuid, want: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let sample = tokio::time::timeout_at(deadline, sub.recv_async())

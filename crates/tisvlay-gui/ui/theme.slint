@@ -96,6 +96,9 @@ export global Theme {
     // stays at the default below — Breeze's own blue
     // (Selection:BackgroundNormal / DecorationFocus, 61,174,233).
     in-out property <color> accent: #3daee9;
+    // The desktop's monospace family by name, set from Rust at startup;
+    // empty, the default font, until it lands.
+    in-out property <string> mono-font;
     // Hover / pressed state for filled accent buttons. Light mode darkens,
     // dark mode brightens, so the bg shift stays visible against the
     // surface in either scheme.
