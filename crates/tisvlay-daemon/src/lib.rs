@@ -158,17 +158,32 @@ impl Stack {
         let Self {
             daemon, mut tasks, ..
         } = self;
-        let outcome = tokio::select! {
-            () = shutdown => Ok(()),
-            joined = &mut tasks.reactor => Err(match joined {
-                Ok(()) => anyhow!("world reactor stopped"),
-                Err(e) => anyhow::Error::new(e).context("world reactor ended"),
-            }),
-            joined = &mut tasks.bridge => Err(match joined {
-                Ok(Ok(())) => anyhow!("zenoh bridge stopped"),
-                Ok(Err(e)) => e.context("zenoh bridge failed"),
-                Err(e) => anyhow::Error::new(e).context("zenoh bridge ended"),
-            }),
+        let outcome = {
+            let store_ended = async {
+                match tasks.store.as_mut() {
+                    Some(store) => store.await,
+                    None => std::future::pending().await,
+                }
+            };
+            // Biased: when the world dies its store channel closes too, and
+            // the world is the cause worth naming.
+            tokio::select! {
+                biased;
+                () = shutdown => Ok(()),
+                joined = &mut tasks.reactor => Err(match joined {
+                    Ok(()) => anyhow!("world reactor stopped"),
+                    Err(e) => anyhow::Error::new(e).context("world reactor ended"),
+                }),
+                joined = &mut tasks.bridge => Err(match joined {
+                    Ok(Ok(())) => anyhow!("zenoh bridge stopped"),
+                    Ok(Err(e)) => e.context("zenoh bridge failed"),
+                    Err(e) => anyhow::Error::new(e).context("zenoh bridge ended"),
+                }),
+                joined = store_ended => Err(match joined {
+                    Ok(()) => anyhow!("store writer stopped"),
+                    Err(e) => anyhow::Error::new(e).context("store writer ended"),
+                }),
+            }
         };
         match &outcome {
             Ok(()) => info!("shutting down"),
@@ -187,6 +202,7 @@ impl Stack {
             tasks.bridge.abort();
         }
         if let Some(store) = tasks.store
+            && !store.is_finished()
             && tokio::time::timeout(STORE_FLUSH_TIMEOUT, store)
                 .await
                 .is_err()
