@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TvState {
     /// Raw, vendor-reported power state. Updated by [`TvState::update_power`]
     /// alongside the derived [`Self::is_on`] / [`Self::is_screen_on`]

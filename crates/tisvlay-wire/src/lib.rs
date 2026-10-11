@@ -388,7 +388,9 @@ pub mod payload {
                 PairingErrorCode::ConnectionFailed => Self::PairingConnectionFailed,
                 PairingErrorCode::InvalidInput => Self::PairingInvalidInput,
                 PairingErrorCode::Cancelled => Self::PairingCancelled,
-                PairingErrorCode::Unknown => Self::PairingUnknown,
+                // Core's codes are non-exhaustive: one this wire doesn't
+                // know yet reads as unknown until it gets a variant here.
+                PairingErrorCode::Unknown | _ => Self::PairingUnknown,
             }
         }
     }
@@ -399,6 +401,8 @@ pub mod payload {
                 tisvlay_core::errors::DeviceErrorCode::PermissionDenied => {
                     Self::DevicePermissionDenied
                 }
+                // As above: a device code this wire doesn't know yet.
+                _ => Self::PairingUnknown,
             }
         }
     }

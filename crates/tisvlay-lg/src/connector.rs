@@ -26,6 +26,7 @@ const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Factory for creating LG WebOS connections.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct LgConnector;
 
 impl LgConnector {

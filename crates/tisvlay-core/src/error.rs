@@ -14,6 +14,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// This enum is designed to be vendor-agnostic, with backend-specific errors
 /// wrapped in the [`Backend`](Error::Backend) variant.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Connection failed (boxed to keep Error small).
     #[error("Connection failed: {0}")]

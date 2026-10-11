@@ -654,8 +654,8 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             tisvlay_lg::VENDOR_NAME,
             Arc::new(tisvlay_lg::LgConnector::new()),
         )
-        .with_capabilities(caps(&tisvlay_lg::LgBackend))
-        .with_retry(tisvlay_lg::LgBackend.verify_retry_config())
+        .with_capabilities(caps(&tisvlay_lg::LgBackend::new()))
+        .with_retry(tisvlay_lg::LgBackend::new().verify_retry_config())
         // Pinned SSDP source port: LG TVs reply unicast from ephemeral
         // ports TO this port, so it must match the firewall's allowed UDP
         // port — see docs/firewall.md at the repo root.
@@ -665,8 +665,8 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             tisvlay_cec::VENDOR_NAME,
             Arc::new(tisvlay_cec::CecConnector::new()),
         )
-        .with_capabilities(caps(&tisvlay_cec::CecBackend))
-        .with_retry(tisvlay_cec::CecBackend.verify_retry_config())
+        .with_capabilities(caps(&tisvlay_cec::CecBackend::new()))
+        .with_retry(tisvlay_cec::CecBackend::new().verify_retry_config())
         .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
     let mut stack = serve(

@@ -12,6 +12,7 @@ use tisvlay_core::{Capabilities, TvBackend};
 ///
 /// This provides metadata about the LG WebOS backend and its capabilities.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct LgBackend;
 
 impl LgBackend {
