@@ -57,7 +57,8 @@ enum Command {
     /// socket group (one-click, authenticated via polkit). Log out and
     /// back in afterward for it to take effect.
     EnableAccess,
-    /// Probe the daemon's liveliness token.
+    /// Probe the daemon's liveliness token and report its release; fails
+    /// when the daemon is absent or runs a release this CLI can't talk to.
     Status,
     /// Apply hand edits of the state files: the daemon's, the session's
     /// and the tray's (what the GUI's Reload button does).
@@ -357,11 +358,16 @@ async fn run() -> Result<()> {
     let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
     // Commands that send the daemon rpcs check its release first; `status`
-    // reports it, `watch` is a passive view, and the user-socket commands
-    // check the session service instead.
+    // reports it, `watch` is a passive view, the user-socket commands
+    // check the session service instead, and `reload` checks each service
+    // it reloads.
     if !matches!(
         cli.command,
-        Command::Status | Command::Watch | Command::UserProfile(_) | Command::RemoteSession(_)
+        Command::Status
+            | Command::Watch
+            | Command::UserProfile(_)
+            | Command::RemoteSession(_)
+            | Command::Reload
     ) {
         check_release::<manager::Info>(&caller, "daemon").await?;
     }
@@ -1197,7 +1203,11 @@ async fn reload(
     site: &str,
     json_out: bool,
 ) -> Result<()> {
-    let daemon = caller.call::<manager::Reload>(&(), &()).await;
+    let daemon = match release_mismatch::<manager::Info>(caller, "daemon").await {
+        Err(_) => ReloadOutcome::NotRunning,
+        Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
+        Ok(None) => reload_outcome(Some(caller.call::<manager::Reload>(&(), &()).await)),
+    };
     let user_socket =
         user_socket.unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
     let user = match zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?).await {
@@ -1207,21 +1217,19 @@ async fn reload(
     let (session, tray) = match &user {
         Some(user) => (
             match release_mismatch::<user_profile::Info>(user, "session service").await {
-                Some(mismatch) => ReloadOutcome::Failed(mismatch),
-                None => reload_outcome(Some(user.call::<user_profile::Reload>(&(), &()).await)),
+                Err(_) => ReloadOutcome::NotRunning,
+                Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
+                Ok(None) => reload_outcome(Some(user.call::<user_profile::Reload>(&(), &()).await)),
             },
             match release_mismatch::<user_tray::Info>(user, "tray").await {
-                Some(mismatch) => ReloadOutcome::Failed(mismatch),
-                None => reload_outcome(Some(user.call::<user_tray::Reload>(&(), &()).await)),
+                Err(_) => ReloadOutcome::NotRunning,
+                Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
+                Ok(None) => reload_outcome(Some(user.call::<user_tray::Reload>(&(), &()).await)),
             },
         ),
         None => (ReloadOutcome::NotRunning, ReloadOutcome::NotRunning),
     };
-    let outcomes = [
-        ("daemon", reload_outcome(Some(daemon))),
-        ("session", session),
-        ("tray", tray),
-    ];
+    let outcomes = [("daemon", daemon), ("session", session), ("tray", tray)];
     if json_out {
         let report: serde_json::Map<String, Value> = outcomes
             .iter()
@@ -1335,15 +1343,24 @@ async fn status(
             })
         );
     }
+    let healthy = alive && compatible != Some(false);
+    if json_out {
+        if !healthy {
+            #[expect(
+                clippy::exit,
+                reason = "`status --json` reports a missing or incompatible daemon as exit code 1 after printing its JSON, with no error text"
+            )]
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if alive {
-        if !json_out {
-            println!("daemon alive: site '{site}' at {}", socket.display());
-            if let Some(release) = &release {
-                println!(
-                    "daemon release: {release} (this CLI: {})",
-                    tisvlay_protocol::VERSION
-                );
-            }
+        println!("daemon alive: site '{site}' at {}", socket.display());
+        if let Some(release) = &release {
+            println!(
+                "daemon release: {release} (this CLI: {})",
+                tisvlay_protocol::VERSION
+            );
         }
         if compatible == Some(false) {
             bail!(
@@ -1353,12 +1370,6 @@ async fn status(
             );
         }
         Ok(())
-    } else if json_out {
-        #[expect(
-            clippy::exit,
-            reason = "`status --json` reports a missing daemon as exit code 1 after printing its JSON, with no error text"
-        )]
-        std::process::exit(1);
     } else {
         bail!(
             "no daemon liveliness token for site '{site}' at {}",
@@ -1368,32 +1379,44 @@ async fn status(
 }
 
 /// Refuse to send rpcs to a service on a release this CLI can't talk to
-/// (a different `major.minor`). A service that doesn't answer isn't
-/// checked: the command reports that itself.
+/// (a different `major.minor`), or to one that isn't there at all, which
+/// fails here rather than waiting out the command's own rpc too. A service
+/// that's there but doesn't answer `info` isn't checked: the command
+/// reports that itself.
 async fn check_release<R>(caller: &Caller, service: &str) -> Result<()>
 where
     R: Unary<Target = (), Request = (), Response = rpc::ServiceInfo>,
 {
     match release_mismatch::<R>(caller, service).await {
-        Some(mismatch) => bail!("{mismatch}"),
-        None => Ok(()),
+        Err(e) => bail!("the {service} isn't running ({e})"),
+        Ok(Some(mismatch)) => bail!("{mismatch}"),
+        Ok(None) => Ok(()),
     }
 }
 
 /// The mismatch message when `service` answers its `info` rpc with a
-/// release this CLI can't talk to.
-async fn release_mismatch<R>(caller: &Caller, service: &str) -> Option<String>
+/// release this CLI can't talk to. `Err` when no service is there at all
+/// ([`RpcError::Unavailable`]); any other failure to ask counts as no
+/// mismatch, for the command to report.
+async fn release_mismatch<R>(
+    caller: &Caller,
+    service: &str,
+) -> std::result::Result<Option<String>, RpcError>
 where
     R: Unary<Target = (), Request = (), Response = rpc::ServiceInfo>,
 {
-    let info = caller.call::<R>(&(), &()).await.ok()?;
-    (!tisvlay_protocol::compatible(tisvlay_protocol::VERSION, &info.version)).then(|| {
+    let info = match caller.call::<R>(&(), &()).await {
+        Ok(info) => info,
+        Err(e @ RpcError::Unavailable { .. }) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    Ok((!tisvlay_protocol::compatible(tisvlay_protocol::VERSION, &info.version)).then(|| {
         format!(
             "the {service} runs release {}, which this CLI ({}) can't talk to; restart it or upgrade so they match",
             info.version,
             tisvlay_protocol::VERSION
         )
-    })
+    }))
 }
 
 /// Hydrate from the publisher caches (AdvancedSubscriber history — the
