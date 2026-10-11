@@ -36,7 +36,7 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
-pub use logind::watch_logind;
+pub use logind::{supervise_logind, watch_logind};
 pub use seed::{SeedConfig, SeedTv, load_seed_config};
 pub use store::load_store;
 
@@ -714,17 +714,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         Duration::from_secs(60),
         DPMS_PERIOD,
     ));
-    match zbus::Connection::system().await {
-        Ok(connection) => {
-            let world = stack.world.clone();
-            tokio::spawn(async move {
-                if let Err(e) = watch_logind(connection, world).await {
-                    tracing::warn!(%e, "logind watcher exited");
-                }
-            });
-        }
-        Err(e) => tracing::warn!(%e, "no system bus, logind watcher disabled"),
-    }
+    logind::spawn(stack.world.clone());
 
     // The store applied in `serve`; the seed config only adds TVs it
     // didn't hold, so they persist as the real change they are.

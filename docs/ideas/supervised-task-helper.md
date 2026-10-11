@@ -2,17 +2,19 @@
 
 ## Problem
 
-Three services hand-roll the same "keep this task alive" shape with different spellings:
+Five loops hand-roll the same "keep this task alive" shape with different spellings:
 
 - the tray's settings service: supervised client link into the session router (fail-fast open + retry loop, per the serve-side law),
 - the session service's wayland idle adapter: re-register on watch death, retry every 5 s when the compositor is briefly gone,
-- the daemon's netlink monitor: reopen the kernel connection with a capped backoff, resyncing its kept view on every reconnect ([watchers/network.md](../watchers/network.md) § Staying connected).
+- the daemon's netlink monitor: reopen the kernel connection with a capped backoff, resyncing its kept view on every reconnect ([watchers/network.md](../watchers/network.md) § Staying connected);
+- the daemon's seat-access watch: a fresh system-bus connection every 30 s after a loss, warning once until a watch runs long enough to count as working;
+- the daemon's logind watcher: the same shape on a 5 s delay, since a suspend in the gap leaves the TVs on. It ran unsupervised until a QA run showed dbus-broker evicting every peer of a user over its quota: the watcher's streams ended and sleep handling stopped silently for the daemon's lifetime.
 
-Each grew its loop independently during the parity port, so restart policy, backoff, and logging differ by accident rather than by design.
+Each grew its loop independently, so restart policy, backoff, and logging differ by accident rather than by design.
 
 ## Idea
 
-A small `tisvlay-core` helper that makes "supervised task" a named concept:
+A small `tisvlay-runtime` helper (binary glue, not core's published API) that makes "supervised task" a named concept:
 
 ```rust
 pub async fn supervised<F, Fut>(name: &str, backoff: Duration, mut factory: F)
@@ -34,7 +36,7 @@ plus whatever per-caller nuance survives contact (the idle adapter also re-regis
 
 ## Why deferred
 
-Semantic, cross-crate change touching three supervision policies that are individually field-validated; the wrong unification (e.g. restarting the netlink monitor into a half-initialized state) would be worse than the duplication. Do it deliberately, with the per-service shutdown semantics written down first.
+Semantic, cross-crate change touching five supervision policies that are individually field-validated; the wrong unification (e.g. restarting the netlink monitor into a half-initialized state) would be worse than the duplication. Do it deliberately, with the per-service shutdown semantics written down first.
 
 ## Related: the daemon's core-task supervisor
 
