@@ -41,6 +41,13 @@ If even `tisvlay status` fails, the CLI tells you which of two failure modes you
 - **"You don't have TV control access yet"** — an access problem; run `tisvlay enable-access` (see [Access](../getting-started/installation.md#access)). You'll typically only see this over SSH or from a service account.
 - **"daemon unreachable"** — the daemon itself is down or the socket path is wrong: check `systemctl status tisvlay-daemon` and `journalctl -u tisvlay-daemon`.
 
+## A hand edit didn't take
+
+- **Reload failed** — the message names the file and why; a parse error shows the line and column. Nothing from that file was applied: fix it and run `tisvlay reload` again.
+- **A `<file>.edited` appeared** — you edited a state file but a service wrote it before you reloaded, so your edit was moved aside rather than overwritten. Redo it in the current file and reload.
+
+See [Hand-editing and reloading](../guide/configuration.md#hand-editing-and-reloading).
+
 ## No tray icon on GNOME
 
 Vanilla GNOME has no system-tray host; see [GUI & Tray](../guide/gui-tray.md#tray-applet-tisvlay-tray) for the extension that adds one.

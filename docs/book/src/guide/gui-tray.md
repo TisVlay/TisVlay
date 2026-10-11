@@ -16,6 +16,8 @@ Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single
 
 **Settings** — the tray's [notification](#notifications) preferences and a test-notification button to verify your desktop's notification stack.
 
+**Reload** — the sidebar button applies hand edits of the state files ([Hand-editing and reloading](./configuration.md#hand-editing-and-reloading)). A toast names the files it reloaded; a failure shows a banner above every pane, naming the file and the problem, until you dismiss it or a later Reload succeeds.
+
 **About** — version, component, and license information.
 
 **Navigation** — Alt+←/→ or the mouse back/forward buttons step through your pane history, browser-style. (Inactive while the pairing wizard or an edit form is open, so keys aren't stolen mid-edit.)

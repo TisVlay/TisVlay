@@ -8,7 +8,7 @@ tisvlay is configured with TOML, spread across a few files:
 | `~/.config/tisvlay/session.toml` | each desktop user | **user** profiles and per-user TV profile assignments |
 | `~/.config/tisvlay/tray.toml` | each desktop user | tray notification preferences |
 
-`daemon.toml` is the daemon's own store: it reads it at startup and **rewrites it** as state changes, so hand-editing it while the daemon runs will be overwritten. Change TVs and profiles through the CLI (`tisvlay pair`, `tisvlay config-set`, `tisvlay assign`, `tisvlay profile …`, `tisvlay user-profile …`) or the GUI, which persist for you.
+Each service rewrites its own file as state changes. The usual way to change TVs and profiles is through the CLI (`tisvlay pair`, `tisvlay config-set`, `tisvlay assign`, `tisvlay profile …`, `tisvlay user-profile …`) or the GUI, which persist for you; you can also [edit a file by hand and reload it](#hand-editing-and-reloading).
 
 To declare TVs **declaratively** — for a reproducible or headless setup — give the daemon a **seed file** with `tisvlay-daemon --seed <file>` (on NixOS, the module's `settings` option writes it for you). The seed is re-applied on every start, but only for TVs whose `id` is absent from `daemon.toml`, so runtime edits stick and a still-declared TV that you removed at runtime comes back (drop the seed entry to drop it). Omit an entry's `id` and it is derived deterministically from the entry's content.
 
@@ -112,3 +112,18 @@ Every field with its stock default (generated from the code, so it's always curr
 The two idle timers set **how long** to wait in each lock state; the shared `on_idle_timeout`/`on_idle_resume` actions decide **what** happens. A `0` timer disables idle for that lock state.
 
 Any field may be omitted from a profile; it then inherits (see [Profiles → Resolution order](./profiles.md#resolution-order)). Setting an event replaces its whole value, so re-gating an inherited action means restating the action too (the GUI does this for you).
+
+## Hand-editing and reloading
+
+Any of the three files can be edited by hand while the services run. Then apply the edit with one of:
+
+- `tisvlay reload` — reloads the daemon's, the session's and the tray's files, one line per service (a service that isn't running is reported, not failed).
+- The GUI's **Reload** button, in the sidebar — the same three files.
+- `systemctl reload tisvlay-daemon` — the daemon's file only. `systemctl` reports success as soon as the signal is sent, so the outcome is in the daemon's journal.
+
+How a reload treats your edit:
+
+- **Only the edit applies.** The service compares the file with what it last wrote and applies just the difference, so changes made through the CLI or GUI but not yet written survive. Where both changed the same field, the file wins.
+- **A bad edit is refused whole** — for example a missing or unparsable file, a repeated id, a changed or unknown vendor, renaming or removing the `default` profile, or deleting a profile a TV still uses. A parse error points at its file, line and column. A TV in the middle of pairing is left as it is.
+- **Comments survive.** The services' own writes keep your comments and layout wherever the values beside them didn't change.
+- **Reload before the service writes again.** An edit nobody reloaded is moved aside to `<file>.edited` (one slot, readable only by its owner) with a warning, never silently overwritten; redo the edit in the current file and reload.
