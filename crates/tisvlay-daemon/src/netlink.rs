@@ -1,6 +1,5 @@
-//! Kernel network monitor (ported from the root daemon's netlink
-//! watcher): route resolution (TV IP → NIC name) plus link-carrier
-//! monitoring via rtnetlink. Kernel-level — fires within milliseconds of
+//! Kernel network monitor: route resolution (TV IP → NIC name) plus
+//! link-carrier monitoring via rtnetlink. Kernel-level — fires within milliseconds of
 //! a cable pull and needs no NetworkManager.
 //!
 //! The reactor requests monitoring per network TV ([`RouteRequest`]);
@@ -25,6 +24,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
+use anyhow::Context;
 use futures_util::{StreamExt, TryStreamExt};
 use netlink_packet_core::NetlinkPayload;
 use netlink_packet_route::RouteNetlinkMessage;
@@ -41,15 +41,51 @@ use uuid::Uuid;
 /// settles. NIC transitions fire dozens of events over seconds.
 const ROUTE_SETTLE: Duration = Duration::from_millis(100);
 
+/// Reconnect backoff after the kernel connection fails: doubling from the
+/// first bound up to the second.
+const RECONNECT_MIN: Duration = Duration::from_secs(1);
+const RECONNECT_MAX: Duration = Duration::from_secs(60);
+
 pub(crate) fn spawn_link_monitor(
     world: WorldClient,
     routes: mpsc::UnboundedReceiver<RouteRequest>,
 ) {
-    tokio::spawn(async move {
-        if let Err(e) = watch_network(world, routes).await {
-            warn!(error = %e, "network monitor exited");
+    tokio::spawn(supervise(world, routes));
+}
+
+/// Keep the monitor running for the world's lifetime. Each connection
+/// opens the multicast subscription, resyncs, and watches; when it fails
+/// (the open, the link dump, or the message stream ending), route
+/// requests are still served through a capped backoff, then it
+/// reconnects. Without this a dead connection would silently end carrier
+/// and route monitoring, and a TV parked during a network blip would
+/// never redial. The monitor's view survives reconnects.
+async fn supervise(world: WorldClient, mut routes: mpsc::UnboundedReceiver<RouteRequest>) {
+    let mut state = MonitorState::default();
+    let mut backoff = RECONNECT_MIN;
+    loop {
+        let error = match watch_network(&world, &mut routes, &mut state, &mut backoff).await {
+            Ok(()) => return,
+            Err(error) => error,
+        };
+        warn!(error = %format!("{error:#}"), retry_in = ?backoff, "network monitor lost its kernel connection; reconnecting");
+        let pause = tokio::time::sleep(backoff);
+        tokio::pin!(pause);
+        loop {
+            tokio::select! {
+                request = routes.recv() => match request {
+                    Some(request) => {
+                        if !handle_request(&world, &mut state, request).await {
+                            return;
+                        }
+                    }
+                    None => return,
+                },
+                () = &mut pause => break,
+            }
         }
-    });
+        backoff = backoff.saturating_mul(2).min(RECONNECT_MAX);
+    }
 }
 
 /// The monitor's view of the network: each link's usability and each
@@ -89,6 +125,11 @@ impl MonitorState {
         })
     }
 
+    /// Forget every link's usability, so a resync reports each afresh.
+    fn reset_carrier(&mut self) {
+        self.carrier.clear();
+    }
+
     /// The monitored TVs, for a re-resolution pass.
     fn monitored(&self) -> Vec<(Uuid, IpAddr)> {
         self.monitored.iter().map(|(&tv, &ip)| (tv, ip)).collect()
@@ -126,89 +167,157 @@ fn send(world: &WorldClient, event: InEvent) -> bool {
     world.send(event)
 }
 
+/// One connection's lifetime: `Ok` once the world is gone, `Err` when
+/// the kernel connection fails and should be reopened.
 async fn watch_network(
-    world: WorldClient,
-    mut routes: mpsc::UnboundedReceiver<RouteRequest>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    world: &WorldClient,
+    routes: &mut mpsc::UnboundedReceiver<RouteRequest>,
+    state: &mut MonitorState,
+    backoff: &mut Duration,
+) -> anyhow::Result<()> {
+    // Subscribe before the resync dump, so no change falls between them.
     let (conn, _handle, mut messages) = new_multicast_connection(&[
         MulticastGroup::Link,
         MulticastGroup::Ipv4Ifaddr,
         MulticastGroup::Ipv6Ifaddr,
         MulticastGroup::Ipv4Route,
         MulticastGroup::Ipv6Route,
-    ])?;
-    tokio::spawn(conn);
-    info!("network monitor started");
-
-    let mut state = MonitorState::default();
-    let mut settle_at: Option<tokio::time::Instant> = None;
-
-    loop {
-        tokio::select! {
-            request = routes.recv() => {
-                match request {
-                    Some(RouteRequest::Monitor { tv, host }) => {
-                        let Ok(ip) = host.parse::<IpAddr>() else {
-                            debug!(%tv, host, "address is not an IP; skipping route monitoring");
-                            state.forget(tv);
-                            continue;
-                        };
-                        state.monitor(tv, ip);
-                        let interface = resolve_interface_for_ip(ip).await;
-                        if let Some(event) = state.on_resolved(tv, interface)
-                            && !send(&world, event)
-                        {
-                            break;
+    ])
+    .context("open the netlink multicast subscription")?;
+    let conn = tokio::spawn(conn);
+    let watched = async {
+        if !resync(world, state).await? {
+            return Ok(());
+        }
+        *backoff = RECONNECT_MIN;
+        info!("network monitor started");
+        let mut settle_at: Option<tokio::time::Instant> = None;
+        loop {
+            tokio::select! {
+                request = routes.recv() => match request {
+                    Some(request) => {
+                        if !handle_request(world, state, request).await {
+                            return Ok(());
                         }
                     }
-                    Some(RouteRequest::Forget { tv }) => state.forget(tv),
-                    None => break,
-                }
-            }
-            message = messages.next() => {
-                let Some((message, _)) = message else { break };
-                let NetlinkPayload::InnerMessage(msg) = message.payload else {
-                    continue;
-                };
-                match msg {
-                    RouteNetlinkMessage::NewLink(link) => {
-                        let Some((index, name, usable)) = link_status(&link) else { continue };
-                        if let Some(event) = state.on_link(index, name, usable)
-                            && !send(&world, event)
-                        {
-                            break;
-                        }
-                    }
-                    RouteNetlinkMessage::NewRoute(_)
-                    | RouteNetlinkMessage::DelRoute(_)
-                    | RouteNetlinkMessage::NewAddress(_)
-                    | RouteNetlinkMessage::DelAddress(_) => {
-                        // Reachability may have changed in either direction —
-                        // re-resolve every monitored TV. Immediate pass on the
-                        // first event of a burst, one trailing pass after it
-                        // settles.
-                        trace!("route table changed, re-resolving monitored TVs");
-                        if settle_at.is_none() {
-                            if !re_resolve(&world, &mut state).await {
-                                break;
+                    None => return Ok(()),
+                },
+                message = messages.next() => {
+                    let Some((message, _)) = message else {
+                        anyhow::bail!("the netlink message stream ended");
+                    };
+                    let msg = match message.payload {
+                        NetlinkPayload::InnerMessage(msg) => msg,
+                        // The kernel overran the socket buffer (ENOBUFS)
+                        // and dropped notifications, typically in a burst
+                        // of interface churn: the view may be stale.
+                        NetlinkPayload::Overrun(_) => {
+                            warn!("netlink notifications were dropped; resyncing");
+                            if !resync(world, state).await? {
+                                return Ok(());
                             }
-                            settle_at = tokio::time::Instant::now().checked_add(ROUTE_SETTLE);
+                            continue;
                         }
+                        _ => continue,
+                    };
+                    match msg {
+                        RouteNetlinkMessage::NewLink(link) => {
+                            let Some((index, name, usable)) = link_status(&link) else { continue };
+                            if let Some(event) = state.on_link(index, name, usable)
+                                && !send(world, event)
+                            {
+                                return Ok(());
+                            }
+                        }
+                        RouteNetlinkMessage::NewRoute(_)
+                        | RouteNetlinkMessage::DelRoute(_)
+                        | RouteNetlinkMessage::NewAddress(_)
+                        | RouteNetlinkMessage::DelAddress(_) => {
+                            // Reachability may have changed in either
+                            // direction — re-resolve every monitored TV.
+                            // Immediate pass on the first event of a burst,
+                            // one trailing pass after it settles.
+                            trace!("route table changed, re-resolving monitored TVs");
+                            if settle_at.is_none() {
+                                if !re_resolve(world, state).await {
+                                    return Ok(());
+                                }
+                                settle_at = tokio::time::Instant::now().checked_add(ROUTE_SETTLE);
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-            () = async { tokio::time::sleep_until(settle_at.expect("the branch is enabled only while settle_at is Some")).await },
-                if settle_at.is_some() =>
-            {
-                settle_at = None;
-                if !re_resolve(&world, &mut state).await {
-                    break;
+                () = async { tokio::time::sleep_until(settle_at.expect("the branch is enabled only while settle_at is Some")).await },
+                    if settle_at.is_some() =>
+                {
+                    settle_at = None;
+                    if !re_resolve(world, state).await {
+                        return Ok(());
+                    }
                 }
             }
         }
+    };
+    let result = watched.await;
+    conn.abort();
+    result
+}
+
+/// Serve one route request; false once the world is gone.
+async fn handle_request(
+    world: &WorldClient,
+    state: &mut MonitorState,
+    request: RouteRequest,
+) -> bool {
+    match request {
+        RouteRequest::Monitor { tv, host } => {
+            let Ok(ip) = host.parse::<IpAddr>() else {
+                debug!(%tv, host, "address is not an IP; skipping route monitoring");
+                state.forget(tv);
+                return true;
+            };
+            state.monitor(tv, ip);
+            let interface = resolve_interface_for_ip(ip).await;
+            state
+                .on_resolved(tv, interface)
+                .is_none_or(|event| send(world, event))
+        }
+        RouteRequest::Forget { tv } => {
+            state.forget(tv);
+            true
+        }
     }
-    Ok(())
+}
+
+/// Resync after a (re)connect or dropped notifications: every link's
+/// current usability (the carrier view starts over; the world's carrier
+/// handling is idempotent), then every monitored TV's route. `Ok(false)`
+/// once the world is gone.
+async fn resync(world: &WorldClient, state: &mut MonitorState) -> anyhow::Result<bool> {
+    let links = dump_links().await?;
+    state.reset_carrier();
+    for link in &links {
+        if let Some((index, name, usable)) = link_status(link)
+            && let Some(event) = state.on_link(index, name, usable)
+            && !send(world, event)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(re_resolve(world, state).await)
+}
+
+/// Every link's current state, over a short-lived connection of its own:
+/// a dump on the multicast connection could meet an overrun on its reply
+/// path, which netlink-proto doesn't handle.
+async fn dump_links() -> anyhow::Result<Vec<LinkMessage>> {
+    let (connection, handle, _) =
+        new_connection().context("open a netlink connection for the link dump")?;
+    let task = tokio::spawn(connection);
+    let links = handle.link().get().execute().try_collect().await;
+    task.abort();
+    links.context("dump links")
 }
 
 /// One resolution pass over every monitored TV; sends `RouteResolved`
@@ -338,6 +447,18 @@ mod tests {
             state.on_link(2, "eno1".into(), false),
             Some(InEvent::Carrier { up: false, .. })
         ));
+    }
+
+    /// After a reset (a reconnect or dropped notifications), every link
+    /// reports again, even ones that didn't change.
+    #[test]
+    fn a_carrier_reset_reports_every_link_again() {
+        let mut state = MonitorState::default();
+        assert!(state.on_link(2, "eno1".into(), true).is_some());
+        assert!(state.on_link(3, "wlan0".into(), false).is_some());
+        state.reset_carrier();
+        assert!(state.on_link(2, "eno1".into(), true).is_some());
+        assert!(state.on_link(3, "wlan0".into(), false).is_some());
     }
 
     #[test]

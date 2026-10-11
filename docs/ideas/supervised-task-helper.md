@@ -6,7 +6,7 @@ Three services hand-roll the same "keep this task alive" shape with different sp
 
 - the tray's settings service: supervised client link into the session router (fail-fast open + retry loop, per the serve-side law),
 - the session service's wayland idle adapter: re-register on watch death, retry every 5 s when the compositor is briefly gone,
-- the daemon's netlink monitor: spawn + log-on-exit (no restart at all — an rtnetlink connection failure silently ends carrier/route monitoring for the process lifetime).
+- the daemon's netlink monitor: reopen the kernel connection with a capped backoff, resyncing its kept view on every reconnect ([watchers/network.md](../watchers/network.md) § Staying connected).
 
 Each grew its loop independently during the parity port, so restart policy, backoff, and logging differ by accident rather than by design.
 
@@ -38,4 +38,4 @@ Semantic, cross-crate change touching three supervision policies that are indivi
 
 ## Related: the daemon's core-task supervisor
 
-The daemon's core tasks (world reactor, zenoh bridge, store writer) already have a supervisor, `Stack::run_until` (see [architecture.md](../architecture.md) § The world). Its policy is exit-on-death, not restart-in-process: a dead core task ends the process in order and systemd restarts it from the store, because those tasks share state that can't be rebuilt piecemeal. This idea is about the other shape, the per-service loops that restart in place (the tray link, the idle adapter) and the netlink monitor, which has neither policy yet.
+The daemon's core tasks (world reactor, zenoh bridge, store writer) already have a supervisor, `Stack::run_until` (see [architecture.md](../architecture.md) § The world). Its policy is exit-on-death, not restart-in-process: a dead core task ends the process in order and systemd restarts it from the store, because those tasks share state that can't be rebuilt piecemeal. This idea is about the other shape, the per-service loops that restart in place: the tray link, the idle adapter and the netlink monitor.
