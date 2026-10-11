@@ -161,6 +161,8 @@ The isolated-networks fix (generic mechanism in prose, vendor specifics in a per
 3. **S1** link/anchor checker in CI, so the consolidated cross-links can't rot.
 4. **Maintainer decisions** first: H1 (version string), H2 (badges), H5 (glibc + tested-models), G3 (NixOS options page now or later).
 
+**Step 1 done (2026-10-10)** — `9a753f4a` Getting Started, `15156e01` User Guide, and the Operations/Reference commit: every R, H3–H10, V item and the G3 consolidation applied; hand-written words ~11.5k → ~10.5k with the NixOS option table and CEC device-access steps added. Found while consolidating: distro packages never documented CEC device access (the packaged unit's `PrivateDevices` hides `/dev/cec*`; the unit file's own drop-in + udev instructions are now in Installation), and Pairing pointed at a nonexistent `[tv.cec]` block. Next: step 2 (G1, G2, H1).
+
 **Decisions (maintainer, 2026-10-10):**
 - H1 — generate the release version from `Cargo.toml` into a partial behind the docs drift gate (joins G1/G2 in step 2).
 - H2 — leave the crates.io badges as they are for now.
