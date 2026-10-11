@@ -11,7 +11,7 @@ Powering on uses Wake-on-LAN, which needs:
 - A **MAC address** stored for the TV — `tisvlay config <id>` shows what's stored. If it's missing, `tisvlay repair <id>` reads it from the TV (LG, paired by IPv4 address); otherwise set it with `tisvlay config-set <id> '{"mac":"AA:BB:CC:DD:EE:FF"}'`.
 - The **right** MAC: a TV has separate wired and Wi-Fi MACs, and only the interface it's connected through wakes it. If the pairing's `mac:` line said the TV reports a different MAC than the one configured, switch to the TV's with the `config-set` command it printed. See [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac).
 - **"TV On via Wi-Fi" / "Mobile TV On"** enabled in the TV's network settings.
-- The TV and host on the same L2 network — WoL magic packets are broadcasts and don't cross routers, unless your router relays or reflects them onto the TV's subnet or VLAN.
+- The TV and host on the same L2 network — WoL magic packets are broadcasts and don't cross routers, unless your router relays or reflects them onto the TV's subnet or VLAN (see [TVs on an Isolated Network](./isolated-networks.md)).
 
 There is also a 1–5 second delay between the magic packet and the first command while the TV boots, and TVs may ignore WoL during a pixel-refresh cycle.
 

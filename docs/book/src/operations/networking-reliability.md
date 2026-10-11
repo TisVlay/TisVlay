@@ -28,4 +28,4 @@ Together these mean automation reaches the state you asked for from any starting
 
 ## When something's off
 
-If a wake or screen action doesn't land, the usual causes are Wake-on-LAN prerequisites (the right MAC stored, "TV On via Wi-Fi" enabled, same L2 network) or the TV being on a different subnet with nothing relaying the wake broadcast to it. Walk through [Troubleshooting → The TV won't power on](./troubleshooting.md#the-tv-wont-power-on), and use `tisvlay watch` to see the connection and power-cycle state change live.
+If a wake or screen action doesn't land, the usual causes are Wake-on-LAN prerequisites (the right MAC stored, "TV On via Wi-Fi" enabled, same L2 network) or the TV being on a different subnet with nothing relaying the wake broadcast to it ([TVs on an Isolated Network](./isolated-networks.md) covers that setup). Walk through [Troubleshooting → The TV won't power on](./troubleshooting.md#the-tv-wont-power-on), and use `tisvlay watch` to see the connection and power-cycle state change live.

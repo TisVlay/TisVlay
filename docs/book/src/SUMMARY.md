@@ -21,6 +21,7 @@
 
 - [Firewall & Discovery](./operations/firewall-discovery.md)
 - [Networking & Reliability](./operations/networking-reliability.md)
+- [TVs on an Isolated Network](./operations/isolated-networks.md)
 - [Troubleshooting](./operations/troubleshooting.md)
 
 # Reference

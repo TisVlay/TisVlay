@@ -60,6 +60,6 @@ sudo firewall-cmd --reload
 - `tisvlay discover` — a bounded scan; found TVs stream back as they answer.
 - `tisvlay discover-session` — an open-ended discovery session that keeps streaming findings until you stop it (ctrl-c).
 - The **GUI wizard** does the same, live, and lists the host's CEC adapters alongside the network scan.
-- **Manual entry** — if discovery can't reach the TV, type its IP; the GUI auto-fills the MAC address for Wake-on-LAN from the kernel's ARP/NDP cache (an "Auto-detected" badge marks it, clearing if you edit). A TV on another subnet or VLAN is invisible to that cache, so the field stays blank ("MAC not detected") — leave it, and the MAC is read from the TV once pairing completes.
+- **Manual entry** — if discovery can't reach the TV, type its IP; the GUI auto-fills the MAC address for Wake-on-LAN from the kernel's ARP/NDP cache (an "Auto-detected" badge marks it, clearing if you edit). A TV on another subnet or VLAN is invisible to that cache, so the field stays blank ("MAC not detected") — leave it, and the MAC is read from the TV once pairing completes. For discovery itself across a VLAN, see [TVs on an Isolated Network](./isolated-networks.md).
 
 Discovery is a convenience — you can always pair by IP address with `tisvlay pair "<name>" --vendor lg --params '{"ip":"192.168.1.100"}'`, no firewall changes required.
