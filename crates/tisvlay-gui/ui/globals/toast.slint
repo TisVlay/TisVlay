@@ -3,13 +3,9 @@
 // — toast is a window-overlay, auto-clears after a short timeout
 // driven by Rust (no Slint-side timer; tokio + on_ui from main.rs).
 //
-// Convention here: the toast is success-only. Clipboard failures and
-// similar errors stay silent (matching KDE/Plasma's "no toast for
-// failures" default); use `Errors` for surfaces that need user
-// attention. The one window-level failure surface is the notice: a
-// sticky inline message for an action that isn't tied to a pane (the
-// sidebar's Reload), so it shows whichever pane is open and stays
-// until dismissed.
+// Convention here: success-only. Clipboard failures and similar
+// errors stay silent (matching KDE/Plasma's "no toast for failures"
+// default); use `Errors` for surfaces that need user attention.
 //
 // Usage:
 //   - Slint side: `Toast.show("Copied to clipboard.")` from any
@@ -22,39 +18,10 @@
 
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { InlineError } from "../widgets.slint";
 
 export global Toast {
     in-out property <string> message;
-    /// The sticky failure notice: an empty title hides it, and the
-    /// user's dismiss clears it. Set from Rust (`show_notice`).
-    in-out property <string> notice-title;
-    in-out property <string> notice-message;
     callback show(string);
-}
-
-// The notice, sized by the parent's width; its message renders
-// monospace, since what lands here is diagnostic text (a TOML parse
-// error draws a caret under the offending column).
-export component NoticeView inherits Rectangle {
-    visible: Toast.notice-title != "";
-    height: self.visible ? inline.height : 0;
-    drop-shadow-blur: 24px;
-    drop-shadow-color: Theme.drop-shadow;
-    drop-shadow-offset-y: 6px;
-    border-radius: Design.radius-card;
-
-    inline := InlineError {
-        width: 100%;
-        tone: "error";
-        title: Toast.notice-title;
-        message: Toast.notice-message;
-        message-font-family: "monospace";
-        dismissed => {
-            Toast.notice-title = "";
-            Toast.notice-message = "";
-        }
-    }
 }
 
 export component ToastView inherits Rectangle {

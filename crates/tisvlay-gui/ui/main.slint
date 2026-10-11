@@ -25,7 +25,7 @@ import { Clipboard } from "globals/clipboard.slint";
 import { Errors } from "globals/errors.slint";
 import { Icons } from "globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "globals/profiles.slint";
-import { NoticeView, Toast, ToastView } from "globals/toast.slint";
+import { Toast, ToastView } from "globals/toast.slint";
 import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
 import { SelectOverlay } from "globals/select.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
@@ -390,6 +390,23 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // App-level reload banner: a state file the sidebar's
+                // Reload couldn't apply. Above every pane, like the access
+                // banner, since the button belongs to no pane.
+                if Errors.reload.title != "" || Errors.reload.message != "": VerticalLayout {
+                    padding: Design.gap-stack;
+                    padding-bottom: 0;
+                    InlineError {
+                        tone: "error";
+                        title: Errors.reload.title;
+                        message: Errors.reload.message;
+                        message-font-family: Theme.mono-font;
+                        dismissed => {
+                            Errors.reload = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                        }
+                    }
+                }
+
                 // Each pane is positioned absolutely within this Rectangle.
                 // Slint Rectangles don't lay out children, so panes must
                 // bind width / height to the parent explicitly.
@@ -433,20 +450,14 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Top-center notice and toast — declared after the HorizontalBox
-    // so they render on top of the panes. Positioned by `x`/`y` rather
-    // than a layout because they float over the chrome (titlebar edge
-    // included), not inside the sidebar+pane split. The sticky notice
-    // sits on top and pushes a toast below it; the toast auto-clears
-    // via a Rust-side timer (see `show_toast` in toast.rs).
-    notice := NoticeView {
-        width: min(640px, root.width - 48px);
-        x: (root.width - self.width) / 2;
-        y: 24px;
-    }
+    // Top-center toast — declared after the HorizontalBox so it
+    // renders on top of the panes. Positioned by `x`/`y` rather than
+    // a layout because we want it to float over the chrome (titlebar
+    // edge included), not inside the sidebar+pane split. Auto-clears
+    // via Rust-side timer (see `show_toast` in main.rs).
     ToastView {
         x: (root.width - self.width) / 2;
-        y: notice.visible ? notice.y + notice.height + 8px : 24px;
+        y: 24px;
     }
 
     // Contextual-help bubble overlay. Rendered last (top-most) and at

@@ -40,7 +40,7 @@ use profiles::{
     dispatch_select_after_create, dispatch_value_edit, dispatch_value_edit_number, new_editor,
 };
 use state_watch::initial_fetch_and_watch;
-use toast::{show_notice, show_toast};
+use toast::show_toast;
 use wizard::{
     WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
     WizardManualLookupCancel, cancel_wizard_discovery, cancel_wizard_manual_lookup,
@@ -134,43 +134,73 @@ fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: Str
     });
 }
 
+/// One service's part of a sidebar Reload.
+struct ReloadOutcome {
+    /// The service's state file by name (`tray.toml`), or the service's
+    /// name when it didn't report a path.
+    file: String,
+    /// `None` when the GUI isn't connected to the service.
+    result: Option<tisvlay::Result<tisvlay::ReloadReport>>,
+}
+
+/// A state file's name from its service's reported path, else `fallback`.
+fn file_label(path: tisvlay::Result<String>, fallback: String) -> String {
+    path.ok()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or(fallback)
+}
+
 /// How a sidebar Reload reports.
 #[derive(Debug, PartialEq, Eq)]
 enum ReloadSummary {
     /// Nothing failed: a toast naming what changed.
     Toast(String),
-    /// Something failed: a sticky notice that also names what applied.
-    Notice { title: String, message: String },
+    /// Something failed: the app-level banner.
+    Banner { title: String, message: String },
 }
 
-/// Report a sidebar Reload at window level (see [`reload_summary`]).
-fn report_reload(
-    app_weak: &slint::Weak<AppWindow>,
-    outcomes: Vec<(String, Option<tisvlay::Result<tisvlay::ReloadReport>>)>,
-) {
-    for (service, outcome) in &outcomes {
-        if let Some(Err(e)) = outcome {
-            warn!(error = %e, %service, "reload_config failed");
+/// Report a sidebar Reload at window level (see [`reload_summary`]). A
+/// Reload with no failure clears an earlier failure's banner.
+fn report_reload(app_weak: &slint::Weak<AppWindow>, outcomes: Vec<ReloadOutcome>) {
+    for outcome in &outcomes {
+        if let Some(Err(e)) = &outcome.result {
+            warn!(error = %e, file = %outcome.file, "reload_config failed");
         }
     }
-    match reload_summary(outcomes) {
-        ReloadSummary::Toast(message) => show_toast(app_weak.clone(), &message),
-        ReloadSummary::Notice { title, message } => show_notice(app_weak, title, message),
-    }
+    let banner = match reload_summary(outcomes) {
+        ReloadSummary::Toast(message) => {
+            show_toast(app_weak.clone(), &message);
+            ErrorState::default()
+        }
+        ReloadSummary::Banner { title, message } => ErrorState {
+            kind: SharedString::default(),
+            tone: SharedString::from("error"),
+            title: SharedString::from(title),
+            message: SharedString::from(message),
+            action_label: SharedString::default(),
+        },
+    };
+    on_ui(app_weak, move |app| {
+        app.global::<Errors>().set_reload(banner);
+    });
 }
 
-/// Each service's reload outcome (`None` when the GUI isn't connected to
-/// it) as a toast naming the services whose file held an edit, or, when
-/// any failed, a notice with each failure.
-fn reload_summary(
-    outcomes: Vec<(String, Option<tisvlay::Result<tisvlay::ReloadReport>>)>,
-) -> ReloadSummary {
+/// The toast naming the files that held an edit, or, when any failed,
+/// the banner with each failure's report. A file the service couldn't
+/// parse reports like a compiler error (path, line, caret), so the
+/// reports stand on their own; the title names the files.
+fn reload_summary(outcomes: Vec<ReloadOutcome>) -> ReloadSummary {
     let mut changed = Vec::new();
     let mut failed = Vec::new();
-    for (service, outcome) in outcomes {
-        match outcome {
-            Some(Ok(report)) if report.changed => changed.push(service),
-            Some(Err(e)) => failed.push((service, error_text(&e))),
+    for ReloadOutcome { file, result } in outcomes {
+        match result {
+            Some(Ok(report)) if report.changed => changed.push(file),
+            Some(Err(tisvlay::Error::Rpc { message, .. })) => failed.push((file, message)),
+            Some(Err(e)) => failed.push((file, error_text(&e))),
             Some(Ok(_)) | None => {}
         }
     }
@@ -181,22 +211,14 @@ fn reload_summary(
             gettext("Reloaded: {0}").replace("{0}", &changed.join(", "))
         });
     }
-    let names: Vec<&str> = failed.iter().map(|(service, _)| service.as_str()).collect();
-    let title = gettext("Reload failed: {0}").replace("{0}", &names.join(", "));
-    let mut message = if let [(_, error)] = failed.as_slice() {
-        error.clone()
-    } else {
-        failed
-            .iter()
-            .map(|(service, error)| format!("{service}: {error}"))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    };
-    if !changed.is_empty() {
-        message.push_str("\n\n");
-        message.push_str(&gettext("Applied: {0}").replace("{0}", &changed.join(", ")));
-    }
-    ReloadSummary::Notice { title, message }
+    let files: Vec<&str> = failed.iter().map(|(file, _)| file.as_str()).collect();
+    let title = gettext("Reload failed: {0}").replace("{0}", &files.join(", "));
+    let message = failed
+        .into_iter()
+        .map(|(_, report)| report)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    ReloadSummary::Banner { title, message }
 }
 
 /// Run an SDK call for the TV or profile `id` from the Slint model. The
@@ -1697,28 +1719,34 @@ fn register_callbacks(
         let app_weak = app_weak.clone();
         tokio::spawn(async move {
             // The button lives in the sidebar, so its outcome reports at
-            // window level, whichever pane is open: a toast naming what
-            // changed, or a sticky notice for what failed. A service the
-            // GUI isn't connected to is skipped.
-            let mut outcomes = vec![(gettext("daemon"), Some(d.reload_config().await))];
+            // window level, whichever pane is open: a toast naming the
+            // files that changed, or the app-level banner for a file that
+            // couldn't apply. A service the GUI isn't connected to is
+            // skipped. Each file is named by the path its service reports.
+            let mut outcomes = vec![ReloadOutcome {
+                file: file_label(d.config_path().await, gettext("daemon")),
+                result: Some(d.reload_config().await),
+            }];
             let session_ref = s.read().await;
-            let session = match session_ref.as_ref() {
-                Some(client) => Some(client.reload_config().await),
-                None => None,
-            };
+            if let Some(client) = session_ref.as_ref() {
+                outcomes.push(ReloadOutcome {
+                    file: file_label(client.config_path().await, gettext("session")),
+                    result: Some(client.reload_config().await),
+                });
+            }
             drop(session_ref);
-            outcomes.push((gettext("session"), session));
             // Tell the tray to re-read `tray.toml` too, then pull the
             // body immediately rather than waiting only on the tray's
             // settings-key echo — keeps the settings pane in sync
             // with a hand-edited config on the same click.
             let tray_ref = tr.read().await;
-            let tray = match tray_ref.as_ref() {
-                Some(client) => Some(client.reload_config().await),
-                None => None,
-            };
+            if let Some(client) = tray_ref.as_ref() {
+                outcomes.push(ReloadOutcome {
+                    file: file_label(client.config_path().await, gettext("tray")),
+                    result: Some(client.reload_config().await),
+                });
+            }
             drop(tray_ref);
-            outcomes.push((gettext("tray"), tray));
             report_reload(&app_weak, outcomes);
             state_watch::refresh_tray_notifications(&tr, &app_weak).await;
         });
@@ -2619,68 +2647,95 @@ mod notification_key_tests {
 mod tests {
     use super::*;
 
+    fn outcome(
+        file: &str,
+        result: Option<tisvlay::Result<tisvlay::ReloadReport>>,
+    ) -> ReloadOutcome {
+        ReloadOutcome {
+            file: file.into(),
+            result,
+        }
+    }
+
     fn reloaded(changed: bool) -> Option<tisvlay::Result<tisvlay::ReloadReport>> {
         Some(Ok(tisvlay::ReloadReport { changed }))
     }
 
-    fn refused(message: &str) -> Option<tisvlay::Result<tisvlay::ReloadReport>> {
-        Some(Err(tisvlay::Error::Transport {
-            what: "reload",
-            source: Some(Box::new(std::io::Error::other(message.to_string()))),
+    fn refused(report: &str) -> Option<tisvlay::Result<tisvlay::ReloadReport>> {
+        Some(Err(tisvlay::Error::Rpc {
+            code: tisvlay::ErrorCode::StoreUnreadable,
+            message: report.into(),
         }))
     }
 
     #[test]
-    fn a_reload_names_the_services_that_changed() {
+    fn a_reload_names_the_files_that_changed() {
         let summary = reload_summary(vec![
-            ("daemon".into(), reloaded(true)),
-            ("session".into(), reloaded(false)),
-            ("tray".into(), reloaded(true)),
+            outcome("daemon.toml", reloaded(true)),
+            outcome("session.toml", reloaded(false)),
+            outcome("tray.toml", reloaded(true)),
         ]);
         assert_eq!(
             summary,
-            ReloadSummary::Toast("Reloaded: daemon, tray".into())
+            ReloadSummary::Toast("Reloaded: daemon.toml, tray.toml".into())
         );
     }
 
     #[test]
     fn a_reload_with_nothing_to_apply_says_so() {
         let summary = reload_summary(vec![
-            ("daemon".into(), reloaded(false)),
-            ("session".into(), None),
-            ("tray".into(), reloaded(false)),
+            outcome("daemon.toml", reloaded(false)),
+            outcome("session", None),
         ]);
         assert_eq!(summary, ReloadSummary::Toast("No changes on disk".into()));
     }
 
     #[test]
-    fn a_failed_reload_gets_a_notice_that_also_names_what_applied() {
+    fn a_failed_reload_shows_only_the_failure() {
         let summary = reload_summary(vec![
-            ("daemon".into(), reloaded(true)),
-            ("session".into(), reloaded(false)),
-            ("tray".into(), refused("bad toml")),
+            outcome("daemon.toml", reloaded(true)),
+            outcome("tray.toml", refused("error: bad\n --> /x/tray.toml:6:11")),
         ]);
         assert_eq!(
             summary,
-            ReloadSummary::Notice {
-                title: "Reload failed: tray".into(),
-                message: "reload: bad toml\n\nApplied: daemon".into(),
+            ReloadSummary::Banner {
+                title: "Reload failed: tray.toml".into(),
+                message: "error: bad\n --> /x/tray.toml:6:11".into(),
+            },
+            "no error code suffix, and the applied daemon.toml goes unmentioned"
+        );
+    }
+
+    #[test]
+    fn several_failures_are_each_reported() {
+        let summary = reload_summary(vec![
+            outcome("daemon.toml", refused("error: one")),
+            outcome("tray.toml", refused("error: two")),
+        ]);
+        assert_eq!(
+            summary,
+            ReloadSummary::Banner {
+                title: "Reload failed: daemon.toml, tray.toml".into(),
+                message: "error: one\n\nerror: two".into(),
             }
         );
     }
 
     #[test]
-    fn several_failures_are_each_named() {
-        let summary = reload_summary(vec![
-            ("daemon".into(), refused("one")),
-            ("tray".into(), refused("two")),
-        ]);
+    fn a_file_is_named_by_its_reported_path() {
         assert_eq!(
-            summary,
-            ReloadSummary::Notice {
-                title: "Reload failed: daemon, tray".into(),
-                message: "daemon: reload: one\n\ntray: reload: two".into(),
-            }
+            file_label(Ok("/var/lib/tisvlay/daemon.toml".into()), "daemon".into()),
+            "daemon.toml"
+        );
+        assert_eq!(
+            file_label(
+                Err(tisvlay::Error::Transport {
+                    what: "x",
+                    source: None
+                }),
+                "daemon".into()
+            ),
+            "daemon"
         );
     }
 
