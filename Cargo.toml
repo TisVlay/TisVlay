@@ -71,6 +71,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 secrecy = { version = "0.10", features = ["serde"] }
 toml = "1.1"
+# Format-preserving TOML: the state writers keep a hand edit's comments and
+# layout across their writes.
+toml_edit = "0.25"
 
 # Error handling
 thiserror = "2"

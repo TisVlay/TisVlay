@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tisvlay_core::UserProfileConfig;
+use tisvlay_runtime::fs::TomlWrite;
 use tisvlay_wire::error::WireError;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -154,7 +155,7 @@ pub(crate) async fn store_task(
     }
 }
 
-/// [`write_atomic`] off the async runtime, since the fsyncs block, after
+/// [`write_store`] off the async runtime, since the fsyncs block, after
 /// keeping aside a hand edit nobody reloaded (the file no longer holds
 /// `base`, what the writer last wrote). Returns the snapshot once it's on
 /// disk.
@@ -166,7 +167,7 @@ async fn write_blocking(
     let path = path.to_path_buf();
     match tokio::task::spawn_blocking(move || {
         keep_unreloaded_edit(&path, &base);
-        write_atomic(&path, &snapshot).then_some(snapshot)
+        write_store(&path, &snapshot).then_some(snapshot)
     })
     .await
     {
@@ -212,22 +213,16 @@ fn same_content(a: &UserStoreSnapshot, b: &UserStoreSnapshot) -> bool {
         && sorted(&a.assignment, |a| a.tv) == sorted(&b.assignment, |a| a.tv)
 }
 
-/// Serialize and durably replace the store file (`write_atomic`:
-/// temp file, fsync, rename). Blocking; the store task runs it on
-/// `spawn_blocking`. Returns whether the file was written.
-fn write_atomic(path: &Path, snapshot: &UserStoreSnapshot) -> bool {
-    let text = match toml::to_string_pretty(snapshot) {
-        Ok(text) => text,
-        Err(e) => {
-            error!(%e, "user store serialize failed");
-            return false;
-        }
-    };
-    match tisvlay_runtime::fs::write_atomic(path, text.as_bytes()) {
-        Ok(()) => {
+/// Durably write the store file, keeping a hand edit's comments and
+/// layout (`write_toml`). Blocking; the store task runs it on
+/// `spawn_blocking`. Returns whether the file holds `snapshot`.
+fn write_store(path: &Path, snapshot: &UserStoreSnapshot) -> bool {
+    match tisvlay_runtime::fs::write_toml(path, snapshot) {
+        Ok(TomlWrite::Written) => {
             debug!(store = %path.display(), profiles = snapshot.profile.len(), assignments = snapshot.assignment.len(), "user store written");
             true
         }
+        Ok(TomlWrite::Unchanged) => true,
         Err(e) => {
             error!(%e, store = %path.display(), "user store write failed");
             false
@@ -259,7 +254,7 @@ mod tests {
                 profile,
             }],
         };
-        write_atomic(&path, &snapshot);
+        write_store(&path, &snapshot);
         assert_eq!(load_user_store(&path).unwrap(), snapshot);
         assert!(!path.with_extension("toml.tmp").exists(), "tmp cleaned up");
     }

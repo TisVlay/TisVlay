@@ -165,27 +165,19 @@ fn read_for_reload(path: &Path) -> Result<NotificationSettings, WireError> {
         .map_err(|e| WireError::store_unreadable(path, e))
 }
 
-/// Durably replace `tray.toml` (`write_atomic`: temp file, fsync,
-/// rename), off the async runtime since the fsyncs block.
+/// Durably write `tray.toml`, keeping a hand edit's comments and layout
+/// (`write_toml`), off the async runtime since the fsyncs block.
 async fn save_settings(path: &Path, settings: &NotificationSettings) {
     let persisted = PersistedSettings {
         version: schema_v1(),
         settings: *settings,
     };
-    let text = match toml::to_string_pretty(&persisted) {
-        Ok(text) => text,
-        Err(e) => {
-            warn!(%e, "tray config serialize failed");
-            return;
-        }
-    };
     let path = path.to_path_buf();
-    let written = tokio::task::spawn_blocking(move || {
-        tisvlay_runtime::fs::write_atomic(&path, text.as_bytes())
-    })
-    .await;
+    let written =
+        tokio::task::spawn_blocking(move || tisvlay_runtime::fs::write_toml(&path, &persisted))
+            .await;
     match written {
-        Ok(Ok(())) => {}
+        Ok(Ok(_)) => {}
         Ok(Err(e)) => warn!(%e, "tray config write failed"),
         Err(e) => warn!(%e, "tray config write task failed"),
     }

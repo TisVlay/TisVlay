@@ -1,7 +1,8 @@
 //! Process glue shared by TisVlay's binaries, each module behind a feature:
 //!
 //! - `logging` — tracing init with journald support
-//! - `fs` — crash-safe atomic replacement of state files
+//! - `fs` — crash-safe atomic replacement of state files, and TOML writes
+//!   that keep a hand edit's comments
 //! - `client` — the GUI's and tray's shared helpers (coalescing,
 //!   reconciliation, deduplicated refreshes, profile references)
 //! - `access` — one-click enrollment into the group that gates the daemon

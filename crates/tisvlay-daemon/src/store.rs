@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tisvlay_runtime::fs::TomlWrite;
 use tisvlay_wire::endpoint::manager;
 use tisvlay_world::{Command, Reply, StoreEdit, StoreMsg, StoreSnapshot, WireError, WorldClient};
 use tokio::sync::mpsc;
@@ -101,7 +102,7 @@ pub(crate) async fn store_task(
     }
 }
 
-/// [`write_atomic`] off the async runtime, since the fsyncs block, after
+/// [`write_store`] off the async runtime, since the fsyncs block, after
 /// keeping aside a hand edit nobody reloaded (the file no longer holds
 /// `base`, what the writer last wrote). Returns the snapshot once it's on
 /// disk.
@@ -113,7 +114,7 @@ async fn write_blocking(
     let path = path.to_path_buf();
     match tokio::task::spawn_blocking(move || {
         keep_unreloaded_edit(&path, &base);
-        write_atomic(&path, &snapshot).then_some(snapshot)
+        write_store(&path, &snapshot).then_some(snapshot)
     })
     .await
     {
@@ -159,22 +160,16 @@ fn same_content(a: &StoreSnapshot, b: &StoreSnapshot) -> bool {
         && sorted(&a.system_profile, |p| p.id) == sorted(&b.system_profile, |p| p.id)
 }
 
-/// Serialize and durably replace the store file (`write_atomic`:
-/// temp file, fsync, rename). Blocking; the store task runs it on
-/// `spawn_blocking`. Returns whether the file was written.
-fn write_atomic(path: &Path, snapshot: &StoreSnapshot) -> bool {
-    let text = match toml::to_string_pretty(snapshot) {
-        Ok(text) => text,
-        Err(e) => {
-            error!(%e, "store serialize failed");
-            return false;
-        }
-    };
-    match tisvlay_runtime::fs::write_atomic(path, text.as_bytes()) {
-        Ok(()) => {
+/// Durably write the store file, keeping a hand edit's comments and
+/// layout (`write_toml`). Blocking; the store task runs it on
+/// `spawn_blocking`. Returns whether the file holds `snapshot`.
+fn write_store(path: &Path, snapshot: &StoreSnapshot) -> bool {
+    match tisvlay_runtime::fs::write_toml(path, snapshot) {
+        Ok(TomlWrite::Written) => {
             debug!(store = %path.display(), tvs = snapshot.tv.len(), profiles = snapshot.system_profile.len(), "store written");
             true
         }
+        Ok(TomlWrite::Unchanged) => true,
         Err(e) => {
             error!(%e, store = %path.display(), "store write failed");
             false
@@ -195,7 +190,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("daemon.toml");
         let base = StoreSnapshot::default();
-        assert!(write_atomic(&path, &base));
+        assert!(write_store(&path, &base));
         let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
         let (persist_tx, persist_rx) = mpsc::unbounded_channel();
         let (reload_tx, reload_rx) = mpsc::unbounded_channel();
@@ -268,13 +263,13 @@ mod tests {
         let path = dir.path().join("daemon.toml");
         let aside = dir.path().join("daemon.toml.edited");
         let base = StoreSnapshot::default();
-        assert!(write_atomic(&path, &base));
+        assert!(write_store(&path, &base));
         let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
         let (persist_tx, persist_rx) = mpsc::unbounded_channel();
         let (_reload_tx, reload_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(store_task(path.clone(), base, persist_rx, reload_rx, world));
 
-        assert!(write_atomic(&path, &one_tv("Hand edit")));
+        assert!(write_store(&path, &one_tv("Hand edit")));
         persist_tx
             .send(StoreMsg::Persist(Box::new(one_tv("World"))))
             .unwrap();
@@ -287,7 +282,7 @@ mod tests {
 
         std::fs::remove_file(&aside).unwrap();
         let reloaded = one_tv("Reloaded edit");
-        assert!(write_atomic(&path, &reloaded));
+        assert!(write_store(&path, &reloaded));
         persist_tx
             .send(StoreMsg::Reloaded(Some(Box::new(reloaded))))
             .unwrap();
@@ -327,7 +322,7 @@ mod tests {
                 },
             }],
         };
-        write_atomic(&path, &snapshot);
+        write_store(&path, &snapshot);
         let loaded = load_store(&path).unwrap();
         assert_eq!(loaded, snapshot);
         assert!(!path.with_extension("toml.tmp").exists(), "tmp cleaned up");
@@ -362,7 +357,7 @@ scheme = "wss"
         assert!(shown.contains("client_key"), "{shown}");
         assert!(!shown.contains("lg-client-key-1234"), "{shown}");
 
-        write_atomic(&path, &loaded);
+        write_store(&path, &loaded);
         let reloaded = load_store(&path).unwrap();
         let lg: tisvlay_lg::LgVendorConfig = reloaded.tv[0].config.parse("lg").unwrap();
         assert_eq!(
