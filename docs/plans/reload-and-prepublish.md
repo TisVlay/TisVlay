@@ -101,6 +101,12 @@ Settled in review, where all three reviewers converged:
   - A `tisvlay reload` CLI verb, per the add-the-surface-by-hand convention.
   - The GUI fixes the stale comment and tooltip (then `just i18n-extract` and the `.pot` diff), and routes a tray reload failure to a banner.
 
+*Decided during implementation:*
+- The session's store writer answers the core's reload request over a oneshot, since the session has no world to route a command through. The daemon's writer sends the world a `Command::ReloadStore` carrying the edit, or the refusal.
+- The unreloaded-edit set-aside covers the session's store as well as the daemon's.
+- The CLI gains `tisvlay user-profile reload` as well as `tisvlay reload`.
+- The daemon tests that replayed the store by hand after `serve` (left over from #152's boot seed) drop the replay.
+
 **Commits** (each green; each retirement rides with the commit that makes it true):
 1. `write_atomic` and the three writers. Retires `docs/ideas/atomic-config-writes.md` and its index entry.
 2. The daemon store task's `base`, the reload request, the world's `ApplyStoreEdit` handler, the manager endpoint and its bridge arm (one commit: the compiler demands the arm), the SDK, and tests.
