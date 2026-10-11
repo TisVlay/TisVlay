@@ -5,6 +5,7 @@ import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
+import { Health, ServiceHealth } from "../globals/health.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace wire identity in parens) above a rich
@@ -22,15 +23,16 @@ import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 //     GUI's D-Bus activation name. Empty for CLI.
 //   - `description`: rich one-line sentence describing what this
 //     component does ("Device management, WoL at boot, …").
-//   - `version`: probed runtime version. Always populated when
-//     `online` is true (D-Bus const property / `--version` parse);
-//     unread when offline.
-//   - `tone`: drift-tone ("info" / "warn" / "danger") for the
-//     version chip vs the running GUI's compile-time version.
-//   - `online`: true if the surface answered (D-Bus peer reachable,
-//     or `tisvlay --version` parsed cleanly). Drives both the
-//     status circle and the right-column chip's content (version
-//     pill vs `offline` pill).
+//   - `version`: probed runtime version ("—" while a live peer's
+//     probe hasn't landed; empty when offline). Feeds the
+//     diagnostics blob.
+//   - `health`: presence plus release compatibility against this
+//     GUI's release, the same value the sidebar dot renders. Colors
+//     the status circle and the version chip.
+//   - `online`: presence (liveliness, or `tisvlay --version` parsed
+//     cleanly for the CLI). Feeds the diagnostics blob.
+//   - `chip`: the chip's label ("v0.3.0", "offline", "not found").
+//   - `tip`: the chip's hover hint, saying why it's colored.
 //   - `config_path`: absolute path to the peer's config file.
 //     Drives the folder-open IconBtn — present and enabled when
 //     non-empty, present-but-disabled (40% opacity) for D-Bus peers
@@ -42,14 +44,16 @@ export struct AboutComponentRow {
     bus_address: string,
     description: string,
     version: string,
-    tone: string,
+    health: ServiceHealth,
     online: bool,
+    chip: string,
+    tip: string,
     config_path: string,
 }
 
 // Single row of the COMPONENTS table. Two-line layout: title row
 // (friendly name + bus address + folder-open IconBtn) and description
-// row (rich sentence). Left: 28px ✓/✗ status circle. Right: single
+// row (rich sentence). Left: 28px ✓/!/✗ status circle. Right: single
 // chip slot — version pill when online, `offline` pill when not.
 // The status circle already conveys presence, so a separate "online"
 // pill would duplicate the green check; consolidating to one chip
@@ -85,15 +89,14 @@ component ComponentRow {
             spacing: 12px;
             alignment: stretch;
 
-            // Status indicator — colored circle with ✓/✗ glyph,
+            // Status indicator — colored circle with a ✓ / ! / ✗
+            // glyph for the row's health (the sidebar dot's value),
             // vertically centered in the row so it reads as the
             // row's at-a-glance marker rather than an anchor on
             // the title line. Wrapper VerticalLayout owns the
             // alignment (same intrinsic-stretch discipline the
             // right-column chip uses, just centered instead of
-            // top). For D-Bus peers it indicates "service
-            // responding"; for the CLI it indicates "binary on
-            // PATH and `--version` parsed cleanly".
+            // top).
             VerticalLayout {
                 alignment: center;
                 horizontal-stretch: 0;
@@ -101,13 +104,13 @@ component ComponentRow {
                     width: Design.size-tile-md;
                     height: Design.size-tile-md;
                     border-radius: self.width / 2;
-                    background: entry.online ? Theme.success-soft : Theme.danger-soft;
+                    background: Health.soft(entry.health);
                     horizontal-stretch: 0;
                     vertical-stretch: 0;
 
                     Text {
-                        text: entry.online ? "✓" : "✗";
-                        color: entry.online ? Theme.success-text : Theme.danger-text;
+                        text: Health.mark(entry.health);
+                        color: Health.text(entry.health);
                         font-weight: 700;
                         // Glyph scale tracks the circle: half the
                         // parent's width keeps the proportion stable
@@ -169,8 +172,8 @@ component ComponentRow {
             }
 
             // Right column: single chip, top-aligned to the title
-            // row. Online → version pill with drift-tone; offline →
-            // `offline` pill in danger tone. Same anchor, same width
+            // row, colored by the row's health. Online → version
+            // pill; offline → `offline` pill. Same anchor, same width
             // band, content is what flips — so the column reads as a
             // stable status column whether the row's peer is up or
             // down. The CLI's old "invisible online chip" trick is no
@@ -183,8 +186,9 @@ component ComponentRow {
                 HorizontalLayout {
                     alignment: end;
                     Chip {
-                        label: entry.online ? "v" + entry.version : @tr("offline");
-                        tone: entry.online ? entry.tone : "danger";
+                        label: entry.chip;
+                        tone: Health.tone(entry.health);
+                        tip: entry.tip;
                     }
                 }
             }
@@ -322,9 +326,8 @@ export component AboutPane inherits Rectangle {
                         alignment: end;
                         Chip {
                             label: "v" + root.gui-version;
-                            // `info` tone matches the COMPONENTS chips
-                            // when versions agree — visual continuity
-                            // for the running build's identifier.
+                            // `info`: a link to the release notes, not
+                            // a status like the COMPONENTS chips.
                             tone: "info";
                             interactive: true;
                             tip: @tr("Open release notes");

@@ -24,11 +24,12 @@ export component Chip inherits Rectangle {
     in property <string> tone: "neutral";
     /// `interactive: true` adds a pointer cursor + click handling so
     /// the chip reads as a hyperlink-style affordance. Default
-    /// `false` keeps every existing decorative chip (online/offline,
-    /// version-drift indicators, etc.) inert.
+    /// `false` keeps decorative chips (the About pane's version
+    /// chips, etc.) unclickable.
     in property <bool> interactive: false;
-    /// Optional hover hint (hover-only); requires `interactive` — it
-    /// shares the chip's TouchArea. Empty → no tip.
+    /// Optional hover hint (hover-only). A decorative chip with a tip
+    /// gets a hover-only TouchArea: no pointer cursor, no click. Empty
+    /// → no tip.
     in property <string> tip;
     callback clicked();
 
@@ -82,27 +83,30 @@ export component Chip inherits Rectangle {
         }
     }
 
-    // Hover hint (interactive chips): the shared trigger reports `tip`
-    // to the Help global; the window-root overlay draws the bubble.
+    // Hover hint: the shared trigger reports `tip` to the Help global;
+    // the window-root overlay draws the bubble.
     tip-trigger := HelpTrigger {
         width: 100%;
         height: 100%;
         text: root.tip;
     }
+    property <bool> hoverable: root.interactive || root.tip != "";
     // The `if`-gated TouchArea below is removed when the chip stops being
-    // interactive, so it can't emit `has-hover = false` to dismiss its
-    // own bubble — clear it here instead.
-    changed interactive => {
-        if (!root.interactive) {
+    // hoverable, so it can't emit `has-hover = false` to dismiss its own
+    // bubble — clear it here instead.
+    changed hoverable => {
+        if (!root.hoverable) {
             tip-trigger.hover-leave();
         }
     }
 
-    if root.interactive: TouchArea {
-        mouse-cursor: pointer;
+    if root.hoverable: TouchArea {
+        mouse-cursor: root.interactive ? pointer : default;
         clicked => {
-            root.clicked();
-            tip-trigger.hover-leave();
+            if (root.interactive) {
+                root.clicked();
+                tip-trigger.hover-leave();
+            }
         }
         changed has-hover => {
             tip-trigger.set-hover(self.has-hover);
