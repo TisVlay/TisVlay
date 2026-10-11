@@ -980,8 +980,10 @@ impl TrayClient {
         Ok(self.call::<user_tray::Info>(&()).await?.state_path)
     }
 
-    pub async fn reload_config(&self) -> Result<()> {
-        Ok(())
+    /// Apply a hand edit of the tray's settings file. Refused when the
+    /// file is missing or unparsable.
+    pub async fn reload_config(&self) -> Result<ReloadReport> {
+        self.call::<user_tray::Reload>(&()).await
     }
 
     pub async fn notification_settings(&self) -> Result<NotificationSettings> {

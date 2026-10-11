@@ -16,6 +16,7 @@ use anyhow::{Context, Result, anyhow};
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
 use tisvlay_wire::endpoint::user_tray;
+use tisvlay_wire::error::WireError;
 use tisvlay_wire::{keys, rpc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -155,6 +156,15 @@ pub fn load_settings(path: &Path) -> Result<NotificationSettings> {
     }
 }
 
+/// `tray.toml` as a reload sees it: a missing or unparsable file is
+/// refused rather than read as the defaults.
+fn read_for_reload(path: &Path) -> Result<NotificationSettings, WireError> {
+    let text = std::fs::read_to_string(path).map_err(|e| WireError::store_unreadable(path, e))?;
+    toml::from_str::<PersistedSettings>(&text)
+        .map(|persisted| persisted.settings)
+        .map_err(|e| WireError::store_unreadable(path, e))
+}
+
 /// Durably replace `tray.toml` (`write_atomic`: temp file, fsync,
 /// rename), off the async runtime since the fsyncs block.
 async fn save_settings(path: &Path, settings: &NotificationSettings) {
@@ -254,6 +264,26 @@ pub async fn serve_settings(
                     state_path: config_path.display().to_string(),
                 };
                 responder.ok(&info).await;
+            }
+            user_tray::Incoming::Reload((), responder) => {
+                // Every update is written before it's answered, so the
+                // file only differs from `settings` after a hand edit,
+                // which then applies whole. Unlike boot, a missing or
+                // unparsable file is refused rather than defaulted.
+                let reloaded = read_for_reload(&config_path).map(|disk| {
+                    let changed = disk != settings;
+                    if changed {
+                        settings = disk;
+                        notifier.set_enabled(settings);
+                    }
+                    changed
+                });
+                if reloaded == Ok(true) {
+                    publish(settings).await;
+                }
+                responder
+                    .answer(reloaded.map(|changed| rpc::ReloadReport { changed }))
+                    .await;
             }
         }
     }

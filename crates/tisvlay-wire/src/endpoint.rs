@@ -368,6 +368,8 @@ pub mod user_tray {
             Test = "test" (()) -> rpc::Ack, write;
             /// The tray's version and state path.
             Info = "info" (()) -> rpc::ServiceInfo, read;
+            /// Apply a hand edit of the tray's settings file.
+            Reload = "reload" (()) -> rpc::ReloadReport, write;
         }
     }
 }
