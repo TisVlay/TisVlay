@@ -32,6 +32,11 @@ The **Screen capture arms** switch lives on the user profile's REMOTE SESSION ca
 
 Sunshine's default capture on Nvidia is invisible to the desktop portal, so tisvlay watches Sunshine's own status endpoint on loopback instead — which means Sunshine works **with no configuration at all**. Just stream in; the TV stays asleep.
 
+That endpoint sits on Sunshine's base port, 47989 by default. If you've moved Sunshine to another `port` (for example, to leave the GameStream defaults to Moonshine), tell the session service where to look, or it will poll whatever now answers on the default port:
+
+- **NixOS:** `services.tisvlay.sunshinePort = 48989;` (Sunshine's configured `port`).
+- **Other distros:** add `--sunshine-port 48989` to the session service's command line with `systemctl --user edit --full tisvlay-session`, then `systemctl --user restart tisvlay-session`.
+
 If you want the TV armed the *instant* Sunshine launches (a second or two ahead of the status poll), add a prep-command hook to Sunshine (`sunshine.conf` → **Configuration → General → Command Preparations**, or the raw config):
 
 ```json

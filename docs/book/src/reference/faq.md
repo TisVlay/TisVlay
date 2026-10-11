@@ -30,7 +30,7 @@ A few TOML files — the daemon's `daemon.toml` (TVs + system profiles), your se
 
 ### Is the pairing key a secret?
 
-Moderately. The per-TV `client_key` lets any holder on your network control that TV (power, input, volume — it is not a system credential). It lives in the daemon's store at `/var/lib/tisvlay/daemon.toml`, readable only by the `tisvlay` service user. Treat it like a Wi-Fi password: not catastrophic, not for pasting into bug reports.
+Moderately. The per-TV `client_key` lets any holder on your network control that TV (power, input, volume — it is not a system credential). It lives in the daemon's store at `/var/lib/tisvlay/daemon.toml`, readable only by the `tisvlay` service user, and the daemon never hands it out: `tisvlay config` and the GUI's configuration view leave it out, and it's redacted from the logs. Treat it like a Wi-Fi password: not catastrophic, not for pasting into bug reports.
 
 ### Can I control several TVs?
 
