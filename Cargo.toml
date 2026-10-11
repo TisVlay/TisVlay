@@ -177,9 +177,10 @@ bevy_ecs = "0.20"
 # switched off — on zenoh-ext too, whose `default` re-enables them. Add a
 # `transport_*` feature back here if a link ever needs one.
 zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
-# Tilde, not caret: the `unstable` feature switches on zenoh's internal
-# APIs and pins zenoh exactly, so a newer 1.x could break the published
-# SDK downstream. Bump it deliberately (docs/build.md § Review triggers).
+# Tilde, not caret: the `unstable` feature switches on zenoh's unstable
+# and internal APIs, which may break within 1.x, so a newer minor could
+# break the published SDK downstream. Bump it deliberately
+# (docs/build.md § Review triggers).
 zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable"] }
 
 # EDID parsing for the DRM connector ↔ TV matcher

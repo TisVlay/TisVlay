@@ -411,7 +411,9 @@ pub struct DiscoverySession {
 /// Frozen, with the three `info` keys: it's how a client learns a
 /// service's release before anything else can be decoded, so a client
 /// of any release must still read it. Fields may be added, never
-/// changed or removed, and unknown fields are never denied. `version`
+/// changed or removed; an added field carries `#[serde(default)]`, so a
+/// newer client still reads an older service's reply, and unknown fields
+/// are never denied, so an older client reads a newer one's. `version`
 /// is the service's [`crate::VERSION`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ServiceInfo {

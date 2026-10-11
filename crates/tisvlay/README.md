@@ -52,6 +52,7 @@ These crates' types appear in this crate's API, so a major-version bump of one i
 - `tisvlay-core`: `TvInfo`'s capabilities, hardware id and power state, pairing schema fields, and the profile configs.
 - `tisvlay-protocol`: the re-exported payload and rpc types and `ErrorCode`. It releases in lockstep with this crate.
 - `uuid`: TV and profile ids.
+- `serde`: the re-exported protocol payload and rpc types implement `Serialize` and `Deserialize`.
 - `serde_json`: `update_tv_config` takes a `serde_json::Map`.
 - `futures-core`: the pairing, power-cycle and discovery progress streams are `impl Stream`.
 

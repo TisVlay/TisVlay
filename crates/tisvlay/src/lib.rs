@@ -446,8 +446,9 @@ impl DaemonClient {
 
     /// Apply a hand edit of the daemon's store file: only what changed
     /// since the daemon last wrote it applies, and the report says whether
-    /// anything did. Refused when the file is missing or unparsable, or
-    /// the daemon runs without one.
+    /// anything did. Rpc, refused with [`ErrorCode::NoStore`] (the daemon
+    /// runs without a file) or [`ErrorCode::StoreUnreadable`] (missing or
+    /// unparsable; the message is the parser's report).
     pub async fn reload_config(&self) -> Result<ReloadReport> {
         self.call::<manager::Reload>(&(), &()).await
     }
@@ -496,6 +497,8 @@ impl DaemonClient {
     }
 
     /// Start a re-pair; returns the attempt id its progress samples carry.
+    /// Rpc, refused with [`ErrorCode::TvNotFound`] or
+    /// [`ErrorCode::PairingExists`] (one is already running for the TV).
     pub async fn re_pair(&self, tv: Uuid) -> Result<Uuid> {
         let started = self.call::<tv::RePair>(&tv, &()).await?;
         Ok(started.attempt)
@@ -627,7 +630,8 @@ impl DaemonClient {
     }
 
     /// Open an open-ended discovery session; it scans on the daemon's
-    /// cadence until [`Self::stop_discovery`].
+    /// cadence until [`Self::stop_discovery`]. Rpc; it scans every vendor,
+    /// so it isn't refused.
     pub async fn start_discovery(&self) -> Result<Uuid> {
         let started = self
             .call::<manager::DiscoverStart>(&(), &rpc::DiscoverStart { vendor: None })
@@ -672,7 +676,7 @@ impl DaemonClient {
     /// Manual-entry hint: the daemon probes its ARP cache (after the
     /// vendor primes it) for the device's MAC, so the wizard can show it
     /// before pairing. Pair-time enrichment daemon-side remains the
-    /// safety net.
+    /// safety net. Rpc, refused with [`ErrorCode::UnknownVendor`].
     pub async fn enrich_manual_entry(&self, vendor: &str, address: &str) -> Result<Option<String>> {
         let request = rpc::Enrich {
             vendor: vendor.into(),
@@ -705,8 +709,8 @@ impl DaemonClient {
     /// half asleep, this wakes it instead of failing. The ack comes once
     /// the action is sent or the wake is under way; the daemon then
     /// checks the power state and retries on its own. Rpc, refused with
-    /// [`ErrorCode::TvNotFound`], [`ErrorCode::NotConnected`] or
-    /// [`ErrorCode::WakeNotSupported`].
+    /// [`ErrorCode::TvNotFound`] or [`ErrorCode::NotConnected`]
+    /// (disconnected, and the transport can't wake it).
     pub async fn screen_on(&self, tv: Uuid) -> Result<()> {
         self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(true))
             .await
@@ -816,13 +820,17 @@ impl DaemonClient {
         self.tv_call::<tv::Remove>(tv, &()).await
     }
 
-    /// The TV's config, schema-secret fields removed.
+    /// The TV's config, schema-secret fields removed. Rpc, refused with
+    /// [`ErrorCode::TvNotFound`].
     pub async fn get_tv_config(&self, tv: Uuid) -> Result<TvConfigView> {
         self.call::<tv::GetConfig>(&tv, &()).await
     }
 
     /// Patch the TV's config: known top-level keys apply to its settings,
-    /// everything else merges into the vendor table.
+    /// everything else merges into the vendor table. Rpc, refused with
+    /// [`ErrorCode::TvNotFound`], [`ErrorCode::InvalidField`] (a value the
+    /// field rejects; see [`Error::invalid_field`]) or
+    /// [`ErrorCode::BadRequest`] (a key of the wrong type).
     pub async fn update_tv_config(
         &self,
         tv: Uuid,
@@ -1053,8 +1061,9 @@ impl SessionClient {
 
     /// Apply a hand edit of the session's store file (user profiles and
     /// assignments): only what changed since the session last wrote it
-    /// applies. Refused when the file is missing or unparsable, or the
-    /// session runs without one.
+    /// applies. Rpc, refused with [`ErrorCode::NoStore`] (the session
+    /// runs without a file) or [`ErrorCode::StoreUnreadable`] (missing or
+    /// unparsable; the message is the parser's report).
     pub async fn reload_config(&self) -> Result<ReloadReport> {
         self.call::<user_profile::Reload>(&(), &()).await
     }
@@ -1320,8 +1329,9 @@ impl TrayClient {
         Ok(self.info().await?.state_path)
     }
 
-    /// Apply a hand edit of the tray's settings file. Refused when the
-    /// file is missing or unparsable.
+    /// Apply a hand edit of the tray's settings file. Rpc, refused with
+    /// [`ErrorCode::StoreUnreadable`] (missing or unparsable; the message
+    /// is the parser's report).
     pub async fn reload_config(&self) -> Result<ReloadReport> {
         self.call::<user_tray::Reload>(&()).await
     }
