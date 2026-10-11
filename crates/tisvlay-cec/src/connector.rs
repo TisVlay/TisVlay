@@ -111,7 +111,7 @@ impl TvConnector for CecConnector {
             .opener
             .open(
                 &config.device,
-                config.physical_address,
+                config.physical_address.to_linux(),
                 advertised_name(&config),
             )
             .await?;
@@ -145,7 +145,7 @@ impl TvConnector for CecConnector {
         let config = vendor_config.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
         let link = self
             .opener
-            .open(&config.device, config.physical_address, None)
+            .open(&config.device, config.physical_address.to_linux(), None)
             .await?;
         link.power_on().await
     }
@@ -160,7 +160,7 @@ impl TvConnector for CecConnector {
             .opener
             .open(
                 &config.device,
-                config.physical_address,
+                config.physical_address.to_linux(),
                 advertised_name(&config),
             )
             .await?;
@@ -187,7 +187,7 @@ impl TvConnector for CecConnector {
                         .opener
                         .open(
                             &config.device,
-                            config.physical_address,
+                            config.physical_address.to_linux(),
                             advertised_name(&config),
                         )
                         .await

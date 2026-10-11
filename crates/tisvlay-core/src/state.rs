@@ -4,61 +4,9 @@ use crate::HardwareId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Phases a power-on (wake-and-connect) flow walks through.
-///
-/// Published as wire strings on the per-TV `progress/power` key
-/// so GUIs can show staged feedback ("Sending wake-up..." →
-/// "Connecting..." → "Connected" / "Failed") instead of a single
-/// 5-30 s spinner.
-///
-/// The manager picks one of two paths up front:
-///
-/// - **Direct-connect** (TV reachable already; just lost the WS):
-///   skip WoL, emit `DirectConnect` → `Connecting` → `Connected`.
-/// - **Wake-on-LAN** (TV in deep standby): emit `WolSent` →
-///   `Connecting` → `Connected`. The backend's WoL send + connect
-///   retry loop is atomic from the manager's view, so `WolSent`
-///   and `Connecting` fire back-to-back just before the call.
-///
-/// Either path terminates in `Connected` on success or `Failed` on
-/// failure. The wire string is stable; new phases get appended (not
-/// renumbered) so old clients keep working.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PowerCyclePhase {
-    /// Wake-on-LAN packet has been (or is about to be) sent.
-    WolSent,
-    /// Skipping WoL — TV reachable, going straight to connect.
-    /// Mutually exclusive with `WolSent` for a given power-on flow.
-    DirectConnect,
-    /// Manager is attempting to establish a connection to the TV.
-    Connecting,
-    /// Connection succeeded; the TV is online.
-    Connected,
-    /// Wake-and-connect failed (TV unreachable, timeout, etc.).
-    Failed,
-}
-
-impl PowerCyclePhase {
-    /// Wire representation. Stable string contract for the D-Bus signal.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::WolSent => "wol_sent",
-            Self::DirectConnect => "direct_connect",
-            Self::Connecting => "connecting",
-            Self::Connected => "connected",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-impl std::fmt::Display for PowerCyclePhase {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TvState {
     /// Raw, vendor-reported power state. Updated by [`TvState::update_power`]
     /// alongside the derived [`Self::is_on`] / [`Self::is_screen_on`]
@@ -200,23 +148,6 @@ impl PowerState {
     pub fn needs_wake_preflight(self) -> bool {
         !matches!(self, Self::Active | Self::ScreenSaver | Self::ScreenOff)
     }
-}
-
-/// Shared client-side interpretation of a TV's power-state wire
-/// string: whether the TV is "on".
-///
-/// Clients (CLI, tray, GUI) read the string projection of the per-TV
-/// `state/power` payload (surfaced as `TvInfo::power_state` by the
-/// SDK) rather than the rich [`PowerState`] enum. This is the single
-/// place that maps that vocabulary to an on/off bit, and it delegates
-/// to the enum — [`PowerState::parse`] accepts every serde wire
-/// spelling (plus the vendor-side spellings), and
-/// [`PowerState::is_on`] is the one on/off classification — so the
-/// string gate can never drift from the enum's semantics. Strings
-/// the vocabulary doesn't know parse as [`PowerState::Unknown`] and
-/// read as off, same as a stale or hand-set `"unknown"` value.
-pub fn power_state_str_is_on(power_state: &str) -> bool {
-    PowerState::parse(power_state).is_on()
 }
 
 impl TvState {
@@ -423,39 +354,5 @@ mod tests {
                 s.is_screen_on
             );
         }
-    }
-
-    /// Pins the string gate to `PowerState::is_on` across every
-    /// variant's actual serde wire spelling, so a serde rename (or a
-    /// new variant) can't silently split the two interpretations.
-    #[test]
-    fn power_state_str_is_on_matches_enum_for_every_wire_spelling() {
-        for state in [
-            PowerState::Active,
-            PowerState::Standby,
-            PowerState::ActiveStandby,
-            PowerState::Suspend,
-            PowerState::ScreenSaver,
-            PowerState::ScreenOff,
-            PowerState::WarmingUp,
-            PowerState::CoolingDown,
-            PowerState::Unknown,
-        ] {
-            let wire = serde_json::to_value(state).unwrap();
-            let wire = wire.as_str().unwrap();
-            assert_eq!(
-                power_state_str_is_on(wire),
-                state.is_on(),
-                "string gate diverges from PowerState::is_on for wire spelling {wire:?}"
-            );
-        }
-    }
-
-    /// Strings outside the vocabulary read as off — a client must
-    /// never treat an unclassifiable power state as powered.
-    #[test]
-    fn power_state_str_is_on_reads_unknown_strings_as_off() {
-        assert!(!power_state_str_is_on("no such state"));
-        assert!(!power_state_str_is_on(""));
     }
 }

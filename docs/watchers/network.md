@@ -18,6 +18,17 @@ A single `rtnetlink` multicast connection subscribes to five groups:
 
 This is kernel-level, fires within milliseconds of a state change, and works without NetworkManager.
 
+### Staying connected
+
+The monitor restarts in place. Its view (each link's usability, each monitored TV's address and resolved interface) lives in a `MonitorState` that outlives any one kernel connection.
+- **Each connection** subscribes first, then resyncs: a link dump (`RTM_GETLINK`, on a short-lived connection of its own) reports every link afresh, and every monitored TV is re-resolved. The world's carrier handling is idempotent, so resending unchanged links is harmless, provided each link reads the same as it did. A link counts as usable with carrier and an operational state of `UP`, or `UNKNOWN` and not dormant: loopback, tun, WireGuard and Tailscale report `UNKNOWN` while carrying traffic, and reading them as down would park every TV routed over them on each resync.
+- **Dropped notifications.** In a burst of interface churn the kernel can overrun the socket buffer (ENOBUFS), which netlink-proto surfaces as a `NetlinkPayload::Overrun` message. The monitor resyncs on it, since lost link and route events would otherwise leave its view stale.
+- **A failed connection** (the open, the dump, or the message stream ending) is logged and reopened with a capped backoff (1 s doubling to 60 s), while route requests are still served. The backoff starts over only after a connection stayed up for a minute. The monitor ends only when the world does.
+
+Without this, a dead connection silently ended carrier and route monitoring for the daemon's lifetime, and a TV parked during a network blip never redialed.
+
+**Testing.** The reconnect loop itself has no unit test: a fake opener would have to produce rtnetlink's `Connection` and message-receiver types, or the loop would need a trait seam bigger than the loop. So the loop stays thin, and its decisions (report on change, report everything after a reset) are `MonitorState` unit tests. The restart is checked in the field: provoke an overrun with interface churn (create and delete a few hundred veth pairs) and confirm a parked TV still redials. Restarting NetworkManager doesn't close the kernel socket, so it doesn't exercise the restart path.
+
 ## Route-Based Device Resolution
 
 For every network-transport TV, the daemon resolves which NIC carries traffic to its IP via `RTM_GETROUTE` (equivalent to `ip route get <IP>`):

@@ -7,9 +7,10 @@
 use crate::with_id;
 use std::sync::Arc;
 
-use crate::compat::{DaemonClient, PowerCyclePhase};
 use anyhow::Result;
 use slint::{Model, SharedString};
+use tisvlay::DaemonClient;
+use tisvlay::PowerPhase;
 
 use crate::{AppWindow, on_ui};
 
@@ -50,7 +51,7 @@ pub(crate) async fn run_power_on_with_progress(
 pub(crate) fn update_power_cycle_phase(
     app_weak: &slint::Weak<AppWindow>,
     tv_id: &str,
-    phase: Option<PowerCyclePhase>,
+    phase: Option<PowerPhase>,
 ) {
     let tv_id = tv_id.to_string();
     on_ui(app_weak, move |app| {

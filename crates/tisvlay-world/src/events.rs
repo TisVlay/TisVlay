@@ -392,6 +392,34 @@ pub enum Command {
         id: Uuid,
         reply: Option<Reply<profile::Effective>>,
     },
+    /// Apply a hand edit of the store file. The store writer reads the
+    /// file and sends the edit, or the refusal (no file, unreadable,
+    /// unparsable) for the world to answer.
+    ReloadStore {
+        edit: Result<Box<StoreEdit>, WireError>,
+        reply: Option<Reply<manager::Reload>>,
+    },
+}
+
+/// A hand edit of the store file: the snapshot the store writer last
+/// wrote (or loaded at boot), and the file as it reads now. A reload
+/// applies exactly the difference between the two, so world changes still
+/// waiting on a write survive it.
+#[derive(Debug)]
+pub struct StoreEdit {
+    pub base: StoreSnapshot,
+    pub disk: StoreSnapshot,
+}
+
+/// What the world sends the store writer.
+#[derive(Debug)]
+pub enum StoreMsg {
+    /// The world's state changed: write it.
+    Persist(Box<StoreSnapshot>),
+    /// A reload finished. `Some` carries the file it applied, which is
+    /// now the writer's record of what's on disk; `None` means the world
+    /// refused it, so that record stands.
+    Reloaded(Option<Box<StoreSnapshot>>),
 }
 
 /// A dial failure with its typed reason preserved across the task
@@ -401,9 +429,9 @@ pub enum Command {
 /// on the way to clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialFailure {
-    /// Namespaced reason code when the error has one — today
-    /// `device.permission-denied`; `None` = generic connect failure.
-    pub code: Option<String>,
+    /// The reason when the error carries one (a device-access failure);
+    /// `None` is a generic connect failure.
+    pub code: Option<tisvlay_wire::payload::FailureCode>,
     /// Reason-specific parameter — the device-node path for the
     /// permission case.
     pub path: Option<String>,
@@ -416,11 +444,7 @@ impl DialFailure {
     pub fn from_error(error: &tisvlay_core::Error) -> Self {
         match error {
             tisvlay_core::Error::PermissionDenied { path } => Self {
-                code: Some(
-                    tisvlay_core::errors::DeviceErrorCode::PermissionDenied
-                        .as_str()
-                        .into(),
-                ),
+                code: Some(tisvlay_core::errors::DeviceErrorCode::PermissionDenied.into()),
                 path: Some(path.clone()),
                 message: error.to_string(),
             },
@@ -486,7 +510,7 @@ pub enum BackendEvent {
     Disconnected,
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
-    PowerPhase(&'static str),
+    PowerPhase(tisvlay_wire::payload::PowerPhase),
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
         reply: AckReply,

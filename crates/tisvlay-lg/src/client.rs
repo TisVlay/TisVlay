@@ -34,7 +34,7 @@ fn payload_keys(payload: &Value) -> Vec<&str> {
 }
 
 /// Client for controlling an LG WebOS TV.
-pub struct WebOsClient {
+pub(crate) struct WebOsClient {
     /// WebSocket connection (None if closed).
     conn: Option<Connection>,
     /// Client key for authentication.
@@ -81,7 +81,7 @@ impl WebOsClient {
     /// If `client_key` is provided, attempts to reconnect with
     /// existing pairing. If `None` or the key is invalid, a pairing
     /// prompt will be shown on the TV.
-    pub async fn connect(host: &str, client_key: Option<Secret>) -> Result<Self> {
+    pub(crate) async fn connect(host: &str, client_key: Option<Secret>) -> Result<Self> {
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
         let conn = Connection::connect(host, connect_timeout).await?;
         Self::register_on(conn, client_key).await
@@ -91,7 +91,7 @@ impl WebOsClient {
     /// reconnects when the pairing flow has already recorded which
     /// scheme the TV speaks into `LgVendorConfig.scheme` — single
     /// dispatch, no fallback round-trip.
-    pub async fn connect_with_scheme(
+    pub(crate) async fn connect_with_scheme(
         host: &str,
         scheme: crate::config::WebOsScheme,
         client_key: Option<Secret>,
@@ -143,7 +143,7 @@ impl WebOsClient {
     }
 
     /// Check if the connection is still active.
-    pub fn is_connected(&self) -> bool {
+    pub(crate) fn is_connected(&self) -> bool {
         self.conn.as_ref().is_some_and(Connection::is_alive)
     }
 
@@ -250,7 +250,7 @@ impl WebOsClient {
     }
 
     /// Get the client key (for saving to config).
-    pub fn client_key(&self) -> Option<&Secret> {
+    pub(crate) fn client_key(&self) -> Option<&Secret> {
         self.client_key.as_ref()
     }
 
@@ -289,25 +289,6 @@ impl WebOsClient {
     // Subscriptions
     // -------------------------------------------------------------------------
 
-    /// Subscribe to a single SSAP endpoint.
-    ///
-    /// Sends a subscribe request and returns the initial response (which
-    /// typically contains the current value). Subsequent updates arrive on
-    /// the subscription channel (see [`take_subscription_rx`](Self::take_subscription_rx)).
-    pub async fn subscribe(&mut self, uri: &str) -> Result<Response> {
-        let request = Request::subscribe(self.next_id(), uri);
-        let timeout = self.timeout;
-        let response = self.conn()?.request(&request, timeout).await?;
-
-        if response.msg_type == ResponseType::Error
-            && let Some(error) = &response.error
-        {
-            tracing::warn!(uri, error, "Subscribe returned error");
-        }
-
-        Ok(response)
-    }
-
     /// Subscribe to all state endpoints used for push-based updates.
     ///
     /// Returns a mapping of request ID → endpoint URI so the caller can
@@ -318,7 +299,7 @@ impl WebOsClient {
     ///
     /// After calling this, subscription updates will arrive on the channel
     /// returned by [`take_subscription_rx`](Self::take_subscription_rx).
-    pub async fn subscribe_state_updates(
+    pub(crate) async fn subscribe_state_updates(
         &mut self,
     ) -> Result<(
         std::collections::HashMap<String, String>,
@@ -409,7 +390,7 @@ impl WebOsClient {
     /// Take the subscription receiver from the underlying connection.
     ///
     /// Returns `Some` on the first call, `None` on subsequent calls.
-    pub fn take_subscription_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Response>> {
+    pub(crate) fn take_subscription_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Response>> {
         self.conn_mut().ok()?.take_subscription_rx()
     }
 
@@ -418,7 +399,7 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Turn off the TV (standby).
-    pub async fn power_off(&mut self) -> Result<()> {
+    pub(crate) async fn power_off(&mut self) -> Result<()> {
         self.command(power::TURN_OFF, json!({})).await?;
         Ok(())
     }
@@ -429,7 +410,7 @@ impl WebOsClient {
     /// as success so direct callers (tray, GUI) don't see spurious
     /// errors when toggling a no-op. Other error codes propagate so the
     /// reliable dispatch tier can react.
-    pub async fn screen_off(&mut self) -> Result<()> {
+    pub(crate) async fn screen_off(&mut self) -> Result<()> {
         match self.command(power::TURN_OFF_SCREEN, json!({})).await {
             Ok(_) => Ok(()),
             Err(Error::TvError(msg)) if is_idempotent_screen_error(&msg) => {
@@ -451,7 +432,7 @@ impl WebOsClient {
     /// (Active Standby etc.) and the screen-on command was refused; the
     /// reliable dispatch tier needs the error so it can escalate to
     /// `power_on` with WoL. See `docs/lg/firmware-quirks.md` — "Bug B".
-    pub async fn screen_on(&mut self) -> Result<()> {
+    pub(crate) async fn screen_on(&mut self) -> Result<()> {
         match self.command(power::TURN_ON_SCREEN, json!({})).await {
             Ok(_) => Ok(()),
             Err(Error::TvError(msg)) if is_idempotent_screen_error(&msg) => {
@@ -473,7 +454,7 @@ impl WebOsClient {
     /// field. Without that, a `get_power_state` query issued during
     /// a remote-press power-off would return `Active` for ~3 s
     /// while the panel is actually going dark.
-    pub async fn get_power_state(&mut self) -> Result<PowerState> {
+    pub(crate) async fn get_power_state(&mut self) -> Result<PowerState> {
         let response = self.command(power::GET_POWER_STATE, json!({})).await?;
         Ok(
             crate::connection::parse_power_state_payload(&response.payload)
@@ -486,14 +467,14 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Switch to a specific input.
-    pub async fn switch_input(&mut self, input_id: &str) -> Result<()> {
+    pub(crate) async fn switch_input(&mut self, input_id: &str) -> Result<()> {
         self.command(input::SWITCH_INPUT, json!({"inputId": input_id}))
             .await?;
         Ok(())
     }
 
     /// Get list of available inputs.
-    pub async fn get_inputs(&mut self) -> Result<Vec<InputInfo>> {
+    pub(crate) async fn get_inputs(&mut self) -> Result<Vec<InputInfo>> {
         let response = self
             .command(input::GET_EXTERNAL_INPUT_LIST, json!({}))
             .await?;
@@ -516,7 +497,7 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Set the volume (0-100).
-    pub async fn set_volume(&mut self, volume: u8) -> Result<()> {
+    pub(crate) async fn set_volume(&mut self, volume: u8) -> Result<()> {
         let volume = i32::from(volume.min(100));
         self.command(audio::SET_VOLUME, json!({"volume": volume}))
             .await?;
@@ -524,7 +505,7 @@ impl WebOsClient {
     }
 
     /// Get the current volume.
-    pub async fn get_volume(&mut self) -> Result<VolumeInfo> {
+    pub(crate) async fn get_volume(&mut self) -> Result<VolumeInfo> {
         let response = self.command(audio::GET_VOLUME, json!({})).await?;
         let vol_response: VolumeResponse = serde_json::from_value(response.payload)?;
         vol_response
@@ -533,13 +514,13 @@ impl WebOsClient {
     }
 
     /// Set mute state.
-    pub async fn set_mute(&mut self, mute: bool) -> Result<()> {
+    pub(crate) async fn set_mute(&mut self, mute: bool) -> Result<()> {
         self.command(audio::SET_MUTE, json!({"mute": mute})).await?;
         Ok(())
     }
 
     /// Get current mute state.
-    pub async fn get_mute(&mut self) -> Result<bool> {
+    pub(crate) async fn get_mute(&mut self) -> Result<bool> {
         let response = self.command(audio::GET_MUTE, json!({})).await?;
         let muted = response
             .payload
@@ -547,18 +528,6 @@ impl WebOsClient {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         Ok(muted)
-    }
-
-    /// Increase volume by one step.
-    pub async fn volume_up(&mut self) -> Result<()> {
-        self.command(audio::VOLUME_UP, json!({})).await?;
-        Ok(())
-    }
-
-    /// Decrease volume by one step.
-    pub async fn volume_down(&mut self) -> Result<()> {
-        self.command(audio::VOLUME_DOWN, json!({})).await?;
-        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -571,7 +540,7 @@ impl WebOsClient {
     /// `WRITE_SETTINGS` in the signed manifest. Uses the Luna service
     /// workaround via createAlert instead (shared by bscpylgtv,
     /// LGTVCompanion, etc.).
-    pub async fn set_backlight(&mut self, backlight: u8) -> Result<()> {
+    pub(crate) async fn set_backlight(&mut self, backlight: u8) -> Result<()> {
         let backlight = i32::from(backlight.min(100));
 
         let luna_params = json!({
@@ -614,7 +583,7 @@ impl WebOsClient {
     }
 
     /// Get current backlight (OLED pixel brightness, 0-100).
-    pub async fn get_backlight(&mut self) -> Result<u8> {
+    pub(crate) async fn get_backlight(&mut self) -> Result<u8> {
         let response = self
             .command(
                 picture::GET_SYSTEM_SETTINGS,
@@ -646,7 +615,7 @@ impl WebOsClient {
     /// MAC). Best-effort: `None` on any failed read, a connected interface
     /// whose address isn't `dialed`, or a missing block. Never the Wi-Fi
     /// Direct (`p2p`) interface — it's no WoL target.
-    pub async fn get_link_mac(&mut self, dialed: IpAddr) -> Option<MacAddress> {
+    pub(crate) async fn get_link_mac(&mut self, dialed: IpAddr) -> Option<MacAddress> {
         let status = self.network_read(network::GET_STATUS).await?;
         let Some(iface) = ["wired", "wifi"].into_iter().find(|name| {
             let block = status.get(*name).unwrap_or(&Value::Null);
@@ -695,7 +664,7 @@ impl WebOsClient {
     /// older sets may omit `serialNumber`. The returned [`HardwareId`]
     /// uses the EDID PNPID `"GSM"` for manufacturer (LG is always GSM)
     /// and fills model / serial from whichever fields the TV reports.
-    pub async fn get_hardware_id(&mut self) -> Result<HardwareId> {
+    pub(crate) async fn get_hardware_id(&mut self) -> Result<HardwareId> {
         let response = self.command(system::GET_SYSTEM_INFO, json!({})).await?;
         let payload = &response.payload;
 
@@ -722,7 +691,7 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Get the current TV state.
-    pub async fn get_state(&mut self) -> Result<TvState> {
+    pub(crate) async fn get_state(&mut self) -> Result<TvState> {
         let mut state = TvState::new();
 
         // Get power state
@@ -758,7 +727,7 @@ impl WebOsClient {
     }
 
     /// Close the connection.
-    pub async fn close(&mut self) -> Result<()> {
+    pub(crate) async fn close(&mut self) -> Result<()> {
         if let Some(mut conn) = self.conn.take() {
             conn.close().await
         } else {

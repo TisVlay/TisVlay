@@ -8,7 +8,7 @@
 )]
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -16,9 +16,11 @@ use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
 use serde_json::{Value, json};
 use tisvlay_cli::{Cli, Command, ProfileCmd, RemoteSessionCmd, UserProfileCmd};
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{Unary, manager, profile, tv, user_profile, user_remote, vendors};
-use tisvlay_wire::{keys, rpc};
+use tisvlay_wire::caller::{Caller, RpcError};
+use tisvlay_wire::endpoint::{
+    Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
+};
+use tisvlay_wire::{keys, payload, rpc};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::sample::SampleKind;
@@ -84,6 +86,7 @@ async fn run() -> Result<()> {
         // Handled above, before the client opens (needs no connection).
         Command::EnableAccess => unreachable!(),
         Command::Status => status(&session, site, &socket, json_out).await,
+        Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
         Command::Discover { vendor, timeout_ms } => {
@@ -651,7 +654,7 @@ async fn pair(
 }
 
 /// One line on what the pairing did with the device-reported link MAC.
-fn link_mac_line(id: Uuid, report: &tisvlay_wire::payload::LinkMacReport) -> String {
+fn link_mac_line(id: Uuid, report: &payload::LinkMacReport) -> String {
     use tisvlay_wire::payload::LinkMacOutcome;
     let reported = &report.reported;
     match &report.outcome {
@@ -683,26 +686,28 @@ async fn watch_pairing(
         tokio::select! {
             sample = subscriber.recv_async() => {
                 let Ok(sample) = sample else { bail!("progress stream closed") };
-                let value: Value =
-                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                if value["attempt"] != attempt.to_string() {
+                let Ok(progress) =
+                    serde_json::from_slice::<payload::PairingProgress>(&sample.payload().to_bytes())
+                else {
+                    continue;
+                };
+                if progress.attempt != attempt {
                     continue;
                 }
-                let phase = value["phase"].as_str().unwrap_or("?");
-                println!("[{phase}] {}", value["message"].as_str().unwrap_or(""));
-                match phase {
-                    "complete" => {
+                println!("[{}] {}", progress.phase, progress.message);
+                match progress.phase {
+                    payload::PairingPhase::Complete => {
                         println!("paired: {id}");
-                        if let Ok(report) = serde_json::from_value(value["link_mac"].clone()) {
-                            println!("{}", link_mac_line(id, &report));
+                        if let Some(report) = &progress.link_mac {
+                            println!("{}", link_mac_line(id, report));
                         }
                         return Ok(());
                     }
-                    "failed" => bail!(
+                    payload::PairingPhase::Failed => bail!(
                         "pairing failed: {}",
-                        value["code"].as_str().unwrap_or("unknown")
+                        progress.code.map_or("unknown", payload::FailureCode::as_str)
                     ),
-                    _ => {}
+                    payload::PairingPhase::AwaitingTv | payload::PairingPhase::AwaitingInput => {}
                 }
             }
             _ = tokio::signal::ctrl_c() => {
@@ -710,6 +715,111 @@ async fn watch_pairing(
                 let _ = call::<manager::CancelPair>(caller, &(), &rpc::TvRef { id }).await;
             }
         }
+    }
+}
+
+/// Reload every service's state file, as the GUI's Reload button does:
+/// the daemon's, then the session's and the tray's over the user socket.
+/// A service that isn't running has nothing to reload, so it's reported
+/// rather than failed; any other error fails the command after the report.
+async fn reload(
+    caller: &Caller,
+    user_socket: Option<PathBuf>,
+    site: &str,
+    json_out: bool,
+) -> Result<()> {
+    let daemon = caller.call::<manager::Reload>(&(), &()).await;
+    let user_socket =
+        user_socket.unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
+    let user = match zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?).await {
+        Ok(user) => Some(Caller::new(user, site)),
+        Err(_) => None,
+    };
+    let (session, tray) = match &user {
+        Some(user) => (
+            Some(user.call::<user_profile::Reload>(&(), &()).await),
+            Some(user.call::<user_tray::Reload>(&(), &()).await),
+        ),
+        None => (None, None),
+    };
+    let outcomes = [
+        ("daemon", reload_outcome(Some(daemon))),
+        ("session", reload_outcome(session)),
+        ("tray", reload_outcome(tray)),
+    ];
+    if json_out {
+        let report: serde_json::Map<String, Value> = outcomes
+            .iter()
+            .map(|(service, outcome)| ((*service).to_string(), outcome.to_json()))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        for (service, outcome) in &outcomes {
+            println!("{:<8} {}", format!("{service}:"), outcome.describe());
+        }
+        // Each failure's report after the table: a file the service
+        // couldn't parse reads like a compiler error, path included.
+        for (service, outcome) in &outcomes {
+            if let ReloadOutcome::Failed(report) = outcome {
+                println!();
+                if report.starts_with("error: ") {
+                    println!("{report}");
+                } else {
+                    println!("error: {service}: {report}");
+                }
+            }
+        }
+    }
+    let failed: Vec<&str> = outcomes
+        .iter()
+        .filter(|(_, outcome)| matches!(outcome, ReloadOutcome::Failed(_)))
+        .map(|(service, _)| *service)
+        .collect();
+    if !failed.is_empty() {
+        bail!("reload failed for {}", failed.join(", "));
+    }
+    Ok(())
+}
+
+/// One service's part of a [`reload`].
+enum ReloadOutcome {
+    Changed,
+    Unchanged,
+    NotRunning,
+    Failed(String),
+}
+
+impl ReloadOutcome {
+    fn describe(&self) -> String {
+        match self {
+            Self::Changed => "applied the file's edit".into(),
+            Self::Unchanged => "the file is unchanged".into(),
+            Self::NotRunning => "not running".into(),
+            Self::Failed(_) => "failed".into(),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        match self {
+            Self::Changed => json!({ "status": "changed" }),
+            Self::Unchanged => json!({ "status": "unchanged" }),
+            Self::NotRunning => json!({ "status": "not-running" }),
+            Self::Failed(error) => json!({ "status": "failed", "error": error }),
+        }
+    }
+}
+
+/// `None` (no user socket to reach) and an rpc no service answered both
+/// mean the service isn't running.
+fn reload_outcome(
+    result: Option<std::result::Result<rpc::ReloadReport, RpcError>>,
+) -> ReloadOutcome {
+    match result {
+        None | Some(Err(RpcError::Unavailable { .. })) => ReloadOutcome::NotRunning,
+        Some(Ok(rpc::ReloadReport { changed: true })) => ReloadOutcome::Changed,
+        Some(Ok(rpc::ReloadReport { changed: false })) => ReloadOutcome::Unchanged,
+        Some(Err(RpcError::Service(e))) => ReloadOutcome::Failed(e.message),
+        Some(Err(e)) => ReloadOutcome::Failed(e.to_string()),
     }
 }
 

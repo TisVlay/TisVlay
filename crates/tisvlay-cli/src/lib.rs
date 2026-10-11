@@ -55,6 +55,9 @@ pub enum Command {
     EnableAccess,
     /// Probe the daemon's liveliness token.
     Status,
+    /// Apply hand edits of the state files: the daemon's, the session's
+    /// and the tray's (what the GUI's Reload button does).
+    Reload,
     /// List TVs with their current state (hydrates from publisher caches).
     List,
     /// Stream every data key: history first, then live samples.

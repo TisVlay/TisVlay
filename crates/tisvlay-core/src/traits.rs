@@ -27,6 +27,17 @@
 //! (IP addresses, serial ports, CEC addresses, etc.) are encapsulated in the
 //! [`VendorConfig`], which only the vendor crate knows how to interpret. The
 //! daemon and CLI never see transport-specific types.
+//!
+//! # Async Style
+//!
+//! [`TvConnection`] and [`TvConnector`] use `#[async_trait]`, because the
+//! daemon holds them as trait objects (`Box<dyn TvConnection>`,
+//! `Arc<dyn TvConnector>`) and a native `async fn` in a trait isn't
+//! dyn-compatible. [`TvDiscovery`] is consumed generically, so it uses a
+//! native `impl Future` return; a caller that needs a trait object wraps it
+//! in a boxing adapter of its own (the daemon's `DynDiscovery`). Implement
+//! each trait the way it's declared: `#[async_trait]` on impls of the first
+//! two, a plain `async fn` for `discover`.
 
 use crate::{
     Capabilities, DiscoveredTv, Error, HardwareId, InputInfo, MacAddress, PairingSession,

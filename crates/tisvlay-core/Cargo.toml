@@ -9,8 +9,9 @@ license.workspace = true
 publish = true
 homepage.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tv", "smart-tv", "remote-control", "home-automation", "linux"]
+categories = ["hardware-support", "asynchronous"]
+readme = "README.md"
 
 [dependencies]
 tokio = { workspace = true }
@@ -29,9 +30,6 @@ bitflags = { workspace = true }
 
 # Stable per-TV identifiers (UUID v4)
 uuid = { workspace = true }
-
-# Sync mutex without poisoning (Reconciler, ReconcilerMap, Coalescer).
-parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

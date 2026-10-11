@@ -120,7 +120,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         info.capabilities
             .contains(tisvlay_core::Capabilities::VOLUME)
     );
-    assert_eq!(info.power_state, "active");
+    assert_eq!(info.power_state, tisvlay_core::PowerState::Active);
     assert!(
         info.vendor_config
             .iter()

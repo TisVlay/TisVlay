@@ -36,7 +36,7 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
-pub use logind::watch_logind;
+pub use logind::{supervise_logind, watch_logind};
 pub use seed::{SeedConfig, SeedTv, load_seed_config};
 pub use store::load_store;
 
@@ -129,6 +129,9 @@ pub struct Stack {
     startup_ready: Arc<StartupReadiness>,
     /// TVs the store held at boot; `run`'s seed config skips them.
     stored: HashSet<Uuid>,
+    /// The store writer's reload requests (SIGHUP's path); `None` for an
+    /// ephemeral daemon.
+    reloads: Option<mpsc::UnboundedSender<store::ReloadRequest>>,
     tasks: Tasks,
 }
 
@@ -363,18 +366,31 @@ pub async fn serve(
             .filter_map(|v| v.retry.map(|retry| (v.id.clone(), retry)))
             .collect(),
     );
-    let store = store_path.map(|path| {
-        let (tx, rx) = mpsc::unbounded_channel();
-        reactor.set_persist(tx);
-        tokio::spawn(store::store_task(path.to_path_buf(), rx))
-    });
+    let stored_snapshot = store_path.map(load_store).transpose()?;
+    // The store writer starts from the snapshot just loaded: its record of
+    // what's on disk, which a reload compares the file against.
+    let (store, reloads) = match (store_path, &stored_snapshot) {
+        (Some(path), Some(base)) => {
+            let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+            let (reload_tx, reload_rx) = mpsc::unbounded_channel();
+            reactor.set_persist(persist_tx);
+            let task = tokio::spawn(store::store_task(
+                path.to_path_buf(),
+                base.clone(),
+                persist_rx,
+                reload_rx,
+                world.clone(),
+            ));
+            (Some(task), Some(reload_tx))
+        }
+        _ => (None, None),
+    };
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
     // Boot state applies before the reactor runs. The editable default
     // profile comes first, so the catalog always has the inheritance
     // baseline; the store's rows follow and upsert over it, so user edits
     // to the default survive restarts.
-    let stored_snapshot = store_path.map(load_store).transpose()?;
     let mut default_profile = tisvlay_core::SystemProfileConfig::full_default();
     default_profile.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
     let mut boot = vec![Command::AddProfile {
@@ -453,6 +469,7 @@ pub async fn serve(
         discoveries,
         catalog,
         info,
+        reloads.clone(),
         bridge_ready,
     ));
     // Greeter idle transitions arrive as plain puts from `tisvlay-greeter`
@@ -571,6 +588,7 @@ pub async fn serve(
         routes: Some(routes_rx),
         startup_ready,
         stored,
+        reloads,
         tasks: Tasks {
             reactor,
             bridge,
@@ -613,6 +631,10 @@ pub struct DaemonOptions {
 /// optionally watch a DRM connector's DPMS state, and run until ctrl-c,
 /// SIGTERM, or a core task ending.
 pub async fn run(options: DaemonOptions) -> Result<()> {
+    // SIGHUP is `systemctl reload`. Its default action kills the process,
+    // so the handler goes in before anything else can be signaled.
+    let hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .context("install the SIGHUP handler")?;
     use tisvlay_core::TvBackend;
     fn caps(backend: &dyn TvBackend) -> Vec<String> {
         backend
@@ -632,8 +654,8 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             tisvlay_lg::VENDOR_NAME,
             Arc::new(tisvlay_lg::LgConnector::new()),
         )
-        .with_capabilities(caps(&tisvlay_lg::LgBackend))
-        .with_retry(tisvlay_lg::LgBackend.verify_retry_config())
+        .with_capabilities(caps(&tisvlay_lg::LgBackend::new()))
+        .with_retry(tisvlay_lg::LgBackend::new().verify_retry_config())
         // Pinned SSDP source port: LG TVs reply unicast from ephemeral
         // ports TO this port, so it must match the firewall's allowed UDP
         // port — see docs/firewall.md at the repo root.
@@ -643,8 +665,8 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             tisvlay_cec::VENDOR_NAME,
             Arc::new(tisvlay_cec::CecConnector::new()),
         )
-        .with_capabilities(caps(&tisvlay_cec::CecBackend))
-        .with_retry(tisvlay_cec::CecBackend.verify_retry_config())
+        .with_capabilities(caps(&tisvlay_cec::CecBackend::new()))
+        .with_retry(tisvlay_cec::CecBackend::new().verify_retry_config())
         .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
     let mut stack = serve(
@@ -692,17 +714,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         Duration::from_secs(60),
         DPMS_PERIOD,
     ));
-    match zbus::Connection::system().await {
-        Ok(connection) => {
-            let world = stack.world.clone();
-            tokio::spawn(async move {
-                if let Err(e) = watch_logind(connection, world).await {
-                    tracing::warn!(%e, "logind watcher exited");
-                }
-            });
-        }
-        Err(e) => tracing::warn!(%e, "no system bus, logind watcher disabled"),
-    }
+    logind::spawn(stack.world.clone());
 
     // The store applied in `serve`; the seed config only adds TVs it
     // didn't hold, so they persist as the real change they are.
@@ -748,6 +760,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             });
         });
     }
+    tokio::spawn(reload_on_hangup(hangup, stack.reloads.clone()));
     // SIGTERM is what the service manager sends on stop; without a
     // handler it kills the process before the store flushes.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -765,9 +778,52 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
     stack.run_until(shutdown).await
 }
 
+/// Turn each SIGHUP into a store reload, the same path as the reload rpc.
+/// `systemctl reload` reports success as soon as the signal is sent, so
+/// the outcome is logged: the world logs an applied edit, and a refusal
+/// (with no caller to answer) at warn.
+async fn reload_on_hangup(
+    mut hangup: tokio::signal::unix::Signal,
+    reloads: Option<mpsc::UnboundedSender<store::ReloadRequest>>,
+) {
+    while hangup.recv().await.is_some() {
+        match &reloads {
+            Some(reloads) => {
+                info!("SIGHUP: reloading the store");
+                if reloads.send(store::ReloadRequest { reply: None }).is_err() {
+                    return;
+                }
+            }
+            None => tracing::warn!("SIGHUP: this daemon runs without a store, nothing to reload"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SIGHUP takes the reload rpc's path, with no caller to answer.
+    /// Nextest runs each test in its own process, so the signal reaches
+    /// only this one.
+    #[tokio::test]
+    async fn sighup_requests_a_store_reload() {
+        let hangup =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(reload_on_hangup(hangup, Some(tx)));
+        let sent = std::process::Command::new("kill")
+            .args(["-HUP", &std::process::id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        let request = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("SIGHUP requested a reload")
+            .expect("the request channel is open");
+        assert!(request.reply.is_none());
+        task.abort();
+    }
 
     #[test]
     fn startup_ready_truth_table() {

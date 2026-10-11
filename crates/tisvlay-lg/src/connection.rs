@@ -20,7 +20,7 @@ use tracing::{info, trace, warn};
 /// Wraps a `WebOsClient` and implements the tisvlay-core connection traits.
 /// Handles auto-reconnection transparently when the WebSocket connection drops.
 #[derive(Debug)]
-pub struct LgConnection {
+pub(crate) struct LgConnection {
     client: Option<WebOsClient>,
     config: LgVendorConfig,
     capabilities: Capabilities,
@@ -43,7 +43,7 @@ impl LgConnection {
     /// `None` if the TV didn't respond to `getSystemInfo` — rare on
     /// supported firmware). Exposed via
     /// [`hardware_id`](Self::hardware_id) without blocking on I/O.
-    pub fn new(
+    pub(crate) fn new(
         client: WebOsClient,
         config: LgVendorConfig,
         hardware_id: Option<tisvlay_core::HardwareId>,

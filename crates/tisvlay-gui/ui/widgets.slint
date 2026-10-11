@@ -615,8 +615,8 @@ export component LineEditField inherits Rectangle {
     in property <string> placeholder-text;
     in-out property <string> text <=> inner.text;
     in property <bool> enabled <=> inner.enabled;
-    /// Optional CSS-style font-family list (e.g.
-    /// `"ui-monospace, monospace"`) — useful for IP / MAC entry.
+    /// Optional font family (one family name, e.g. `Theme.mono-font`
+    /// for IP / MAC entry); empty is the default font.
     in property <string> font-family <=> inner.font-family;
     callback edited(string);
     callback accepted(string);
@@ -686,6 +686,8 @@ export component InlineError inherits Rectangle {
     in property <string> title;
     /// Detail text (the underlying typed reason).
     in property <string> message;
+    /// Font family for `message`; empty is the default font.
+    in property <string> message-font-family;
     /// Optional action label (e.g. "Retry", "Edit MAC"). Empty
     /// hides the action button.
     in property <string> action-label;
@@ -781,6 +783,7 @@ export component InlineError inherits Rectangle {
                 text: root.message;
                 color: Theme.text;
                 font-size: Design.font-helper;
+                font-family: root.message-font-family;
                 wrap: word-wrap;
             }
         }
@@ -854,7 +857,7 @@ export component InlineError inherits Rectangle {
 // A horizontal slider paired with a numeric readout, designed for
 // values that are mirrored on a remote endpoint (the daemon → TV).
 // Convergence gating lives on the Rust side (`Reconciler<V>` /
-// `ReconcilerMap<K, V>` in `tisvlay-core`); this component is a thin
+// `ReconcilerMap<K, V>` in `tisvlay-runtime`); this component is a thin
 // view that displays a Rust-driven `model-value` and forwards user
 // input via `committed(int)`.
 //

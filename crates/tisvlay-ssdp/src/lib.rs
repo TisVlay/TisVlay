@@ -1,8 +1,4 @@
-//! Vendor-neutral async SSDP M-SEARCH client.
-//!
-//! See the crate-level [README](https://crates.io/crates/tisvlay-ssdp) for
-//! usage, scope, and firewall-bind rationale.
-
+#![doc = include_str!("../README.md")]
 // Published crate: every public item is documented (docs/build.md,
 // first-publish checklist).
 #![warn(missing_docs)]
@@ -35,6 +31,7 @@ const RECV_BUFFER_SIZE: usize = 2048;
 
 /// Options controlling how the SSDP search is performed.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct SearchOptions {
     /// Local socket address to bind to. `None` lets the OS pick an
     /// ephemeral port (standard SSDP-client behavior). Set to a
@@ -102,6 +99,7 @@ impl SsdpResponse {
 
 /// Errors that can occur during an SSDP search.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Socket operation failed (bind, send, or recv).
     #[error("io: {0}")]

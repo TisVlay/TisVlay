@@ -26,7 +26,7 @@ tisvlay-gui = { workspace = true }
 # Transport-free core types (profiles, schema, capabilities, helpers);
 # the D-Bus client surface is replaced by tisvlay.
 tisvlay-core = { workspace = true }
-tisvlay-runtime = { workspace = true, features = ["logging", "access"] }
+tisvlay-runtime = { workspace = true, features = ["logging", "access", "client"] }
 tisvlay = { workspace = true }
 tisvlay-wire = { workspace = true }
 tisvlay-icons = { workspace = true }
@@ -39,6 +39,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 parking_lot = "0.12"
+fontique = { workspace = true }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 wl-clipboard-rs = "0.9"
 gettext-rs = "0.8"

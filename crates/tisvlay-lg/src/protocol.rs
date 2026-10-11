@@ -19,7 +19,7 @@ use tisvlay_core::Secret;
 
 /// Outgoing message to the TV.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Request {
+pub(crate) struct Request {
     /// Unique request ID for correlating responses.
     pub id: String,
     /// Message type: "hello", "register", or "request".
@@ -36,7 +36,7 @@ pub struct Request {
 /// Request message types.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RequestType {
+pub(crate) enum RequestType {
     /// Registration/pairing request.
     Register,
     /// Command request.
@@ -47,15 +47,12 @@ pub enum RequestType {
 
 /// Incoming message from the TV.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Response {
+pub(crate) struct Response {
     /// Request ID this response corresponds to.
     pub id: Option<String>,
     /// Response type.
     #[serde(rename = "type")]
     pub msg_type: ResponseType,
-    /// SSAP endpoint URI (present in subscription updates).
-    #[serde(default)]
-    pub uri: Option<String>,
     /// Response payload.
     #[serde(default)]
     pub payload: Value,
@@ -66,7 +63,7 @@ pub struct Response {
 /// Response message types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ResponseType {
+pub(crate) enum ResponseType {
     /// Response to a request.
     Response,
     /// Registration was successful.
@@ -80,7 +77,7 @@ pub enum ResponseType {
 /// Registration payload sent during pairing.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RegisterPayload {
+pub(crate) struct RegisterPayload {
     /// Whether to force a new pairing prompt.
     pub force_pairing: bool,
     /// Pairing type (usually "PROMPT").
@@ -95,7 +92,7 @@ pub struct RegisterPayload {
 /// Application manifest for registration.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Manifest {
+pub(crate) struct Manifest {
     /// Requested permissions.
     pub permissions: Vec<String>,
     /// Manifest signatures (required by TV).
@@ -114,7 +111,7 @@ pub struct Manifest {
 /// Signature information.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Signature {
+pub(crate) struct Signature {
     /// Base64-encoded signature.
     pub signature: String,
     /// Signature version.
@@ -129,7 +126,7 @@ pub struct Signature {
 /// LGTVCompanion, etc.).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SignedInfo {
+pub(crate) struct SignedInfo {
     /// App ID (must be "com.lge.test" to match the standard signed manifest).
     pub app_id: String,
     /// Vendor ID.
@@ -147,7 +144,7 @@ impl RegisterPayload {
     ///
     /// If `client_key` is provided, attempts to reconnect with existing pairing.
     /// If `None`, a new pairing prompt will be shown on the TV.
-    pub fn new(client_key: Option<Secret>) -> Self {
+    pub(crate) fn new(client_key: Option<Secret>) -> Self {
         Self {
             force_pairing: false,
             pairing_type: "PROMPT".to_string(),
@@ -242,26 +239,15 @@ impl Default for Manifest {
 /// Registered response payload containing the client key.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct RegisteredPayload {
+pub(crate) struct RegisteredPayload {
     /// Client key for future connections.
     pub client_key: Secret,
-}
-
-/// Power state response.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PowerState {
-    /// Current power state.
-    pub state: String,
-    /// Processing state (for wake-up).
-    #[serde(default)]
-    pub processing: Option<String>,
 }
 
 /// Volume response wrapper (TV returns volume inside volumeStatus).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VolumeResponse {
+pub(crate) struct VolumeResponse {
     /// Volume status (may be nested or at top level).
     #[serde(default)]
     pub volume_status: Option<VolumeInfo>,
@@ -275,7 +261,7 @@ pub struct VolumeResponse {
 
 impl VolumeResponse {
     /// Extract volume info, handling both nested and flat response formats.
-    pub fn into_volume_info(self) -> Option<VolumeInfo> {
+    pub(crate) fn into_volume_info(self) -> Option<VolumeInfo> {
         if let Some(status) = self.volume_status {
             Some(status)
         } else if let Some(volume) = self.volume {
@@ -292,7 +278,7 @@ impl VolumeResponse {
 /// Volume info.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VolumeInfo {
+pub(crate) struct VolumeInfo {
     /// Current volume level (0-100).
     pub volume: i32,
     /// Whether audio is muted.
@@ -303,7 +289,7 @@ pub struct VolumeInfo {
 /// External input info.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExternalInput {
+pub(crate) struct ExternalInput {
     /// Input ID (e.g., "HDMI_1").
     pub id: String,
     /// Display label.
@@ -311,21 +297,18 @@ pub struct ExternalInput {
     /// Whether this input is currently connected.
     #[serde(default)]
     pub connected: bool,
-    /// Input type.
-    #[serde(default)]
-    pub app_id: Option<String>,
 }
 
 /// List of external inputs.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ExternalInputList {
+pub(crate) struct ExternalInputList {
     /// Available inputs.
     pub devices: Vec<ExternalInput>,
 }
 
 impl Request {
     /// Create a register request.
-    pub fn register(id: impl Into<String>, payload: RegisterPayload) -> Self {
+    pub(crate) fn register(id: impl Into<String>, payload: RegisterPayload) -> Self {
         Self {
             id: id.into(),
             msg_type: RequestType::Register,
@@ -337,7 +320,7 @@ impl Request {
     }
 
     /// Create a command request.
-    pub fn command(id: impl Into<String>, uri: impl Into<String>, payload: Value) -> Self {
+    pub(crate) fn command(id: impl Into<String>, uri: impl Into<String>, payload: Value) -> Self {
         Self {
             id: id.into(),
             msg_type: RequestType::Request,
@@ -347,7 +330,7 @@ impl Request {
     }
 
     /// Create a subscribe request.
-    pub fn subscribe(id: impl Into<String>, uri: impl Into<String>) -> Self {
+    pub(crate) fn subscribe(id: impl Into<String>, uri: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             msg_type: RequestType::Subscribe,
@@ -357,7 +340,7 @@ impl Request {
     }
 
     /// Create a subscribe request with a payload.
-    pub fn subscribe_with_payload(
+    pub(crate) fn subscribe_with_payload(
         id: impl Into<String>,
         uri: impl Into<String>,
         payload: Value,

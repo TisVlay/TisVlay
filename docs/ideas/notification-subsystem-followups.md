@@ -22,14 +22,10 @@ proxy-build shapes — only the proxy type and error strings differ. A
 
 **Trade-offs.** Biggest and least-certain-to-pay-off item here: the four
 clients look similar but carry real per-peer differences (bus choice,
-availability-probe target, reload semantics — `GuiClient` has no
-`reload_config` at all, and `DaemonClient::reload_config` also clears the
-proxy cache). The abstraction may cost more in conditionals than the
-boilerplate it removes. The sibling `reload_config` / `--config`
-boilerplate was already assessed and deliberately left un-extracted
-(intentional per-binary divergence — see commit `refactor(gui): dedup
-the daemon/session reload-error arms`), so the uniform-interface
-precondition this trait would need has not materialized.
+availability-probe target, `GuiClient` has no `reload_config` at all).
+The abstraction may cost more in conditionals than the boilerplate it
+removes, so the uniform-interface precondition this trait would need has
+not materialized.
 
 **Trigger.** A fifth peer client appears with a genuinely uniform
 interface.

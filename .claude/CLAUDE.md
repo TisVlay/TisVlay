@@ -25,13 +25,15 @@ tisvlay/
 ├── crates/
 │   ├── tisvlay-core/              # Core library (vendor-agnostic traits & types)
 │   │   └── src/                  # traits, capabilities, pairing, config (profiles),
-│   │                             # state, wol, Coalescer/ReconcilerMap/RefreshTrigger
+│   │                             # state, vendor config, secrets, wol
 │   ├── tisvlay-runtime/           # Binaries' process glue (unpublished): logging init,
-│   │                             # socket-group access, wayland + Mutter idle transports
+│   │                             # socket-group access, wayland + Mutter idle transports,
+│   │                             # durable state-file writes, GUI/tray client helpers
+│   │                             # (Coalescer/ReconcilerMap/RefreshTrigger, profile refs)
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation (SSAP over wss)
 │   ├── tisvlay-cec/               # HDMI-CEC vendor implementation (linux-cec)
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)
-│   ├── tisvlay-mock/              # In-memory mock backend (always registered)
+│   ├── tisvlay-mock/              # In-memory mock backend (always registered, unpublished)
 │   ├── tisvlay-test/              # OS-environment fakes (private dbus-daemon,
 │   │                             # fake logind/ScreenSaver) — dev-only
 │   │
@@ -234,6 +236,7 @@ Rules the lints can't fully express; the lint policy and its reasons are in `doc
 - **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
 - **Secrets never reach `Debug`.** A typed secret is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. The LG client key is one everywhere it's typed (`Credentials`, `LgVendorConfig`, the register payloads, `WebOsClient`); a new credential field uses it too. The untyped vendor config is a `tisvlay_core::VendorConfig`, and the wire requests that carry one (`AddTv`, `UpdateConfig`) are hand-written the same way: their `Debug` prints key names only. `Secret` wraps secrecy 0.10 (redacted `Debug`, zeroize on drop, `Serialize` opt-in); zenoh-config still pins 0.8, so `deny.toml` skips that duplicate.
 - **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
+- **Published crates** (core, ssdp, lg, cec) keep items private by default. `#[non_exhaustive]`, public-dependency and README rules are in `docs/build.md` § Public API policy; `just package-check` packages them.
 - **A new rpc is declared once** in its family's table in `tisvlay-wire`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. A world-answered rpc also gets a `Command` variant, and the reactor's exhaustive match then demands its one-shot handler in `tisvlay-world`'s `systems/commands.rs`. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
 - **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
 - **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.

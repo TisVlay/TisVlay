@@ -209,10 +209,13 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             options.user_socket.display()
         )
     })?;
-    let mut snapshot = match &options.store {
+    let loaded = match &options.store {
         Some(path) => load_user_store(path)?,
         None => UserStoreSnapshot::default(),
     };
+    // The writer's record of what's on disk is the file as loaded, before
+    // the default profile is ensured below; a reload compares against it.
+    let mut snapshot = loaded.clone();
     // Root ensure_default parity: the editable default profile exists
     // from first boot; stored edits to it survive (seed only if absent),
     // and its name stays pinned.
@@ -233,11 +236,20 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             record.body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
         }
     }
-    let persist = options.store.as_ref().map(|path| {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(store::store_task(path.clone(), rx));
-        tx
-    });
+    let (persist, reloads) = match &options.store {
+        Some(path) => {
+            let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+            let (reload_tx, reload_rx) = mpsc::unbounded_channel();
+            tokio::spawn(store::store_task(
+                path.clone(),
+                loaded,
+                persist_rx,
+                reload_rx,
+            ));
+            (Some(persist_tx), Some(reload_tx))
+        }
+        None => (None, None),
+    };
 
     // RPC queries land in the core loop through a channel, like the
     // daemon bridge — one task owns all state, no locks.
@@ -346,6 +358,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         tvs: HashMap::new(),
         publishers: HashMap::new(),
         persist,
+        reloads,
         state_path: options
             .store
             .as_ref()
@@ -399,7 +412,9 @@ struct Core {
     assignments: HashMap<Uuid, Uuid>,
     tvs: HashMap<Uuid, payload::Meta>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
-    persist: Option<mpsc::UnboundedSender<UserStoreSnapshot>>,
+    persist: Option<mpsc::UnboundedSender<store::StoreMsg>>,
+    /// The store writer's reload requests; `None` without a store file.
+    reloads: Option<mpsc::UnboundedSender<store::ReloadRequest>>,
     /// For the `info` rpc (About pane row).
     state_path: String,
     idle_tx: watch::Sender<(u64, u64)>,
@@ -959,32 +974,208 @@ impl Core {
         });
     }
 
+    /// The persisted form, sorted by id: the maps iterate in no fixed
+    /// order, and a stable one keeps unchanged writes skipped and a hand
+    /// comment next to its entry.
     fn snapshot(&self) -> UserStoreSnapshot {
+        let mut profile: Vec<UserProfileRecord> = self
+            .profiles
+            .iter()
+            .map(|(id, body)| UserProfileRecord {
+                id: *id,
+                body: body.clone(),
+            })
+            .collect();
+        profile.sort_by_key(|record| record.id);
+        let mut assignment: Vec<Assignment> = self
+            .assignments
+            .iter()
+            .map(|(tv, profile)| Assignment {
+                tv: *tv,
+                profile: *profile,
+            })
+            .collect();
+        assignment.sort_by_key(|assignment| assignment.tv);
         UserStoreSnapshot {
             version: UserStoreSnapshot::default().version,
-            profile: self
-                .profiles
-                .iter()
-                .map(|(id, body)| UserProfileRecord {
-                    id: *id,
-                    body: body.clone(),
-                })
-                .collect(),
-            assignment: self
-                .assignments
-                .iter()
-                .map(|(tv, profile)| Assignment {
-                    tv: *tv,
-                    profile: *profile,
-                })
-                .collect(),
+            profile,
+            assignment,
         }
     }
 
     fn persist(&self) {
         if let Some(tx) = &self.persist {
-            let _ = tx.send(self.snapshot());
+            let _ = tx.send(store::StoreMsg::Persist(self.snapshot()));
         }
+    }
+
+    /// Apply a hand edit of the store file. The writer reads it and hands
+    /// over the edit since what it last wrote; only that difference
+    /// applies, so changes still awaiting their write survive, and the
+    /// file wins where both changed the same profile or assignment.
+    async fn reload(&mut self) -> Result<rpc::ReloadReport, WireError> {
+        let Some(reloads) = &self.reloads else {
+            return Err(WireError::no_store());
+        };
+        let (reply, edit) = tokio::sync::oneshot::channel();
+        reloads
+            .send(store::ReloadRequest { reply })
+            .map_err(|_| WireError::bad_request("the store writer is gone"))?;
+        let edit = edit
+            .await
+            .map_err(|_| WireError::bad_request("the store writer is gone"))??;
+        let result = self.apply_edit(&edit).await;
+        if let Some(tx) = &self.persist {
+            let applied = result.is_ok().then(|| edit.disk.clone());
+            let _ = tx.send(store::StoreMsg::Reloaded(applied));
+        }
+        if result.as_ref().is_ok_and(|report| report.changed) {
+            info!("applied a hand edit of the user store");
+            self.persist();
+        }
+        result
+    }
+
+    async fn apply_edit(
+        &mut self,
+        edit: &store::UserStoreEdit,
+    ) -> Result<rpc::ReloadReport, WireError> {
+        // Ids key the merge, so a file that repeats one is ambiguous.
+        fn first_duplicate(ids: impl IntoIterator<Item = Uuid>) -> Option<Uuid> {
+            let mut seen = HashSet::new();
+            ids.into_iter().find(|&id| !seen.insert(id))
+        }
+        if let Some(id) = first_duplicate(edit.disk.profile.iter().map(|record| record.id)) {
+            return Err(WireError::bad_request(format!(
+                "the file lists profile {id} twice"
+            )));
+        }
+        if let Some(tv) =
+            first_duplicate(edit.disk.assignment.iter().map(|assignment| assignment.tv))
+        {
+            return Err(WireError::bad_request(format!(
+                "the file assigns TV {tv} twice"
+            )));
+        }
+        let index_profiles = |snapshot: &UserStoreSnapshot| -> HashMap<Uuid, UserProfileConfig> {
+            snapshot
+                .profile
+                .iter()
+                .map(|record| (record.id, record.body.clone()))
+                .collect()
+        };
+        let index_assignments = |snapshot: &UserStoreSnapshot| -> HashMap<Uuid, Uuid> {
+            snapshot
+                .assignment
+                .iter()
+                .map(|assignment| (assignment.tv, assignment.profile))
+                .collect()
+        };
+        let (base_profiles, disk_profiles) =
+            (index_profiles(&edit.base), index_profiles(&edit.disk));
+        let (base_assigned, disk_assigned) =
+            (index_assignments(&edit.base), index_assignments(&edit.disk));
+        // Per field: a client change to another field of the same profile,
+        // still waiting to be written, survives. A profile the file adds
+        // (or one the session no longer holds) takes the file's body.
+        let changed_profiles: Vec<(Uuid, UserProfileConfig)> = disk_profiles
+            .iter()
+            .filter(|(id, body)| base_profiles.get(id) != Some(*body))
+            .map(|(id, disk)| {
+                let body = match (base_profiles.get(id), self.profiles.get(id)) {
+                    (Some(base), Some(current)) => current.merge_edit(base, disk),
+                    _ => disk.clone(),
+                };
+                (*id, body)
+            })
+            .collect();
+        let removed_profiles: Vec<Uuid> = base_profiles
+            .keys()
+            .filter(|id| !disk_profiles.contains_key(id))
+            .copied()
+            .collect();
+        let changed_assignments: Vec<(Uuid, Uuid)> = disk_assigned
+            .iter()
+            .filter(|(tv, profile)| base_assigned.get(tv) != Some(*profile))
+            .map(|(tv, profile)| (*tv, *profile))
+            .collect();
+        let removed_assignments: Vec<Uuid> = base_assigned
+            .keys()
+            .filter(|tv| !disk_assigned.contains_key(tv))
+            .copied()
+            .collect();
+        if changed_profiles.is_empty()
+            && removed_profiles.is_empty()
+            && changed_assignments.is_empty()
+            && removed_assignments.is_empty()
+        {
+            return Ok(rpc::ReloadReport { changed: false });
+        }
+
+        // Validate everything before applying anything.
+        if removed_profiles.contains(&tisvlay_core::DEFAULT_USER_PROFILE_UUID) {
+            return Err(WireError::profile_reserved(
+                tisvlay_core::DEFAULT_USER_PROFILE_UUID,
+            ));
+        }
+        if let Some((_, body)) = changed_profiles
+            .iter()
+            .find(|(id, _)| *id == tisvlay_core::DEFAULT_USER_PROFILE_UUID)
+            && body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
+        {
+            return Err(WireError::bad_request(format!(
+                "default profile's name must be \"{}\"",
+                tisvlay_core::DEFAULT_PROFILE_NAME
+            )));
+        }
+        let mut profiles_after = self.profiles.clone();
+        for (id, body) in &changed_profiles {
+            profiles_after.insert(*id, body.clone());
+        }
+        for id in &removed_profiles {
+            profiles_after.remove(id);
+        }
+        let mut assignments_after = self.assignments.clone();
+        for (tv, profile) in &changed_assignments {
+            assignments_after.insert(*tv, *profile);
+        }
+        for tv in &removed_assignments {
+            assignments_after.remove(tv);
+        }
+        if let Some(profile) = assignments_after
+            .values()
+            .find(|profile| !profiles_after.contains_key(profile))
+        {
+            return Err(if removed_profiles.contains(profile) {
+                WireError::profile_in_use(*profile)
+            } else {
+                WireError::profile_not_found(*profile)
+            });
+        }
+
+        // Apply: profiles first, so assignments name existing ones.
+        for (id, body) in &changed_profiles {
+            self.profiles.insert(*id, body.clone());
+            self.publish_profile(id, body).await;
+        }
+        for (tv, profile) in &changed_assignments {
+            self.assignments.insert(*tv, *profile);
+            self.publish_assignment(tv, Some(*profile)).await;
+        }
+        for tv in &removed_assignments {
+            self.assignments.remove(tv);
+            self.delete_key(&keys::user_tv_profile(&self.site, tv))
+                .await;
+        }
+        for id in &removed_profiles {
+            self.profiles.remove(id);
+            self.delete_key(&keys::user_profile(&self.site, id)).await;
+        }
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::ReloadReport { changed: true })
     }
 
     async fn handle_query(&mut self, query: Query) {
@@ -1027,6 +1218,9 @@ impl Core {
             }
             user_profile::Incoming::Assign(request, responder) => {
                 responder.answer(self.assign_profile(request).await).await;
+            }
+            user_profile::Incoming::Reload((), responder) => {
+                responder.answer(self.reload().await).await;
             }
         }
     }

@@ -11,7 +11,7 @@
 //! See the git history of `docs/plans/profile-crud-v3.md` for the wire-shape
 //! rationale.
 
-use crate::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
+use tisvlay_core::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
 use uuid::Uuid;
 
 /// TV-side data the reference helpers need.

@@ -589,10 +589,10 @@ async fn store_round_trips_profiles_and_assignment() {
     drop(client1);
     stack1.daemon.close().await.unwrap();
 
-    // Second life: replay profiles then TVs, exactly like run() does.
+    // Second life: `serve` applies the store before the world runs.
     let socket2 = dir.path().join("b.sock");
     let (connector2, discovery2, _handle2) = new_test_parts();
-    let stack2 = tisvlay_daemon::serve(
+    let _stack2 = tisvlay_daemon::serve(
         &socket2,
         "t",
         vec![
@@ -603,19 +603,6 @@ async fn store_round_trips_profiles_and_assignment() {
     )
     .await
     .unwrap();
-    let snapshot = tisvlay_daemon::load_store(&store).unwrap();
-    for profile in snapshot.system_profile {
-        stack2.world.command(tisvlay_world::Command::AddProfile {
-            record: Box::new(profile),
-            reply: None,
-        });
-    }
-    for record in snapshot.tv {
-        stack2.world.command(tisvlay_world::Command::AddTv {
-            record: Box::new(record),
-            reply: None,
-        });
-    }
     let client2 = zenoh::open(bootstrap::client_config(&socket2).unwrap())
         .await
         .unwrap();

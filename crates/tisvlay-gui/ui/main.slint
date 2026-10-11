@@ -7,7 +7,7 @@
 //   - Theming follows `Palette.color-scheme` (live xdg-desktop-portal),
 //     no app-level appearance toggle.
 //   - Convergence gating for slider values lives in Rust
-//     (`tisvlay-core::ReconcilerMap`); Slint stays a thin view.
+//     (`tisvlay_runtime::client::ReconcilerMap`); Slint stays a thin view.
 //   - Animations: see `widgets.slint` (`PulseDot`, `SpinnerArc`,
 //     `ScanLine`) and the per-call-site `animate background { ... }`
 //     hover transitions, all aligned with
@@ -260,11 +260,11 @@ export component AppWindow inherits Window {
                     // Spacer pushes status to bottom
                     Rectangle { vertical-stretch: 1; }
 
-                    // Reload daemon config — power-user action. The daemon
-                    // re-reads `~/.config/tisvlay/config.toml` from disk;
-                    // useful only when someone edited the file outside the
-                    // GUI. Sits above the daemon/session status because
-                    // it's a daemon-scoped action.
+                    // Reload config — power-user action. The daemon, session
+                    // and tray each apply a hand edit of their state file
+                    // (daemon.toml, session.toml, tray.toml); useful only
+                    // when someone edited one outside the GUI. Sits above
+                    // the service status block it acts on.
                     Rectangle {
                         height: 28px;
                         background: reload-touch.has-hover && root.daemon-available
@@ -274,7 +274,7 @@ export component AppWindow inherits Window {
                         animate background { duration: 150ms; }
 
                         accessible-role: button;
-                        accessible-label: @tr("Reload daemon config");
+                        accessible-label: @tr("Reload config files");
                         accessible-enabled: root.daemon-available;
                         accessible-id: "sidebar-reload";
                         accessible-action-default => {
@@ -316,7 +316,7 @@ export component AppWindow inherits Window {
                         reload-help := HelpTrigger {
                             width: 100%;
                             height: 100%;
-                            text: @tr("Reload the daemon's config from disk — picks up edits made outside the app.");
+                            text: @tr("Reload the daemon, session and tray config files from disk — applies edits made outside the app.");
                         }
                         reload-touch := TouchArea {
                             enabled: root.daemon-available;
@@ -386,6 +386,23 @@ export component AppWindow inherits Window {
                         }
                         dismissed => {
                             Errors.access = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                        }
+                    }
+                }
+
+                // App-level reload banner: a state file the sidebar's
+                // Reload couldn't apply. Above every pane, like the access
+                // banner, since the button belongs to no pane.
+                if Errors.reload.title != "" || Errors.reload.message != "": VerticalLayout {
+                    padding: Design.gap-stack;
+                    padding-bottom: 0;
+                    InlineError {
+                        tone: "error";
+                        title: Errors.reload.title;
+                        message: Errors.reload.message;
+                        message-font-family: Theme.mono-font;
+                        dismissed => {
+                            Errors.reload = { kind: "", tone: "", title: "", message: "", action-label: "" };
                         }
                     }
                 }

@@ -52,32 +52,13 @@ impl fmt::Display for InputType {
     }
 }
 
-impl InputType {
-    /// Parse from a D-Bus string.
-    pub fn from_dbus_string(s: &str) -> Self {
-        match s {
-            "pin" => Self::Pin,
-            "password" => Self::Password,
-            _ => Self::None,
-        }
-    }
-
-    /// Convert to a D-Bus string.
-    pub fn to_dbus_string(&self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Pin => "pin",
-            Self::Password => "password",
-        }
-    }
-}
-
 /// Credentials obtained from successful pairing.
 ///
 /// `data` is a [`Secret`]; `Debug` is written by hand so the `extra` values
 /// (future refresh tokens) stay out of it too, since `Debug` output can
 /// reach logs through `?value` fields and `#[instrument]`.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Credentials {
     /// Vendor-specific credential data.
     ///
@@ -205,6 +186,7 @@ impl std::error::Error for PairingError {}
 /// carried as the pairing-progress payload's `code` field and matched
 /// by clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PairingErrorCode {
     /// User rejected pairing on the TV.
     Rejected,
@@ -299,16 +281,6 @@ impl PairingState {
     /// Create a "failed" state with an error.
     pub fn failed(error: PairingError) -> Self {
         Self::Failed { error }
-    }
-
-    /// Get the D-Bus state string.
-    pub fn to_dbus_state(&self) -> &'static str {
-        match self {
-            Self::AwaitingTvPrompt { .. } => "awaiting_tv",
-            Self::AwaitingUserInput { .. } => "awaiting_input",
-            Self::Complete { .. } => "complete",
-            Self::Failed { .. } => "failed",
-        }
     }
 
     /// Get the human-readable message for this state.
@@ -553,30 +525,17 @@ mod tests {
     }
 
     #[test]
-    fn test_input_type_dbus() {
-        assert_eq!(InputType::from_dbus_string("pin"), InputType::Pin);
-        assert_eq!(InputType::from_dbus_string("password"), InputType::Password);
-        assert_eq!(InputType::from_dbus_string("unknown"), InputType::None);
-
-        assert_eq!(InputType::Pin.to_dbus_string(), "pin");
-    }
-
-    #[test]
-    fn test_pairing_state_dbus() {
+    fn test_pairing_state_accessors() {
         let state = PairingState::awaiting_tv_prompt("Accept on TV");
-        assert_eq!(state.to_dbus_state(), "awaiting_tv");
         assert_eq!(state.message(), "Accept on TV");
 
         let state = PairingState::awaiting_user_input("Enter PIN", InputType::Pin);
-        assert_eq!(state.to_dbus_state(), "awaiting_input");
         assert_eq!(state.input_type(), InputType::Pin);
 
         let state = PairingState::complete(Credentials::new("key123"));
-        assert_eq!(state.to_dbus_state(), "complete");
         assert!(state.is_complete());
 
         let state = PairingState::failed(PairingError::rejected());
-        assert_eq!(state.to_dbus_state(), "failed");
         assert!(state.is_failed());
     }
 

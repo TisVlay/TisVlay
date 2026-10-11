@@ -54,8 +54,6 @@ authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/ruffsl/tisvlay"
 repository = "https://github.com/ruffsl/tisvlay"
-keywords = ["remote", "lg", "tv", "linux", "webos"]
-categories = ["command-line-utilities", "hardware-support"]
 # All crates are unpublished by default; individual crates override with
 # `publish = true` when ready for crates.io.
 publish = false
@@ -74,6 +72,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 secrecy = { version = "0.10", features = ["serde"] }
 toml = "1.1"
+# Format-preserving TOML: the state writers keep a hand edit's comments and
+# layout across their writes.
+toml_edit = "0.25"
+
+# The system's monospace family for the GUI (the font library Slint uses;
+# kept on the version Slint pins so the graph holds one copy).
+fontique = "0.11"
 
 # Error handling
 thiserror = "2"
@@ -148,15 +153,11 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 pipewire-native = "0.2"
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
-# `async` enables the tokio `AsyncDevice` wrapper; `serde` gives
-# `PhysicalAddress` its `a.b.c.d` string (de)serialization for the vendor
-# config. Default features (`cectool`, `tracing`) are dropped to avoid the
-# clap pull and the bundled CLI binary. LGPL-2.1 — carried via a per-crate
-# exception in packaging/licensing.
-linux-cec = { version = "0.2", default-features = false, features = [
-    "async",
-    "serde",
-] }
+# `async` enables the tokio `AsyncDevice` wrapper. Default features
+# (`cectool`, `tracing`) are dropped to avoid the clap pull and the bundled
+# CLI binary. LGPL-2.1 — carried via a per-crate exception in
+# packaging/licensing.
+linux-cec = { version = "0.2", default-features = false, features = ["async"] }
 
 # ABI-stable `EACCES` / `EPERM` constants to classify a `/dev/cecN` open
 # failure that `linux-cec` surfaces as `Error::SystemError(errno)`. Matching
@@ -208,15 +209,14 @@ rtnetlink = "0.23"
 
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
-# version is used once the path is stripped). The dev-only crate
-# (`tisvlay-test`, `publish = false`) is path-ONLY: a *versioned*
-# dev-dependency on it is kept in the published manifest and would
-# demand an unpublished crate from crates.io, whereas a path-only
-# dev-dependency is dropped on publish.
+# version is used once the path is stripped). Unpublished crates
+# (`publish = false`) are path-ONLY: a *versioned* dev-dependency on one
+# is kept in the published manifest and would demand an unpublished crate
+# from crates.io, whereas a path-only dev-dependency is dropped on publish.
 tisvlay-core = { path = "crates/tisvlay-core", version = "0.3.0" }
 tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.3.0" }
 tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.3.0" }
-tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.3.0" }
+tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-wire = { path = "crates/tisvlay-wire" }

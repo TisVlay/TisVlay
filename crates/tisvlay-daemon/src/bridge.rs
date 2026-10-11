@@ -22,6 +22,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::discovery::DynDiscovery;
+use crate::store::ReloadRequest;
 use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::liveliness::LivelinessToken;
@@ -56,6 +57,7 @@ pub(crate) async fn run(
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     catalog: Arc<Vec<VendorMeta>>,
     info: rpc::ServiceInfo,
+    reloads: Option<mpsc::UnboundedSender<ReloadRequest>>,
     ready: tokio::sync::oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
     let (query_tx, mut queries) = mpsc::unbounded_channel::<(Family, Query)>();
@@ -89,6 +91,7 @@ pub(crate) async fn run(
         discoveries,
         catalog,
         info,
+        reloads,
         publishers: HashMap::new(),
         pending: HashMap::new(),
         next_reply: 1,
@@ -127,6 +130,8 @@ struct Bridge {
     discoveries: Arc<HashMap<String, Arc<dyn DynDiscovery>>>,
     catalog: Arc<Vec<VendorMeta>>,
     info: rpc::ServiceInfo,
+    /// The store writer's reload requests; `None` for an ephemeral daemon.
+    reloads: Option<mpsc::UnboundedSender<ReloadRequest>>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
     /// Queries the world owes a reply, by correlation id.
     pending: HashMap<ReplyTo, Query>,
@@ -227,10 +232,9 @@ impl Bridge {
             return;
         };
         let alive_key = keys::alive_pairing(&self.site, &tv);
-        let terminal = matches!(
-            payload.get("phase").and_then(Value::as_str),
-            Some("complete" | "failed")
-        );
+        let terminal =
+            serde_json::from_value::<tisvlay_wire::payload::PairingProgress>(payload.clone())
+                .is_ok_and(|progress| progress.phase.is_terminal());
         if terminal {
             self.pairing_tokens.remove(&alive_key);
         } else if !self.pairing_tokens.contains_key(&alive_key) {
@@ -296,6 +300,18 @@ impl Bridge {
         match incoming {
             manager::Incoming::Info((), responder) => {
                 responder.ok(&self.info).await;
+                None
+            }
+            manager::Incoming::Reload((), responder) => {
+                // The store writer reads the file and hands the world the
+                // edit; the world answers.
+                match self.reloads.clone() {
+                    Some(reloads) => {
+                        let reply = self.file(responder);
+                        let _ = reloads.send(ReloadRequest { reply });
+                    }
+                    None => responder.err(&WireError::no_store()).await,
+                }
                 None
             }
             manager::Incoming::Enrich(request, responder) => {

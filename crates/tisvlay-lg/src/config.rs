@@ -8,9 +8,8 @@ use tisvlay_core::{Error, Secret};
 ///
 /// `Wss` (port 3001 + TLS with self-signed cert) is the modern
 /// firmware default; `Ws` (port 3000, plain) is older firmware that
-/// shipped before LG's TLS rollout. Pairing probes both via
-/// [`Connection::connect`](crate::transport::Connection::connect)
-/// and persists the working one into [`LgVendorConfig::scheme`] so
+/// shipped before LG's TLS rollout. Pairing probes both and
+/// persists the working one into [`LgVendorConfig::scheme`] so
 /// post-pairing reconnects dispatch directly without the fallback
 /// round-trip.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,9 +138,6 @@ impl LgVendorConfig {
         self.default_input = Some(input.into());
     }
 }
-
-/// Type alias for backwards compatibility within this crate.
-pub type LgConfig = LgVendorConfig;
 
 #[cfg(test)]
 mod tests {

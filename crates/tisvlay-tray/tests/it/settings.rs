@@ -65,6 +65,9 @@ async fn settings_round_trip_and_persistence() {
     }
     let settings = client.notification_settings().await.unwrap();
     assert!(settings.tv_wake, "factory default on");
+    // A fresh install has no file yet, and nothing to reload.
+    assert!(!config_path.exists());
+    assert!(!client.reload_config().await.unwrap().changed);
 
     // Partial update: only the touched switch changes, and it persists.
     client
@@ -79,6 +82,53 @@ async fn settings_round_trip_and_persistence() {
     assert!(settings.tv_pairing);
     let on_disk = load_settings(&config_path).unwrap();
     assert!(!on_disk.tv_wake && on_disk.tv_pairing);
+
+    // A hand edit of the file applies on reload; with nothing new, a
+    // second reload changes nothing; a missing file is refused.
+    let edited = std::fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("tv_pairing = true", "tv_pairing = false");
+    std::fs::write(&config_path, edited).unwrap();
+    assert!(client.reload_config().await.unwrap().changed);
+    assert!(!client.notification_settings().await.unwrap().tv_pairing);
+    assert!(!client.reload_config().await.unwrap().changed);
+    let kept = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::remove_file(&config_path).unwrap();
+    let err = client
+        .reload_config()
+        .await
+        .expect_err("a missing file is refused, not defaulted");
+    assert!(
+        matches!(
+            err,
+            tisvlay::Error::Rpc {
+                code: tisvlay_wire::error::ErrorCode::StoreUnreadable,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    std::fs::write(&config_path, kept).unwrap();
+
+    // A hand edit nobody reloaded is kept aside, not overwritten, when
+    // the next settings change is written.
+    let unreloaded = std::fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("tv_connection = true", "tv_connection = false");
+    std::fs::write(&config_path, &unreloaded).unwrap();
+    client
+        .update_notification_settings(NotificationSettingsPatch {
+            daemon_offline: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("tray.toml.edited")).unwrap(),
+        unreloaded
+    );
+    let on_disk = load_settings(&config_path).unwrap();
+    assert!(on_disk.tv_connection && !on_disk.daemon_offline);
 
     // The test toast rpc acks and queues the toast (bypassing the category
     // gate); the info rpc reports the config location.

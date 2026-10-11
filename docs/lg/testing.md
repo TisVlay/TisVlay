@@ -26,7 +26,7 @@ let mut client = WebOsClient::connect_url(&server.ws_url(), None).await?;
 
 | Layer | What | Location |
 |-------|------|----------|
-| Protocol fixtures | serde round-trips, fixture JSON parsing | `tests/protocol_fixtures.rs` + `tests/fixtures/*.json` |
+| Protocol fixtures | serde round-trips, fixture JSON parsing | `src/protocol_fixtures.rs` + `src/protocol_fixtures/*.json` (unit tests, since the protocol types are crate-private) |
 | Config parsing | TOML with aliases, round-trip | `src/config.rs` (inline) |
 | Client integration | registration, commands, subscriptions | `src/client.rs` (inline) |
 | Backend traits | subscription merging, `LgConnection` surface | `src/connection.rs` (inline) |

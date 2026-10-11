@@ -134,7 +134,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tisvlay-cec = { workspace = true }
 tisvlay-core = { workspace = true }
-tisvlay-runtime = { workspace = true, features = ["logging"] }
+tisvlay-runtime = { workspace = true, features = ["logging", "fs"] }
 tisvlay-lg = { workspace = true, features = ["discovery"] }
 tisvlay-mock = { workspace = true }
 tokio = { workspace = true }

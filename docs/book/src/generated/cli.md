@@ -3,6 +3,7 @@
 * [`tisvlay`↴](#tisvlay)
 * [`tisvlay enable-access`↴](#tisvlay-enable-access)
 * [`tisvlay status`↴](#tisvlay-status)
+* [`tisvlay reload`↴](#tisvlay-reload)
 * [`tisvlay list`↴](#tisvlay-list)
 * [`tisvlay watch`↴](#tisvlay-watch)
 * [`tisvlay discover`↴](#tisvlay-discover)
@@ -58,6 +59,7 @@ TisVlay TV control
 
 * `enable-access` — Grant the current user TV control by adding it to the daemon's socket group (one-click, authenticated via polkit). Log out and back in afterward for it to take effect
 * `status` — Probe the daemon's liveliness token
+* `reload` — Apply hand edits of the state files: the daemon's, the session's and the tray's (what the GUI's Reload button does)
 * `list` — List TVs with their current state (hydrates from publisher caches)
 * `watch` — Stream every data key: history first, then live samples
 * `discover` — Scan for TVs (bounded window; findings stream back as replies)
@@ -109,6 +111,14 @@ Grant the current user TV control by adding it to the daemon's socket group (one
 Probe the daemon's liveliness token
 
 **Usage:** `tisvlay status`
+
+
+
+## `tisvlay reload`
+
+Apply hand edits of the state files: the daemon's, the session's and the tray's (what the GUI's Reload button does)
+
+**Usage:** `tisvlay reload`
 
 
 

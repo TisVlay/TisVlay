@@ -18,21 +18,18 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [WoL via raw socket (CAP_NET_RAW)](ideas/wol-raw-socket.md)
 - [Polkit gating for multi-user shared workstations](ideas/polkit-multi-user.md)
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
-- [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)
+- [Typed pairing-failure follow-ups (more dial codes, handshake device errors, GUI recovery actions)](ideas/typed-failed-reason-payload.md)
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
-- [Shared supervised-task helper (tray link / idle adapter / netlink monitor)](ideas/supervised-task-helper.md)
+- [Shared supervised-task helper (tray link / idle adapter / netlink monitor / seat and logind watches)](ideas/supervised-task-helper.md)
 - [Eager remote-state refresh on gated events (world-side DPMS path)](ideas/eager-remote-state-refresh.md)
 - [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](ideas/remote-session-followups.md)
 - [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](ideas/zenoh-typed-queryables.md)
 - [SDK methods for the rpcs only the CLI reaches (add-tv, discover, user effective)](ideas/sdk-cli-only-rpcs.md)
-- [Prune core's unused error vocabularies (`PowerError`, `PowerErrorCode`, `ConfigErrorCode`)](ideas/core-error-vocabulary-pruning.md)
-- [Reload config from disk (daemon, session, tray): the dead "Reload config" button](ideas/reload-config.md)
 - [A typed `update-config` request (settings fields + flattened vendor map)](ideas/typed-update-config.md)
 
 ## Operational
 
 - [User service auto-start after `nixos-rebuild switch`](ideas/nixos-user-service-auto-start.md)
-- [Atomic config writes (tempfile + rename)](ideas/atomic-config-writes.md)
 
 ## CLI
 

@@ -80,6 +80,10 @@ impl UuidMap {
         self.0.contains_key(id)
     }
 
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (Uuid, Entity)> + '_ {
+        self.0.iter().map(|(&id, &entity)| (id, entity))
+    }
+
     #[cfg(debug_assertions)]
     pub(crate) fn snapshot(&self) -> HashMap<Uuid, Entity> {
         self.0.clone()
@@ -534,7 +538,9 @@ pub(crate) enum Effect {
         vendor: String,
         config: VendorConfig,
     },
-    /// Persist the full state snapshot (reactor debounces and writes
-    /// atomically).
+    /// Persist the full state snapshot (the store writer debounces and
+    /// writes atomically).
     Persist(Box<StoreSnapshot>),
+    /// Tell the store writer a reload finished (see `StoreMsg::Reloaded`).
+    StoreReloaded(Option<Box<StoreSnapshot>>),
 }

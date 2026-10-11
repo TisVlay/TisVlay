@@ -5,11 +5,20 @@
 //! correctly and that domain-specific payload types extract the
 //! expected values.
 
-use rstest::rstest;
-use tisvlay_lg::protocol::{
-    ExternalInputList, PowerState, RegisterPayload, RegisteredPayload, Request, Response,
-    ResponseType, VolumeResponse,
+use crate::protocol::{
+    ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
+    VolumeResponse,
 };
+use rstest::rstest;
+use serde::Deserialize;
+
+/// The `getPowerState` payload's fields, as the fixtures carry them.
+#[derive(Debug, Deserialize)]
+struct PowerState {
+    state: String,
+    #[serde(default)]
+    processing: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Response deserialization from fixture JSON
@@ -17,57 +26,57 @@ use tisvlay_lg::protocol::{
 
 #[rstest]
 #[case::register_phase1(
-    include_str!("fixtures/register_response_phase1.json"),
+    include_str!("protocol_fixtures/register_response_phase1.json"),
     "register_0",
     ResponseType::Response
 )]
 #[case::register_phase2(
-    include_str!("fixtures/register_response_phase2.json"),
+    include_str!("protocol_fixtures/register_response_phase2.json"),
     "register_0",
     ResponseType::Registered
 )]
 #[case::power_active(
-    include_str!("fixtures/power_state_active.json"),
+    include_str!("protocol_fixtures/power_state_active.json"),
     "status_1",
     ResponseType::Response
 )]
 #[case::power_screen_off(
-    include_str!("fixtures/power_state_screen_off.json"),
+    include_str!("protocol_fixtures/power_state_screen_off.json"),
     "status_2",
     ResponseType::Response
 )]
 #[case::volume_nested(
-    include_str!("fixtures/volume_nested.json"),
+    include_str!("protocol_fixtures/volume_nested.json"),
     "status_3",
     ResponseType::Response
 )]
 #[case::volume_flat(
-    include_str!("fixtures/volume_flat.json"),
+    include_str!("protocol_fixtures/volume_flat.json"),
     "status_4",
     ResponseType::Response
 )]
 #[case::input_list(
-    include_str!("fixtures/external_input_list.json"),
+    include_str!("protocol_fixtures/external_input_list.json"),
     "status_5",
     ResponseType::Response
 )]
 #[case::foreground_app(
-    include_str!("fixtures/foreground_app.json"),
+    include_str!("protocol_fixtures/foreground_app.json"),
     "status_6",
     ResponseType::Response
 )]
 #[case::backlight(
-    include_str!("fixtures/backlight_settings.json"),
+    include_str!("protocol_fixtures/backlight_settings.json"),
     "status_7",
     ResponseType::Response
 )]
 #[case::error(
-    include_str!("fixtures/error_response.json"),
+    include_str!("protocol_fixtures/error_response.json"),
     "cmd_1",
     ResponseType::Error
 )]
 #[case::command_ok(
-    include_str!("fixtures/command_success.json"),
+    include_str!("protocol_fixtures/command_success.json"),
     "cmd_2",
     ResponseType::Response
 )]
@@ -87,7 +96,7 @@ fn parse_response_fixture(
 
 #[test]
 fn registered_payload_extracts_client_key() {
-    let json = include_str!("fixtures/register_response_phase2.json");
+    let json = include_str!("protocol_fixtures/register_response_phase2.json");
     let response: Response = serde_json::from_str(json).unwrap();
     let payload: RegisteredPayload =
         serde_json::from_value(response.payload).expect("should parse as RegisteredPayload");
@@ -105,10 +114,10 @@ fn power_state_extraction(
     // include_str! requires a literal, so match on the fixture path.
     let json = match fixture {
         "fixtures/power_state_active.json" => {
-            include_str!("fixtures/power_state_active.json")
+            include_str!("protocol_fixtures/power_state_active.json")
         }
         "fixtures/power_state_screen_off.json" => {
-            include_str!("fixtures/power_state_screen_off.json")
+            include_str!("protocol_fixtures/power_state_screen_off.json")
         }
         _ => unreachable!(),
     };
@@ -120,7 +129,7 @@ fn power_state_extraction(
 
 #[test]
 fn volume_nested_format() {
-    let json = include_str!("fixtures/volume_nested.json");
+    let json = include_str!("protocol_fixtures/volume_nested.json");
     let response: Response = serde_json::from_str(json).unwrap();
     let vol: VolumeResponse = serde_json::from_value(response.payload).unwrap();
     let info = vol.into_volume_info().expect("should extract volume info");
@@ -130,7 +139,7 @@ fn volume_nested_format() {
 
 #[test]
 fn volume_flat_format() {
-    let json = include_str!("fixtures/volume_flat.json");
+    let json = include_str!("protocol_fixtures/volume_flat.json");
     let response: Response = serde_json::from_str(json).unwrap();
     let vol: VolumeResponse = serde_json::from_value(response.payload).unwrap();
     let info = vol.into_volume_info().expect("should extract volume info");
@@ -140,7 +149,7 @@ fn volume_flat_format() {
 
 #[test]
 fn external_input_list_parsing() {
-    let json = include_str!("fixtures/external_input_list.json");
+    let json = include_str!("protocol_fixtures/external_input_list.json");
     let response: Response = serde_json::from_str(json).unwrap();
     let list: ExternalInputList = serde_json::from_value(response.payload).unwrap();
     assert_eq!(list.devices.len(), 4);
@@ -152,7 +161,7 @@ fn external_input_list_parsing() {
 
 #[test]
 fn error_response_has_error_message() {
-    let json = include_str!("fixtures/error_response.json");
+    let json = include_str!("protocol_fixtures/error_response.json");
     let response: Response = serde_json::from_str(json).unwrap();
     assert_eq!(response.msg_type, ResponseType::Error);
     assert_eq!(
