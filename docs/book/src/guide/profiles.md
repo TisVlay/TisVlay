@@ -21,10 +21,10 @@ TV's assigned profile  →  the default profile  →  built-in defaults
 A profile therefore only needs to spell out what it changes. For example, a system profile for a guest-room TV that should never turn on by itself:
 
 ```sh
-tisvlay profile create "guest" --body '{"on_startup":"none","on_shutdown":"screen_off"}'
+tisvlay profile create "guest" --body '{"on_startup":"none","on_wake":"none"}'
 ```
 
-Every other field (`on_sleep`, `on_wake`, …) flows through from `default`, and tracks `default` if you later edit it — only the two overridden fields are pinned.
+Every other field (`on_shutdown`, `on_sleep`, …) flows through from `default`, and tracks `default` if you later edit it — only the two overridden fields are pinned.
 
 For **user** profiles the chain is one layer longer: your profile → your `default` → an admin-set baseline (a system-wide user-profile default) → built-ins. On a single-user machine you can ignore the admin layer.
 

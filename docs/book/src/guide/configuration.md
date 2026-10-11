@@ -95,7 +95,7 @@ on_session_unlock = { action = "screen_on", restore_input = true, while_remote =
 ```
 
 - `restore_input` (default `false`) — after an on-ish action completes, switch the TV to its `primary_input`. Needs a backend that can switch inputs (LG; not CEC).
-- `while_remote` (default `false`) — `true` lets the action fire even while a remote session has the TV armed; see [Remote-Session Awareness](./remote-sessions.md#what-it-does-when-armed).
+- `while_remote` (default `false`) — `true` lets the action fire even while a remote session has the TV armed; see [Remote-Session Awareness](./remote-sessions.md#what-it-does-when-armed). The stock defaults below set it on the blanks and power-offs, so overriding one of those with a bare action drops it; write the table form to keep it.
 
 ### System profile
 
@@ -108,8 +108,6 @@ Every field with its stock default (generated from the code, so it's always curr
 ### User profile
 
 {{#include ../generated/profile-defaults-user.md}}
-
-In both profiles, the off-going events (blanks and power-offs) carry `while_remote = true` in their stock mapping so they still fire while a remote session has the TV armed; when you override one, keep the modifier, e.g. `on_shutdown = { action = "screen_off", while_remote = true }`.
 
 The two idle timers set **how long** to wait in each lock state; the shared `on_idle_timeout`/`on_idle_resume` actions decide **what** happens. A `0` timer disables idle for that lock state.
 
