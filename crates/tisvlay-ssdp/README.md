@@ -38,10 +38,8 @@ Pin the source port so a firewall can accept a single port instead of the unboun
 # use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 # use tisvlay_ssdp::{search, SearchOptions};
 # async fn run() -> Result<(), tisvlay_ssdp::Error> {
-let opts = SearchOptions {
-    bind_addr: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 1901)),
-    ..SearchOptions::default()
-};
+let mut opts = SearchOptions::default();
+opts.bind_addr = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 1901));
 let _stream = search(&["upnp:rootdevice"], Duration::from_secs(3), opts).await?;
 # Ok(())
 # }
@@ -58,6 +56,12 @@ iptables -I INPUT -p udp --dport 1901 -j ACCEPT
 - IPv4 multicast only. IPv6 SSDP (`ff02::c`) is not implemented.
 - Linux/Unix focus. The library compiles on Windows but the multihoming hack that Windows requires for reliable multicast send is not included.
 - Active discovery only — does not listen for unsolicited `NOTIFY` announcements.
+
+`SearchOptions` is `#[non_exhaustive]`, so later releases can add options: start from `SearchOptions::default()` and set the fields you need.
+
+## Public dependencies
+
+`search` and `SharedSearcher::search` return an `impl futures_core::Stream`, so `futures-core` is part of this crate's API. Both must run inside a tokio runtime, though no tokio type appears in a signature.
 
 ## License
 

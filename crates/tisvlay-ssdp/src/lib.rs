@@ -1,8 +1,4 @@
-//! Vendor-neutral async SSDP M-SEARCH client.
-//!
-//! See the crate-level [README](https://crates.io/crates/tisvlay-ssdp) for
-//! usage, scope, and firewall-bind rationale.
-
+#![doc = include_str!("../README.md")]
 // Published crate: every public item is documented (docs/build.md,
 // first-publish checklist).
 #![warn(missing_docs)]

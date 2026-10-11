@@ -1,38 +1,4 @@
-//! tisvlay-lg - LG WebOS TV backend for tisvlay.
-//!
-//! This crate provides the LG WebOS implementation of the tisvlay TV control traits.
-//! It communicates with LG WebOS TVs using the SSAP (Simple Service Access Protocol)
-//! over WebSocket.
-//!
-//! # Features
-//!
-//! - Power on/off (Wake-on-LAN for power on)
-//! - Screen on/off (OLED-safe blanking)
-//! - HDMI input switching
-//! - Volume and mute control
-//! - Backlight control (OLED pixel brightness)
-//! - Network discovery via SSDP
-//!
-//! # Example
-//!
-//! ```no_run
-//! use tisvlay_core::{TvConnector, VendorConfig};
-//! use tisvlay_lg::{LgConnector, LgVendorConfig};
-//!
-//! #[tokio::main]
-//! async fn main() -> tisvlay_core::Result<()> {
-//!     let mut config = LgVendorConfig::new("192.168.1.100");
-//!     config.mac = Some("AA:BB:CC:DD:EE:FF".into());
-//!     config.set_client_key("your_client_key");
-//!     let config = VendorConfig::from_typed(&config).expect("an LG config is a TOML table");
-//!
-//!     let mut connection = LgConnector::new().connect(&config).await?;
-//!     connection.set_volume(20).await?;
-//!     connection.close().await?;
-//!     Ok(())
-//! }
-//! ```
-
+#![doc = include_str!("../README.md")]
 // Published crate: every public item is documented (docs/build.md,
 // first-publish checklist).
 #![warn(missing_docs)]
