@@ -32,7 +32,6 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 ## Operational
 
 - [User service auto-start after `nixos-rebuild switch`](ideas/nixos-user-service-auto-start.md)
-- [Atomic config writes (tempfile + rename)](ideas/atomic-config-writes.md)
 
 ## CLI
 

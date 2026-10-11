@@ -71,16 +71,27 @@ pub(crate) async fn store_task(path: PathBuf, mut rx: mpsc::UnboundedReceiver<Us
             match tokio::time::timeout(DEBOUNCE, rx.recv()).await {
                 Ok(Some(newer)) => snapshot = newer,
                 Ok(None) => {
-                    write_atomic(&path, &snapshot);
+                    write_blocking(&path, snapshot).await;
                     return;
                 }
                 Err(_) => break,
             }
         }
-        write_atomic(&path, &snapshot);
+        write_blocking(&path, snapshot).await;
     }
 }
 
+/// [`write_atomic`] off the async runtime: the fsyncs block.
+async fn write_blocking(path: &Path, snapshot: UserStoreSnapshot) {
+    let path = path.to_path_buf();
+    if let Err(e) = tokio::task::spawn_blocking(move || write_atomic(&path, &snapshot)).await {
+        error!(%e, "user store write task failed");
+    }
+}
+
+/// Serialize and durably replace the store file (`write_atomic`:
+/// temp file, fsync, rename). Blocking; the store task runs it on
+/// `spawn_blocking`.
 fn write_atomic(path: &Path, snapshot: &UserStoreSnapshot) {
     let text = match toml::to_string_pretty(snapshot) {
         Ok(text) => text,
@@ -89,22 +100,12 @@ fn write_atomic(path: &Path, snapshot: &UserStoreSnapshot) {
             return;
         }
     };
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        error!(%e, "user store dir create failed");
-        return;
+    match tisvlay_runtime::fs::write_atomic(path, text.as_bytes()) {
+        Ok(()) => {
+            debug!(store = %path.display(), profiles = snapshot.profile.len(), assignments = snapshot.assignment.len(), "user store written");
+        }
+        Err(e) => error!(%e, store = %path.display(), "user store write failed"),
     }
-    let tmp = path.with_extension("toml.tmp");
-    if let Err(e) = std::fs::write(&tmp, text) {
-        error!(%e, "user store tmp write failed");
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        error!(%e, "user store rename failed");
-        return;
-    }
-    debug!(store = %path.display(), profiles = snapshot.profile.len(), assignments = snapshot.assignment.len(), "user store written");
 }
 
 #[cfg(test)]

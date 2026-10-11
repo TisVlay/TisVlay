@@ -155,25 +155,29 @@ pub fn load_settings(path: &Path) -> Result<NotificationSettings> {
     }
 }
 
-fn save_settings(path: &Path, settings: &NotificationSettings) {
+/// Durably replace `tray.toml` (`write_atomic`: temp file, fsync,
+/// rename), off the async runtime since the fsyncs block.
+async fn save_settings(path: &Path, settings: &NotificationSettings) {
     let persisted = PersistedSettings {
         version: schema_v1(),
         settings: *settings,
     };
-    let Ok(text) = toml::to_string_pretty(&persisted) else {
-        return;
+    let text = match toml::to_string_pretty(&persisted) {
+        Ok(text) => text,
+        Err(e) => {
+            warn!(%e, "tray config serialize failed");
+            return;
+        }
     };
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        warn!(%e, "tray config dir create failed");
-        return;
-    }
-    let tmp = path.with_extension("toml.tmp");
-    if std::fs::write(&tmp, text).is_ok()
-        && let Err(e) = std::fs::rename(&tmp, path)
-    {
-        warn!(%e, "tray config write failed");
+    let path = path.to_path_buf();
+    let written = tokio::task::spawn_blocking(move || {
+        tisvlay_runtime::fs::write_atomic(&path, text.as_bytes())
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!(%e, "tray config write failed"),
+        Err(e) => warn!(%e, "tray config write task failed"),
     }
 }
 
@@ -236,7 +240,7 @@ pub async fn serve_settings(
             user_tray::Incoming::Update(patch, responder) => {
                 settings = settings.merged_with(&patch);
                 notifier.set_enabled(settings);
-                save_settings(&config_path, &settings);
+                save_settings(&config_path, &settings).await;
                 publish(settings).await;
                 responder.ok(&settings).await;
             }
