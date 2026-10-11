@@ -39,7 +39,7 @@ wol  = true         # wake: magic packets go LAN → IoT
 ```
 
 - **Direction matters.** `source_if` is the side that searches and wakes (your desktop's network); `target_if` is the TV's. netflector relays searches and wakes source → target, and proxies the TV's replies back.
-- **Interface names** come from the router: run `ip -br addr` on it and match each network's subnet to its interface. A UniFi gateway, for example, names its default LAN `br0` and each additional network a `br<N>` bridge. Name the per-network interface, not a VLAN trunk — netflector ignores frames tagged for another VLAN.
+- **Interface names** come from the router: run `ip -br addr` on it and match each network's subnet to its interface. A UniFi gateway, for example, names its default LAN `br0` and each additional network a `br<N>` bridge. Name the per-network interface, not a VLAN trunk — netflector ignores VLAN-tagged frames.
 - **`macs`** is optional. It narrows the entry to specific devices; use the MAC of the interface the TV is actually connected through (wired or Wi-Fi). That's the MAC tisvlay reports when you pair (see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac)).
 - **`mdns`, `dial`, and `wsd`** aren't used by tisvlay. Enable `mdns` and `dial` too if you want phones on the LAN to cast to the TV.
 
