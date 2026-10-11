@@ -326,6 +326,8 @@ pub mod user_profile {
             Effective = "effective" (rpc::TvRef) -> tisvlay_core::ResolvedUserProfile, read;
             /// Assign (or unassign) a user profile to a TV.
             Assign = "assign" (rpc::UserAssign) -> rpc::Ack, write;
+            /// Apply a hand edit of the session's store file.
+            Reload = "reload" (()) -> rpc::ReloadReport, write;
         }
     }
 }

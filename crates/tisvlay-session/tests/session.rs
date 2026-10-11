@@ -1644,3 +1644,89 @@ async fn provisional_portal_joins_on_corroborating_screencast() {
     })
     .await;
 }
+
+/// Wait until the session's store file mentions `needle`.
+async fn await_store_contains(store: &Path, needle: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_to_string(store).is_ok_and(|t| t.contains(needle)) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the store never mentioned {needle}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A hand edit of the session's store file applies on reload; a second
+/// reload with nothing new changes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_applies_a_hand_edited_user_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("session.toml");
+    let rig = rig_with_store(Some(&store)).await;
+    let profile = call::<user_profile::Create>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "body": { "name": "Before" } })),
+    )
+    .await
+    .expect("create ok")
+    .id;
+    await_store_contains(&store, "Before").await;
+    let edited = std::fs::read_to_string(&store)
+        .unwrap()
+        .replace("\"Before\"", "\"After\"");
+    std::fs::write(&store, edited).unwrap();
+
+    let sub = history_sub(&rig.user, keys::user_profile(&rig.site, &profile)).await;
+    let report = call::<user_profile::Reload>(&rig.user_caller, &(), &())
+        .await
+        .expect("reload ok");
+    assert!(report.changed);
+    recv_until(&sub, |s| payload_json(s)["name"] == "After").await;
+    let again = call::<user_profile::Reload>(&rig.user_caller, &(), &())
+        .await
+        .expect("reload ok");
+    assert!(!again.changed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_refuses_bad_user_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("session.toml");
+    let rig = rig_with_store(Some(&store)).await;
+    call::<user_profile::Create>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "body": { "name": "Kept" } })),
+    )
+    .await
+    .expect("create ok");
+    await_store_contains(&store, "Kept").await;
+
+    // Dropping the default profile is refused, whole.
+    let text = std::fs::read_to_string(&store).unwrap();
+    let parsed: tisvlay_session::UserStoreSnapshot = toml::from_str(&text).unwrap();
+    let mut without_default = parsed.clone();
+    without_default
+        .profile
+        .retain(|record| record.id != tisvlay_core::DEFAULT_USER_PROFILE_UUID);
+    std::fs::write(&store, toml::to_string(&without_default).unwrap()).unwrap();
+    let err = call::<user_profile::Reload>(&rig.user_caller, &(), &())
+        .await
+        .expect_err("the default profile can't go");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileReserved);
+
+    // A missing file is refused, not read as empty.
+    std::fs::remove_file(&store).unwrap();
+    let err = call::<user_profile::Reload>(&rig.user_caller, &(), &())
+        .await
+        .expect_err("a missing store is refused");
+    assert_eq!(refusal(&err).code, ErrorCode::StoreUnreadable);
+
+    let ephemeral = rig_with_store(None).await;
+    let err = call::<user_profile::Reload>(&ephemeral.user_caller, &(), &())
+        .await
+        .expect_err("no store, nothing to reload");
+    assert_eq!(refusal(&err).code, ErrorCode::NoStore);
+}

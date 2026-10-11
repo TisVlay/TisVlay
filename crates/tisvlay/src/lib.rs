@@ -776,9 +776,12 @@ impl SessionClient {
         Ok(self.call::<user_profile::Info>(&(), &()).await?.state_path)
     }
 
-    pub async fn reload_config(&self) -> Result<()> {
-        // The session store is wire-mutated; there is no file to reload.
-        Ok(())
+    /// Apply a hand edit of the session's store file (user profiles and
+    /// assignments): only what changed since the session last wrote it
+    /// applies. Refused when the file is missing or unparsable, or the
+    /// session runs without one.
+    pub async fn reload_config(&self) -> Result<ReloadReport> {
+        self.call::<user_profile::Reload>(&(), &()).await
     }
 
     /// The TV's assigned user-profile uuid, from the mirror; `None` when
