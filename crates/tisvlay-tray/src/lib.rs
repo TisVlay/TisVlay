@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
-use tisvlay_core::{Coalescer, ReconcilerMap};
+use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
 use tisvlay_wire::caller::Caller;
 use tisvlay_wire::endpoint::{Unary, tv, user_profile};
 use tisvlay_wire::payload::{self, PairingPhase, StatePayload};

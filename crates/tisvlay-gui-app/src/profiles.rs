@@ -34,13 +34,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::compat::{
-    AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
-    SessionAction, SessionClient, SystemProfileBody, UserProfileBody,
-};
 use gettextrs::pgettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, UserProfileBody};
+use tisvlay_core::{
+    AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, SessionAction,
+};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 use uuid::Uuid;

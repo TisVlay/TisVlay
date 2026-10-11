@@ -13,14 +13,14 @@
 
 use std::collections::HashMap;
 
-use crate::compat::{
-    Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, PowerState,
-    SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, references_of,
-    user_references_of,
-};
 use anyhow::Result;
 use gettextrs::gettext;
 use slint::SharedString;
+use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, TvInfo, UserProfileBody};
+use tisvlay_core::{
+    Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, PowerState,
+};
+use tisvlay_runtime::client::{TvAssignment, references_of, user_references_of};
 use tracing::debug;
 use uuid::Uuid;
 
@@ -41,7 +41,7 @@ pub(crate) struct TvViewRaw {
     pub primary_descriptor: SharedString,
     pub connected: bool,
     pub power_state: SharedString,
-    /// Connected *and* powered on (via `power_state_str_is_on`). The power
+    /// Connected *and* powered on (via `PowerState::is_on`). The power
     /// button keys on this rather than `connected` so a connected-in-standby
     /// CEC TV still offers "Power on".
     pub is_on: bool,

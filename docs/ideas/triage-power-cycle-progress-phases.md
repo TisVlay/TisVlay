@@ -47,5 +47,5 @@ Pick this up when:
 ## Related
 
 - Triage script today: [scripts/triage_dispatch_perf.py](../../scripts/triage_dispatch_perf.py).
-- `PowerCycleProgress` signal definition and phase semantics: `tisvlay-core::PowerCyclePhase` in [crates/tisvlay-core/src/state.rs](../../crates/tisvlay-core/src/state.rs).
+- The `progress/power` phases: `tisvlay_wire::payload::PowerPhase` in [crates/tisvlay-wire/src/lib.rs](../../crates/tisvlay-wire/src/lib.rs).
 - Why bypassing `screen_on` to "shorten the slow path" is the wrong instinct: [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md) "The 10 s `REQUEST_MS` is load-bearing" section.

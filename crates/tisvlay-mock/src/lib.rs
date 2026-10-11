@@ -37,8 +37,8 @@
 //!   (`[tv.mock] pairing = "accept"`) or by explicit test calls
 //!   through [`MockHandle`].
 
-// Published crate: every public item is documented (docs/build.md,
-// first-publish checklist).
+// Every public item is documented: this crate is the template a new
+// vendor backend copies (docs/backends/implementing-a-vendor.md).
 #![warn(missing_docs)]
 
 mod backend;

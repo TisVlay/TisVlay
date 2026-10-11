@@ -7,9 +7,9 @@
 use crate::with_id;
 use std::sync::Arc;
 
-use crate::compat::DaemonClient;
 use anyhow::Result;
 use slint::{Model, SharedString};
+use tisvlay::DaemonClient;
 use tisvlay::PowerPhase;
 
 use crate::{AppWindow, on_ui};

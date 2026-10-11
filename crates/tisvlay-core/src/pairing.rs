@@ -52,26 +52,6 @@ impl fmt::Display for InputType {
     }
 }
 
-impl InputType {
-    /// Parse from a D-Bus string.
-    pub fn from_dbus_string(s: &str) -> Self {
-        match s {
-            "pin" => Self::Pin,
-            "password" => Self::Password,
-            _ => Self::None,
-        }
-    }
-
-    /// Convert to a D-Bus string.
-    pub fn to_dbus_string(&self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Pin => "pin",
-            Self::Password => "password",
-        }
-    }
-}
-
 /// Credentials obtained from successful pairing.
 ///
 /// `data` is a [`Secret`]; `Debug` is written by hand so the `extra` values
@@ -540,15 +520,6 @@ mod tests {
             PairingErrorCode::Timeout.to_string(),
             PairingErrorCode::Timeout.as_str(),
         );
-    }
-
-    #[test]
-    fn test_input_type_dbus() {
-        assert_eq!(InputType::from_dbus_string("pin"), InputType::Pin);
-        assert_eq!(InputType::from_dbus_string("password"), InputType::Password);
-        assert_eq!(InputType::from_dbus_string("unknown"), InputType::None);
-
-        assert_eq!(InputType::Pin.to_dbus_string(), "pin");
     }
 
     #[test]

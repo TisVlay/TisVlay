@@ -22,6 +22,9 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 /// device-reported link MAC at pair time).
 pub const MAC_CONFIG_KEY: &str = "mac";
 
+/// The discard port Wake-on-LAN packets go to.
+const WOL_PORT: u16 = 9;
+
 /// MAC address representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacAddress([u8; 6]);
@@ -89,49 +92,8 @@ fn build_magic_packet(mac: &MacAddress) -> [u8; 102] {
     packet
 }
 
-/// Send a Wake-on-LAN packet to wake a TV.
-///
-/// Sends the magic packet to the broadcast address (255.255.255.255:9).
-pub fn wake(mac: &MacAddress) -> Result<()> {
-    wake_with_options(mac, WakeOptions::default())
-}
-
-/// Options for Wake-on-LAN.
-#[derive(Debug, Clone)]
-pub struct WakeOptions {
-    /// Broadcast address to send to.
-    pub broadcast_addr: Ipv4Addr,
-    /// Port to send to (default: 9).
-    pub port: u16,
-}
-
-impl Default for WakeOptions {
-    fn default() -> Self {
-        Self {
-            broadcast_addr: Ipv4Addr::BROADCAST,
-            port: 9,
-        }
-    }
-}
-
-impl WakeOptions {
-    /// Use a specific broadcast address (e.g., subnet broadcast).
-    #[must_use]
-    pub fn with_broadcast(mut self, addr: Ipv4Addr) -> Self {
-        self.broadcast_addr = addr;
-        self
-    }
-
-    /// Use a specific port.
-    #[must_use]
-    pub fn with_port(mut self, port: u16) -> Self {
-        self.port = port;
-        self
-    }
-}
-
-/// Send a Wake-on-LAN packet with custom options.
-pub fn wake_with_options(mac: &MacAddress, options: WakeOptions) -> Result<()> {
+/// Send one magic packet to the broadcast address (255.255.255.255:9).
+fn wake(mac: &MacAddress) -> Result<()> {
     let packet = build_magic_packet(mac);
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
@@ -141,18 +103,13 @@ pub fn wake_with_options(mac: &MacAddress, options: WakeOptions) -> Result<()> {
         .set_broadcast(true)
         .map_err(|e| Error::WakeOnLan(format!("Failed to enable broadcast: {e}")))?;
 
-    let dest = SocketAddr::V4(SocketAddrV4::new(options.broadcast_addr, options.port));
+    let dest = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::BROADCAST, WOL_PORT));
 
     socket
         .send_to(&packet, &dest.into())
         .map_err(|e| Error::WakeOnLan(format!("Failed to send packet: {e}")))?;
 
-    tracing::debug!(
-        mac = %mac,
-        broadcast = %options.broadcast_addr,
-        port = options.port,
-        "Sent Wake-on-LAN packet"
-    );
+    tracing::debug!(mac = %mac, "Sent Wake-on-LAN packet");
 
     Ok(())
 }

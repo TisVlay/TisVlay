@@ -1,8 +1,8 @@
 //! Capability flags for TV backend feature detection.
 //!
 //! This module provides the [`Capabilities`] bitflags type that backends use to
-//! advertise which features they support. The D-Bus interface uses these capabilities
-//! to determine which feature interfaces to expose for each TV.
+//! advertise which features they support. Clients use them to decide which
+//! controls a TV offers.
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ bitflags! {
     ///
     /// These flags are used to:
     /// - Advertise what a backend can do
-    /// - Determine which D-Bus feature interfaces to expose
+    /// - Decide which controls a client offers for a TV
     /// - Gate operations at runtime to prevent unsupported calls
     ///
     /// # Example
@@ -136,9 +136,8 @@ bitflags! {
 }
 
 impl Capabilities {
-    /// Convert capabilities to a D-Bus-friendly string array.
-    ///
-    /// This is used when exposing capabilities via D-Bus properties.
+    /// The capabilities as lowercase names, in declaration order: their
+    /// serde form, and what error messages print.
     ///
     /// # Example
     ///
@@ -187,8 +186,8 @@ impl Capabilities {
 
     /// Parse capabilities from a string array.
     ///
-    /// This is the inverse of [`to_strings`](Self::to_strings), useful for
-    /// parsing capabilities received over D-Bus.
+    /// This is the inverse of [`to_strings`](Self::to_strings), used to
+    /// parse the names a client received on the wire.
     ///
     /// Unknown capability strings are silently ignored.
     pub fn from_strings(strings: &[&str]) -> Self {

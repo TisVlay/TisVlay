@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::compat::{
-    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgress,
-};
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use tisvlay::{
+    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgress,
+};
 use tisvlay::{FailureCode, PairingPhase};
 use tracing::warn;
 

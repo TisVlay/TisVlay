@@ -207,15 +207,14 @@ rtnetlink = "0.23"
 
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
-# version is used once the path is stripped). The dev-only crate
-# (`tisvlay-test`, `publish = false`) is path-ONLY: a *versioned*
-# dev-dependency on it is kept in the published manifest and would
-# demand an unpublished crate from crates.io, whereas a path-only
-# dev-dependency is dropped on publish.
+# version is used once the path is stripped). Unpublished crates
+# (`publish = false`) are path-ONLY: a *versioned* dev-dependency on one
+# is kept in the published manifest and would demand an unpublished crate
+# from crates.io, whereas a path-only dev-dependency is dropped on publish.
 tisvlay-core = { path = "crates/tisvlay-core", version = "0.3.0" }
 tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.3.0" }
 tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.3.0" }
-tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.3.0" }
+tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-wire = { path = "crates/tisvlay-wire" }
