@@ -1,10 +1,4 @@
-//! Shared wire vocabulary for the TisVlay zenoh stack.
-//!
-//! Everything both sides of the wire must agree on lives here: the key space,
-//! the payload structs, and the session bootstrap (transport endpoint +
-//! scouting discipline). Key-space reference: the "Key space" section of
-//! `docs/architecture.md`.
-
+#![doc = include_str!("../README.md")]
 // Published crate: every public item is documented (docs/build.md,
 // first-publish checklist).
 #![warn(missing_docs)]

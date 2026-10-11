@@ -1,42 +1,4 @@
-//! Client SDK for the TisVlay services: [`DaemonClient`],
-//! [`SessionClient`] and [`TrayClient`], plus a [`StateWatcher`] merging
-//! their change events.
-//!
-//! Reads come from client-side mirrors: history subscribers over the
-//! services' cached keys. Writes are typed rpcs, and change events are
-//! the mirrors' own deltas. Failures are one [`Error`], named for what a
-//! caller can act on.
-//!
-//! # Runtime
-//!
-//! The clients and the watcher spawn tasks on the ambient tokio runtime,
-//! which must be the multi-thread scheduler: zenoh rejects the
-//! current-thread one. Construct them from inside that runtime.
-//!
-//! # Connecting
-//!
-//! A client's `connect` returns once its local session is open. It
-//! neither waits for nor requires the service: the link dials in the
-//! background for as long as the client lives, and availability follows
-//! the service's liveliness (`is_available`, and the `*Appeared` /
-//! `*Disappeared` [`StateEvent`]s).
-//!
-//! # Mirror reads and rpcs
-//!
-//! A mirror read sends nothing. It reflects the last state the service
-//! published, answers at once, and keeps showing that state while the
-//! service is down. Once a service is known to run a release this client
-//! can't talk to, its mirror reads come back empty (or as
-//! [`Error::VersionMismatch`]) rather than serve state that may have
-//! decoded wrongly.
-//!
-//! An rpc is a round trip. The first one in each lifetime of a service
-//! checks the service's release, and any rpc can fail with
-//! [`Error::Unavailable`], [`Error::Timeout`],
-//! [`Error::VersionMismatch`], [`Error::Transport`] or
-//! [`Error::Protocol`]. A refusal is [`Error::Rpc`]; method docs name the
-//! [`ErrorCode`]s a method can be refused with.
-
+#![doc = include_str!("../README.md")]
 // Published crate: every public item is documented (docs/build.md,
 // first-publish checklist).
 #![warn(missing_docs)]

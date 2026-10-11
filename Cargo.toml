@@ -170,14 +170,17 @@ bevy_ecs = "0.20"
 
 # Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
 # API (caches, history, recovery) is behind `unstable` — an accepted
-# risk, tracked in the parity plan's watch items.
+# risk, watched in docs/build.md § Review triggers.
 #
 # Every TisVlay link is a Unix socket, so zenoh's default transports (QUIC,
 # TLS, WebSocket, TCP, UDP, compression, multilink, pubkey/usrpwd auth) are
 # switched off — on zenoh-ext too, whose `default` re-enables them. Add a
 # `transport_*` feature back here if a link ever needs one.
 zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
-zenoh-ext = { version = "1.10", default-features = false, features = ["unstable"] }
+# Tilde, not caret: the `unstable` feature switches on zenoh's internal
+# APIs and pins zenoh exactly, so a newer 1.x could break the published
+# SDK downstream. Bump it deliberately (docs/build.md § Review triggers).
+zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable"] }
 
 # EDID parsing for the DRM connector ↔ TV matcher
 edidkit = "0.1"
@@ -218,12 +221,12 @@ tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.3.0" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
-tisvlay-protocol = { path = "crates/tisvlay-protocol" }
+tisvlay-protocol = { path = "crates/tisvlay-protocol", version = "0.3.0" }
 tisvlay-world = { path = "crates/tisvlay-world" }
 tisvlay-icons = { path = "crates/tisvlay-icons" }
 tisvlay-runtime = { path = "crates/tisvlay-runtime" }
 tisvlay-gui = { path = "crates/tisvlay-gui" }
-tisvlay = { path = "crates/tisvlay" }
+tisvlay = { path = "crates/tisvlay", version = "0.3.0" }
 # Binary crates exposed as libs for cross-crate integration tests.
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }
 tisvlay-session = { path = "crates/tisvlay-session" }
