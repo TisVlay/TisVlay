@@ -20,28 +20,23 @@ pub(super) fn arm_desired_input(
 }
 
 /// Route a power-on request: in-band on a live handle, otherwise the wake
-/// dial for wake-capable transports.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "takes the calling system's queries and resources; bundling them would only rename the list"
-)]
+/// dial for wake-capable transports. `Ok` once the action is sent or the
+/// wake dial is armed.
 pub(super) fn power_on_tv(
     commands: &mut Commands,
-    outbox: &mut Outbox,
     clock: &Clock,
     entity: Entity,
     id: Uuid,
     handle: Option<&ConnectionHandle>,
     link: Option<&payload::Link>,
     restore_to: Option<String>,
-    reply: Option<AckReply>,
-) {
+) -> Result<(), WireError> {
     match handle {
         Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOn).is_ok() => {
             arm_desired_input(commands, entity, clock, restore_to);
-            reply_ok(outbox, reply);
+            Ok(())
         }
-        Some(_) => reply_err(outbox, reply, WireError::not_connected(id)),
+        Some(_) => Err(WireError::not_connected(id)),
         None if link.is_some_and(|l| l.supports_wake) => {
             // Reinsert even when a dial is already pending: an explicit
             // power-on upgrades an in-flight plain retry (which cannot
@@ -51,9 +46,9 @@ pub(super) fn power_on_tv(
             redial(&mut e, true);
             e.remove::<RetryAt>();
             arm_desired_input(commands, entity, clock, restore_to);
-            reply_ok(outbox, reply);
+            Ok(())
         }
-        None => reply_err(outbox, reply, WireError::wake_not_supported(id)),
+        None => Err(WireError::wake_not_supported(id)),
     }
 }
 
@@ -94,38 +89,29 @@ pub(super) type ScreenRow<'a> = (
 /// power state after the backend's verify delay (see `verify_dispatch`).
 /// Backends that emulate screen via power route straight to power actions.
 /// A wake-needy or disconnected `screen_on` rides the power path instead
-/// of erroring; a disconnected `screen_off` is a satisfied no-op.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "takes the calling system's queries and resources; bundling them would only rename the list"
-)]
+/// of erroring; a disconnected `screen_off` is a satisfied no-op. `Ok`
+/// once the action is sent, routed, or latched.
 pub(super) fn dispatch_screen(
     commands: &mut Commands,
-    outbox: &mut Outbox,
     clock: &Clock,
     entity: Entity,
     id: Uuid,
     on: bool,
     row: ScreenRow,
     restore_to: Option<String>,
-    reply: Option<AckReply>,
-) {
+) -> Result<(), WireError> {
     let (handle, pending, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
-            power_on_tv(
-                commands, outbox, clock, entity, id, handle, link, restore_to, reply,
-            );
-        } else if let Some(handle) = handle {
-            let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
-            reply_ok(outbox, reply);
-        } else {
-            // Satisfied no-op: a dark, unreachable TV already is
-            // screen-off. Standby-reachable backends keep their handle
-            // in standby, so this arm is the truly-unplugged case.
-            reply_ok(outbox, reply);
+            return power_on_tv(commands, clock, entity, id, handle, link, restore_to);
         }
-        return;
+        if let Some(handle) = handle {
+            let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
+        }
+        // Otherwise a satisfied no-op: a dark, unreachable TV already is
+        // screen-off. Standby-reachable backends keep their handle in
+        // standby, so that's the truly-unplugged case.
+        return Ok(());
     }
     // Pre-flight wake: `screen_on` against a half-asleep TV no-ops or
     // false-ACKs (LG's ActiveStandby), so a wake-needy cached power
@@ -143,18 +129,9 @@ pub(super) fn dispatch_screen(
     match handle {
         Some(handle) if wake_needy && traits.is_some_and(|t| t.0.reachable_in_standby) => {
             // Wake in place on the live standby connection.
-            power_on_tv(
-                commands,
-                outbox,
-                clock,
-                entity,
-                id,
-                Some(handle),
-                link,
-                restore_to,
-                reply,
-            );
+            let sent = power_on_tv(commands, clock, entity, id, Some(handle), link, restore_to);
             arm_screen_verify(commands, entity, clock, retry, on, false);
+            sent
         }
         Some(_) if wake_needy => {
             // Network transports have no in-band power_on (LG wakes via
@@ -163,9 +140,9 @@ pub(super) fn dispatch_screen(
             let mut e = commands.entity(entity);
             e.remove::<(ConnectionHandle, RetryAt)>();
             redial(&mut e, true);
-            reply_ok(outbox, reply);
             arm_screen_verify(commands, entity, clock, retry, on, true);
             arm_desired_input(commands, entity, clock, restore_to);
+            Ok(())
         }
         Some(handle)
             if handle
@@ -179,31 +156,27 @@ pub(super) fn dispatch_screen(
         {
             arm_screen_verify(commands, entity, clock, retry, on, false);
             arm_desired_input(commands, entity, clock, restore_to);
-            reply_ok(outbox, reply);
+            Ok(())
         }
         None if on && link.is_some_and(|l| l.supports_wake) => {
             // Elevation: a disconnected `screen_on` rides the wake path
             // instead of erroring (the rpc acks when the dial is armed,
             // same as `power-on`); the verify survives the dial, spends
             // the dispatch's one wake, and re-asserts on reconnect.
-            power_on_tv(
-                commands, outbox, clock, entity, id, None, link, restore_to, reply,
-            );
+            let armed = power_on_tv(commands, clock, entity, id, None, link, restore_to);
             arm_screen_verify(commands, entity, clock, retry, true, true);
+            armed
         }
         None if !on && pending => {
             // A dial is in flight: latch the intent so the reconnect
             // re-asserts `screen_off` over the fresh link — the locked-
             // idle timer racing a boot wake must not be swallowed.
             arm_screen_verify(commands, entity, clock, retry, false, false);
-            reply_ok(outbox, reply);
+            Ok(())
         }
-        None if !on => {
-            // Satisfied no-op: a dark, disconnected TV already is
-            // screen-off.
-            reply_ok(outbox, reply);
-        }
-        _ => reply_err(outbox, reply, WireError::not_connected(id)),
+        // Satisfied no-op: a dark, disconnected TV already is screen-off.
+        None if !on => Ok(()),
+        _ => Err(WireError::not_connected(id)),
     }
 }
 
@@ -398,7 +371,6 @@ pub(super) fn dispatch_system_events(
     profile: Res<SystemProfile>,
     mut commands: Commands,
     clock: Res<Clock>,
-    mut outbox: ResMut<Outbox>,
     q: Query<
         (
             Entity,
@@ -411,7 +383,6 @@ pub(super) fn dispatch_system_events(
             Option<&payload::Power>,
             Option<&MirrorsConnector>,
             Option<&payload::Meta>,
-            Option<&payload::Input>,
         ),
         With<Managed>,
     >,
@@ -423,18 +394,13 @@ pub(super) fn dispatch_system_events(
         let InEvent::System { event, connector } = msg else {
             continue;
         };
-        for (entity, id, handle, pending, traits, link, retry, power, mirrors, meta, input) in &q {
+        for (entity, id, handle, pending, traits, link, retry, power, mirrors, meta) in &q {
             if let Some(scope) = connector
                 && mirrors.is_none_or(|MirrorsConnector(mapped)| mapped != scope)
             {
                 continue;
             }
-            // Resolved here rather than read from `meta.automated`: dispatch
-            // runs before the derive pass, and must honor a profile edit or
-            // input change from this same batch.
-            if !meta.is_none_or(|m| {
-                is_automated(m, input, resolve_automate_when(m, &profile_index, &bodies))
-            }) {
+            if meta.is_some_and(|m| !m.automated) {
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
@@ -460,45 +426,32 @@ pub(super) fn dispatch_system_events(
             } else {
                 None
             };
-            match action {
-                ProfileAction::ScreenOff => dispatch_screen(
-                    &mut commands,
-                    &mut outbox,
-                    &clock,
-                    entity,
-                    id.0,
-                    false,
-                    (handle, pending, traits, link, retry, power),
-                    None,
-                    None,
-                ),
-                ProfileAction::ScreenOn => dispatch_screen(
-                    &mut commands,
-                    &mut outbox,
-                    &clock,
-                    entity,
-                    id.0,
-                    true,
-                    (handle, pending, traits, link, retry, power),
-                    restore_to,
-                    None,
-                ),
+            let row = (handle, pending, traits, link, retry, power);
+            let dispatched = match action {
+                ProfileAction::ScreenOff => {
+                    dispatch_screen(&mut commands, &clock, entity, id.0, false, row, None)
+                }
+                ProfileAction::ScreenOn => {
+                    dispatch_screen(&mut commands, &clock, entity, id.0, true, row, restore_to)
+                }
                 ProfileAction::PowerOff => {
                     if let Some(handle) = handle {
                         let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
                     }
+                    Ok(())
                 }
                 ProfileAction::PowerOn => power_on_tv(
                     &mut commands,
-                    &mut outbox,
                     &clock,
                     entity,
                     id.0,
                     handle,
                     link,
                     restore_to,
-                    None,
                 ),
+            };
+            if let Err(error) = dispatched {
+                tracing::debug!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action not dispatched");
             }
         }
     }

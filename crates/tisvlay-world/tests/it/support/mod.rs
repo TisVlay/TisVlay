@@ -51,10 +51,12 @@ pub(crate) fn spawn_reactor_with_store() -> (
 }
 
 /// [`spawn_reactor_with_store`] booted the way the daemon boots: `stored`
-/// is the persist baseline and `commands` apply before the reactor runs.
+/// is the persist baseline and `commands` apply before the reactor runs;
+/// what `queue` sends then lands in the reactor's first batch.
 pub(crate) fn spawn_seeded_reactor(
     stored: StoreSnapshot,
     commands: Vec<Command>,
+    queue: impl FnOnce(&WorldClient),
 ) -> (
     UnboundedReceiver<WireEffect>,
     UnboundedReceiver<StoreSnapshot>,
@@ -65,6 +67,7 @@ pub(crate) fn spawn_seeded_reactor(
     let (persist_tx, persist_rx) = tokio::sync::mpsc::unbounded_channel();
     reactor.set_persist(persist_tx);
     reactor.seed(Some(stored), commands);
+    queue(&client);
     tokio::spawn(reactor.run());
     (effects, persist_rx, client, handle)
 }

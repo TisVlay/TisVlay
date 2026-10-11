@@ -9,9 +9,7 @@ use tisvlay_core::VendorConfig;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{
-    BackendCmd, Reply, StoreSnapshot, SystemEvent, TransportInfo, TvRecord, WireEffect,
-};
+use crate::events::{BackendCmd, StoreSnapshot, SystemEvent, TransportInfo, WireEffect};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
 #[derive(Component, Debug)]
@@ -332,11 +330,4 @@ pub(crate) enum Effect {
     /// Persist the full state snapshot (reactor debounces and writes
     /// atomically).
     Persist(Box<StoreSnapshot>),
-    /// Redact a TV's config against its vendor schema and reply — the
-    /// reactor owns the connectors (and thus the schemas), so the Secret
-    /// filtering happens there and credentials never reach the bridge.
-    RedactConfig {
-        reply: Reply<tisvlay_wire::endpoint::tv::GetConfig>,
-        record: TvRecord,
-    },
 }

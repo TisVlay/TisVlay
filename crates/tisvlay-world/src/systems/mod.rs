@@ -1,14 +1,15 @@
-//! The schedule: ingest commands, backend facts, pairing updates, and
-//! system events; reconcile pending connects; derive link state; publish
-//! changes; snapshot the store.
+//! The world's systems. Client commands run as one-shot systems before
+//! the schedule ([`commands`]); the schedule then ingests backend facts,
+//! pairing updates, and system events; reconciles pending connects;
+//! derives link state and the automation gate; publishes changes; and
+//! snapshots the store.
 
-mod commands;
+pub(crate) mod commands;
 mod dispatch;
 mod facts;
 mod profiles;
 mod publish;
 
-use commands::*;
 use dispatch::*;
 use facts::*;
 use profiles::*;
@@ -22,8 +23,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
 use tisvlay_core::{PairingCommand, PairingState, TvState, VendorConfig};
-use tisvlay_wire::endpoint::Rpc;
-use tisvlay_wire::rpc::{Created, PairStarted, RePairStarted};
+use tisvlay_wire::rpc::{Ack, Created, PairStarted, RePairStarted};
 use tisvlay_wire::{keys, payload};
 use uuid::Uuid;
 
@@ -35,8 +35,8 @@ use crate::components::{
     RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
-    AckReply, AnyReply, BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, ProfileRecord,
-    Reply, StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
+    StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.
@@ -52,9 +52,6 @@ pub(crate) fn build_schedule() -> Schedule {
     let mut schedule = Schedule::default();
     schedule.add_systems(
         (
-            handle_lifecycle_commands,
-            handle_tv_commands,
-            handle_profile_commands,
             apply_backend_events,
             apply_connector_matches,
             apply_transport_facts,
@@ -64,6 +61,9 @@ pub(crate) fn build_schedule() -> Schedule {
             verify_dispatch,
             reconcile_input,
             apply_remote_session,
+            // After every input fact and profile edit of the step, so
+            // dispatch reads this step's automation verdict.
+            derive_automated,
             dispatch_system_events,
             reconcile_connections,
         )
@@ -73,7 +73,6 @@ pub(crate) fn build_schedule() -> Schedule {
     schedule.add_systems(
         (
             derive_link_state,
-            derive_automated,
             derive_remote_armed,
             publish_greeter_timeout,
             publish_changed::<payload::Power>,
@@ -189,7 +188,7 @@ fn spawn_tv(commands: &mut Commands, index: &mut TvIndex, outbox: &mut Outbox, r
 
 /// Pairing-session state shared by the command and update handlers.
 #[derive(SystemParam)]
-struct PairingParams<'w, 's> {
+pub(crate) struct PairingParams<'w, 's> {
     index: ResMut<'w, PairingIndex>,
     refs: Query<'w, 's, &'static mut PairingRef>,
 }
@@ -216,7 +215,7 @@ type LinkQuery<'a> = (
 
 /// Per-TV settings writes, bundled to keep system signatures within reason.
 #[derive(SystemParam)]
-struct SettingsWrites<'w, 's> {
+pub(crate) struct SettingsWrites<'w, 's> {
     identity: Query<'w, 's, &'static mut payload::Identity>,
     meta: Query<'w, 's, &'static mut payload::Meta>,
     vendor: Query<'w, 's, &'static mut VendorRef>,

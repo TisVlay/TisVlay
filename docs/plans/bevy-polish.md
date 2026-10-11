@@ -153,7 +153,7 @@ No logic changes, so it's reviewable with `git diff --color-moved`.
   - *Immediate reply:* every command except the five below returns `Result<R::Response, WireError>`. That includes `PowerOn` and `SetScreen`, which reply once the action is sent or the wake dial is armed. `power_on_tv` and `dispatch_screen` return `Result<(), WireError>`, and `dispatch_system_events` logs their errors.
   - *Deferred reply:* `SetVolume`, `SetMuted`, `SwitchInput`, `SetBacklight` and `PowerOff` ack on `CommandDone`. They take their `Reply` (which is `Copy`) in the input and hand it to the backend. Validation failures return `Err`, and the reactor answers those.
   - *`GetConfig`:* the handler returns the `TvRecord`. The reactor arm redacts it with the connectors it owns, which deletes `Effect::RedactConfig`.
-- **Command shape.** Each `Command` variant becomes a newtype around its input struct, with the reply alongside: `Command::X(XInput, Option<Reply<..>>)`. Input structs carrying a `VendorConfig` (`Pair`, `AddTv`, `UpdateConfig`) keep the key-names-only `Debug`. This touches about 80 construction sites in the bridge and the world tests, all in-repo, with no shims.
+- **Command shape.** *Decided during implementation:* the `Command` variants keep their struct shape. The reactor's arm destructures each variant and passes the handler its fields as a tuple (`In<(Uuid, String)>`), or as a small input struct where there are many (`PairInput`). The match stays exhaustive, which is the property that matters, and the bridge and test construction sites (about 80) don't churn.
 - **Deleted:**
   - the three `handle_*_commands` systems, so the ingest chain starts at `apply_backend_events`;
   - `command_reply`, `respond` and the `_ => {}` arms;
@@ -228,7 +228,7 @@ No logic changes, so it's reviewable with `git diff --color-moved`.
 ## Resolved in review
 
 - **Commands from within the world.** There are none. Commands come only from the bridge and the daemon's boot seed. Systems push `Effect`s, and the reactor's self-sends are facts (`TransportFacts`, `PairingUpdate`, `Backend`).
-- **Handler input types.** Each variant becomes a newtype around its input struct (item 4b).
+- **Handler input types.** Struct variants stay; handlers take tuples or a small input struct (item 4b).
 - **Panic test seam.** A stub connector that panics, driven through `serve()` and `Stack::run_until`. No production seam.
 - **Hooks at teardown.** None fire (item 5).
 - **Executor.** A bare `Schedule::default()` runs single-threaded, because bevy_ecs's `multi_threaded` feature is off. Panics are caught by `handle_unwind` and reach the fallback handler with the system's name.

@@ -633,3 +633,65 @@ async fn plain_dial_never_reads_the_link_mac() {
     collect_until(&mut effects, |e| link_connected(e, true)).await;
     assert_eq!(handle.link_mac_call_count("mock://plain"), 0);
 }
+
+/// Commands apply in arrival order across families, each seeing the
+/// ones before it: a profile deleted ahead of an assignment is gone by
+/// the time the assignment runs, so the delete isn't refused as in use.
+#[tokio::test]
+async fn commands_apply_in_arrival_order() {
+    let tv = Uuid::new_v4();
+    let profile = Uuid::new_v4();
+    let mut body = SystemProfileConfig::full_default();
+    body.name = "Evening".into();
+    let record = tv_record(tv, "Den", mock_config("mock://ordered"));
+    let mut stored = tisvlay_world::StoreSnapshot::default();
+    stored.tv.push(record.clone());
+    stored.system_profile.push(ProfileRecord {
+        id: profile,
+        body: body.clone(),
+    });
+    let (mut effects, _store, _client, _handle) = spawn_seeded_reactor(
+        stored,
+        vec![
+            Command::AddProfile {
+                record: Box::new(ProfileRecord { id: profile, body }),
+                reply: None,
+            },
+            Command::AddTv {
+                record: Box::new(record.clone()),
+                reply: None,
+            },
+        ],
+        |client| {
+            client.command(Command::DeleteProfile {
+                id: profile,
+                reply: Some(Reply::new(1)),
+            });
+            client.command(Command::SetSystemProfile {
+                id: tv,
+                profile: Some(profile),
+                reply: Some(Reply::new(2)),
+            });
+            client.command(Command::AddTv {
+                record: Box::new(record),
+                reply: Some(Reply::new(3)),
+            });
+        },
+    );
+    let seen = collect_until(&mut effects, |e| reply_to(e, 3)).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 1)),
+        None,
+        "delete"
+    );
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 2)),
+        None,
+        "assign"
+    );
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 3)),
+        Some(tisvlay_wire::error::ErrorCode::TvExists),
+        "a second add of the same TV"
+    );
+}

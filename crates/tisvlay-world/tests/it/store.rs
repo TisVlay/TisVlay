@@ -217,6 +217,7 @@ async fn a_seeded_boot_writes_nothing_back() {
             record: Box::new(record),
             reply: None,
         }],
+        |_| {},
     );
     collect_until(&mut effects, |e| link_connected(e, true)).await;
     settle(&mut effects, &client, 1).await;
