@@ -10,43 +10,23 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
 use tisvlay_tray::state::Mirror;
+use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{Unary, manager, profile, tv, user_profile, user_remote};
 use tisvlay_wire::{bootstrap, keys, rpc};
-use uuid::Uuid;
-use zenoh::Session;
-use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::Sample;
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig};
 
 type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 
-/// A get that matches zero queryables completes instantly with no
-/// reply — the served side may still be declaring its queryables —
-/// so the no-reply case retries briefly.
-async fn call(client: &Session, key: &str, body: Value) -> Value {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let replies = client
-            .get(key.to_string())
-            .payload(serde_json::to_vec(&body).unwrap())
-            .encoding(Encoding::APPLICATION_JSON)
-            .timeout(Duration::from_secs(5))
-            .await
-            .unwrap();
-        let reply = match tokio::time::timeout(Duration::from_secs(5), replies.recv_async())
-            .await
-            .expect("rpc timed out")
-        {
-            Ok(reply) => reply,
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-            Err(e) => panic!("rpc got no reply: {e}"),
-        };
-        let sample = reply.result().expect("rpc ok");
-        return serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-    }
+/// One typed rpc that must succeed.
+async fn call<R: Unary>(caller: &Caller, target: &R::Target, request: &R::Request) -> R::Response {
+    caller.call::<R>(target, request).await.expect("rpc ok")
+}
+
+/// A request from a JSON literal, decoded into the rpc's request type.
+fn body<T: serde::de::DeserializeOwned>(json: Value) -> T {
+    serde_json::from_value(json).expect("the literal fits the request type")
 }
 
 /// Pump subscriber samples into the mirror until `pred` holds.
@@ -106,50 +86,39 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
     let user = zenoh::open(bootstrap::client_config(&user_socket).unwrap())
         .await
         .unwrap();
+    let system_caller = Caller::new(system.clone(), "t");
+    let user_caller = Caller::new(user.clone(), "t");
 
     // Seed: one TV, one system profile (assigned), one user profile
     // (assigned) — all before the mirror subscribes, so hydration is
     // what delivers them.
-    let ok = call(
-        &system,
-        &keys::manager_rpc("t", "add-tv"),
-        serde_json::to_value(rpc::AddTv {
-            id: None,
-            name: "Den".into(),
-            vendor: "mock".into(),
-            managed: true,
-            config: json!({ "address": "mock://tray" }),
-        })
-        .unwrap(),
-    )
-    .await;
-    let tv = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    let ok = call(
-        &system,
-        &keys::profile_rpc("t", "create"),
-        json!({ "body": { "name": "Cinema" } }),
-    )
-    .await;
-    let system_profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &system,
-        &keys::tv_rpc("t", &tv, "set-system-profile"),
-        json!({ "profile": system_profile }),
-    )
-    .await;
-    let ok = call(
-        &user,
-        &keys::user_profile_rpc("t", "create"),
-        json!({ "body": { "name": "Quiet nights" } }),
-    )
-    .await;
-    let user_profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &user,
-        &keys::user_profile_rpc("t", "assign"),
-        json!({ "tv": tv, "profile": user_profile }),
-    )
-    .await;
+    let request = rpc::AddTv {
+        id: None,
+        name: "Den".into(),
+        vendor: "mock".into(),
+        managed: true,
+        config: serde_json::from_value(json!({ "address": "mock://tray" })).unwrap(),
+    };
+    let tv = call::<manager::AddTv>(&system_caller, &(), &request)
+        .await
+        .id;
+    let request = body(json!({ "body": { "name": "Cinema" } }));
+    let system_profile = call::<profile::Create>(&system_caller, &(), &request)
+        .await
+        .id;
+    let request = rpc::SetSystemProfile {
+        profile: Some(system_profile),
+    };
+    call::<tv::SetSystemProfile>(&system_caller, &tv, &request).await;
+    let request = body(json!({ "body": { "name": "Quiet nights" } }));
+    let user_profile = call::<user_profile::Create>(&user_caller, &(), &request)
+        .await
+        .id;
+    let request = rpc::UserAssign {
+        tv,
+        profile: Some(user_profile),
+    };
+    call::<user_profile::Assign>(&user_caller, &(), &request).await;
 
     let system_sub = system
         .declare_subscriber(keys::all("t"))
@@ -185,24 +154,11 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
 
     // Live edits flow through: rename the system profile, unassign the
     // user profile, drop the volume.
-    call(
-        &system,
-        &keys::profile_rpc("t", "update"),
-        json!({ "id": system_profile, "body": { "name": "Movie night" } }),
-    )
-    .await;
-    call(
-        &user,
-        &keys::user_profile_rpc("t", "assign"),
-        json!({ "tv": tv }),
-    )
-    .await;
-    call(
-        &system,
-        &keys::tv_rpc("t", &tv, "set-volume"),
-        json!({ "level": 11 }),
-    )
-    .await;
+    let request = body(json!({ "id": system_profile, "body": { "name": "Movie night" } }));
+    call::<profile::Update>(&system_caller, &(), &request).await;
+    let request = rpc::UserAssign { tv, profile: None };
+    call::<user_profile::Assign>(&user_caller, &(), &request).await;
+    call::<tv::SetVolume>(&system_caller, &tv, &rpc::SetVolume { level: 11 }).await;
     converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
         m.system_profiles.get(&system_profile) == Some(&"Movie night".to_string())
             && m.tvs
@@ -214,29 +170,23 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
     // A manual remote source arms the TV; the flag rides the meta
     // projection round-trip (session mirror -> world -> daemon cache) and
     // drives the tray's read-only "Remote session active" indicator.
-    call(
-        &user,
-        &keys::user_remote_rpc("t", "set"),
-        json!({ "source": "laptop", "active": true }),
-    )
-    .await;
+    let remote = |active| rpc::RemoteSet {
+        source: Some("laptop".into()),
+        active,
+    };
+    call::<user_remote::Set>(&user_caller, &(), &remote(true)).await;
     converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
         m.tvs.get(&tv).is_some_and(|view| view.remote_armed)
     })
     .await;
-    call(
-        &user,
-        &keys::user_remote_rpc("t", "set"),
-        json!({ "source": "laptop", "active": false }),
-    )
-    .await;
+    call::<user_remote::Set>(&user_caller, &(), &remote(false)).await;
     converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
         m.tvs.get(&tv).is_some_and(|view| !view.remote_armed)
     })
     .await;
 
     // Removal tombstones every key; the meta delete drops the row.
-    call(&system, &keys::tv_rpc("t", &tv, "remove"), Value::Null).await;
+    call::<tv::Remove>(&system_caller, &tv, &()).await;
     converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
         !m.tvs.contains_key(&tv)
     })
@@ -266,20 +216,17 @@ async fn capability_flags_gate_menu_sections() {
     let client = zenoh::open(bootstrap::client_config(socket).unwrap())
         .await
         .unwrap();
-    let ok = call(
-        &client,
-        &keys::manager_rpc("t", "add-tv"),
-        serde_json::to_value(rpc::AddTv {
-            id: None,
-            name: "Caps".into(),
-            vendor: "mock".into(),
-            managed: false,
-            config: json!({ "address": "mock://caps", "refuse_connect": true }),
-        })
-        .unwrap(),
-    )
-    .await;
-    let tv = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let request = rpc::AddTv {
+        id: None,
+        name: "Caps".into(),
+        vendor: "mock".into(),
+        managed: false,
+        config: serde_json::from_value(json!({ "address": "mock://caps", "refuse_connect": true }))
+            .unwrap(),
+    };
+    let tv = call::<manager::AddTv>(&Caller::new(client.clone(), "t"), &(), &request)
+        .await
+        .id;
 
     let sub = client
         .declare_subscriber(keys::tv_all("t"))

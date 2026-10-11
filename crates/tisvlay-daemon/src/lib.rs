@@ -281,7 +281,8 @@ pub async fn serve(
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
     tokio::spawn(reactor.run());
-    // Seed the editable default profile (root ensure_default parity).
+    // Seed the editable default profile, so the catalog always has the
+    // inheritance baseline.
     // AddTv-style replay from the store lands later and upserts over
     // this, so user edits to the default survive restarts.
     let mut default_profile = tisvlay_core::SystemProfileConfig::full_default();
@@ -327,10 +328,12 @@ pub async fn serve(
     let bridge_site = site.to_string();
     let bridge_world = world.clone();
     // Introspection served by the bridge (About pane rows).
-    let info = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "state_path": store_path.map(|p| p.display().to_string()).unwrap_or_default(),
-    });
+    let info = tisvlay_wire::rpc::ServiceInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+        state_path: store_path
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    };
     let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         if let Err(e) = bridge::run(

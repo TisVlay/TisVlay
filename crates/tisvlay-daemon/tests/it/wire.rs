@@ -8,13 +8,17 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tisvlay_core::DiscoveredTv;
 use tisvlay_mock::{MockHandle, new_test_parts};
+use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{manager, tv};
+use tisvlay_wire::error::ErrorCode;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
-use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::{Sample, SampleKind};
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig};
+
+use crate::support::{body, call, raw_refusal, refusal};
 
 type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 
@@ -24,6 +28,7 @@ struct Wire {
     stack: tisvlay_daemon::Stack,
     handle: MockHandle,
     client: Session,
+    caller: Caller,
     site: String,
 }
 
@@ -51,6 +56,7 @@ async fn wire() -> Wire {
         socket,
         stack,
         handle,
+        caller: Caller::new(client.clone(), "t"),
         client,
         site: "t".into(),
     }
@@ -88,42 +94,6 @@ async fn history_sub(session: &Session, key: String) -> Sub {
         .unwrap()
 }
 
-/// One RPC round-trip; `Err` carries the decoded typed-error payload.
-/// A get that matches zero queryables completes instantly with no
-/// reply — the bridge may still be declaring its queryables right
-/// after `serve` returns — so the no-reply case retries briefly.
-async fn call(client: &Session, key: &str, body: Value) -> Result<Value, Value> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let replies = client
-            .get(key.to_string())
-            .payload(serde_json::to_vec(&body).unwrap())
-            .encoding(Encoding::APPLICATION_JSON)
-            .timeout(Duration::from_secs(5))
-            .await
-            .unwrap();
-        let reply = match tokio::time::timeout(Duration::from_secs(5), replies.recv_async())
-            .await
-            .expect("rpc timed out")
-        {
-            Ok(reply) => reply,
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-            Err(e) => panic!("rpc got no reply: {e}"),
-        };
-        return match reply.result() {
-            Ok(sample) => {
-                Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-            Err(err) => {
-                Err(serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-        };
-    }
-}
-
 /// Receive samples until `pred` matches, panicking after 10 s.
 async fn recv_until(sub: &Sub, mut pred: impl FnMut(&Sample) -> bool) -> Vec<Sample> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -152,28 +122,23 @@ fn payload_json(sample: &Sample) -> Value {
     serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null)
 }
 
-fn add_body(name: &str, address: &str) -> Value {
-    serde_json::to_value(rpc::AddTv {
+fn add_body(name: &str, address: &str) -> rpc::AddTv {
+    rpc::AddTv {
         id: None,
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": address }),
-    })
-    .unwrap()
+        config: serde_json::from_value(json!({ "address": address })).unwrap(),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn add_tv_then_late_client_hydrates_via_history() {
     let w = wire().await;
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Den", "mock://den"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().expect("reply carries id")).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Den", "mock://den"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
 
     // A brand-new session, opened after the fact, hydrates from the
     // publisher caches through subscriber history (plus live samples for
@@ -203,37 +168,35 @@ async fn add_tv_then_late_client_hydrates_via_history() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rpc_errors_are_typed() {
     let w = wire().await;
-    let err = call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &Uuid::new_v4(), "set-volume"),
-        json!({ "level": 5 }),
-    )
-    .await
-    .expect_err("unknown tv must fail");
-    assert_eq!(err["code"], "tv-not-found");
+    let err = call::<tv::SetVolume>(&w.caller, &Uuid::new_v4(), &body(json!({ "level": 5 })))
+        .await
+        .expect_err("unknown tv must fail");
+    assert_eq!(refusal(&err).code, ErrorCode::TvNotFound);
 
-    let err = call(
+    let err = raw_refusal(
         &w.client,
         &keys::manager_rpc(&w.site, "add-tv"),
         json!({ "nonsense": true }),
     )
-    .await
-    .expect_err("malformed body must fail");
+    .await;
     assert_eq!(err["code"], "bad-request");
+    let err = raw_refusal(
+        &w.client,
+        &keys::manager_rpc(&w.site, "teleport"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(err["code"], "unknown-rpc");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn volume_rpc_lands_as_state_publish() {
     let w = wire().await;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Den", "mock://vol"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Den", "mock://vol"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
 
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
@@ -242,13 +205,9 @@ async fn volume_rpc_lands_as_state_publish() {
     })
     .await;
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "set-volume"),
-        json!({ "level": 55 }),
-    )
-    .await
-    .expect("set-volume ok");
+    call::<tv::SetVolume>(&w.caller, &id, &body(json!({ "level": 55 })))
+        .await
+        .expect("set-volume ok");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
             .is_some_and(|(tv, path)| tv == id && path == "state/volume")
@@ -257,6 +216,52 @@ async fn volume_rpc_lands_as_state_publish() {
     .await;
     // The push originated from the backend, proving the full loop:
     // rpc → world → connection task → mock → subscription → publish.
+}
+
+/// The rpcs no other suite reaches, each through its typed endpoint.
+#[tokio::test(flavor = "multi_thread")]
+async fn remaining_rpcs_answer_typed() {
+    let w = wire().await;
+    let info = call::<manager::Info>(&w.caller, &(), &())
+        .await
+        .expect("info ok");
+    assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(info.state_path, "", "an ephemeral daemon has no store");
+
+    // A TEST-NET address the ARP cache can't know: the hint is empty.
+    let request = rpc::Enrich {
+        vendor: "mock".into(),
+        ip: "192.0.2.1".into(),
+    };
+    let hint = call::<manager::Enrich>(&w.caller, &(), &request)
+        .await
+        .expect("enrich ok");
+    assert_eq!(hint.mac, None);
+
+    let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
+    let id = call::<manager::AddTv>(&w.caller, &(), &add_body("Den", "mock://rest"))
+        .await
+        .expect("add-tv ok")
+        .id;
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/link")
+            && payload_json(s)["connected"] == true
+    })
+    .await;
+    call::<tv::SetMuted>(&w.caller, &id, &rpc::SetMuted { muted: true })
+        .await
+        .expect("set-muted ok");
+    recv_until(&sub, |s| {
+        keys::parse_tv_path(&w.site, s.key_expr().as_str())
+            .is_some_and(|(tv, path)| tv == id && path == "state/volume")
+            && payload_json(s)["muted"] == true
+    })
+    .await;
+    // Reconnecting a connected TV is a no-op ack.
+    call::<tv::Reconnect>(&w.caller, &id, &())
+        .await
+        .expect("reconnect ok");
 }
 
 /// P1's exit criterion: a daemon restart keeps its TVs. The store file is
@@ -282,14 +287,11 @@ async fn restart_preserves_tvs_via_store() {
     let client1 = zenoh::open(bootstrap::client_config(&socket1).unwrap())
         .await
         .unwrap();
-    let ok = call(
-        &client1,
-        &keys::manager_rpc("t", "add-tv"),
-        add_body("Persisted", "mock://persist"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let caller1 = Caller::new(client1.clone(), "t");
+    let ok = call::<manager::AddTv>(&caller1, &(), &add_body("Persisted", "mock://persist"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
 
     // Wait for the debounced write to land.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -351,14 +353,10 @@ async fn restart_preserves_tvs_via_store() {
 #[tokio::test(flavor = "multi_thread")]
 async fn settings_rpcs_publish_and_unmanage_keeps_the_link() {
     let w = wire().await;
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Old Name", "mock://settings"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Old Name", "mock://settings"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
@@ -367,13 +365,9 @@ async fn settings_rpcs_publish_and_unmanage_keeps_the_link() {
     })
     .await;
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "set-name"),
-        json!({ "name": "New Name" }),
-    )
-    .await
-    .expect("set-name ok");
+    call::<tv::SetName>(&w.caller, &id, &body(json!({ "name": "New Name" })))
+        .await
+        .expect("set-name ok");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
             .is_some_and(|(tv, path)| tv == id && path == "meta/identity")
@@ -386,13 +380,9 @@ async fn settings_rpcs_publish_and_unmanage_keeps_the_link() {
     // live and manual control still works). If unmanage dropped the
     // link, a link{connected:false} would precede the meta publish —
     // track that in the same drain.
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "set-managed"),
-        json!({ "managed": false }),
-    )
-    .await
-    .expect("set-managed ok");
+    call::<tv::SetManaged>(&w.caller, &id, &body(json!({ "managed": false })))
+        .await
+        .expect("set-managed ok");
     let mut link_dropped = false;
     recv_until(&sub, |s| {
         let Some((tv, path)) = keys::parse_tv_path(&w.site, s.key_expr().as_str()) else {
@@ -414,13 +404,9 @@ async fn settings_rpcs_publish_and_unmanage_keeps_the_link() {
     );
 
     // Manual control still works while unmanaged.
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "set-volume"),
-        json!({ "level": 33 }),
-    )
-    .await
-    .expect("set-volume ok on an unmanaged TV");
+    call::<tv::SetVolume>(&w.caller, &id, &body(json!({ "level": 33 })))
+        .await
+        .expect("set-volume ok on an unmanaged TV");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
             .is_some_and(|(tv, path)| tv == id && path == "state/volume")
@@ -429,13 +415,9 @@ async fn settings_rpcs_publish_and_unmanage_keeps_the_link() {
     .await;
 
     // Managing again just flips automation back on.
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "set-managed"),
-        json!({ "managed": true }),
-    )
-    .await
-    .expect("set-managed ok");
+    call::<tv::SetManaged>(&w.caller, &id, &body(json!({ "managed": true })))
+        .await
+        .expect("set-managed ok");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
             .is_some_and(|(tv, path)| tv == id && path == "meta/config")
@@ -447,14 +429,10 @@ async fn settings_rpcs_publish_and_unmanage_keeps_the_link() {
 #[tokio::test(flavor = "multi_thread")]
 async fn input_backlight_screen_round_trip() {
     let w = wire().await;
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Den", "mock://ibs"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Den", "mock://ibs"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
@@ -463,13 +441,9 @@ async fn input_backlight_screen_round_trip() {
     })
     .await;
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "switch-input"),
-        json!({ "input": "HDMI_2" }),
-    )
-    .await
-    .expect("switch-input ok");
+    call::<tv::SwitchInput>(&w.caller, &id, &body(json!({ "input": "HDMI_2" })))
+        .await
+        .expect("switch-input ok");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
             .is_some_and(|(tv, path)| tv == id && path == "state/input")
@@ -477,13 +451,9 @@ async fn input_backlight_screen_round_trip() {
     })
     .await;
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "set-backlight"),
-        json!({ "level": 42 }),
-    )
-    .await
-    .expect("set-backlight ok");
+    call::<tv::SetBacklight>(&w.caller, &id, &body(json!({ "level": 42 })))
+        .await
+        .expect("set-backlight ok");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
             .is_some_and(|(tv, path)| tv == id && path == "state/backlight")
@@ -491,13 +461,9 @@ async fn input_backlight_screen_round_trip() {
     })
     .await;
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "set-screen"),
-        json!({ "on": false }),
-    )
-    .await
-    .expect("set-screen ok");
+    call::<tv::SetScreen>(&w.caller, &id, &body(json!({ "on": false })))
+        .await
+        .expect("set-screen ok");
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
             .is_some_and(|(tv, path)| tv == id && path == "state/power")
@@ -509,14 +475,10 @@ async fn input_backlight_screen_round_trip() {
 #[tokio::test(flavor = "multi_thread")]
 async fn get_config_reads_and_update_config_moves_the_tv() {
     let w = wire().await;
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Movable", "mock://before"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Movable", "mock://before"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
@@ -525,20 +487,16 @@ async fn get_config_reads_and_update_config_moves_the_tv() {
     })
     .await;
 
-    let config = call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "get-config"),
-        Value::Null,
-    )
-    .await
-    .expect("get-config ok");
-    assert_eq!(config["name"], "Movable");
-    assert_eq!(config["config"]["address"], "mock://before");
+    let config = call::<tv::GetConfig>(&w.caller, &id, &())
+        .await
+        .expect("get-config ok");
+    assert_eq!(config.name, "Movable");
+    assert_eq!(config.config["address"], "mock://before");
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "update-config"),
-        json!({ "address": "mock://after", "name": "Moved" }),
+    call::<tv::UpdateConfig>(
+        &w.caller,
+        &id,
+        &body(json!({ "address": "mock://after", "name": "Moved" })),
     )
     .await
     .expect("update-config ok");
@@ -556,15 +514,11 @@ async fn get_config_reads_and_update_config_moves_the_tv() {
     })
     .await;
     assert!(w.handle.connect_call_count("mock://after") >= 1);
-    let config = call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "get-config"),
-        Value::Null,
-    )
-    .await
-    .expect("get-config ok");
-    assert_eq!(config["name"], "Moved");
-    assert_eq!(config["config"]["address"], "mock://after");
+    let config = call::<tv::GetConfig>(&w.caller, &id, &())
+        .await
+        .expect("get-config ok");
+    assert_eq!(config.name, "Moved");
+    assert_eq!(config.config["address"], "mock://after");
 
     // The connector-derived display state tracked the patch: a late
     // subscriber hydrates an identity whose primary descriptor is the
@@ -598,31 +552,27 @@ async fn get_config_reads_and_update_config_moves_the_tv() {
     .await;
 
     // Immutable and malformed patches are typed errors.
-    let err = call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "update-config"),
-        json!({ "vendor": "lg" }),
-    )
-    .await
-    .expect_err("vendor is immutable");
-    assert_eq!(err["code"], "bad-request");
+    let err = call::<tv::UpdateConfig>(&w.caller, &id, &body(json!({ "vendor": "lg" })))
+        .await
+        .expect_err("vendor is immutable");
+    assert_eq!(refusal(&err).code, ErrorCode::BadRequest);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn re_pair_refreshes_credentials_in_place() {
     let w = wire().await;
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name: "Repairable".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://rp", "pairing": "accept" }),
-    })
-    .unwrap();
-    let ok = call(&w.client, &keys::manager_rpc(&w.site, "pair"), body)
+        config: serde_json::from_value(json!({ "address": "mock://rp", "pairing": "accept" }))
+            .unwrap(),
+    };
+    let ok = call::<manager::Pair>(&w.caller, &(), &request)
         .await
         .expect("pair ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let id = ok.id;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
@@ -632,16 +582,14 @@ async fn re_pair_refreshes_credentials_in_place() {
     .await;
 
     let progress = history_sub(&w.client, keys::pairing_progress(&w.site, &id)).await;
-    let started = call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "re-pair"),
-        Value::Null,
-    )
-    .await
-    .expect("re-pair ok");
-    let attempt = started["attempt"].clone();
-    assert!(attempt.is_string(), "re-pair reply carries its attempt");
-    assert_ne!(attempt, ok["attempt"], "each session mints its own attempt");
+    let started = call::<tv::RePair>(&w.caller, &id, &())
+        .await
+        .expect("re-pair ok");
+    let attempt = started.attempt.to_string();
+    assert_ne!(
+        started.attempt, ok.attempt,
+        "each session mints its own attempt"
+    );
     // The progress cache may replay the original session's `complete`
     // ahead of (or, once the re-pair's live samples win the race, never
     // alongside) the re-pair's — only the re-pair's attempt ends the wait.
@@ -668,37 +616,30 @@ async fn discover_streams_findings_as_multiple_replies() {
     w.handle
         .publish_tv(DiscoveredTv::new("tv-b", "Beta", "mock://b", "mock"));
 
-    // Consolidation off: discovery replies share the query's key, and the
-    // default mode would collapse them to the latest one.
-    let replies = w
-        .client
-        .get(keys::manager_rpc(&w.site, "discover"))
-        .payload(serde_json::to_vec(&json!({ "vendor": "mock", "timeout_ms": 200 })).unwrap())
-        .encoding(Encoding::APPLICATION_JSON)
-        .consolidation(zenoh::query::ConsolidationMode::None)
-        .timeout(Duration::from_secs(5))
+    // One query, one reply per finding (consolidation off in the caller).
+    let request = rpc::Discover {
+        vendor: Some("mock".into()),
+        timeout_ms: Some(200),
+    };
+    let found = w
+        .caller
+        .call_many::<manager::Discover>(&(), &request)
         .await
         .unwrap();
-    let mut names = Vec::new();
-    while let Ok(reply) = replies.recv_async().await {
-        let sample = reply.result().expect("discover replies are ok samples");
-        names.push(payload_json(sample)["name"].as_str().unwrap().to_string());
-    }
+    let mut names: Vec<String> = found.into_iter().map(|tv| tv.name).collect();
     names.sort();
     assert_eq!(names, ["Alpha", "Beta"]);
 
-    let replies = w
-        .client
-        .get(keys::manager_rpc(&w.site, "discover"))
-        .payload(serde_json::to_vec(&json!({ "vendor": "nope" })).unwrap())
-        .encoding(Encoding::APPLICATION_JSON)
-        .timeout(Duration::from_secs(5))
+    let request = rpc::Discover {
+        vendor: Some("nope".into()),
+        timeout_ms: None,
+    };
+    let err = w
+        .caller
+        .call_many::<manager::Discover>(&(), &request)
         .await
-        .unwrap();
-    let reply = replies.recv_async().await.expect("one reply");
-    let err = reply.result().expect_err("unknown vendor must err");
-    let value: Value = serde_json::from_slice(&err.payload().to_bytes()).unwrap();
-    assert_eq!(value["code"], "unknown-vendor");
+        .unwrap_err();
+    assert_eq!(refusal(&err).code, ErrorCode::UnknownVendor);
 }
 
 /// Full loop: sysfs DPMS flip → watcher → world system event → stock
@@ -706,14 +647,10 @@ async fn discover_streams_findings_as_multiple_replies() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dpms_transitions_drive_profile_actions_end_to_end() {
     let w = wire().await;
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Den", "mock://dpms"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Den", "mock://dpms"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
@@ -759,14 +696,10 @@ async fn dpms_transitions_drive_profile_actions_end_to_end() {
 #[tokio::test(flavor = "multi_thread")]
 async fn remove_emits_deletes_and_late_joiners_see_nothing() {
     let w = wire().await;
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Doomed", "mock://rm"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Doomed", "mock://rm"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
 
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
     recv_until(&sub, |s| {
@@ -776,13 +709,9 @@ async fn remove_emits_deletes_and_late_joiners_see_nothing() {
     })
     .await;
 
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "remove"),
-        Value::Null,
-    )
-    .await
-    .expect("remove ok");
+    call::<tv::Remove>(&w.caller, &id, &())
+        .await
+        .expect("remove ok");
     // Live subscribers see the tombstones.
     recv_until(&sub, |s| {
         s.kind() == SampleKind::Delete
@@ -810,18 +739,20 @@ async fn remove_emits_deletes_and_late_joiners_see_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn pairing_progress_liveliness_and_cancel_over_wire() {
     let w = wire().await;
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name: "Pairing".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://pairwire", "pairing": "manual" }),
-    })
-    .unwrap();
-    let ok = call(&w.client, &keys::manager_rpc(&w.site, "pair"), body)
+        config: serde_json::from_value(
+            json!({ "address": "mock://pairwire", "pairing": "manual" }),
+        )
+        .unwrap(),
+    };
+    let ok = call::<manager::Pair>(&w.caller, &(), &request)
         .await
         .expect("pair accepted");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let id = ok.id;
 
     // Progress replays from the deep pairing cache.
     let sub = history_sub(&w.client, keys::pairing_progress(&w.site, &id)).await;
@@ -840,13 +771,9 @@ async fn pairing_progress_liveliness_and_cancel_over_wire() {
         "pairing liveliness token must be present mid-session"
     );
 
-    call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "cancel-pair"),
-        json!({ "id": id }),
-    )
-    .await
-    .expect("cancel ok");
+    call::<manager::CancelPair>(&w.caller, &(), &body(json!({ "id": id })))
+        .await
+        .expect("cancel ok");
     let seen = recv_until(&sub, |s| payload_json(s)["phase"] == "failed").await;
     let failed = payload_json(seen.last().unwrap());
     assert_eq!(failed["code"], "pairing.cancelled");
@@ -871,34 +798,29 @@ async fn vendor_field_validation_rejects_blank_required_fields() {
 
     // add-tv with the mock's required `address` field absent: rejected
     // before the world sees it, with the field routed in the message.
-    let err = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        serde_json::to_value(rpc::AddTv {
+    let err = call::<manager::AddTv>(
+        &w.caller,
+        &(),
+        &rpc::AddTv {
             id: None,
             name: "Blank".into(),
             vendor: "mock".into(),
             managed: true,
-            config: json!({}),
-        })
-        .unwrap(),
+            config: serde_json::from_value(json!({})).unwrap(),
+        },
     )
     .await
     .expect_err("missing required vendor field must be rejected");
-    assert_eq!(err["code"], "invalid-field");
-    assert_eq!(err["message"], "address: required");
+    assert_eq!(refusal(&err).code, ErrorCode::InvalidField);
+    assert_eq!(refusal(&err).message, "address: required");
 
     // A valid TV, then a patch blanking the required field. The bridge
     // learns the TV's vendor from the identity publish, so wait for it
     // before patching.
-    let ok = call(
-        &w.client,
-        &keys::manager_rpc(&w.site, "add-tv"),
-        add_body("Valid", "mock://valid"),
-    )
-    .await
-    .expect("add-tv ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let ok = call::<manager::AddTv>(&w.caller, &(), &add_body("Valid", "mock://valid"))
+        .await
+        .expect("add-tv ok");
+    let id = ok.id;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
     recv_until(&sub, |s| {
         keys::parse_tv_path(&w.site, s.key_expr().as_str())
@@ -906,24 +828,16 @@ async fn vendor_field_validation_rejects_blank_required_fields() {
     })
     .await;
 
-    let err = call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "update-config"),
-        json!({ "address": "  " }),
-    )
-    .await
-    .expect_err("blanking a required vendor field must be rejected");
-    assert_eq!(err["code"], "invalid-field");
-    assert_eq!(err["message"], "address: required");
+    let err = call::<tv::UpdateConfig>(&w.caller, &id, &body(json!({ "address": "  " })))
+        .await
+        .expect_err("blanking a required vendor field must be rejected");
+    assert_eq!(refusal(&err).code, ErrorCode::InvalidField);
+    assert_eq!(refusal(&err).message, "address: required");
 
     // Untouched required fields don't block partial patches.
-    call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "update-config"),
-        json!({ "name": "Still Valid" }),
-    )
-    .await
-    .expect("partial patch without the required field is fine");
+    call::<tv::UpdateConfig>(&w.caller, &id, &body(json!({ "name": "Still Valid" })))
+        .await
+        .expect("partial patch without the required field is fine");
 }
 
 /// End to end over the wire: a pairing whose device reports its link MAC
@@ -932,26 +846,26 @@ async fn vendor_field_validation_rejects_blank_required_fields() {
 #[tokio::test(flavor = "multi_thread")]
 async fn pair_fills_the_mac_the_device_reports() {
     let w = wire().await;
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name: "Routed".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({
+        config: serde_json::from_value(json!({
             "address": "mock://routed",
             "pairing": "accept",
             "link_mac": "84-90-0a-63-a9-94",
-        }),
-    })
-    .unwrap();
-    let ok = call(&w.client, &keys::manager_rpc(&w.site, "pair"), body)
+        }))
+        .unwrap(),
+    };
+    let ok = call::<manager::Pair>(&w.caller, &(), &request)
         .await
         .expect("pair ok");
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let id = ok.id;
     let progress = history_sub(&w.client, keys::pairing_progress(&w.site, &id)).await;
     let seen = recv_until(&progress, |s| {
         let v = payload_json(s);
-        v["phase"] == "complete" && v["attempt"] == ok["attempt"]
+        v["phase"] == "complete" && v["attempt"] == ok.attempt.to_string()
     })
     .await;
     let complete = payload_json(seen.last().unwrap());
@@ -960,12 +874,8 @@ async fn pair_fills_the_mac_the_device_reports() {
         json!({ "reported": "84:90:0A:63:A9:94", "outcome": { "kind": "filled" } })
     );
 
-    let config = call(
-        &w.client,
-        &keys::tv_rpc(&w.site, &id, "get-config"),
-        Value::Null,
-    )
-    .await
-    .expect("get-config ok");
-    assert_eq!(config["config"]["mac"], "84:90:0A:63:A9:94");
+    let config = call::<tv::GetConfig>(&w.caller, &id, &())
+        .await
+        .expect("get-config ok");
+    assert_eq!(config.config["mac"], "84:90:0A:63:A9:94");
 }

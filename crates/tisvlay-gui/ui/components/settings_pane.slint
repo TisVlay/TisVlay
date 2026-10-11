@@ -1,11 +1,11 @@
 // Settings pane.
 //
 // Houses cross-pane settings — currently the NOTIFICATIONS group
-// (`org.tisvlay.Tray1` backing) plus a "Send test notification"
+// (backed by the tray's settings rpcs) plus a "Send test notification"
 // button so users can verify their DE's notification stack
 // independently of category gating. When the tray service isn't
 // running, switches stay visible-but-disabled (last-fetched values
-// surfaced as defaults via `NotificationSettingsBody::defaults()`);
+// surfaced as defaults via `NotificationSettings::default()`);
 // an inline banner above the group explains the runtime constraint.
 
 import { Button, Switch } from "std-widgets.slint";
@@ -90,8 +90,8 @@ export component SettingsPane inherits Rectangle {
         //
         // One switch per notification category, dispatching through
         // `Tray.set-notification(category, enabled)` to the Rust
-        // handler that wraps each call in a one-key
-        // `NotificationSettingsBody` for `Tray1.UpdateNotificationSettings`.
+        // handler that wraps each call in a one-field
+        // `NotificationSettingsPatch` for the tray's update rpc.
         // The category string keys must match `NotificationCategory::key()`
         // in tisvlay-core; the `slint_notification_keys_match_core` test in
         // src/lib.rs guards that contract.

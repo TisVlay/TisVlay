@@ -4,7 +4,9 @@
 //! the reactor inbox.
 
 use std::sync::Arc;
-use tisvlay_core::{PairingError, PairingErrorCode, PairingSession, PairingState, TvConnector};
+use tisvlay_core::{
+    PairingError, PairingErrorCode, PairingSession, PairingState, TvConnector, VendorConfig,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -24,7 +26,7 @@ pub(crate) async fn connect_flow(
     dial: u64,
     pairing: bool,
     connector: Arc<dyn TvConnector>,
-    config: toml::Value,
+    config: VendorConfig,
     wake: bool,
     retry: tisvlay_core::RetryConfig,
     traits: crate::events::TransportInfo,

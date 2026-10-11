@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
 use tisvlay_test::PrivateBus;
 use tisvlay_test::fake_logind::FakeLogind;
+use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::manager;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
-use zenoh::bytes::Encoding;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -66,25 +67,18 @@ async fn logind_sleep_resume_drive_profile_actions() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name: "Den".into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": "mock://logind" }),
-    })
-    .unwrap();
-    let replies = client
-        .get(keys::manager_rpc("t", "add-tv"))
-        .payload(serde_json::to_vec(&body).unwrap())
-        .encoding(Encoding::APPLICATION_JSON)
-        .timeout(Duration::from_secs(5))
+        config: serde_json::from_value(json!({ "address": "mock://logind" })).unwrap(),
+    };
+    let id = Caller::new(client.clone(), "t")
+        .call::<manager::AddTv>(&(), &request)
         .await
-        .unwrap();
-    let reply = replies.recv_async().await.expect("add reply");
-    let ok: Value =
-        serde_json::from_slice(&reply.result().expect("ok").payload().to_bytes()).unwrap();
-    let id = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+        .expect("add-tv ok")
+        .id;
 
     let sub = client
         .declare_subscriber(keys::tv_all("t"))

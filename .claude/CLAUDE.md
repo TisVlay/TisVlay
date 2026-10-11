@@ -230,10 +230,11 @@ CI runs file checks via prek, then a single `just test-ci` (clippy + nextest + d
 Rules the lints can't fully express; the lint policy and its reasons are in `docs/build.md` § Lint policy.
 
 - **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
-- **Errors:** published library crates expose `thiserror` types callers can match on. `anyhow` belongs in binaries and the in-workspace client SDK, whose callers only report errors.
+- **Errors:** published crates and the client SDK expose `thiserror` types callers can match on. Binaries and binary-glue libraries (`tisvlay-runtime`, the service crates' library halves, wire's `bootstrap`) may use `anyhow`. The model is in `docs/architecture.md` § Error model.
 - **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
-- **Secrets never reach `Debug`.** The LG credential types (`Credentials`, `LgVendorConfig` and the register payloads) implement `Debug` by hand and redact the client key; a new type holding a credential does the same. The untyped vendor-config TOML still carries the key in derived `Debug`, so never log a `TvConfig` or `TvRecord` whole.
+- **Secrets never reach `Debug`.** A typed secret is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. The LG client key is one everywhere it's typed (`Credentials`, `LgVendorConfig`, the register payloads, `WebOsClient`); a new credential field uses it too. The untyped vendor config is a `tisvlay_core::VendorConfig`, and the wire requests that carry one (`AddTv`, `UpdateConfig`) are hand-written the same way: their `Debug` prints key names only. `Secret` wraps secrecy 0.10 (redacted `Debug`, zeroize on drop, `Serialize` opt-in); zenoh-config still pins 0.8, so `deny.toml` skips that duplicate.
 - **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
+- **A new rpc is declared once** in its family's table in `tisvlay-wire`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
 - **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
 - **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.
 

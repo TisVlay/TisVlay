@@ -5,11 +5,12 @@
 use bevy_ecs::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use tisvlay_core::VendorConfig;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::events::{
-    BackendCmd, ReplyTo, StoreSnapshot, SystemEvent, TransportInfo, TvRecord, WireEffect,
+    BackendCmd, Reply, StoreSnapshot, SystemEvent, TransportInfo, TvRecord, WireEffect,
 };
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
@@ -20,7 +21,7 @@ pub(crate) struct TvId(pub Uuid);
 #[derive(Component, Debug)]
 pub(crate) struct VendorRef {
     pub vendor: String,
-    pub config: toml::Value,
+    pub config: VendorConfig,
 }
 
 /// Marker: this TV should be dialed and driven by profiles.
@@ -146,7 +147,7 @@ pub(crate) struct PairingRef {
     pub vendor: String,
     /// The pairing-form params — fed to `build_config_from_pairing` on
     /// success.
-    pub params: toml::Value,
+    pub params: VendorConfig,
     /// `Some` = fresh enrollment (spawn on success), `None` = re-pair.
     pub enroll: Option<PairingEnroll>,
     /// Cancel channel, attached once the pairing task starts. `None` for
@@ -302,20 +303,20 @@ pub(crate) enum Effect {
         /// pair-time reads (the device-reported link MAC).
         pairing: bool,
         vendor: String,
-        config: toml::Value,
+        config: VendorConfig,
         wake: bool,
     },
     /// Start a vendor pairing handshake (reactor calls the connector).
     StartPairing {
         tv: Uuid,
         vendor: String,
-        params: toml::Value,
+        params: VendorConfig,
     },
     /// Build the persistable vendor config from pairing credentials.
     CompletePairing {
         tv: Uuid,
         vendor: String,
-        params: toml::Value,
+        params: VendorConfig,
         credentials: Box<tisvlay_core::Credentials>,
     },
     /// Re-evaluate a TV's config-derived transport facts (the reactor
@@ -326,7 +327,7 @@ pub(crate) enum Effect {
     Facts {
         tv: Uuid,
         vendor: String,
-        config: toml::Value,
+        config: VendorConfig,
     },
     /// Persist the full state snapshot (reactor debounces and writes
     /// atomically).
@@ -334,5 +335,8 @@ pub(crate) enum Effect {
     /// Redact a TV's config against its vendor schema and reply — the
     /// reactor owns the connectors (and thus the schemas), so the Secret
     /// filtering happens there and credentials never reach the bridge.
-    RedactConfig { reply: ReplyTo, record: TvRecord },
+    RedactConfig {
+        reply: Reply<tisvlay_wire::endpoint::tv::GetConfig>,
+        record: TvRecord,
+    },
 }

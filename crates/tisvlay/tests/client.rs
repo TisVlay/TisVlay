@@ -12,7 +12,11 @@ use std::time::Duration;
 use serde_json::json;
 use tisvlay::{DaemonClient, SessionClient, StateEvent, StateWatcher, StateWatcherConfig};
 use tisvlay_mock::new_test_parts;
-use uuid::Uuid;
+
+/// A vendor config object from a JSON literal.
+fn config(json: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::from_value(json).unwrap()
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sdk_mirrors_rpcs_and_watches() {
@@ -60,7 +64,11 @@ async fn sdk_mirrors_rpcs_and_watches() {
 
     // Catalog reads work before any TV exists.
     let vendors = daemon.get_supported_vendors().await.unwrap();
-    assert_eq!(vendors, vec![("mock".to_string(), "Mock".to_string())]);
+    let names: Vec<(&str, &str)> = vendors
+        .iter()
+        .map(|vendor| (vendor.id.as_str(), vendor.name.as_str()))
+        .collect();
+    assert_eq!(names, [("mock", "Mock")]);
     let schema = daemon.get_pairing_schema("mock").await.unwrap();
     assert!(schema.iter().any(|field| field.name == "address"));
     assert!(daemon.get_pairing_schema("nope").await.is_err());
@@ -70,12 +78,12 @@ async fn sdk_mirrors_rpcs_and_watches() {
         .pair_tv(
             "Den",
             "mock",
-            &json!({ "address": "mock://sdk", "pairing": "accept" }).to_string(),
+            config(json!({ "address": "mock://sdk", "pairing": "accept" })),
             true,
         )
         .await
         .unwrap()
-        .tv_id;
+        .id;
     wait_for(&daemon, |tvs| {
         tvs.iter()
             .any(|info| info.uuid == tv && info.connected && info.volume == 30)
@@ -96,7 +104,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
     }
 
     // Writes round-trip and land back in the mirror.
-    daemon.set_volume(&tv, 12).await.unwrap();
+    daemon.set_volume(tv, 12).await.unwrap();
     wait_for(&daemon, |tvs| {
         tvs.iter().any(|info| info.uuid == tv && info.volume == 12)
     })
@@ -129,7 +137,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
     let profile = daemon.create_system_profile("Cinema").await.unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if daemon.get_system_profile(profile).await.is_ok() {
+        if daemon.get_system_profile(profile).await.is_some() {
             break;
         }
         assert!(
@@ -151,12 +159,12 @@ async fn sdk_mirrors_rpcs_and_watches() {
     assert!(session.is_available().await);
     let user_profile = session.create_user_profile("Quiet").await.unwrap();
     session
-        .set_tv_user_profile(&tv, &user_profile.to_string())
+        .set_tv_user_profile(tv, Some(user_profile))
         .await
         .unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if session.get_tv_user_profile(&tv).await.unwrap() == user_profile.to_string() {
+        if session.get_tv_user_profile(tv).await == Some(user_profile) {
             break;
         }
         assert!(
@@ -165,16 +173,15 @@ async fn sdk_mirrors_rpcs_and_watches() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let bodies = session.list_user_profile_bodies().await.unwrap();
+    let bodies = session.list_user_profile_bodies().await;
     assert_eq!(
         bodies.get(&user_profile).map(|b| b.name.as_str()),
         Some("Quiet")
     );
 
     // Removal drains the mirror row.
-    daemon.remove_tv(&tv).await.unwrap();
+    daemon.remove_tv(tv).await.unwrap();
     wait_for(&daemon, |tvs| !tvs.iter().any(|info| info.uuid == tv)).await;
-    let _ = Uuid::parse_str(&tv).unwrap();
 }
 
 /// The remote-session surface end to end: the manual verb rpc arms a
@@ -228,13 +235,13 @@ async fn sdk_remote_session_arms_and_mirrors() {
         .pair_tv(
             "Den",
             "mock",
-            &json!({ "address": "mock://remote", "pairing": "accept" }).to_string(),
+            config(json!({ "address": "mock://remote", "pairing": "accept" })),
             true,
         )
         .await
         .unwrap()
-        .tv_id;
-    let tv_id = Uuid::parse_str(&tv).unwrap();
+        .id;
+    let tv_id = tv;
     wait_for(&daemon, |tvs| {
         tvs.iter().any(|info| info.uuid == tv && info.connected)
     })
@@ -363,7 +370,7 @@ async fn client_before_daemon_connects_when_it_appears() {
     // default profile is visible and editable-shaped.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        if let Ok(body) = daemon
+        if let Some(body) = daemon
             .get_system_profile(tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
             .await
         {
@@ -411,13 +418,14 @@ async fn first_rpc_races_route_propagation_and_still_lands() {
     let daemon = DaemonClient::connect(&system_socket, "t").await.unwrap();
     // No liveliness wait — this is the whole point.
     let vendors = daemon.get_supported_vendors().await.unwrap();
-    assert_eq!(vendors, vec![("mock".to_string(), "Mock".to_string())]);
+    let names: Vec<(&str, &str)> = vendors
+        .iter()
+        .map(|vendor| (vendor.id.as_str(), vendor.name.as_str()))
+        .collect();
+    assert_eq!(names, [("mock", "Mock")]);
 
     // Typed service errors stay terminal and fast — the matching gate
     // must not swallow them into retries.
     let error = daemon.get_pairing_schema("nope").await.unwrap_err();
-    let rpc = error
-        .downcast_ref::<tisvlay::RpcError>()
-        .expect("typed rpc error");
-    assert_eq!(rpc.code, "unknown-vendor");
+    assert_eq!(error.rpc_code(), Some(tisvlay::ErrorCode::UnknownVendor));
 }

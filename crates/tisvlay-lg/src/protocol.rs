@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tisvlay_core::Secret;
 
 /// Outgoing message to the TV.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,8 +77,8 @@ pub enum ResponseType {
     Hello,
 }
 
-/// Registration payload sent during pairing. `Debug` redacts the client key.
-#[derive(Clone, Serialize)]
+/// Registration payload sent during pairing.
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterPayload {
     /// Whether to force a new pairing prompt.
@@ -88,21 +89,7 @@ pub struct RegisterPayload {
     pub manifest: Manifest,
     /// Previously obtained client key (None for new pairing).
     #[serde(rename = "client-key", skip_serializing_if = "Option::is_none")]
-    pub client_key: Option<String>,
-}
-
-impl std::fmt::Debug for RegisterPayload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegisterPayload")
-            .field("force_pairing", &self.force_pairing)
-            .field("pairing_type", &self.pairing_type)
-            .field("manifest", &self.manifest)
-            .field(
-                "client_key",
-                &self.client_key.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
+    pub client_key: Option<Secret>,
 }
 
 /// Application manifest for registration.
@@ -160,7 +147,7 @@ impl RegisterPayload {
     ///
     /// If `client_key` is provided, attempts to reconnect with existing pairing.
     /// If `None`, a new pairing prompt will be shown on the TV.
-    pub fn new(client_key: Option<String>) -> Self {
+    pub fn new(client_key: Option<Secret>) -> Self {
         Self {
             force_pairing: false,
             pairing_type: "PROMPT".to_string(),
@@ -252,20 +239,12 @@ impl Default for Manifest {
     }
 }
 
-/// Registered response payload containing the client key. `Debug` redacts it.
-#[derive(Clone, Deserialize)]
+/// Registered response payload containing the client key.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct RegisteredPayload {
     /// Client key for future connections.
-    pub client_key: String,
-}
-
-impl std::fmt::Debug for RegisteredPayload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegisteredPayload")
-            .field("client_key", &"<redacted>")
-            .finish()
-    }
+    pub client_key: Secret,
 }
 
 /// Power state response.
@@ -401,9 +380,9 @@ mod tests {
     #[test]
     fn debug_redacts_the_client_key() {
         let key = "secret-client-key-1234";
-        let register = RegisterPayload::new(Some(key.to_string()));
+        let register = RegisterPayload::new(Some(key.into()));
         let registered = RegisteredPayload {
-            client_key: key.to_string(),
+            client_key: key.into(),
         };
         for shown in [
             format!("{register:?}"),
@@ -412,7 +391,7 @@ mod tests {
             format!("{registered:#?}"),
         ] {
             assert!(!shown.contains(key), "client key leaked into {shown}");
-            assert!(shown.contains("<redacted>"), "{shown}");
+            assert!(shown.contains("[REDACTED]"), "{shown}");
         }
     }
 }

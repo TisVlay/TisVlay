@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// TV-side data the reference helpers need.
 ///
 /// Built by callers from whatever shape their in-memory TV list takes
-/// (`TvConfig` on the daemon, `TvViewRaw` on the GUI, the cached state
+/// (`TvRecord` on the daemon, `TvViewRaw` on the GUI, the cached state
 /// in the tray). `system_profile` / `user_profile` are `Option<Uuid>`
 /// so callers from data shapes without explicit assignments can pass
 /// `None`; the helpers fall back to the default-UUID semantic.

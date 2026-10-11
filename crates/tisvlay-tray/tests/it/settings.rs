@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use tisvlay::{NotificationSettingsBody, TrayClient};
+use tisvlay::{NotificationSettingsPatch, TrayClient};
 use tisvlay_tray::notify::{Notifier, load_settings, serve_settings};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -64,19 +64,19 @@ async fn settings_round_trip_and_persistence() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let settings = client.notification_settings().await.unwrap();
-    assert_eq!(settings.tv_wake, Some(true), "factory default on");
+    assert!(settings.tv_wake, "factory default on");
 
     // Partial update: only the touched switch changes, and it persists.
     client
-        .update_notification_settings(NotificationSettingsBody {
+        .update_notification_settings(NotificationSettingsPatch {
             tv_wake: Some(false),
             ..Default::default()
         })
         .await
         .unwrap();
     let settings = client.notification_settings().await.unwrap();
-    assert_eq!(settings.tv_wake, Some(false));
-    assert_eq!(settings.tv_pairing, Some(true));
+    assert!(!settings.tv_wake);
+    assert!(settings.tv_pairing);
     let on_disk = load_settings(&config_path).unwrap();
     assert!(!on_disk.tv_wake && on_disk.tv_pairing);
 

@@ -924,7 +924,7 @@ mod tests {
         // it: the real reconnect path dials the configured IP on the
         // standard SSAP ports, which the fake server isn't on.
         let mut config = LgVendorConfig::new(server.addr().ip().to_string());
-        config.client_key = Some("test-client-key".to_string());
+        config.client_key = Some("test-client-key".into());
         let mut conn = LgConnection::new(client, config, None);
         conn.reconnect_url = Some(server.ws_url());
 

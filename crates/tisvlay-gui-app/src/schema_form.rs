@@ -228,21 +228,12 @@ pub(crate) fn autofill_schema(
 /// schema field looks itself up in the supplied object by `name`,
 /// falling back to the field's `default` when absent. Used by the
 /// TVs pane's edit-pencil flow to prefill the form with the TV's
-/// current values before the user makes any changes.
-///
-/// The `get-config` reply nests the vendor table under `config`
-/// (top level carries the TV-level fields: `name`, `managed`, …);
-/// the schema fields live in that nested table, so it wins when
-/// present. A flat object still works — callers can pass the vendor
-/// table directly.
+/// current values before the user makes any changes. `config` is the
+/// `get-config` reply's vendor table, where the schema fields live.
 pub(crate) fn prefill_schema_from_config(
     schema: &[PairingField],
-    config: &serde_json::Value,
+    config: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<AutofilledRow> {
-    let table = config
-        .get("config")
-        .and_then(|nested| nested.as_object())
-        .or_else(|| config.as_object());
     schema
         .iter()
         .map(|f| {
@@ -252,8 +243,8 @@ pub(crate) fn prefill_schema_from_config(
             // cleanly through the same widget that handles user
             // input. Missing or null falls through to the field's
             // declared default.
-            let value = table
-                .and_then(|t| t.get(&f.name))
+            let value = config
+                .get(&f.name)
                 .map(|v| match v {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Bool(b) => b.to_string(),
@@ -300,7 +291,7 @@ pub(crate) enum ClearedOptionals {
     Null,
 }
 
-/// Build a config-payload JSON object from the schema-fields model.
+/// Build a config-payload object from the schema-fields model.
 /// Walks each row and emits `{ <name>: <value>, ... }` matching the
 /// schema's `name` keys; a cleared optional row is encoded per
 /// [`ClearedOptionals`] (an empty `""` is never sent — typed validators
@@ -312,10 +303,10 @@ pub(crate) enum ClearedOptionals {
 /// int) convert to JSON numbers when parseable, falling back to
 /// string. Strings (including ip / mac / password / path) stay
 /// strings.
-pub(crate) fn build_config_json_from_schema(
+pub(crate) fn build_config_from_schema(
     model: &ModelRc<PairingFieldRow>,
     cleared: ClearedOptionals,
-) -> String {
+) -> serde_json::Map<String, serde_json::Value> {
     let mut obj = serde_json::Map::new();
     for i in 0..model.row_count() {
         let Some(row) = model.row_data(i) else {
@@ -341,7 +332,7 @@ pub(crate) fn build_config_json_from_schema(
         };
         obj.insert(row.name.to_string(), json_val);
     }
-    serde_json::Value::Object(obj).to_string()
+    obj
 }
 
 #[cfg(test)]
@@ -508,37 +499,23 @@ mod tests {
 
     // ---------- prefill_schema_from_config ----------
 
-    #[test]
-    fn prefill_schema_from_config_projects_string_values() {
-        let f = field("ip", PairingFieldType::Ip, true);
-        let cfg = serde_json::json!({ "ip": "10.0.0.5" });
-        let rows = prefill_schema_from_config(&[f], &cfg);
-        assert_eq!(rows[0].value, "10.0.0.5");
+    fn object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_value(value).unwrap()
     }
 
     #[test]
-    fn prefill_schema_from_config_reads_the_nested_vendor_table() {
-        // The full `get-config` reply shape: TV-level fields at the
-        // top, vendor fields nested under `config`. The prefill must
-        // read the nested table — otherwise every field misses and
-        // the edit pane opens blank over a fully-configured TV.
-        let ip = field("ip", PairingFieldType::Ip, true);
-        let mac = field("mac", PairingFieldType::Mac, false);
-        let reply = serde_json::json!({
-            "name": "Living Room",
-            "managed": true,
-            "config": { "ip": "192.168.1.50", "mac": "84:90:0a:63:a9:94" }
-        });
-        let rows = prefill_schema_from_config(&[ip, mac], &reply);
-        assert_eq!(rows[0].value, "192.168.1.50");
-        assert_eq!(rows[1].value, "84:90:0a:63:a9:94");
+    fn prefill_schema_from_config_projects_string_values() {
+        let f = field("ip", PairingFieldType::Ip, true);
+        let cfg = object(serde_json::json!({ "ip": "10.0.0.5" }));
+        let rows = prefill_schema_from_config(&[f], &cfg);
+        assert_eq!(rows[0].value, "10.0.0.5");
     }
 
     #[test]
     fn prefill_schema_from_config_stringifies_numbers_and_bools() {
         let port = field("port", PairingFieldType::Port, false);
         let auto = field("automated", PairingFieldType::Bool, false);
-        let cfg = serde_json::json!({ "port": 3001, "automated": true });
+        let cfg = object(serde_json::json!({ "port": 3001, "automated": true }));
         let rows = prefill_schema_from_config(&[port, auto], &cfg);
         assert_eq!(rows[0].value, "3001");
         assert_eq!(rows[1].value, "true");
@@ -548,15 +525,15 @@ mod tests {
     fn prefill_schema_from_config_falls_back_to_default_for_missing_or_empty() {
         let mut f = field("ip", PairingFieldType::Ip, false);
         f.default = "0.0.0.0".into();
-        let missing = serde_json::json!({});
+        let missing = object(serde_json::json!({}));
         let rows = prefill_schema_from_config(&[f.clone()], &missing);
         assert_eq!(rows[0].value, "0.0.0.0");
 
-        let empty = serde_json::json!({ "ip": "" });
+        let empty = object(serde_json::json!({ "ip": "" }));
         let rows = prefill_schema_from_config(&[f.clone()], &empty);
         assert_eq!(rows[0].value, "0.0.0.0");
 
-        let null = serde_json::json!({ "ip": null });
+        let null = object(serde_json::json!({ "ip": null }));
         let rows = prefill_schema_from_config(&[f], &null);
         assert_eq!(rows[0].value, "0.0.0.0");
     }
@@ -590,16 +567,15 @@ mod tests {
         assert!(!compute_schema_valid(&m));
     }
 
-    // ---------- build_config_json_from_schema ----------
+    // ---------- build_config_from_schema ----------
 
     #[test]
-    fn build_config_json_omits_cleared_optionals_for_pair() {
+    fn build_config_omits_cleared_optionals_for_pair() {
         let m = model(vec![
             row("ip", "ip", true, "10.0.0.1", "valid"),
             row("name", "string", false, "", "pristine"),
         ]);
-        let json = build_config_json_from_schema(&m, ClearedOptionals::Omit);
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Omit);
         assert_eq!(parsed["ip"], "10.0.0.1");
         assert!(
             parsed.get("name").is_none(),
@@ -608,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_json_nulls_cleared_optionals_for_edit() {
+    fn build_config_nulls_cleared_optionals_for_edit() {
         // The edit patch must carry an explicit null for a cleared
         // optional — the merge removes the stored key on null, so the
         // serde default reapplies. Omitting would keep the old value
@@ -617,8 +593,7 @@ mod tests {
             row("ip", "ip", true, "10.0.0.1", "valid"),
             row("mac", "mac", false, "", "pristine"),
         ]);
-        let json = build_config_json_from_schema(&m, ClearedOptionals::Null);
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Null);
         assert_eq!(parsed["ip"], "10.0.0.1");
         assert_eq!(
             parsed.get("mac"),
@@ -628,16 +603,14 @@ mod tests {
     }
 
     #[test]
-    fn build_config_json_emits_typed_scalars_for_bool_and_numeric() {
+    fn build_config_emits_typed_scalars_for_bool_and_numeric() {
         let m = model(vec![
             row("automated", "bool", false, "true", "valid"),
             row("port", "port", false, "3001", "valid"),
             row("retries", "int", false, "5", "valid"),
             row("ip", "ip", true, "10.0.0.1", "valid"),
         ]);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&build_config_json_from_schema(&m, ClearedOptionals::Omit))
-                .unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Omit);
         assert_eq!(parsed["automated"], serde_json::Value::Bool(true));
         assert_eq!(parsed["port"].as_i64(), Some(3001));
         assert_eq!(parsed["retries"].as_i64(), Some(5));
@@ -645,11 +618,9 @@ mod tests {
     }
 
     #[test]
-    fn build_config_json_falls_back_to_string_for_unparsable_numerics() {
+    fn build_config_falls_back_to_string_for_unparsable_numerics() {
         let m = model(vec![row("port", "port", false, "not-a-number", "invalid")]);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&build_config_json_from_schema(&m, ClearedOptionals::Omit))
-                .unwrap();
+        let parsed = build_config_from_schema(&m, ClearedOptionals::Omit);
         assert_eq!(
             parsed["port"],
             serde_json::Value::String("not-a-number".into())

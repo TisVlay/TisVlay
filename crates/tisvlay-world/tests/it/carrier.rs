@@ -5,7 +5,7 @@ use crate::support;
 use std::time::Duration;
 
 use support::*;
-use tisvlay_world::{Command, InEvent, SystemEvent};
+use tisvlay_world::{Command, InEvent, Reply, SystemEvent};
 use uuid::Uuid;
 
 /// Carrier down parks network-dependent connections; carrier up redials.
@@ -224,7 +224,7 @@ async fn wake_dial_defers_while_routeless_and_resumes_with_a_full_budget() {
     table.insert("address".into(), toml::Value::String("mock://route".into()));
     table.insert("refuse_connect".into(), toml::Value::Boolean(true));
     client.command(Command::AddTv {
-        record: Box::new(tv_record(id, "Route", toml::Value::Table(table))),
+        record: Box::new(tv_record(id, "Route", table.into())),
         reply: None,
     });
     // The first dial precedes any route resolution (monitoring is
@@ -293,8 +293,8 @@ async fn routeless_failure_returns_the_attempt_but_keeps_the_backoff() {
     table.insert("address".into(), toml::Value::String("mock://flap".into()));
     table.insert("refuse_connect".into(), toml::Value::Boolean(true));
     client.command(Command::AddTv {
-        record: Box::new(tv_record(id, "Flap", toml::Value::Table(table))),
-        reply: Some(1),
+        record: Box::new(tv_record(id, "Flap", table.into())),
+        reply: Some(Reply::new(1)),
     });
     collect_until(&mut effects, |e| reply_to(e, 1)).await;
 

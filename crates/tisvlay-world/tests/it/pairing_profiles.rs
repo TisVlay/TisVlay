@@ -6,14 +6,14 @@ use crate::support;
 use std::time::Duration;
 
 use support::*;
-use tisvlay_world::{Command, InEvent, SystemEvent, WireEffect};
+use tisvlay_core::VendorConfig;
+use tisvlay_world::{Command, InEvent, Reply, SystemEvent, WireEffect};
 use uuid::Uuid;
 
-fn pairing_config(address: &str, mode: &str) -> toml::Value {
-    let mut table = toml::value::Table::new();
-    table.insert("address".into(), toml::Value::String(address.into()));
-    table.insert("pairing".into(), toml::Value::String(mode.into()));
-    toml::Value::Table(table)
+fn pairing_config(address: &str, mode: &str) -> VendorConfig {
+    let mut config = mock_config(address);
+    config.insert("pairing", mode);
+    config
 }
 
 fn progress_on<'a>(
@@ -43,7 +43,7 @@ async fn pair_accept_creates_tv_with_redacted_progress() {
         vendor: "mock".into(),
         config: pairing_config("mock://pair1", "accept"),
         managed: true,
-        reply: Some(10),
+        reply: Some(Reply::new(10)),
     });
 
     // The paired TV comes up managed: pairing completes, the TV entity
@@ -91,10 +91,7 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
     let progress_key = format!("tisvlay/test/pairing/{id}/progress");
 
     let mut config = pairing_config("mock://pair-dead", "accept");
-    config
-        .as_table_mut()
-        .unwrap()
-        .insert("refuse_connect".into(), toml::Value::Boolean(true));
+    config.insert("refuse_connect", true);
     client.command(Command::Pair {
         id,
         attempt: Uuid::new_v4(),
@@ -102,7 +99,7 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
         vendor: "mock".into(),
         config,
         managed: true,
-        reply: Some(20),
+        reply: Some(Reply::new(20)),
     });
 
     let seen = collect_until(&mut effects, |e| {
@@ -132,12 +129,12 @@ async fn pair_fails_and_rolls_back_when_first_dial_fails() {
     client.command(Command::SetVolume {
         id,
         level: 1,
-        reply: Some(21),
+        reply: Some(Reply::new(21)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 21)).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 21)),
-        Some("tv-not-found")
+        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
     );
 }
 
@@ -151,16 +148,13 @@ async fn transport_facts_reach_the_link_without_a_dial() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = Uuid::new_v4();
     let mut config = pairing_config("mock://idle", "manual");
-    config
-        .as_table_mut()
-        .unwrap()
-        .insert("refuse_connect".into(), toml::Value::Boolean(true));
+    config.insert("refuse_connect", true);
     let mut record = tv_record(id, "Idle", config);
     record.managed = false;
 
     client.command(Command::AddTv {
         record: Box::new(record),
-        reply: Some(30),
+        reply: Some(Reply::new(30)),
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/link")
@@ -182,7 +176,7 @@ async fn pair_reject_publishes_typed_failure_and_no_tv() {
         vendor: "mock".into(),
         config: pairing_config("mock://pair2", "reject"),
         managed: true,
-        reply: Some(11),
+        reply: Some(Reply::new(11)),
     });
 
     let seen = collect_until(&mut effects, |e| {
@@ -199,12 +193,12 @@ async fn pair_reject_publishes_typed_failure_and_no_tv() {
     client.command(Command::SetVolume {
         id,
         level: 1,
-        reply: Some(12),
+        reply: Some(Reply::new(12)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 12)).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 12)),
-        Some("tv-not-found")
+        Some(tisvlay_wire::error::ErrorCode::TvNotFound)
     );
 }
 
@@ -223,7 +217,7 @@ async fn cancel_pair_terminates_manual_session() {
         vendor: "mock".into(),
         config: pairing_config("mock://pair3", "manual"),
         managed: true,
-        reply: Some(13),
+        reply: Some(Reply::new(13)),
     });
     collect_until(&mut effects, |e| {
         progress_on(e, &progress_key, "awaiting_tv").is_some()
@@ -232,7 +226,7 @@ async fn cancel_pair_terminates_manual_session() {
 
     client.command(Command::CancelPair {
         id,
-        reply: Some(14),
+        reply: Some(Reply::new(14)),
     });
     let seen = collect_until(&mut effects, |e| {
         progress_on(e, &progress_key, "failed").is_some()
@@ -269,7 +263,7 @@ async fn power_on_wakes_disconnected_tv() {
     client.command(Command::PowerOn {
         id,
         restore_input: false,
-        reply: Some(20),
+        reply: Some(Reply::new(20)),
     });
     let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
     assert!(
@@ -334,9 +328,8 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
     let base = std::time::Instant::now();
     let id = Uuid::new_v4();
     let mut config = pairing_config("mock://wakeless", "manual");
-    let table = config.as_table_mut().unwrap();
-    table.insert("refuse_connect".into(), toml::Value::Boolean(true));
-    table.insert("wake".into(), toml::Value::Boolean(false));
+    config.insert("refuse_connect", true);
+    config.insert("wake", false);
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Wakeless", config)),
         reply: None,
@@ -357,8 +350,8 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
 
     client.command(Command::UpdateConfig {
         id,
-        patch: serde_json::json!({ "wake": true }),
-        reply: Some(31),
+        patch: serde_json::from_value(serde_json::json!({ "wake": true })).unwrap(),
+        reply: Some(Reply::new(31)),
     });
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/link").is_some_and(|p| p["supports_wake"] == true)
@@ -389,13 +382,13 @@ async fn re_pair_supersedes_an_in_flight_dial() {
             "Den",
             pairing_config("mock://superseded", "accept"),
         )),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(&mut effects, |e| reply_to(e, 1)).await;
     client.command(Command::RePair {
         id,
         attempt,
-        reply: Some(2),
+        reply: Some(Reply::new(2)),
     });
 
     let seen = collect_until(&mut effects, |e| {
@@ -420,11 +413,8 @@ async fn re_pair_supersedes_an_in_flight_dial() {
     .await;
 }
 
-fn with(mut config: toml::Value, key: &str, value: &str) -> toml::Value {
-    config
-        .as_table_mut()
-        .expect("config is a table")
-        .insert(key.into(), toml::Value::String(value.into()));
+fn with(mut config: VendorConfig, key: &str, value: &str) -> VendorConfig {
+    config.insert(key, value);
     config
 }
 
@@ -457,7 +447,7 @@ async fn pair_fills_an_unset_mac_from_the_device() {
             "84-90-0a-63-a9-94",
         ),
         managed: true,
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     let mut report = None;
     let mut filled = false;
@@ -502,7 +492,7 @@ async fn pair_keeps_a_configured_mac() {
         vendor: "mock".into(),
         config,
         managed: true,
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     let seen = collect_until(&mut effects, |e| {
         progress_on(e, &progress_key, "complete").is_some()
@@ -540,7 +530,7 @@ async fn plain_dial_never_reads_the_link_mac() {
             "Den",
             with(mock_config("mock://plain"), "link_mac", "84:90:0A:63:A9:94"),
         )),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
     assert_eq!(handle.link_mac_call_count("mock://plain"), 0);

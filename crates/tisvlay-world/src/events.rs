@@ -3,14 +3,139 @@
 
 use bevy_ecs::message::Message;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::marker::PhantomData;
 use std::time::Instant;
-use tisvlay_core::TvState;
+use tisvlay_core::{TvState, VendorConfig};
+use tisvlay_wire::endpoint::{Rpc, manager, profile, tv};
+use tisvlay_wire::rpc::Ack;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Correlation id for a command reply — the bridge maps it back onto the
 /// zenoh query that asked.
 pub type ReplyTo = u64;
+
+/// A reply owed to one rpc caller, typed by the rpc it answers: replying
+/// takes that rpc's response type, so a mismatched reply doesn't compile.
+///
+/// ```
+/// # use tisvlay_world::Reply;
+/// # use tisvlay_wire::{endpoint::manager, rpc};
+/// let _ = Reply::<manager::AddTv>::new(1).ok(&rpc::Created { id: uuid::Uuid::nil() });
+/// ```
+///
+/// ```compile_fail,E0308
+/// # use tisvlay_world::Reply;
+/// # use tisvlay_wire::{endpoint::manager, rpc};
+/// let _ = Reply::<manager::AddTv>::new(1).ok(&rpc::Ack {});
+/// ```
+///
+/// Only an rpc answered by [`Ack`] erases into an [`AckReply`]:
+///
+/// ```
+/// # use tisvlay_world::{AckReply, Reply};
+/// # use tisvlay_wire::endpoint::tv;
+/// let _ = AckReply::from(Reply::<tv::SetVolume>::new(1));
+/// ```
+///
+/// ```compile_fail,E0277
+/// # use tisvlay_world::{AckReply, Reply};
+/// # use tisvlay_wire::endpoint::manager;
+/// let _ = AckReply::from(Reply::<manager::AddTv>::new(1));
+/// ```
+pub struct Reply<R> {
+    to: ReplyTo,
+    rpc: PhantomData<fn() -> R>,
+}
+
+impl<R> Clone for Reply<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R> Copy for Reply<R> {}
+
+impl<R> fmt::Debug for Reply<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Reply").field(&self.to).finish()
+    }
+}
+
+impl<R> PartialEq for Reply<R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.to == other.to
+    }
+}
+
+impl<R: Rpc> Reply<R> {
+    /// The reply to the query the bridge filed under `to`.
+    pub fn new(to: ReplyTo) -> Self {
+        Self {
+            to,
+            rpc: PhantomData,
+        }
+    }
+
+    /// The effect answering the caller with `response`.
+    pub fn ok(self, response: &R::Response) -> WireEffect {
+        WireEffect::Reply {
+            to: self.to,
+            result: Ok(serde_json::to_value(response)
+                .expect("rpc responses are serde structs, string-keyed maps and lists of them, which always encode as JSON")),
+        }
+    }
+}
+
+/// A reply known to answer with [`Ack`]: what the paths several
+/// rpcs share (power and screen dispatch) and the backend's deferred acks
+/// carry, without naming the rpc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AckReply(ReplyTo);
+
+impl<R: Rpc<Response = Ack>> From<Reply<R>> for AckReply {
+    fn from(reply: Reply<R>) -> Self {
+        Self(reply.to)
+    }
+}
+
+impl AckReply {
+    /// The effect acknowledging the caller.
+    pub fn ok(self) -> WireEffect {
+        WireEffect::Reply {
+            to: self.0,
+            result: Ok(serde_json::json!({})),
+        }
+    }
+}
+
+/// Any reply, erased: refusals carry no response type, so every reply can
+/// answer with an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnyReply(ReplyTo);
+
+impl<R> From<Reply<R>> for AnyReply {
+    fn from(reply: Reply<R>) -> Self {
+        Self(reply.to)
+    }
+}
+
+impl From<AckReply> for AnyReply {
+    fn from(reply: AckReply) -> Self {
+        Self(reply.0)
+    }
+}
+
+impl AnyReply {
+    /// The effect refusing the caller's request.
+    pub fn err(self, error: WireError) -> WireEffect {
+        WireEffect::Reply {
+            to: self.0,
+            result: Err(error),
+        }
+    }
+}
 
 /// Everything that can enter the world through the reactor inbox.
 #[derive(Message, Debug)]
@@ -113,7 +238,7 @@ pub enum PairingUpdate {
     State(Box<tisvlay_core::PairingState>),
     /// The reactor built the final vendor config from credentials — spawn
     /// the TV (or update it, for a re-pair).
-    ConfigReady(toml::Value),
+    ConfigReady(VendorConfig),
     /// Config build failed after successful pairing.
     ConfigFailed(String),
 }
@@ -129,77 +254,77 @@ pub enum Command {
         attempt: Uuid,
         name: String,
         vendor: String,
-        config: toml::Value,
+        config: VendorConfig,
         managed: bool,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<manager::Pair>>,
     },
     /// Re-run the pairing handshake for an existing TV (refreshes
     /// credentials); progress streams on the TV's pairing key.
     RePair {
         id: Uuid,
         attempt: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::RePair>>,
     },
     CancelPair {
         id: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<manager::CancelPair>>,
     },
     /// Enroll a TV directly from a full store row — the boot-replay and
     /// rpc enrollment path alike.
     AddTv {
         record: Box<TvRecord>,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<manager::AddTv>>,
     },
     RemoveTv {
         id: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::Remove>>,
     },
     /// Request a (re)connect attempt for a TV that is down. Connection
     /// dials are event-driven — a TV that disconnects stays down until
     /// asked (a powered-off TV must not be fought back on).
     Reconnect {
         id: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::Reconnect>>,
     },
     SetName {
         id: Uuid,
         name: String,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetName>>,
     },
     SetManaged {
         id: Uuid,
         managed: bool,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetManaged>>,
     },
     SetSystemProfile {
         id: Uuid,
         profile: Option<Uuid>,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetSystemProfile>>,
     },
     SetPrimaryInput {
         id: Uuid,
         input: Option<String>,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetPrimaryInput>>,
     },
     SetVolume {
         id: Uuid,
         level: u8,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetVolume>>,
     },
     SetMuted {
         id: Uuid,
         muted: bool,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetMuted>>,
     },
     SwitchInput {
         id: Uuid,
         input: String,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SwitchInput>>,
     },
     SetBacklight {
         id: Uuid,
         level: u8,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetBacklight>>,
     },
     SetScreen {
         id: Uuid,
@@ -208,64 +333,64 @@ pub enum Command {
         /// `primary_input` once the action completes. Manual clients
         /// never set it.
         restore_input: bool,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::SetScreen>>,
     },
     PowerOn {
         id: Uuid,
         /// Resolved intent from a profile dispatch, as on `SetScreen`.
         restore_input: bool,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::PowerOn>>,
     },
     PowerOff {
         id: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::PowerOff>>,
     },
     /// Read the TV's config: top-level fields + the vendor table. The
     /// reactor redacts `Secret` fields against the vendor schema before
     /// the reply leaves the process.
     GetConfig {
         id: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<tv::GetConfig>>,
     },
     /// Patch config: known top-level keys apply to the TV's settings,
     /// everything else merges into the vendor table (which forces a
     /// reconnect, since transport parameters may have changed).
     UpdateConfig {
         id: Uuid,
-        patch: serde_json::Value,
-        reply: Option<ReplyTo>,
+        patch: tisvlay_wire::rpc::UpdateConfig,
+        reply: Option<Reply<tv::UpdateConfig>>,
     },
     /// Create (or boot-replay) a system profile.
     AddProfile {
         record: Box<ProfileRecord>,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<profile::Create>>,
     },
     UpdateProfile {
         id: Uuid,
         body: Box<tisvlay_core::SystemProfileConfig>,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<profile::Update>>,
     },
     DuplicateProfile {
         id: Uuid,
         new_id: Uuid,
         name: String,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<profile::Duplicate>>,
     },
     /// Refused while any TV references the profile.
     DeleteProfile {
         id: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<profile::Delete>>,
     },
     /// The stock event → action mapping, as system-profile field values —
     /// what an unset profile field inherits.
     ProfileDefaults {
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<profile::Defaults>>,
     },
     /// One TV's resolved mapping: its assigned profile's fields where set,
     /// the stock values everywhere else.
     EffectiveProfile {
         id: Uuid,
-        reply: Option<ReplyTo>,
+        reply: Option<Reply<profile::Effective>>,
     },
 }
 
@@ -364,7 +489,7 @@ pub enum BackendEvent {
     PowerPhase(&'static str),
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
-        reply: ReplyTo,
+        reply: AckReply,
         result: Result<(), String>,
     },
 }
@@ -376,11 +501,11 @@ pub enum BackendCmd {
     /// caller's rpc is answered only when the TV acknowledged, so a
     /// well-behaved client paces its writes at device speed instead of
     /// flooding this queue with stale absolute values.
-    SetVolume(u8, Option<ReplyTo>),
-    SetMuted(bool, Option<ReplyTo>),
-    SwitchInput(String, Option<ReplyTo>),
-    SetBacklight(u8, Option<ReplyTo>),
-    PowerOff(Option<ReplyTo>),
+    SetVolume(u8, Option<AckReply>),
+    SetMuted(bool, Option<AckReply>),
+    SwitchInput(String, Option<AckReply>),
+    SetBacklight(u8, Option<AckReply>),
+    PowerOff(Option<AckReply>),
     /// Wake and screen dispatch reply through their own machinery (the
     /// power-progress key and the verify-retry tier).
     PowerOn,
@@ -402,7 +527,7 @@ pub struct TvRecord {
     pub primary_input: Option<String>,
     /// Vendor config verbatim, credentials included — disk only, never
     /// the wire.
-    pub config: toml::Value,
+    pub config: VendorConfig,
 }
 
 /// One system profile's persistable row.
@@ -460,3 +585,29 @@ pub enum WireEffect {
 }
 
 pub use tisvlay_wire::error::WireError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pairing update that outlives its session is debug-logged whole; the
+    /// config it carries holds the client key, so only key names may show.
+    #[test]
+    fn pairing_update_debug_shows_only_config_keys() {
+        let mut config = VendorConfig::new();
+        config.insert("ip", "192.0.2.1");
+        config.insert("client_key", "secret-client-key-1234");
+        let event = InEvent::PairingUpdate {
+            id: Uuid::nil(),
+            update: PairingUpdate::ConfigReady(config),
+        };
+        for shown in [format!("{event:?}"), format!("{event:#?}")] {
+            assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+            assert!(!shown.contains("192.0.2.1"), "{shown}");
+            assert!(
+                shown.contains("client_key"),
+                "key names stay visible: {shown}"
+            );
+        }
+    }
+}

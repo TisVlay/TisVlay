@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compat::{
-    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgressDetail,
+    DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgress,
 };
 use gettextrs::gettext;
 use parking_lot::Mutex;
@@ -20,7 +20,7 @@ use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;
 use crate::schema_form::{AutofilledRow, autofill_schema, compute_schema_valid};
-use crate::{AppWindow, PairingFieldRow, PairingWizard, WizardDiscoveredTv, on_ui};
+use crate::{AppWindow, PairingFieldRow, PairingWizard, WizardDiscoveredTv, error_text, on_ui};
 
 /// One row of the pairing-wizard's discovery list, owned Rust-side.
 ///
@@ -266,17 +266,17 @@ pub(crate) async fn run_wizard_discovery(
     let signal_stream = match daemon.discovery_found_stream().await {
         Ok(s) => s,
         Err(e) => {
-            publish_discovery_error(&app_weak, e);
+            publish_discovery_error(&app_weak, &e);
             return;
         }
     };
 
-    // `timeout_ms = 0` ⇒ until-stop-or-hard-cap semantics. The hard
-    // cap is the daemon's safety net for a crashed GUI.
-    let session_id = match daemon.start_discovery(0).await {
+    // The session runs until stopped or the daemon's hard cap, its
+    // safety net for a crashed GUI.
+    let session_id = match daemon.start_discovery().await {
         Ok(sid) => sid,
         Err(e) => {
-            publish_discovery_error(&app_weak, e);
+            publish_discovery_error(&app_weak, &e);
             return;
         }
     };
@@ -288,7 +288,7 @@ pub(crate) async fn run_wizard_discovery(
             biased;
             _ = &mut cancel_rx => break,
             maybe_item = signal_stream.next() => {
-                let Some((id, name, address, hw_id, vendor, vendor_data)) = maybe_item else {
+                let Some(found) = maybe_item else {
                     // Stream ended — daemon shutdown or subscriber dropped.
                     break;
                 };
@@ -296,12 +296,15 @@ pub(crate) async fn run_wizard_discovery(
                     break;
                 }
                 let entry = WizardEntry {
-                    id,
-                    name,
-                    vendor,
-                    address,
-                    hw_model: hw_id.model.unwrap_or_default(),
-                    vendor_data,
+                    id: found.id,
+                    name: found.name,
+                    vendor: found.vendor,
+                    address: found.address,
+                    hw_model: found
+                        .hardware_id
+                        .and_then(|hardware| hardware.model)
+                        .unwrap_or_default(),
+                    vendor_data: found.vendor_data,
                 };
                 // Daemon dedups within a single session; across
                 // overlapping sessions (rare — wizard typically only
@@ -326,7 +329,7 @@ pub(crate) async fn run_wizard_discovery(
     }
 
     // Tell the daemon to stop scanning. Best-effort — log on error.
-    if let Err(e) = daemon.stop_discovery(&session_id).await {
+    if let Err(e) = daemon.stop_discovery(session_id).await {
         warn!(session_id = %session_id, error = %e, "stop_discovery failed");
     }
 
@@ -342,8 +345,8 @@ pub(crate) async fn run_wizard_discovery(
 }
 
 /// Surface a discovery setup error in the wizard's error banner.
-fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: impl std::fmt::Display) {
-    let msg = format!("{e}");
+fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: &tisvlay::Error) {
+    let msg = error_text(e);
     on_ui(app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();
         wizard.set_discovery_streaming(false);
@@ -391,7 +394,7 @@ pub(crate) async fn fetch_and_publish_schema(
         }
         Err(e) => {
             warn!(vendor = %vendor, error = %e, "GetPairingSchema failed");
-            let msg = format!("{e}");
+            let msg = error_text(&e);
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
                 wizard.set_discovery_error(SharedString::from(msg));
@@ -436,7 +439,7 @@ pub(crate) async fn run_wizard_pair(
     wizard_gen: WizardGen,
     name: String,
     vendor: String,
-    config_json: String,
+    config: serde_json::Map<String, serde_json::Value>,
     managed: bool,
 ) {
     // Capture the generation at task start. Every callback below
@@ -457,7 +460,7 @@ pub(crate) async fn run_wizard_pair(
                 captured_gen,
                 name,
                 vendor,
-                config_json,
+                config,
                 managed,
             )
             .await;
@@ -469,8 +472,8 @@ pub(crate) async fn run_wizard_pair(
     // tv_id immediately. Errors here are unknown-vendor /
     // ConfigInvalidVendorConfig / etc. — route via the field-mapper
     // so per-field problems bounce back to step 2.
-    let PairStarted { tv_id, attempt } =
-        match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
+    let PairStarted { id: tv_id, attempt } =
+        match daemon.pair_tv(&name, &vendor, config, managed).await {
             Ok(started) => started,
             Err(e) => {
                 publish_pair_outcome(
@@ -488,7 +491,7 @@ pub(crate) async fn run_wizard_pair(
     // `cancel-pair` rpc. The same pair_tv_id is consumed
     // by the cancel handler in `lib.rs::on_cancel`.
     {
-        let tv_id_for_ui = tv_id.clone();
+        let tv_id_for_ui = tv_id.to_string();
         let app_weak = app_weak.clone();
         let wizard_gen = wizard_gen.clone();
         on_ui(&app_weak, move |app| {
@@ -503,7 +506,7 @@ pub(crate) async fn run_wizard_pair(
     // Drain to terminal, dispatching non-terminal phases into the
     // wizard's phase/message fields with the gen-guarded callback.
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, tv_id, attempt, on_progress).await;
 
     let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
@@ -530,16 +533,16 @@ async fn run_pair_no_progress(
     captured_gen: u64,
     name: String,
     vendor: String,
-    config_json: String,
+    config: serde_json::Map<String, serde_json::Value>,
     managed: bool,
 ) {
-    let result = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
+    let result = match daemon.pair_tv(&name, &vendor, config, managed).await {
         Err(e) => Err(PairError::Rpc(e)),
         Ok(_) => {
             let msg = gettext(
                 "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
             );
-            Err(PairError::Rpc(anyhow::anyhow!("{msg}")))
+            Err(PairError::Local(msg))
         }
     };
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
@@ -563,7 +566,7 @@ pub(crate) async fn run_wizard_re_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
-    tv_id: String,
+    tv_id: uuid::Uuid,
 ) {
     let captured_gen = wizard_gen.load(Ordering::SeqCst);
 
@@ -576,13 +579,13 @@ pub(crate) async fn run_wizard_re_pair(
             // async-spawn contract. Without a progress stream we
             // can't know the actual outcome, so we surface an
             // explicit failure instead of an optimistic `complete`.
-            let result = match daemon.re_pair(&tv_id).await {
+            let result = match daemon.re_pair(tv_id).await {
                 Err(e) => Err(PairError::Rpc(e)),
                 Ok(_) => {
                     let msg = gettext(
                         "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
                     );
-                    Err(PairError::Rpc(anyhow::anyhow!("{msg}")))
+                    Err(PairError::Local(msg))
                 }
             };
             publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
@@ -592,7 +595,7 @@ pub(crate) async fn run_wizard_re_pair(
 
     // Re-pair's sync RPC errors are TvNotFound / AlreadyPairing —
     // route them through the same outcome publisher.
-    let attempt = match daemon.re_pair(&tv_id).await {
+    let attempt = match daemon.re_pair(tv_id).await {
         Ok(attempt) => attempt,
         Err(e) => {
             publish_pair_outcome(
@@ -607,7 +610,7 @@ pub(crate) async fn run_wizard_re_pair(
     };
 
     let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
-    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, &attempt, on_progress).await;
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, tv_id, attempt, on_progress).await;
 
     let result = terminal_to_result(outcome);
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
@@ -649,24 +652,25 @@ fn make_progress_callback(
     }
 }
 
-/// Typed pair/re-pair outcome for [`publish_pair_outcome`]. Keeps the
-/// handshake failure's typed detail compiler-visible (no anyhow
-/// erase-then-downcast) while still carrying sync-RPC errors as `anyhow`
-/// — those need the `zbus::Error::MethodError` chain intact for
-/// `extract_invalid_vendor_config`'s per-field routing.
+/// Typed pair/re-pair outcome for [`publish_pair_outcome`]: the
+/// handshake failure's detail and the SDK error both stay typed, so an
+/// `invalid-field` refusal routes to its schema row.
 enum PairError {
     /// Terminal `failed` phase from the daemon — localize by its `code`.
-    Handshake(Box<PairingProgressDetail>),
-    /// A sync-RPC / stream error (unknown vendor, ConfigInvalidVendorConfig,
-    /// no-progress fallback) — field-routed, else shown verbatim.
-    Rpc(anyhow::Error),
+    Handshake(Box<PairingProgress>),
+    /// A sync-rpc or stream error (unknown vendor, `invalid-field`, the
+    /// progress stream ending early) — field-routed, else shown with its
+    /// cause chain.
+    Rpc(tisvlay::Error),
+    /// A GUI-side failure, already localized (the no-progress fallback).
+    Local(String),
 }
 
 /// Localize a pairing-failure reason for display. Branches on the
 /// daemon's stable, machine-readable `code`; an unknown or absent code
 /// falls back to the daemon's English `message`. The daemon stays
 /// locale-agnostic — the translated copy lives here in the GUI.
-fn localize_pair_failure(detail: &PairingProgressDetail) -> String {
+fn localize_pair_failure(detail: &PairingProgress) -> String {
     if detail.code.as_deref() == Some(DeviceErrorCode::PermissionDenied.as_str()) {
         // Name the actual node from the payload when present.
         let node = detail.path.as_deref().unwrap_or("/dev/cec*");
@@ -683,13 +687,13 @@ fn localize_pair_failure(detail: &PairingProgressDetail) -> String {
 /// Translate `drain_pair_to_terminal`'s `Result<PairTerminal>` into the
 /// shape [`publish_pair_outcome`] expects: a `Complete` keeps its link-MAC
 /// report for the done step, a terminal `Failed` keeps its typed detail,
-/// and a stream error stays `anyhow`.
+/// and a stream error stays the SDK's.
 fn terminal_to_result(
-    outcome: anyhow::Result<PairTerminal>,
+    outcome: tisvlay::Result<PairTerminal>,
 ) -> Result<Option<LinkMacReport>, PairError> {
     match outcome {
         Ok(PairTerminal::Complete { link_mac, .. }) => Ok(link_mac),
-        Ok(PairTerminal::Failed { detail, .. }) => Err(PairError::Handshake(Box::new(detail))),
+        Ok(PairTerminal::Failed { progress, .. }) => Err(PairError::Handshake(Box::new(progress))),
         Err(e) => Err(PairError::Rpc(e)),
     }
 }
@@ -716,9 +720,8 @@ fn mac_notice(report: Option<&LinkMacReport>) -> (&'static str, String, String) 
     }
 }
 
-/// Push the pair-flow outcome into the wizard. Routes typed
-/// per-field errors (`org.tisvlay.Error.ConfigInvalidVendorConfig`)
-/// back to the originating schema row so the user sees the inline
+/// Push the pair-flow outcome into the wizard. Routes the daemon's
+/// `invalid-field` refusals back to the originating schema row so the user sees the inline
 /// red-text error directly under the offending field, then bounces
 /// back to step 2 for correction. Anything else surfaces as a
 /// generic step-3 failure.
@@ -758,8 +761,8 @@ fn publish_pair_outcome(
                 }
             }
             // Typed handshake failure (carries a reason code) — localize
-            // by the code. A handshake failure never carries the
-            // ConfigInvalidVendorConfig D-Bus shape, so no field routing.
+            // by the code. A handshake failure is never an `invalid-field`
+            // refusal, so no field routing.
             Err(PairError::Handshake(detail)) => {
                 wizard.set_pair_phase("failed".into());
                 wizard.set_pair_message(SharedString::from(localize_pair_failure(&detail)));
@@ -777,7 +780,11 @@ fn publish_pair_outcome(
                     return;
                 }
                 wizard.set_pair_phase("failed".into());
-                wizard.set_pair_message(SharedString::from(format!("{e}")));
+                wizard.set_pair_message(SharedString::from(error_text(&e)));
+            }
+            Err(PairError::Local(message)) => {
+                wizard.set_pair_phase("failed".into());
+                wizard.set_pair_message(SharedString::from(message));
             }
         }
     });

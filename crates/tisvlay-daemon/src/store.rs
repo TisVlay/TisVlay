@@ -86,10 +86,11 @@ mod tests {
                 managed: true,
                 system_profile: Some(Uuid::new_v4()),
                 primary_input: Some("HDMI_1".into()),
-                config: toml::Value::Table(toml::value::Table::from_iter([(
+                config: toml::Table::from_iter([(
                     "address".to_string(),
                     toml::Value::String("mock://den".into()),
-                )])),
+                )])
+                .into(),
             }],
             system_profile: vec![tisvlay_world::ProfileRecord {
                 id: Uuid::new_v4(),
@@ -103,6 +104,45 @@ mod tests {
         let loaded = load_store(&path).unwrap();
         assert_eq!(loaded, snapshot);
         assert!(!path.with_extension("toml.tmp").exists(), "tmp cleaned up");
+    }
+
+    /// The LG client key lives only in the store: it survives a load and
+    /// re-save verbatim, while the loaded record's `Debug` names the key
+    /// without showing it.
+    #[test]
+    fn store_keeps_the_client_key_out_of_debug() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[tv]]
+id = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"
+name = "Living Room"
+vendor = "lg"
+managed = true
+
+[tv.config]
+ip = "192.0.2.10"
+client_key = "lg-client-key-1234"
+scheme = "wss"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_store(&path).unwrap();
+        let shown = format!("{loaded:?}");
+        assert!(shown.contains("client_key"), "{shown}");
+        assert!(!shown.contains("lg-client-key-1234"), "{shown}");
+
+        write_atomic(&path, &loaded);
+        let reloaded = load_store(&path).unwrap();
+        let lg: tisvlay_lg::LgVendorConfig = reloaded.tv[0].config.parse("lg").unwrap();
+        assert_eq!(
+            lg.client_key.as_ref().map(tisvlay_core::Secret::expose),
+            Some("lg-client-key-1234")
+        );
+        assert_eq!(reloaded, loaded);
     }
 
     #[test]

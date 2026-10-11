@@ -17,10 +17,12 @@ use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
 use tisvlay_session::sunshine::{Observation, StaticProbe};
 use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
+use tisvlay_wire::caller::{Caller, RpcError};
+use tisvlay_wire::endpoint::{Unary, manager, user_profile, user_remote};
+use tisvlay_wire::error::ErrorCode;
 use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
-use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::Sample;
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig};
@@ -38,6 +40,10 @@ struct Rig {
     client: Session,
     /// Client on the user socket — user profiles and assignments.
     user: Session,
+    /// Typed rpcs on the system socket.
+    caller: Caller,
+    /// Typed rpcs on the user socket.
+    user_caller: Caller,
     site: String,
     mock: tisvlay_mock::MockHandle,
     /// The core's Sunshine observation — tests script it; `Absent` by default.
@@ -84,6 +90,8 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
         _dir: dir,
         system_socket,
         stack,
+        caller: Caller::new(client.clone(), "t"),
+        user_caller: Caller::new(user.clone(), "t"),
         client,
         user,
         site: "t".into(),
@@ -100,38 +108,25 @@ async fn history_sub(session: &Session, key: String) -> Sub {
         .unwrap()
 }
 
-/// A get that matches zero queryables completes instantly with no
-/// reply — the served side may still be declaring its queryables —
-/// so the no-reply case retries briefly.
-async fn call(client: &Session, key: &str, body: Value) -> Result<Value, Value> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let replies = client
-            .get(key.to_string())
-            .payload(serde_json::to_vec(&body).unwrap())
-            .encoding(Encoding::APPLICATION_JSON)
-            .timeout(Duration::from_secs(5))
-            .await
-            .unwrap();
-        let reply = match tokio::time::timeout(Duration::from_secs(5), replies.recv_async())
-            .await
-            .expect("rpc timed out")
-        {
-            Ok(reply) => reply,
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-            Err(e) => panic!("rpc got no reply: {e}"),
-        };
-        return match reply.result() {
-            Ok(sample) => {
-                Ok(serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-            Err(err) => {
-                Err(serde_json::from_slice(&err.payload().to_bytes()).unwrap_or(Value::Null))
-            }
-        };
+/// One typed rpc round-trip through the matching-gated caller.
+async fn call<R: Unary>(
+    caller: &Caller,
+    target: &R::Target,
+    request: &R::Request,
+) -> Result<R::Response, RpcError> {
+    caller.call::<R>(target, request).await
+}
+
+/// A request from a JSON literal, decoded into the rpc's request type.
+fn body<T: serde::de::DeserializeOwned>(json: Value) -> T {
+    serde_json::from_value(json).expect("the literal fits the request type")
+}
+
+/// The service's refusal behind a failed call.
+fn refusal(error: &RpcError) -> &tisvlay_wire::error::WireError {
+    match error {
+        RpcError::Service(refusal) => refusal,
+        other => panic!("expected a service refusal, got {other:?}"),
     }
 }
 
@@ -170,18 +165,17 @@ fn payload_json(sample: &Sample) -> Value {
 }
 
 async fn add_tv(rig: &Rig, name: &str, address: &str) -> Uuid {
-    let body = serde_json::to_value(rpc::AddTv {
+    let request = rpc::AddTv {
         id: None,
         name: name.into(),
         vendor: "mock".into(),
         managed: true,
-        config: json!({ "address": address }),
-    })
-    .unwrap();
-    let ok = call(&rig.client, &keys::manager_rpc(&rig.site, "add-tv"), body)
+        config: serde_json::from_value(json!({ "address": address })).unwrap(),
+    };
+    let ok = call::<manager::AddTv>(&rig.caller, &(), &request)
         .await
         .expect("add-tv ok");
-    Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap()
+    ok.id
 }
 
 async fn wait_tv_state(sub: &Sub, site: &str, id: Uuid, path: &str, pred: impl Fn(&Value) -> bool) {
@@ -264,6 +258,38 @@ async fn drive_tap(rig: &Rig, tap: &Sub, event: SessionEvent, name: &str) {
 }
 
 /// The gateway invariant: user keys exist on the user socket only.
+/// The user-profile rpcs no other test reaches, through their typed endpoints.
+#[tokio::test(flavor = "multi_thread")]
+async fn user_profile_update_duplicate_and_info() {
+    let rig = rig().await;
+    let info = call::<user_profile::Info>(&rig.user_caller, &(), &())
+        .await
+        .expect("info ok");
+    assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+
+    let request = body(json!({ "body": { "name": "Original" } }));
+    let id = call::<user_profile::Create>(&rig.user_caller, &(), &request)
+        .await
+        .expect("create ok")
+        .id;
+    let request = body(json!({ "id": id, "body": { "name": "Renamed" } }));
+    call::<user_profile::Update>(&rig.user_caller, &(), &request)
+        .await
+        .expect("update ok");
+    let request = rpc::ProfileDuplicate {
+        id,
+        name: "Copy".into(),
+    };
+    let copy = call::<user_profile::Duplicate>(&rig.user_caller, &(), &request)
+        .await
+        .expect("duplicate ok")
+        .id;
+    assert_ne!(copy, id, "a duplicate mints its own id");
+
+    let sub = history_sub(&rig.user, keys::user_profile(&rig.site, &copy)).await;
+    recv_until(&sub, |s| payload_json(s)["name"] == "Copy").await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn gateway_isolates_the_user_subtree() {
     let rig = rig().await;
@@ -280,14 +306,14 @@ async fn gateway_isolates_the_user_subtree() {
     .await
     .unwrap();
 
-    let ok = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "create"),
-        json!({ "body": { "name": "Mine", "on_session_lock": "none" } }),
+    let ok = call::<user_profile::Create>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "body": { "name": "Mine", "on_session_lock": "none" } })),
     )
     .await
     .expect("create ok");
-    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
+    let profile = ok.id;
 
     // The owner sees it (two-endpoint client, hydrated from cache)…
     let mine = history_sub(&rig.user, keys::user_all(&rig.site)).await;
@@ -365,15 +391,11 @@ async fn user_profile_overrides_and_guards() {
     })
     .await;
 
-    let defaults = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "defaults"),
-        Value::Null,
-    )
-    .await
-    .expect("defaults ok");
+    let defaults = call::<user_profile::Defaults>(&rig.user_caller, &(), &())
+        .await
+        .expect("defaults ok");
     assert_eq!(
-        defaults,
+        serde_json::to_value(defaults).unwrap(),
         json!({
             "name": "default",
             // Floor splits by direction: the off-going blanks (lock,
@@ -398,18 +420,18 @@ async fn user_profile_overrides_and_guards() {
         })
     );
 
-    let ok = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "create"),
-        json!({ "body": { "name": "No blank", "on_session_lock": "none" } }),
+    let ok = call::<user_profile::Create>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "body": { "name": "No blank", "on_session_lock": "none" } })),
     )
     .await
     .expect("create ok");
-    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "assign"),
-        json!({ "tv": quiet, "profile": profile }),
+    let profile = ok.id;
+    call::<user_profile::Assign>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "tv": quiet, "profile": profile })),
     )
     .await
     .expect("assign ok");
@@ -421,13 +443,11 @@ async fn user_profile_overrides_and_guards() {
     })
     .await;
 
-    let effective = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "effective"),
-        json!({ "id": quiet }),
-    )
-    .await
-    .expect("effective ok");
+    let effective =
+        call::<user_profile::Effective>(&rig.user_caller, &(), &body(json!({ "id": quiet })))
+            .await
+            .expect("effective ok");
+    let effective = serde_json::to_value(effective).unwrap();
     assert_eq!(effective["on_session_lock"], "none");
     assert_eq!(
         effective["on_session_unlock"],
@@ -442,28 +462,16 @@ async fn user_profile_overrides_and_guards() {
     })
     .await;
 
-    let err = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "delete"),
-        json!({ "id": profile }),
-    )
-    .await
-    .expect_err("delete while assigned must fail");
-    assert_eq!(err["code"], "profile-in-use");
-    call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "assign"),
-        json!({ "tv": quiet }),
-    )
-    .await
-    .expect("unassign ok");
-    call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "delete"),
-        json!({ "id": profile }),
-    )
-    .await
-    .expect("delete ok");
+    let err = call::<user_profile::Delete>(&rig.user_caller, &(), &body(json!({ "id": profile })))
+        .await
+        .expect_err("delete while assigned must fail");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileInUse);
+    call::<user_profile::Assign>(&rig.user_caller, &(), &body(json!({ "tv": quiet })))
+        .await
+        .expect("unassign ok");
+    call::<user_profile::Delete>(&rig.user_caller, &(), &body(json!({ "id": profile })))
+        .await
+        .expect("delete ok");
 }
 
 /// The consumed-D-Bus adapter: logind `LockedHint` transitions drive
@@ -567,21 +575,21 @@ async fn screen_drift_while_idle_reasserts_after_grace() {
     .await;
 
     // A short locked-idle timeout keeps the drift grace test-sized.
-    let ok = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "create"),
-        json!({ "body": {
+    let ok = call::<user_profile::Create>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "body": {
             "name": "Drift",
             "locked_idle_timeout_seconds": 1,
-        } }),
+        } })),
     )
     .await
     .expect("create ok");
-    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "assign"),
-        json!({ "tv": tv, "profile": profile }),
+    let profile = ok.id;
+    call::<user_profile::Assign>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "tv": tv, "profile": profile })),
     )
     .await
     .expect("assign ok");
@@ -693,22 +701,22 @@ async fn user_store_and_idle_watch_round_trip() {
     .await;
 
     assert_eq!(*rig.stack.idle_timeouts.borrow(), (0, 0));
-    let ok = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "create"),
-        json!({ "body": {
+    let ok = call::<user_profile::Create>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "body": {
             "name": "Idle",
             "locked_idle_timeout_seconds": 45,
             "unlocked_idle_timeout_seconds": 120,
-        } }),
+        } })),
     )
     .await
     .expect("create ok");
-    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "assign"),
-        json!({ "tv": tv, "profile": profile }),
+    let profile = ok.id;
+    call::<user_profile::Assign>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "tv": tv, "profile": profile })),
     )
     .await
     .expect("assign ok");
@@ -765,19 +773,19 @@ async fn user_store_and_idle_watch_round_trip() {
 }
 
 /// Create + assign a user profile carrying `body`; returns the profile id.
-async fn create_and_assign(rig: &Rig, tv: Uuid, body: Value) -> Uuid {
-    let ok = call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "create"),
-        json!({ "body": body }),
+async fn create_and_assign(rig: &Rig, tv: Uuid, profile_body: Value) -> Uuid {
+    let ok = call::<user_profile::Create>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "body": profile_body })),
     )
     .await
     .expect("create ok");
-    let profile = Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap();
-    call(
-        &rig.user,
-        &keys::user_profile_rpc(&rig.site, "assign"),
-        json!({ "tv": tv, "profile": profile }),
+    let profile = ok.id;
+    call::<user_profile::Assign>(
+        &rig.user_caller,
+        &(),
+        &body(json!({ "tv": tv, "profile": profile })),
     )
     .await
     .expect("assign ok");
@@ -1271,23 +1279,23 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
     let client = zenoh::open(bootstrap::client_config(&system_socket).unwrap())
         .await
         .unwrap();
+    let caller = Caller::new(client.clone(), "t");
     let mirror = client
         .declare_subscriber(keys::remote_session("t"))
         .await
         .unwrap();
     let tv = {
-        let body = serde_json::to_value(rpc::AddTv {
+        let request = rpc::AddTv {
             id: None,
             name: "Den".into(),
             vendor: "mock".into(),
             managed: true,
-            config: json!({ "address": "mock://outage" }),
-        })
-        .unwrap();
-        let ok = call(&client, &keys::manager_rpc("t", "add-tv"), body)
+            config: serde_json::from_value(json!({ "address": "mock://outage" })).unwrap(),
+        };
+        let ok = call::<manager::AddTv>(&caller, &(), &request)
             .await
             .expect("add-tv ok");
-        Uuid::parse_str(ok["id"].as_str().unwrap()).unwrap()
+        ok.id
     };
 
     // Once the link recovers, the mirror must converge to the armed TV —
@@ -1322,14 +1330,16 @@ async fn remote_verb_rpc_round_trips() {
     })
     .await;
 
-    let caller = Caller::new(rig.user.clone());
+    let caller = Caller::new(rig.user.clone(), rig.site.clone());
     // Arm via the rpc — the reply echoes the fact.
+    let set = |active| rpc::RemoteSet {
+        source: Some("cli".into()),
+        active,
+    };
     let reply = caller
-        .call(
-            &keys::user_remote_rpc(&rig.site, "set"),
-            json!({ "source": "cli", "active": true }),
-        )
+        .call::<user_remote::Set>(&(), &set(true))
         .await
+        .map(|state| serde_json::to_value(state).unwrap())
         .expect("set arms");
     assert!(
         reply["sources"].as_array().is_some_and(|s| s
@@ -1340,8 +1350,9 @@ async fn remote_verb_rpc_round_trips() {
 
     // status reflects the armed source.
     let status = caller
-        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .call::<user_remote::Status>(&(), &())
         .await
+        .map(|state| serde_json::to_value(state).unwrap())
         .expect("status ok");
     assert!(
         status["sources"]
@@ -1352,15 +1363,13 @@ async fn remote_verb_rpc_round_trips() {
 
     // Disarm; status goes empty.
     caller
-        .call(
-            &keys::user_remote_rpc(&rig.site, "set"),
-            json!({ "source": "cli", "active": false }),
-        )
+        .call::<user_remote::Set>(&(), &set(false))
         .await
         .expect("set disarms");
     let status = caller
-        .fetch(&keys::user_remote_rpc(&rig.site, "status"), Value::Null)
+        .call::<user_remote::Status>(&(), &())
         .await
+        .map(|state| serde_json::to_value(state).unwrap())
         .expect("status ok");
     assert_eq!(status["sources"], json!([]), "disarmed status is empty");
 }

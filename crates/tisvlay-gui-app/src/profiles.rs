@@ -5,7 +5,7 @@
 //! editor, and the dispatch helpers that walk an `(uuid, field)` pair
 //! through the inherit chain.
 //!
-//! Field metadata lives here, **not** in `tisvlay-core` â the daemon
+//! Field metadata lives here, **not** in `tisvlay-core` — the daemon
 //! is purely a property-bag carrier, and tying GUI knowledge to the
 //! wire surface would force a daemon update to introduce a new field
 //! kind. The price is that adding a profile field requires touching
@@ -13,7 +13,7 @@
 //! tables in this module; the upside is that the daemon stays unaware
 //! of widget choices.
 //!
-//! The selection's editor model is rebuilt on every refresh â a select
+//! The selection's editor model is rebuilt on every refresh — a select
 //! call, a `*ProfileChanged` signal whose UUID matches the current
 //! selection, or a fresh default-body fetch. Stale-callback protection
 //! lives on the [`ProfileEditorState::system_gen`] / `user_gen`
@@ -54,7 +54,7 @@ use crate::{AppWindow, ProfileFieldEntry, ProfileKind, Profiles, on_ui};
 
 /// Which enum class an `Enum`-kind field carries. Drives the
 /// dispatch fork in [`parse_enum_token`] without a pointer-equality
-/// comparison on the option slice â Rust `const` items inline at
+/// comparison on the option slice — Rust `const` items inline at
 /// each use site and produce per-site anonymous statics, so
 /// `std::ptr::eq` on the slice is unreliable across invocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub(crate) enum EnumClass {
 /// model. The Slint side reads `kind` (as a string) to pick a
 /// `ProfileFieldRowEnum` vs `ProfileFieldRowNumber`; the matching
 /// branch fields below seed the widget. `Bool` and `Text` are reserved
-/// for future shapes â adding one requires extending
+/// for future shapes — adding one requires extending
 /// [`build_field_raw`] and the matching Slint branch.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FieldKind {
@@ -91,7 +91,7 @@ pub(crate) enum FieldKind {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FieldSpec {
     /// Snake-case key on the body dict + the value Slint emits in
-    /// `Profiles.value-edited(field_name, â¦)` / `reset-field(field_name)`.
+    /// `Profiles.value-edited(field_name, …)` / `reset-field(field_name)`.
     pub wire: &'static str,
     pub kind: FieldKind,
 }
@@ -105,7 +105,7 @@ const SESSION_ACTION_OPTIONS: &[&str] =
 const AUTOMATE_WHEN_OPTIONS: &[&str] = &["always", "on_primary", "off_primary"];
 
 /// System-profile field table. Order is the rendering order in the
-/// editor â `on_startup` first, automation gate last.
+/// editor — `on_startup` first, automation gate last.
 pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "on_startup",
@@ -338,7 +338,7 @@ fn field_label(wire: &str) -> String {
         "on_remote_disconnect" => pgettext("profile field", "On remote disconnect"),
         "on_local_return" => pgettext("profile field", "On local return"),
         "remote_screencast_arms" => pgettext("profile field", "Screen capture arms"),
-        // Unknown wire keys flow through verbatim â should never
+        // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
         other => other.to_string(),
@@ -351,17 +351,17 @@ fn field_label(wire: &str) -> String {
 
 /// Three-layer body cache for system profiles.
 ///
-/// - `baseline` â the hard-coded body the daemon exposes via
+/// - `baseline` — the hard-coded body the daemon exposes via
 ///   `GetResolvedSystemProfileDefaults`. Fetched once at GUI start
 ///   (and on `DaemonAppeared`); never invalidated mid-session.
-/// - `default_body` â the reserved-default profile's body
+/// - `default_body` — the reserved-default profile's body
 ///   (`DEFAULT_SYSTEM_PROFILE_UUID`). Refreshed when its
 ///   `SystemProfileChanged` signal arrives.
-/// - `bodies` â the per-profile catalog keyed by UUID. Each entry
+/// - `bodies` — the per-profile catalog keyed by UUID. Each entry
 ///   refreshes when its own `Changed` signal arrives. Filled lazily
 ///   on selection so a session with hundreds of profiles doesn't
 ///   pay a fan-out fetch up front. The reserved-default UUID never
-///   lives here â [`ProfileLayers::cache_body`] routes it to the
+///   lives here — [`ProfileLayers::cache_body`] routes it to the
 ///   `default_body` slot, keeping exactly one copy. A map entry for
 ///   it would shadow the slot in the resolve walk and go stale the
 ///   next time only the slot refreshes.
@@ -416,7 +416,7 @@ impl UserProfileLayers {
 pub(crate) enum ResolvedValue {
     /// Field is set on the profile's own body.
     LocallySet { current: String },
-    /// Field is `None` on its body â value walked from the default
+    /// Field is `None` on its body — value walked from the default
     /// body, then the baseline.
     Inheriting { current: String },
 }
@@ -695,7 +695,7 @@ pub(crate) struct Selection {
     pub uuid: Option<Uuid>,
 }
 
-/// Editor state held in an `Arc<Mutex<â¦>>` so the StateWatcher's
+/// Editor state held in an `Arc<Mutex<…>>` so the StateWatcher's
 /// signal-dispatch task and the per-callback async tasks can both
 /// mutate it under the same lock.
 ///
@@ -749,7 +749,7 @@ pub(crate) fn new_editor() -> ProfileEditor {
 // =============================================================================
 
 /// Prime the baseline + default body for the system layers. Called at
-/// startup and on `DaemonAppeared`. Errors are logged but non-fatal â
+/// startup and on `DaemonAppeared`. Errors are logged but non-fatal —
 /// a stale baseline / default just means the inherit walk falls back
 /// to `SystemProfileBody::default()` (all-`None`), which the daemon
 /// rejects on dispatch with a `None` action (the same outcome a body
@@ -767,13 +767,13 @@ pub(crate) async fn prime_system_layers(daemon: &DaemonClient, editor: &ProfileE
             floor()
         }
     };
-    let default_body = match daemon.get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID).await {
-        Ok(b) => b,
-        Err(e) => {
-            debug!(error = %e, "Default system profile body fetch failed; using the floor");
+    let default_body = daemon
+        .get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID)
+        .await
+        .unwrap_or_else(|| {
+            debug!("Default system profile not mirrored yet; using the floor");
             floor()
-        }
-    };
+        });
     let mut state = editor.lock();
     state.system.baseline = baseline;
     state.system.default_body = default_body;
@@ -789,13 +789,13 @@ pub(crate) async fn prime_user_layers(session: &SessionClient, editor: &ProfileE
             floor()
         }
     };
-    let default_body = match session.get_user_profile(DEFAULT_USER_PROFILE_UUID).await {
-        Ok(b) => b,
-        Err(e) => {
-            debug!(error = %e, "Default user profile body fetch failed; using the floor");
+    let default_body = session
+        .get_user_profile(DEFAULT_USER_PROFILE_UUID)
+        .await
+        .unwrap_or_else(|| {
+            debug!("Default user profile not mirrored yet; using the floor");
             floor()
-        }
-    };
+        });
     let mut state = editor.lock();
     state.user.baseline = baseline;
     state.user.default_body = default_body;
@@ -813,7 +813,7 @@ pub(crate) async fn prime_user_layers(session: &SessionClient, editor: &ProfileE
 /// `system_gen` / `user_gen` is bumped at task start. If the user
 /// re-selects mid-flight (clicking another row), the captured value
 /// no longer matches the live counter and the post-fetch model push
-/// is a no-op â the new selection's task carries the fresh model.
+/// is a no-op — the new selection's task carries the fresh model.
 pub(crate) async fn select(
     editor: ProfileEditor,
     daemon: Arc<DaemonClient>,
@@ -844,7 +844,7 @@ pub(crate) async fn select(
     }
 
     // Lazy prime: only fetch the body if not already cached (or if
-    // it's the reserved default â that body lives on the dedicated
+    // it's the reserved default — that body lives on the dedicated
     // `default_body` slot, refreshed by the signal handler).
     let need_fetch = {
         let state = editor.lock();
@@ -869,27 +869,28 @@ pub(crate) async fn select(
                     Some(s) => fetch_user_profile_body(s, uuid)
                         .await
                         .map(SystemOrUser::User),
-                    None => Err(anyhow::anyhow!(
-                        "Session service unavailable; cannot load user profile body"
-                    )),
+                    None => {
+                        warn!(uuid = %uuid, "Session service unavailable; cannot load user profile body");
+                        None
+                    }
                 }
             }
         };
 
         match fetch_result {
-            Ok(SystemOrUser::System(body)) => {
+            Some(SystemOrUser::System(body)) => {
                 editor.lock().system.cache_body(uuid, body);
             }
-            Ok(SystemOrUser::User(body)) => {
+            Some(SystemOrUser::User(body)) => {
                 editor.lock().user.cache_body(uuid, body);
             }
-            Err(e) => {
-                warn!(uuid = %uuid, ?kind, error = %e, "Profile body fetch failed");
+            None => {
+                warn!(uuid = %uuid, ?kind, "Profile body not in the mirror");
             }
         }
     }
 
-    // Stale-callback guard before publishing â if the user selected
+    // Stale-callback guard before publishing — if the user selected
     // again while we were fetching, the new task owns the push.
     let still_current = {
         let state = editor.lock();
@@ -921,12 +922,12 @@ enum SystemOrUser {
 
 /// Build the `[ProfileFieldEntry]` model + the `can-reset-all` flag
 /// from the current layer state and push them into the Slint global.
-/// Pure-data plus an `on_ui` hop â no IO.
+/// Pure-data plus an `on_ui` hop — no IO.
 ///
 /// The intermediate [`ProfileFieldRaw`] is `Send` (plain `Vec`s, no
 /// `ModelRc`); the `ModelRc::new` step happens inside the event-loop
 /// closure since `ModelRc` is `!Send`. Mirrors the
-/// `TvViewRaw â TvViewModel` pattern in `state.rs`.
+/// `TvViewRaw → TvViewModel` pattern in `state.rs`.
 fn push_editor_rows(
     editor: &ProfileEditor,
     app_weak: slint::Weak<AppWindow>,
@@ -1016,7 +1017,7 @@ fn push_card_model(
 /// `(FieldSpec, ResolvedValue)` on a worker thread and converted to
 /// the Slint-generated `ProfileFieldEntry` (which carries a `ModelRc`,
 /// `!Send`) inside the event-loop closure. Field shapes mirror
-/// `ProfileFieldEntry` 1:1 so the conversion is straight wrapping â
+/// `ProfileFieldEntry` 1:1 so the conversion is straight wrapping —
 /// the `options` `Vec` becomes a `ModelRc`-backed list, everything
 /// else copies through.
 #[derive(Debug, Clone)]
@@ -1187,7 +1188,7 @@ fn remote_gate_is_enabled(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
 
 /// Convert a `(FieldSpec, ResolvedValue)` pair into a [`ProfileFieldRaw`].
 /// Variant-specific fields outside the matched kind stay at their
-/// zero values â same convention as `ProfileFieldEntry`'s doc
+/// zero values — same convention as `ProfileFieldEntry`'s doc
 /// comment in `profiles.slint`.
 fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldRaw {
     let mut raw = ProfileFieldRaw {
@@ -1250,7 +1251,7 @@ fn field_kind_tag(field: &FieldSpec) -> &'static str {
 
 /// Refresh the editor rows for the current selection without
 /// re-running the catalog-priming part of [`select`]. Used by the
-/// signal handler when a `*ProfileChanged` arrives â the cache has
+/// signal handler when a `*ProfileChanged` arrives — the cache has
 /// already been updated, we just need to rebuild the model.
 fn refresh_editor_if_selected(editor: &ProfileEditor, app_weak: slint::Weak<AppWindow>) {
     let (kind, uuid) = {
@@ -1274,19 +1275,16 @@ pub(crate) async fn handle_system_changed(
     app_weak: slint::Weak<AppWindow>,
     uuid: Uuid,
 ) {
-    let new_body = match fetch_system_profile_body(&daemon, uuid).await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(uuid = %uuid, error = %e, "Refreshing system profile body failed");
-            return;
-        }
+    let Some(new_body) = fetch_system_profile_body(&daemon, uuid).await else {
+        warn!(uuid = %uuid, "Changed system profile body not in the mirror");
+        return;
     };
 
     let (kind_for_refresh, refresh) = {
         let mut state = editor.lock();
         if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
             state.system.default_body = new_body;
-            // Default shifted â every system selection's inherit
+            // Default shifted — every system selection's inherit
             // chain moved, so refresh whatever's currently selected
             // on the system side.
             (
@@ -1296,7 +1294,7 @@ pub(crate) async fn handle_system_changed(
         } else {
             state.system.bodies.insert(uuid, new_body);
             // Only refresh if the changed profile is the current
-            // selection â other rows don't reference its body.
+            // selection — other rows don't reference its body.
             (
                 Some(EditorKind::System),
                 state.selection.kind == Some(EditorKind::System)
@@ -1321,17 +1319,17 @@ pub(crate) async fn handle_system_added(
     uuid: Uuid,
 ) {
     match fetch_system_profile_body(&daemon, uuid).await {
-        Ok(body) => {
+        Some(body) => {
             // In a fresh launch the default profile lands here (mirror
             // hydration finishes after the startup prime); `cache_body`
             // routes it to the inherit-chain slot so inheriting rows
             // stop resolving against the stale prime fallback.
             editor.lock().system.cache_body(uuid, body);
         }
-        Err(e) => {
-            // Non-fatal â the next select on this UUID will re-fetch
+        None => {
+            // Non-fatal — the next select on this UUID will re-fetch
             // through the lazy-prime path.
-            debug!(uuid = %uuid, error = %e, "Eager fetch after SystemProfileAdded failed");
+            debug!(uuid = %uuid, "Added system profile body not in the mirror yet");
         }
     }
 }
@@ -1379,12 +1377,9 @@ pub(crate) async fn handle_user_changed(
         debug!(uuid = %uuid, "UserProfileChanged arrived while session service unavailable");
         return;
     };
-    let new_body = match fetch_user_profile_body(client, uuid).await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(uuid = %uuid, error = %e, "Refreshing user profile body failed");
-            return;
-        }
+    let Some(new_body) = fetch_user_profile_body(client, uuid).await else {
+        warn!(uuid = %uuid, "Changed user profile body not in the mirror");
+        return;
     };
     drop(session_ref);
 
@@ -1415,11 +1410,11 @@ pub(crate) async fn handle_user_added(
         return;
     };
     match fetch_user_profile_body(client, uuid).await {
-        Ok(body) => {
+        Some(body) => {
             editor.lock().user.cache_body(uuid, body);
         }
-        Err(e) => {
-            debug!(uuid = %uuid, error = %e, "Eager fetch after UserProfileAdded failed");
+        None => {
+            debug!(uuid = %uuid, "Added user profile body not in the mirror yet");
         }
     }
 }
@@ -1500,7 +1495,7 @@ pub(crate) enum BodyPatch {
 
 /// Parse a ComboBox-emitted token into the matching `SessionAction`
 /// variant. Tokens mirror the `#[serde(rename_all = "snake_case")]`
-/// emitted by [`session_action_token`] â if either diverges this
+/// emitted by [`session_action_token`] — if either diverges this
 /// match arm catches it.
 fn parse_session_action(token: &str) -> anyhow::Result<SessionAction> {
     match token {
@@ -1523,7 +1518,7 @@ fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
 }
 
 /// Mutate one field on a `SystemProfileBody`. The patch's variant
-/// must match the target's `FieldKind` â passing `BodyPatch::Number`
+/// must match the target's `FieldKind` — passing `BodyPatch::Number`
 /// to an enum field surfaces as an `anyhow::Error`.
 fn set_system_field(
     body: &mut SystemProfileBody,
@@ -1713,7 +1708,7 @@ async fn update_system_field(
         snapshot_system_body(&state, uuid)
     };
     set_system_field(&mut body, wire, patch)?;
-    daemon.update_system_profile(uuid, &body).await
+    Ok(daemon.update_system_profile(uuid, body).await?)
 }
 
 async fn update_user_field(
@@ -1732,7 +1727,7 @@ async fn update_user_field(
     let client = session_ref
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-    client.update_user_profile(uuid, &body).await
+    Ok(client.update_user_profile(uuid, body).await?)
 }
 
 /// Apply a ComboBox-driven enum edit to the selected profile. The
@@ -1977,7 +1972,7 @@ pub(crate) async fn dispatch_reset_all(
                 name: snapshot.name,
                 ..Default::default()
             };
-            daemon.update_system_profile(uuid, &body).await
+            Ok(daemon.update_system_profile(uuid, body).await?)
         }
         EditorKind::User => {
             let snapshot = {
@@ -1992,13 +1987,13 @@ pub(crate) async fn dispatch_reset_all(
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            client.update_user_profile(uuid, &body).await
+            Ok(client.update_user_profile(uuid, body).await?)
         }
     }
 }
 
 /// Rename the selected profile. Issues a body update that carries the
-/// new name + every other field from the current cached body â the
+/// new name + every other field from the current cached body — the
 /// daemon's atomic replace semantic means we have to round-trip the
 /// full body even for a name-only change.
 pub(crate) async fn dispatch_rename(
@@ -2016,7 +2011,7 @@ pub(crate) async fn dispatch_rename(
                 snapshot_system_body(&state, uuid)
             };
             body.name = new_name.to_string();
-            daemon.update_system_profile(uuid, &body).await
+            Ok(daemon.update_system_profile(uuid, body).await?)
         }
         EditorKind::User => {
             let mut body = {
@@ -2028,7 +2023,7 @@ pub(crate) async fn dispatch_rename(
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            client.update_user_profile(uuid, &body).await
+            Ok(client.update_user_profile(uuid, body).await?)
         }
     }
 }
@@ -2055,14 +2050,14 @@ pub(crate) async fn dispatch_select_after_create(
     // fetch).
     match kind {
         EditorKind::System => {
-            if let Ok(body) = fetch_system_profile_body(&daemon, uuid).await {
+            if let Some(body) = fetch_system_profile_body(&daemon, uuid).await {
                 editor.lock().system.cache_body(uuid, body);
             }
         }
         EditorKind::User => {
             let session_ref = session.read().await;
             if let Some(client) = session_ref.as_ref()
-                && let Ok(body) = fetch_user_profile_body(client, uuid).await
+                && let Some(body) = fetch_user_profile_body(client, uuid).await
             {
                 editor.lock().user.cache_body(uuid, body);
             }
@@ -2097,7 +2092,7 @@ mod tests {
     use super::*;
 
     fn baseline_system() -> SystemProfileBody {
-        // Resembles the daemon's hard-coded baseline â every field
+        // Resembles the daemon's hard-coded baseline — every field
         // resolved to a concrete value so the inherit walk has
         // something to land on.
         SystemProfileBody {
@@ -2207,7 +2202,7 @@ mod tests {
             bodies,
         };
 
-        // Default-set field â inheriting, value from the default body.
+        // Default-set field — inheriting, value from the default body.
         let on_startup = find_system("on_startup");
         let resolved = resolve_system_field(&layers, uuid, on_startup);
         assert_eq!(
@@ -2217,7 +2212,7 @@ mod tests {
             }
         );
 
-        // Default-absent field â falls through to baseline.
+        // Default-absent field — falls through to baseline.
         let on_shutdown = find_system("on_shutdown");
         let resolved = resolve_system_field(&layers, uuid, on_shutdown);
         assert_eq!(
@@ -2231,7 +2226,7 @@ mod tests {
     #[test]
     fn default_uuid_falls_back_to_default_body_slot() {
         // The reserved-default profile's body lives on `layers.default_body`,
-        // not in `layers.bodies` â make sure the walker consults it.
+        // not in `layers.bodies` — make sure the walker consults it.
         let layers = ProfileLayers {
             baseline: baseline_system(),
             default_body: SystemProfileBody {
@@ -2284,7 +2279,7 @@ mod tests {
 
     #[test]
     fn inheriting_user_number_field_carries_no_overlay() {
-        // Number fields don't get the inherit overlay â the gutter
+        // Number fields don't get the inherit overlay — the gutter
         // accent + reset glyph carry the inherit signal instead.
         let uuid = Uuid::new_v4();
         let mut bodies = HashMap::new();
@@ -2391,7 +2386,7 @@ mod tests {
 
     #[test]
     fn build_field_raw_enum_carries_options_and_current() {
-        // build_field_raw is glyph-agnostic â it should pass whatever
+        // build_field_raw is glyph-agnostic — it should pass whatever
         // `current` string the resolver produced through to
         // `current_value` verbatim. Using a sentinel proves that.
         let sentinel_current = "power_on<<sentinel>>";
@@ -2496,7 +2491,7 @@ mod tests {
         // The GUI-restart bug sequence: hydration caches the default's
         // body (Added), the user edits it, and the Changed handler
         // refreshes only the `default_body` slot. The default's own
-        // editor rows must resolve to the edited value â a `bodies`
+        // editor rows must resolve to the edited value — a `bodies`
         // entry for the reserved UUID would shadow the slot with the
         // hydration-time body forever.
         let mut layers = ProfileLayers {
@@ -2532,7 +2527,7 @@ mod tests {
 
     #[test]
     fn set_system_field_writes_every_session_action_wire() {
-        // One round-trip per `SessionAction`-typed wire â make sure
+        // One round-trip per `SessionAction`-typed wire — make sure
         // each lands on the right body slot. Catches regression of
         // the wire <-> field mapping.
         let mut body = SystemProfileBody::default();
@@ -3116,7 +3111,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // dispatch_reset_all body shape (synchronous portion only â the
+    // dispatch_reset_all body shape (synchronous portion only — the
     // daemon round-trip isn't tested here)
     // -----------------------------------------------------------------
 

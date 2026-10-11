@@ -21,15 +21,24 @@ use crate::transport::Connection;
 use serde_json::{Value, json};
 use std::net::IpAddr;
 use std::time::Duration;
-use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, TvState};
+use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, Secret, TvState};
 use tokio::sync::mpsc;
+
+/// A response payload's key names, for logs: the `Registered` payload
+/// carries the client key, so the values never reach a log line.
+fn payload_keys(payload: &Value) -> Vec<&str> {
+    payload
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
 
 /// Client for controlling an LG WebOS TV.
 pub struct WebOsClient {
     /// WebSocket connection (None if closed).
     conn: Option<Connection>,
     /// Client key for authentication.
-    client_key: Option<String>,
+    client_key: Option<Secret>,
     /// Request ID counter.
     request_id: u64,
     /// Request timeout.
@@ -72,7 +81,7 @@ impl WebOsClient {
     /// If `client_key` is provided, attempts to reconnect with
     /// existing pairing. If `None` or the key is invalid, a pairing
     /// prompt will be shown on the TV.
-    pub async fn connect(host: &str, client_key: Option<String>) -> Result<Self> {
+    pub async fn connect(host: &str, client_key: Option<Secret>) -> Result<Self> {
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
         let conn = Connection::connect(host, connect_timeout).await?;
         Self::register_on(conn, client_key).await
@@ -85,7 +94,7 @@ impl WebOsClient {
     pub async fn connect_with_scheme(
         host: &str,
         scheme: crate::config::WebOsScheme,
-        client_key: Option<String>,
+        client_key: Option<Secret>,
     ) -> Result<Self> {
         use crate::config::WebOsScheme;
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
@@ -96,7 +105,7 @@ impl WebOsClient {
         Self::register_on(conn, client_key).await
     }
 
-    async fn register_on(conn: Connection, client_key: Option<String>) -> Result<Self> {
+    async fn register_on(conn: Connection, client_key: Option<Secret>) -> Result<Self> {
         let mut client = Self {
             conn: Some(conn),
             client_key: client_key.clone(),
@@ -116,7 +125,7 @@ impl WebOsClient {
     /// Used by tests that run a [`FakeSsapServer`](crate::test_server::FakeSsapServer)
     /// on localhost. Bypasses the wss→ws fallback and connects directly.
     #[cfg(test)]
-    pub(crate) async fn connect_url(url: &str, client_key: Option<String>) -> Result<Self> {
+    pub(crate) async fn connect_url(url: &str, client_key: Option<Secret>) -> Result<Self> {
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
         let conn = Connection::connect_url_plain(url, connect_timeout).await?;
 
@@ -154,7 +163,7 @@ impl WebOsClient {
     /// response via a oneshot channel. Intermediate messages (e.g.,
     /// subscription updates) are handled by the background reader and
     /// do not interfere with registration.
-    async fn register(&mut self, existing_key: Option<String>) -> Result<String> {
+    async fn register(&mut self, existing_key: Option<Secret>) -> Result<Secret> {
         let payload = RegisterPayload::new(existing_key);
         let request = Request::register(self.next_id(), payload);
 
@@ -175,7 +184,11 @@ impl WebOsClient {
 
         // Phase 1: send the register request and get the first response.
         let response = self.conn()?.request(&request, pairing_timeout).await?;
-        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 1)");
+        tracing::debug!(
+            msg_type = ?response.msg_type,
+            payload_keys = ?payload_keys(&response.payload),
+            "Registration response (phase 1)"
+        );
 
         match response.msg_type {
             ResponseType::Registered => {
@@ -208,7 +221,11 @@ impl WebOsClient {
         // Phase 2: wait for the Registered response (no re-send).
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self.conn()?.request_wait(&request.id, remaining).await?;
-        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 2)");
+        tracing::debug!(
+            msg_type = ?response.msg_type,
+            payload_keys = ?payload_keys(&response.payload),
+            "Registration response (phase 2)"
+        );
 
         match response.msg_type {
             ResponseType::Registered => {
@@ -233,8 +250,8 @@ impl WebOsClient {
     }
 
     /// Get the client key (for saving to config).
-    pub fn client_key(&self) -> Option<&str> {
-        self.client_key.as_deref()
+    pub fn client_key(&self) -> Option<&Secret> {
+        self.client_key.as_ref()
     }
 
     /// WebSocket scheme the underlying connection succeeded over.
@@ -755,6 +772,16 @@ mod tests {
     use super::*;
     use crate::test_server::{FakeSsapServer, RegistrationOutcome};
 
+    /// The registration log line names the `Registered` payload's keys,
+    /// never the client key itself.
+    #[test]
+    fn registration_log_fields_omit_the_client_key() {
+        let payload = json!({ "client-key": "secret-client-key-1234" });
+        let shown = format!("{:?}", payload_keys(&payload));
+        assert!(shown.contains("client-key"), "{shown}");
+        assert!(!shown.contains("secret-client-key-1234"), "{shown}");
+    }
+
     // -----------------------------------------------------------------------
     // Reader-loop fault injection — these exercise the WebOsClient reader
     // directly (malformed frame tolerance, socket-drop detection).
@@ -802,7 +829,10 @@ mod tests {
             .expect("should connect and register");
 
         assert!(client.is_connected());
-        assert_eq!(client.client_key(), Some("test-client-key"));
+        assert_eq!(
+            client.client_key().map(Secret::expose),
+            Some("test-client-key")
+        );
         client.close().await.unwrap();
     }
 
@@ -813,12 +843,14 @@ mod tests {
             client_key: "returning-key".to_string(),
         });
 
-        let mut client =
-            WebOsClient::connect_url(&server.ws_url(), Some("returning-key".to_string()))
-                .await
-                .expect("should register immediately");
+        let mut client = WebOsClient::connect_url(&server.ws_url(), Some("returning-key".into()))
+            .await
+            .expect("should register immediately");
 
-        assert_eq!(client.client_key(), Some("returning-key"));
+        assert_eq!(
+            client.client_key().map(Secret::expose),
+            Some("returning-key")
+        );
         client.close().await.unwrap();
     }
 
@@ -1085,7 +1117,7 @@ mod field_probe {
             Some(list) => list.split(',').map(str::trim).collect(),
             None => ENDPOINTS.to_vec(),
         };
-        let mut client = WebOsClient::connect(&host, Some(key)).await.unwrap();
+        let mut client = WebOsClient::connect(&host, Some(key.into())).await.unwrap();
         for uri in uris {
             match client.command(uri, json!({})).await {
                 Ok(response) => println!("{uri}\n  {}", response.payload),

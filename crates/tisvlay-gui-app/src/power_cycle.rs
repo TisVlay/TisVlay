@@ -4,6 +4,7 @@
 //! can render the staged button label while WoL → reachable →
 //! ready unfolds.
 
+use crate::with_id;
 use std::sync::Arc;
 
 use crate::compat::{DaemonClient, PowerCyclePhase};
@@ -22,7 +23,7 @@ pub(crate) async fn run_power_on_with_progress(
 ) -> Result<()> {
     use futures_util::StreamExt;
 
-    let stream = daemon.power_cycle_progress_stream(&tv_id).await?;
+    let stream = with_id(&tv_id, |tv| daemon.power_cycle_progress_stream(tv)).await?;
     let app_weak_drainer = app_weak.clone();
     let tv_id_drainer = tv_id.clone();
     let drainer = tokio::spawn(async move {
@@ -32,7 +33,7 @@ pub(crate) async fn run_power_on_with_progress(
         }
     });
 
-    let result = daemon.power_on(&tv_id).await;
+    let result = with_id(&tv_id, |tv| daemon.power_on(tv)).await;
     drainer.abort();
 
     // Clear the phase indicator so the button re-enables. The regular

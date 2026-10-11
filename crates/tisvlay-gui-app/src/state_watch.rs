@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use crate::compat::{
-    DaemonClient, NotificationSettingsBody, RefreshTrigger, SessionClient, StateEvent,
-    StateWatcher, TrayClient,
+    DaemonClient, NotificationSettings, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+    TrayClient,
 };
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -73,7 +73,7 @@ pub(crate) async fn initial_fetch_and_watch(
     // switch positions even if the GUI starts while the tray is
     // offline; gets overwritten with real values once
     // `refresh_tray_notifications` lands a fetch.
-    let initial_tray_notifications = body_to_slint(&NotificationSettingsBody::defaults());
+    let initial_tray_notifications = settings_to_slint(&NotificationSettings::default());
     on_ui(&app_weak, move |app| {
         if let Some(snapshot) = initial_snapshot {
             push_snapshot(&app, snapshot);
@@ -119,39 +119,34 @@ async fn fetch_and_publish_vendors(
     app_weak: &slint::Weak<AppWindow>,
     supported_vendors_cache: &SupportedVendorsCache,
 ) {
-    let mut vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
-    vendor_pairs.sort_by_key(|a| a.1.to_lowercase());
+    let mut vendors = match daemon.get_supported_vendors().await {
+        Ok(vendors) => vendors,
+        Err(e) => {
+            debug!(error = %e, "vendor catalog unavailable");
+            Vec::new()
+        }
+    };
+    vendors.sort_by_key(|vendor| vendor.name.to_lowercase());
     debug!(
-        count = vendor_pairs.len(),
+        count = vendors.len(),
         "Fetched supported vendors from daemon"
     );
     if let Ok(mut cache) = supported_vendors_cache.write() {
-        *cache = vendor_pairs.iter().map(|(id, _)| id.clone()).collect();
+        *cache = vendors.iter().map(|vendor| vendor.id.clone()).collect();
     }
 
-    // Per-vendor capability fetch in a second pass — keeps the
-    // vendor-catalog payload unchanged (still `(id, name)` pairs) and
-    // lets vendors come and go without renegotiating shape. Vendor
-    // counts are O(1) in practice (one to a handful), so the extra
-    // round-trips are negligible against the cost of any user-visible
-    // wizard step. Errors per vendor collapse to "no IP family
-    // support claimed", which means the wizard's affordances stay
-    // conservative — placeholder reverts to v4-only — rather than
-    // silently asserting transport support the daemon didn't
-    // actually confirm.
+    // The catalog carries each vendor's capabilities; the pairing
+    // schema is one rpc per vendor. Vendor counts are O(1) in practice
+    // (one to a handful), so the round-trips are negligible against any
+    // user-visible wizard step.
     let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities, PrimaryField)> =
-        Vec::with_capacity(vendor_pairs.len());
-    for (id, name) in vendor_pairs {
-        // Capabilities and pairing schema are independent rpcs —
-        // fetch them concurrently.
-        let (caps, schema) = tokio::join!(
-            daemon.get_vendor_capabilities(&id),
-            daemon.get_pairing_schema(&id),
-        );
-        let caps = caps.unwrap_or_else(|e| {
-            debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
-            tisvlay_core::Capabilities::empty()
-        });
+        Vec::with_capacity(vendors.len());
+    for vendor in vendors {
+        let id = vendor.id;
+        let name = vendor.name;
+        let names: Vec<&str> = vendor.capabilities.iter().map(String::as_str).collect();
+        let caps = tisvlay_core::Capabilities::from_strings(&names);
+        let schema = daemon.get_pairing_schema(&id).await;
         // The schema's first field is the vendor's primary descriptor
         // (schema-ordering convention) — it becomes the manual-entry
         // panel's identity input. Fetch failure falls back to a
@@ -231,13 +226,11 @@ async fn watch_state(
     editor: ProfileEditor,
 ) {
     // No debounce: every state event triggers a refresh fire.
-    // The default 100ms (originally a flood guard before
-    // `RefreshTrigger` existed) is now redundant — `RefreshTrigger`
-    // already folds concurrent fires into a single in-flight refresh
-    // plus one trailing-edge follow-up, so floods can't backlog.
+    // `RefreshTrigger` folds concurrent fires into a single in-flight
+    // refresh plus one trailing-edge follow-up, so floods can't backlog.
     //
-    // Removing the debounce means the daemon→GUI sample rate is bounded
-    // by `fetch_state` latency (≈ms locally), not by a fixed timer.
+    // The daemon→GUI sample rate is therefore bounded by `fetch_state`
+    // latency (≈ms locally), not by a fixed timer.
     // Slint's winit backend then rate-limits the visual side: it
     // queries the live monitor refresh rate via
     // `current_monitor().refresh_rate_millihertz()` and coalesces
@@ -248,10 +241,7 @@ async fn watch_state(
     // `invoke_from_event_loop` is cheap; the property tracker dedups
     // and only one paint per frame happens regardless of how many
     // updates feed in.
-    let watcher_config = crate::compat::StateWatcherConfig {
-        signal_debounce: std::time::Duration::ZERO,
-        ..Default::default()
-    };
+    let watcher_config = crate::compat::StateWatcherConfig::default();
     // Session/tray events ride the clients built at startup (resilient
     // links, never replaced); the watcher synthesizes `*Appeared` for
     // peers already alive at construction, so the initial availability
@@ -427,26 +417,21 @@ pub(crate) async fn refresh_tray_notifications(
             None => return,
         }
     };
-    let settings = body_to_slint(&body);
+    let settings = settings_to_slint(&body);
     on_ui(app_weak, move |app| {
         app.global::<Tray>().set_notifications(settings);
     });
 }
 
-/// Lower a `NotificationSettingsBody` (every field `Option<bool>`)
-/// into the Slint `TrayNotificationSettings` struct (every field
-/// `bool`). The tray's property getter fills every field, so the
-/// `unwrap_or(true)` only guards the theoretical partial body from a
-/// future version-skewed tray — falling back to the documented
-/// default-on. (`TrayNotificationSettings` is Slint-generated, so the
-/// field list can't route through `NotificationCategory::ALL` the way
-/// the tray-side conversions do.)
-fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
+/// Lower the tray's settings into the Slint `TrayNotificationSettings`
+/// struct. (`TrayNotificationSettings` is Slint-generated, so the field
+/// list can't route through `NotificationCategory::ALL`.)
+fn settings_to_slint(settings: &NotificationSettings) -> TrayNotificationSettings {
     TrayNotificationSettings {
-        tv_connection: body.tv_connection.unwrap_or(true),
-        tv_pairing: body.tv_pairing.unwrap_or(true),
-        tv_wake: body.tv_wake.unwrap_or(true),
-        daemon_offline: body.daemon_offline.unwrap_or(true),
+        tv_connection: settings.tv_connection,
+        tv_pairing: settings.tv_pairing,
+        tv_wake: settings.tv_wake,
+        daemon_offline: settings.daemon_offline,
     }
 }
 
@@ -487,8 +472,8 @@ async fn refresh_about_components(
 ) {
     async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
     where
-        F1: Future<Output = anyhow::Result<String>>,
-        F2: Future<Output = anyhow::Result<String>>,
+        F1: Future<Output = tisvlay::Result<String>>,
+        F2: Future<Output = tisvlay::Result<String>>,
     {
         Some(PeerInfo {
             version: version.await.ok()?,

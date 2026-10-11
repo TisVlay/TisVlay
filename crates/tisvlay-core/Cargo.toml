@@ -19,8 +19,9 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Redacted secret values (the client key) behind `Secret`.
+secrecy = { workspace = true }
 socket2 = { workspace = true }
-directories = { workspace = true }
 
 # Multi-vendor abstractions
 async-trait = { workspace = true }
@@ -35,7 +36,6 @@ parking_lot = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

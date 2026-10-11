@@ -368,10 +368,10 @@ mod tests {
     use tisvlay_core::TvConnector;
 
     /// Build a minimal mock vendor-config table for the given address.
-    fn vendor_config(address: &str) -> toml::Value {
-        let mut table = toml::value::Table::new();
-        table.insert("address".into(), toml::Value::String(address.to_string()));
-        toml::Value::Table(table)
+    fn vendor_config(address: &str) -> tisvlay_core::VendorConfig {
+        let mut config = tisvlay_core::VendorConfig::new();
+        config.insert("address", address);
+        config
     }
 
     /// `set_initial_power_state_override` applies at construct-time
@@ -497,13 +497,9 @@ mod tests {
         );
 
         // Poll-only config: subscription refused, but get_state works.
-        let mut table = toml::value::Table::new();
-        table.insert(
-            "address".into(),
-            toml::Value::String("mock://poll".to_string()),
-        );
-        table.insert("disable_subscription".into(), toml::Value::Boolean(true));
-        let cfg = toml::Value::Table(table);
+        let mut cfg = tisvlay_core::VendorConfig::new();
+        cfg.insert("address", "mock://poll");
+        cfg.insert("disable_subscription", true);
 
         let mut poll = connector.connect(&cfg).await.expect("connect poll");
         let err = poll

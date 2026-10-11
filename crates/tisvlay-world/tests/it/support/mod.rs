@@ -4,18 +4,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
-use tisvlay_world::{Command, Reactor, TvRecord, WireEffect, WorldClient};
+use tisvlay_wire::error::ErrorCode;
+use tisvlay_world::{Command, Reactor, Reply, TvRecord, WireEffect, WorldClient};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
-pub(crate) fn mock_config(address: &str) -> toml::Value {
-    let mut table = toml::value::Table::new();
-    table.insert("address".into(), toml::Value::String(address.into()));
-    toml::Value::Table(table)
+pub(crate) fn mock_config(address: &str) -> VendorConfig {
+    let mut config = VendorConfig::new();
+    config.insert("address", address);
+    config
 }
 
-pub(crate) fn tv_record(id: Uuid, name: &str, config: toml::Value) -> TvRecord {
+pub(crate) fn tv_record(id: Uuid, name: &str, config: VendorConfig) -> TvRecord {
     TvRecord {
         id,
         name: name.into(),
@@ -97,12 +99,12 @@ pub(crate) fn reply_to(effect: &WireEffect, to: u64) -> bool {
     matches!(effect, WireEffect::Reply { to: t, .. } if *t == to)
 }
 
-pub(crate) fn reply_err_code(effect: &WireEffect, to: u64) -> Option<&str> {
+pub(crate) fn reply_err_code(effect: &WireEffect, to: u64) -> Option<ErrorCode> {
     match effect {
         WireEffect::Reply {
             to: t,
             result: Err(error),
-        } if *t == to => Some(&error.code),
+        } if *t == to => Some(error.code),
         _ => None,
     }
 }
@@ -115,7 +117,7 @@ pub(crate) async fn add_connected_tv(
     let id = Uuid::new_v4();
     client.command(Command::AddTv {
         record: Box::new(tv_record(id, "Den", mock_config(address))),
-        reply: Some(1),
+        reply: Some(Reply::new(1)),
     });
     collect_until(effects, |e| link_connected(e, true)).await;
     id

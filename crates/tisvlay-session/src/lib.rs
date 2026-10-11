@@ -25,10 +25,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
 use tisvlay_wire::caller::Caller;
+use tisvlay_wire::endpoint::{tv, user_profile, user_remote};
 use tisvlay_wire::error::WireError;
 use tisvlay_wire::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
@@ -243,7 +243,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     // daemon bridge — one task owns all state, no locks.
     let (query_tx, queries) = mpsc::unbounded_channel::<Query>();
     let queryable = user
-        .declare_queryable(keys::user_profile_rpc_wild(&options.site))
+        .declare_queryable(user_profile::Incoming::wild(&options.site))
         .complete(true)
         .callback(move |query| {
             let _ = query_tx.send(query);
@@ -255,7 +255,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     // manual/hook sources); routed into the same core loop.
     let (remote_query_tx, remote_queries) = mpsc::unbounded_channel::<Query>();
     let remote_queryable = user
-        .declare_queryable(keys::user_remote_rpc_wild(&options.site))
+        .declare_queryable(user_remote::Incoming::wild(&options.site))
         .complete(true)
         .callback(move |query| {
             let _ = remote_query_tx.send(query);
@@ -326,7 +326,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
 
     // Matching-gated caller for TV rpcs on the system socket, shared into
     // every dispatch's spawned task.
-    let caller = Arc::new(Caller::new(system.clone()));
+    let caller = Arc::new(Caller::new(system.clone(), options.site.clone()));
 
     let mut core = Core {
         system,
@@ -721,52 +721,18 @@ impl Core {
     /// Serve the remote verb rpc: `set { source, active }` toggles a
     /// manual source; `status` returns the current fact.
     async fn handle_remote_query(&mut self, query: Query) {
-        let key = query.key_expr().as_str().to_string();
-        let Some(verb) = keys::parse_user_remote_rpc(&self.site, &key).map(str::to_string) else {
-            reply_err(
-                &query,
-                &WireError::bad_request(format!("no such rpc: {key}")),
-            )
-            .await;
+        let Some(((), incoming)) = user_remote::Incoming::receive(&self.site, query).await else {
             return;
         };
-        let body: Value = query
-            .payload()
-            .and_then(|bytes| serde_json::from_slice(&bytes.to_bytes()).ok())
-            .unwrap_or(Value::Null);
-        match verb.as_str() {
-            "set" => {
-                // Default source `manual`; `active` required.
-                let source = body
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .unwrap_or("manual")
-                    .to_string();
-                let Some(active) = body.get("active").and_then(Value::as_bool) else {
-                    reply_err(&query, &WireError::bad_request("set requires `active`")).await;
-                    return;
-                };
-                self.apply_remote_report(RemoteReport::manual(source, active))
+        match incoming {
+            user_remote::Incoming::Set(request, responder) => {
+                let source = request.source.unwrap_or_else(|| "manual".into());
+                self.apply_remote_report(RemoteReport::manual(source, request.active))
                     .await;
-                reply_json(
-                    &query,
-                    &serde_json::to_value(self.remote_state()).unwrap_or_default(),
-                )
-                .await;
+                responder.ok(&self.remote_state()).await;
             }
-            "status" => {
-                reply_json(
-                    &query,
-                    &serde_json::to_value(self.remote_state()).unwrap_or_default(),
-                )
-                .await;
-            }
-            other => {
-                reply_err(
-                    &query,
-                    &WireError::bad_request(format!("no such rpc: {other}")),
-                )
-                .await;
+            user_remote::Incoming::Status((), responder) => {
+                responder.ok(&self.remote_state()).await;
             }
         }
     }
@@ -877,25 +843,39 @@ impl Core {
     /// the world honors it without knowing the session's event vocabulary,
     /// and manual clients (which never set it) stay input-neutral.
     fn call_tv(&self, tv: Uuid, spec: tisvlay_core::EventAction) {
-        let restore = spec.restore_input();
-        let (verb, body) = match spec.action() {
-            SessionAction::ScreenOff => ("set-screen", json!({ "on": false })),
-            SessionAction::ScreenOn => (
-                "set-screen",
-                json!({ "on": true, "restore_input": restore }),
-            ),
-            SessionAction::PowerOff => ("power-off", Value::Null),
-            SessionAction::PowerOn => ("power-on", json!({ "restore_input": restore })),
-            SessionAction::None => return,
-        };
+        let action = spec.action();
+        if action == SessionAction::None {
+            return;
+        }
+        let restore_input = spec.restore_input();
         let caller = Arc::clone(&self.caller);
-        let key = keys::tv_rpc(&self.site, &tv, verb);
         // Spawned so the matching gate + rpc timeout never block the core
         // select; the Caller re-issues nothing on a write and classifies
         // unavailable-vs-rejected for the log line.
         tokio::spawn(async move {
-            if let Err(error) = caller.call(&key, body).await {
-                warn!(%key, %error, "tv rpc failed");
+            let outcome = match action {
+                SessionAction::ScreenOff => {
+                    caller
+                        .call::<tv::SetScreen>(&tv, &rpc::SetScreen::manual(false))
+                        .await
+                }
+                SessionAction::ScreenOn => {
+                    let request = rpc::SetScreen {
+                        on: true,
+                        restore_input,
+                    };
+                    caller.call::<tv::SetScreen>(&tv, &request).await
+                }
+                SessionAction::PowerOff => caller.call::<tv::PowerOff>(&tv, &()).await,
+                SessionAction::PowerOn => {
+                    caller
+                        .call::<tv::PowerOn>(&tv, &rpc::PowerOn { restore_input })
+                        .await
+                }
+                SessionAction::None => return,
+            };
+            if let Err(error) = outcome {
+                warn!(%tv, %error, "tv rpc failed");
             }
         });
     }
@@ -1008,160 +988,150 @@ impl Core {
     }
 
     async fn handle_query(&mut self, query: Query) {
-        let key = query.key_expr().as_str().to_string();
-        let Some(verb) = keys::parse_user_profile_rpc(&self.site, &key).map(str::to_string) else {
-            reply_err(
-                &query,
-                &WireError::bad_request(format!("no such rpc: {key}")),
-            )
-            .await;
+        let Some(((), incoming)) = user_profile::Incoming::receive(&self.site, query).await else {
             return;
         };
-        let body: Value = match query.payload() {
-            Some(bytes) => match serde_json::from_slice(&bytes.to_bytes()) {
-                Ok(value) => value,
-                Err(e) => {
-                    reply_err(
-                        &query,
-                        &WireError::bad_request(format!("invalid JSON: {e}")),
-                    )
+        match incoming {
+            user_profile::Incoming::Create(request, responder) => {
+                responder.answer(self.create_profile(request).await).await;
+            }
+            user_profile::Incoming::Update(request, responder) => {
+                responder.answer(self.update_profile(request).await).await;
+            }
+            user_profile::Incoming::Duplicate(request, responder) => {
+                responder
+                    .answer(self.duplicate_profile(request).await)
                     .await;
-                    return;
-                }
-            },
-            None => Value::Null,
-        };
-        match self.route(&query, verb.as_str(), &body).await {
-            Ok(payload) => reply_json(&query, &payload).await,
-            Err(error) => reply_err(&query, &error).await,
-        }
-    }
-
-    async fn route(
-        &mut self,
-        _query: &Query,
-        verb: &str,
-        body: &Value,
-    ) -> Result<Value, WireError> {
-        match verb {
-            "create" => {
-                let req: rpc::UserProfileCreate = parse(body)?;
-                let id = req.id.unwrap_or_else(Uuid::new_v4);
-                let mut new_body = req.body.clone();
-                if id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
-                    // Re-creating the reserved default is an upsert with
-                    // the name pinned (root ensure_default parity).
-                    new_body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-                } else if self.profiles.contains_key(&id) {
-                    return Err(WireError::profile_exists(id));
-                }
-                let req = rpc::UserProfileCreate {
-                    id: Some(id),
-                    body: new_body,
-                };
-                self.profiles.insert(id, req.body.clone());
-                self.publish_profile(&id, &req.body).await;
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                Ok(json!({ "id": id }))
             }
-            "update" => {
-                let req: rpc::UserProfileUpdate = parse(body)?;
-                if !self.profiles.contains_key(&req.id) {
-                    return Err(WireError::profile_not_found(req.id));
-                }
-                if req.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID
-                    && req.body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
-                {
-                    return Err(WireError::bad_request(format!(
-                        "default profile's name must be \"{}\"",
-                        tisvlay_core::DEFAULT_PROFILE_NAME
-                    )));
-                }
-                self.profiles.insert(req.id, req.body.clone());
-                self.publish_profile(&req.id, &req.body).await;
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                Ok(json!({}))
-            }
-            "duplicate" => {
-                let req: rpc::ProfileDuplicate = parse(body)?;
-                let Some(source) = self.profiles.get(&req.id).cloned() else {
-                    return Err(WireError::profile_not_found(req.id));
-                };
-                let id = Uuid::new_v4();
-                let mut body = source;
-                body.name = req.name;
-                self.profiles.insert(id, body.clone());
-                self.publish_profile(&id, &body).await;
-                self.persist();
-                Ok(json!({ "id": id }))
-            }
-            "delete" => {
-                let req: rpc::TvRef = parse(body)?;
-                if req.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
-                    return Err(WireError::profile_reserved(req.id));
-                }
-                if !self.profiles.contains_key(&req.id) {
-                    return Err(WireError::profile_not_found(req.id));
-                }
-                if self.assignments.values().any(|profile| *profile == req.id) {
-                    return Err(WireError::profile_in_use(req.id));
-                }
-                self.profiles.remove(&req.id);
-                self.delete_key(&keys::user_profile(&self.site, &req.id))
+            user_profile::Incoming::Delete(request, responder) => {
+                responder
+                    .answer(self.delete_profile(request.id).await)
                     .await;
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                Ok(json!({}))
             }
-            "info" => Ok(json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "state_path": self.state_path,
-            })),
-            "defaults" => {
+            user_profile::Incoming::Info((), responder) => {
+                let info = rpc::ServiceInfo {
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    state_path: self.state_path.clone(),
+                };
+                responder.ok(&info).await;
+            }
+            user_profile::Incoming::Defaults((), responder) => {
                 // The hard-coded floor as a Body — the editable default
                 // profile sits between this and child profiles.
                 let mut floor = UserProfileConfig::full_default();
                 floor.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
-                serde_json::to_value(&floor)
-                    .map_err(|error| WireError::bad_request(format!("encode defaults: {error}")))
+                responder.ok(&floor).await;
             }
-            "effective" => {
-                let req: rpc::TvRef = parse(body)?;
-                Ok(resolved_json(&self.resolve_for(&req.id)))
+            user_profile::Incoming::Effective(request, responder) => {
+                responder.ok(&self.resolve_for(&request.id)).await;
             }
-            "assign" => {
-                let req: rpc::UserAssign = parse(body)?;
-                if let Some(profile) = req.profile {
-                    if !self.profiles.contains_key(&profile) {
-                        return Err(WireError::profile_not_found(profile));
-                    }
-                    self.assignments.insert(req.tv, profile);
-                    self.publish_assignment(&req.tv, Some(profile)).await;
-                } else {
-                    self.assignments.remove(&req.tv);
-                    self.delete_key(&keys::user_tv_profile(&self.site, &req.tv))
-                        .await;
-                }
-                self.persist();
-                self.recompute_idle();
-                if self.recompute_remote_armed() {
-                    self.publish_remote().await;
-                }
-                Ok(json!({}))
+            user_profile::Incoming::Assign(request, responder) => {
+                responder.answer(self.assign_profile(request).await).await;
             }
-            other => Err(WireError::bad_request(format!("no such rpc: {other}"))),
         }
+    }
+
+    async fn create_profile(
+        &mut self,
+        request: rpc::UserProfileCreate,
+    ) -> Result<rpc::Created, WireError> {
+        let id = request.id.unwrap_or_else(Uuid::new_v4);
+        let mut body = request.body;
+        if id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
+            // Re-creating the reserved default is an upsert with the name
+            // pinned.
+            body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
+        } else if self.profiles.contains_key(&id) {
+            return Err(WireError::profile_exists(id));
+        }
+        self.profiles.insert(id, body.clone());
+        self.publish_profile(&id, &body).await;
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Created { id })
+    }
+
+    async fn update_profile(
+        &mut self,
+        request: rpc::UserProfileUpdate,
+    ) -> Result<rpc::Ack, WireError> {
+        if !self.profiles.contains_key(&request.id) {
+            return Err(WireError::profile_not_found(request.id));
+        }
+        if request.id == tisvlay_core::DEFAULT_USER_PROFILE_UUID
+            && request.body.name.trim() != tisvlay_core::DEFAULT_PROFILE_NAME
+        {
+            return Err(WireError::bad_request(format!(
+                "default profile's name must be \"{}\"",
+                tisvlay_core::DEFAULT_PROFILE_NAME
+            )));
+        }
+        self.profiles.insert(request.id, request.body.clone());
+        self.publish_profile(&request.id, &request.body).await;
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Ack {})
+    }
+
+    async fn duplicate_profile(
+        &mut self,
+        request: rpc::ProfileDuplicate,
+    ) -> Result<rpc::Created, WireError> {
+        let Some(mut body) = self.profiles.get(&request.id).cloned() else {
+            return Err(WireError::profile_not_found(request.id));
+        };
+        let id = Uuid::new_v4();
+        body.name = request.name;
+        self.profiles.insert(id, body.clone());
+        self.publish_profile(&id, &body).await;
+        self.persist();
+        Ok(rpc::Created { id })
+    }
+
+    async fn delete_profile(&mut self, id: Uuid) -> Result<rpc::Ack, WireError> {
+        if id == tisvlay_core::DEFAULT_USER_PROFILE_UUID {
+            return Err(WireError::profile_reserved(id));
+        }
+        if !self.profiles.contains_key(&id) {
+            return Err(WireError::profile_not_found(id));
+        }
+        if self.assignments.values().any(|profile| *profile == id) {
+            return Err(WireError::profile_in_use(id));
+        }
+        self.profiles.remove(&id);
+        self.delete_key(&keys::user_profile(&self.site, &id)).await;
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Ack {})
+    }
+
+    async fn assign_profile(&mut self, request: rpc::UserAssign) -> Result<rpc::Ack, WireError> {
+        if let Some(profile) = request.profile {
+            if !self.profiles.contains_key(&profile) {
+                return Err(WireError::profile_not_found(profile));
+            }
+            self.assignments.insert(request.tv, profile);
+            self.publish_assignment(&request.tv, Some(profile)).await;
+        } else {
+            self.assignments.remove(&request.tv);
+            self.delete_key(&keys::user_tv_profile(&self.site, &request.tv))
+                .await;
+        }
+        self.persist();
+        self.recompute_idle();
+        if self.recompute_remote_armed() {
+            self.publish_remote().await;
+        }
+        Ok(rpc::Ack {})
     }
 
     async fn publish_profile(&mut self, id: &Uuid, body: &UserProfileConfig) {
@@ -1255,53 +1225,6 @@ async fn drift_deadline(at: Option<tokio::time::Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
-    }
-}
-
-/// The wire projection of a resolved user profile — same field names as
-/// the config, every value concrete. Actions render in their serde
-/// shape (string, or table when they carry modifiers).
-fn resolved_json(resolved: &ResolvedUserProfile) -> Value {
-    let action = |a: tisvlay_core::EventAction| serde_json::to_value(a).unwrap_or_default();
-    json!({
-        "on_session_lock": action(resolved.on_session_lock),
-        "on_session_unlock": action(resolved.on_session_unlock),
-        "on_lock_wake": action(resolved.on_lock_wake),
-        "locked_idle_timeout_seconds": resolved.locked_idle_timeout_seconds,
-        "unlocked_idle_timeout_seconds": resolved.unlocked_idle_timeout_seconds,
-        "on_idle_timeout": action(resolved.on_idle_timeout),
-        "on_idle_resume": action(resolved.on_idle_resume),
-        "on_remote_connect": action(resolved.on_remote_connect),
-        "on_remote_disconnect": action(resolved.on_remote_disconnect),
-        "on_local_return": action(resolved.on_local_return),
-        "remote_screencast_arms": resolved.remote_screencast_arms,
-    })
-}
-
-fn parse<T: DeserializeOwned>(body: &Value) -> Result<T, WireError> {
-    serde_json::from_value(body.clone()).map_err(|e| WireError::bad_request(e.to_string()))
-}
-
-async fn reply_json(query: &Query, payload: &Value) {
-    let bytes = serde_json::to_vec(payload).unwrap_or_default();
-    let key = query.key_expr().clone().into_owned();
-    if let Err(e) = query
-        .reply(key, bytes)
-        .encoding(Encoding::APPLICATION_JSON)
-        .await
-    {
-        warn!(%e, "reply failed");
-    }
-}
-
-async fn reply_err(query: &Query, error: &WireError) {
-    let bytes = serde_json::to_vec(error).unwrap_or_default();
-    if let Err(e) = query
-        .reply_err(bytes)
-        .encoding(Encoding::APPLICATION_JSON)
-        .await
-    {
-        warn!(%e, "reply_err failed");
     }
 }
 
