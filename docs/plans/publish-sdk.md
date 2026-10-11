@@ -1,6 +1,6 @@
 # Publish the client SDK
 
-Publish the `tisvlay` client SDK (`crates/tisvlay`) to crates.io, which also reserves the bare `tisvlay` name. The SDK re-exports wire types (`payload`, `rpc`, `error::ErrorCode`), so `tisvlay-wire` has to publish with it. Today both are `publish = false`, and wire was designed as in-repo vocabulary: no compatibility shims, every client in the repo, and an upgrade window of one re-login. This plan audits both crates the way #156–#158 audited the first four, and settles what a published SDK promises to clients outside the repo.
+Publish the `tisvlay` client SDK (`crates/tisvlay`) to crates.io, which also reserves the bare `tisvlay` name. The SDK re-exports wire types (`payload`, `rpc`, `error::ErrorCode`), so the protocol has to publish with it. Today both are `publish = false`, and wire was designed as in-repo vocabulary: no compatibility shims, every client in the repo, and an upgrade window of one re-login. This plan audits both crates the way #156–#158 audited the first four, and settles what a published SDK promises to clients outside the repo.
 
 ## State today
 
@@ -9,58 +9,63 @@ Publish the `tisvlay` client SDK (`crates/tisvlay`) to crates.io, which also res
   - **In-repo user:** the GUI. The CLI talks to wire directly.
 - **Wire** (`crates/tisvlay-wire`, about 2,900 lines): modules `payload`, `keys`, `rpc`, `error`, `endpoint`, `caller`, `bootstrap` and `serve`.
   - **Dependencies:** core, zenoh, bevy_ecs, anyhow, serde, serde_json, tokio, tracing, uuid.
-  - **Who uses what:**
-    - `serve` is used only by the daemon.
-    - `bootstrap` is used by every binary and by the GUI.
-    - `caller` is used by the SDK, CLI, daemon, session and tray.
-    - `payload`, `rpc`, `error` and `endpoint` are used across the services and the SDK.
+  - **`endpoint` generates both halves.** Each family's table generates the client calls and the servers' `Incoming` dispatch, built on `serve::Responder`. That one declaration is what makes the compiler demand a server arm for every new rpc, so `serve` is part of the protocol, not daemon glue.
+  - **`bootstrap`:** client connect configs and default socket paths, used by every binary and the GUI, plus the listening configs (`peer_config`, `router_config`), used only by the daemon and session. It returns `anyhow` errors.
 - **Policy conflicts** with `docs/build.md` § Public API policy:
-  - **bevy_ecs:** eight payload structs (`Power`, `Volume`, `Link`, `Input`, `Backlight`, `Identity`, `VendorRows`, `Meta`) derive bevy's `Component`, because the world stores them directly. bevy_ecs would become a public dependency, and it is 0.x with breaking releases every few months.
-  - **anyhow:** `bootstrap` returns `anyhow` errors, which the policy keeps out of published APIs.
-  - **Server glue:** `serve` is daemon-only glue that would ship to every SDK user.
-- **Compatibility:** requests decode strictly, wire enums are exhaustive, and the project rule is no fallback paths or skew tolerance. That rule holds only while every client is in-repo; a published SDK puts clients outside it.
+  - **bevy_ecs:** eight payload structs (`Power`, `Volume`, `Link`, `Input`, `Backlight`, `Identity`, `VendorRows`, `Meta`) derive bevy's `Component`, because the world stores them directly.
+  - **anyhow:** `bootstrap` returns `anyhow` errors.
+- **Compatibility:** requests decode strictly, wire enums are exhaustive, and the project rule is no fallback paths or skew tolerance. That rule held because every client was in-repo.
 
-## Open questions
+## Decisions
 
-1. **What does a published SDK promise about daemon versions?**
-   - **(a) Lockstep with a handshake.** SDK x.y talks only to a daemon x.y. The daemon advertises its protocol version, for example on the liveliness token or in `info`, and the SDK refuses a mismatch with a typed error. There are no shims, which keeps the current rule.
-   - **(b) A semver protocol.** Compatible within a minor version, which takes tolerant decoding and versioned keys.
-   - (a) looks right for 0.x.
-2. **What shape should the wire boundary take?**
-   - **(a) Feature-gate wire in place:** `serve` and the bevy derives behind features the daemon and world enable, and typed errors in `bootstrap`.
-   - **(b) Split out a published protocol crate** (for example `tisvlay-protocol`, holding keys, payload, rpc, error, endpoint, caller and the client half of bootstrap), and keep `tisvlay-wire` unpublished for `serve` and the bevy glue.
-3. **How do the bevy derives get out of the published API?** A `bevy` feature on the protocol crate, or newtype components in the world wrapping the payload structs.
-4. **Which clients publish?** All three, or `DaemonClient` alone, with the session and tray clients kept in-repo because their user-socket protocol is younger.
-5. **zenoh as a public dependency:** zenoh 1.x is stable semver. Does any SDK signature expose zenoh or zenoh-ext types? Audit item: the `StateWatcherConfig` fields and the advanced-subscriber setup.
-6. **The CLI:** also publish `tisvlay-cli` so `cargo install tisvlay-cli` works, or leave the CLI to distro packages and the Nix flake.
+Owner's rulings, 2026-10-11:
 
-## Proposed cars
+- **Lockstep with a handshake.** A published SDK talks only to services of its own release line, the same `major.minor` (at 0.x, a minor bump is the breaking one). Each service advertises its version; the SDK checks it and fails a mismatch with a typed error that names both versions. There are no shims or tolerant decoding: the no-compatibility rule stands, and external clients upgrade with the daemon.
+- **Wire becomes `tisvlay-protocol`, published whole.**
+  - **Contents:** keys, payload, rpc, error, endpoint, caller, serve, and the client connect configs.
+  - **Moves out:** the listening configs (`peer_config`, `router_config`) move to `tisvlay-runtime`, where `anyhow` is allowed. The client configs return a typed error.
+  - **Why the earlier split fell through:** it assumed `serve` was daemon-only. It isn't, and splitting it from `endpoint` would break the declare-once guarantee. Publishing `serve` also lets a third party write a compatible mock service for their tests.
+- **The bevy derives leave via newtypes.** The world wraps each of the eight payloads in its own `Component` newtype that derefs to the payload. The protocol crate has no bevy dependency.
+- **All three clients publish:** `DaemonClient` and `StateWatcher`, plus `SessionClient` and `TrayClient`.
+- **The CLI stays unpublished.** Distro packages and the Nix flake ship it.
 
-These are provisional; the answers above reshape them.
+## Cars
 
-1. **Wire boundary.**
-   - Gate or split per Q2 and Q3.
-   - Make `bootstrap`'s client half return typed errors, and move the anyhow-returning server half to `tisvlay-runtime`.
-   - Run `unreachable_pub` and the private-by-default pass over what's left.
-2. **SDK audit.**
-   - Apply the same checks as #157: private by default, the `#[non_exhaustive]` policy (`TvInfo`, `StateEvent`, `TvStateChange` and the config structs), no dependency types beyond the documented list, and `#![warn(missing_docs)]`.
-   - Decide what the re-exported wire types promise.
-3. **Compatibility contract** per Q1:
-   - the version advertisement and the SDK-side check with its typed error;
-   - tests for match and mismatch;
-   - architecture.md § Error model and the "no shims" rule restated for a published SDK.
-4. **Packaging.**
-   - READMEs as crate docs, public dependencies and keywords;
-   - wire and the SDK added to `just package-check`;
-   - publish order core → ssdp → lg, cec → wire (or protocol) → SDK;
+1. **Protocol crate.** Mechanical, behavior-preserving.
+   - **Rename:** `crates/tisvlay-wire` → `crates/tisvlay-protocol` (`git mv`, so history follows), and update every `tisvlay_wire::` import.
+   - **Move:** `peer_config` and `router_config` go to `tisvlay-runtime` (a `zenoh` feature, or the existing service features).
+   - **Typed errors:** `client_config` and `client_config_resilient` return a typed `ConfigError`.
+   - **Docs:** `CLAUDE.md`'s crate map and architecture.md's references follow the rename.
+2. **Bevy newtypes.** The world defines `Component` newtypes for the eight payloads (`Deref`/`DerefMut` to the payload). Its systems and `publish_changed::<…>` read through them, and the protocol crate drops `bevy_ecs`. `StatePayload::PATH` stays on the payload type, so publishing still keys off the protocol type.
+3. **Handshake.**
+   - **Advertising:** the services already answer `info` with `ServiceInfo { version, state_path }`.
+   - **Checking:** the SDK checks the `major.minor` once per client connection, the first time the service is reachable, and caches the result. A mismatch fails every call with `Error::VersionMismatch { service, ours, theirs }`.
+   - **Open detail for review:** whether the check belongs in the SDK alone or in `caller`, so the CLI gets it too. If `caller` checks, the version travels with each service's liveliness, not an extra round trip.
+   - **Tests:** a match, and a mismatch against a stub service built from `serve`.
+4. **API audit** of `tisvlay-protocol` and `tisvlay`, the #157 checks:
+   - private by default (`unreachable_pub`, unused public items);
+   - the `#[non_exhaustive]` policy: errors and codes yes; `TvInfo`, `StateEvent`, `TvStateChange` and `StateWatcherConfig` per their construction; wire enums stay exhaustive, since lockstep means a new variant is a minor release anyway;
+   - no dependency types beyond the documented list. zenoh 1.x is a public dependency of the protocol crate (`caller` takes a `zenoh::Session`, and `serve` takes a `zenoh::query::Query`). Check whether any SDK signature exposes zenoh or zenoh-ext;
+   - `#![warn(missing_docs)]` on both;
+   - decide whether the SDK's re-exports stay re-exports or become its own types.
+5. **Packaging.**
+   - READMEs as crate docs, doctested, with public dependencies;
+   - per-crate keywords and categories;
+   - `LICENSE` symlinks;
+   - both crates added to `just package-check`;
+   - publish order core → ssdp → lg, cec → protocol → tisvlay;
    - `docs/build.md`'s checklist and crate count;
-   - release-plz picking them up.
+   - release-plz picks them up.
 
 ## Test plan
 
-- `just check` after every commit, and `just package-check` with the new crates from car 4 on.
-- New tests per car: the handshake (match and mismatch), the gated builds (the protocol crate without the `bevy` and `server` features builds and tests), and the README doctests.
-- `cargo hack --each-feature` covers the new features (`just hack`).
+- `just check` after every commit, and `just package-check` with the new crates from car 5 on.
+- New tests per car:
+  - car 1: the typed client-config errors;
+  - car 2: the existing world suites, unchanged in behavior;
+  - car 3: a handshake match and mismatch;
+  - car 5: the README doctests.
+- `just hack` for each feature on its own, since `tisvlay-runtime` gains the listening configs.
 
 ## Retirement
 
