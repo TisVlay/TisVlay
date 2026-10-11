@@ -214,7 +214,14 @@ mod tests {
     /// missing packaged path leaves the dev default in place.
     #[test]
     fn stale_dev_socket_falls_through_to_the_packaged_path() {
-        let dir = tisvlay_test::socket_tempdir();
+        // Under /tmp, not the test rig's helper: this test ships in the
+        // published crate, whose packaged manifest drops the workspace's
+        // unpublished dev-dependencies. /tmp keeps the socket paths
+        // within the kernel's limit.
+        let dir = tempfile::Builder::new()
+            .prefix("tv")
+            .tempdir_in("/tmp")
+            .expect("create a temp dir under /tmp");
         let dev = dir.path().join("zenoh.sock");
         let packaged = dir.path().join("packaged.sock");
 
