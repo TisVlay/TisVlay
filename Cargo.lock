@@ -3453,7 +3453,6 @@ dependencies = [
  "linux-cec-sys",
  "nix 0.31.3",
  "num_enum",
- "serde",
  "strum",
  "thiserror 2.0.21",
  "tinyvec",

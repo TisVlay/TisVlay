@@ -1,9 +1,8 @@
 //! Vendor config for the CEC backend.
 
-use std::str::FromStr;
-
-use linux_cec::PhysicalAddress;
 use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::PhysicalAddress;
 
 /// CEC TV configuration, stored under `[tv.cec]` in the daemon config.
 ///
@@ -120,8 +119,8 @@ where
     D: Deserializer<'de>,
 {
     // Accept either the dotted `a.b.c.d`/hex string form or a raw integer
-    // (matching linux-cec's own `Deserialize`, so an `UpdateConfig` numeric
-    // payload isn't rejected); an empty string — a cleared optional
+    // (matching `PhysicalAddress`'s own `Deserialize`, so an `UpdateConfig`
+    // numeric payload isn't rejected); an empty string — a cleared optional
     // pairing-form field — falls back to the default.
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -131,7 +130,7 @@ where
     }
     match Raw::deserialize(deserializer)? {
         Raw::Text(s) if s.is_empty() => Ok(default_physical_address()),
-        Raw::Text(s) => PhysicalAddress::from_str(&s).map_err(serde::de::Error::custom),
+        Raw::Text(s) => s.parse().map_err(serde::de::Error::custom),
         Raw::Number(n) => Ok(PhysicalAddress::from(n)),
     }
 }
@@ -212,7 +211,7 @@ mod tests {
     #[test]
     fn parses_integer_physical_address() {
         // A raw integer (e.g. an `UpdateConfig` numeric payload) is the
-        // packed u16, matching linux-cec's own deserializer.
+        // packed u16, matching `PhysicalAddress`'s own deserializer.
         let cfg: CecVendorConfig =
             toml::from_str("device = \"/dev/cec0\"\nphysical_address = 4096").unwrap();
         assert_eq!(cfg.physical_address, PhysicalAddress::from(0x1000));

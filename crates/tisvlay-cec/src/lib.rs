@@ -20,6 +20,7 @@
 // first-publish checklist).
 #![warn(missing_docs)]
 
+mod address;
 mod backend;
 mod config;
 mod connection;
@@ -28,6 +29,7 @@ mod discovery;
 mod identity;
 mod link;
 
+pub use address::{ParsePhysicalAddressError, PhysicalAddress};
 pub use backend::CecBackend;
 pub use config::CecVendorConfig;
 pub use connection::CecConnection;
@@ -42,6 +44,10 @@ pub const VENDOR_NAME: &str = "HDMI CEC";
 
 /// Out-of-crate test seam (`test-link` feature): the scripted CEC link
 /// doubles and the power vocabulary they speak.
+///
+/// Test-only: `PowerStatus` is linux-cec's type, re-exported so a test can
+/// script a fake without depending on linux-cec. The feature is outside the
+/// crate's semver surface and follows linux-cec's releases.
 #[cfg(any(test, feature = "test-link"))]
 pub use link::{FakeCecLink, FakeCecLinkOpener};
 #[cfg(any(test, feature = "test-link"))]
