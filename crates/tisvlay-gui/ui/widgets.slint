@@ -615,8 +615,8 @@ export component LineEditField inherits Rectangle {
     in property <string> placeholder-text;
     in-out property <string> text <=> inner.text;
     in property <bool> enabled <=> inner.enabled;
-    /// Optional CSS-style font-family list (e.g.
-    /// `"ui-monospace, monospace"`) — useful for IP / MAC entry.
+    /// Optional font family (one family name, e.g. `Theme.mono-font`
+    /// for IP / MAC entry); empty is the default font.
     in property <string> font-family <=> inner.font-family;
     callback edited(string);
     callback accepted(string);

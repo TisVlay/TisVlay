@@ -468,7 +468,7 @@ component LabeledRow {
                 text: root.value == "" ? "—" : root.value;
                 color: Theme.text;
                 font-size: Design.font-meta;
-                font-family: root.mono ? "ui-monospace, monospace" : "";
+                font-family: root.mono ? Theme.mono-font : "";
                 overflow: elide;
             }
         }
@@ -538,7 +538,7 @@ component TvDetailHeader inherits Rectangle {
                     text: root.tv.primary-descriptor == "" ? "—" : root.tv.primary-descriptor;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
-                    font-family: "ui-monospace, monospace";
+                    font-family: Theme.mono-font;
                     // primary-descriptor is the connection address;
                     // a v6 form would otherwise push the hw-model off
                     // the row in the master/detail header.

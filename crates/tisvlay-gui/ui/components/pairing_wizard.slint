@@ -214,7 +214,7 @@ component DiscoveryRow inherits Rectangle {
                     text: root.tv.address;
                     color: Theme.text-dim;
                     font-size: Design.font-caption;
-                    font-family: "ui-monospace, monospace";
+                    font-family: Theme.mono-font;
                     // ~39-char v6 addresses would otherwise push the
                     // trailing model chip off the row.
                     overflow: elide;
@@ -523,7 +523,7 @@ component StepDiscover {
                                 root.supported-vendors.length > root.manual-vendor-index
                                     ? root.supported-vendors[root.manual-vendor-index].primary-placeholder
                                     : "";
-                            font-family: "ui-monospace, monospace";
+                            font-family: Theme.mono-font;
                             text <=> root.manual-ip;
                             edited(v) => { root.manual-ip-edited(v); }
                         }
@@ -646,7 +646,7 @@ component StepConfigure {
                             + (root.selected-hw-model != "" ? (" · " + root.selected-hw-model) : "");
                         color: Theme.text-dim;
                         font-size: Design.font-helper;
-                        font-family: "ui-monospace, monospace";
+                        font-family: Theme.mono-font;
                         // Wrap (not elide) so the full v6 address
                         // stays visible — wizard step 2 is where the
                         // user confirms what they're pairing.
@@ -972,7 +972,7 @@ component StepDone {
                     text: root.tv-address;
                     color: Theme.text-dim;
                     font-size: Design.font-caption;
-                    font-family: "ui-monospace, monospace";
+                    font-family: Theme.mono-font;
                     // v6 addresses would otherwise crowd out the
                     // trailing Managed/Unmanaged badge.
                     overflow: elide;

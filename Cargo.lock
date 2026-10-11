@@ -6695,6 +6695,7 @@ dependencies = [
  "anyhow",
  "ashpd",
  "clap",
+ "fontique",
  "futures-util",
  "gettext-rs 0.8.0",
  "i-slint-backend-testing",

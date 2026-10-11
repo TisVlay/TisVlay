@@ -13,6 +13,7 @@ mod dbus;
 mod diagnostic;
 mod edit_pane;
 mod file_manager;
+mod fonts;
 mod icon_theme;
 mod nav;
 mod power_cycle;
@@ -785,6 +786,7 @@ pub fn run() -> Result<()> {
     // `Theme.accent` at its hardcoded default — this just upgrades
     // the experience when it can.
     tokio::spawn(watch_accent_color(app.as_weak()));
+    fonts::resolve_monospace(app.as_weak());
 
     // Mouse back/forward buttons → history navigation, handled at the
     // winit layer so the side buttons work anywhere in the window
