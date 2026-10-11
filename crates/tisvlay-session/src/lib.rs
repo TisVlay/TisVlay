@@ -974,25 +974,32 @@ impl Core {
         });
     }
 
+    /// The persisted form, sorted by id: the maps iterate in no fixed
+    /// order, and a stable one keeps unchanged writes skipped and a hand
+    /// comment next to its entry.
     fn snapshot(&self) -> UserStoreSnapshot {
+        let mut profile: Vec<UserProfileRecord> = self
+            .profiles
+            .iter()
+            .map(|(id, body)| UserProfileRecord {
+                id: *id,
+                body: body.clone(),
+            })
+            .collect();
+        profile.sort_by_key(|record| record.id);
+        let mut assignment: Vec<Assignment> = self
+            .assignments
+            .iter()
+            .map(|(tv, profile)| Assignment {
+                tv: *tv,
+                profile: *profile,
+            })
+            .collect();
+        assignment.sort_by_key(|assignment| assignment.tv);
         UserStoreSnapshot {
             version: UserStoreSnapshot::default().version,
-            profile: self
-                .profiles
-                .iter()
-                .map(|(id, body)| UserProfileRecord {
-                    id: *id,
-                    body: body.clone(),
-                })
-                .collect(),
-            assignment: self
-                .assignments
-                .iter()
-                .map(|(tv, profile)| Assignment {
-                    tv: *tv,
-                    profile: *profile,
-                })
-                .collect(),
+            profile,
+            assignment,
         }
     }
 
@@ -1033,6 +1040,23 @@ impl Core {
         &mut self,
         edit: &store::UserStoreEdit,
     ) -> Result<rpc::ReloadReport, WireError> {
+        // Ids key the merge, so a file that repeats one is ambiguous.
+        fn first_duplicate(ids: impl IntoIterator<Item = Uuid>) -> Option<Uuid> {
+            let mut seen = HashSet::new();
+            ids.into_iter().find(|&id| !seen.insert(id))
+        }
+        if let Some(id) = first_duplicate(edit.disk.profile.iter().map(|record| record.id)) {
+            return Err(WireError::bad_request(format!(
+                "the file lists profile {id} twice"
+            )));
+        }
+        if let Some(tv) =
+            first_duplicate(edit.disk.assignment.iter().map(|assignment| assignment.tv))
+        {
+            return Err(WireError::bad_request(format!(
+                "the file assigns TV {tv} twice"
+            )));
+        }
         let index_profiles = |snapshot: &UserStoreSnapshot| -> HashMap<Uuid, UserProfileConfig> {
             snapshot
                 .profile

@@ -154,6 +154,29 @@ async fn a_reload_applies_the_hand_edit() {
     );
 }
 
+/// Ids key the merge, so a file that repeats one is refused whole
+/// rather than spawning the TV twice.
+#[tokio::test]
+async fn a_file_that_repeats_an_id_is_refused() {
+    let base = snapshot(Vec::new(), Vec::new());
+    let mut w = boot(&base).await;
+    let id = Uuid::new_v4();
+    let disk = snapshot(
+        vec![
+            tv_record(id, "Hall", mock_config("mock://hall")),
+            tv_record(id, "Hall again", mock_config("mock://hall")),
+        ],
+        Vec::new(),
+    );
+    let seen = w.reload(&base, &disk).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 100)),
+        Some(ErrorCode::BadRequest),
+        "{seen:#?}"
+    );
+    assert_eq!(w.reloaded(), Some(false), "nothing applied");
+}
+
 #[tokio::test]
 async fn a_world_change_awaiting_its_write_survives_a_reload() {
     let id = Uuid::new_v4();

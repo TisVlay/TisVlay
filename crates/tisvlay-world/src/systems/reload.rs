@@ -92,6 +92,18 @@ pub(crate) fn reload_store(
     mut outbox: ResMut<Outbox>,
     site: Res<Site>,
 ) -> Result<ReloadReport, WireError> {
+    // Ids key the merge, so a file that repeats one is ambiguous: refuse
+    // it before diffing, which would apply both entries.
+    if let Some(id) = first_duplicate(edit.disk.tv.iter().map(|tv| tv.id)) {
+        return Err(WireError::bad_request(format!(
+            "the file lists TV {id} twice"
+        )));
+    }
+    if let Some(id) = first_duplicate(edit.disk.system_profile.iter().map(|p| p.id)) {
+        return Err(WireError::bad_request(format!(
+            "the file lists profile {id} twice"
+        )));
+    }
     let diff = StoreDiff::between(&edit.base, &edit.disk);
     if diff.is_empty() {
         return Ok(ReloadReport { changed: false });
@@ -134,14 +146,36 @@ pub(crate) fn reload_store(
             return Err(WireError::profile_reserved(id));
         }
     }
+    // A TV mid-pairing belongs to its pairing flow; the edit leaves it be.
+    let pairing_flow = |id: Uuid| {
+        pairing.index.contains(&id)
+            || tvs
+                .get(&id)
+                .is_some_and(|entity| verifying.get(entity).is_ok())
+    };
+    let skip: HashSet<Uuid> = diff
+        .tvs_changed
+        .iter()
+        .map(|(_, new)| new.id)
+        .chain(diff.tvs_removed.iter().copied())
+        .filter(|&id| pairing_flow(id))
+        .collect();
     if !diff.profiles_removed.is_empty() {
         // A profile can go only if no TV references it once the edit's
-        // own TV changes apply.
-        let removed_tvs: HashSet<Uuid> = diff.tvs_removed.iter().copied().collect();
+        // own TV changes apply. A TV mid-pairing keeps its current
+        // assignment, since the edit leaves it be.
+        let removed_tvs: HashSet<Uuid> = diff
+            .tvs_removed
+            .iter()
+            .copied()
+            .filter(|id| !skip.contains(id))
+            .collect();
         let reassigned: HashMap<Uuid, Option<Uuid>> = diff
             .tvs_changed
             .iter()
-            .filter(|(old, new)| old.system_profile != new.system_profile)
+            .filter(|(old, new)| {
+                old.system_profile != new.system_profile && !skip.contains(&new.id)
+            })
             .map(|(_, new)| (new.id, new.system_profile))
             .collect();
         let assigned = tvs
@@ -158,20 +192,6 @@ pub(crate) fn reload_store(
         }
     }
 
-    // A TV mid-pairing belongs to its pairing flow; the edit leaves it be.
-    let pairing_flow = |id: Uuid| {
-        pairing.index.contains(&id)
-            || tvs
-                .get(&id)
-                .is_some_and(|entity| verifying.get(entity).is_ok())
-    };
-    let skip: HashSet<Uuid> = diff
-        .tvs_changed
-        .iter()
-        .map(|(_, new)| new.id)
-        .chain(diff.tvs_removed.iter().copied())
-        .filter(|&id| pairing_flow(id))
-        .collect();
     for id in &skip {
         tracing::info!(tv = %id, "reload left a TV that's mid-pairing unchanged");
     }
@@ -306,6 +326,12 @@ fn apply_tv_edit(
         e.remove::<(ConnectionHandle, RetryAt)>();
         redial(&mut e, false);
     }
+}
+
+/// The first id `ids` repeats, if any.
+fn first_duplicate(ids: impl IntoIterator<Item = Uuid>) -> Option<Uuid> {
+    let mut seen = HashSet::new();
+    ids.into_iter().find(|&id| !seen.insert(id))
 }
 
 #[cfg(test)]

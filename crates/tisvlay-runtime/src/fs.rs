@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
-use tracing::warn;
+use tracing::{error, warn};
 
 /// Replace `path` with `contents` atomically and durably: write a sibling
 /// temp file (mode 0600, since these files hold credentials), fsync it,
@@ -39,13 +39,54 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
             .open(&tmp)?;
         file.write_all(contents)?;
         file.sync_all()?;
-        fs::rename(&tmp, path)?;
-        File::open(dir)?.sync_all()
+        fs::rename(&tmp, path)
     })();
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
+        return written;
     }
-    written
+    // The file holds the new contents now; only the rename's durability
+    // is in doubt. Reporting that as a failed write would leave the
+    // caller's record of the file stale, and its next write would take
+    // its own output for a hand edit.
+    if let Err(e) = File::open(dir).and_then(|dir| dir.sync_all()) {
+        warn!(%e, file = %path.display(), "the write landed but its directory didn't sync");
+    }
+    Ok(())
+}
+
+/// Before a state writer replaces `path`: if the file no longer holds what
+/// the writer last wrote (it doesn't parse, or `is_record` rejects it),
+/// someone edited it and never reloaded, so move it aside to
+/// `<path>.edited` (see [`set_aside`]) with a warning rather than
+/// overwrite the edit. Returns whether the write may go ahead: false when
+/// the edit couldn't be set aside. A missing file has nothing to keep.
+///
+/// Blocking: async callers run it on `spawn_blocking`.
+pub fn keep_unreloaded_edit<T: DeserializeOwned>(
+    path: &Path,
+    is_record: impl FnOnce(&T) -> bool,
+) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return true;
+    };
+    if toml::from_str::<T>(&text).is_ok_and(|disk| is_record(&disk)) {
+        return true;
+    }
+    match set_aside(path) {
+        Ok(aside) => {
+            warn!(
+                file = %path.display(),
+                aside = %aside.display(),
+                "the file held an edit nobody reloaded; kept it aside before writing"
+            );
+            true
+        }
+        Err(e) => {
+            error!(%e, file = %path.display(), "couldn't set aside an edit nobody reloaded; not writing over it");
+            false
+        }
+    }
 }
 
 /// Move `path` aside to `<path>.edited` (mode 0600, replacing an earlier
@@ -529,6 +570,38 @@ ip = "192.168.4.170"
             report.ends_with(&format!(" --> {}", path.display())),
             "{report}"
         );
+    }
+
+    #[test]
+    fn an_unreloaded_edit_is_set_aside_before_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.toml");
+        fs::write(&path, "version = 2\n").unwrap();
+        let ours = |table: &toml::Table| table["version"].as_integer() == Some(1);
+        assert!(keep_unreloaded_edit(&path, ours));
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("store.toml.edited")).unwrap(),
+            "version = 2\n"
+        );
+        // The writer's own record stays put.
+        fs::write(&path, "version = 1\n").unwrap();
+        assert!(keep_unreloaded_edit(&path, ours));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn an_edit_that_cant_be_set_aside_blocks_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.toml");
+        fs::write(&path, "version = 2\n").unwrap();
+        // A non-empty directory where the aside goes makes the move fail.
+        let aside = dir.path().join("store.toml.edited");
+        fs::create_dir(&aside).unwrap();
+        fs::write(aside.join("keep"), b"x").unwrap();
+        let ours = |table: &toml::Table| table["version"].as_integer() == Some(1);
+        assert!(!keep_unreloaded_edit(&path, ours));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "version = 2\n");
     }
 
     #[test]
