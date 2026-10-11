@@ -140,9 +140,6 @@ impl LgVendorConfig {
     }
 }
 
-/// Type alias for backwards compatibility within this crate.
-pub type LgConfig = LgVendorConfig;
-
 #[cfg(test)]
 mod tests {
     use super::*;

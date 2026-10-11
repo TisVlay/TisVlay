@@ -43,26 +43,24 @@ mod config;
 mod connection;
 mod connector;
 mod endpoints;
-pub mod protocol;
+mod protocol;
 mod transport;
 
 #[cfg(feature = "discovery")]
 mod discovery;
 
 #[cfg(test)]
+mod protocol_fixtures;
+#[cfg(test)]
 pub(crate) mod test_server;
 
-// Public re-exports
+// The public surface is what the daemon registers: the connector,
+// backend, discovery and typed config. The SSAP client, protocol types and
+// endpoint constants stay private, so protocol changes (LG firmware moves)
+// never ripple into this crate's semver.
 pub use backend::LgBackend;
-pub use client::WebOsClient;
-pub use config::{LgConfig, LgVendorConfig};
-pub use connection::LgConnection;
+pub use config::LgVendorConfig;
 pub use connector::LgConnector;
-pub use endpoints::{
-    WS_PORT, WSS_PORT, audio as audio_endpoints, buttons, input as input_endpoints,
-    picture as picture_endpoints, power as power_endpoints, timeouts,
-};
-pub use protocol::{ExternalInput, PowerState as ProtocolPowerState, VolumeInfo};
 
 #[cfg(feature = "discovery")]
 pub use discovery::LgDiscovery;
