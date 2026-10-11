@@ -28,7 +28,7 @@ use std::time::Duration;
 use futures_util::{StreamExt, TryStreamExt};
 use netlink_packet_core::NetlinkPayload;
 use netlink_packet_route::RouteNetlinkMessage;
-use netlink_packet_route::link::{LinkAttribute, LinkFlags};
+use netlink_packet_route::link::{LinkAttribute, LinkFlags, LinkMessage};
 use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{MulticastGroup, RouteMessageBuilder, new_connection, new_multicast_connection};
 use tisvlay_world::{InEvent, RouteRequest, WorldClient};
@@ -52,6 +52,80 @@ pub(crate) fn spawn_link_monitor(
     });
 }
 
+/// The monitor's view of the network: each link's usability and each
+/// monitored TV's address and resolved interface. Pure bookkeeping; the
+/// I/O loop feeds it kernel facts and forwards the events it returns.
+#[derive(Debug, Default)]
+struct MonitorState {
+    carrier: HashMap<u32, bool>,
+    monitored: HashMap<Uuid, IpAddr>,
+    resolved: HashMap<Uuid, Option<String>>,
+}
+
+impl MonitorState {
+    /// A link's current usability; the `Carrier` event when it changed.
+    fn on_link(&mut self, index: u32, name: String, usable: bool) -> Option<InEvent> {
+        (self.carrier.insert(index, usable) != Some(usable)).then_some(InEvent::Carrier {
+            interface: name,
+            up: usable,
+        })
+    }
+
+    fn monitor(&mut self, tv: Uuid, ip: IpAddr) {
+        self.monitored.insert(tv, ip);
+    }
+
+    fn forget(&mut self, tv: Uuid) {
+        self.monitored.remove(&tv);
+        self.resolved.remove(&tv);
+    }
+
+    /// A TV's freshly resolved interface; the `RouteResolved` event when
+    /// it changed.
+    fn on_resolved(&mut self, tv: Uuid, interface: Option<String>) -> Option<InEvent> {
+        (self.resolved.get(&tv) != Some(&interface)).then(|| {
+            self.resolved.insert(tv, interface.clone());
+            InEvent::RouteResolved { tv, interface }
+        })
+    }
+
+    /// The monitored TVs, for a re-resolution pass.
+    fn monitored(&self) -> Vec<(Uuid, IpAddr)> {
+        self.monitored.iter().map(|(&tv, &ip)| (tv, ip)).collect()
+    }
+}
+
+/// A link message's index, name and usability: physical carrier (cable)
+/// AND operational state (software up), the same rule as the root
+/// watcher. `None` for a link without a name.
+fn link_status(link: &LinkMessage) -> Option<(u32, String, bool)> {
+    let physical = link.header.flags.contains(LinkFlags::LowerUp);
+    let oper_up = link.attributes.iter().any(|attr| {
+        matches!(
+            attr,
+            LinkAttribute::OperState(netlink_packet_route::link::State::Up)
+        )
+    });
+    let name = link.attributes.iter().find_map(|attr| match attr {
+        LinkAttribute::IfName(name) => Some(name.clone()),
+        _ => None,
+    })?;
+    Some((link.header.index, name, physical && oper_up))
+}
+
+/// Forward an event to the world, logging it; false once the world is
+/// gone.
+fn send(world: &WorldClient, event: InEvent) -> bool {
+    match &event {
+        InEvent::Carrier { interface, up } => info!(%interface, up, "carrier transition"),
+        InEvent::RouteResolved { tv, interface } => {
+            info!(%tv, interface = ?interface, "route resolved");
+        }
+        _ => {}
+    }
+    world.send(event)
+}
+
 async fn watch_network(
     world: WorldClient,
     mut routes: mpsc::UnboundedReceiver<RouteRequest>,
@@ -66,9 +140,7 @@ async fn watch_network(
     tokio::spawn(conn);
     info!("network monitor started");
 
-    let mut carrier_state: HashMap<u32, bool> = HashMap::new();
-    let mut monitored: HashMap<Uuid, IpAddr> = HashMap::new();
-    let mut resolved: HashMap<Uuid, Option<String>> = HashMap::new();
+    let mut state = MonitorState::default();
     let mut settle_at: Option<tokio::time::Instant> = None;
 
     loop {
@@ -78,24 +150,18 @@ async fn watch_network(
                     Some(RouteRequest::Monitor { tv, host }) => {
                         let Ok(ip) = host.parse::<IpAddr>() else {
                             debug!(%tv, host, "address is not an IP; skipping route monitoring");
-                            monitored.remove(&tv);
-                            resolved.remove(&tv);
+                            state.forget(tv);
                             continue;
                         };
-                        monitored.insert(tv, ip);
+                        state.monitor(tv, ip);
                         let interface = resolve_interface_for_ip(ip).await;
-                        if resolved.get(&tv) != Some(&interface) {
-                            info!(%tv, interface = ?interface, "route resolved");
-                            resolved.insert(tv, interface.clone());
-                            if !world.send(InEvent::RouteResolved { tv, interface }) {
-                                break;
-                            }
+                        if let Some(event) = state.on_resolved(tv, interface)
+                            && !send(&world, event)
+                        {
+                            break;
                         }
                     }
-                    Some(RouteRequest::Forget { tv }) => {
-                        monitored.remove(&tv);
-                        resolved.remove(&tv);
-                    }
+                    Some(RouteRequest::Forget { tv }) => state.forget(tv),
                     None => break,
                 }
             }
@@ -106,27 +172,10 @@ async fn watch_network(
                 };
                 match msg {
                     RouteNetlinkMessage::NewLink(link) => {
-                        let index = link.header.index;
-                        // Usable = physical carrier (cable) AND operational
-                        // state (software up) — same rule as the root watcher.
-                        let physical = link.header.flags.contains(LinkFlags::LowerUp);
-                        let oper_up = link.attributes.iter().any(|attr| {
-                            matches!(
-                                attr,
-                                LinkAttribute::OperState(netlink_packet_route::link::State::Up)
-                            )
-                        });
-                        let usable = physical && oper_up;
-                        let name = link.attributes.iter().find_map(|attr| match attr {
-                            LinkAttribute::IfName(name) => Some(name.clone()),
-                            _ => None,
-                        });
-                        let Some(name) = name else { continue };
-                        if carrier_state.insert(index, usable) == Some(usable) {
-                            continue;
-                        }
-                        info!(interface = %name, up = usable, "carrier transition");
-                        if !world.send(InEvent::Carrier { interface: name, up: usable }) {
+                        let Some((index, name, usable)) = link_status(&link) else { continue };
+                        if let Some(event) = state.on_link(index, name, usable)
+                            && !send(&world, event)
+                        {
                             break;
                         }
                     }
@@ -140,7 +189,7 @@ async fn watch_network(
                         // settles.
                         trace!("route table changed, re-resolving monitored TVs");
                         if settle_at.is_none() {
-                            if !re_resolve(&world, &monitored, &mut resolved).await {
+                            if !re_resolve(&world, &mut state).await {
                                 break;
                             }
                             settle_at = tokio::time::Instant::now().checked_add(ROUTE_SETTLE);
@@ -153,7 +202,7 @@ async fn watch_network(
                 if settle_at.is_some() =>
             {
                 settle_at = None;
-                if !re_resolve(&world, &monitored, &mut resolved).await {
+                if !re_resolve(&world, &mut state).await {
                     break;
                 }
             }
@@ -164,19 +213,13 @@ async fn watch_network(
 
 /// One resolution pass over every monitored TV; sends `RouteResolved`
 /// for changes only. Returns false when the world is gone.
-async fn re_resolve(
-    world: &WorldClient,
-    monitored: &HashMap<Uuid, IpAddr>,
-    resolved: &mut HashMap<Uuid, Option<String>>,
-) -> bool {
-    for (&tv, &ip) in monitored {
+async fn re_resolve(world: &WorldClient, state: &mut MonitorState) -> bool {
+    for (tv, ip) in state.monitored() {
         let interface = resolve_interface_for_ip(ip).await;
-        if resolved.get(&tv) != Some(&interface) {
-            info!(%tv, interface = ?interface, "route resolution changed");
-            resolved.insert(tv, interface.clone());
-            if !world.send(InEvent::RouteResolved { tv, interface }) {
-                return false;
-            }
+        if let Some(event) = state.on_resolved(tv, interface)
+            && !send(world, event)
+        {
+            return false;
         }
     }
     true
@@ -279,6 +322,42 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carrier_events_fire_on_changes_only() {
+        let mut state = MonitorState::default();
+        assert!(matches!(
+            state.on_link(2, "eno1".into(), true),
+            Some(InEvent::Carrier { up: true, .. })
+        ));
+        assert!(
+            state.on_link(2, "eno1".into(), true).is_none(),
+            "no change, no event"
+        );
+        assert!(matches!(
+            state.on_link(2, "eno1".into(), false),
+            Some(InEvent::Carrier { up: false, .. })
+        ));
+    }
+
+    #[test]
+    fn resolutions_fire_on_changes_only_and_forget_clears() {
+        let mut state = MonitorState::default();
+        let tv = Uuid::new_v4();
+        state.monitor(tv, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(state.on_resolved(tv, Some("eno1".into())).is_some());
+        assert!(state.on_resolved(tv, Some("eno1".into())).is_none());
+        assert!(
+            state.on_resolved(tv, None).is_some(),
+            "a lost route is a change"
+        );
+        state.forget(tv);
+        assert!(state.monitored().is_empty());
+        assert!(
+            state.on_resolved(tv, None).is_some(),
+            "a forgotten TV's next resolution reports afresh"
+        );
+    }
 
     #[tokio::test]
     async fn resolves_localhost_to_lo() {
