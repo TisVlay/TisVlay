@@ -9,7 +9,7 @@ use tisvlay_core::UserProfileConfig;
 use tisvlay_wire::error::WireError;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -126,7 +126,7 @@ pub(crate) async fn store_task(
                 }
                 None => {
                     if let Some(snapshot) = pending.take() {
-                        write_blocking(&path, snapshot).await;
+                        write_blocking(&path, snapshot, base).await;
                     }
                     return;
                 }
@@ -145,7 +145,7 @@ pub(crate) async fn store_task(
             }, if due.is_some() && !reloading => {
                 due = None;
                 if let Some(snapshot) = pending.take()
-                    && let Some(written) = write_blocking(&path, snapshot).await
+                    && let Some(written) = write_blocking(&path, snapshot, base.clone()).await
                 {
                     base = written;
                 }
@@ -154,12 +154,21 @@ pub(crate) async fn store_task(
     }
 }
 
-/// [`write_atomic`] off the async runtime, since the fsyncs block. Returns
-/// the snapshot once it's on disk.
-async fn write_blocking(path: &Path, snapshot: UserStoreSnapshot) -> Option<UserStoreSnapshot> {
+/// [`write_atomic`] off the async runtime, since the fsyncs block, after
+/// keeping aside a hand edit nobody reloaded (the file no longer holds
+/// `base`, what the writer last wrote). Returns the snapshot once it's on
+/// disk.
+async fn write_blocking(
+    path: &Path,
+    snapshot: UserStoreSnapshot,
+    base: UserStoreSnapshot,
+) -> Option<UserStoreSnapshot> {
     let path = path.to_path_buf();
-    match tokio::task::spawn_blocking(move || write_atomic(&path, &snapshot).then_some(snapshot))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        keep_unreloaded_edit(&path, &base);
+        write_atomic(&path, &snapshot).then_some(snapshot)
+    })
+    .await
     {
         Ok(written) => written,
         Err(e) => {
@@ -167,6 +176,40 @@ async fn write_blocking(path: &Path, snapshot: UserStoreSnapshot) -> Option<User
             None
         }
     }
+}
+
+/// If the file no longer holds what the writer last wrote, someone edited
+/// it and never reloaded: move it aside to `<path>.edited` (with a
+/// warning) rather than overwrite the edit. A missing file has nothing to
+/// keep.
+fn keep_unreloaded_edit(path: &Path, base: &UserStoreSnapshot) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if toml::from_str::<UserStoreSnapshot>(&text).is_ok_and(|disk| same_content(&disk, base)) {
+        return;
+    }
+    match tisvlay_runtime::fs::set_aside(path) {
+        Ok(aside) => warn!(
+            store = %path.display(),
+            aside = %aside.display(),
+            "the user store held an edit nobody reloaded; kept it aside before writing"
+        ),
+        Err(e) => {
+            error!(%e, store = %path.display(), "setting aside an unreloaded user store edit failed");
+        }
+    }
+}
+
+/// The same profiles and assignments, whatever their order in the file.
+fn same_content(a: &UserStoreSnapshot, b: &UserStoreSnapshot) -> bool {
+    fn sorted<T: Clone>(items: &[T], key: impl Fn(&T) -> Uuid) -> Vec<T> {
+        let mut items = items.to_vec();
+        items.sort_by_key(|item| key(item));
+        items
+    }
+    sorted(&a.profile, |p| p.id) == sorted(&b.profile, |p| p.id)
+        && sorted(&a.assignment, |a| a.tv) == sorted(&b.assignment, |a| a.tv)
 }
 
 /// Serialize and durably replace the store file (`write_atomic`:

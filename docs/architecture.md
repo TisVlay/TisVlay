@@ -117,7 +117,8 @@ A hand edit of a state file applies on reload: the `reload` rpc of the daemon, s
 - the writer reads the file, refusing a missing or unparsable one (never read as empty), and hands over the edit since its record;
 - the world (or the session's core) applies only that difference, so changes still awaiting their write survive, and the file wins where both changed a field;
 - the edit is validated whole first, then applied through the client commands' helpers;
-- the writer holds its writes until the outcome arrives, and a successful reload makes the file its new record.
+- the writer holds its writes until the outcome arrives, and a successful reload makes the file its new record;
+- before any write, a file that no longer holds the writer's record (an edit nobody reloaded) is moved to `<file>.edited` with a warning instead of being overwritten.
 
 The tray writes every update before answering, so its file only differs after a hand edit, which applies whole.
 

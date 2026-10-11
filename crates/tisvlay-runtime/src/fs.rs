@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Replace `path` with `contents` atomically and durably: write a sibling
@@ -43,6 +43,24 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     written
 }
 
+/// Move `path` aside to `<path>.edited` (mode 0600, replacing an earlier
+/// one) and return where it went: a state writer's way to keep a hand
+/// edit it's about to overwrite. A single slot rather than timestamped
+/// copies, since these files hold credentials and copies would pile up.
+///
+/// Blocking: async callers run it on `spawn_blocking`.
+pub fn set_aside(path: &Path) -> io::Result<PathBuf> {
+    let mut name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path names no file"))?
+        .to_owned();
+    name.push(".edited");
+    let aside = path.with_file_name(name);
+    fs::rename(path, &aside)?;
+    fs::set_permissions(&aside, fs::Permissions::from_mode(0o600))?;
+    Ok(aside)
+}
+
 /// `<path>.tmp`, beside the target so the rename stays on one filesystem.
 fn temp_path(path: &Path) -> io::Result<PathBuf> {
     let mut name = path
@@ -56,7 +74,6 @@ fn temp_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn replaces_the_file_owner_only_and_leaves_no_temp() {
@@ -81,6 +98,22 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"fresh");
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn set_aside_moves_the_file_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        fs::write(&path, b"hand edit").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let aside = set_aside(&path).unwrap();
+        assert_eq!(aside, dir.path().join("state.toml.edited"));
+        assert!(!path.exists());
+        assert_eq!(fs::read(&aside).unwrap(), b"hand edit");
+        assert_eq!(
+            fs::metadata(&aside).unwrap().permissions().mode() & 0o777,
             0o600
         );
     }

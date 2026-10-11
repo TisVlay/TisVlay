@@ -13,7 +13,7 @@ use tisvlay_wire::endpoint::manager;
 use tisvlay_world::{Command, Reply, StoreEdit, StoreMsg, StoreSnapshot, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// Load the store; a missing file is an empty store.
 pub fn load_store(path: &Path) -> Result<StoreSnapshot> {
@@ -75,7 +75,7 @@ pub(crate) async fn store_task(
                 }
                 None => {
                     if let Some(snapshot) = pending.take() {
-                        write_blocking(&path, snapshot).await;
+                        write_blocking(&path, snapshot, base).await;
                     }
                     return;
                 }
@@ -92,7 +92,7 @@ pub(crate) async fn store_task(
             }, if due.is_some() && !reloading => {
                 due = None;
                 if let Some(snapshot) = pending.take()
-                    && let Some(written) = write_blocking(&path, snapshot).await
+                    && let Some(written) = write_blocking(&path, snapshot, base.clone()).await
                 {
                     base = written;
                 }
@@ -101,12 +101,21 @@ pub(crate) async fn store_task(
     }
 }
 
-/// [`write_atomic`] off the async runtime, since the fsyncs block. Returns
-/// the snapshot once it's on disk.
-async fn write_blocking(path: &Path, snapshot: StoreSnapshot) -> Option<StoreSnapshot> {
+/// [`write_atomic`] off the async runtime, since the fsyncs block, after
+/// keeping aside a hand edit nobody reloaded (the file no longer holds
+/// `base`, what the writer last wrote). Returns the snapshot once it's on
+/// disk.
+async fn write_blocking(
+    path: &Path,
+    snapshot: StoreSnapshot,
+    base: StoreSnapshot,
+) -> Option<StoreSnapshot> {
     let path = path.to_path_buf();
-    match tokio::task::spawn_blocking(move || write_atomic(&path, &snapshot).then_some(snapshot))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        keep_unreloaded_edit(&path, &base);
+        write_atomic(&path, &snapshot).then_some(snapshot)
+    })
+    .await
     {
         Ok(written) => written,
         Err(e) => {
@@ -114,6 +123,40 @@ async fn write_blocking(path: &Path, snapshot: StoreSnapshot) -> Option<StoreSna
             None
         }
     }
+}
+
+/// If the file no longer holds what the writer last wrote, someone edited
+/// it and never reloaded: move it aside to `<path>.edited` (with a
+/// warning) rather than overwrite the edit. A missing file has nothing to
+/// keep.
+fn keep_unreloaded_edit(path: &Path, base: &StoreSnapshot) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if toml::from_str::<StoreSnapshot>(&text).is_ok_and(|disk| same_content(&disk, base)) {
+        return;
+    }
+    match tisvlay_runtime::fs::set_aside(path) {
+        Ok(aside) => warn!(
+            store = %path.display(),
+            aside = %aside.display(),
+            "the store held an edit nobody reloaded; kept it aside before writing"
+        ),
+        Err(e) => {
+            error!(%e, store = %path.display(), "setting aside an unreloaded store edit failed");
+        }
+    }
+}
+
+/// The same TVs and profiles, whatever their order in the file.
+fn same_content(a: &StoreSnapshot, b: &StoreSnapshot) -> bool {
+    fn sorted<T: Clone>(items: &[T], key: impl Fn(&T) -> uuid::Uuid) -> Vec<T> {
+        let mut items = items.to_vec();
+        items.sort_by_key(|item| key(item));
+        items
+    }
+    sorted(&a.tv, |tv| tv.id) == sorted(&b.tv, |tv| tv.id)
+        && sorted(&a.system_profile, |p| p.id) == sorted(&b.system_profile, |p| p.id)
 }
 
 /// Serialize and durably replace the store file (`write_atomic`:
@@ -189,6 +232,72 @@ mod tests {
         drop(persist_tx);
         task.await.unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().contains("Pending"));
+    }
+
+    fn one_tv(name: &str) -> StoreSnapshot {
+        let mut snapshot = StoreSnapshot::default();
+        snapshot.tv.push(TvRecord {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            vendor: "mock".into(),
+            managed: true,
+            system_profile: None,
+            primary_input: None,
+            config: tisvlay_core::VendorConfig::new(),
+        });
+        snapshot
+    }
+
+    async fn await_contains(path: &Path, needle: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(path).is_ok_and(|t| t.contains(needle)) {
+            assert!(
+                Instant::now() < deadline,
+                "{} never held {needle}",
+                path.display()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A hand edit nobody reloaded is kept aside rather than overwritten;
+    /// one a reload applied is the writer's new record, so it isn't.
+    #[tokio::test]
+    async fn an_unreloaded_edit_is_kept_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.toml");
+        let aside = dir.path().join("daemon.toml.edited");
+        let base = StoreSnapshot::default();
+        assert!(write_atomic(&path, &base));
+        let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
+        let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+        let (_reload_tx, reload_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(store_task(path.clone(), base, persist_rx, reload_rx, world));
+
+        assert!(write_atomic(&path, &one_tv("Hand edit")));
+        persist_tx
+            .send(StoreMsg::Persist(Box::new(one_tv("World"))))
+            .unwrap();
+        await_contains(&path, "World").await;
+        assert!(
+            std::fs::read_to_string(&aside)
+                .unwrap()
+                .contains("Hand edit")
+        );
+
+        std::fs::remove_file(&aside).unwrap();
+        let reloaded = one_tv("Reloaded edit");
+        assert!(write_atomic(&path, &reloaded));
+        persist_tx
+            .send(StoreMsg::Reloaded(Some(Box::new(reloaded))))
+            .unwrap();
+        persist_tx
+            .send(StoreMsg::Persist(Box::new(one_tv("Merged"))))
+            .unwrap();
+        await_contains(&path, "Merged").await;
+        assert!(!aside.exists(), "a reloaded edit isn't kept aside");
+        drop(persist_tx);
+        task.await.unwrap();
     }
 
     #[test]

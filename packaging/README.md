@@ -234,7 +234,7 @@ The daemon keeps its TVs (credentials included) and system profiles in `/var/lib
 
 - **Only the edit applies.** The daemon compares the file with what it last wrote and applies just that difference, so changes made through clients but not yet written survive. Where both changed the same field, the file wins.
 - **A bad edit is refused whole.** That covers a missing or unparsable file (never read as empty), a changed vendor, removing the default profile, or deleting a profile a TV still uses. `systemctl reload` reports success as soon as the signal is sent, so the outcome is in the daemon's journal.
-- **Reload before the daemon writes again.** Any client change makes the daemon rewrite the file. Edits made in the meantime need a reload first.
+- **Reload before the daemon writes again.** Any client change makes the daemon rewrite the file. An edit nobody reloaded is moved to `daemon.toml.edited` (mode 0600, one slot) with a warning in the journal, never silently overwritten.
 
 ## Testing the result
 
