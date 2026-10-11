@@ -8,6 +8,7 @@ use tisvlay_core::{Capabilities, TvBackend};
 
 /// CEC backend metadata.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct CecBackend;
 
 impl CecBackend {

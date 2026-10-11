@@ -58,6 +58,7 @@ impl fmt::Display for InputType {
 /// (future refresh tokens) stay out of it too, since `Debug` output can
 /// reach logs through `?value` fields and `#[instrument]`.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Credentials {
     /// Vendor-specific credential data.
     ///
@@ -185,6 +186,7 @@ impl std::error::Error for PairingError {}
 /// carried as the pairing-progress payload's `code` field and matched
 /// by clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PairingErrorCode {
     /// User rejected pairing on the TV.
     Rejected,
