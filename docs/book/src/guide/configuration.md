@@ -109,6 +109,8 @@ Every field with its stock default (generated from the code, so it's always curr
 
 {{#include ../generated/profile-defaults-user.md}}
 
+In both profiles, the off-going events (blanks and power-offs) carry `while_remote = true` in their stock mapping so they still fire while a remote session has the TV armed; when you override one, keep the modifier, e.g. `on_shutdown = { action = "screen_off", while_remote = true }`.
+
 The two idle timers set **how long** to wait in each lock state; the shared `on_idle_timeout`/`on_idle_resume` actions decide **what** happens. A `0` timer disables idle for that lock state.
 
 Any field may be omitted from a profile; it then inherits (see [Profiles → Resolution order](./profiles.md#resolution-order)). Setting an event replaces its whole value, so re-gating an inherited action means restating the action too (the GUI does this for you).
