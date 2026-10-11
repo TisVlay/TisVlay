@@ -153,12 +153,27 @@ cargo-deny 0.18+ also excludes dev-deps from `bans` and `licenses` by default â€
 
 Four crates are `publish = true`: `tisvlay-core`, `-lg`, `-cec` and `-ssdp`. The mock backend stays unpublished: its API is shaped around the workspace's tests, and new vendors copy it from the repo. release-plz publishes their releases, and its `semver_check` runs cargo-semver-checks from the second release on. Its crates.io token carries only the `publish-update` scope, so it can't create a crate: the first publish of each one is done by hand, and that is when this checklist runs. It also runs whenever a crate flips to `publish = true`.
 
-1. **`cargo package -p <crate> --list`, then a full `cargo package -p <crate>`.** The list shows exactly what ships, so read it for fixtures and stray files. The build compiles the packaged crate on its own, which catches path-only dependencies, and cargo warns about missing metadata (description, license, documentation, homepage or repository).
-2. **A `readme`.** Only `tisvlay-ssdp` sets one today; without it the crates.io page is empty.
+1. **`just package-check`.** It packages all four crates in one `cargo package` invocation, first as a file list, then as a build of each packaged crate on its own. Read the list for fixtures and stray files (`tisvlay-lg`'s protocol fixtures ship on purpose: its unit tests `include_str!` them). The build catches path-only dependencies, and cargo warns about missing metadata (description, license, documentation, homepage or repository). One invocation matters: cargo resolves the crates' path dependencies on each other through a local overlay, while a per-crate `cargo package -p tisvlay-lg` fails until `tisvlay-core` is on crates.io.
+2. **A README that is also the crate docs.** Each crate root starts with `#![doc = include_str!("../README.md")]`, so crates.io and docs.rs show the same page and the README's examples run as doctests. A README example that stops compiling against the API fails `just test`. A `LICENSE` symlink to the root license ships the Apache-2.0 text in each package (cargo packages the target file).
 3. **`#![warn(missing_docs)]` at the crate root.** Every public item documented, with no filler (`/// The client.` says nothing).
 4. **docs.rs sees every public item.** Where a non-default feature gates items, set `[package.metadata.docs.rs] all-features = true` (`tisvlay-lg` does, for `discovery`). Leave it off where the only feature exposes test doubles (`tisvlay-cec`'s `test-link`).
 5. **No binary glue in the public API:** no `anyhow`, no logging setup, no desktop transports. Those live in the unpublished `tisvlay-runtime`; a library error is a `thiserror` type the caller can match on.
-6. **After the first publish, set up crates.io trusted publishing** for the release-plz job, so later releases need no long-lived token.
+6. **Publish in dependency order:** `tisvlay-core`, then `tisvlay-ssdp`, then `tisvlay-lg` and `tisvlay-cec`, or let `cargo publish --workspace` order them. crates.io must already hold a dependency's version before a crate that needs it uploads, optional ones included (`tisvlay-lg`'s `discovery` feature pulls `tisvlay-ssdp`).
+7. **After the first publish, set up crates.io trusted publishing** for the release-plz job, so later releases need no long-lived token.
+
+### Public API policy
+
+The published crates release in lockstep on the shared workspace version, and at 0.x a breaking change is a minor bump that release-plz makes for us. The rules below keep the breaking changes rare and deliberate.
+
+- **Private by default.** A public item stays public only if a caller outside the crate needs it. Making an item public later is a minor change; making it private later is a breaking one. `tisvlay-lg` keeps its SSAP client, protocol types and endpoint constants private for this reason: firmware moves the protocol, and those moves must not reach its semver.
+- **`#[non_exhaustive]`** goes on:
+  - error enums and their code enums (core's `Error`, `PairingErrorCode` and `DeviceErrorCode`; ssdp's `Error`);
+  - options structs (ssdp's `SearchOptions`), which callers build from `default()` and then set fields on;
+  - records that vendors read but don't construct (`TvState`, `Credentials`);
+  - the vendor unit structs (`LgBackend`, `LgConnector`, `CecBackend`), constructed through `new()`/`Default` so they can gain state later.
+
+  It stays off enums whose every arm matters to a caller (`AutomateWhen`, `SessionAction`, `EventAction`, `PairingState`, `PairingCommand`, `Transport`): there, the compiler demanding a new arm is worth more than additive evolution. It also stays off the records vendors construct (`InputInfo`, `DiscoveredTv`, `PairingField`), where a new field is a lockstep minor bump. A workspace match on a non-exhaustive enum from another crate needs a fallback arm, and the arm says what an unknown variant means.
+- **Public dependencies** are the crates whose types appear in a published API, so their major-version bumps are breaking for us too. Each crate's README lists its own under "Public dependencies" and names the items that expose them. Today those are tokio, uuid, bitflags, serde, toml and serde_json for core, serde (plus core itself) for lg and cec, and futures-core for ssdp. A pre-1.0 or young dependency gets a newtype instead: `tisvlay-cec`'s `PhysicalAddress` wraps linux-cec's, which keeps linux-cec out of the API. A test-only feature (`tisvlay-cec`'s `test-link`) is outside the crate's semver guarantees and may re-export a dependency's types. Until cargo's `public` dependency marker (RFC 3516) stabilizes, the README list is the record.
 
 ## Review triggers
 

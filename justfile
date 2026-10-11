@@ -501,3 +501,14 @@ package-archlinux: licenses-html completions package-build
 # Build all package formats
 [group('package')]
 package-all: package-deb package-rpm package-archlinux
+
+# Package the crates.io crates and build each from its packaged source,
+# the way crates.io will (docs/build.md "First-publish checklist"). One
+# invocation, so cargo resolves their path dependencies on each other
+# through a local overlay: a per-crate `cargo package -p tisvlay-lg`
+# fails until tisvlay-core is on crates.io. The list shows what ships.
+# Cargo refuses a dirty tree; commit first or pass `--allow-dirty`.
+[group('package')]
+package-check *args:
+    cargo package --list -p tisvlay-core -p tisvlay-ssdp -p tisvlay-lg -p tisvlay-cec {{ args }}
+    cargo package -p tisvlay-core -p tisvlay-ssdp -p tisvlay-lg -p tisvlay-cec {{ args }}
