@@ -6766,7 +6766,6 @@ dependencies = [
 name = "tisvlay-protocol"
 version = "0.3.0"
 dependencies = [
- "bevy_ecs",
  "serde",
  "serde_json",
  "tisvlay-core",

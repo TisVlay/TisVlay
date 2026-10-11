@@ -37,9 +37,9 @@ tisvlay/
 │   ├── tisvlay-test/              # OS-environment fakes (private dbus-daemon,
 │   │                             # fake logind/ScreenSaver) — dev-only
 │   │
-│   ├── tisvlay-protocol/          # Key-space vocabulary, payload structs (= bevy
-│   │                             # components = serde wire payloads), typed WireError,
-│   │                             # session bootstrap (peer/router/client configs)
+│   ├── tisvlay-protocol/          # Key-space vocabulary, payload structs (serde wire
+│   │                             # payloads; the world stores them as State<T>), typed
+│   │                             # WireError, session bootstrap (peer/router/client configs)
 │   ├── tisvlay-world/             # bevy_ecs world: components, systems, reactor loop,
 │   │                             # backend bridge (deferred acks via CommandDone)
 │   ├── tisvlay-daemon/            # System daemon binary+lib: world + zenoh bridge,
