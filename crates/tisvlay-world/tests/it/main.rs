@@ -11,4 +11,5 @@ mod support;
 mod carrier;
 mod dispatch;
 mod pairing_profiles;
+mod store;
 mod world;

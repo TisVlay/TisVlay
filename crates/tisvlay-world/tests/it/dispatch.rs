@@ -816,3 +816,39 @@ async fn automation_wake_restores_the_primary_input() {
     })
     .await;
 }
+
+/// The greeter timeout follows the derived `automated` flag in the same
+/// step an input change flips it: gated off the primary input, the timer
+/// reads disabled; switching onto the primary arms it.
+#[tokio::test]
+async fn greeter_timeout_follows_an_input_flip() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://greeter-flip").await;
+    // The mock sits on HDMI_1; the primary is HDMI_2.
+    client.command(Command::SetPrimaryInput {
+        id,
+        input: Some("HDMI_2".into()),
+        reply: Some(Reply::new(60)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 60)).await;
+    let mut body = SystemProfileConfig::full_default();
+    body.name = "Greeter".into();
+    body.automate_when = Some(tisvlay_core::AutomateWhen::OnPrimary);
+    body.idle_timeout_seconds = Some(300);
+    assign_remote_profile(&mut effects, &client, id, body).await;
+    let timeout = |e: &tisvlay_world::WireEffect| {
+        is_publish_on(e, "/greeter/timeout").map(|p| p["seconds"].clone())
+    };
+    // Gated off: the assignment publishes no enabled timer.
+    assert_quiet(&mut effects, Duration::from_millis(200), |e| {
+        timeout(e).is_some_and(|s| s != 0)
+    })
+    .await;
+
+    client.command(Command::SwitchInput {
+        id,
+        input: "HDMI_2".into(),
+        reply: Some(Reply::new(61)),
+    });
+    collect_until(&mut effects, |e| timeout(e).is_some_and(|s| s == 300)).await;
+}

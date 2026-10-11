@@ -1,26 +1,31 @@
-//! The reactor: single owner of the bevy world. Batches inbox events, runs
-//! the schedule at sync points, and executes drained effects.
+//! The reactor: single owner of the bevy world. Batches inbox events,
+//! applies client commands one at a time, runs the schedule over the
+//! batch's facts, and executes drained effects.
 
+use bevy_ecs::error::{BevyError, ErrorContext, FallbackErrorHandler, match_severity};
 use bevy_ecs::message::Messages;
 use bevy_ecs::prelude::*;
+use bevy_ecs::system::SystemInput;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 use tisvlay_core::{TvConnector, VendorConfig};
+use tisvlay_wire::endpoint::Rpc;
 use tisvlay_wire::rpc::TvConfigView;
 use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, DialSeq, DirtyStore, Effect, KnownVendors, Outbox, PairingIndex, ProfileIndex,
+    Clock, DialSeq, Effect, KnownVendors, LastPersisted, Outbox, PairingIndex, ProfileIndex,
     RemoteArmed, Site, SystemProfile, TvIndex,
 };
 use crate::events::{
-    BackendEvent, Command, InEvent, PairingUpdate, RouteRequest, StoreSnapshot, TvRecord,
-    WireEffect,
+    AckReply, AnyReply, BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, Reply,
+    RouteRequest, StoreSnapshot, TvRecord, WireEffect, WireError,
 };
 use crate::systems::build_schedule;
+use crate::systems::commands as handle;
 
 pub struct Reactor {
     world: World,
@@ -40,8 +45,8 @@ impl fmt::Debug for Reactor {
     }
 }
 
-/// Cloneable sender into the reactor inbox — the seam where zenoh RPC glue
-/// (M2), watchers, and tests inject events.
+/// Cloneable sender into the reactor inbox — the seam where the zenoh
+/// bridge, watchers, and tests inject events.
 #[derive(Clone, Debug)]
 pub struct WorldClient {
     tx: mpsc::UnboundedSender<InEvent>,
@@ -66,8 +71,8 @@ impl WorldClient {
 
 impl Reactor {
     /// Build a reactor for `site` with the given vendor → connector map.
-    /// Returns the wire-effects receiver (zenoh writer in M2, test tap
-    /// today) and a client for injecting events.
+    /// Returns the wire-effects receiver (the zenoh bridge, or a test
+    /// tap) and a client for injecting events.
     pub fn new(
         site: impl Into<String>,
         connectors: Vec<(&str, Arc<dyn TvConnector>)>,
@@ -90,10 +95,11 @@ impl Reactor {
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
         world.init_resource::<ProfileIndex>();
-        world.init_resource::<DirtyStore>();
+        world.init_resource::<LastPersisted>();
         world.init_resource::<DialSeq>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
+        world.insert_resource(FallbackErrorHandler(log_world_error));
 
         let client = WorldClient {
             tx: inbox_tx.clone(),
@@ -130,6 +136,18 @@ impl Reactor {
         self.routes_tx = Some(tx);
     }
 
+    /// Apply the boot state before [`run`](Self::run): `stored` (the
+    /// snapshot loaded from the store, if any) becomes the persist
+    /// baseline, then `commands` apply as one synchronous step. Replaying
+    /// the store writes nothing back, and no step ever runs against a
+    /// half-replayed table. Attach the store and route outlets first, so
+    /// a real difference (a migrated record, the default profile on a
+    /// fresh store) and the boot dials reach them.
+    pub fn seed(&mut self, stored: Option<StoreSnapshot>, commands: Vec<Command>) {
+        self.world.resource_mut::<LastPersisted>().0 = stored;
+        self.step(commands.into_iter().map(InEvent::Command).collect());
+    }
+
     /// Per-vendor verify-retry tuning (from each backend's
     /// `verify_retry_config`); vendors without an entry get the default.
     pub fn set_vendor_retry(&mut self, retry: HashMap<String, tisvlay_core::RetryConfig>) {
@@ -152,36 +170,44 @@ impl Reactor {
     /// drained effects.
     fn step(&mut self, batch: Vec<InEvent>) {
         tracing::trace!(batch = batch.len(), "step");
+        let mut commands = Vec::new();
         for event in batch {
             match event {
+                // Ticks apply first, so the batch's commands and facts all
+                // see its clock.
                 InEvent::Tick { now } => {
                     // Monotonic: a production ticker and test-injected
                     // future instants coexist without regressing time.
                     let mut clock = self.world.resource_mut::<Clock>();
                     clock.0 = clock.0.max(now);
                 }
-                other => {
-                    // Removal also ends route monitoring for the TV's
-                    // address. (Transport facts need no enrollment
-                    // intercept: every TV dials, and the SpawnConnect
-                    // arm sends them ahead of each dial outcome.)
-                    if let InEvent::Command(Command::RemoveTv { id, .. }) = &other
-                        && let Some(tx) = &self.routes_tx
-                    {
-                        let _ = tx.send(RouteRequest::Forget { tv: *id });
-                    }
-                    self.world.write_message(other);
+                InEvent::Command(command) => commands.push(command),
+                fact => {
+                    self.world.write_message(fact);
                 }
             }
         }
+        for command in commands {
+            self.apply(command);
+        }
         self.schedule.run(&mut self.world);
         self.world.resource_mut::<Messages<InEvent>>().update();
+        // Ages out component-removal records, which otherwise accumulate
+        // for the world's lifetime: no App drives this here.
+        self.world.clear_trackers();
+        #[cfg(debug_assertions)]
+        assert_indexes_match(&mut self.world);
 
         let effects: Vec<Effect> = std::mem::take(&mut self.world.resource_mut::<Outbox>().0);
         for effect in effects {
             match effect {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
+                }
+                Effect::ForgetRoute { tv } => {
+                    if let Some(tx) = &self.routes_tx {
+                        let _ = tx.send(RouteRequest::Forget { tv });
+                    }
                 }
                 Effect::SpawnConnect {
                     tv,
@@ -299,9 +325,214 @@ impl Reactor {
                     }
                     None => tracing::debug!("no store attached, persist snapshot dropped"),
                 },
-                Effect::RedactConfig { reply, record } => {
-                    let view = redacted_config(&self.connectors, record);
-                    let _ = self.effects_tx.send(reply.ok(&view));
+            }
+        }
+    }
+
+    /// Apply one client command: run its handler as a one-shot system
+    /// and answer its reply. The handler's `Commands` flush on return, so
+    /// the next command sees this one's effects. The match is exhaustive:
+    /// a command without a handler doesn't compile.
+    fn apply(&mut self, command: Command) {
+        match command {
+            Command::Pair {
+                id,
+                attempt,
+                name,
+                vendor,
+                config,
+                managed,
+                reply,
+            } => {
+                let input = handle::PairInput {
+                    id,
+                    attempt,
+                    name,
+                    vendor,
+                    config,
+                    managed,
+                };
+                let result = self.run_handler(handle::pair, input);
+                self.answer(reply, result);
+            }
+            Command::RePair { id, attempt, reply } => {
+                let result = self.run_handler(handle::re_pair, (id, attempt));
+                self.answer(reply, result);
+            }
+            Command::CancelPair { id, reply } => {
+                let result = self.run_handler(handle::cancel_pair, id);
+                self.answer(reply, result);
+            }
+            Command::AddTv { record, reply } => {
+                let result = self.run_handler(handle::add_tv, *record);
+                self.answer(reply, result);
+            }
+            Command::RemoveTv { id, reply } => {
+                let result = self.run_handler(handle::remove_tv, id);
+                self.answer(reply, result);
+            }
+            Command::Reconnect { id, reply } => {
+                let result = self.run_handler(handle::reconnect, id);
+                self.answer(reply, result);
+            }
+            Command::SetName { id, name, reply } => {
+                let result = self.run_handler(handle::set_name, (id, name));
+                self.answer(reply, result);
+            }
+            Command::SetManaged { id, managed, reply } => {
+                let result = self.run_handler(handle::set_managed, (id, managed));
+                self.answer(reply, result);
+            }
+            Command::SetSystemProfile { id, profile, reply } => {
+                let result = self.run_handler(handle::set_system_profile, (id, profile));
+                self.answer(reply, result);
+            }
+            Command::SetPrimaryInput { id, input, reply } => {
+                let result = self.run_handler(handle::set_primary_input, (id, input));
+                self.answer(reply, result);
+            }
+            Command::SetVolume { id, level, reply } => {
+                let ack = reply.map(AckReply::from);
+                let result = self.run_handler(
+                    handle::backend_command,
+                    (id, BackendCmd::SetVolume(level, ack)),
+                );
+                self.refuse(ack, result);
+            }
+            Command::SetMuted { id, muted, reply } => {
+                let ack = reply.map(AckReply::from);
+                let result = self.run_handler(
+                    handle::backend_command,
+                    (id, BackendCmd::SetMuted(muted, ack)),
+                );
+                self.refuse(ack, result);
+            }
+            Command::SwitchInput { id, input, reply } => {
+                let ack = reply.map(AckReply::from);
+                let result = self.run_handler(handle::switch_input, (id, input, ack));
+                self.refuse(ack, result);
+            }
+            Command::SetBacklight { id, level, reply } => {
+                let ack = reply.map(AckReply::from);
+                let result = self.run_handler(
+                    handle::backend_command,
+                    (id, BackendCmd::SetBacklight(level, ack)),
+                );
+                self.refuse(ack, result);
+            }
+            Command::SetScreen {
+                id,
+                on,
+                restore_input,
+                reply,
+            } => {
+                let result = self.run_handler(handle::set_screen, (id, on, restore_input));
+                self.answer(reply, result);
+            }
+            Command::PowerOn {
+                id,
+                restore_input,
+                reply,
+            } => {
+                let result = self.run_handler(handle::power_on, (id, restore_input));
+                self.answer(reply, result);
+            }
+            Command::PowerOff { id, reply } => {
+                let ack = reply.map(AckReply::from);
+                let result =
+                    self.run_handler(handle::backend_command, (id, BackendCmd::PowerOff(ack)));
+                self.refuse(ack, result);
+            }
+            Command::GetConfig { id, reply } => {
+                // The reactor owns the connectors (and thus the schemas),
+                // so Secret fields are stripped here and credentials never
+                // reach the bridge.
+                let result = self
+                    .run_handler(handle::get_config, id)
+                    .map(|record| redacted_config(&self.connectors, record));
+                self.answer(reply, result);
+            }
+            Command::UpdateConfig { id, patch, reply } => {
+                let result = self.run_handler(handle::update_config, (id, patch));
+                self.answer(reply, result);
+            }
+            Command::AddProfile { record, reply } => {
+                let result = self.run_handler(handle::add_profile, *record);
+                self.answer(reply, result);
+            }
+            Command::UpdateProfile { id, body, reply } => {
+                let result = self.run_handler(handle::update_profile, (id, *body));
+                self.answer(reply, result);
+            }
+            Command::DuplicateProfile {
+                id,
+                new_id,
+                name,
+                reply,
+            } => {
+                let result = self.run_handler(handle::duplicate_profile, (id, new_id, name));
+                self.answer(reply, result);
+            }
+            Command::DeleteProfile { id, reply } => {
+                let result = self.run_handler(handle::delete_profile, id);
+                self.answer(reply, result);
+            }
+            Command::ProfileDefaults { reply } => {
+                self.answer(reply, Ok(handle::profile_defaults()));
+            }
+            Command::EffectiveProfile { id, reply } => {
+                let result = self.run_handler(handle::effective_profile, id);
+                self.answer(reply, result);
+            }
+        }
+    }
+
+    /// Run a command handler now, flushing its `Commands` before returning.
+    fn run_handler<I, O, M>(
+        &mut self,
+        handler: impl IntoSystem<I, O, M> + 'static,
+        input: I::Inner<'_>,
+    ) -> O
+    where
+        I: SystemInput + 'static,
+        O: 'static,
+    {
+        self.world
+            .run_system_cached_with(handler, input)
+            .expect("command handlers are fn items, cached on first use and never unregistered")
+    }
+
+    /// Answer a command's reply with its handler's result. Replies queue
+    /// behind the handler's own effects. A refused command nobody asked
+    /// for (the boot seed sends replyless ones) is logged instead.
+    fn answer<R: Rpc>(&mut self, reply: Option<Reply<R>>, result: Result<R::Response, WireError>) {
+        let effect = match (reply, result) {
+            (Some(reply), Ok(response)) => reply.ok(&response),
+            (Some(reply), Err(error)) => AnyReply::from(reply).err(error),
+            (None, Ok(_)) => return,
+            (None, Err(error)) => {
+                tracing::warn!(rpc = R::NAME, code = ?error.code, message = %error.message, "command refused");
+                return;
+            }
+        };
+        self.world
+            .resource_mut::<Outbox>()
+            .0
+            .push(Effect::Wire(effect));
+    }
+
+    /// Refuse a backend command its handler couldn't send. A sent one is
+    /// acked from the connection task once the TV completes it.
+    fn refuse(&mut self, reply: Option<AckReply>, result: Result<(), WireError>) {
+        if let Err(error) = result {
+            match reply {
+                Some(reply) => self
+                    .world
+                    .resource_mut::<Outbox>()
+                    .0
+                    .push(Effect::Wire(AnyReply::from(reply).err(error))),
+                None => {
+                    tracing::warn!(code = ?error.code, message = %error.message, "backend command refused");
                 }
             }
         }
@@ -338,6 +569,42 @@ fn transport_facts(
         survives_ip_change: connector.survives_source_ip_change(),
         emulate_screen_via_power: connector.emulate_screen_via_power(config),
     }
+}
+
+/// Every hook-kept index maps exactly the live entities carrying its key
+/// component, both ways. Checked after every step in debug builds (the
+/// test suites included): a drifted index would misroute commands.
+#[cfg(debug_assertions)]
+fn assert_indexes_match(world: &mut World) {
+    use crate::components::{Keyed, PairingFor, ProfileId, TvId, UuidMap};
+    use std::ops::Deref;
+    fn check<K: Keyed, I: Resource + Deref<Target = UuidMap>>(world: &mut World) {
+        let live: HashMap<uuid::Uuid, Entity> = world
+            .query::<(Entity, &K)>()
+            .iter(world)
+            .map(|(entity, key)| (key.key(), entity))
+            .collect();
+        let indexed = world.resource::<I>().snapshot();
+        assert_eq!(
+            indexed,
+            live,
+            "{} must index exactly the live {} entities",
+            std::any::type_name::<I>(),
+            std::any::type_name::<K>(),
+        );
+    }
+    check::<TvId, TvIndex>(world);
+    check::<ProfileId, ProfileIndex>(world);
+    check::<PairingFor, PairingIndex>(world);
+}
+
+/// The world's fallback error handler: log through tracing with the
+/// failing system's name, then defer to bevy's default. A caught panic
+/// still resumes its unwind, so the reactor task dies and the daemon's
+/// supervisor restarts the process.
+fn log_world_error(error: BevyError, ctx: ErrorContext) {
+    tracing::error!(kind = ctx.kind(), name = %ctx.name(), %error, "world error");
+    match_severity(error, ctx);
 }
 
 /// Project a TV record into its wire-safe config reply: top-level fields
@@ -432,6 +699,50 @@ mod tests {
                 },
             ]
         }
+    }
+
+    #[derive(bevy_ecs::component::Component)]
+    struct Marker;
+
+    #[test]
+    fn error_handler_resumes_a_caught_panic() {
+        let ctx = ErrorContext::System {
+            name: "test_system".into(),
+            last_run: bevy_ecs::change_detection::Tick::new(0),
+        };
+        let error = BevyError::panic("boom", Box::new("boom"));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            log_world_error(error, ctx);
+        }));
+        let payload = unwound.expect_err("a caught panic resumes unwinding");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
+    }
+
+    /// Component removals are recorded for `RemovedComponents` readers;
+    /// each step must age them out, or the record grows for the life of
+    /// the daemon (markers come and go constantly).
+    #[test]
+    fn steps_age_out_removal_records() {
+        let (mut reactor, _effects, _client) = Reactor::new("test", Vec::new());
+        let entity = reactor.world.spawn_empty().id();
+        for _ in 0..10 {
+            reactor
+                .world
+                .entity_mut(entity)
+                .insert(Marker)
+                .remove::<Marker>();
+            reactor.step(Vec::new());
+        }
+        let marker = reactor
+            .world
+            .component_id::<Marker>()
+            .expect("inserting Marker registered it");
+        let recorded = reactor
+            .world
+            .removed_components()
+            .get(marker)
+            .map_or(0, Messages::len);
+        assert!(recorded <= 2, "{recorded} removal records retained");
     }
 
     #[test]
