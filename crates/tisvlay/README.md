@@ -43,7 +43,7 @@ There are three clients: `DaemonClient` for the system daemon, and `SessionClien
 
 ## Compatibility
 
-A client talks only to services of its own release line, the same `major.minor`: SDK 0.4.x works with services 0.4.x, and patch releases interoperate. Each client checks its service's release in each lifetime of the service, starting when the service appears. On a mismatch, its rpcs fail with `Error::VersionMismatch`, its mirror reads come back empty (`list_tvs` returns the error), and `StateEvent::VersionMismatch` fires, until the service restarts on a matching release. Upgrade the SDK with the daemon.
+A client talks only to services of its own release line, the same `major.minor`: SDK 0.4.x works with services 0.4.x, and patch releases interoperate (a pre-release such as `0.5.0-rc.1` works only with exactly itself). Each client checks its service's release in each lifetime of the service, starting when the service appears. On a mismatch, its rpcs fail with `Error::VersionMismatch`, its mirror reads come back empty (`list_tvs` returns the error), and `StateEvent::VersionMismatch` fires, until the service restarts on a matching release. Upgrade the SDK with the daemon.
 
 ## Public dependencies
 
@@ -52,6 +52,7 @@ These crates' types appear in this crate's API, so a major-version bump of one i
 - `tisvlay-core`: `TvInfo`'s capabilities, hardware id and power state, pairing schema fields, and the profile configs.
 - `tisvlay-protocol`: the re-exported payload and rpc types and `ErrorCode`. It releases in lockstep with this crate.
 - `uuid`: TV and profile ids.
+- `serde`: the re-exported protocol payload and rpc types implement `Serialize` and `Deserialize`.
 - `serde_json`: `update_tv_config` takes a `serde_json::Map`.
 - `futures-core`: the pairing, power-cycle and discovery progress streams are `impl Stream`.
 

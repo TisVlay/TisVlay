@@ -30,6 +30,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tisvlay-test = { workspace = true }
 
 [lints]

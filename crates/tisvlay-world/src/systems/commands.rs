@@ -237,9 +237,15 @@ pub(crate) fn set_managed(
 pub(crate) fn set_system_profile(
     In((id, profile)): In<(Uuid, Option<Uuid>)>,
     index: Res<TvIndex>,
+    profiles: Res<ProfileIndex>,
     mut metas: Query<&mut State<payload::Meta>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
+    if let Some(profile) = profile
+        && profiles.get(&profile).is_none()
+    {
+        return Err(WireError::profile_not_found(profile));
+    }
     if let Ok(mut meta) = metas.get_mut(entity)
         && meta.system_profile != profile
     {

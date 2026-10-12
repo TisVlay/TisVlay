@@ -55,7 +55,7 @@ pub enum Error {
     VersionMismatch {
         /// The mismatched service.
         service: Service,
-        /// This SDK's release.
+        /// The protocol release this SDK speaks.
         ours: String,
         /// The service's release.
         theirs: String,

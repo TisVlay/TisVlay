@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 ## Compatibility
 
-Services and clients built from the same `major.minor` speak the same protocol; patch releases interoperate. `VERSION` is this crate's release, which every service reports in its `info` reply, and `compatible()` holds the rule. `ServiceInfo` and the `info` keys are frozen, so a client of any release can read a service's release. There are no compatibility shims beyond that: a different release line is refused, not translated.
+Services and clients built from the same `major.minor` speak the same protocol; patch releases interoperate. A pre-release (`0.5.0-rc.1`) talks only to exactly itself, since it may still change before its final release. `VERSION` is this crate's release, which every service reports in its `info` reply, and `compatible()` holds the rule. `ServiceInfo` and the `info` keys are frozen, so a client of any release can read a service's release. There are no compatibility shims beyond that: a different release line is refused, not translated.
 
 ## Requirements
 

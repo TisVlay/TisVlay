@@ -142,11 +142,14 @@ pub enum StateEvent {
     /// the watcher fell behind and dropped events.
     FallbackPoll,
     /// A service runs a release this client can't talk to: every rpc to
-    /// it fails until it's restarted on a matching release.
+    /// it fails until it's restarted on a matching release. Sent once per
+    /// service lifetime, after its `*Appeared`; a watcher built while the
+    /// mismatch is already known gets it on start, and may then see it
+    /// twice.
     VersionMismatch {
         /// The mismatched service.
         service: Service,
-        /// This SDK's release.
+        /// The protocol release this SDK speaks.
         ours: String,
         /// The service's release.
         theirs: String,
@@ -378,8 +381,7 @@ impl DaemonClient {
                         &caller,
                         Service::Daemon,
                         |caller| async move { caller.call::<manager::Info>(&(), &()).await },
-                    )
-                    .await;
+                    );
                 }
             });
         }
@@ -405,9 +407,7 @@ impl DaemonClient {
     /// descriptor arrive as published state (`meta/vendor`,
     /// `meta/identity`) like everything else.
     pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
-        if let Some(mismatch) = self.handshake.known_mismatch() {
-            return Err(mismatch);
-        }
+        self.refuse_known_mismatch()?;
         let rows: Vec<(Uuid, mirror_row::Row)> = {
             let mirror = self.mirror.lock().expect("mirror lock");
             mirror
@@ -444,8 +444,9 @@ impl DaemonClient {
 
     /// Apply a hand edit of the daemon's store file: only what changed
     /// since the daemon last wrote it applies, and the report says whether
-    /// anything did. Refused when the file is missing or unparsable, or
-    /// the daemon runs without one.
+    /// anything did. Rpc, refused with [`ErrorCode::NoStore`] (the daemon
+    /// runs without a file) or [`ErrorCode::StoreUnreadable`] (missing or
+    /// unparsable; the message is the parser's report).
     pub async fn reload_config(&self) -> Result<ReloadReport> {
         self.call::<manager::Reload>(&(), &()).await
     }
@@ -494,6 +495,8 @@ impl DaemonClient {
     }
 
     /// Start a re-pair; returns the attempt id its progress samples carry.
+    /// Rpc, refused with [`ErrorCode::TvNotFound`] or
+    /// [`ErrorCode::PairingExists`] (one is already running for the TV).
     pub async fn re_pair(&self, tv: Uuid) -> Result<Uuid> {
         let started = self.call::<tv::RePair>(&tv, &()).await?;
         Ok(started.attempt)
@@ -513,10 +516,13 @@ impl DaemonClient {
 
     /// Every pairing session's progress samples as `(tv, sample)`,
     /// hydrated from the deep pairing caches so a re-opened wizard
-    /// replays prior phases.
+    /// replays prior phases. Refused with [`Error::VersionMismatch`] while
+    /// the daemon is known to run another release, and silent while it
+    /// does.
     pub async fn pairing_progress_stream(
         &self,
     ) -> Result<impl futures_util::Stream<Item = (Uuid, PairingProgress)> + use<>> {
+        self.refuse_known_mismatch()?;
         let sub = self
             .session
             .declare_subscriber(keys::pairing_progress_wild(&self.site))
@@ -525,8 +531,12 @@ impl DaemonClient {
             .map_err(|e| Error::transport("subscribe to pairing progress", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
         let site = self.site.clone();
+        let handshake = Arc::clone(&self.handshake);
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                if handshake.known_mismatch().is_some() {
+                    continue;
+                }
                 let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str())
                 else {
                     continue;
@@ -597,11 +607,14 @@ impl DaemonClient {
         })
     }
 
-    /// One TV's `progress/power` phases (wake feedback).
+    /// One TV's `progress/power` phases (wake feedback). Refused with
+    /// [`Error::VersionMismatch`] while the daemon is known to run another
+    /// release, and silent while it does.
     pub async fn power_cycle_progress_stream(
         &self,
         tv: Uuid,
     ) -> Result<impl futures_util::Stream<Item = PowerPhase> + use<>> {
+        self.refuse_known_mismatch()?;
         let sub = self
             .session
             .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
@@ -609,8 +622,12 @@ impl DaemonClient {
             .await
             .map_err(|e| Error::transport("subscribe to power progress", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
+        let handshake = Arc::clone(&self.handshake);
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                if handshake.known_mismatch().is_some() {
+                    continue;
+                }
                 let Ok(progress) = serde_json::from_slice::<tisvlay_protocol::payload::PowerProgress>(
                     &sample.payload().to_bytes(),
                 ) else {
@@ -625,7 +642,8 @@ impl DaemonClient {
     }
 
     /// Open an open-ended discovery session; it scans on the daemon's
-    /// cadence until [`Self::stop_discovery`].
+    /// cadence until [`Self::stop_discovery`]. Rpc; it scans every vendor,
+    /// so it isn't refused.
     pub async fn start_discovery(&self) -> Result<Uuid> {
         let started = self
             .call::<manager::DiscoverStart>(&(), &rpc::DiscoverStart { vendor: None })
@@ -641,18 +659,25 @@ impl DaemonClient {
             .map(|_| ())
     }
 
-    /// Every discovery session's findings.
+    /// Every discovery session's findings. Refused with
+    /// [`Error::VersionMismatch`] while the daemon is known to run another
+    /// release, and silent while it does.
     pub async fn discovery_found_stream(
         &self,
     ) -> Result<impl futures_util::Stream<Item = DiscoveredTv> + use<>> {
+        self.refuse_known_mismatch()?;
         let sub = self
             .session
             .declare_subscriber(keys::discovery_found_wild(&self.site))
             .await
             .map_err(|e| Error::transport("subscribe to discovery findings", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
+        let handshake = Arc::clone(&self.handshake);
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                if handshake.known_mismatch().is_some() {
+                    continue;
+                }
                 let Ok(found) =
                     serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes())
                 else {
@@ -670,7 +695,7 @@ impl DaemonClient {
     /// Manual-entry hint: the daemon probes its ARP cache (after the
     /// vendor primes it) for the device's MAC, so the wizard can show it
     /// before pairing. Pair-time enrichment daemon-side remains the
-    /// safety net.
+    /// safety net. Rpc, refused with [`ErrorCode::UnknownVendor`].
     pub async fn enrich_manual_entry(&self, vendor: &str, address: &str) -> Result<Option<String>> {
         let request = rpc::Enrich {
             vendor: vendor.into(),
@@ -703,8 +728,8 @@ impl DaemonClient {
     /// half asleep, this wakes it instead of failing. The ack comes once
     /// the action is sent or the wake is under way; the daemon then
     /// checks the power state and retries on its own. Rpc, refused with
-    /// [`ErrorCode::TvNotFound`], [`ErrorCode::NotConnected`] or
-    /// [`ErrorCode::WakeNotSupported`].
+    /// [`ErrorCode::TvNotFound`] or [`ErrorCode::NotConnected`]
+    /// (disconnected, and the transport can't wake it).
     pub async fn screen_on(&self, tv: Uuid) -> Result<()> {
         self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(true))
             .await
@@ -790,9 +815,8 @@ impl DaemonClient {
     }
 
     /// Assign a system profile to the TV, or `None` for the default
-    /// profile. The daemon doesn't check that `profile` exists: an
-    /// unknown id resolves as if none were assigned. Rpc, refused with
-    /// [`ErrorCode::TvNotFound`].
+    /// profile. Rpc, refused with [`ErrorCode::TvNotFound`] or
+    /// [`ErrorCode::ProfileNotFound`] (no system profile has that id).
     pub async fn set_tv_system_profile(&self, tv: Uuid, profile: Option<Uuid>) -> Result<()> {
         self.tv_call::<tv::SetSystemProfile>(tv, &rpc::SetSystemProfile { profile })
             .await
@@ -814,13 +838,17 @@ impl DaemonClient {
         self.tv_call::<tv::Remove>(tv, &()).await
     }
 
-    /// The TV's config, schema-secret fields removed.
+    /// The TV's config, schema-secret fields removed. Rpc, refused with
+    /// [`ErrorCode::TvNotFound`].
     pub async fn get_tv_config(&self, tv: Uuid) -> Result<TvConfigView> {
         self.call::<tv::GetConfig>(&tv, &()).await
     }
 
     /// Patch the TV's config: known top-level keys apply to its settings,
-    /// everything else merges into the vendor table.
+    /// everything else merges into the vendor table. Rpc, refused with
+    /// [`ErrorCode::TvNotFound`], [`ErrorCode::InvalidField`] (a value the
+    /// field rejects; see [`Error::invalid_field`]) or
+    /// [`ErrorCode::BadRequest`] (a key of the wrong type).
     pub async fn update_tv_config(
         &self,
         tv: Uuid,
@@ -946,6 +974,15 @@ impl DaemonClient {
             .await
             .map_err(|e| Error::from_rpc(Service::Daemon, e))
     }
+
+    /// Fail when the daemon is already known to run another release: the
+    /// gate the mirror reads and progress streams share, which doesn't ask.
+    fn refuse_known_mismatch(&self) -> Result<()> {
+        match self.handshake.known_mismatch() {
+            Some(mismatch) => Err(mismatch),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Client for the per-user session service (user profiles).
@@ -1018,8 +1055,7 @@ impl SessionClient {
                         &caller,
                         Service::Session,
                         |caller| async move { caller.call::<user_profile::Info>(&(), &()).await },
-                    )
-                    .await;
+                    );
                 }
             });
         }
@@ -1052,8 +1088,9 @@ impl SessionClient {
 
     /// Apply a hand edit of the session's store file (user profiles and
     /// assignments): only what changed since the session last wrote it
-    /// applies. Refused when the file is missing or unparsable, or the
-    /// session runs without one.
+    /// applies. Rpc, refused with [`ErrorCode::NoStore`] (the session
+    /// runs without a file) or [`ErrorCode::StoreUnreadable`] (missing or
+    /// unparsable; the message is the parser's report).
     pub async fn reload_config(&self) -> Result<ReloadReport> {
         self.call::<user_profile::Reload>(&(), &()).await
     }
@@ -1277,8 +1314,7 @@ impl TrayClient {
                         &caller,
                         Service::Tray,
                         |caller| async move { caller.call::<user_tray::Info>(&(), &()).await },
-                    )
-                    .await;
+                    );
                 }
             });
         }
@@ -1320,8 +1356,9 @@ impl TrayClient {
         Ok(self.info().await?.state_path)
     }
 
-    /// Apply a hand edit of the tray's settings file. Refused when the
-    /// file is missing or unparsable.
+    /// Apply a hand edit of the tray's settings file. Rpc, refused with
+    /// [`ErrorCode::StoreUnreadable`] (missing or unparsable; the message
+    /// is the parser's report).
     pub async fn reload_config(&self) -> Result<ReloadReport> {
         self.call::<user_tray::Reload>(&()).await
     }
@@ -1374,31 +1411,37 @@ impl TrayClient {
 /// Keep a client's verdict in step with its service's liveliness: a
 /// service that went away gets a fresh check in its next lifetime, and one
 /// that appeared is checked at once, so a mismatch reaches the watcher
-/// without waiting for a call.
-async fn check_on_liveliness<F, Fut>(
+/// without waiting for a call. The check runs on its own task, so a slow
+/// `info` never holds up the next liveliness edge.
+fn check_on_liveliness<F, Fut>(
     alive: bool,
-    handshake: &Handshake,
+    handshake: &Arc<Handshake>,
     events: &broadcast::Sender<StateEvent>,
     caller: &Arc<Caller>,
     service: Service,
     info: F,
 ) where
-    F: FnOnce(Arc<Caller>) -> Fut,
-    Fut: Future<Output = std::result::Result<rpc::ServiceInfo, tisvlay_protocol::caller::RpcError>>,
+    F: FnOnce(Arc<Caller>) -> Fut + Send + 'static,
+    Fut: Future<Output = std::result::Result<rpc::ServiceInfo, tisvlay_protocol::caller::RpcError>>
+        + Send,
 {
     if !alive {
-        handshake.reset().await;
+        handshake.reset();
         return;
     }
+    let handshake = Arc::clone(handshake);
+    let events = events.clone();
     let caller = Arc::clone(caller);
-    let _ = handshake
-        .ensure(events, || async move {
-            info(caller)
-                .await
-                .map(|info| info.version)
-                .map_err(|e| Error::from_rpc(service, e))
-        })
-        .await;
+    tokio::spawn(async move {
+        let _ = handshake
+            .ensure(&events, || async move {
+                info(caller)
+                    .await
+                    .map(|info| info.version)
+                    .map_err(|e| Error::from_rpc(service, e))
+            })
+            .await;
+    });
 }
 
 /// Watcher tuning: mirror deltas forward directly, so the one knob is
@@ -1447,14 +1490,14 @@ impl StateWatcher {
         if let Some(tray) = tray {
             forward(tray.subscribe_events(), tx.clone());
         }
-        // Synthesize `*Appeared` for peers already alive: their
-        // liveliness edge fired into the client's broadcast before this
-        // watcher subscribed (a tokio broadcast drops events sent with
-        // no receivers), so consumers relying on edges alone would
-        // never learn about a peer that came up between client
-        // construction and watcher construction. A level-triggered
-        // emit after subscription closes the window; consumers treat
-        // repeated `*Appeared` idempotently.
+        // Synthesize `*Appeared` for peers already alive, and
+        // `VersionMismatch` for mismatches already known: both fired into
+        // the client's broadcast before this watcher subscribed (a tokio
+        // broadcast drops events sent with no receivers), so consumers
+        // relying on edges alone would never learn of them. A
+        // level-triggered emit after subscription closes the window; a
+        // check finishing in between can announce twice, and consumers
+        // treat repeats idempotently.
         {
             let tx = tx.clone();
             let daemon = daemon.clone();
@@ -1464,15 +1507,24 @@ impl StateWatcher {
                 if daemon.is_available().await {
                     let _ = tx.send(StateEvent::DaemonAppeared);
                 }
-                if let Some(session) = session
-                    && session.is_available().await
-                {
-                    let _ = tx.send(StateEvent::SessionAppeared);
+                if let Some(event) = daemon.handshake.known_mismatch_event() {
+                    let _ = tx.send(event);
                 }
-                if let Some(tray) = tray
-                    && tray.is_available().await
-                {
-                    let _ = tx.send(StateEvent::TrayAppeared);
+                if let Some(session) = session {
+                    if session.is_available().await {
+                        let _ = tx.send(StateEvent::SessionAppeared);
+                    }
+                    if let Some(event) = session.handshake.known_mismatch_event() {
+                        let _ = tx.send(event);
+                    }
+                }
+                if let Some(tray) = tray {
+                    if tray.is_available().await {
+                        let _ = tx.send(StateEvent::TrayAppeared);
+                    }
+                    if let Some(event) = tray.handshake.known_mismatch_event() {
+                        let _ = tx.send(event);
+                    }
                 }
             });
         }

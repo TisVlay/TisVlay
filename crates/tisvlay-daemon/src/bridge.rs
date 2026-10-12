@@ -303,6 +303,11 @@ impl Bridge {
                 // The store writer reads the file and hands the world the
                 // edit; the world answers.
                 match self.reloads.clone() {
+                    // A writer that's gone (the daemon shutting down)
+                    // would never answer a filed reply, so refuse at once.
+                    Some(reloads) if reloads.is_closed() => {
+                        responder.err(&WireError::daemon_shutting_down()).await;
+                    }
                     Some(reloads) => {
                         let reply = self.file(responder);
                         let _ = reloads.send(ReloadRequest { reply });

@@ -122,7 +122,7 @@ macro_rules! family {
 
         $(#[$family_meta])*
         #[derive(Debug)]
-        pub enum Call {
+        pub(crate) enum Call {
             $(
                 #[doc = concat!("[`", stringify!($name), "`]'s decoded request.")]
                 $name($request),

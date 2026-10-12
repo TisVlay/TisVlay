@@ -388,6 +388,7 @@ impl PairingPhase {
 /// and the first dial's `device.*` access reasons, on the wire as
 /// those namespaced tokens.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FailureCode {
     /// The user rejected pairing on the TV.
     #[serde(rename = "pairing.rejected")]

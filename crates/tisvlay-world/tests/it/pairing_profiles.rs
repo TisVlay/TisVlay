@@ -636,7 +636,8 @@ async fn plain_dial_never_reads_the_link_mac() {
 
 /// Commands apply in arrival order across families, each seeing the
 /// ones before it: a profile deleted ahead of an assignment is gone by
-/// the time the assignment runs, so the delete isn't refused as in use.
+/// the time the assignment runs, so the delete isn't refused as in use
+/// and the assignment is refused as naming no profile.
 #[tokio::test]
 async fn commands_apply_in_arrival_order() {
     let tv = Uuid::new_v4();
@@ -686,7 +687,7 @@ async fn commands_apply_in_arrival_order() {
     );
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 2)),
-        None,
+        Some(tisvlay_protocol::error::ErrorCode::ProfileNotFound),
         "assign"
     );
     assert_eq!(

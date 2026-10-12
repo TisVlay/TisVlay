@@ -221,6 +221,11 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
 
     // A referencing TV blocks deletion until unassigned.
     let tv = add_tv(&w, "Den", "mock://prof-crud").await;
+    let unknown = Uuid::new_v4();
+    let err = call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({ "profile": unknown })))
+        .await
+        .expect_err("assigning an unknown profile must fail");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileNotFound);
     call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({ "profile": profile_id })))
         .await
         .expect("assign ok");

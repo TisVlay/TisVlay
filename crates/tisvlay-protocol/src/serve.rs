@@ -6,6 +6,7 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+use serde::Deserialize;
 use zenoh::bytes::Encoding;
 use zenoh::query::Query;
 
@@ -50,10 +51,13 @@ impl<R: Rpc> Responder<R> {
     /// Set the reply aside for a server that answers later through its
     /// own correlation: one map can hold the replies it owes across rpcs.
     /// The daemon files queries for its world, which answers with JSON
-    /// typed there by the same `R`.
+    /// typed there by the same `R`. The parked reply remembers `R`, and
+    /// checks the JSON it's answered with against `R`'s response type.
     pub fn park(mut self) -> ParkedReply {
         ParkedReply {
             query: Some(self.take()),
+            rpc: R::NAME,
+            check: check_response::<R>,
         }
     }
 
@@ -94,29 +98,56 @@ impl<R> fmt::Debug for Responder<R> {
     }
 }
 
-/// A [`Responder`] set aside with [`Responder::park`], its rpc type left
-/// to the server that answers it. Answering consumes it, and one dropped
-/// unanswered logs a warning, as a responder does.
+/// A [`Responder`] set aside with [`Responder::park`], its rpc type
+/// erased so one map can hold replies of every rpc. Answering consumes
+/// it, and one dropped unanswered logs a warning, as a responder does.
 pub struct ParkedReply {
     query: Option<Query>,
+    rpc: &'static str,
+    check: fn(&serde_json::Value) -> Result<(), serde_json::Error>,
 }
 
 impl ParkedReply {
-    /// Answer with a response already encoded as JSON, or refuse.
+    /// Answer with a response already encoded as JSON, or refuse. JSON
+    /// that doesn't decode as the parked rpc's response type isn't sent:
+    /// the server's bug is logged here and the caller gets an
+    /// [`ErrorCode::Internal`](crate::error::ErrorCode::Internal) refusal,
+    /// rather than a reply it can't decode.
     pub async fn answer(mut self, outcome: Result<serde_json::Value, WireError>) {
         let query = self
             .query
             .take()
             .expect("a parked reply holds its query until answered, and answering consumes it");
         match outcome {
-            Ok(response) => {
-                let bytes =
-                    serde_json::to_vec(&response).expect("a JSON value always encodes as JSON");
-                send(&query, bytes).await;
-            }
+            Ok(response) => match (self.check)(&response) {
+                Ok(()) => {
+                    let bytes =
+                        serde_json::to_vec(&response).expect("a JSON value always encodes as JSON");
+                    send(&query, bytes).await;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        rpc = self.rpc,
+                        key = %query.key_expr(),
+                        %error,
+                        "parked reply isn't the rpc's response type; refusing instead"
+                    );
+                    let refusal = WireError::internal(format!(
+                        "the service built a malformed {} reply",
+                        self.rpc
+                    ));
+                    reply_err(&query, &refusal).await;
+                }
+            },
             Err(error) => reply_err(&query, &error).await,
         }
     }
+}
+
+/// Whether `value` decodes as `R`'s response: what a [`ParkedReply`]
+/// checks before sending.
+fn check_response<R: Rpc>(value: &serde_json::Value) -> Result<(), serde_json::Error> {
+    R::Response::deserialize(value).map(drop)
 }
 
 impl Drop for ParkedReply {
@@ -169,5 +200,65 @@ async fn send(query: &Query, bytes: Vec<u8>) {
         .await
     {
         tracing::warn!(key = %query.key_expr(), %e, "rpc reply failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::bootstrap;
+    use crate::caller::{Caller, RpcError};
+    use crate::endpoint::manager;
+    use crate::error::ErrorCode;
+    use crate::keys;
+
+    /// A parked reply answered with JSON of the wrong shape refuses with
+    /// `internal` instead of sending what the caller can't decode, and
+    /// one of the right shape goes through.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_parked_reply_checks_its_json_against_the_response_type() {
+        // Under /tmp, for the same reason as bootstrap's socket test.
+        let dir = tempfile::Builder::new()
+            .prefix("tv")
+            .tempdir_in("/tmp")
+            .expect("create a temp dir under /tmp");
+        let socket = dir.path().join("hub.sock");
+        let server = zenoh::open(bootstrap::peer_config(&socket).unwrap())
+            .await
+            .unwrap();
+        let queryable = server
+            .declare_queryable(keys::manager_rpc_wild("t"))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            while let Ok(query) = queryable.recv_async().await {
+                match manager::Incoming::receive("t", query).await {
+                    Some(((), manager::Incoming::Info((), responder))) => {
+                        let wrong = serde_json::json!({ "not": "a ServiceInfo" });
+                        responder.park().answer(Ok(wrong)).await;
+                    }
+                    Some(((), manager::Incoming::Reload((), responder))) => {
+                        let right = serde_json::json!({ "changed": true });
+                        responder.park().answer(Ok(right)).await;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+            .await
+            .unwrap();
+        let caller = Caller::new(client, "t");
+        match caller.call::<manager::Info>(&(), &()).await {
+            Err(RpcError::Service(error)) => assert_eq!(error.code, ErrorCode::Internal),
+            other => panic!("expected an internal refusal, got {other:?}"),
+        }
+        assert!(
+            caller
+                .call::<manager::Reload>(&(), &())
+                .await
+                .unwrap()
+                .changed
+        );
     }
 }

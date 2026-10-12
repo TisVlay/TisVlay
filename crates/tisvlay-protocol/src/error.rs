@@ -77,6 +77,8 @@ error_codes! {
     /// The state file couldn't be read or parsed; a reload applies
     /// nothing.
     StoreUnreadable = "store-unreadable",
+    /// The service failed on its side; the request itself may be fine.
+    Internal = "internal",
 }
 
 /// Split a [`WireError::invalid_field`] refusal back into its
@@ -204,7 +206,7 @@ impl WireError {
     pub fn profile_not_found(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileNotFound,
-            message: format!("no system profile with id {id}"),
+            message: format!("no profile with id {id}"),
         }
     }
 
@@ -212,7 +214,7 @@ impl WireError {
     pub fn profile_exists(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileExists,
-            message: format!("a system profile with id {id} already exists"),
+            message: format!("a profile with id {id} already exists"),
         }
     }
 
@@ -220,7 +222,7 @@ impl WireError {
     pub fn profile_in_use(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileInUse,
-            message: format!("system profile {id} is referenced by at least one TV"),
+            message: format!("profile {id} is assigned to at least one TV"),
         }
     }
 
@@ -264,6 +266,15 @@ impl WireError {
         Self {
             code: ErrorCode::StoreUnreadable,
             message: report.into(),
+        }
+    }
+
+    /// The service failed on its side (a task it needs is gone, a reply
+    /// it built is malformed); the request itself may be fine.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message: message.into(),
         }
     }
 }
