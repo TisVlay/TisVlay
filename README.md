@@ -33,6 +33,19 @@
   - GUI app for device pairing, profile editing, and user setting
   - System tray for quick access controls and device status
 
+## 🖼️ Screenshots
+
+| **TVs** — status, automation and profile assignments | **TV controls** — picture, audio and input (light theme) |
+|:---:|:---:|
+| ![TVs pane showing a connected LG TV with its status, managed toggle and profile assignments](docs/screenshots/tvs_pane.png) | ![TVs pane in the light theme showing backlight, screen, volume, mute and input controls](docs/screenshots/tvs_pane_2.png) |
+| **System profiles** — machine lifecycle events | **User profiles** — session events and idle timers |
+| ![Profiles pane editing a system profile's startup, shutdown, sleep, wake and DPMS actions](docs/screenshots/profiles_pane_system.png) | ![Profiles pane editing a user profile's lock, unlock, idle and resume actions](docs/screenshots/profiles_pane_user.png) |
+| **Settings** — desktop notification preferences | **About** — components, their status and versions |
+| ![Settings pane with notification toggles and a test-notification button](docs/screenshots/settings_pane.png) | ![About pane listing the daemon, session, tray, GUI and CLI with their versions](docs/screenshots/about_pane.png) |
+| **Tray menu** — per-TV quick controls | **Tray tooltip** — every TV's state at a glance |
+| ![System tray menu with power, profiles, input, backlight, screen and volume controls for a TV](docs/screenshots/system_tray_menu.png) | ![System tray tooltip listing each TV's power, volume and backlight](docs/screenshots/system_tray_hover.png) |
+
+
 ## 🏛️ Architecture
 
 TisVlay is comprised of a collection of cooperating components:
