@@ -41,6 +41,17 @@ If even `tisvlay status` fails, the CLI tells you which of two failure modes you
 - **"You don't have TV control access yet"** — an access problem; run `tisvlay enable-access` (see [Access](../getting-started/installation.md#access)). You'll typically only see this over SSH or from a service account.
 - **"daemon unreachable"** — the daemon itself is down or the socket path is wrong: check `systemctl status tisvlay-daemon` and `journalctl -u tisvlay-daemon`.
 
+## Version mismatch
+
+The GUI shows a **Version mismatch** banner, or a CLI command fails with a version error: a service and the app or CLI talking to it come from different releases, so they refuse to talk rather than misread each other. Releases that differ only in the patch number still work together. It usually follows an upgrade, before the running services restarted — restart the one named (and reopen the GUI):
+
+```sh
+sudo systemctl restart tisvlay-daemon
+systemctl --user restart tisvlay-session tisvlay-tray
+```
+
+`tisvlay status` then reports the daemon's release and whether it's compatible. If the CLI is the odd one out, the `tisvlay` on your `PATH` comes from another install.
+
 ## A hand edit didn't take
 
 - **Reload failed** — the message names the file and why; a parse error shows the line and column. Nothing from that file was applied: fix it and run `tisvlay reload` again.

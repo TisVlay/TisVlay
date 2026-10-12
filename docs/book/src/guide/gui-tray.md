@@ -20,6 +20,8 @@ Launch **TisVlay** from your application menu, or run `tisvlay-gui`. It's single
 
 **About** — version, component, and license information.
 
+**Service status** — the sidebar's dots show whether each service is running and compatible with this app; hover a version on the About pane for why it's colored as it is. A service on another release raises a **Version mismatch** banner (see [Troubleshooting](../operations/troubleshooting.md#version-mismatch)).
+
 **Navigation** — Alt+←/→ or the mouse back/forward buttons step through your pane history, browser-style. (Inactive while the pairing wizard or an edit form is open, so keys aren't stolen mid-edit.)
 
 **Contextual help** — an info (**ⓘ**) button reveals a longer explanation of the option beside it; icon-only buttons and chips show a short tip on hover. KDE-style, so the help stays out of the way until you ask for it.
