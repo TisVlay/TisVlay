@@ -2,7 +2,8 @@
 //!
 //! Any KWin-serviced screen capture appears in the PipeWire graph as a
 //! node with `media.class = "Stream/Output/Video"` and
-//! `node.name = "kwin_wayland"` (krdp in both modes, RustDesk, plus
+//! `node.name = "kwin_wayland"`, or `.kwin_wayland-wrapped` under NixOS's
+//! wrapper (krdp in both modes, RustDesk, plus
 //! plain captures like OBS or a browser tab-share — the signal carries no
 //! app attribution, which is why the unattributed `Screencast` kind arms
 //! only when the resolved profile opts in). The detector watches the
@@ -61,7 +62,15 @@ pub(crate) struct NodeProps {
 /// The predicate: a KWin-serviced video capture node.
 pub(crate) fn is_screencast(props: &NodeProps) -> bool {
     props.media_class.as_deref() == Some(SCREENCAST_MEDIA_CLASS)
-        && props.node_name.as_deref() == Some(KWIN_NODE_NAME)
+        && props.node_name.as_deref().is_some_and(is_kwin_node_name)
+}
+
+/// Whether a `node.name` is KWin's. KWin names its capture nodes after
+/// its process, so a wrapped binary shows through: NixOS's `makeWrapper`
+/// runs the real `kwin_wayland` as `.kwin_wayland-wrapped`.
+fn is_kwin_node_name(name: &str) -> bool {
+    let name = name.trim_start_matches('.');
+    name.strip_suffix("-wrapped").unwrap_or(name) == KWIN_NODE_NAME
 }
 
 /// Tracks the matching nodes present in the graph and turns registry /
@@ -434,7 +443,7 @@ mod ffi {
                 // nodes are not KWin captures, so only build a `NodeProps`
                 // (and bind the node) for one that matches the predicate.
                 if props.get(super::MEDIA_CLASS) != Some(super::SCREENCAST_MEDIA_CLASS)
-                    || props.get(super::NODE_NAME) != Some(super::KWIN_NODE_NAME)
+                    || !props.get(super::NODE_NAME).is_some_and(super::is_kwin_node_name)
                 {
                     return;
                 }
@@ -560,6 +569,19 @@ mod tests {
         assert!(!is_screencast(&props(
             Some(SCREENCAST_MEDIA_CLASS),
             Some("Firefox")
+        )));
+        // A wrapped KWin (NixOS) still matches; look-alikes don't.
+        assert!(is_screencast(&props(
+            Some(SCREENCAST_MEDIA_CLASS),
+            Some(".kwin_wayland-wrapped")
+        )));
+        assert!(!is_screencast(&props(
+            Some(SCREENCAST_MEDIA_CLASS),
+            Some("kwin_wayland_wrapper")
+        )));
+        assert!(!is_screencast(&props(
+            Some(SCREENCAST_MEDIA_CLASS),
+            Some("kwin_wayland-wrapped-not")
         )));
         // Missing either property never matches.
         assert!(!is_screencast(&props(Some(SCREENCAST_MEDIA_CLASS), None)));
