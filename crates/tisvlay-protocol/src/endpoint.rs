@@ -21,7 +21,10 @@ use crate::{keys, rpc, serve};
 pub trait Rpc {
     /// What addresses a call besides the site: `()`, a TV id, a vendor id.
     type Target: ?Sized;
+    /// The request body, sent as JSON; `()` for an rpc that takes none.
     type Request: Serialize + DeserializeOwned;
+    /// The reply body: the one reply of a [`Unary`] rpc, or each reply
+    /// of a [`Streaming`] one.
     type Response: Serialize + DeserializeOwned;
     /// The rpc's name within its family, for logs.
     const NAME: &'static str;
@@ -120,7 +123,10 @@ macro_rules! family {
         $(#[$family_meta])*
         #[derive(Debug)]
         pub enum Call {
-            $( $name($request), )*
+            $(
+                #[doc = concat!("[`", stringify!($name), "`]'s decoded request.")]
+                $name($request),
+            )*
         }
 
         impl Call {
@@ -137,7 +143,12 @@ macro_rules! family {
         /// it owes.
         #[derive(Debug)]
         pub enum Incoming {
-            $( $name($request, $crate::serve::Responder<$name>), )*
+            $(
+                #[doc = concat!(
+                    "[`", stringify!($name), "`]'s decoded request and the responder that owes its reply."
+                )]
+                $name($request, $crate::serve::Responder<$name>),
+            )*
         }
 
         impl Incoming {
@@ -210,11 +221,14 @@ pub mod manager {
             Discover = "discover" (rpc::Discover) -> tisvlay_core::DiscoveredTv, stream;
             /// Open a scan session publishing findings until stopped.
             DiscoverStart = "discover-start" (rpc::DiscoverStart) -> rpc::DiscoverySession, write;
+            /// Stop a scan session [`DiscoverStart`] opened, dropping its
+            /// liveliness token.
             DiscoverStop = "discover-stop" (rpc::DiscoverStop) -> rpc::Ack, write;
             /// Enroll a TV from a full config, without pairing.
             AddTv = "add-tv" (rpc::AddTv) -> rpc::Created, write;
             /// Pair a new TV; progress streams on its pairing key.
             Pair = "pair" (rpc::AddTv) -> rpc::PairStarted, write;
+            /// Cancel the pairing session running for a TV.
             CancelPair = "cancel-pair" (rpc::TvRef) -> rpc::Ack, write;
         }
     }
@@ -261,9 +275,16 @@ pub mod profile {
         parse: keys::parse_profile_rpc,
         wild: keys::profile_rpc_wild,
         rpcs: {
+            /// Create a system profile under the request's id or a minted
+            /// one. Re-creating the reserved default overwrites it, keeping
+            /// its name.
             Create = "create" (rpc::ProfileCreate) -> rpc::Created, write;
+            /// Replace a system profile's body.
             Update = "update" (rpc::ProfileUpdate) -> rpc::Ack, write;
+            /// Copy a system profile under a new name; replies the copy's id.
             Duplicate = "duplicate" (rpc::ProfileDuplicate) -> rpc::Created, write;
+            /// Delete a system profile; refused for the reserved default and
+            /// while any TV references it.
             Delete = "delete" (rpc::TvRef) -> rpc::Ack, write;
             /// The stock event mapping an unset profile field inherits.
             Defaults = "defaults" (()) -> tisvlay_core::SystemProfileConfig, read;
@@ -284,21 +305,43 @@ pub mod tv {
         parse: keys::parse_tv_rpc,
         wild: keys::tv_rpc_wild,
         rpcs: {
+            /// Set the volume level; acked once the TV completes it.
             SetVolume = "set-volume" (rpc::SetVolume) -> rpc::Ack, write;
+            /// Mute or unmute the TV; acked once the TV completes it.
             SetMuted = "set-muted" (rpc::SetMuted) -> rpc::Ack, write;
+            /// Rename the TV.
             SetName = "set-name" (rpc::SetName) -> rpc::Ack, write;
+            /// Turn profile-driven automation on or off for the TV. The
+            /// connection and manual control work either way.
             SetManaged = "set-managed" (rpc::SetManaged) -> rpc::Ack, write;
+            /// Assign the TV a system profile, or none to fall back on the
+            /// default profile.
             SetSystemProfile = "set-system-profile" (rpc::SetSystemProfile) -> rpc::Ack, write;
+            /// Set (or clear) the input a power-on or screen-on with
+            /// `restore_input` lands the TV on.
             SetPrimaryInput = "set-primary-input" (rpc::SetPrimaryInput) -> rpc::Ack, write;
+            /// Switch the TV's input, cancelling any pending input restore;
+            /// acked once the TV completes it.
             SwitchInput = "switch-input" (rpc::SwitchInput) -> rpc::Ack, write;
+            /// Set the backlight level; acked once the TV completes it.
             SetBacklight = "set-backlight" (rpc::SetBacklight) -> rpc::Ack, write;
+            /// Turn the screen on or off. Acked once the action is sent
+            /// (a screen-on may ride the wake path), then verified against
+            /// the TV's reported power state, with retries.
             SetScreen = "set-screen" (rpc::SetScreen) -> rpc::Ack, write;
+            /// Power the TV on over its connection, or, disconnected, by a
+            /// wake dial where the transport supports one.
             PowerOn = "power-on" (rpc::PowerOn) -> rpc::Ack, write;
+            /// Power the TV off; acked once the TV completes it.
             PowerOff = "power-off" (()) -> rpc::Ack, write;
+            /// Dial the TV now, unless it's connected or a dial is pending.
             Reconnect = "reconnect" (()) -> rpc::Ack, write;
+            /// Remove the TV, ending any pairing session for it.
             Remove = "remove" (()) -> rpc::Ack, write;
             /// The TV's config, secrets removed.
             GetConfig = "get-config" (()) -> rpc::TvConfigView, read;
+            /// Patch the TV's settings and vendor config (see
+            /// [`rpc::UpdateConfig`]); a vendor-config change redials it.
             UpdateConfig = "update-config" (rpc::UpdateConfig) -> rpc::Ack, write;
             /// Re-run pairing to refresh credentials.
             RePair = "re-pair" (()) -> rpc::RePairStarted, write;
@@ -317,9 +360,16 @@ pub mod user_profile {
         parse: keys::parse_user_profile_rpc,
         wild: keys::user_profile_rpc_wild,
         rpcs: {
+            /// Create a user profile under the request's id or a minted one.
+            /// Re-creating the reserved default overwrites it, keeping its
+            /// name.
             Create = "create" (rpc::UserProfileCreate) -> rpc::Created, write;
+            /// Replace a user profile's body.
             Update = "update" (rpc::UserProfileUpdate) -> rpc::Ack, write;
+            /// Copy a user profile under a new name; replies the copy's id.
             Duplicate = "duplicate" (rpc::ProfileDuplicate) -> rpc::Created, write;
+            /// Delete a user profile; refused for the reserved default and
+            /// while any TV is assigned it.
             Delete = "delete" (rpc::TvRef) -> rpc::Ack, write;
             /// The session's version and state path.
             Info = "info" (()) -> rpc::ServiceInfo, read;
@@ -348,6 +398,7 @@ pub mod user_remote {
         rpcs: {
             /// Toggle a manual remote-session source; replies the new state.
             Set = "set" (rpc::RemoteSet) -> crate::payload::RemoteSessionState, write;
+            /// The current remote-session state.
             Status = "status" (()) -> crate::payload::RemoteSessionState, read;
         }
     }
@@ -364,6 +415,7 @@ pub mod user_tray {
         parse: keys::parse_user_tray_rpc,
         wild: keys::user_tray_rpc_wild,
         rpcs: {
+            /// The tray's notification settings.
             Get = "get" (()) -> rpc::NotificationSettings, read;
             /// Apply a partial update; replies the merged settings.
             Update = "update" (rpc::NotificationSettingsPatch) -> rpc::NotificationSettings, write;
@@ -422,8 +474,13 @@ pub mod vendors {
     /// A decoded vendor-catalog rpc.
     #[derive(Debug)]
     pub enum Call {
+        /// [`Catalog`]'s request; it takes no body.
         Catalog(()),
-        Schema { vendor: String },
+        /// [`Schema`]'s request.
+        Schema {
+            /// The vendor id the key names.
+            vendor: String,
+        },
     }
 
     impl Call {
@@ -450,9 +507,17 @@ pub mod vendors {
     /// A received vendor-catalog rpc and the reply it owes.
     #[derive(Debug)]
     pub enum Incoming {
+        /// [`Catalog`]'s request, which takes no body, and the responder
+        /// that owes its reply.
         Catalog(Responder<Catalog>),
+        /// [`Schema`]'s request and the responder that owes its reply.
         Schema {
+            /// The vendor id the key names, not yet checked against the
+            /// registered backends.
             vendor: String,
+            /// Owes the vendor's pairing form, or an
+            /// [`ErrorCode::UnknownVendor`](crate::error::ErrorCode::UnknownVendor)
+            /// refusal.
             responder: Responder<Schema>,
         },
     }

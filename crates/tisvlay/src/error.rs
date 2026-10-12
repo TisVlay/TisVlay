@@ -13,21 +13,38 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The service refused the request.
+    /// The service refused the request. Nothing was applied; branch on
+    /// `code` (see also [`Error::invalid_field`]).
     #[error("{message} ({code})")]
-    Rpc { code: ErrorCode, message: String },
-    /// The service isn't running, or isn't reachable yet.
+    Rpc {
+        /// Why the service refused, for a caller to branch on.
+        code: ErrorCode,
+        /// The service's explanation, in English, for a person to read.
+        message: String,
+    },
+    /// The service isn't running, or isn't reachable yet: no service
+    /// took the call before the deadline, so a write wasn't applied.
+    /// Retry once the client's `is_available` turns true. A socket this
+    /// process may not open looks the same.
     #[error("the {service} is unavailable")]
-    Unavailable { service: Service },
+    Unavailable {
+        /// The service the call went to.
+        service: Service,
+    },
     /// No answer (timed out, or the service dropped the call). For a
     /// write, the outcome is unknown.
     #[error("the {service} didn't answer")]
-    Timeout { service: Service },
+    Timeout {
+        /// The service the call went to.
+        service: Service,
+    },
     /// The local link failed: opening the session, a subscription, or a
     /// stream that ended early.
     #[error("{what}")]
     Transport {
+        /// What the SDK was doing when the link failed.
         what: &'static str,
+        /// The underlying failure, when there is one.
         #[source]
         source: Option<BoxError>,
     },
@@ -36,14 +53,19 @@ pub enum Error {
     /// match.
     #[error("the {service} runs release {theirs}, which this client ({ours}) can't talk to")]
     VersionMismatch {
+        /// The mismatched service.
         service: Service,
+        /// This SDK's release.
         ours: String,
+        /// The service's release.
         theirs: String,
     },
     /// A reply didn't decode as its rpc's response type.
     #[error("malformed reply from the {service}")]
     Protocol {
+        /// The service that sent the reply.
         service: Service,
+        /// The decode failure, naming the rpc.
         #[source]
         source: BoxError,
     },
@@ -53,8 +75,20 @@ pub enum Error {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    /// The system daemon, which drives the TVs and owns pairing,
+    /// discovery and the system profiles ([`DaemonClient`]).
+    ///
+    /// [`DaemonClient`]: crate::DaemonClient
     Daemon,
+    /// The per-user session service, which owns the user profiles and
+    /// the remote-session state ([`SessionClient`]).
+    ///
+    /// [`SessionClient`]: crate::SessionClient
     Session,
+    /// The tray's per-user notification settings service
+    /// ([`TrayClient`]).
+    ///
+    /// [`TrayClient`]: crate::TrayClient
     Tray,
 }
 
@@ -114,6 +148,11 @@ impl Error {
             error @ RpcError::Undecodable { .. } => Self::Protocol {
                 service,
                 source: Box::new(error),
+            },
+            // A failure the protocol added later: keep it as the source.
+            error => Self::Transport {
+                what: "rpc failure",
+                source: Some(Box::new(error)),
             },
         }
     }

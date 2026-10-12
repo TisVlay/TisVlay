@@ -140,6 +140,16 @@ Ordered so the conflict hotspot (wire's `lib.rs`) is split first and the later c
 - **The GUI's version banner isn't dismissible.** It clears itself when the mismatched service goes away, and its next lifetime gets a fresh check.
 - **The stack runs linearly:** car 3 stacks on car 2 instead of running in parallel. It's simpler to merge, and costs nothing.
 
+*Decided during implementation (car 4):*
+- **`StateEvent` stays exhaustive,** against the car's first sketch. The policy keeps the attribute off enums whose every arm matters, and the GUI's exhaustive match is what demanded the version-mismatch arm. Under lockstep, a new variant is a minor release anyway.
+- **What did get `#[non_exhaustive]`:** `RpcError` (the SDK's conversion keeps an unknown failure as a `Transport` source), `TvInfo`, `TvStateChange` and `StateWatcherConfig`. `ErrorCode` already had it.
+- **`PowerPhase::DirectConnect` is gone.** Nothing published it; publishing it would promise clients a phase that never comes.
+- **Writing the docs found two handshake gaps, both fixed:** the session client's `version()`/`config_path()` were gated, and `get_user_profile` skipped the mismatch check.
+- **Pre-existing follow-ups the doc pass found, outside this train:**
+  - the `profile_*` refusal messages say "system profile" when the session returns them for user profiles;
+  - the session answers `BadRequest` for an internal failure ("the store writer is gone");
+  - `tv::SetSystemProfile` doesn't check that the profile exists.
+
 **PR split** (stacked): 1a+1b, then 1c, then 2 and 3 in parallel, then 4 (on both), then 5 (last, since its doctests need the final API).
 
 ## Test plan

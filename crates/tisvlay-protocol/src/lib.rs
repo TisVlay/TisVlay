@@ -5,6 +5,10 @@
 //! scouting discipline). Key-space reference: the "Key space" section of
 //! `docs/architecture.md`.
 
+// Published crate: every public item is documented (docs/build.md,
+// first-publish checklist).
+#![warn(missing_docs)]
+
 pub mod bootstrap;
 pub mod caller;
 pub mod endpoint;
