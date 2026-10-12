@@ -22,6 +22,7 @@ import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
+import { ServiceHealth } from "../globals/health.slint";
 
 export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
 
@@ -274,6 +275,7 @@ component TvList inherits Rectangle {
     in property <[TvViewModel]> tvs;
     in property <int> connected-count;
     in property <bool> daemon-available;
+    in property <ServiceHealth> daemon-health;
     in-out property <int> selected-index;
 
     width: Design.width-master;
@@ -407,7 +409,24 @@ component TvList inherits Rectangle {
             }
         }
 
-        if root.tvs.length == 0 && root.daemon-available: Rectangle {
+        // A daemon on an incompatible release hides its TVs from this
+        // GUI; say so rather than claim there are none.
+        if root.tvs.length == 0 && root.daemon-available && root.daemon-health == ServiceHealth.incompatible: Rectangle {
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: Design.gap-pane;
+                Text {
+                    text: @tr("TVs hidden: version mismatch");
+                    color: Theme.danger-text;
+                    font-size: Design.font-body;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.tvs.length == 0 && root.daemon-available && root.daemon-health != ServiceHealth.incompatible: Rectangle {
             VerticalLayout {
                 width: 100%;
                 alignment: center;
@@ -1126,6 +1145,7 @@ export component TvsPane {
     in property <[TvViewModel]> tvs;
     in property <int> tvs-connected-count;
     in property <bool> daemon-available;
+    in property <ServiceHealth> daemon-health;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
     in-out property <int> selected-index: -1;
@@ -1187,6 +1207,7 @@ export component TvsPane {
                 tvs: root.tvs;
                 connected-count: root.tvs-connected-count;
                 daemon-available: root.daemon-available;
+                daemon-health: root.daemon-health;
                 selected-index <=> root.selected-index;
             }
 

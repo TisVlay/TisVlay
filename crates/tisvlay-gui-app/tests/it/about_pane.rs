@@ -10,7 +10,7 @@
 
 use i_slint_backend_testing::{ElementHandle, ElementQuery};
 use slint::{ModelRc, SharedString, VecModel};
-use tisvlay_gui::{AboutComponentRow, AppWindow, Pane};
+use tisvlay_gui::{AboutComponentRow, AppWindow, Pane, ServiceHealth};
 
 /// Pre-canned multi-row state mirroring `about::make_about_components`'s
 /// production output. Inlined rather than calling the library's
@@ -24,8 +24,18 @@ fn make_synthetic_components() -> Vec<AboutComponentRow> {
             bus_address: SharedString::from(bus),
             description: SharedString::from(""),
             version: SharedString::from(version),
-            tone: SharedString::from("info"),
+            health: if online {
+                ServiceHealth::Ok
+            } else {
+                ServiceHealth::Offline
+            },
             online,
+            chip: SharedString::from(if online {
+                format!("v{version}")
+            } else {
+                "offline".to_string()
+            }),
+            tip: SharedString::from(""),
             config_path: SharedString::from(""),
         };
     vec![

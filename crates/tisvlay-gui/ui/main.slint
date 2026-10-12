@@ -27,13 +27,14 @@ import { Icons } from "globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "globals/profiles.slint";
 import { Toast, ToastView } from "globals/toast.slint";
 import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
+import { Health, ServiceHealth } from "globals/health.slint";
 import { SelectOverlay } from "globals/select.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, Tray, TrayNotificationSettings, PairingWizard, EditPane, Clipboard, Errors, Icons, Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry, Toast, Help }
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, Tray, TrayNotificationSettings, PairingWizard, EditPane, Clipboard, Errors, Icons, Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry, Toast, Help, ServiceHealth }
 
 export enum Pane {
     tvs,
@@ -118,6 +119,12 @@ export component AppWindow inherits Window {
     in property <bool> daemon-available: false;
     in property <bool> session-available: false;
     in property <bool> tray-available: false;
+    // Presence plus release compatibility, for the footer dots (and the
+    // TVs pane's empty state). The `*-available` flags above stay
+    // presence only.
+    in property <ServiceHealth> daemon-health: ServiceHealth.offline;
+    in property <ServiceHealth> session-health: ServiceHealth.offline;
+    in property <ServiceHealth> tray-health: ServiceHealth.offline;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
     in property <string> gui-version;
@@ -329,7 +336,9 @@ export component AppWindow inherits Window {
 
                     // Footer status block — three peer indicators (Daemon /
                     // Session / Tray) grouped together and centered within
-                    // the sidebar. Each row is a single left-aligned Text
+                    // the sidebar. Each dot renders its service's health:
+                    // filled while it runs, colored by whether this GUI
+                    // can use it. Each row is a single left-aligned Text
                     // (dot glyph + label), so the dots naturally share an
                     // x-coord (the row's left edge); wrapping the whole
                     // VerticalLayout in a centered HorizontalLayout shifts
@@ -342,20 +351,20 @@ export component AppWindow inherits Window {
                             spacing: 2px;
                             horizontal-stretch: 0;
                             Text {
-                                text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
-                                color: root.daemon-available ? Theme.success : Theme.danger;
+                                text: Health.dot(root.daemon-health) + " " + @tr("Daemon");
+                                color: Health.color(root.daemon-health);
                                 font-size: Design.font-caption;
                                 horizontal-alignment: left;
                             }
                             Text {
-                                text: (root.session-available ? "● " : "○ ") + @tr("Session");
-                                color: root.session-available ? Theme.success : Theme.danger;
+                                text: Health.dot(root.session-health) + " " + @tr("Session");
+                                color: Health.color(root.session-health);
                                 font-size: Design.font-caption;
                                 horizontal-alignment: left;
                             }
                             Text {
-                                text: (root.tray-available ? "● " : "○ ") + @tr("Tray");
-                                color: root.tray-available ? Theme.success : Theme.danger;
+                                text: Health.dot(root.tray-health) + " " + @tr("Tray");
+                                color: Health.color(root.tray-health);
                                 font-size: Design.font-caption;
                                 horizontal-alignment: left;
                             }
@@ -435,6 +444,7 @@ export component AppWindow inherits Window {
                         tvs-connected-count: root.tvs-connected-count;
                         selected-index <=> root.selected-tv-index;
                         daemon-available: root.daemon-available;
+                        daemon-health: root.daemon-health;
                         system-profiles: root.system-profiles;
                         user-profiles: root.user-profiles;
                     }

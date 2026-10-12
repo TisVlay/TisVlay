@@ -14,7 +14,9 @@ use tisvlay_runtime::client::RefreshTrigger;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
+use crate::about::{
+    PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version, service_health,
+};
 use crate::profiles::{self, ProfileEditor};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
@@ -139,14 +141,12 @@ pub(crate) async fn initial_fetch_and_watch(
         app.global::<Tray>()
             .set_notifications(initial_tray_notifications);
     });
-    // Every availability copy goes through the single writer.
-    publish_availability(&daemon, &session, &tray, &app_weak).await;
+    // Every service-status copy goes through the single writer.
+    publish_services(&daemon, &session, &tray, &app_weak).await;
 
     if initial_tray_available {
         refresh_tray_notifications(&tray, &app_weak).await;
     }
-
-    refresh_about_components(&daemon, &session, &tray, &app_weak).await;
     watch_state(
         daemon,
         session,
@@ -352,7 +352,7 @@ async fn watch_state(
                 // defaults on disk, in which case the inherit walk
                 // would otherwise resolve against a stale ancestor.
                 profiles::prime_system_layers(&daemon, &editor).await;
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
@@ -423,8 +423,7 @@ async fn watch_state(
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                     app.set_tvs_connected_count(0);
                 });
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
-                refresh_about_components(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
                 // The client exists from startup (background-retry link);
@@ -432,7 +431,7 @@ async fn watch_state(
                 if let Some(client) = session.read().await.as_ref() {
                     profiles::prime_user_layers(client, &editor).await;
                 }
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
@@ -442,13 +441,13 @@ async fn watch_state(
                 // gets a fresh release check.
                 mismatches.clear(Service::Session);
                 mismatches.publish(&app_weak);
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
                 // The client exists from startup (background-retry link).
                 {
-                    publish_availability(&daemon, &session, &tray, &app_weak).await;
+                    publish_services(&daemon, &session, &tray, &app_weak).await;
                     refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
                 }
@@ -457,7 +456,7 @@ async fn watch_state(
                 // Client stays, same as the session arm above.
                 mismatches.clear(Service::Tray);
                 mismatches.publish(&app_weak);
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayNotificationSettingsChanged => {
@@ -528,20 +527,23 @@ async fn refresh(
             });
         }
         // Content-only failure: availability is liveliness's job
-        // (publish_availability), never a fetch outcome's.
+        // (publish_services), never a fetch outcome's.
         Err(e) => debug!(error = %e, "State refresh failed"),
     }
     drop(session_ref);
-    publish_availability(daemon, session, tray, app_weak).await;
-    refresh_about_components(daemon, session, tray, app_weak).await;
+    publish_services(daemon, session, tray, app_weak).await;
 }
 
-/// Probe each peer's version + config-path info rpcs and push the
-/// COMPONENTS-table model to the About pane. Both values are
-/// constant for a peer's lifetime, so this is cheap to invoke after
-/// every state-affecting event; caching would save a couple of
-/// round-trips on a flap-storm but isn't worth the extra plumbing.
-async fn refresh_about_components(
+/// The single writer for every Slint service-status property: the
+/// presence flags (window props + the Tray/Profiles globals), each
+/// service's health for the footer dots, and the About pane's
+/// COMPONENTS rows. Presence is liveliness, only; rpc outcomes are
+/// content, never online/offline. Health adds the release each
+/// service's `info` reports, which answers even across a version
+/// mismatch. Writing everything from one probe is what keeps the
+/// footer, settings pane, profiles pane and About rows from ever
+/// disagreeing.
+async fn publish_services(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
     tray: &RwLock<Option<TrayClient>>,
@@ -558,8 +560,7 @@ async fn refresh_about_components(
         })
     }
 
-    // Availability is liveliness; the probes fill content only. A
-    // failed probe on a live peer renders an online row with "—".
+    // A failed probe on a live peer renders an online row with "—".
     let daemon_up = daemon.is_available().await;
     let daemon_info = probe(daemon.version(), daemon.config_path()).await;
     let (session_up, session_info) = match session.read().await.as_ref() {
@@ -577,6 +578,9 @@ async fn refresh_about_components(
         None => (false, None),
     };
     let cli_version = probe_cli_version().await;
+    let daemon_health = service_health(daemon_up, daemon_info.as_ref());
+    let session_health = service_health(session_up, session_info.as_ref());
+    let tray_health = service_health(tray_up, tray_info.as_ref());
     let rows = make_about_components(
         &crate::endpoints().site,
         (daemon_up, daemon_info.as_ref()),
@@ -585,36 +589,15 @@ async fn refresh_about_components(
         cli_version.as_deref(),
     );
     on_ui(app_weak, move |app| {
-        app.set_about_components(ModelRc::new(VecModel::from(rows)));
-    });
-}
-
-/// The single writer for every Slint availability property — presence
-/// is liveliness, only; rpc outcomes are content, never online/offline.
-/// Writing all copies (window props + the Tray/Profiles globals) in
-/// one place is what keeps the footer, settings pane, profiles pane,
-/// and About rows from ever disagreeing.
-async fn publish_availability(
-    daemon: &DaemonClient,
-    session: &RwLock<Option<SessionClient>>,
-    tray: &RwLock<Option<TrayClient>>,
-    app_weak: &slint::Weak<AppWindow>,
-) {
-    let daemon_up = daemon.is_available().await;
-    let session_up = match session.read().await.as_ref() {
-        Some(client) => client.is_available().await,
-        None => false,
-    };
-    let tray_up = match tray.read().await.as_ref() {
-        Some(client) => client.is_available().await,
-        None => false,
-    };
-    on_ui(app_weak, move |app| {
         app.set_daemon_available(daemon_up);
         app.set_session_available(session_up);
         app.set_tray_available(tray_up);
         app.global::<Tray>().set_available(tray_up);
         app.global::<Profiles>().set_session_available(session_up);
+        app.set_daemon_health(daemon_health);
+        app.set_session_health(session_health);
+        app.set_tray_health(tray_health);
+        app.set_about_components(ModelRc::new(VecModel::from(rows)));
     });
 }
 
