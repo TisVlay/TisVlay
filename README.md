@@ -33,7 +33,7 @@
   - GUI app for device pairing, profile editing, and user setting
   - System tray for quick access controls and device status
 
-## 🖼️ Screenshots
+## 📸 Screenshots
 
 | **TVs** — status, automation and profile assignments | **TV controls** — picture, audio and input (light theme) |
 |:---:|:---:|
