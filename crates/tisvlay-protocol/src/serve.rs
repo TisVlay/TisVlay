@@ -47,11 +47,14 @@ impl<R: Rpc> Responder<R> {
         }
     }
 
-    /// The query, for a server that answers later through its own
-    /// correlation (the daemon files it and replies from the world,
-    /// typed there by the same `R`); the caller takes over the reply.
-    pub fn into_query(mut self) -> Query {
-        self.take()
+    /// Set the reply aside for a server that answers later through its
+    /// own correlation: one map can hold the replies it owes across rpcs.
+    /// The daemon files queries for its world, which answers with JSON
+    /// typed there by the same `R`.
+    pub fn park(mut self) -> ParkedReply {
+        ParkedReply {
+            query: Some(self.take()),
+        }
     }
 
     fn take(&mut self) -> Query {
@@ -91,6 +94,46 @@ impl<R> fmt::Debug for Responder<R> {
     }
 }
 
+/// A [`Responder`] set aside with [`Responder::park`], its rpc type left
+/// to the server that answers it. Answering consumes it, and one dropped
+/// unanswered logs a warning, as a responder does.
+pub struct ParkedReply {
+    query: Option<Query>,
+}
+
+impl ParkedReply {
+    /// Answer with a response already encoded as JSON, or refuse.
+    pub async fn answer(mut self, outcome: Result<serde_json::Value, WireError>) {
+        let query = self
+            .query
+            .take()
+            .expect("a parked reply holds its query until answered, and answering consumes it");
+        match outcome {
+            Ok(response) => {
+                let bytes =
+                    serde_json::to_vec(&response).expect("a JSON value always encodes as JSON");
+                send(&query, bytes).await;
+            }
+            Err(error) => reply_err(&query, &error).await,
+        }
+    }
+}
+
+impl Drop for ParkedReply {
+    fn drop(&mut self) {
+        if let Some(query) = &self.query {
+            tracing::warn!(key = %query.key_expr(), "parked rpc dropped without a reply");
+        }
+    }
+}
+
+impl fmt::Debug for ParkedReply {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let key = self.query.as_ref().map(|query| query.key_expr().as_str());
+        f.debug_tuple("ParkedReply").field(&key).finish()
+    }
+}
+
 fn encode<T: serde::Serialize>(response: &T) -> Vec<u8> {
     serde_json::to_vec(response).expect(
             "rpc responses are serde structs, string-keyed maps and lists of them, which always encode as JSON",
@@ -98,24 +141,16 @@ fn encode<T: serde::Serialize>(response: &T) -> Vec<u8> {
 }
 
 /// A query's body bytes, empty when it carried none.
-pub fn payload(query: &Query) -> Vec<u8> {
+pub(crate) fn payload(query: &Query) -> Vec<u8> {
     query
         .payload()
         .map(|payload| payload.to_bytes().into_owned())
         .unwrap_or_default()
 }
 
-/// Answer `query` with a response already encoded as JSON — the
-/// daemon's world replies to the queries it filed with
-/// [`Responder::into_query`], typed where the world built them.
-pub async fn reply_json(query: &Query, response: &serde_json::Value) {
-    let bytes = serde_json::to_vec(response).expect("a JSON value always encodes as JSON");
-    send(query, bytes).await;
-}
-
-/// Refuse `query` with a typed error: a query no family decoded, or
-/// one the daemon filed for the world.
-pub async fn reply_err(query: &Query, error: &WireError) {
+/// Refuse `query` with a typed error: a query no family decoded, or a
+/// parked reply's refusal.
+pub(crate) async fn reply_err(query: &Query, error: &WireError) {
     let bytes = serde_json::to_vec(error).expect("WireError always encodes as JSON");
     if let Err(e) = query
         .reply_err(bytes)

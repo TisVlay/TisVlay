@@ -128,6 +128,12 @@ Ordered so the conflict hotspot (wire's `lib.rs`) is split first and the later c
    - **`release-plz.toml`:** a note that per-package tags (`tisvlay-v0.4.0`) sit next to the distro tag (`v0.4.0`).
    - **First release PR:** check that the CHANGELOGs for both new crates read as an initial release, since release-plz filters by package path across the rename.
 
+*Decided during implementation (car 1c):*
+- **`discover_scan` stays in the protocol.** It isn't daemon policy: a client's query window for a discover is `discover_scan(request) + DISCOVER_MARGIN`, so both sides must agree on it. Moving it would mean duplicating its constants, which would then drift. Its doc says so.
+- **`keys::parse_*` stays public.** It's client API: the SDK's mirror, the CLI and the tray parse the keys they receive on wildcard subscriptions.
+- **No `__private` module was needed.** `family!` isn't exported, so its expansions live in the protocol crate. Its helpers (`serve::payload`, `serve::reply_err`, the generated `Call::decode`) went `pub(crate)`.
+- **The escape hatches became `ParkedReply`.** `Responder::park()` returns a type-erased reply the daemon bridge can keep in one map across rpcs and answer later with the world's JSON. It keeps a responder's guarantees: answering consumes it, and one dropped unanswered logs a warning. `into_query` and `reply_json` are gone.
+
 **PR split** (stacked): 1a+1b, then 1c, then 2 and 3 in parallel, then 4 (on both), then 5 (last, since its doctests need the final API).
 
 ## Test plan

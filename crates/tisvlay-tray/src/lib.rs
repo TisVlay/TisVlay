@@ -524,7 +524,7 @@ pub fn default_user_socket() -> PathBuf {
 
 /// Re-exported for the wire test's mirror driver.
 pub fn client_config(socket: &Path) -> Result<zenoh::Config> {
-    bootstrap::client_config(socket)
+    Ok(bootstrap::client_config(socket)?)
 }
 
 /// Terminal pairing phases become toasts — non-terminal progress is the
