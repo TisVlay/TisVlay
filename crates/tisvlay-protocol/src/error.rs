@@ -77,6 +77,8 @@ error_codes! {
     /// The state file couldn't be read or parsed; a reload applies
     /// nothing.
     StoreUnreadable = "store-unreadable",
+    /// The service failed on its side; the request itself may be fine.
+    Internal = "internal",
 }
 
 /// Split a [`WireError::invalid_field`] refusal back into its
@@ -264,6 +266,15 @@ impl WireError {
         Self {
             code: ErrorCode::StoreUnreadable,
             message: report.into(),
+        }
+    }
+
+    /// The service failed on its side (a task it needs is gone, a reply
+    /// it built is malformed); the request itself may be fine.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message: message.into(),
         }
     }
 }

@@ -1020,10 +1020,10 @@ impl Core {
         let (reply, edit) = tokio::sync::oneshot::channel();
         reloads
             .send(store::ReloadRequest { reply })
-            .map_err(|_| WireError::bad_request("the store writer is gone"))?;
+            .map_err(|_| WireError::internal("the store writer is gone"))?;
         let edit = edit
             .await
-            .map_err(|_| WireError::bad_request("the store writer is gone"))??;
+            .map_err(|_| WireError::internal("the store writer is gone"))??;
         let result = self.apply_edit(&edit).await;
         if let Some(tx) = &self.persist {
             let applied = result.is_ok().then(|| edit.disk.clone());
