@@ -1,5 +1,5 @@
 //! World-side components and resources. Wire-visible state components live
-//! in `tisvlay_wire::payload` (component = key = payload); everything here is
+//! in `tisvlay_protocol::payload` (component = key = payload); everything here is
 //! internal structure.
 
 use bevy_ecs::lifecycle::HookContext;
@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::time::Instant;
 use tisvlay_core::VendorConfig;
-use tisvlay_wire::{keys, payload};
+use tisvlay_protocol::{keys, payload};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 

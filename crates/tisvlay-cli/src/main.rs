@@ -16,11 +16,11 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::CompleteEnv;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::{Value, json};
-use tisvlay_wire::caller::{Caller, RpcError};
-use tisvlay_wire::endpoint::{
+use tisvlay_protocol::caller::{Caller, RpcError};
+use tisvlay_protocol::endpoint::{
     Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
 };
-use tisvlay_wire::{keys, payload, rpc};
+use tisvlay_protocol::{keys, payload, rpc};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::sample::SampleKind;
@@ -346,7 +346,7 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
     let socket = cli
         .socket
-        .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path);
+        .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path);
     // `enable-access` needs no daemon connection — it is the fix for not
     // being able to reach the socket, so it runs before opening the client.
     if matches!(cli.command, Command::EnableAccess) {
@@ -486,8 +486,8 @@ async fn run() -> Result<()> {
         Command::UserProfile(cmd) => {
             let user_socket = cli
                 .user_socket
-                .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?)
+                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
                 .await
                 .map_err(|e| {
                     anyhow!(
@@ -507,8 +507,8 @@ async fn run() -> Result<()> {
         Command::RemoteSession(cmd) => {
             let user_socket = cli
                 .user_socket
-                .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?)
+                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
                 .await
                 .map_err(|e| {
                     anyhow!(
@@ -557,27 +557,27 @@ fn vendor_completions() -> ArgValueCandidates {
 
 fn tv_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_tv_candidates(
-        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+        &tisvlay_protocol::bootstrap::default_connect_socket_path(),
     ))
 }
 
 fn system_profile_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_catalog_candidates(
-        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+        &tisvlay_protocol::bootstrap::default_connect_socket_path(),
         &keys::profile_system_wild("main"),
     ))
 }
 
 fn user_profile_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_catalog_candidates(
-        &tisvlay_wire::bootstrap::default_session_socket_path(),
+        &tisvlay_protocol::bootstrap::default_session_socket_path(),
         "tisvlay/main/user/profile/*",
     ))
 }
 
 fn vendor_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_vendor_candidates(
-        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+        &tisvlay_protocol::bootstrap::default_connect_socket_path(),
     ))
 }
 
@@ -604,7 +604,7 @@ fn blocking_candidates(
 /// Hydrate the TV wildcard from the publisher caches and turn each TV into
 /// a completion candidate. `None` on any transport error.
 async fn collect_tv_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>> {
-    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+    let session = zenoh::open(tisvlay_protocol::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
     let site = "main";
@@ -652,7 +652,7 @@ async fn collect_catalog_candidates(
     socket: &Path,
     wildcard: &str,
 ) -> Option<Vec<CompletionCandidate>> {
-    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+    let session = zenoh::open(tisvlay_protocol::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
     let subscriber = session
@@ -695,7 +695,7 @@ async fn collect_catalog_candidates(
 /// A query (not a cached wildcard like the TV/profile catalogs), so it
 /// rides the `Caller` fetch path. `None` on any transport error.
 async fn collect_vendor_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>> {
-    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+    let session = zenoh::open(tisvlay_protocol::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
     let vendors = Caller::new(session, "main")
@@ -1004,7 +1004,7 @@ async fn discover_session(
 }
 
 async fn open_client(socket: &Path) -> Result<Session> {
-    zenoh::open(tisvlay_wire::bootstrap::client_config(socket)?)
+    zenoh::open(tisvlay_protocol::bootstrap::client_config(socket)?)
         .await
         .map_err(|e| {
             // A connect failure for a caller who isn't in the socket group
@@ -1118,7 +1118,7 @@ async fn pair(
 
 /// One line on what the pairing did with the device-reported link MAC.
 fn link_mac_line(id: Uuid, report: &payload::LinkMacReport) -> String {
-    use tisvlay_wire::payload::LinkMacOutcome;
+    use tisvlay_protocol::payload::LinkMacOutcome;
     let reported = &report.reported;
     match &report.outcome {
         LinkMacOutcome::Filled => format!("mac: detected {reported} (saved)"),
@@ -1193,8 +1193,8 @@ async fn reload(
 ) -> Result<()> {
     let daemon = caller.call::<manager::Reload>(&(), &()).await;
     let user_socket =
-        user_socket.unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
-    let user = match zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?).await {
+        user_socket.unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+    let user = match zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?).await {
         Ok(user) => Some(Caller::new(user, site)),
         Err(_) => None,
     };
@@ -1439,7 +1439,7 @@ mod tests {
 
     #[test]
     fn link_mac_line_names_each_outcome() {
-        use tisvlay_wire::payload::{LinkMacOutcome, LinkMacReport};
+        use tisvlay_protocol::payload::{LinkMacOutcome, LinkMacReport};
         let id = uuid::Uuid::nil();
         let report = |outcome| LinkMacReport {
             reported: "84:90:0A:63:A9:94".into(),

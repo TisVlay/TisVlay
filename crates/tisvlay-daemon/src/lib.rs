@@ -78,7 +78,7 @@ async fn open_socket(socket: &Path) -> Result<Session> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create socket dir {}", parent.display()))?;
     }
-    let config = tisvlay_wire::bootstrap::peer_config(socket)?;
+    let config = tisvlay_protocol::bootstrap::peer_config(socket)?;
     let session = zenoh::open(config)
         .await
         .map_err(|e| anyhow!("open zenoh peer session on {}: {e}", socket.display()))?;
@@ -99,7 +99,7 @@ async fn open_socket(socket: &Path) -> Result<Session> {
 /// observe it alive (first-rpc-right-after-alive must never race the
 /// queryable declarations).
 async fn declare_alive(session: &Session, site: &str) -> Result<LivelinessToken> {
-    let key = tisvlay_wire::keys::daemon_alive(site);
+    let key = tisvlay_protocol::keys::daemon_alive(site);
     session
         .liveliness()
         .declare_token(key.as_str())
@@ -454,7 +454,7 @@ pub async fn serve(
     let bridge_site = site.to_string();
     let bridge_world = world.clone();
     // Introspection served by the bridge (About pane rows).
-    let info = tisvlay_wire::rpc::ServiceInfo {
+    let info = tisvlay_protocol::rpc::ServiceInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         state_path: store_path
             .map(|p| p.display().to_string())
@@ -478,7 +478,7 @@ pub async fn serve(
     // below): a greeter that sees the daemon alive must not put into
     // the void.
     let greeter_sub = session
-        .declare_subscriber(tisvlay_wire::keys::greeter_idle(site))
+        .declare_subscriber(tisvlay_protocol::keys::greeter_idle(site))
         .await
         .map_err(|e| anyhow!("declare greeter idle subscriber: {e}"))?;
     let greeter_world = world.clone();
@@ -515,7 +515,7 @@ pub async fn serve(
     // this is what retired the session-side re-put. Forward the computed
     // armed set into the world, which gates the wake-ish system events.
     let remote_sub = session
-        .declare_subscriber(tisvlay_wire::keys::remote_session(site))
+        .declare_subscriber(tisvlay_protocol::keys::remote_session(site))
         .history(HistoryConfig::default().detect_late_publishers())
         .await
         .map_err(|e| anyhow!("declare remote session subscriber: {e}"))?;
@@ -524,7 +524,7 @@ pub async fn serve(
     tokio::spawn(async move {
         let sub = remote_sub;
         while let Ok(sample) = sub.recv_async().await {
-            let Ok(state) = serde_json::from_slice::<tisvlay_wire::payload::RemoteSessionState>(
+            let Ok(state) = serde_json::from_slice::<tisvlay_protocol::payload::RemoteSessionState>(
                 &sample.payload().to_bytes(),
             ) else {
                 continue;
@@ -546,7 +546,7 @@ pub async fn serve(
     // mirror rather than concluding no session will arm.
     let session_alive_sub = session
         .liveliness()
-        .declare_subscriber(tisvlay_wire::keys::session_alive(site))
+        .declare_subscriber(tisvlay_protocol::keys::session_alive(site))
         .history(true)
         .await
         .map_err(|e| anyhow!("declare session liveliness subscriber: {e}"))?;

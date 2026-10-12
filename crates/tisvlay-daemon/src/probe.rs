@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tisvlay_core::HardwareId;
-use tisvlay_wire::keys;
+use tisvlay_protocol::keys;
 use tisvlay_world::{InEvent, WorldClient};
 use tracing::{debug, info, trace, warn};
 use uuid::Uuid;

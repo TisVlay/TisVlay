@@ -1,5 +1,5 @@
 [package]
-name = "tisvlay-wire"
+name = "tisvlay-protocol"
 description = "TisVlay wire layer: shared key-space vocabulary, payload structs, and zenoh session bootstrap"
 version.workspace = true
 edition.workspace = true

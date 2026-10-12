@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
-use tisvlay_wire::error::ErrorCode;
+use tisvlay_protocol::error::ErrorCode;
 use tisvlay_world::{
     Command, Reactor, Reply, RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect,
     WorldClient,

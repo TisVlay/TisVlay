@@ -374,11 +374,11 @@ pub fn run() -> Result<()> {
         system_socket: args
             .socket
             .clone()
-            .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path),
+            .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path),
         user_socket: args
             .user_socket
             .clone()
-            .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path),
+            .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path),
         site: args.site,
     });
     info!("tisvlay-gui starting");

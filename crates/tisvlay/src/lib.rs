@@ -20,20 +20,20 @@ use serde_json::Value;
 use tisvlay_core::{
     Capabilities, DiscoveredTv, HardwareId, PairingField, SystemProfileConfig, UserProfileConfig,
 };
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{
     Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
 };
-use tisvlay_wire::{bootstrap, keys, rpc};
+use tisvlay_protocol::{bootstrap, keys, rpc};
 
 pub use desktop::DesktopMapping;
 pub use error::{BoxError, Error, Result, Service};
-pub use tisvlay_wire::error::ErrorCode;
-pub use tisvlay_wire::payload::{
+pub use tisvlay_protocol::error::ErrorCode;
+pub use tisvlay_protocol::payload::{
     FailureCode, LinkMacOutcome, LinkMacReport, PairingPhase, PairingProgress, PowerPhase,
     RemoteSessionState, RemoteSource, RemoteSourceKind,
 };
-pub use tisvlay_wire::rpc::{
+pub use tisvlay_protocol::rpc::{
     NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, TvConfigView,
     VendorEntry,
 };
@@ -442,7 +442,7 @@ impl DaemonClient {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
-                let Ok(progress) = serde_json::from_slice::<tisvlay_wire::payload::PowerProgress>(
+                let Ok(progress) = serde_json::from_slice::<tisvlay_protocol::payload::PowerProgress>(
                     &sample.payload().to_bytes(),
                 ) else {
                     continue;
@@ -1113,7 +1113,7 @@ mod mirror_row {
     //! `TvRow` → `TvInfo` projection, kept next to the type it fills.
 
     use super::*;
-    use tisvlay_wire::payload;
+    use tisvlay_protocol::payload;
 
     pub(crate) struct Row {
         power: Option<payload::Power>,

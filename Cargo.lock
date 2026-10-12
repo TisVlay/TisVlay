@@ -6567,9 +6567,9 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-daemon",
  "tisvlay-mock",
+ "tisvlay-protocol",
  "tisvlay-session",
  "tisvlay-test",
- "tisvlay-wire",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -6604,8 +6604,8 @@ dependencies = [
  "clap_complete",
  "serde",
  "serde_json",
+ "tisvlay-protocol",
  "tisvlay-runtime",
- "tisvlay-wire",
  "tokio",
  "uuid",
  "zenoh",
@@ -6652,9 +6652,9 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-lg",
  "tisvlay-mock",
+ "tisvlay-protocol",
  "tisvlay-runtime",
  "tisvlay-test",
- "tisvlay-wire",
  "tisvlay-world",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
@@ -6672,8 +6672,8 @@ dependencies = [
  "anyhow",
  "clap",
  "serde_json",
+ "tisvlay-protocol",
  "tisvlay-runtime",
- "tisvlay-wire",
  "tokio",
  "tracing",
  "zenoh",
@@ -6710,8 +6710,8 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-gui",
  "tisvlay-icons",
+ "tisvlay-protocol",
  "tisvlay-runtime",
- "tisvlay-wire",
  "tokio",
  "tracing",
  "uuid",
@@ -6763,6 +6763,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tisvlay-protocol"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "serde",
+ "serde_json",
+ "tisvlay-core",
+ "tisvlay-test",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zenoh",
+]
+
+[[package]]
 name = "tisvlay-runtime"
 version = "0.3.0"
 dependencies = [
@@ -6804,9 +6820,9 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-daemon",
  "tisvlay-mock",
+ "tisvlay-protocol",
  "tisvlay-runtime",
  "tisvlay-test",
- "tisvlay-wire",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
@@ -6862,10 +6878,10 @@ dependencies = [
  "tisvlay-daemon",
  "tisvlay-icons",
  "tisvlay-mock",
+ "tisvlay-protocol",
  "tisvlay-runtime",
  "tisvlay-session",
  "tisvlay-test",
- "tisvlay-wire",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
@@ -6873,22 +6889,6 @@ dependencies = [
  "zbus",
  "zenoh",
  "zenoh-ext",
-]
-
-[[package]]
-name = "tisvlay-wire"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "bevy_ecs",
- "serde",
- "serde_json",
- "tisvlay-core",
- "tisvlay-test",
- "tokio",
- "tracing",
- "uuid",
- "zenoh",
 ]
 
 [[package]]
@@ -6901,7 +6901,7 @@ dependencies = [
  "serde_json",
  "tisvlay-core",
  "tisvlay-mock",
- "tisvlay-wire",
+ "tisvlay-protocol",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tracing",

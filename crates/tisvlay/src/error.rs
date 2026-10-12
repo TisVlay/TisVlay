@@ -3,8 +3,8 @@
 
 use std::fmt;
 
-use tisvlay_wire::caller::RpcError;
-use tisvlay_wire::error::{ErrorCode, invalid_field_parts};
+use tisvlay_protocol::caller::RpcError;
+use tisvlay_protocol::error::{ErrorCode, invalid_field_parts};
 
 /// A boxed cause, kept for `source()` chains and logs.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -113,7 +113,7 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay_wire::error::WireError;
+    use tisvlay_protocol::error::WireError;
 
     #[test]
     fn transport_keeps_its_cause_in_source() {

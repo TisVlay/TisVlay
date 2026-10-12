@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tisvlay_wire::caller::{Caller, RpcError};
-use tisvlay_wire::endpoint::Unary;
-use tisvlay_wire::error::WireError;
+use tisvlay_protocol::caller::{Caller, RpcError};
+use tisvlay_protocol::endpoint::Unary;
+use tisvlay_protocol::error::WireError;
 use zenoh::Session;
 use zenoh::bytes::Encoding;
 

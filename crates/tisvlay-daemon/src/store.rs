@@ -9,8 +9,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tisvlay_protocol::endpoint::manager;
 use tisvlay_runtime::fs::TomlWrite;
-use tisvlay_wire::endpoint::manager;
 use tisvlay_world::{Command, Reply, StoreEdit, StoreMsg, StoreSnapshot, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tokio::time::Instant;

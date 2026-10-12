@@ -15,9 +15,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
-use tisvlay_wire::endpoint::user_tray;
-use tisvlay_wire::error::WireError;
-use tisvlay_wire::{keys, rpc};
+use tisvlay_protocol::endpoint::user_tray;
+use tisvlay_protocol::error::WireError;
+use tisvlay_protocol::{keys, rpc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use zenoh::Session;
@@ -25,7 +25,7 @@ use zenoh::bytes::Encoding;
 use zenoh::query::Query;
 use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
 
-pub use tisvlay_wire::rpc::NotificationSettings;
+pub use tisvlay_protocol::rpc::NotificationSettings;
 
 /// On-disk wrapper for the settings file: the schema version tag rides
 /// the persisted form only, never the wire body. Absence *defines*

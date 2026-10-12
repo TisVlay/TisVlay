@@ -1,0 +1,556 @@
+//! Wire payload structs — the load-bearing design decision:
+//! each struct is simultaneously the bevy component, the serde wire
+//! payload, and the value at one key ([`StatePayload::PATH`] under the
+//! TV's key prefix). Coupling this crate to `bevy_ecs` is intentional.
+
+use bevy_ecs::component::Component;
+use serde::{Deserialize, Serialize};
+
+/// A payload that lives at one per-TV key. `PATH` is the key tail under
+/// `tisvlay/<site>/tv/<uuid>/`.
+pub trait StatePayload: Component + Serialize + Clone + PartialEq {
+    const PATH: &'static str;
+}
+
+/// Power state, projected from the vendor-reported substate.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Power {
+    pub state: tisvlay_core::PowerState,
+    pub is_on: bool,
+    pub is_screen_on: bool,
+}
+
+impl StatePayload for Power {
+    const PATH: &'static str = "state/power";
+}
+
+impl From<&tisvlay_core::TvState> for Power {
+    fn from(s: &tisvlay_core::TvState) -> Self {
+        Self {
+            state: s.power_state,
+            is_on: s.is_on,
+            is_screen_on: s.is_screen_on,
+        }
+    }
+}
+
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Volume {
+    pub level: u8,
+    pub muted: bool,
+}
+
+impl StatePayload for Volume {
+    const PATH: &'static str = "state/volume";
+}
+
+/// Connection health — derived from world structure (a TV with a live
+/// connection task is `connected`; one mid-dial is `reconnecting`).
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub connected: bool,
+    pub reconnecting: bool,
+    pub supports_wake: bool,
+}
+
+impl StatePayload for Link {
+    const PATH: &'static str = "state/link";
+}
+
+/// Current + available inputs.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Input {
+    pub current: Option<String>,
+    pub available: Vec<InputEntry>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct InputEntry {
+    pub id: String,
+    pub label: String,
+    pub connected: bool,
+}
+
+impl StatePayload for Input {
+    const PATH: &'static str = "state/input";
+}
+
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Backlight {
+    pub level: u8,
+}
+
+impl StatePayload for Backlight {
+    const PATH: &'static str = "state/backlight";
+}
+
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub name: String,
+    pub vendor: String,
+    /// Canonical device brand when the backend can resolve it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub make: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    pub capabilities: Vec<String>,
+    /// DRM connector this TV mirrors, once the desktop probe matches it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connector: Option<String>,
+    /// The vendor's primary identifying descriptor (LG: IP; CEC:
+    /// device node) — the connector's `primary_descriptor`, evaluated
+    /// by the reactor from the vendor config. Clients render it as
+    /// the TV's spatial hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<String>,
+}
+
+impl Identity {
+    /// A fresh identity carrying only what enrollment knows.
+    pub fn new(name: impl Into<String>, vendor: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            vendor: vendor.into(),
+            brand: None,
+            make: None,
+            model: None,
+            serial: None,
+            capabilities: Vec::new(),
+            connector: None,
+            primary: None,
+        }
+    }
+}
+
+impl StatePayload for Identity {
+    const PATH: &'static str = "meta/identity";
+}
+
+/// Vendor-projected display rows for the TV's read-only INFO surface:
+/// the connector's `display_config` (editable fields) and
+/// `display_diagnostics` (pair-time captures) as schema-ordered,
+/// labeled `(label, value)` pairs, Secret-free. Arrays preserve order
+/// on the wire — JSON objects re-sort alphabetically — so this is the
+/// only shape row order survives in.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct VendorRows {
+    pub config: Vec<(String, String)>,
+    pub diagnostics: Vec<(String, String)>,
+}
+
+impl StatePayload for VendorRows {
+    const PATH: &'static str = "meta/vendor";
+}
+
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Meta {
+    pub managed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_profile: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_input: Option<String>,
+    /// Read-only projection of the resolved profile-chain
+    /// `automate_when` policy (assigned profile - default profile -
+    /// always); the world's derive pass is the only writer.
+    pub automate_when: tisvlay_core::AutomateWhen,
+    /// The evaluated automation gate: `managed` AND the resolved
+    /// `automate_when` holds against the current input. Consumers
+    /// (session service, tray) act only on automated TVs.
+    pub automated: bool,
+    /// Whether a remote session currently arms this TV (mirrored
+    /// from the session service). While set, the world honors the
+    /// system profile's while-remote overrides on DPMS-on/resume; a
+    /// read-only projection for clients to surface the state.
+    #[serde(default)]
+    pub remote_armed: bool,
+}
+
+impl Meta {
+    pub fn new(managed: bool) -> Self {
+        Self {
+            managed,
+            system_profile: None,
+            primary_input: None,
+            automate_when: tisvlay_core::AutomateWhen::Always,
+            // `should_automate` gives unknown inputs the benefit of
+            // the doubt, so a fresh managed TV starts automated.
+            automated: managed,
+            // No remote session until the mirror says so.
+            remote_armed: false,
+        }
+    }
+}
+
+impl StatePayload for Meta {
+    const PATH: &'static str = "meta/config";
+}
+
+/// Every per-TV cached-state key tail — the DELETE sweep on TV removal.
+pub const TV_PATHS: [&str; 8] = [
+    Power::PATH,
+    Volume::PATH,
+    Link::PATH,
+    Input::PATH,
+    Backlight::PATH,
+    Identity::PATH,
+    Meta::PATH,
+    VendorRows::PATH,
+];
+
+/// Non-payload per-TV keys included in the removal sweep.
+pub const TV_EXTRA_PATHS: [&str; 1] = ["progress/power"];
+
+/// Pairing progress on `tisvlay/<site>/pairing/<uuid>/progress` — the
+/// redacted projection of the core pairing state: credentials never
+/// reach the wire, clients branch on `phase` and localize by `code`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PairingProgress {
+    /// The pairing attempt this sample belongs to, minted per pair /
+    /// re-pair and returned by that rpc. A TV's progress key outlives
+    /// its sessions — a history subscriber sees earlier attempts'
+    /// samples replayed from the cache, in an order relative to the
+    /// live ones that isn't guaranteed — so a watcher drains only its
+    /// own attempt.
+    pub attempt: uuid::Uuid,
+    pub phase: PairingPhase,
+    pub message: String,
+    /// Why the attempt failed; `failed` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<FailureCode>,
+    /// Reason-specific parameter — the device-node path on a
+    /// permission-denied failure, so clients can name the node in
+    /// the fix hint. Absent for reasons that carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// `complete` only: what the device reported as its link MAC and
+    /// what the daemon did with it. Absent when the vendor can't
+    /// report one or the read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_mac: Option<LinkMacReport>,
+}
+
+/// The device-reported link MAC at pairing time, compared against the
+/// TV's configured `mac` by the daemon so clients only render it. A
+/// snapshot of the moment the pairing completed — accepting the
+/// reported MAC afterwards doesn't rewrite this sample.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LinkMacReport {
+    /// The device-reported MAC, canonical form.
+    pub reported: String,
+    pub outcome: LinkMacOutcome,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LinkMacOutcome {
+    /// `mac` was unset; the daemon stored `reported`.
+    Filled,
+    /// The configured `mac` already equals `reported`.
+    Matches,
+    /// The configured `mac` differs and was kept.
+    Differs { configured: String },
+}
+
+/// A wake-and-connect flow's progress, on a TV's `progress/power` key.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PowerProgress {
+    pub phase: PowerPhase,
+}
+
+/// The phases a wake-and-connect flow walks through, ending in
+/// `connected` or `failed`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerPhase {
+    /// The Wake-on-LAN packet has been (or is about to be) sent.
+    WolSent,
+    /// The TV was reachable, so no wake: straight to connecting.
+    DirectConnect,
+    Connecting,
+    /// The dial is deferred until the TV's network route returns.
+    AwaitingNetwork,
+    Connected,
+    Failed,
+}
+
+impl PowerPhase {
+    /// The wire token, for display and the GUI's string properties.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WolSent => "wol_sent",
+            Self::DirectConnect => "direct_connect",
+            Self::Connecting => "connecting",
+            Self::AwaitingNetwork => "awaiting_network",
+            Self::Connected => "connected",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Where a pairing attempt stands.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingPhase {
+    /// Waiting for the user to accept on the TV.
+    AwaitingTv,
+    /// Waiting for the user to enter a PIN or password.
+    AwaitingInput,
+    /// Paired, and the TV's first dial succeeded.
+    Complete,
+    Failed,
+}
+
+impl PairingPhase {
+    /// `complete` or `failed`: no further sample follows for the
+    /// attempt.
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::Failed)
+    }
+
+    /// The wire token (`awaiting_tv`, ...), for display and the GUI's
+    /// string properties.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingTv => "awaiting_tv",
+            Self::AwaitingInput => "awaiting_input",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Why a pairing attempt failed: the handshake's `pairing.*` reasons
+/// and the first dial's `device.*` access reasons, on the wire as
+/// those namespaced tokens.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FailureCode {
+    /// The user rejected pairing on the TV.
+    #[serde(rename = "pairing.rejected")]
+    PairingRejected,
+    #[serde(rename = "pairing.timeout")]
+    PairingTimeout,
+    /// The TV couldn't be reached.
+    #[serde(rename = "pairing.connection-failed")]
+    PairingConnectionFailed,
+    /// The PIN or password was wrong.
+    #[serde(rename = "pairing.invalid-input")]
+    PairingInvalidInput,
+    #[serde(rename = "pairing.cancelled")]
+    PairingCancelled,
+    #[serde(rename = "pairing.unknown")]
+    PairingUnknown,
+    /// The daemon may not open the device node (`path` names it).
+    #[serde(rename = "device.permission-denied")]
+    DevicePermissionDenied,
+    /// A device failure this wire has no code for yet.
+    #[serde(rename = "device.unknown")]
+    DeviceUnknown,
+}
+
+impl FailureCode {
+    /// The wire token, for display.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PairingRejected => "pairing.rejected",
+            Self::PairingTimeout => "pairing.timeout",
+            Self::PairingConnectionFailed => "pairing.connection-failed",
+            Self::PairingInvalidInput => "pairing.invalid-input",
+            Self::PairingCancelled => "pairing.cancelled",
+            Self::PairingUnknown => "pairing.unknown",
+            Self::DevicePermissionDenied => "device.permission-denied",
+            Self::DeviceUnknown => "device.unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for FailureCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<tisvlay_core::PairingErrorCode> for FailureCode {
+    fn from(code: tisvlay_core::PairingErrorCode) -> Self {
+        use tisvlay_core::PairingErrorCode;
+        match code {
+            PairingErrorCode::Rejected => Self::PairingRejected,
+            PairingErrorCode::Timeout => Self::PairingTimeout,
+            PairingErrorCode::ConnectionFailed => Self::PairingConnectionFailed,
+            PairingErrorCode::InvalidInput => Self::PairingInvalidInput,
+            PairingErrorCode::Cancelled => Self::PairingCancelled,
+            // Core's codes are non-exhaustive: one this wire doesn't
+            // know yet reads as unknown until it gets a variant here.
+            PairingErrorCode::Unknown | _ => Self::PairingUnknown,
+        }
+    }
+}
+
+impl From<tisvlay_core::errors::DeviceErrorCode> for FailureCode {
+    fn from(code: tisvlay_core::errors::DeviceErrorCode) -> Self {
+        match code {
+            tisvlay_core::errors::DeviceErrorCode::PermissionDenied => Self::DevicePermissionDenied,
+            // As above, in the device family: a code this wire
+            // doesn't know yet.
+            _ => Self::DeviceUnknown,
+        }
+    }
+}
+
+impl std::fmt::Display for PairingPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&tisvlay_core::PairingState> for PairingPhase {
+    fn from(state: &tisvlay_core::PairingState) -> Self {
+        use tisvlay_core::PairingState;
+        match state {
+            PairingState::AwaitingTvPrompt { .. } => Self::AwaitingTv,
+            PairingState::AwaitingUserInput { .. } => Self::AwaitingInput,
+            PairingState::Complete { .. } => Self::Complete,
+            PairingState::Failed { .. } => Self::Failed,
+        }
+    }
+}
+
+impl PairingProgress {
+    /// Project a core pairing state onto `attempt`'s progress sample.
+    pub fn from_state(attempt: uuid::Uuid, state: &tisvlay_core::PairingState) -> Self {
+        Self {
+            attempt,
+            phase: state.into(),
+            message: state.message().into(),
+            code: state.error().map(|e| e.code.into()),
+            // Handshake errors carry no device parameter; dial
+            // failures (which do) are composed by the world from
+            // the typed dial reason, not through this projection.
+            path: None,
+            link_mac: None,
+        }
+    }
+}
+
+/// A remote-session fact: every live source tagged by kind, plus the
+/// per-TV `armed` projection the session computes from the sources
+/// crossed with each TV's resolved user profile. The world (via the
+/// system mirror) consumes `armed` booleans only, staying
+/// arming-policy-free.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteSessionState {
+    pub sources: Vec<RemoteSource>,
+    pub armed: Vec<uuid::Uuid>,
+}
+
+/// One live remote source. `detail` names the specific origin (the
+/// resolved exe for `Portal`, the source label for `Manual`); it's
+/// carried for display and attribution, not routing.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RemoteSource {
+    pub kind: RemoteSourceKind,
+    pub detail: String,
+}
+
+/// How a remote source was detected. Attributed kinds always arm;
+/// the unattributed `Screencast` signal arms only when the resolved
+/// profile opts in (`remote_screencast_arms`). `Ord` so the source
+/// set keys deterministically.
+///
+/// `Sunshine` is the continuous `/serverinfo` level poll's own key,
+/// kept distinct from the `Manual` hook verb so the poll and the
+/// optional `global_prep_cmd` hook coexist without racing each other's
+/// arm.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteSourceKind {
+    Manual,
+    Logind,
+    Portal,
+    Screencast,
+    Sunshine,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tisvlay_core::{Credentials, InputType, PairingError, PairingState};
+
+    /// Each code's wire token matches core's `as_str()`, so clients
+    /// print the reason names core defines.
+    #[test]
+    fn failure_codes_keep_core_tokens() {
+        use tisvlay_core::PairingErrorCode as P;
+        for code in [
+            P::Rejected,
+            P::Timeout,
+            P::ConnectionFailed,
+            P::InvalidInput,
+            P::Cancelled,
+            P::Unknown,
+        ] {
+            assert_eq!(FailureCode::from(code).as_str(), code.as_str());
+        }
+        let device = tisvlay_core::errors::DeviceErrorCode::PermissionDenied;
+        assert_eq!(FailureCode::from(device).as_str(), device.as_str());
+        for code in [
+            FailureCode::PairingRejected,
+            FailureCode::DevicePermissionDenied,
+            FailureCode::DeviceUnknown,
+        ] {
+            let json = serde_json::to_value(code).unwrap();
+            assert_eq!(json, code.as_str());
+            assert_eq!(serde_json::from_value::<FailureCode>(json).unwrap(), code);
+        }
+    }
+
+    /// Every phase the world publishes decodes, `awaiting_network`
+    /// included.
+    #[test]
+    fn every_power_phase_decodes() {
+        for phase in [
+            PowerPhase::WolSent,
+            PowerPhase::DirectConnect,
+            PowerPhase::Connecting,
+            PowerPhase::AwaitingNetwork,
+            PowerPhase::Connected,
+            PowerPhase::Failed,
+        ] {
+            let sample = serde_json::json!({ "phase": phase.as_str() });
+            let progress: PowerProgress = serde_json::from_value(sample).unwrap();
+            assert_eq!(progress.phase, phase);
+        }
+    }
+
+    #[test]
+    fn pairing_states_map_to_their_phases() {
+        let cases = [
+            (
+                PairingState::awaiting_tv_prompt("accept"),
+                PairingPhase::AwaitingTv,
+            ),
+            (
+                PairingState::awaiting_user_input("pin", InputType::Pin),
+                PairingPhase::AwaitingInput,
+            ),
+            (
+                PairingState::complete(Credentials::new("key")),
+                PairingPhase::Complete,
+            ),
+            (
+                PairingState::failed(PairingError::rejected()),
+                PairingPhase::Failed,
+            ),
+        ];
+        for (state, phase) in cases {
+            assert_eq!(PairingPhase::from(&state), phase);
+            assert_eq!(
+                phase.is_terminal(),
+                state.is_complete() || state.is_failed()
+            );
+        }
+    }
+}

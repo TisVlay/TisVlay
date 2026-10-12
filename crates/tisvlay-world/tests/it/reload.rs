@@ -5,7 +5,7 @@ use crate::support;
 
 use support::*;
 use tisvlay_core::SystemProfileConfig;
-use tisvlay_wire::error::ErrorCode;
+use tisvlay_protocol::error::ErrorCode;
 use tisvlay_world::{
     Command, ProfileRecord, Reply, StoreEdit, StoreMsg, StoreSnapshot, TvRecord, WireEffect,
     WorldClient,

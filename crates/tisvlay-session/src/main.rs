@@ -74,10 +74,10 @@ async fn run() -> anyhow::Result<()> {
     let stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
         system_socket: args
             .system_socket
-            .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path),
+            .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path),
         user_socket: args
             .user_socket
-            .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path),
+            .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path),
         site: args.site,
         store,
         sunshine: sunshine.clone(),

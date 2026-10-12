@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::manager;
+use tisvlay_protocol::{bootstrap, keys, rpc};
 use tisvlay_test::PrivateBus;
 use tisvlay_test::fake_logind::FakeLogind;
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::manager;
-use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
