@@ -206,7 +206,7 @@ impl WireError {
     pub fn profile_not_found(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileNotFound,
-            message: format!("no system profile with id {id}"),
+            message: format!("no profile with id {id}"),
         }
     }
 
@@ -214,7 +214,7 @@ impl WireError {
     pub fn profile_exists(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileExists,
-            message: format!("a system profile with id {id} already exists"),
+            message: format!("a profile with id {id} already exists"),
         }
     }
 
@@ -222,7 +222,7 @@ impl WireError {
     pub fn profile_in_use(id: Uuid) -> Self {
         Self {
             code: ErrorCode::ProfileInUse,
-            message: format!("system profile {id} is referenced by at least one TV"),
+            message: format!("profile {id} is assigned to at least one TV"),
         }
     }
 

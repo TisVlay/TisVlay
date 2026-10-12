@@ -4,7 +4,6 @@
 
 - [Session event handler `last_action` cache survives daemon reconnects](bugs/last-action-cache-survives-reconnect.md)
 - [`run_pairing_handshake` has no timeout on `wait_for_completion`](bugs/pair-tv-no-timeout.md)
-- [Profile refusals: wrong wording, a missing check](bugs/profile-refusal-gaps.md)
 
 ## Closed
 

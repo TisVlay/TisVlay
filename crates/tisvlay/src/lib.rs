@@ -815,9 +815,8 @@ impl DaemonClient {
     }
 
     /// Assign a system profile to the TV, or `None` for the default
-    /// profile. The daemon doesn't check that `profile` exists: an
-    /// unknown id resolves as if none were assigned. Rpc, refused with
-    /// [`ErrorCode::TvNotFound`].
+    /// profile. Rpc, refused with [`ErrorCode::TvNotFound`] or
+    /// [`ErrorCode::ProfileNotFound`] (no system profile has that id).
     pub async fn set_tv_system_profile(&self, tv: Uuid, profile: Option<Uuid>) -> Result<()> {
         self.tv_call::<tv::SetSystemProfile>(tv, &rpc::SetSystemProfile { profile })
             .await
