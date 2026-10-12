@@ -161,6 +161,9 @@
                 # out to. cargo-nfpm itself is not in nixpkgs — install
                 # with `cargo install cargo-nfpm` to drive `just package-*`.
                 nfpm
+                # pipewire's `libspa-0.2` pkg-config entry gives dev builds
+                # a real SPA plugin dir for the session's PipeWire client.
+                pipewire
                 pkg-config
                 prek
                 # slint-lsp on $PATH so editor integrations (VSCode Slint
@@ -192,6 +195,11 @@
 
             # Tell rust-analyzer where to find std sources for go-to-definition.
             RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";
+
+            # The session's PipeWire client bakes the directory it reads
+            # `client.conf` from at build time; point it at the store, as
+            # packaging/nix/package.nix does.
+            PIPEWIRE_CONFIG_DATA_DIR = "${pkgs.pipewire}/share/pipewire";
 
             # cargo-llvm-cov needs llvm-cov / llvm-profdata whose LLVM major
             # matches rustc's (see llvmPkgs above); rustup's llvm-tools-preview

@@ -150,6 +150,9 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # aborts inside an FFI callback on a protocol decode error against
 # PipeWire ≥ 1.4.
 pipewire-native = "0.2"
+# The session's build script asks it where SPA plugins live, the answer
+# pipewire-native bakes in, so the session can check before connecting.
+pkg-config = "0.3"
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
 # `async` enables the tokio `AsyncDevice` wrapper. Default features

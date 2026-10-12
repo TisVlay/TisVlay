@@ -47,7 +47,9 @@ pub use lock::{seed_lock_state, seed_lock_state_on, spawn as spawn_lock_watcher,
 pub use logind::spawn as spawn_logind_detector;
 pub use monitor::spawn as spawn_portal_monitor;
 pub use remote::RemoteReport;
-pub use screencast::{point_at_host_spa_plugins, spawn as spawn_screencast_detector};
+pub use screencast::{
+    SpaPluginsMissing, point_at_host_spa_plugins, spawn as spawn_screencast_detector,
+};
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
 pub use sunshine::spawn as spawn_sunshine_detector;
 

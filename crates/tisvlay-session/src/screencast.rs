@@ -31,6 +31,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use tisvlay_protocol::payload::RemoteSourceKind;
 use tracing::debug;
@@ -230,6 +231,40 @@ impl From<std::io::Error> for FfiError {
 
 pub use ffi::point_at_host_spa_plugins;
 
+/// No SPA support plugin in any directory PipeWire's loader would search,
+/// so the screencast detector can't start.
+#[derive(Debug)]
+pub struct SpaPluginsMissing {
+    /// The directories checked, in search order.
+    pub searched: Vec<PathBuf>,
+}
+
+impl std::fmt::Display for SpaPluginsMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let searched: Vec<String> = self
+            .searched
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect();
+        write!(
+            f,
+            "no SPA support plugin in {}; set SPA_PLUGIN_DIR to PipeWire's spa-0.2 directory",
+            searched.join(", ")
+        )
+    }
+}
+
+/// The directories among `candidates` holding the support plugin
+/// (`<dir>/<support_lib>.so`), the one file the loader can't start
+/// without.
+fn usable_spa_dirs(candidates: &[PathBuf], support_lib: &str) -> Vec<PathBuf> {
+    candidates
+        .iter()
+        .filter(|dir| dir.join(format!("{support_lib}.so")).is_file())
+        .cloned()
+        .collect()
+}
+
 /// The FFI-facing strip: the only code that touches `pipewire-native`.
 /// Deliberately thin — it wires registry/node events to the pure
 /// [`Tracker`] and forwards its reports. Not exercised by CI (needs a
@@ -244,7 +279,9 @@ mod ffi {
     use pipewire_native::proxy::{HasProxy, ProxyEvents};
     use pipewire_native::{context::Context, some_closure, thread_loop::ThreadLoop, types};
 
-    use super::{FfiError, NodeProps, Tracker};
+    use std::path::PathBuf;
+
+    use super::{FfiError, NodeProps, SpaPluginsMissing, Tracker, usable_spa_dirs};
     use crate::RemoteClient;
 
     /// One-time global init of the PipeWire support libraries.
@@ -252,48 +289,72 @@ mod ffi {
         pipewire_native::init();
     }
 
-    /// `pipewire-native` bakes a single SPA plugin directory at build time
-    /// (from `pkg-config` in whatever sandbox produced the binary) and
-    /// panics on init if `support/libspa-support` isn't there. A packaged
-    /// build rarely matches the host: our `.deb` bakes the pkg-config
-    /// fallback `/usr/lib64/spa-0.2`, but Debian/Ubuntu ship the plugins
-    /// under the multiarch `/usr/lib/<triple>/spa-0.2`. Point the loader at
-    /// the host's real dirs unless the operator already pinned one. The
-    /// loader searches a colon-separated list in order and skips dirs that
-    /// don't load, so we hand it every layout that exists and let it pick.
+    /// Point PipeWire's plugin loader at SPA plugins that are really
+    /// there, or report that there are none. `pipewire-native` loads its
+    /// support plugin (`support/libspa-support.so`) from `SPA_PLUGIN_DIR`,
+    /// else from a directory baked in at its build, and panics if it isn't
+    /// there. A packaged build rarely matches the host: our `.deb` bakes
+    /// pkg-config's fallback `/usr/lib64/spa-0.2` while Debian/Ubuntu ship
+    /// the multiarch `/usr/lib/<triple>/spa-0.2`, and a build that found
+    /// no pkg-config entry bakes a path a NixOS host doesn't have. So the
+    /// candidates (the operator's `SPA_PLUGIN_DIR`, else our own
+    /// build-time pkg-config answer and every FHS layout) are checked for
+    /// the support plugin, and `SPA_PLUGIN_DIR` is set to the ones that
+    /// have it. With none, the detector must stay off.
     ///
     /// # Safety
     ///
     /// It calls [`std::env::set_var`], so no other thread may exist yet: call
     /// it from `main` before the async runtime starts.
-    pub unsafe fn point_at_host_spa_plugins() {
-        if std::env::var_os("SPA_PLUGIN_DIR").is_some() {
-            return;
+    pub unsafe fn point_at_host_spa_plugins() -> Result<(), SpaPluginsMissing> {
+        let support_lib =
+            std::env::var("SPA_SUPPORT_LIB").unwrap_or_else(|_| "support/libspa-support".into());
+        if let Some(pinned) = std::env::var_os("SPA_PLUGIN_DIR") {
+            let pinned: Vec<PathBuf> = std::env::split_paths(&pinned).collect();
+            return if usable_spa_dirs(&pinned, &support_lib).is_empty() {
+                Err(SpaPluginsMissing { searched: pinned })
+            } else {
+                Ok(())
+            };
         }
-        let mut dirs: Vec<String> = Vec::new();
-        // Debian/Ubuntu multiarch: /usr/lib/<triple>/spa-0.2.
-        if let Ok(entries) = std::fs::read_dir("/usr/lib") {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("spa-0.2");
-                if candidate.is_dir() {
-                    dirs.push(candidate.to_string_lossy().into_owned());
-                }
-            }
+        let candidates = spa_candidates();
+        let usable = usable_spa_dirs(&candidates, &support_lib);
+        if usable.is_empty() {
+            return Err(SpaPluginsMissing {
+                searched: candidates,
+            });
         }
-        // Non-multiarch layouts: /usr/lib/spa-0.2 (Arch and others) and
-        // /usr/lib64/spa-0.2 (Fedora/RHEL/openSUSE, and the pkg-config
-        // fallback our own build bakes in).
-        for fixed in ["/usr/lib/spa-0.2", "/usr/lib64/spa-0.2"] {
-            if std::path::Path::new(fixed).is_dir() {
-                dirs.push(fixed.to_string());
-            }
-        }
-        if dirs.is_empty() {
-            return;
-        }
+        let joined = std::env::join_paths(&usable)
+            .expect("plugin dirs from the filesystem and pkg-config hold no ':'");
         // SAFETY: by this fn's contract no other thread exists yet, so
         // nothing can read or write the environment concurrently.
-        unsafe { std::env::set_var("SPA_PLUGIN_DIR", dirs.join(":")) };
+        unsafe { std::env::set_var("SPA_PLUGIN_DIR", joined) };
+        Ok(())
+    }
+
+    /// Where SPA plugins may live, in search order: the plugin dir
+    /// pkg-config reported when this crate was built (a Nix store path for
+    /// a Nix build), then the FHS layouts.
+    fn spa_candidates() -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = option_env!("TISVLAY_SPA_PLUGINDIR")
+            .map(PathBuf::from)
+            .into_iter()
+            .collect();
+        // Debian/Ubuntu multiarch: /usr/lib/<triple>/spa-0.2.
+        if let Ok(entries) = std::fs::read_dir("/usr/lib") {
+            let mut multiarch: Vec<PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path().join("spa-0.2"))
+                .filter(|dir| dir.is_dir())
+                .collect();
+            multiarch.sort();
+            dirs.extend(multiarch);
+        }
+        // Non-multiarch layouts: /usr/lib/spa-0.2 (Arch and others) and
+        // /usr/lib64/spa-0.2 (Fedora/RHEL/openSUSE).
+        dirs.extend(["/usr/lib/spa-0.2", "/usr/lib64/spa-0.2"].map(PathBuf::from));
+        dirs.dedup();
+        dirs
     }
 
     /// Shared flags the callbacks flip: `done` on a broken pipe (server
@@ -606,5 +667,30 @@ mod tests {
         assert_eq!(r[0].detail, "1 node (running)");
         // Clearing an already-empty tracker is a no-op.
         assert!(t.clear().is_empty());
+    }
+
+    /// Only a directory holding the support plugin counts, so a plugin
+    /// dir that exists but lacks it (or doesn't exist) can't send the
+    /// PipeWire client into its panic.
+    #[test]
+    fn only_dirs_with_the_support_plugin_are_usable() {
+        let root = tempfile::tempdir().unwrap();
+        let good = root.path().join("good");
+        let empty = root.path().join("empty");
+        std::fs::create_dir_all(good.join("support")).unwrap();
+        std::fs::write(good.join("support/libspa-support.so"), b"").unwrap();
+        std::fs::create_dir_all(&empty).unwrap();
+        let missing = root.path().join("missing");
+        let candidates = vec![missing, empty, good.clone()];
+        assert_eq!(
+            usable_spa_dirs(&candidates, "support/libspa-support"),
+            vec![good]
+        );
+        assert!(usable_spa_dirs(&candidates[..2], "support/libspa-support").is_empty());
+        let report = SpaPluginsMissing {
+            searched: candidates[..2].to_vec(),
+        }
+        .to_string();
+        assert!(report.contains("SPA_PLUGIN_DIR"));
     }
 }
