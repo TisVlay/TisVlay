@@ -16,7 +16,6 @@ use facts::*;
 use profiles::*;
 use publish::*;
 
-use bevy_ecs::component::Mutable;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::{EntityCommands, SystemParam};
@@ -33,7 +32,7 @@ use crate::components::{
     DispatchVerify, Effect, KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector,
     MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef,
     PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed,
-    RetryAt, Site, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
+    RetryAt, Site, State, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
@@ -135,8 +134,8 @@ fn spawn_tv(commands: &mut Commands, outbox: &mut Outbox, record: &TvRecord) -> 
             vendor: record.vendor.clone(),
             config: record.config.clone(),
         },
-        identity,
-        payload::Meta {
+        State(identity),
+        State(payload::Meta {
             managed: record.managed,
             system_profile: record.system_profile,
             primary_input: record.primary_input.clone(),
@@ -147,16 +146,16 @@ fn spawn_tv(commands: &mut Commands, outbox: &mut Outbox, record: &TvRecord) -> 
             automated: record.managed,
             // derive_remote_armed sets this once a mirror update lands.
             remote_armed: false,
-        },
-        payload::Link {
+        }),
+        State(payload::Link {
             connected: false,
             reconnecting: false,
             supports_wake: false,
-        },
+        }),
         // Filled by the reactor's enrollment-time facts (Effect::Facts
         // above); present from spawn so publish_changed has a component
         // to watch.
-        payload::VendorRows::default(),
+        State(payload::VendorRows::default()),
     ));
     redial(&mut entity, false);
     if record.managed {
@@ -175,9 +174,9 @@ pub(crate) struct PairingParams<'w, 's> {
 type TvQuery<'a> = (
     Option<&'a ConnectionHandle>,
     Has<PendingConnect>,
-    Option<&'a payload::Link>,
+    Option<&'a State<payload::Link>>,
     Option<&'a VendorRef>,
-    Option<&'a payload::Meta>,
+    Option<&'a State<payload::Meta>>,
 );
 
 /// The settings handler's slice of `TvQuery` — it must not read
@@ -187,16 +186,16 @@ type LinkQuery<'a> = (
     Option<&'a ConnectionHandle>,
     Has<PendingConnect>,
     Option<&'a TransportTraits>,
-    Option<&'a payload::Link>,
+    Option<&'a State<payload::Link>>,
     Option<&'a DispatchRetry>,
-    Option<&'a payload::Power>,
+    Option<&'a State<payload::Power>>,
 );
 
 /// Per-TV settings writes, bundled to keep system signatures within reason.
 #[derive(SystemParam)]
 pub(crate) struct SettingsWrites<'w, 's> {
-    identity: Query<'w, 's, &'static mut payload::Identity>,
-    meta: Query<'w, 's, &'static mut payload::Meta>,
+    identity: Query<'w, 's, &'static mut State<payload::Identity>>,
+    meta: Query<'w, 's, &'static mut State<payload::Meta>>,
     vendor: Query<'w, 's, &'static mut VendorRef>,
 }
 

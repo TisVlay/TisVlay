@@ -1,19 +1,18 @@
-//! Wire payload structs — the load-bearing design decision:
-//! each struct is simultaneously the bevy component, the serde wire
-//! payload, and the value at one key ([`StatePayload::PATH`] under the
-//! TV's key prefix). Coupling this crate to `bevy_ecs` is intentional.
+//! Wire payload structs: each is the serde wire payload and the value at
+//! one key ([`StatePayload::PATH`] under the TV's key prefix). The daemon's
+//! world stores them as components, wrapped on its side, so this crate
+//! knows nothing of its ECS.
 
-use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
 /// A payload that lives at one per-TV key. `PATH` is the key tail under
 /// `tisvlay/<site>/tv/<uuid>/`.
-pub trait StatePayload: Component + Serialize + Clone + PartialEq {
+pub trait StatePayload: Serialize + Clone + PartialEq + Send + Sync + 'static {
     const PATH: &'static str;
 }
 
 /// Power state, projected from the vendor-reported substate.
-#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Power {
     pub state: tisvlay_core::PowerState,
     pub is_on: bool,
@@ -34,7 +33,7 @@ impl From<&tisvlay_core::TvState> for Power {
     }
 }
 
-#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Volume {
     pub level: u8,
     pub muted: bool,
@@ -46,7 +45,7 @@ impl StatePayload for Volume {
 
 /// Connection health — derived from world structure (a TV with a live
 /// connection task is `connected`; one mid-dial is `reconnecting`).
-#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Link {
     pub connected: bool,
     pub reconnecting: bool,
@@ -58,7 +57,7 @@ impl StatePayload for Link {
 }
 
 /// Current + available inputs.
-#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     pub current: Option<String>,
     pub available: Vec<InputEntry>,
@@ -75,7 +74,7 @@ impl StatePayload for Input {
     const PATH: &'static str = "state/input";
 }
 
-#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Backlight {
     pub level: u8,
 }
@@ -84,7 +83,7 @@ impl StatePayload for Backlight {
     const PATH: &'static str = "state/backlight";
 }
 
-#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
     pub name: String,
     pub vendor: String,
@@ -136,7 +135,7 @@ impl StatePayload for Identity {
 /// labeled `(label, value)` pairs, Secret-free. Arrays preserve order
 /// on the wire — JSON objects re-sort alphabetically — so this is the
 /// only shape row order survives in.
-#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct VendorRows {
     pub config: Vec<(String, String)>,
     pub diagnostics: Vec<(String, String)>,
@@ -146,7 +145,7 @@ impl StatePayload for VendorRows {
     const PATH: &'static str = "meta/vendor";
 }
 
-#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
     pub managed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -7,7 +7,7 @@ use super::*;
 /// a remote session currently arms.
 pub(super) fn derive_remote_armed(
     armed: Res<RemoteArmed>,
-    mut q: Query<(&TvId, &mut payload::Meta)>,
+    mut q: Query<(&TvId, &mut State<payload::Meta>)>,
 ) {
     for (id, mut meta) in &mut q {
         let is_armed = armed.0.contains(&id.0);
@@ -21,13 +21,13 @@ pub(super) fn derive_remote_armed(
 /// projection clients read — in step with profile edits and input
 /// changes.
 pub(super) fn derive_automated(
-    mut q: Query<(&mut payload::Meta, Option<&payload::Input>)>,
+    mut q: Query<(&mut State<payload::Meta>, Option<&State<payload::Input>>)>,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
 ) {
     for (mut meta, input) in &mut q {
         let when = resolve_automate_when(&meta, &profile_index, &bodies);
-        let automated = is_automated(&meta, input, when);
+        let automated = is_automated(&meta, input.map(|input| &input.0), when);
         if meta.automate_when != when {
             meta.automate_when = when;
         }
@@ -44,7 +44,7 @@ pub(super) fn derive_automated(
 pub(super) fn publish_greeter_timeout(
     mut outbox: ResMut<Outbox>,
     site: Res<Site>,
-    q: Query<&payload::Meta, With<Managed>>,
+    q: Query<&State<payload::Meta>, With<Managed>>,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
     mut last: Local<Option<u64>>,
@@ -83,7 +83,11 @@ pub(super) fn publish_greeter_timeout(
 /// `set_if_neq` gates change detection, so publishes fire only on real
 /// transitions.
 pub(super) fn derive_link_state(
-    mut q: Query<(&mut payload::Link, Has<ConnectionHandle>, Has<Reconnecting>)>,
+    mut q: Query<(
+        &mut State<payload::Link>,
+        Has<ConnectionHandle>,
+        Has<Reconnecting>,
+    )>,
 ) {
     for (mut link, connected, reconnecting) in &mut q {
         let new = payload::Link {
@@ -91,19 +95,19 @@ pub(super) fn derive_link_state(
             reconnecting,
             supports_wake: link.supports_wake,
         };
-        link.set_if_neq(new);
+        link.set_if_neq(State(new));
     }
 }
 
 /// The state forwarder, reduced to a generic system: any changed (or newly
 /// inserted) payload component becomes a publish on its key.
 pub(super) fn publish_changed<T: payload::StatePayload>(
-    q: Query<(&TvId, &T), Changed<T>>,
+    q: Query<(&TvId, &State<T>), Changed<State<T>>>,
     site: Res<Site>,
     mut outbox: ResMut<Outbox>,
 ) {
     for (id, value) in &q {
-        match serde_json::to_value(value) {
+        match serde_json::to_value(&value.0) {
             Ok(payload) => outbox.0.push(Effect::Wire(WireEffect::Publish {
                 key: keys::tv_path(&site.0, &id.0, T::PATH),
                 payload,
@@ -121,13 +125,17 @@ pub(super) fn publish_changed<T: payload::StatePayload>(
 /// dial succeeds, so a rolled-back enrollment leaves no trace. A
 /// re-pairing TV stays in: it was stored before and survives a failed
 /// verification.
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 pub(super) fn snapshot_store(
     mut last: ResMut<LastPersisted>,
     q: Query<(
         &TvId,
         &VendorRef,
-        &payload::Identity,
-        &payload::Meta,
+        &State<payload::Identity>,
+        &State<payload::Meta>,
         Option<&PairVerifying>,
     )>,
     profiles: Query<(&ProfileId, &ProfileBody)>,

@@ -29,7 +29,7 @@ The law learned empirically: **a connect-only peer leaf cannot fan out what it s
 
 ## Key space
 
-[`tisvlay-protocol`](../crates/tisvlay-protocol/src/lib.rs) is the single vocabulary source: key constructors (`keys::*`), payload structs (which double as bevy components and serde wire payloads), typed `WireError`, and session bootstrap configs. The shape by prefix, all under `tisvlay/<site>/`:
+[`tisvlay-protocol`](../crates/tisvlay-protocol/src/lib.rs) is the single vocabulary source: key constructors (`keys::*`), payload structs (the serde wire payloads, which the world stores as components wrapped in its `State<T>`, so the protocol crate has no bevy dependency), typed `WireError`, and session bootstrap configs. The shape by prefix, all under `tisvlay/<site>/`:
 
 ```
 tv/<uuid>/state/{power,volume,input,backlight,link}   cached pubs (state fan-out)

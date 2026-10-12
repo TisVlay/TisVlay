@@ -4,18 +4,18 @@ use super::*;
 
 /// Write a payload component through change detection, inserting on
 /// first sight — `set_if_neq` gates the publish either way.
-pub(super) fn upsert_payload<T: Component<Mutability = Mutable> + PartialEq>(
+pub(super) fn upsert_payload<T: payload::StatePayload>(
     commands: &mut Commands,
-    query: &mut Query<&mut T>,
+    query: &mut Query<&mut State<T>>,
     entity: Entity,
     value: T,
 ) {
     match query.get_mut(entity) {
         Ok(mut current) => {
-            current.set_if_neq(value);
+            current.set_if_neq(State(value));
         }
         Err(_) => {
-            commands.entity(entity).insert(value);
+            commands.entity(entity).insert(State(value));
         }
     }
 }
@@ -24,11 +24,11 @@ pub(super) fn upsert_payload<T: Component<Mutability = Mutable> + PartialEq>(
 /// system signatures within reason.
 #[derive(SystemParam)]
 pub(super) struct StateWrites<'w, 's> {
-    power: Query<'w, 's, &'static mut payload::Power>,
-    volume: Query<'w, 's, &'static mut payload::Volume>,
-    input: Query<'w, 's, &'static mut payload::Input>,
-    backlight: Query<'w, 's, &'static mut payload::Backlight>,
-    identity: Query<'w, 's, &'static mut payload::Identity>,
+    power: Query<'w, 's, &'static mut State<payload::Power>>,
+    volume: Query<'w, 's, &'static mut State<payload::Volume>>,
+    input: Query<'w, 's, &'static mut State<payload::Input>>,
+    backlight: Query<'w, 's, &'static mut State<payload::Backlight>>,
+    identity: Query<'w, 's, &'static mut State<payload::Identity>>,
     pending: Query<'w, 's, &'static PendingConnect>,
     verify: Query<'w, 's, &'static mut DispatchVerify>,
     monitored: Query<'w, 's, &'static MonitoredInterface>,
@@ -96,7 +96,7 @@ pub(super) fn apply_backend_events(
                     .remove::<(Reconnecting, PendingConnect, RetryAt)>();
                 apply_state(&mut commands, entity, state, &mut writes);
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
-                    let mut enriched = identity.clone();
+                    let mut enriched = identity.0.clone();
                     enriched.brand = brand.clone().or(enriched.brand);
                     if let Some(hw) = hardware {
                         enriched.make = hw.manufacturer.clone().filter(|s| !s.is_empty());
@@ -114,7 +114,7 @@ pub(super) fn apply_backend_events(
                     {
                         enriched.name = model.clone();
                     }
-                    identity.set_if_neq(enriched);
+                    identity.set_if_neq(State(enriched));
                 }
                 // A freshly paired TV completes its pairing here — the
                 // terminal is gated on the first real connection, so
@@ -623,7 +623,7 @@ pub(super) fn apply_connector_matches(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
     index: Res<TvIndex>,
-    mut identities: Query<&mut payload::Identity>,
+    mut identities: Query<&mut State<payload::Identity>>,
 ) {
     for msg in reader.read() {
         let InEvent::ConnectorMatched { tv, connector } = msg else {
@@ -652,9 +652,9 @@ pub(super) fn apply_transport_facts(
     mut reader: MessageReader<InEvent>,
     mut commands: Commands,
     index: Res<TvIndex>,
-    mut links: Query<&mut payload::Link>,
-    mut identities: Query<&mut payload::Identity>,
-    mut vendor_rows: Query<&mut payload::VendorRows>,
+    mut links: Query<&mut State<payload::Link>>,
+    mut identities: Query<&mut State<payload::Identity>>,
+    mut vendor_rows: Query<&mut State<payload::VendorRows>>,
 ) {
     for msg in reader.read() {
         let InEvent::TransportFacts {
