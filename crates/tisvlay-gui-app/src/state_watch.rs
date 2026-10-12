@@ -7,7 +7,8 @@ use std::sync::Arc;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{
-    DaemonClient, NotificationSettings, SessionClient, StateEvent, StateWatcher, TrayClient,
+    DaemonClient, NotificationSettings, Service, SessionClient, StateEvent, StateWatcher,
+    TrayClient,
 };
 use tisvlay_runtime::client::RefreshTrigger;
 use tokio::sync::RwLock;
@@ -17,9 +18,66 @@ use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe
 use crate::profiles::{self, ProfileEditor};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
-    AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers, Tray,
-    TrayNotificationSettings, TvViewModel, VendorInfoRow, VendorOption, on_ui,
+    AppWindow, ErrorState, Errors, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles,
+    Reconcilers, Tray, TrayNotificationSettings, TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
+
+/// The services currently on a release this GUI can't talk to, each with
+/// (this GUI's release, the service's). Rendered as one app-level banner.
+#[derive(Default)]
+struct VersionMismatches(Vec<(Service, String, String)>);
+
+impl VersionMismatches {
+    fn set(&mut self, service: Service, ours: String, theirs: String) {
+        self.clear(service);
+        self.0.push((service, ours, theirs));
+    }
+
+    fn clear(&mut self, service: Service) {
+        self.0.retain(|(known, ..)| *known != service);
+    }
+
+    fn publish(&self, app_weak: &slint::Weak<AppWindow>) {
+        let banner = version_banner(&self.0);
+        on_ui(app_weak, move |app| {
+            app.global::<Errors>().set_version(banner);
+        });
+    }
+}
+
+/// The version banner for `mismatches`, or none when there are none.
+fn version_banner(mismatches: &[(Service, String, String)]) -> ErrorState {
+    if mismatches.is_empty() {
+        return ErrorState::default();
+    }
+    let message = mismatches
+        .iter()
+        .map(|(service, ours, theirs)| {
+            let service = service_name(*service);
+            gettext("TisVlay {0} can't talk to the {1}, which runs {2}. Restart the {1} or upgrade so the two match.")
+                .replace("{0}", ours)
+                .replace("{1}", &service)
+                .replace("{2}", theirs)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ErrorState {
+        kind: SharedString::default(),
+        tone: SharedString::from("error"),
+        title: SharedString::from(gettext("Version mismatch")),
+        message: SharedString::from(message),
+        action_label: SharedString::default(),
+    }
+}
+
+fn service_name(service: Service) -> String {
+    match service {
+        Service::Daemon => gettext("daemon"),
+        Service::Session => gettext("session service"),
+        Service::Tray => gettext("tray"),
+        _ => service.to_string(),
+    }
+}
 
 /// Boot the state-watch loop. One-shot startup: do the initial state
 /// fetch, push the first snapshot, prime the supported-vendors cache,
@@ -273,6 +331,9 @@ async fn watch_state(
         });
     };
 
+    // Services on a release this GUI can't talk to, for the version banner.
+    let mut mismatches = VersionMismatches::default();
+
     loop {
         let Some(event) = watcher.next().await else {
             break;
@@ -346,7 +407,18 @@ async fn watch_state(
                 profiles::handle_user_removed(&editor, app_weak.clone(), uuid);
                 trigger_refresh();
             }
+            StateEvent::VersionMismatch {
+                service,
+                ours,
+                theirs,
+            } => {
+                mismatches.set(service, ours, theirs);
+                mismatches.publish(&app_weak);
+            }
             StateEvent::DaemonDisappeared => {
+                // The daemon's next lifetime gets a fresh release check.
+                mismatches.clear(Service::Daemon);
+                mismatches.publish(&app_weak);
                 on_ui(&app_weak, move |app| {
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                     app.set_tvs_connected_count(0);
@@ -366,7 +438,10 @@ async fn watch_state(
             StateEvent::SessionDisappeared => {
                 // The client stays — its resilient link redials and its
                 // liveliness subscriber delivers the next Appeared.
-                // Only the availability flags flip.
+                // Only the availability flags flip, and the next lifetime
+                // gets a fresh release check.
+                mismatches.clear(Service::Session);
+                mismatches.publish(&app_weak);
                 publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
@@ -380,6 +455,8 @@ async fn watch_state(
             }
             StateEvent::TrayDisappeared => {
                 // Client stays, same as the session arm above.
+                mismatches.clear(Service::Tray);
+                mismatches.publish(&app_weak);
                 publish_availability(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
@@ -743,5 +820,38 @@ fn sync_vec_model<T: Clone + 'static>(
     }
     while vec_model.row_count() > new_len {
         vec_model.remove(vec_model.row_count() - 1);
+    }
+}
+
+#[cfg(test)]
+mod version_banner_tests {
+    use super::*;
+
+    #[test]
+    fn no_mismatch_no_banner() {
+        assert_eq!(version_banner(&[]).title, "");
+    }
+
+    #[test]
+    fn each_mismatched_service_gets_a_line() {
+        let banner = version_banner(&[
+            (Service::Daemon, "0.4.0".into(), "0.3.2".into()),
+            (Service::Tray, "0.4.0".into(), "0.5.0".into()),
+        ]);
+        assert_eq!(banner.title, "Version mismatch");
+        assert_eq!(
+            banner.message,
+            "TisVlay 0.4.0 can't talk to the daemon, which runs 0.3.2. Restart the daemon or upgrade so the two match.\nTisVlay 0.4.0 can't talk to the tray, which runs 0.5.0. Restart the tray or upgrade so the two match."
+        );
+    }
+
+    #[test]
+    fn a_restarted_service_drops_its_line() {
+        let mut mismatches = VersionMismatches::default();
+        mismatches.set(Service::Daemon, "0.4.0".into(), "0.3.2".into());
+        mismatches.set(Service::Daemon, "0.4.0".into(), "0.3.3".into());
+        assert_eq!(mismatches.0.len(), 1, "one line per service");
+        mismatches.clear(Service::Daemon);
+        assert!(mismatches.0.is_empty());
     }
 }

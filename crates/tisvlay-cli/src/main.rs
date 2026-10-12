@@ -356,10 +356,19 @@ async fn run() -> Result<()> {
     let site = &cli.site;
     let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
+    // Commands that send the daemon rpcs check its release first; `status`
+    // reports it, `watch` is a passive view, and the user-socket commands
+    // check the session service instead.
+    if !matches!(
+        cli.command,
+        Command::Status | Command::Watch | Command::UserProfile(_) | Command::RemoteSession(_)
+    ) {
+        check_release::<manager::Info>(&caller, "daemon").await?;
+    }
     match cli.command {
         // Handled above, before the client opens (needs no connection).
         Command::EnableAccess => unreachable!(),
-        Command::Status => status(&session, site, &socket, json_out).await,
+        Command::Status => status(&session, &caller, site, &socket, json_out).await,
         Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
@@ -495,14 +504,9 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            user_profile_cmd(
-                &user,
-                &Caller::new(user.clone(), site.as_str()),
-                site,
-                cmd,
-                json_out,
-            )
-            .await
+            let user_caller = Caller::new(user.clone(), site.as_str());
+            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+            user_profile_cmd(&user, &user_caller, site, cmd, json_out).await
         }
         Command::RemoteSession(cmd) => {
             let user_socket = cli
@@ -516,7 +520,9 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            remote_session_cmd(&Caller::new(user.clone(), site.as_str()), cmd, json_out).await
+            let user_caller = Caller::new(user.clone(), site.as_str());
+            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+            remote_session_cmd(&user_caller, cmd, json_out).await
         }
     }
 }
@@ -1200,15 +1206,21 @@ async fn reload(
     };
     let (session, tray) = match &user {
         Some(user) => (
-            Some(user.call::<user_profile::Reload>(&(), &()).await),
-            Some(user.call::<user_tray::Reload>(&(), &()).await),
+            match release_mismatch::<user_profile::Info>(user, "session service").await {
+                Some(mismatch) => ReloadOutcome::Failed(mismatch),
+                None => reload_outcome(Some(user.call::<user_profile::Reload>(&(), &()).await)),
+            },
+            match release_mismatch::<user_tray::Info>(user, "tray").await {
+                Some(mismatch) => ReloadOutcome::Failed(mismatch),
+                None => reload_outcome(Some(user.call::<user_tray::Reload>(&(), &()).await)),
+            },
         ),
-        None => (None, None),
+        None => (ReloadOutcome::NotRunning, ReloadOutcome::NotRunning),
     };
     let outcomes = [
         ("daemon", reload_outcome(Some(daemon))),
-        ("session", reload_outcome(session)),
-        ("tray", reload_outcome(tray)),
+        ("session", session),
+        ("tray", tray),
     ];
     if json_out {
         let report: serde_json::Map<String, Value> = outcomes
@@ -1286,7 +1298,13 @@ fn reload_outcome(
     }
 }
 
-async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) -> Result<()> {
+async fn status(
+    session: &Session,
+    caller: &Caller,
+    site: &str,
+    socket: &Path,
+    json_out: bool,
+) -> Result<()> {
     let replies = session
         .liveliness()
         .get(keys::daemon_alive(site).as_str())
@@ -1294,15 +1312,45 @@ async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) ->
         .await
         .map_err(|e| anyhow!("liveliness get: {e}"))?;
     let alive = matches!(replies.recv_async().await, Ok(reply) if reply.result().is_ok());
+    let release = match alive {
+        true => caller
+            .call::<manager::Info>(&(), &())
+            .await
+            .ok()
+            .map(|info| info.version),
+        false => None,
+    };
+    let compatible = release
+        .as_deref()
+        .map(|release| tisvlay_protocol::compatible(tisvlay_protocol::VERSION, release));
     if json_out {
         println!(
             "{}",
-            json!({ "alive": alive, "site": site, "socket": socket })
+            json!({
+                "alive": alive,
+                "site": site,
+                "socket": socket,
+                "release": release,
+                "compatible": compatible,
+            })
         );
     }
     if alive {
         if !json_out {
             println!("daemon alive: site '{site}' at {}", socket.display());
+            if let Some(release) = &release {
+                println!(
+                    "daemon release: {release} (this CLI: {})",
+                    tisvlay_protocol::VERSION
+                );
+            }
+        }
+        if compatible == Some(false) {
+            bail!(
+                "the daemon runs release {}, which this CLI ({}) can't talk to; restart it or upgrade so they match",
+                release.as_deref().unwrap_or_default(),
+                tisvlay_protocol::VERSION
+            );
         }
         Ok(())
     } else if json_out {
@@ -1317,6 +1365,35 @@ async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) ->
             socket.display()
         );
     }
+}
+
+/// Refuse to send rpcs to a service on a release this CLI can't talk to
+/// (a different `major.minor`). A service that doesn't answer isn't
+/// checked: the command reports that itself.
+async fn check_release<R>(caller: &Caller, service: &str) -> Result<()>
+where
+    R: Unary<Target = (), Request = (), Response = rpc::ServiceInfo>,
+{
+    match release_mismatch::<R>(caller, service).await {
+        Some(mismatch) => bail!("{mismatch}"),
+        None => Ok(()),
+    }
+}
+
+/// The mismatch message when `service` answers its `info` rpc with a
+/// release this CLI can't talk to.
+async fn release_mismatch<R>(caller: &Caller, service: &str) -> Option<String>
+where
+    R: Unary<Target = (), Request = (), Response = rpc::ServiceInfo>,
+{
+    let info = caller.call::<R>(&(), &()).await.ok()?;
+    (!tisvlay_protocol::compatible(tisvlay_protocol::VERSION, &info.version)).then(|| {
+        format!(
+            "the {service} runs release {}, which this CLI ({}) can't talk to; restart it or upgrade so they match",
+            info.version,
+            tisvlay_protocol::VERSION
+        )
+    })
 }
 
 /// Hydrate from the publisher caches (AdvancedSubscriber history — the

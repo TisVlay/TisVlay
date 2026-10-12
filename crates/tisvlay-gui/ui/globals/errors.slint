@@ -44,6 +44,11 @@ export global Errors {
     /// The message is a compiler-style report, so it renders in the
     /// monospace face.
     in-out property <ErrorState> reload;
+    /// App-level version banner — a service runs a release this GUI
+    /// can't talk to (a different `major.minor`), so every call to it
+    /// fails. Above every pane, under the access banner, until the
+    /// service restarts on a matching release.
+    in-out property <ErrorState> version;
 
     /// Action callback for `tvs.kind` (e.g. "Retry"). Rust binds
     /// this and routes per-kind. Empty action-label hides the

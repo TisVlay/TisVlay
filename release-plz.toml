@@ -18,3 +18,8 @@
 # on a shared-version workspace.)
 [workspace]
 git_release_enable = false
+# Every `feat` bumps the minor, at 0.x too. Clients and services check
+# each other's release on `major.minor` (`tisvlay_protocol::compatible`),
+# so a protocol change must never ship as a patch, and CLAUDE.md's
+# commit rule keeps wire-visible changes off `fix`.
+features_always_increment_minor = true

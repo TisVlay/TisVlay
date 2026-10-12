@@ -9,9 +9,11 @@
 
 mod desktop;
 mod error;
+mod handshake;
 mod mirror;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -44,6 +46,7 @@ use zenoh::Session;
 use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
+use handshake::Handshake;
 use mirror::{SystemMirror, UserMirror};
 
 /// Profile bodies: the wire carries the config structs verbatim (name
@@ -95,6 +98,13 @@ pub enum StateEvent {
     TrayDisappeared,
     TrayNotificationSettingsChanged,
     FallbackPoll,
+    /// A service runs a release this client can't talk to: every rpc to
+    /// it fails until it's restarted on a matching release.
+    VersionMismatch {
+        service: Service,
+        ours: String,
+        theirs: String,
+    },
 }
 
 /// The tray's notification categories, keyed by their settings field
@@ -201,6 +211,7 @@ pub struct DaemonClient {
     site: String,
     mirror: Arc<Mutex<SystemMirror>>,
     events: broadcast::Sender<StateEvent>,
+    handshake: Arc<Handshake>,
 }
 
 impl DaemonClient {
@@ -239,9 +250,13 @@ impl DaemonClient {
             .history(true)
             .await
             .map_err(|e| Error::transport("subscribe to the daemon's liveliness", e))?;
+        let caller = Arc::new(Caller::new(session.clone(), site));
+        let handshake = Arc::new(Handshake::new(Service::Daemon));
         {
             let mirror = Arc::clone(&mirror);
             let events = events.clone();
+            let caller = Arc::clone(&caller);
+            let handshake = Arc::clone(&handshake);
             tokio::spawn(async move {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let alive = sample.kind() == SampleKind::Put;
@@ -251,15 +266,25 @@ impl DaemonClient {
                     } else {
                         StateEvent::DaemonDisappeared
                     });
+                    check_on_liveliness(
+                        alive,
+                        &handshake,
+                        &events,
+                        &caller,
+                        Service::Daemon,
+                        |caller| async move { caller.call::<manager::Info>(&(), &()).await },
+                    )
+                    .await;
                 }
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session.clone(), site)),
+            caller,
             session,
             site: site.to_string(),
             mirror,
             events,
+            handshake,
         })
     }
 
@@ -272,6 +297,9 @@ impl DaemonClient {
     /// descriptor arrive as published state (`meta/vendor`,
     /// `meta/identity`) like everything else.
     pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
+        if let Some(mismatch) = self.handshake.known_mismatch() {
+            return Err(mismatch);
+        }
         let rows: Vec<(Uuid, mirror_row::Row)> = {
             let mirror = self.mirror.lock().expect("mirror lock");
             mirror
@@ -286,14 +314,24 @@ impl DaemonClient {
             .collect())
     }
 
+    /// The daemon's release. Ungated, so it reports what's running
+    /// even across a mismatch.
     pub async fn version(&self) -> Result<String> {
-        Ok(self.call::<manager::Info>(&(), &()).await?.version)
+        Ok(self.info().await?.version)
     }
 
     /// The daemon's state-store path (the zenoh stack has no config
-    /// file; the store is what an admin would inspect).
+    /// file; the store is what an admin would inspect). Ungated, like
+    /// [`Self::version`].
     pub async fn config_path(&self) -> Result<String> {
-        Ok(self.call::<manager::Info>(&(), &()).await?.state_path)
+        Ok(self.info().await?.state_path)
+    }
+
+    async fn info(&self) -> Result<rpc::ServiceInfo> {
+        self.caller
+            .call::<manager::Info>(&(), &())
+            .await
+            .map_err(|e| Error::from_rpc(Service::Daemon, e))
     }
 
     /// Apply a hand edit of the daemon's store file: only what changed
@@ -600,6 +638,9 @@ impl DaemonClient {
 
     /// A system profile's body, from the mirror.
     pub async fn get_system_profile(&self, profile: Uuid) -> Option<SystemProfileBody> {
+        if self.handshake.known_mismatch().is_some() {
+            return None;
+        }
         self.mirror
             .lock()
             .expect("mirror lock")
@@ -609,6 +650,9 @@ impl DaemonClient {
     }
 
     pub async fn list_system_profile_bodies(&self) -> HashMap<Uuid, SystemProfileBody> {
+        if self.handshake.known_mismatch().is_some() {
+            return HashMap::new();
+        }
         self.mirror
             .lock()
             .expect("mirror lock")
@@ -683,6 +727,9 @@ impl DaemonClient {
         target: &R::Target,
         request: &R::Request,
     ) -> Result<R::Response> {
+        self.handshake
+            .ensure(&self.events, || async { Ok(self.info().await?.version) })
+            .await?;
         self.caller
             .call::<R>(target, request)
             .await
@@ -696,6 +743,7 @@ pub struct SessionClient {
     caller: Arc<Caller>,
     mirror: Arc<Mutex<UserMirror>>,
     events: broadcast::Sender<StateEvent>,
+    handshake: Arc<Handshake>,
 }
 
 impl SessionClient {
@@ -732,9 +780,13 @@ impl SessionClient {
             .history(true)
             .await
             .map_err(|e| Error::transport("subscribe to the session's liveliness", e))?;
+        let caller = Arc::new(Caller::new(session, site));
+        let handshake = Arc::new(Handshake::new(Service::Session));
         {
             let mirror = Arc::clone(&mirror);
             let events = events.clone();
+            let caller = Arc::clone(&caller);
+            let handshake = Arc::clone(&handshake);
             tokio::spawn(async move {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let alive = sample.kind() == SampleKind::Put;
@@ -744,13 +796,23 @@ impl SessionClient {
                     } else {
                         StateEvent::SessionDisappeared
                     });
+                    check_on_liveliness(
+                        alive,
+                        &handshake,
+                        &events,
+                        &caller,
+                        Service::Session,
+                        |caller| async move { caller.call::<user_profile::Info>(&(), &()).await },
+                    )
+                    .await;
                 }
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session, site)),
+            caller,
             mirror,
             events,
+            handshake,
         })
     }
 
@@ -777,6 +839,9 @@ impl SessionClient {
     /// The TV's assigned user-profile uuid, from the mirror; `None` when
     /// it uses the default.
     pub async fn get_tv_user_profile(&self, tv: Uuid) -> Option<Uuid> {
+        if self.handshake.known_mismatch().is_some() {
+            return None;
+        }
         self.mirror
             .lock()
             .expect("mirror lock")
@@ -792,6 +857,9 @@ impl SessionClient {
     }
 
     pub async fn list_user_profile_bodies(&self) -> HashMap<Uuid, UserProfileBody> {
+        if self.handshake.known_mismatch().is_some() {
+            return HashMap::new();
+        }
         self.mirror
             .lock()
             .expect("mirror lock")
@@ -874,6 +942,9 @@ impl SessionClient {
     /// — the passive counterpart to [`Self::remote_session_status`],
     /// updated on every `RemoteSessionChanged` event.
     pub async fn remote_session(&self) -> Option<RemoteSessionState> {
+        if self.handshake.known_mismatch().is_some() {
+            return None;
+        }
         self.mirror
             .lock()
             .expect("mirror lock")
@@ -890,8 +961,18 @@ impl SessionClient {
         target: &R::Target,
         request: &R::Request,
     ) -> Result<R::Response> {
+        self.handshake
+            .ensure(&self.events, || async { Ok(self.info().await?.version) })
+            .await?;
         self.caller
             .call::<R>(target, request)
+            .await
+            .map_err(|e| Error::from_rpc(Service::Session, e))
+    }
+
+    async fn info(&self) -> Result<rpc::ServiceInfo> {
+        self.caller
+            .call::<user_profile::Info>(&(), &())
             .await
             .map_err(|e| Error::from_rpc(Service::Session, e))
     }
@@ -905,6 +986,7 @@ pub struct TrayClient {
     caller: Arc<Caller>,
     alive: Arc<Mutex<bool>>,
     events: broadcast::Sender<StateEvent>,
+    handshake: Arc<Handshake>,
 }
 
 impl TrayClient {
@@ -923,9 +1005,13 @@ impl TrayClient {
             .history(true)
             .await
             .map_err(|e| Error::transport("subscribe to the tray's liveliness", e))?;
+        let caller = Arc::new(Caller::new(session.clone(), site));
+        let handshake = Arc::new(Handshake::new(Service::Tray));
         {
             let alive = Arc::clone(&alive);
             let events = events.clone();
+            let caller = Arc::clone(&caller);
+            let handshake = Arc::clone(&handshake);
             tokio::spawn(async move {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let up = sample.kind() == SampleKind::Put;
@@ -935,6 +1021,15 @@ impl TrayClient {
                     } else {
                         StateEvent::TrayDisappeared
                     });
+                    check_on_liveliness(
+                        up,
+                        &handshake,
+                        &events,
+                        &caller,
+                        Service::Tray,
+                        |caller| async move { caller.call::<user_tray::Info>(&(), &()).await },
+                    )
+                    .await;
                 }
             });
         }
@@ -952,9 +1047,10 @@ impl TrayClient {
             });
         }
         Ok(Self {
-            caller: Arc::new(Caller::new(session, site)),
+            caller,
             alive,
             events,
+            handshake,
         })
     }
 
@@ -962,12 +1058,14 @@ impl TrayClient {
         *self.alive.lock().expect("tray alive lock")
     }
 
+    /// The tray's release. Ungated, so it reports what's running even
+    /// across a mismatch.
     pub async fn version(&self) -> Result<String> {
-        Ok(self.call::<user_tray::Info>(&()).await?.version)
+        Ok(self.info().await?.version)
     }
 
     pub async fn config_path(&self) -> Result<String> {
-        Ok(self.call::<user_tray::Info>(&()).await?.state_path)
+        Ok(self.info().await?.state_path)
     }
 
     /// Apply a hand edit of the tray's settings file. Refused when the
@@ -996,11 +1094,51 @@ impl TrayClient {
     }
 
     async fn call<R: Unary<Target = ()>>(&self, request: &R::Request) -> Result<R::Response> {
+        self.handshake
+            .ensure(&self.events, || async { Ok(self.info().await?.version) })
+            .await?;
         self.caller
             .call::<R>(&(), request)
             .await
             .map_err(|e| Error::from_rpc(Service::Tray, e))
     }
+
+    async fn info(&self) -> Result<rpc::ServiceInfo> {
+        self.caller
+            .call::<user_tray::Info>(&(), &())
+            .await
+            .map_err(|e| Error::from_rpc(Service::Tray, e))
+    }
+}
+
+/// Keep a client's verdict in step with its service's liveliness: a
+/// service that went away gets a fresh check in its next lifetime, and one
+/// that appeared is checked at once, so a mismatch reaches the watcher
+/// without waiting for a call.
+async fn check_on_liveliness<F, Fut>(
+    alive: bool,
+    handshake: &Handshake,
+    events: &broadcast::Sender<StateEvent>,
+    caller: &Arc<Caller>,
+    service: Service,
+    info: F,
+) where
+    F: FnOnce(Arc<Caller>) -> Fut,
+    Fut: Future<Output = std::result::Result<rpc::ServiceInfo, tisvlay_protocol::caller::RpcError>>,
+{
+    if !alive {
+        handshake.reset().await;
+        return;
+    }
+    let caller = Arc::clone(caller);
+    let _ = handshake
+        .ensure(events, || async move {
+            info(caller)
+                .await
+                .map(|info| info.version)
+                .map_err(|e| Error::from_rpc(service, e))
+        })
+        .await;
 }
 
 /// Watcher tuning: mirror deltas forward directly, so the one knob is

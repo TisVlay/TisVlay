@@ -313,6 +313,12 @@ pub struct DiscoverySession {
 
 /// Reply to every service's `info` rpc. `state_path` is empty when
 /// the service runs without persistence.
+///
+/// Frozen, with the three `info` keys: it's how a client learns a
+/// service's release before anything else can be decoded, so a client
+/// of any release must still read it. Fields may be added, never
+/// changed or removed, and unknown fields are never denied. `version`
+/// is the service's [`crate::VERSION`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ServiceInfo {
     pub version: String,

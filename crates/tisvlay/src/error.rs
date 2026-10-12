@@ -31,6 +31,15 @@ pub enum Error {
         #[source]
         source: Option<BoxError>,
     },
+    /// The service runs a release this client can't speak to (a
+    /// different `major.minor`). Restart the service or upgrade so the two
+    /// match.
+    #[error("the {service} runs release {theirs}, which this client ({ours}) can't talk to")]
+    VersionMismatch {
+        service: Service,
+        ours: String,
+        theirs: String,
+    },
     /// A reply didn't decode as its rpc's response type.
     #[error("malformed reply from the {service}")]
     Protocol {
