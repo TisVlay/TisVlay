@@ -16,11 +16,11 @@ use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
 use serde_json::{Value, json};
 use tisvlay_cli::{Cli, Command, ProfileCmd, RemoteSessionCmd, UserProfileCmd};
-use tisvlay_wire::caller::{Caller, RpcError};
-use tisvlay_wire::endpoint::{
+use tisvlay_protocol::caller::{Caller, RpcError};
+use tisvlay_protocol::endpoint::{
     Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
 };
-use tisvlay_wire::{keys, payload, rpc};
+use tisvlay_protocol::{keys, payload, rpc};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::sample::SampleKind;
@@ -72,7 +72,7 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
     let socket = cli
         .socket
-        .unwrap_or_else(tisvlay_wire::bootstrap::default_connect_socket_path);
+        .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path);
     // `enable-access` needs no daemon connection — it is the fix for not
     // being able to reach the socket, so it runs before opening the client.
     if matches!(cli.command, Command::EnableAccess) {
@@ -82,10 +82,24 @@ async fn run() -> Result<()> {
     let site = &cli.site;
     let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
+    // Commands that send the daemon rpcs check its release first; `status`
+    // reports it, `watch` is a passive view, the user-socket commands
+    // check the session service instead, and `reload` checks each service
+    // it reloads.
+    if !matches!(
+        cli.command,
+        Command::Status
+            | Command::Watch
+            | Command::UserProfile(_)
+            | Command::RemoteSession(_)
+            | Command::Reload
+    ) {
+        check_release::<manager::Info>(&caller, "daemon").await?;
+    }
     match cli.command {
         // Handled above, before the client opens (needs no connection).
         Command::EnableAccess => unreachable!(),
-        Command::Status => status(&session, site, &socket, json_out).await,
+        Command::Status => status(&session, &caller, site, &socket, json_out).await,
         Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
@@ -212,8 +226,8 @@ async fn run() -> Result<()> {
         Command::UserProfile(cmd) => {
             let user_socket = cli
                 .user_socket
-                .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?)
+                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
                 .await
                 .map_err(|e| {
                     anyhow!(
@@ -221,20 +235,15 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            user_profile_cmd(
-                &user,
-                &Caller::new(user.clone(), site.as_str()),
-                site,
-                cmd,
-                json_out,
-            )
-            .await
+            let user_caller = Caller::new(user.clone(), site.as_str());
+            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+            user_profile_cmd(&user, &user_caller, site, cmd, json_out).await
         }
         Command::RemoteSession(cmd) => {
             let user_socket = cli
                 .user_socket
-                .unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?)
+                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
                 .await
                 .map_err(|e| {
                     anyhow!(
@@ -242,7 +251,9 @@ async fn run() -> Result<()> {
                         user_socket.display()
                     )
                 })?;
-            remote_session_cmd(&Caller::new(user.clone(), site.as_str()), cmd, json_out).await
+            let user_caller = Caller::new(user.clone(), site.as_str());
+            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+            remote_session_cmd(&user_caller, cmd, json_out).await
         }
     }
 }
@@ -541,7 +552,7 @@ async fn discover_session(
 }
 
 async fn open_client(socket: &Path) -> Result<Session> {
-    zenoh::open(tisvlay_wire::bootstrap::client_config(socket)?)
+    zenoh::open(tisvlay_protocol::bootstrap::client_config(socket)?)
         .await
         .map_err(|e| {
             // A connect failure for a caller who isn't in the socket group
@@ -655,7 +666,7 @@ async fn pair(
 
 /// One line on what the pairing did with the device-reported link MAC.
 fn link_mac_line(id: Uuid, report: &payload::LinkMacReport) -> String {
-    use tisvlay_wire::payload::LinkMacOutcome;
+    use tisvlay_protocol::payload::LinkMacOutcome;
     let reported = &report.reported;
     match &report.outcome {
         LinkMacOutcome::Filled => format!("mac: detected {reported} (saved)"),
@@ -728,25 +739,33 @@ async fn reload(
     site: &str,
     json_out: bool,
 ) -> Result<()> {
-    let daemon = caller.call::<manager::Reload>(&(), &()).await;
+    let daemon = match release_mismatch::<manager::Info>(caller, "daemon").await {
+        Err(_) => ReloadOutcome::NotRunning,
+        Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
+        Ok(None) => reload_outcome(Some(caller.call::<manager::Reload>(&(), &()).await)),
+    };
     let user_socket =
-        user_socket.unwrap_or_else(tisvlay_wire::bootstrap::default_session_socket_path);
-    let user = match zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket)?).await {
+        user_socket.unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+    let user = match zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?).await {
         Ok(user) => Some(Caller::new(user, site)),
         Err(_) => None,
     };
     let (session, tray) = match &user {
         Some(user) => (
-            Some(user.call::<user_profile::Reload>(&(), &()).await),
-            Some(user.call::<user_tray::Reload>(&(), &()).await),
+            match release_mismatch::<user_profile::Info>(user, "session service").await {
+                Err(_) => ReloadOutcome::NotRunning,
+                Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
+                Ok(None) => reload_outcome(Some(user.call::<user_profile::Reload>(&(), &()).await)),
+            },
+            match release_mismatch::<user_tray::Info>(user, "tray").await {
+                Err(_) => ReloadOutcome::NotRunning,
+                Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
+                Ok(None) => reload_outcome(Some(user.call::<user_tray::Reload>(&(), &()).await)),
+            },
         ),
-        None => (None, None),
+        None => (ReloadOutcome::NotRunning, ReloadOutcome::NotRunning),
     };
-    let outcomes = [
-        ("daemon", reload_outcome(Some(daemon))),
-        ("session", reload_outcome(session)),
-        ("tray", reload_outcome(tray)),
-    ];
+    let outcomes = [("daemon", daemon), ("session", session), ("tray", tray)];
     if json_out {
         let report: serde_json::Map<String, Value> = outcomes
             .iter()
@@ -823,7 +842,13 @@ fn reload_outcome(
     }
 }
 
-async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) -> Result<()> {
+async fn status(
+    session: &Session,
+    caller: &Caller,
+    site: &str,
+    socket: &Path,
+    json_out: bool,
+) -> Result<()> {
     let replies = session
         .liveliness()
         .get(keys::daemon_alive(site).as_str())
@@ -831,29 +856,103 @@ async fn status(session: &Session, site: &str, socket: &Path, json_out: bool) ->
         .await
         .map_err(|e| anyhow!("liveliness get: {e}"))?;
     let alive = matches!(replies.recv_async().await, Ok(reply) if reply.result().is_ok());
+    let release = match alive {
+        true => caller
+            .call::<manager::Info>(&(), &())
+            .await
+            .ok()
+            .map(|info| info.version),
+        false => None,
+    };
+    let compatible = release
+        .as_deref()
+        .map(|release| tisvlay_protocol::compatible(tisvlay_protocol::VERSION, release));
     if json_out {
         println!(
             "{}",
-            json!({ "alive": alive, "site": site, "socket": socket })
+            json!({
+                "alive": alive,
+                "site": site,
+                "socket": socket,
+                "release": release,
+                "compatible": compatible,
+            })
         );
     }
+    let healthy = alive && compatible != Some(false);
+    if json_out {
+        if !healthy {
+            #[expect(
+                clippy::exit,
+                reason = "`status --json` reports a missing or incompatible daemon as exit code 1 after printing its JSON, with no error text"
+            )]
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if alive {
-        if !json_out {
-            println!("daemon alive: site '{site}' at {}", socket.display());
+        println!("daemon alive: site '{site}' at {}", socket.display());
+        if let Some(release) = &release {
+            println!(
+                "daemon release: {release} (this CLI: {})",
+                tisvlay_protocol::VERSION
+            );
+        }
+        if compatible == Some(false) {
+            bail!(
+                "the daemon runs release {}, which this CLI ({}) can't talk to; restart it or upgrade so they match",
+                release.as_deref().unwrap_or_default(),
+                tisvlay_protocol::VERSION
+            );
         }
         Ok(())
-    } else if json_out {
-        #[expect(
-            clippy::exit,
-            reason = "`status --json` reports a missing daemon as exit code 1 after printing its JSON, with no error text"
-        )]
-        std::process::exit(1);
     } else {
         bail!(
             "no daemon liveliness token for site '{site}' at {}",
             socket.display()
         );
     }
+}
+
+/// Refuse to send rpcs to a service on a release this CLI can't talk to
+/// (a different `major.minor`), or to one that isn't there at all, which
+/// fails here rather than waiting out the command's own rpc too. A service
+/// that's there but doesn't answer `info` isn't checked: the command
+/// reports that itself.
+async fn check_release<R>(caller: &Caller, service: &str) -> Result<()>
+where
+    R: Unary<Target = (), Request = (), Response = rpc::ServiceInfo>,
+{
+    match release_mismatch::<R>(caller, service).await {
+        Err(e) => bail!("the {service} isn't running ({e})"),
+        Ok(Some(mismatch)) => bail!("{mismatch}"),
+        Ok(None) => Ok(()),
+    }
+}
+
+/// The mismatch message when `service` answers its `info` rpc with a
+/// release this CLI can't talk to. `Err` when no service is there at all
+/// ([`RpcError::Unavailable`]); any other failure to ask counts as no
+/// mismatch, for the command to report.
+async fn release_mismatch<R>(
+    caller: &Caller,
+    service: &str,
+) -> std::result::Result<Option<String>, RpcError>
+where
+    R: Unary<Target = (), Request = (), Response = rpc::ServiceInfo>,
+{
+    let info = match caller.call::<R>(&(), &()).await {
+        Ok(info) => info,
+        Err(e @ RpcError::Unavailable { .. }) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    Ok((!tisvlay_protocol::compatible(tisvlay_protocol::VERSION, &info.version)).then(|| {
+        format!(
+            "the {service} runs release {}, which this CLI ({}) can't talk to; restart it or upgrade so they match",
+            info.version,
+            tisvlay_protocol::VERSION
+        )
+    }))
 }
 
 /// Hydrate from the publisher caches (AdvancedSubscriber history — the
@@ -974,7 +1073,7 @@ async fn watch(session: &Session, site: &str) -> Result<()> {
 mod tests {
     #[test]
     fn link_mac_line_names_each_outcome() {
-        use tisvlay_wire::payload::{LinkMacOutcome, LinkMacReport};
+        use tisvlay_protocol::payload::{LinkMacOutcome, LinkMacReport};
         let id = uuid::Uuid::nil();
         let report = |outcome| LinkMacReport {
             reported: "84:90:0A:63:A9:94".into(),

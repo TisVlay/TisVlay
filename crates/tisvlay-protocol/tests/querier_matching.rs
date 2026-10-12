@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 
-use tisvlay_wire::bootstrap;
+use tisvlay_protocol::bootstrap;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 

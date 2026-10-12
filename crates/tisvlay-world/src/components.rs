@@ -1,15 +1,16 @@
 //! World-side components and resources. Wire-visible state components live
-//! in `tisvlay_wire::payload` (component = key = payload); everything here is
+//! in `tisvlay_protocol::payload` (component = key = payload); everything here is
 //! internal structure.
 
 use bevy_ecs::lifecycle::HookContext;
 use bevy_ecs::prelude::*;
 use bevy_ecs::world::DeferredWorld;
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::time::Instant;
 use tisvlay_core::VendorConfig;
-use tisvlay_wire::{keys, payload};
+use tisvlay_protocol::payload::StatePayload;
+use tisvlay_protocol::{keys, payload};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -543,4 +544,24 @@ pub(crate) enum Effect {
     Persist(Box<StoreSnapshot>),
     /// Tell the store writer a reload finished (see `StoreMsg::Reloaded`).
     StoreReloaded(Option<Box<StoreSnapshot>>),
+}
+
+/// A TV's state payload as a component. The payloads are the protocol's
+/// wire types, which know nothing of this ECS, so each is stored wrapped:
+/// queries read `&State<payload::Power>`, and the generic publisher keys
+/// off the payload's `StatePayload::PATH`.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub(crate) struct State<T: StatePayload>(pub T);
+
+impl<T: StatePayload> Deref for State<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: StatePayload> DerefMut for State<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
 }

@@ -58,7 +58,7 @@ TisVlay TV control
 ###### **Subcommands:**
 
 * `enable-access` — Grant the current user TV control by adding it to the daemon's socket group (one-click, authenticated via polkit). Log out and back in afterward for it to take effect
-* `status` — Probe the daemon's liveliness token
+* `status` — Probe the daemon's liveliness token and report its release; fails when the daemon is absent or runs a release this CLI can't talk to
 * `reload` — Apply hand edits of the state files: the daemon's, the session's and the tray's (what the GUI's Reload button does)
 * `list` — List TVs with their current state (hydrates from publisher caches)
 * `watch` — Stream every data key: history first, then live samples
@@ -108,7 +108,7 @@ Grant the current user TV control by adding it to the daemon's socket group (one
 
 ## `tisvlay status`
 
-Probe the daemon's liveliness token
+Probe the daemon's liveliness token and report its release; fails when the daemon is absent or runs a release this CLI can't talk to
 
 **Usage:** `tisvlay status`
 

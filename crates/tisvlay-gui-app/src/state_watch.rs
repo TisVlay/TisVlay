@@ -7,19 +7,79 @@ use std::sync::Arc;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{
-    DaemonClient, NotificationSettings, SessionClient, StateEvent, StateWatcher, TrayClient,
+    DaemonClient, NotificationSettings, Service, SessionClient, StateEvent, StateWatcher,
+    TrayClient,
 };
 use tisvlay_runtime::client::RefreshTrigger;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
+use crate::about::{
+    PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version, service_health,
+};
 use crate::profiles::{self, ProfileEditor};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
-    AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers, Tray,
-    TrayNotificationSettings, TvViewModel, VendorInfoRow, VendorOption, on_ui,
+    AppWindow, ErrorState, Errors, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles,
+    Reconcilers, Tray, TrayNotificationSettings, TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
+
+/// The services currently on a release this GUI can't talk to, each with
+/// (this GUI's release, the service's). Rendered as one app-level banner.
+#[derive(Default)]
+struct VersionMismatches(Vec<(Service, String, String)>);
+
+impl VersionMismatches {
+    fn set(&mut self, service: Service, ours: String, theirs: String) {
+        self.clear(service);
+        self.0.push((service, ours, theirs));
+    }
+
+    fn clear(&mut self, service: Service) {
+        self.0.retain(|(known, ..)| *known != service);
+    }
+
+    fn publish(&self, app_weak: &slint::Weak<AppWindow>) {
+        let banner = version_banner(&self.0);
+        on_ui(app_weak, move |app| {
+            app.global::<Errors>().set_version(banner);
+        });
+    }
+}
+
+/// The version banner for `mismatches`, or none when there are none.
+fn version_banner(mismatches: &[(Service, String, String)]) -> ErrorState {
+    if mismatches.is_empty() {
+        return ErrorState::default();
+    }
+    let message = mismatches
+        .iter()
+        .map(|(service, ours, theirs)| {
+            let service = service_name(*service);
+            gettext("TisVlay {0} can't talk to the {1}, which runs {2}. Restart the {1} or upgrade so the two match.")
+                .replace("{0}", ours)
+                .replace("{1}", &service)
+                .replace("{2}", theirs)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ErrorState {
+        kind: SharedString::default(),
+        tone: SharedString::from("error"),
+        title: SharedString::from(gettext("Version mismatch")),
+        message: SharedString::from(message),
+        action_label: SharedString::default(),
+    }
+}
+
+fn service_name(service: Service) -> String {
+    match service {
+        Service::Daemon => gettext("daemon"),
+        Service::Session => gettext("session service"),
+        Service::Tray => gettext("tray"),
+        _ => service.to_string(),
+    }
+}
 
 /// Boot the state-watch loop. One-shot startup: do the initial state
 /// fetch, push the first snapshot, prime the supported-vendors cache,
@@ -81,14 +141,12 @@ pub(crate) async fn initial_fetch_and_watch(
         app.global::<Tray>()
             .set_notifications(initial_tray_notifications);
     });
-    // Every availability copy goes through the single writer.
-    publish_availability(&daemon, &session, &tray, &app_weak).await;
+    // Every service-status copy goes through the single writer.
+    publish_services(&daemon, &session, &tray, &app_weak).await;
 
     if initial_tray_available {
         refresh_tray_notifications(&tray, &app_weak).await;
     }
-
-    refresh_about_components(&daemon, &session, &tray, &app_weak).await;
     watch_state(
         daemon,
         session,
@@ -273,6 +331,9 @@ async fn watch_state(
         });
     };
 
+    // Services on a release this GUI can't talk to, for the version banner.
+    let mut mismatches = VersionMismatches::default();
+
     loop {
         let Some(event) = watcher.next().await else {
             break;
@@ -291,7 +352,7 @@ async fn watch_state(
                 // defaults on disk, in which case the inherit walk
                 // would otherwise resolve against a stale ancestor.
                 profiles::prime_system_layers(&daemon, &editor).await;
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
@@ -346,13 +407,33 @@ async fn watch_state(
                 profiles::handle_user_removed(&editor, app_weak.clone(), uuid);
                 trigger_refresh();
             }
+            StateEvent::VersionMismatch {
+                service,
+                ours,
+                theirs,
+            } => {
+                mismatches.set(service, ours, theirs);
+                mismatches.publish(&app_weak);
+                // A refresh that ran before the verdict may have listed
+                // the incompatible daemon's TVs; its mirror is off limits
+                // from here, and later refreshes fail without touching
+                // the list.
+                if service == Service::Daemon {
+                    on_ui(&app_weak, move |app| {
+                        app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
+                        app.set_tvs_connected_count(0);
+                    });
+                }
+            }
             StateEvent::DaemonDisappeared => {
+                // The daemon's next lifetime gets a fresh release check.
+                mismatches.clear(Service::Daemon);
+                mismatches.publish(&app_weak);
                 on_ui(&app_weak, move |app| {
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                     app.set_tvs_connected_count(0);
                 });
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
-                refresh_about_components(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
                 // The client exists from startup (background-retry link);
@@ -360,27 +441,32 @@ async fn watch_state(
                 if let Some(client) = session.read().await.as_ref() {
                     profiles::prime_user_layers(client, &editor).await;
                 }
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
                 // The client stays — its resilient link redials and its
                 // liveliness subscriber delivers the next Appeared.
-                // Only the availability flags flip.
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                // Only the availability flags flip, and the next lifetime
+                // gets a fresh release check.
+                mismatches.clear(Service::Session);
+                mismatches.publish(&app_weak);
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
                 // The client exists from startup (background-retry link).
                 {
-                    publish_availability(&daemon, &session, &tray, &app_weak).await;
+                    publish_services(&daemon, &session, &tray, &app_weak).await;
                     refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
                 }
             }
             StateEvent::TrayDisappeared => {
                 // Client stays, same as the session arm above.
-                publish_availability(&daemon, &session, &tray, &app_weak).await;
+                mismatches.clear(Service::Tray);
+                mismatches.publish(&app_weak);
+                publish_services(&daemon, &session, &tray, &app_weak).await;
                 trigger_refresh();
             }
             StateEvent::TrayNotificationSettingsChanged => {
@@ -451,20 +537,23 @@ async fn refresh(
             });
         }
         // Content-only failure: availability is liveliness's job
-        // (publish_availability), never a fetch outcome's.
+        // (publish_services), never a fetch outcome's.
         Err(e) => debug!(error = %e, "State refresh failed"),
     }
     drop(session_ref);
-    publish_availability(daemon, session, tray, app_weak).await;
-    refresh_about_components(daemon, session, tray, app_weak).await;
+    publish_services(daemon, session, tray, app_weak).await;
 }
 
-/// Probe each peer's version + config-path info rpcs and push the
-/// COMPONENTS-table model to the About pane. Both values are
-/// constant for a peer's lifetime, so this is cheap to invoke after
-/// every state-affecting event; caching would save a couple of
-/// round-trips on a flap-storm but isn't worth the extra plumbing.
-async fn refresh_about_components(
+/// The single writer for every Slint service-status property: the
+/// presence flags (window props + the Tray/Profiles globals), each
+/// service's health for the footer dots, and the About pane's
+/// COMPONENTS rows. Presence is liveliness, only; rpc outcomes are
+/// content, never online/offline. Health adds the release each
+/// service's `info` reports, which answers even across a version
+/// mismatch. Writing everything from one probe is what keeps the
+/// footer, settings pane, profiles pane and About rows from ever
+/// disagreeing.
+async fn publish_services(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
     tray: &RwLock<Option<TrayClient>>,
@@ -481,25 +570,28 @@ async fn refresh_about_components(
         })
     }
 
-    // Availability is liveliness; the probes fill content only. A
-    // failed probe on a live peer renders an online row with "—".
+    // Only a live peer is probed: an rpc to an absent one waits out the
+    // matching deadline, which would hold every indicator (and the watch
+    // loop) behind it. A failed probe on a live peer renders an online row
+    // with "—".
     let daemon_up = daemon.is_available().await;
-    let daemon_info = probe(daemon.version(), daemon.config_path()).await;
+    let daemon_info = if daemon_up {
+        probe(daemon.version(), daemon.config_path()).await
+    } else {
+        None
+    };
     let (session_up, session_info) = match session.read().await.as_ref() {
-        Some(s) => (
-            s.is_available().await,
-            probe(s.version(), s.config_path()).await,
-        ),
-        None => (false, None),
+        Some(s) if s.is_available().await => (true, probe(s.version(), s.config_path()).await),
+        _ => (false, None),
     };
     let (tray_up, tray_info) = match tray.read().await.as_ref() {
-        Some(t) => (
-            t.is_available().await,
-            probe(t.version(), t.config_path()).await,
-        ),
-        None => (false, None),
+        Some(t) if t.is_available().await => (true, probe(t.version(), t.config_path()).await),
+        _ => (false, None),
     };
     let cli_version = probe_cli_version().await;
+    let daemon_health = service_health(daemon_up, daemon_info.as_ref());
+    let session_health = service_health(session_up, session_info.as_ref());
+    let tray_health = service_health(tray_up, tray_info.as_ref());
     let rows = make_about_components(
         &crate::endpoints().site,
         (daemon_up, daemon_info.as_ref()),
@@ -508,36 +600,15 @@ async fn refresh_about_components(
         cli_version.as_deref(),
     );
     on_ui(app_weak, move |app| {
-        app.set_about_components(ModelRc::new(VecModel::from(rows)));
-    });
-}
-
-/// The single writer for every Slint availability property — presence
-/// is liveliness, only; rpc outcomes are content, never online/offline.
-/// Writing all copies (window props + the Tray/Profiles globals) in
-/// one place is what keeps the footer, settings pane, profiles pane,
-/// and About rows from ever disagreeing.
-async fn publish_availability(
-    daemon: &DaemonClient,
-    session: &RwLock<Option<SessionClient>>,
-    tray: &RwLock<Option<TrayClient>>,
-    app_weak: &slint::Weak<AppWindow>,
-) {
-    let daemon_up = daemon.is_available().await;
-    let session_up = match session.read().await.as_ref() {
-        Some(client) => client.is_available().await,
-        None => false,
-    };
-    let tray_up = match tray.read().await.as_ref() {
-        Some(client) => client.is_available().await,
-        None => false,
-    };
-    on_ui(app_weak, move |app| {
         app.set_daemon_available(daemon_up);
         app.set_session_available(session_up);
         app.set_tray_available(tray_up);
         app.global::<Tray>().set_available(tray_up);
         app.global::<Profiles>().set_session_available(session_up);
+        app.set_daemon_health(daemon_health);
+        app.set_session_health(session_health);
+        app.set_tray_health(tray_health);
+        app.set_about_components(ModelRc::new(VecModel::from(rows)));
     });
 }
 
@@ -743,5 +814,38 @@ fn sync_vec_model<T: Clone + 'static>(
     }
     while vec_model.row_count() > new_len {
         vec_model.remove(vec_model.row_count() - 1);
+    }
+}
+
+#[cfg(test)]
+mod version_banner_tests {
+    use super::*;
+
+    #[test]
+    fn no_mismatch_no_banner() {
+        assert_eq!(version_banner(&[]).title, "");
+    }
+
+    #[test]
+    fn each_mismatched_service_gets_a_line() {
+        let banner = version_banner(&[
+            (Service::Daemon, "0.4.0".into(), "0.3.2".into()),
+            (Service::Tray, "0.4.0".into(), "0.5.0".into()),
+        ]);
+        assert_eq!(banner.title, "Version mismatch");
+        assert_eq!(
+            banner.message,
+            "TisVlay 0.4.0 can't talk to the daemon, which runs 0.3.2. Restart the daemon or upgrade so the two match.\nTisVlay 0.4.0 can't talk to the tray, which runs 0.5.0. Restart the tray or upgrade so the two match."
+        );
+    }
+
+    #[test]
+    fn a_restarted_service_drops_its_line() {
+        let mut mismatches = VersionMismatches::default();
+        mismatches.set(Service::Daemon, "0.4.0".into(), "0.3.2".into());
+        mismatches.set(Service::Daemon, "0.4.0".into(), "0.3.3".into());
+        assert_eq!(mismatches.0.len(), 1, "one line per service");
+        mismatches.clear(Service::Daemon);
+        assert!(mismatches.0.is_empty());
     }
 }

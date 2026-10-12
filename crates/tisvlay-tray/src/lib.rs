@@ -12,11 +12,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{Unary, tv, user_profile};
+use tisvlay_protocol::payload::{self, PairingPhase, StatePayload};
+use tisvlay_protocol::{bootstrap, keys, rpc};
 use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{Unary, tv, user_profile};
-use tisvlay_wire::payload::{self, PairingPhase, StatePayload};
-use tisvlay_wire::{bootstrap, keys, rpc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -524,7 +524,7 @@ pub fn default_user_socket() -> PathBuf {
 
 /// Re-exported for the wire test's mirror driver.
 pub fn client_config(socket: &Path) -> Result<zenoh::Config> {
-    bootstrap::client_config(socket)
+    Ok(bootstrap::client_config(socket)?)
 }
 
 /// Terminal pairing phases become toasts — non-terminal progress is the
@@ -623,9 +623,7 @@ async fn spawn_power_cycle_toasts(
                     "",
                     "dialog-error",
                 ),
-                payload::PowerPhase::DirectConnect
-                | payload::PowerPhase::Connecting
-                | payload::PowerPhase::AwaitingNetwork => {}
+                payload::PowerPhase::Connecting | payload::PowerPhase::AwaitingNetwork => {}
             }
         }
     });

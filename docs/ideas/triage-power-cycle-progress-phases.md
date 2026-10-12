@@ -4,7 +4,7 @@
 
 The captured number is **daemon-knows-TV-is-fully-online**, not user-visible **panel-lit**. The OLED physically lights up well before the daemon's SSAP handshake completes — typically within ~1 s of WoL — but the script can't see it because it only watches the property cache, and the property cache only updates after the daemon's initial subscribe-state response lands (~7-8 s into the timeline). For "TV-as-monitor" UX the user is looking at the screen for ~6-7 s while the script thinks the dispatch hasn't finished.
 
-The daemon already emits the right signal for a closer-to-perceived measurement: `Tv1.Power.PowerCycleProgress(s)` fires through phases `WolSent` → `Connecting` → `Connected` (or `DirectConnect` → `Connecting` → `Connected` on the warm-WS path; `Failed` on either). The panel lights between `WolSent` and `Connecting`.
+The daemon already emits the right signal for a closer-to-perceived measurement: `Tv1.Power.PowerCycleProgress(s)` fires through phases `WolSent` → `Connecting` → `Connected` (`Failed` on a wake that doesn't land). The panel lights between `WolSent` and `Connecting`.
 
 ## Path forward
 
@@ -33,7 +33,6 @@ The `connecting` phase is the closest proxy we have to panel-lit on the WoL path
 ## Caveats
 
 - The phase timestamps are still daemon-side observations of LG firmware state, not direct panel-light measurement. There's still a small gap between when LG's WS becomes responsive (~`Connecting`) and when the panel actually shows pixels. Empirically the gap is small (sub-second) but it's not zero.
-- The `DirectConnect` path (TV already reachable, WS just dropped) won't have `WolSent`. Code path needs both shapes.
 - For the bad-path scenarios where the daemon's `with_retry` loop fires inside `screen_on` before escalation, no `PowerCycleProgress` events are emitted — that signal only emits during the `power_on` flow. Manual `iptables`-drop-style reproducers won't benefit.
 
 ## Trigger condition
@@ -47,5 +46,5 @@ Pick this up when:
 ## Related
 
 - Triage script today: [scripts/triage_dispatch_perf.py](../../scripts/triage_dispatch_perf.py).
-- The `progress/power` phases: `tisvlay_wire::payload::PowerPhase` in [crates/tisvlay-wire/src/lib.rs](../../crates/tisvlay-wire/src/lib.rs).
+- The `progress/power` phases: `tisvlay_protocol::payload::PowerPhase` in [crates/tisvlay-protocol/src/payload.rs](../../crates/tisvlay-protocol/src/payload.rs).
 - Why bypassing `screen_on` to "shorten the slow path" is the wrong instinct: [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md) "The 10 s `REQUEST_MS` is load-bearing" section.

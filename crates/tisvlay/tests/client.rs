@@ -429,3 +429,211 @@ async fn first_rpc_races_route_propagation_and_still_lands() {
     let error = daemon.get_pairing_schema("nope").await.unwrap_err();
     assert_eq!(error.rpc_code(), Some(tisvlay::ErrorCode::UnknownVendor));
 }
+
+/// A stand-in service built from the protocol's `serve` dispatch, as a
+/// third party might mock one: it listens on `socket`, holds `alive`'s
+/// liveliness token, answers `info` with `release`, and reports nothing
+/// changed to a reload.
+macro_rules! stub_service {
+    ($socket:expr, $wild:expr, $alive:expr, $family:ident, $release:expr) => {{
+        use tisvlay_protocol::endpoint::$family;
+        let session = zenoh::open(tisvlay_protocol::bootstrap::peer_config($socket).unwrap())
+            .await
+            .unwrap();
+        let queryable = session.declare_queryable($wild).await.unwrap();
+        let token = session.liveliness().declare_token($alive).await.unwrap();
+        let release: String = $release.into();
+        let task = tokio::spawn(async move {
+            while let Ok(query) = queryable.recv_async().await {
+                match $family::Incoming::receive("t", query).await {
+                    Some((_, $family::Incoming::Info((), responder))) => {
+                        let info = tisvlay_protocol::rpc::ServiceInfo {
+                            version: release.clone(),
+                            state_path: String::new(),
+                        };
+                        responder.ok(&info).await;
+                    }
+                    Some((_, $family::Incoming::Reload((), responder))) => {
+                        let report = tisvlay_protocol::rpc::ReloadReport { changed: false };
+                        responder.ok(&report).await;
+                    }
+                    _ => {}
+                }
+            }
+        });
+        (session, token, task)
+    }};
+}
+
+async fn next_matching(
+    watcher: &mut StateWatcher,
+    want: impl Fn(&StateEvent) -> bool,
+) -> StateEvent {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = watcher.next().await.expect("watcher open");
+            if want(&event) {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("the event never arrived")
+}
+
+/// A daemon on another release line is refused, gated reads included,
+/// until it restarts on a matching release.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("sys.sock");
+    let stub = stub_service!(
+        &socket,
+        tisvlay_protocol::keys::manager_rpc_wild("t"),
+        tisvlay_protocol::keys::daemon_alive("t"),
+        manager,
+        "99.0.0"
+    );
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+
+    // The check runs as soon as the daemon appears, so the watcher hears
+    // of the mismatch without a call.
+    let event = next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::VersionMismatch { .. })
+    })
+    .await;
+    let StateEvent::VersionMismatch {
+        service,
+        ours,
+        theirs,
+    } = event
+    else {
+        unreachable!()
+    };
+    assert_eq!(service, tisvlay::Service::Daemon);
+    assert_eq!(ours, tisvlay_protocol::VERSION);
+    assert_eq!(theirs, "99.0.0");
+    assert!(matches!(
+        daemon.reload_config().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
+    assert!(matches!(
+        daemon.list_tvs().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
+    assert!(matches!(
+        daemon.pairing_progress_stream().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
+    assert!(matches!(
+        daemon.discovery_found_stream().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
+    assert_eq!(
+        daemon.version().await.unwrap(),
+        "99.0.0",
+        "version() is ungated"
+    );
+
+    // The service restarts on this release: its next lifetime is checked
+    // afresh, and calls go through.
+    let (session, token, task) = stub;
+    drop(token);
+    task.abort();
+    session.close().await.unwrap();
+    next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonDisappeared)).await;
+    let _restarted = stub_service!(
+        &socket,
+        tisvlay_protocol::keys::manager_rpc_wild("t"),
+        tisvlay_protocol::keys::daemon_alive("t"),
+        manager,
+        tisvlay_protocol::VERSION
+    );
+    next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonAppeared)).await;
+    assert!(!daemon.reload_config().await.unwrap().changed);
+    assert!(daemon.list_tvs().await.is_ok());
+}
+
+/// A watcher built after the mismatch is already known still hears of it:
+/// the announcement went out before it subscribed, so it replays it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watcher_built_late_still_hears_of_a_known_mismatch() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("sys.sock");
+    let _stub = stub_service!(
+        &socket,
+        tisvlay_protocol::keys::manager_rpc_wild("t"),
+        tisvlay_protocol::keys::daemon_alive("t"),
+        manager,
+        "99.0.0"
+    );
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    // A call settles the verdict before any watcher exists.
+    assert!(matches!(
+        daemon.reload_config().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
+    let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+    let event = next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::VersionMismatch { .. })
+    })
+    .await;
+    assert!(matches!(
+        event,
+        StateEvent::VersionMismatch { theirs, .. } if theirs == "99.0.0"
+    ));
+}
+
+/// The user-socket clients refuse a mismatched service the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_session_and_tray_clients_refuse_another_release() {
+    let dir = tisvlay_test::socket_tempdir();
+    let session_socket = dir.path().join("session.sock");
+    let tray_socket = dir.path().join("tray.sock");
+    let _session_stub = stub_service!(
+        &session_socket,
+        tisvlay_protocol::keys::user_profile_rpc_wild("t"),
+        tisvlay_protocol::keys::user_alive_session("t"),
+        user_profile,
+        "99.0.0"
+    );
+    let _tray_stub = stub_service!(
+        &tray_socket,
+        tisvlay_protocol::keys::user_tray_rpc_wild("t"),
+        tisvlay_protocol::keys::user_alive_tray("t"),
+        user_tray,
+        "99.0.0"
+    );
+    let session = SessionClient::connect(&session_socket, "t").await.unwrap();
+    let tray = tisvlay::TrayClient::connect(&tray_socket, "t")
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !(session.is_available().await && tray.is_available().await) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stubs never appeared"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(matches!(
+        session.reload_config().await,
+        Err(tisvlay::Error::VersionMismatch {
+            service: tisvlay::Service::Session,
+            ..
+        })
+    ));
+    assert_eq!(
+        session.version().await.unwrap(),
+        "99.0.0",
+        "version() is ungated"
+    );
+    assert!(matches!(
+        tray.reload_config().await,
+        Err(tisvlay::Error::VersionMismatch {
+            service: tisvlay::Service::Tray,
+            ..
+        })
+    ));
+}

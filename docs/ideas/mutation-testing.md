@@ -4,7 +4,7 @@ Coverage says which lines ran; mutation testing says whether the tests would not
 
 ## Where it would run
 
-- **Scoped to pure-logic crates:** core's types and helpers, wire's payloads, the world's reducers and systems, and the parsers (SSDP, SSAP decoding, EDID, CEC identity, MAC parsing). There, a mutant costs an incremental rebuild plus that crate's tests.
+- **Scoped to pure-logic crates:** core's types and helpers, the protocol's payloads, the world's reducers and systems, and the parsers (SSDP, SSAP decoding, EDID, CEC identity, MAC parsing). There, a mutant costs an incremental rebuild plus that crate's tests.
 - **Not over the daemon, session or GUI stacks:** their tests boot zenoh and D-Bus, take seconds each, and would make every mutant slow and some flaky.
 - **On demand, never a gate:** run locally on a crate, or on a PR label, with `--in-diff` so it only mutates the PR's changed lines; `--test-tool nextest` to match the runner.
 

@@ -46,7 +46,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tisvlay_wire::payload::RemoteSourceKind;
+use tisvlay_protocol::payload::RemoteSourceKind;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::debug;

@@ -5,6 +5,7 @@
   cargo-about,
   pkg-config,
   dbus,
+  pipewire,
   makeDesktopItem,
   copyDesktopItems,
   installShellFiles,
@@ -89,7 +90,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     })
   ];
 
-  buildInputs = finalAttrs.rpathLibs;
+  # pipewire: its `libspa-0.2` pkg-config entry gives the SPA plugin dir
+  # the session's PipeWire client loads its support plugin from; the
+  # build bakes that store path in, which keeps pipewire in the closure.
+  buildInputs = finalAttrs.rpathLibs ++ [ pipewire ];
 
   nativeCheckInputs = [
     dbus

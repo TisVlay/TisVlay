@@ -1,0 +1,37 @@
+[package]
+name = "tisvlay-protocol"
+description = "The zenoh protocol TisVlay's TV-control services and clients speak: key space, payloads, typed rpcs, errors and session configs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+homepage.workspace = true
+repository.workspace = true
+keywords = ["tv", "zenoh", "protocol", "ipc", "linux"]
+categories = ["network-programming", "asynchronous"]
+readme = "README.md"
+# The integration tests use the workspace's unpublished test rig, so
+# they can't build from the published source.
+exclude = ["tests/"]
+
+# Unix sockets carry the protocol, so it builds only on Unix.
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tisvlay-core = { workspace = true }
+uuid = { workspace = true }
+zenoh = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tisvlay-test = { workspace = true }
+
+[lints]
+workspace = true

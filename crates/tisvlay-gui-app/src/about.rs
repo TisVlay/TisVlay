@@ -7,13 +7,14 @@
 
 use std::sync::Arc;
 
+use gettextrs::gettext;
 use slint::{Model, SharedString};
 
-use crate::{AboutComponentRow, AppWindow, diagnostic};
+use crate::{AboutComponentRow, AppWindow, ServiceHealth, diagnostic};
 
 /// Compile-time version of this binary. Surfaces in the About pane's
-/// header chip and as the local anchor for the per-component drift
-/// tone in the COMPONENTS table.
+/// header chip and is the release each service's health is judged
+/// against.
 pub(crate) const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Project repository URL — picked up from the workspace package
@@ -132,21 +133,62 @@ pub(crate) struct PeerInfo {
     pub config_path: String,
 }
 
-/// Tone for a per-row version chip in the COMPONENTS table, picked by
-/// comparing the remote process's reported version to this binary's
-/// compile-time version. `info` when equal, `warn` when remote is
-/// newer (we're behind), `danger` when remote is older (a downgrade
-/// or a stale service that wasn't restarted after upgrade).
-fn drift_tone(local: &str, remote: &str) -> &'static str {
-    let parse = |s: &str| -> Vec<u64> {
-        s.split(['.', '-', '+'])
-            .filter_map(|c| c.parse().ok())
-            .collect()
-    };
-    match parse(local).cmp(&parse(remote)) {
-        std::cmp::Ordering::Equal => "info",
-        std::cmp::Ordering::Less => "warn",
-        std::cmp::Ordering::Greater => "danger",
+/// A present peer's health, from its release against this GUI's: the
+/// same release, a compatible one (only the patch differs), or one the
+/// two can't talk across. Compatibility is `tisvlay_protocol::compatible`,
+/// the rule the SDK's handshake applies, so a red chip always matches
+/// the version banner.
+fn release_health(theirs: &str) -> ServiceHealth {
+    if theirs == GUI_VERSION {
+        ServiceHealth::Ok
+    } else if tisvlay_protocol::compatible(GUI_VERSION, theirs) {
+        ServiceHealth::Skew
+    } else {
+        ServiceHealth::Incompatible
+    }
+}
+
+/// A service's health, rendered by the sidebar dot and its About row:
+/// offline unless its liveliness token is up, then decided by its
+/// release. A live service whose release isn't read yet counts as ok,
+/// since nothing says otherwise.
+pub(crate) fn service_health(online: bool, info: Option<&PeerInfo>) -> ServiceHealth {
+    match (online, info) {
+        (false, _) => ServiceHealth::Offline,
+        (true, Some(info)) => release_health(&info.version),
+        (true, None) => ServiceHealth::Ok,
+    }
+}
+
+/// The hover tip for a service row's version chip.
+fn service_tip(health: ServiceHealth, theirs: Option<&str>) -> String {
+    match (health, theirs) {
+        (ServiceHealth::Offline, _) => gettext("Not running"),
+        (ServiceHealth::Ok, Some(_)) => gettext("Same release as this GUI"),
+        (ServiceHealth::Ok, None) => gettext("Release not read yet"),
+        (ServiceHealth::Skew, theirs) => {
+            gettext("Runs {0}, this GUI {1}: compatible, only the patch release differs")
+                .replace("{0}", theirs.unwrap_or_default())
+                .replace("{1}", GUI_VERSION)
+        }
+        (_, theirs) => gettext(
+            "Runs {0}, this GUI {1}: the two can't talk. Restart it or upgrade so they match",
+        )
+        .replace("{0}", theirs.unwrap_or_default())
+        .replace("{1}", GUI_VERSION),
+    }
+}
+
+/// The hover tip for the CLI row's version chip. The CLI never talks to
+/// the GUI; both ship in one package, so a different release means the
+/// `tisvlay` on PATH comes from another install.
+fn cli_tip(health: ServiceHealth, theirs: &str) -> String {
+    match health {
+        ServiceHealth::Offline => gettext("tisvlay not found on PATH"),
+        ServiceHealth::Ok => gettext("Same release as this GUI"),
+        _ => gettext("From a different install: {0}, this GUI {1}")
+            .replace("{0}", theirs)
+            .replace("{1}", GUI_VERSION),
     }
 }
 
@@ -168,14 +210,14 @@ pub(crate) async fn probe_cli_version() -> Option<String> {
 }
 
 /// Build the COMPONENTS-table model for the About pane. Each row
-/// gets a status circle on the left and stacked presence + version
-/// pills on the right. Availability is liveliness, only: each peer's
-/// `online` comes from its liveliness flag — the same source as the
-/// sidebar footer, so the two can never disagree — while the probed
-/// `PeerInfo` fills version/config *content* ("—" until a probe
-/// lands; a failed probe never renders offline). GUI is hardcoded
-/// online with its compile-time `CARGO_PKG_VERSION`; the CLI row
-/// reflects the `--version` shell-out.
+/// gets a status circle on the left and a version chip on the right,
+/// both colored by the row's health. Presence is liveliness, only:
+/// each peer's `online` comes from its liveliness flag, the same
+/// source as the sidebar footer, while the probed `PeerInfo` fills
+/// version/config *content* ("—" until a probe lands; a failed probe
+/// never renders offline). GUI is hardcoded online with its
+/// compile-time `CARGO_PKG_VERSION`; the CLI row reflects the
+/// `--version` shell-out, compared against this GUI's release.
 pub(crate) fn make_about_components(
     site: &str,
     daemon: (bool, Option<&PeerInfo>),
@@ -183,23 +225,35 @@ pub(crate) fn make_about_components(
     tray: (bool, Option<&PeerInfo>),
     cli_version: Option<&str>,
 ) -> Vec<AboutComponentRow> {
-    let peer_row = |(online, info): (bool, Option<&PeerInfo>)| match info {
-        Some(info) => (
-            info.version.clone(),
-            drift_tone(GUI_VERSION, &info.version).to_string(),
-            online,
-            info.config_path.clone(),
-        ),
-        None => (
-            if online {
-                "—".to_string()
-            } else {
-                String::new()
+    struct Cells {
+        version: String,
+        health: ServiceHealth,
+        online: bool,
+        chip: String,
+        tip: String,
+        config_path: String,
+    }
+    let peer_row = |(online, info): (bool, Option<&PeerInfo>)| {
+        let health = service_health(online, info);
+        let theirs = info.map(|info| info.version.as_str());
+        Cells {
+            version: match (online, theirs) {
+                (true, Some(v)) => v.to_string(),
+                (true, None) => "—".to_string(),
+                (false, _) => String::new(),
             },
-            String::new(),
+            health,
             online,
-            String::new(),
-        ),
+            chip: match (online, theirs) {
+                (true, Some(v)) => format!("v{v}"),
+                (true, None) => "—".to_string(),
+                (false, _) => gettext("offline"),
+            },
+            tip: service_tip(health, theirs),
+            config_path: info
+                .map(|info| info.config_path.clone())
+                .unwrap_or_default(),
+        }
     };
     let parens = |identity: String| {
         if identity.is_empty() {
@@ -216,45 +270,62 @@ pub(crate) fn make_about_components(
             // liveliness key (presence on the zenoh bus), except the
             // GUI, whose identity is its real D-Bus activation name.
             let identity = match *name {
-                "tisvlay-daemon" => tisvlay_wire::keys::daemon_alive(site),
-                "tisvlay-session" => tisvlay_wire::keys::user_alive_session(site),
-                "tisvlay-tray" => tisvlay_wire::keys::user_alive_tray(site),
+                "tisvlay-daemon" => tisvlay_protocol::keys::daemon_alive(site),
+                "tisvlay-session" => tisvlay_protocol::keys::user_alive_session(site),
+                "tisvlay-tray" => tisvlay_protocol::keys::user_alive_tray(site),
                 "tisvlay-gui" => "org.tisvlay.Gui".to_string(),
                 _ => String::new(),
             };
-            let (version, tone, online, config_path) = match *name {
+            let cells = match *name {
                 "tisvlay-daemon" => peer_row(daemon),
                 "tisvlay-session" => peer_row(session),
                 "tisvlay-tray" => peer_row(tray),
                 // GUI has no config file yet (passes `None` to dbus::register).
-                "tisvlay-gui" => (
-                    GUI_VERSION.to_string(),
-                    "info".to_string(),
-                    true,
-                    String::new(),
-                ),
+                "tisvlay-gui" => Cells {
+                    version: GUI_VERSION.to_string(),
+                    health: ServiceHealth::Ok,
+                    online: true,
+                    chip: format!("v{GUI_VERSION}"),
+                    tip: gettext("This window's release"),
+                    config_path: String::new(),
+                },
                 // CLI has no per-binary config of its own — its
                 // settings live in the daemon/session configs.
-                "tisvlay" => match cli_version {
-                    Some(v) => (
-                        v.to_string(),
-                        drift_tone(GUI_VERSION, v).to_string(),
-                        true,
-                        String::new(),
-                    ),
-                    None => (String::new(), String::new(), false, String::new()),
+                "tisvlay" => {
+                    let health = cli_version.map_or(ServiceHealth::Offline, release_health);
+                    let theirs = cli_version.unwrap_or_default();
+                    Cells {
+                        version: theirs.to_string(),
+                        health,
+                        online: cli_version.is_some(),
+                        chip: match cli_version {
+                            Some(v) => format!("v{v}"),
+                            None => gettext("not found"),
+                        },
+                        tip: cli_tip(health, theirs),
+                        config_path: String::new(),
+                    }
+                }
+                _ => Cells {
+                    version: String::new(),
+                    health: ServiceHealth::Offline,
+                    online: false,
+                    chip: String::new(),
+                    tip: String::new(),
+                    config_path: String::new(),
                 },
-                _ => (String::new(), String::new(), false, String::new()),
             };
             AboutComponentRow {
                 name: SharedString::from(*name),
                 friendly_name: SharedString::from(*friendly),
                 bus_address: SharedString::from(parens(identity)),
                 description: SharedString::from(*description),
-                version: SharedString::from(version),
-                tone: SharedString::from(tone),
-                online,
-                config_path: SharedString::from(config_path),
+                version: SharedString::from(cells.version),
+                health: cells.health,
+                online: cells.online,
+                chip: SharedString::from(cells.chip),
+                tip: SharedString::from(cells.tip),
+                config_path: SharedString::from(cells.config_path),
             }
         })
         .collect()
@@ -355,5 +426,109 @@ mod tests {
         assert!(daemon.online);
         assert_eq!(daemon.version, "9.9.9");
         assert_eq!(daemon.config_path, "/tmp/x.toml");
+    }
+
+    /// The same release with only the patch bumped.
+    fn patch_bump() -> String {
+        let mut parts: Vec<u64> = GUI_VERSION
+            .split('.')
+            .map(|part| part.parse().expect("GUI_VERSION is major.minor.patch"))
+            .collect();
+        parts[2] += 1;
+        format!("{}.{}.{}", parts[0], parts[1], parts[2])
+    }
+
+    /// The next minor release, which this GUI can't talk to.
+    fn minor_bump() -> String {
+        let mut parts: Vec<u64> = GUI_VERSION
+            .split('.')
+            .map(|part| part.parse().expect("GUI_VERSION is major.minor.patch"))
+            .collect();
+        parts[1] += 1;
+        format!("{}.{}.0", parts[0], parts[1])
+    }
+
+    fn info(version: &str) -> PeerInfo {
+        PeerInfo {
+            version: version.into(),
+            config_path: String::new(),
+        }
+    }
+
+    /// Health tiers follow the handshake's rule: the same release is
+    /// ok, a patch skew is compatible, any other major.minor (newer or
+    /// older) is incompatible, and an absent service is offline
+    /// whatever it last reported.
+    #[test]
+    fn service_health_tiers() {
+        assert_eq!(
+            service_health(true, Some(&info(GUI_VERSION))),
+            ServiceHealth::Ok
+        );
+        assert_eq!(
+            service_health(true, Some(&info(&patch_bump()))),
+            ServiceHealth::Skew
+        );
+        assert_eq!(
+            service_health(true, Some(&info(&minor_bump()))),
+            ServiceHealth::Incompatible
+        );
+        assert_eq!(
+            service_health(true, Some(&info("0.0.1"))),
+            ServiceHealth::Incompatible
+        );
+        assert_eq!(service_health(true, None), ServiceHealth::Ok);
+        assert_eq!(
+            service_health(false, Some(&info(GUI_VERSION))),
+            ServiceHealth::Offline
+        );
+    }
+
+    /// Rows carry the health, the chip label and a tip naming both
+    /// releases when they differ.
+    #[test]
+    fn rows_render_health_chip_and_tip() {
+        let minor = minor_bump();
+        let rows = make_about_components(
+            "t",
+            (true, Some(&info(&minor))),
+            (true, None),
+            (false, None),
+            Some(&patch_bump()),
+        );
+        let row = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .expect("row present")
+                .clone()
+        };
+        let daemon = row("tisvlay-daemon");
+        assert_eq!(daemon.health, ServiceHealth::Incompatible);
+        assert_eq!(daemon.chip, format!("v{minor}"));
+        assert!(daemon.tip.contains(minor.as_str()) && daemon.tip.contains(GUI_VERSION));
+        let session = row("tisvlay-session");
+        assert_eq!(session.health, ServiceHealth::Ok);
+        assert_eq!(session.chip, "—");
+        let tray = row("tisvlay-tray");
+        assert_eq!(tray.health, ServiceHealth::Offline);
+        assert_eq!(tray.chip, "offline");
+        let cli = row("tisvlay");
+        assert_eq!(cli.health, ServiceHealth::Skew);
+        assert!(cli.tip.contains("different install"));
+        let gui = row("tisvlay-gui");
+        assert_eq!(gui.health, ServiceHealth::Ok);
+    }
+
+    /// A CLI missing from PATH is offline, labeled "not found".
+    #[test]
+    fn missing_cli_reads_not_found() {
+        let rows = make_about_components("t", (false, None), (false, None), (false, None), None);
+        let cli = rows
+            .iter()
+            .find(|row| row.name == "tisvlay")
+            .expect("row present");
+        assert_eq!(cli.health, ServiceHealth::Offline);
+        assert!(!cli.online);
+        assert_eq!(cli.chip, "not found");
     }
 }

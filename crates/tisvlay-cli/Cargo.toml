@@ -29,7 +29,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tisvlay-runtime = { workspace = true, features = ["access"] }
-tisvlay-wire = { workspace = true }
+tisvlay-protocol = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }
 zenoh-ext = { workspace = true }

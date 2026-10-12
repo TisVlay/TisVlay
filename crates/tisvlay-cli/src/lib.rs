@@ -12,9 +12,9 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::Value;
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::vendors;
-use tisvlay_wire::keys;
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::vendors;
+use tisvlay_protocol::keys;
 use uuid::Uuid;
 use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
@@ -53,7 +53,8 @@ pub enum Command {
     /// socket group (one-click, authenticated via polkit). Log out and
     /// back in afterward for it to take effect.
     EnableAccess,
-    /// Probe the daemon's liveliness token.
+    /// Probe the daemon's liveliness token and report its release; fails
+    /// when the daemon is absent or runs a release this CLI can't talk to.
     Status,
     /// Apply hand edits of the state files: the daemon's, the session's
     /// and the tray's (what the GUI's Reload button does).
@@ -339,27 +340,27 @@ fn vendor_completions() -> ArgValueCandidates {
 
 fn tv_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_tv_candidates(
-        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+        &tisvlay_protocol::bootstrap::default_connect_socket_path(),
     ))
 }
 
 fn system_profile_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_catalog_candidates(
-        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+        &tisvlay_protocol::bootstrap::default_connect_socket_path(),
         &keys::profile_system_wild("main"),
     ))
 }
 
 fn user_profile_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_catalog_candidates(
-        &tisvlay_wire::bootstrap::default_session_socket_path(),
+        &tisvlay_protocol::bootstrap::default_session_socket_path(),
         "tisvlay/main/user/profile/*",
     ))
 }
 
 fn vendor_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_vendor_candidates(
-        &tisvlay_wire::bootstrap::default_connect_socket_path(),
+        &tisvlay_protocol::bootstrap::default_connect_socket_path(),
     ))
 }
 
@@ -386,7 +387,7 @@ fn blocking_candidates(
 /// Hydrate the TV wildcard from the publisher caches and turn each TV into
 /// a completion candidate. `None` on any transport error.
 async fn collect_tv_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>> {
-    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+    let session = zenoh::open(tisvlay_protocol::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
     let site = "main";
@@ -434,7 +435,7 @@ async fn collect_catalog_candidates(
     socket: &Path,
     wildcard: &str,
 ) -> Option<Vec<CompletionCandidate>> {
-    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+    let session = zenoh::open(tisvlay_protocol::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
     let subscriber = session
@@ -477,7 +478,7 @@ async fn collect_catalog_candidates(
 /// A query (not a cached wildcard like the TV/profile catalogs), so it
 /// rides the `Caller` fetch path. `None` on any transport error.
 async fn collect_vendor_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>> {
-    let session = zenoh::open(tisvlay_wire::bootstrap::client_config(socket).ok()?)
+    let session = zenoh::open(tisvlay_protocol::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
     let vendors = Caller::new(session, "main")

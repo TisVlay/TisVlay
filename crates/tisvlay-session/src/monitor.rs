@@ -46,7 +46,7 @@
 //! remains the fallback.
 
 use futures_util::StreamExt;
-use tisvlay_wire::payload::RemoteSourceKind;
+use tisvlay_protocol::payload::RemoteSourceKind;
 use tracing::debug;
 use zbus::MatchRule;
 use zbus::message::Type as MessageType;

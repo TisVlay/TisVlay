@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{manager, profile, tv};
-use tisvlay_wire::{bootstrap, keys, rpc};
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{manager, profile, tv};
+use tisvlay_protocol::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::bytes::Encoding;
@@ -145,7 +145,7 @@ async fn put_greeter_idle(w: &Wire, idle: bool) {
 /// delivers live plain samples); the dedicated hydration test drives the
 /// real cache-1 advanced-pub path.
 async fn put_remote_session(w: &Wire, armed: &[Uuid]) {
-    let state = tisvlay_wire::payload::RemoteSessionState {
+    let state = tisvlay_protocol::payload::RemoteSessionState {
         sources: Vec::new(),
         armed: armed.to_vec(),
     };
@@ -354,7 +354,7 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
         .declare_token(keys::session_alive(&w.site))
         .await
         .unwrap();
-    let state = tisvlay_wire::payload::RemoteSessionState {
+    let state = tisvlay_protocol::payload::RemoteSessionState {
         sources: Vec::new(),
         armed: vec![tv],
     };
@@ -419,7 +419,7 @@ async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
         .publisher_detection()
         .await
         .unwrap();
-    let state = tisvlay_wire::payload::RemoteSessionState {
+    let state = tisvlay_protocol::payload::RemoteSessionState {
         sources: Vec::new(),
         armed: vec![tv],
     };

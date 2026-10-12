@@ -22,7 +22,7 @@ toml = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
 tracing = { workspace = true }
-tisvlay-wire = { workspace = true }
+tisvlay-protocol = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }
 zenoh-ext = { workspace = true }

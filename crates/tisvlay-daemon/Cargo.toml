@@ -140,7 +140,7 @@ tisvlay-mock = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
-tisvlay-wire = { workspace = true }
+tisvlay-protocol = { workspace = true }
 tisvlay-world = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }

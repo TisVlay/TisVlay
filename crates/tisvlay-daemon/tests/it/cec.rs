@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_cec::{CecConnector, FakeCecLinkOpener, PowerStatus};
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{manager, tv};
-use tisvlay_wire::error::ErrorCode;
-use tisvlay_wire::{bootstrap, keys, rpc};
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{manager, tv};
+use tisvlay_protocol::error::ErrorCode;
+use tisvlay_protocol::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::Sample;

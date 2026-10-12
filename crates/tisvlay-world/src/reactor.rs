@@ -11,8 +11,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 use tisvlay_core::{TvConnector, VendorConfig};
-use tisvlay_wire::endpoint::Rpc;
-use tisvlay_wire::rpc::TvConfigView;
+use tisvlay_protocol::endpoint::Rpc;
+use tisvlay_protocol::rpc::TvConfigView;
 use tokio::sync::mpsc;
 
 use crate::backend;

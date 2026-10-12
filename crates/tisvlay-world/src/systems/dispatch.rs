@@ -28,7 +28,7 @@ pub(super) fn power_on_tv(
     entity: Entity,
     id: Uuid,
     handle: Option<&ConnectionHandle>,
-    link: Option<&payload::Link>,
+    link: Option<&State<payload::Link>>,
     restore_to: Option<String>,
 ) -> Result<(), WireError> {
     match handle {
@@ -80,9 +80,9 @@ pub(super) type ScreenRow<'a> = (
     Option<&'a ConnectionHandle>,
     bool,
     Option<&'a TransportTraits>,
-    Option<&'a payload::Link>,
+    Option<&'a State<payload::Link>>,
     Option<&'a DispatchRetry>,
-    Option<&'a payload::Power>,
+    Option<&'a State<payload::Power>>,
 );
 
 /// Screen dispatch, reliable tier: send, then verify against the cached
@@ -198,8 +198,8 @@ pub(super) fn verify_dispatch(
         &mut DispatchVerify,
         Option<&ConnectionHandle>,
         Has<PendingConnect>,
-        Option<&payload::Power>,
-        Option<&payload::Link>,
+        Option<&State<payload::Power>>,
+        Option<&State<payload::Link>>,
         Option<&TransportTraits>,
         Option<&DispatchRetry>,
     )>,
@@ -283,8 +283,8 @@ pub(super) fn reconcile_input(
         &mut DesiredInput,
         Option<&ConnectionHandle>,
         Has<PendingConnect>,
-        Option<&payload::Input>,
-        Option<&payload::Identity>,
+        Option<&State<payload::Input>>,
+        Option<&State<payload::Identity>>,
         Option<&DispatchRetry>,
     )>,
 ) {
@@ -378,11 +378,11 @@ pub(super) fn dispatch_system_events(
             Option<&ConnectionHandle>,
             Has<PendingConnect>,
             Option<&TransportTraits>,
-            Option<&payload::Link>,
+            Option<&State<payload::Link>>,
             Option<&DispatchRetry>,
-            Option<&payload::Power>,
+            Option<&State<payload::Power>>,
             Option<&MirrorsConnector>,
-            Option<&payload::Meta>,
+            Option<&State<payload::Meta>>,
         ),
         With<Managed>,
     >,
@@ -404,9 +404,13 @@ pub(super) fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
-            let Some((action, restore, while_remote)) =
-                resolve_action(event, meta, &profile_index, &bodies, &profile)
-            else {
+            let Some((action, restore, while_remote)) = resolve_action(
+                event,
+                meta.map(|meta| &meta.0),
+                &profile_index,
+                &bodies,
+                &profile,
+            ) else {
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
             };

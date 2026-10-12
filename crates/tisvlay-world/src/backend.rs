@@ -37,12 +37,12 @@ pub(crate) async fn connect_flow(
         let _ = inbox.send(InEvent::Backend {
             tv,
             dial,
-            event: BackendEvent::PowerPhase(tisvlay_wire::payload::PowerPhase::WolSent),
+            event: BackendEvent::PowerPhase(tisvlay_protocol::payload::PowerPhase::WolSent),
         });
         let _ = inbox.send(InEvent::Backend {
             tv,
             dial,
-            event: BackendEvent::PowerPhase(tisvlay_wire::payload::PowerPhase::Connecting),
+            event: BackendEvent::PowerPhase(tisvlay_protocol::payload::PowerPhase::Connecting),
         });
         connector.wake_and_connect(&config).await
     } else {

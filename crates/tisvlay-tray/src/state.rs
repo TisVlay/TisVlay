@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value;
-use tisvlay_wire::payload::StatePayload;
-use tisvlay_wire::{keys, payload};
+use tisvlay_protocol::payload::StatePayload;
+use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 use zenoh::sample::{Sample, SampleKind};
 

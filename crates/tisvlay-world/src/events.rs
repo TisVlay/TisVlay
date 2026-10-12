@@ -7,8 +7,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::time::Instant;
 use tisvlay_core::{TvState, VendorConfig};
-use tisvlay_wire::endpoint::{Rpc, manager, profile, tv};
-use tisvlay_wire::rpc::Ack;
+use tisvlay_protocol::endpoint::{Rpc, manager, profile, tv};
+use tisvlay_protocol::rpc::Ack;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -21,13 +21,13 @@ pub type ReplyTo = u64;
 ///
 /// ```
 /// # use tisvlay_world::Reply;
-/// # use tisvlay_wire::{endpoint::manager, rpc};
+/// # use tisvlay_protocol::{endpoint::manager, rpc};
 /// let _ = Reply::<manager::AddTv>::new(1).ok(&rpc::Created { id: uuid::Uuid::nil() });
 /// ```
 ///
 /// ```compile_fail,E0308
 /// # use tisvlay_world::Reply;
-/// # use tisvlay_wire::{endpoint::manager, rpc};
+/// # use tisvlay_protocol::{endpoint::manager, rpc};
 /// let _ = Reply::<manager::AddTv>::new(1).ok(&rpc::Ack {});
 /// ```
 ///
@@ -35,13 +35,13 @@ pub type ReplyTo = u64;
 ///
 /// ```
 /// # use tisvlay_world::{AckReply, Reply};
-/// # use tisvlay_wire::endpoint::tv;
+/// # use tisvlay_protocol::endpoint::tv;
 /// let _ = AckReply::from(Reply::<tv::SetVolume>::new(1));
 /// ```
 ///
 /// ```compile_fail,E0277
 /// # use tisvlay_world::{AckReply, Reply};
-/// # use tisvlay_wire::endpoint::manager;
+/// # use tisvlay_protocol::endpoint::manager;
 /// let _ = AckReply::from(Reply::<manager::AddTv>::new(1));
 /// ```
 pub struct Reply<R> {
@@ -357,7 +357,7 @@ pub enum Command {
     /// reconnect, since transport parameters may have changed).
     UpdateConfig {
         id: Uuid,
-        patch: tisvlay_wire::rpc::UpdateConfig,
+        patch: tisvlay_protocol::rpc::UpdateConfig,
         reply: Option<Reply<tv::UpdateConfig>>,
     },
     /// Create (or boot-replay) a system profile.
@@ -431,7 +431,7 @@ pub enum StoreMsg {
 pub struct DialFailure {
     /// The reason when the error carries one (a device-access failure);
     /// `None` is a generic connect failure.
-    pub code: Option<tisvlay_wire::payload::FailureCode>,
+    pub code: Option<tisvlay_protocol::payload::FailureCode>,
     /// Reason-specific parameter — the device-node path for the
     /// permission case.
     pub path: Option<String>,
@@ -510,7 +510,7 @@ pub enum BackendEvent {
     Disconnected,
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
-    PowerPhase(tisvlay_wire::payload::PowerPhase),
+    PowerPhase(tisvlay_protocol::payload::PowerPhase),
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
         reply: AckReply,
@@ -608,7 +608,7 @@ pub enum WireEffect {
     },
 }
 
-pub use tisvlay_wire::error::WireError;
+pub use tisvlay_protocol::error::WireError;
 
 #[cfg(test)]
 mod tests {

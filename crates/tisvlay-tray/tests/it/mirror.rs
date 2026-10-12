@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{Unary, manager, profile, tv, user_profile, user_remote};
+use tisvlay_protocol::{bootstrap, keys, rpc};
 use tisvlay_tray::state::Mirror;
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{Unary, manager, profile, tv, user_profile, user_remote};
-use tisvlay_wire::{bootstrap, keys, rpc};
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::sample::Sample;
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig};

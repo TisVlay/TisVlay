@@ -7,7 +7,7 @@ The testing-infra sprint shipped one canonical Layer-C test (`tisvlay-harness/te
 | `lib.rs` | 1803 | 0% | `register_callbacks` body — every `Daemon.on_set_volume`, `Daemon.on_pair_tv`, `EditPane.on_save`, etc. |
 | `state_watch.rs` | 449 | 0% | `watch_state` event branches (DaemonAppeared/Disappeared, refresh-on-state-change, fallback poll) |
 | `wizard.rs` | 305 | 0% | discovery, schema prefetch, pair flow, per-field error routing |
-| `about.rs` | 218 | 0% | `make_about_components` rendering path + `drift_tone` |
+| `about.rs` | 218 | 0% | `make_about_components` rendering path |
 | `edit_pane.rs` | 81 | 0% | edit-form save flow |
 | `power_cycle.rs` | 70 | 0% | `run_power_on_with_progress` |
 | `toast.rs` | 35 | 0% | `show_toast` (technically Layer-B testable) |

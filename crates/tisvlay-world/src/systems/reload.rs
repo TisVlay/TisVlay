@@ -10,7 +10,7 @@
 use super::commands::{apply_managed, despawn_tv, publish_profile};
 use super::*;
 use crate::events::StoreEdit;
-use tisvlay_wire::rpc::ReloadReport;
+use tisvlay_protocol::rpc::ReloadReport;
 
 /// What changed between two store snapshots, matched by id.
 #[derive(Debug, Default)]

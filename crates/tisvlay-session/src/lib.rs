@@ -27,10 +27,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{tv, user_profile, user_remote};
-use tisvlay_wire::error::WireError;
-use tisvlay_wire::{keys, payload, rpc};
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{tv, user_profile, user_remote};
+use tisvlay_protocol::error::WireError;
+use tisvlay_protocol::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -47,7 +47,9 @@ pub use lock::{seed_lock_state, seed_lock_state_on, spawn as spawn_lock_watcher,
 pub use logind::spawn as spawn_logind_detector;
 pub use monitor::spawn as spawn_portal_monitor;
 pub use remote::RemoteReport;
-pub use screencast::{point_at_host_spa_plugins, spawn as spawn_screencast_detector};
+pub use screencast::{
+    SpaPluginsMissing, point_at_host_spa_plugins, spawn as spawn_screencast_detector,
+};
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
 pub use sunshine::spawn as spawn_sunshine_detector;
 
@@ -184,7 +186,7 @@ pub struct SessionStack {
 /// run the core loop for the process lifetime.
 pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let system = zenoh::open(
-        tisvlay_wire::bootstrap::client_config_resilient(&options.system_socket)
+        tisvlay_protocol::bootstrap::client_config_resilient(&options.system_socket)
             .context("system session config")?,
     )
     .await
@@ -199,7 +201,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             .with_context(|| format!("create user socket dir {}", parent.display()))?;
     }
     let user = zenoh::open(
-        tisvlay_wire::bootstrap::router_config(&options.user_socket)
+        tisvlay_protocol::bootstrap::router_config(&options.user_socket)
             .context("user session config")?,
     )
     .await
@@ -1020,10 +1022,10 @@ impl Core {
         let (reply, edit) = tokio::sync::oneshot::channel();
         reloads
             .send(store::ReloadRequest { reply })
-            .map_err(|_| WireError::bad_request("the store writer is gone"))?;
+            .map_err(|_| WireError::internal("the store writer is gone"))?;
         let edit = edit
             .await
-            .map_err(|_| WireError::bad_request("the store writer is gone"))??;
+            .map_err(|_| WireError::internal("the store writer is gone"))??;
         let result = self.apply_edit(&edit).await;
         if let Some(tx) = &self.persist {
             let applied = result.is_ok().then(|| edit.disk.clone());
@@ -1201,7 +1203,7 @@ impl Core {
             }
             user_profile::Incoming::Info((), responder) => {
                 let info = rpc::ServiceInfo {
-                    version: env!("CARGO_PKG_VERSION").into(),
+                    version: tisvlay_protocol::VERSION.into(),
                     state_path: self.state_path.clone(),
                 };
                 responder.ok(&info).await;

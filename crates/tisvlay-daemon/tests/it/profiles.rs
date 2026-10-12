@@ -9,10 +9,10 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tisvlay_core::DiscoveredTv;
 use tisvlay_mock::{MockHandle, new_test_parts};
-use tisvlay_wire::caller::Caller;
-use tisvlay_wire::endpoint::{manager, profile, tv, vendors};
-use tisvlay_wire::error::ErrorCode;
-use tisvlay_wire::{bootstrap, keys, rpc};
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::{manager, profile, tv, vendors};
+use tisvlay_protocol::error::ErrorCode;
+use tisvlay_protocol::{bootstrap, keys, rpc};
 use tisvlay_world::{InEvent, SystemEvent};
 use uuid::Uuid;
 use zenoh::Session;
@@ -221,6 +221,11 @@ async fn profile_crud_publishes_bodies_and_guards_references() {
 
     // A referencing TV blocks deletion until unassigned.
     let tv = add_tv(&w, "Den", "mock://prof-crud").await;
+    let unknown = Uuid::new_v4();
+    let err = call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({ "profile": unknown })))
+        .await
+        .expect_err("assigning an unknown profile must fail");
+    assert_eq!(refusal(&err).code, ErrorCode::ProfileNotFound);
     call::<tv::SetSystemProfile>(&w.caller, &tv, &body(json!({ "profile": profile_id })))
         .await
         .expect("assign ok");

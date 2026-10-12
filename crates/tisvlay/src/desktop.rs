@@ -14,10 +14,8 @@
 //!
 //! Empty string represents "unknown / not yet probed".
 
-use serde::{Deserialize, Serialize};
-
 /// Resolved desktop mapping for a TV.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DesktopMapping {
     /// DRM connector name (e.g. `HDMI-A-2`). Empty = unknown / not
     /// yet probed.

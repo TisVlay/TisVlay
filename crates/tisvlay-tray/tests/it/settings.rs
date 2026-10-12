@@ -38,7 +38,7 @@ async fn settings_round_trip_and_persistence() {
 
     // Headless stand-in for the tray process: its resilient user link +
     // the settings service (no ksni needed).
-    let tray_link = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket).unwrap())
+    let tray_link = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
         .await
         .unwrap();
     let (notifier, mut toasts) = Notifier::capturing(load_settings(&config_path).unwrap());
@@ -102,7 +102,7 @@ async fn settings_round_trip_and_persistence() {
         matches!(
             err,
             tisvlay::Error::Rpc {
-                code: tisvlay_wire::error::ErrorCode::StoreUnreadable,
+                code: tisvlay_protocol::error::ErrorCode::StoreUnreadable,
                 ..
             }
         ),
@@ -187,7 +187,7 @@ async fn clients_before_stack_see_liveliness_when_it_appears() {
     })
     .await
     .unwrap();
-    let tray_link = zenoh::open(tisvlay_wire::bootstrap::client_config(&user_socket).unwrap())
+    let tray_link = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
         .await
         .unwrap();
     let (notifier, _toasts) = Notifier::capturing(load_settings(&config_path).unwrap());

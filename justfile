@@ -548,5 +548,5 @@ package-all: package-deb package-rpm package-archlinux
 # Cargo refuses a dirty tree; commit first or pass `--allow-dirty`.
 [group('package')]
 package-check *args:
-    cargo package --list -p tisvlay-core -p tisvlay-ssdp -p tisvlay-lg -p tisvlay-cec {{ args }}
-    cargo package -p tisvlay-core -p tisvlay-ssdp -p tisvlay-lg -p tisvlay-cec {{ args }}
+    cargo package --list -p tisvlay-core -p tisvlay-ssdp -p tisvlay-lg -p tisvlay-cec -p tisvlay-protocol -p tisvlay {{ args }}
+    cargo package -p tisvlay-core -p tisvlay-ssdp -p tisvlay-lg -p tisvlay-cec -p tisvlay-protocol -p tisvlay {{ args }}

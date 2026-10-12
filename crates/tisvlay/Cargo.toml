@@ -1,11 +1,24 @@
 [package]
 name = "tisvlay"
-description = "TisVlay client SDK: DaemonClient/SessionClient/TrayClient + StateWatcher over zenoh"
+description = "Client library for TisVlay, the Linux daemon that controls smart TVs from the desktop: list, control and watch TVs, pairing and profiles"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+homepage.workspace = true
+repository.workspace = true
+keywords = ["tv", "smart-tv", "remote-control", "home-automation", "linux"]
+categories = ["api-bindings", "hardware-support", "asynchronous"]
+readme = "README.md"
+# The integration tests boot in-repo services from unpublished crates, so
+# they can't build from the published source.
+exclude = ["tests/"]
+
+# The services listen on Unix sockets, so the SDK builds only on Unix.
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -16,7 +29,7 @@ tisvlay-core = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = "0.1"
 tracing = { workspace = true }
-tisvlay-wire = { workspace = true }
+tisvlay-protocol = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }
 zenoh-ext = { workspace = true }

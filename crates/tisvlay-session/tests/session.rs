@@ -15,12 +15,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
+use tisvlay_protocol::caller::{Caller, RpcError};
+use tisvlay_protocol::endpoint::{Unary, manager, user_profile, user_remote};
+use tisvlay_protocol::error::ErrorCode;
+use tisvlay_protocol::{bootstrap, keys, rpc};
 use tisvlay_session::sunshine::{Observation, StaticProbe};
 use tisvlay_session::{RemoteReport, SessionEvent, SessionOptions, SessionStack};
-use tisvlay_wire::caller::{Caller, RpcError};
-use tisvlay_wire::endpoint::{Unary, manager, user_profile, user_remote};
-use tisvlay_wire::error::ErrorCode;
-use tisvlay_wire::{bootstrap, keys, rpc};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::handlers::FifoChannelHandler;
@@ -123,7 +123,7 @@ fn body<T: serde::de::DeserializeOwned>(json: Value) -> T {
 }
 
 /// The service's refusal behind a failed call.
-fn refusal(error: &RpcError) -> &tisvlay_wire::error::WireError {
+fn refusal(error: &RpcError) -> &tisvlay_protocol::error::WireError {
     match error {
         RpcError::Service(refusal) => refusal,
         other => panic!("expected a service refusal, got {other:?}"),
@@ -888,7 +888,7 @@ async fn armed_remote_suppresses_gated_events() {
 /// armed (the remote edges stay inert so arming never moves the panel).
 /// Returns the rig, the TV, its state subscriber, and the remote fact.
 async fn sunshine_armed() -> (Rig, Uuid, Sub, Sub) {
-    use tisvlay_wire::payload::RemoteSourceKind;
+    use tisvlay_protocol::payload::RemoteSourceKind;
 
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://eager-sunshine").await;
@@ -1320,7 +1320,7 @@ async fn armed_survives_a_system_link_outage_at_arm_time() {
 /// `set { source, active }` arms, `status` reflects it.
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_verb_rpc_round_trips() {
-    use tisvlay_wire::caller::Caller;
+    use tisvlay_protocol::caller::Caller;
 
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://remote-rpc").await;
@@ -1380,7 +1380,7 @@ async fn remote_verb_rpc_round_trips() {
 /// detector→fact→policy→armed contract without a live PipeWire.
 #[tokio::test(flavor = "multi_thread")]
 async fn screencast_source_arms_only_under_capture_policy() {
-    use tisvlay_wire::payload::RemoteSourceKind;
+    use tisvlay_protocol::payload::RemoteSourceKind;
 
     // The detector emits `Screencast` reports keyed on a summary detail;
     // reconstruct that shape here (the module's own pure fns are unit
@@ -1449,7 +1449,7 @@ async fn screencast_source_arms_only_under_capture_policy() {
 /// and drive the edge.
 #[tokio::test(flavor = "multi_thread")]
 async fn unarmed_screencast_publishes_but_fires_no_connect_action() {
-    use tisvlay_wire::payload::RemoteSourceKind;
+    use tisvlay_protocol::payload::RemoteSourceKind;
 
     let screencast = |active: bool| RemoteReport {
         kind: RemoteSourceKind::Screencast,
@@ -1540,7 +1540,7 @@ async fn unarmed_screencast_publishes_but_fires_no_connect_action() {
 /// signal above. The exe rides in the source `detail`.
 #[tokio::test(flavor = "multi_thread")]
 async fn portal_source_arms_without_capture_policy() {
-    use tisvlay_wire::payload::RemoteSourceKind;
+    use tisvlay_protocol::payload::RemoteSourceKind;
 
     let portal = |active: bool| RemoteReport {
         kind: RemoteSourceKind::Portal,
@@ -1592,7 +1592,7 @@ async fn portal_source_arms_without_capture_policy() {
 /// tree-walk join, exercised through the running stack.
 #[tokio::test(flavor = "multi_thread")]
 async fn provisional_portal_joins_on_corroborating_screencast() {
-    use tisvlay_wire::payload::RemoteSourceKind;
+    use tisvlay_protocol::payload::RemoteSourceKind;
 
     let rig = rig().await;
     let tv = add_tv(&rig, "Den", "mock://join").await;

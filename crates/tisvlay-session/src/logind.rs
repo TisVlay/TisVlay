@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 
 use futures_util::StreamExt;
-use tisvlay_wire::payload::RemoteSourceKind;
+use tisvlay_protocol::payload::RemoteSourceKind;
 use tracing::debug;
 
 use crate::detector::{Backoff, Fault};

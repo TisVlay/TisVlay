@@ -7,7 +7,7 @@ members = [
     "crates/tisvlay-mock",
     "crates/tisvlay-cec",
     "crates/tisvlay-test",
-    "crates/tisvlay-wire",
+    "crates/tisvlay-protocol",
     "crates/tisvlay-world",
     "crates/tisvlay-icons",
     "crates/tisvlay-runtime",
@@ -151,6 +151,9 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # aborts inside an FFI callback on a protocol decode error against
 # PipeWire ≥ 1.4.
 pipewire-native = "0.2"
+# The session's build script asks it where SPA plugins live, the answer
+# pipewire-native bakes in, so the session can check before connecting.
+pkg-config = "0.3"
 
 # HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
 # `async` enables the tokio `AsyncDevice` wrapper. Default features
@@ -171,14 +174,18 @@ bevy_ecs = "0.20"
 
 # Zenoh IPC (replaces the served-D-Bus surface). The advanced pub/sub
 # API (caches, history, recovery) is behind `unstable` — an accepted
-# risk, tracked in the parity plan's watch items.
+# risk, watched in docs/build.md § Review triggers.
 #
 # Every TisVlay link is a Unix socket, so zenoh's default transports (QUIC,
 # TLS, WebSocket, TCP, UDP, compression, multilink, pubkey/usrpwd auth) are
 # switched off — on zenoh-ext too, whose `default` re-enables them. Add a
 # `transport_*` feature back here if a link ever needs one.
 zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
-zenoh-ext = { version = "1.10", default-features = false, features = ["unstable"] }
+# Tilde, not caret: the `unstable` feature switches on zenoh's unstable
+# and internal APIs, which may break within 1.x, so a newer minor could
+# break the published SDK downstream. Bump it deliberately
+# (docs/build.md § Review triggers).
+zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable"] }
 
 # EDID parsing for the DRM connector ↔ TV matcher
 edidkit = "0.1"
@@ -219,12 +226,12 @@ tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.3.0" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
 tisvlay-test = { path = "crates/tisvlay-test" }
-tisvlay-wire = { path = "crates/tisvlay-wire" }
+tisvlay-protocol = { path = "crates/tisvlay-protocol", version = "0.3.0" }
 tisvlay-world = { path = "crates/tisvlay-world" }
 tisvlay-icons = { path = "crates/tisvlay-icons" }
 tisvlay-runtime = { path = "crates/tisvlay-runtime" }
 tisvlay-gui = { path = "crates/tisvlay-gui" }
-tisvlay = { path = "crates/tisvlay" }
+tisvlay = { path = "crates/tisvlay", version = "0.3.0" }
 # Binary crates exposed as libs: the daemon and session for cross-crate
 # integration tests, the CLI for the user-guide generator (tisvlay-docgen).
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }

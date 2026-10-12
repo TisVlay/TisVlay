@@ -203,7 +203,7 @@ pub(crate) fn power_on(
 pub(crate) fn set_name(
     In((id, name)): In<(Uuid, String)>,
     index: Res<TvIndex>,
-    mut identities: Query<&mut payload::Identity>,
+    mut identities: Query<&mut State<payload::Identity>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     if let Ok(mut identity) = identities.get_mut(entity)
@@ -219,7 +219,7 @@ pub(crate) fn set_managed(
     mut commands: Commands,
     index: Res<TvIndex>,
     q: Query<LinkQuery>,
-    mut metas: Query<&mut payload::Meta>,
+    mut metas: Query<&mut State<payload::Meta>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let (handle, pending, ..) = q
@@ -237,9 +237,15 @@ pub(crate) fn set_managed(
 pub(crate) fn set_system_profile(
     In((id, profile)): In<(Uuid, Option<Uuid>)>,
     index: Res<TvIndex>,
-    mut metas: Query<&mut payload::Meta>,
+    profiles: Res<ProfileIndex>,
+    mut metas: Query<&mut State<payload::Meta>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
+    if let Some(profile) = profile
+        && profiles.get(&profile).is_none()
+    {
+        return Err(WireError::profile_not_found(profile));
+    }
     if let Ok(mut meta) = metas.get_mut(entity)
         && meta.system_profile != profile
     {
@@ -251,7 +257,7 @@ pub(crate) fn set_system_profile(
 pub(crate) fn set_primary_input(
     In((id, input)): In<(Uuid, Option<String>)>,
     index: Res<TvIndex>,
-    mut metas: Query<&mut payload::Meta>,
+    mut metas: Query<&mut State<payload::Meta>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     if let Ok(mut meta) = metas.get_mut(entity)
@@ -307,7 +313,7 @@ pub(crate) fn set_screen(
     index: Res<TvIndex>,
     clock: Res<Clock>,
     q: Query<LinkQuery>,
-    metas: Query<&payload::Meta>,
+    metas: Query<&State<payload::Meta>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let row = q
@@ -327,7 +333,7 @@ pub(crate) fn set_screen(
 pub(crate) fn get_config(
     In(id): In<Uuid>,
     index: Res<TvIndex>,
-    q: Query<(&payload::Identity, &payload::Meta, &VendorRef)>,
+    q: Query<(&State<payload::Identity>, &State<payload::Meta>, &VendorRef)>,
 ) -> Result<TvRecord, WireError> {
     let entity = tv_entity(&index, id)?;
     let (identity, meta, vendor) = q.get(entity).map_err(|_| WireError::tv_not_found(id))?;
@@ -343,7 +349,7 @@ pub(crate) fn get_config(
 }
 
 pub(crate) fn update_config(
-    In((id, patch)): In<(Uuid, tisvlay_wire::rpc::UpdateConfig)>,
+    In((id, patch)): In<(Uuid, tisvlay_protocol::rpc::UpdateConfig)>,
     mut commands: Commands,
     index: Res<TvIndex>,
     q: Query<LinkQuery>,
@@ -394,7 +400,7 @@ pub(super) fn apply_config_patch(
     q: &Query<LinkQuery>,
     writes: &mut SettingsWrites,
     outbox: &mut Outbox,
-    patch: &tisvlay_wire::rpc::UpdateConfig,
+    patch: &tisvlay_protocol::rpc::UpdateConfig,
 ) -> Result<(), WireError> {
     let object = &patch.0;
     // Validate.
@@ -601,7 +607,7 @@ pub(crate) fn delete_profile(
     In(id): In<Uuid>,
     mut commands: Commands,
     index: Res<ProfileIndex>,
-    metas: Query<&payload::Meta>,
+    metas: Query<&State<payload::Meta>>,
 ) -> Result<Ack, WireError> {
     let entity = index
         .get(&id)
@@ -631,7 +637,7 @@ pub(crate) fn effective_profile(
     tvs: Res<TvIndex>,
     index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
-    metas: Query<&payload::Meta>,
+    metas: Query<&State<payload::Meta>>,
 ) -> Result<tisvlay_core::SystemProfileConfig, WireError> {
     let entity = tv_entity(&tvs, id)?;
     let assigned = metas
