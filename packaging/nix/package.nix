@@ -95,10 +95,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # build bakes that store path in, which keeps pipewire in the closure.
   buildInputs = finalAttrs.rpathLibs ++ [ pipewire ];
 
-  # The same client bakes the directory it reads `client.conf` from,
-  # `/usr/share/pipewire` unless told otherwise; NixOS has none there.
-  env.PIPEWIRE_CONFIG_DATA_DIR = "${pipewire}/share/pipewire";
-
   nativeCheckInputs = [
     dbus
   ];
