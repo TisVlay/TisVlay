@@ -1,0 +1,65 @@
+# Firewall & Discovery
+
+Network backends find TVs by multicast discovery: tisvlay sends a search to a multicast group and listens for replies. The LG backend uses SSDP (the same protocol DLNA/UPnP use), which is what this page's firewall rules cover. HDMI-CEC TVs aren't discovered over the network at all — the host's CEC adapters are probed instead.
+
+## The Linux gotcha
+
+LG TVs reply to SSDP from an **ephemeral** source port rather than the standard port 1900. On Linux, a default-deny firewall therefore drops the reply (the kernel has no conntrack entry that matches it), so discovery silently finds nothing — even though the TV is reachable and you can pair it by explicit IP.
+
+**Symptom:** `tisvlay discover` (or the GUI wizard's discovery) returns no TVs, but pairing by explicit IP works.
+
+## Open the pinned source port
+
+tisvlay binds its SSDP source socket to a **fixed** port — **1901 by default** — so a single firewall rule lets the replies through instead of opening the whole ephemeral range. You don't need to configure the port; just allow inbound UDP on it:
+
+```sh
+# Ubuntu / Debian (ufw)
+sudo ufw allow 1901/udp
+
+# Fedora (firewalld)
+sudo firewall-cmd --permanent --add-port=1901/udp
+sudo firewall-cmd --reload
+
+# Generic iptables
+sudo iptables -I INPUT -p udp --dport 1901 -j ACCEPT
+```
+
+On NixOS the module opens it for you — its `bindPort` already defaults to 1901:
+
+```nix
+services.tisvlay.openFirewall = true;
+# or, by hand:
+networking.firewall.allowedUDPPorts = [ 1901 ];
+```
+
+To use a different port — or an OS-chosen ephemeral one, which can't be narrowed to a single firewall rule — set it in the daemon config, or pass `tisvlay-daemon --ssdp-port <port>` (`0` = ephemeral):
+
+```toml
+# /var/lib/tisvlay/daemon.toml
+[discovery]
+bind_port = 1901   # the default; any unused port works, or 0 for ephemeral
+```
+
+> Note: a `--sport 1900` rule does **not** work — the TV's reply comes from an ephemeral port, so you must match on the pinned *destination* port instead.
+
+## Alternative: allow UDP from your LAN
+
+If you'd rather not pin a port, allow UDP from your local subnet:
+
+```sh
+# ufw
+sudo ufw allow from 192.168.1.0/24 proto udp
+
+# firewalld (rich rule)
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" protocol value="udp" accept'
+sudo firewall-cmd --reload
+```
+
+## Ways to discover and add a TV
+
+- `tisvlay discover` — a bounded scan; found TVs stream back as they answer.
+- `tisvlay discover-session` — an open-ended discovery session that keeps streaming findings until you stop it (ctrl-c).
+- The **GUI wizard** does the same, live, and lists the host's CEC adapters alongside the network scan.
+- **Manual entry** — if discovery can't reach the TV, type its IP; the GUI auto-fills the MAC address for Wake-on-LAN from the kernel's ARP/NDP cache (an "Auto-detected" badge marks it, clearing if you edit). A TV on another subnet or VLAN is invisible to that cache; see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac) and, for discovery across a VLAN, [TVs on an Isolated Network](./isolated-networks.md).
+
+Discovery is a convenience — you can always [pair by IP address](../getting-started/pairing.md#pair-from-the-command-line), no firewall changes required.

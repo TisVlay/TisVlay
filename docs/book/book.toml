@@ -1,0 +1,19 @@
+[book]
+title = "tisvlay"
+authors = ["tisvlay contributors"]
+description = "User guide for tisvlay — TV display control for Linux."
+src = "src"
+language = "en"
+
+[output.html]
+default-theme = "navy"
+git-repository-url = "https://github.com/ruffsl/tisvlay"
+edit-url-template = "https://github.com/ruffsl/tisvlay/edit/main/docs/book/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.search]
+enable = true
+
+[preprocessor]
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

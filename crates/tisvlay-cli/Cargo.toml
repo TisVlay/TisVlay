@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+name = "tisvlay_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tisvlay"
 path = "src/main.rs"

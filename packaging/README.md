@@ -230,12 +230,7 @@ Field-validated on Fedora 44 and Ubuntu 26.04 (both GNOME/GDM 50 with dynamic us
 
 ## Hand-editing the daemon's store
 
-The daemon keeps its TVs (credentials included) and system profiles in `/var/lib/tisvlay/daemon.toml`. To apply a hand edit while it runs, use `systemctl reload tisvlay-daemon`, the GUI's Reload button, or `tisvlay reload` (the last two also reload the session's and tray's files). The daemon treats SIGHUP as its reload rpc, and the units' `ExecReload` sends it.
-
-- **Only the edit applies.** The daemon compares the file with what it last wrote and applies just that difference, field by field for TVs and profiles alike, so changes made through clients but not yet written survive. Where both changed the same field, the file wins.
-- **A bad edit is refused whole,** for example a missing or unparsable file (never read as empty), a repeated id, a changed vendor, an unknown vendor, renaming or removing the default profile, or deleting a profile a TV still uses. A TV in the middle of pairing is left as it is, and the journal says so. `systemctl reload` reports success as soon as the signal is sent, so the outcome is in the daemon's journal.
-- **Comments survive.** The daemon's writes keep the file's comments and layout wherever the values they sit on didn't change, so annotating the store is safe.
-- **Reload before the daemon writes again.** Any client change makes the daemon rewrite the file. An edit nobody reloaded is moved to `daemon.toml.edited` (mode 0600, one slot) with a warning in the journal, never silently overwritten.
+The daemon keeps its TVs (credentials included) and system profiles in `/var/lib/tisvlay/daemon.toml`, and applies a hand edit on reload: the daemon treats SIGHUP as its reload rpc, and the units' `ExecReload` sends it, so `systemctl reload tisvlay-daemon` works on every channel. How a reload merges, refuses and preserves an edit is user-facing behavior, documented once in the user guide: [Configuration → Hand-editing and reloading](../docs/book/src/guide/configuration.md#hand-editing-and-reloading).
 
 ## Testing the result
 
