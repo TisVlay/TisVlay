@@ -1,8 +1,8 @@
 //! PipeWire screencast detector: the `Screencast` remote source.
 //!
 //! Any KWin-serviced screen capture appears in the PipeWire graph as a
-//! node with `media.class = "Stream/Output/Video"` and
-//! `node.name = "kwin_wayland"` (krdp in both modes, RustDesk, plus
+//! node with `media.class = "Stream/Output/Video"` and a `media.name`
+//! starting `kwin-screencast-` (krdp in both modes, RustDesk, plus
 //! plain captures like OBS or a browser tab-share — the signal carries no
 //! app attribution, which is why the unattributed `Screencast` kind arms
 //! only when the resolved profile opts in). The detector watches the
@@ -31,6 +31,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use tisvlay_protocol::payload::RemoteSourceKind;
 use tracing::debug;
@@ -41,9 +42,14 @@ use crate::{RemoteClient, RemoteReport};
 /// PipeWire property keys and the values the predicate matches. Plain
 /// strings (the crate exposes no typed constants for these), named once.
 const MEDIA_CLASS: &str = "media.class";
-const NODE_NAME: &str = "node.name";
+const MEDIA_NAME: &str = "media.name";
 const SCREENCAST_MEDIA_CLASS: &str = "Stream/Output/Video";
-const KWIN_NODE_NAME: &str = "kwin_wayland";
+/// KWin names each capture stream `kwin-screencast-` plus the output,
+/// window or region it captures, and sets no other property; PipeWire
+/// copies the stream name into `media.name`. The prefix has held since
+/// KWin 5.20. `node.name` won't do: it defaults to the process binary,
+/// which packaging renames (`.kwin_wayland-wrapped` under NixOS).
+const KWIN_STREAM_PREFIX: &str = "kwin-screencast-";
 
 /// The properties the predicate needs, lifted out of a PipeWire
 /// `Properties` bag into an owned struct so the predicate and the tracker
@@ -53,20 +59,24 @@ const KWIN_NODE_NAME: &str = "kwin_wayland";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NodeProps {
     pub media_class: Option<String>,
-    pub node_name: Option<String>,
+    pub media_name: Option<String>,
     pub state: Option<String>,
 }
 
 /// The predicate: a KWin-serviced video capture node.
 pub(crate) fn is_screencast(props: &NodeProps) -> bool {
     props.media_class.as_deref() == Some(SCREENCAST_MEDIA_CLASS)
-        && props.node_name.as_deref() == Some(KWIN_NODE_NAME)
+        && props.media_name.as_deref().is_some_and(is_kwin_stream_name)
 }
 
-/// Tracks the matching nodes present in the graph and turns registry /
-/// node-info edges into `Screencast` source reports. Pure: the FFI glue
-/// feeds it `(id, props)` on appearance, `(id, state)` on info, and `id`
-/// on removal; it returns the reports to hand to the core.
+fn is_kwin_stream_name(name: &str) -> bool {
+    name.starts_with(KWIN_STREAM_PREFIX)
+}
+
+/// Tracks the matching nodes present in the graph and turns node-info /
+/// removal edges into `Screencast` source reports. Pure: the FFI glue
+/// feeds it each bound node's info as `(id, props)` and `id` on removal;
+/// it returns the reports to hand to the core.
 ///
 /// Exactly one logical `Screencast` source exists — ON while any matching
 /// node is present, its `detail` summarizing the live node states. A
@@ -84,8 +94,23 @@ pub(crate) struct Tracker {
 }
 
 impl Tracker {
-    /// A node was announced. Records it if it matches the predicate;
-    /// returns any resulting source reports.
+    /// A bound node's info arrived. The first event carries its full
+    /// properties (`media.name` among them, which the registry's global
+    /// announcement leaves out), later ones its run state. Starts
+    /// tracking a node whose properties match and refreshes the detail of
+    /// one already tracked; returns any resulting source reports.
+    pub(crate) fn on_info(&mut self, id: u32, props: &NodeProps) -> Vec<RemoteReport> {
+        if self.nodes.contains_key(&id) {
+            return match props.state.as_deref() {
+                Some(state) => self.on_state(id, state),
+                None => Vec::new(),
+            };
+        }
+        self.on_global(id, props)
+    }
+
+    /// A node's full properties are known. Records it if it matches the
+    /// predicate; returns any resulting source reports.
     pub(crate) fn on_global(&mut self, id: u32, props: &NodeProps) -> Vec<RemoteReport> {
         if !is_screencast(props) {
             return Vec::new();
@@ -230,6 +255,109 @@ impl From<std::io::Error> for FfiError {
 
 pub use ffi::point_at_host_spa_plugins;
 
+/// No SPA support plugin in any directory PipeWire's loader would search,
+/// so the screencast detector can't start.
+#[derive(Debug)]
+pub struct SpaPluginsMissing {
+    /// The directories checked, in search order.
+    pub searched: Vec<PathBuf>,
+}
+
+impl std::fmt::Display for SpaPluginsMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let searched: Vec<String> = self
+            .searched
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect();
+        write!(
+            f,
+            "no SPA support plugin in {}; set SPA_PLUGIN_DIR to PipeWire's spa-0.2 directory",
+            searched.join(", ")
+        )
+    }
+}
+
+/// What to do about `SPA_PLUGIN_DIR` before the PipeWire client starts.
+#[derive(Debug, PartialEq, Eq)]
+enum SpaPlan {
+    /// The operator's `SPA_PLUGIN_DIR` holds the support plugin: leave it.
+    KeepPinned,
+    /// Point the loader at these directories, in search order.
+    Point(Vec<PathBuf>),
+}
+
+/// Decide where PipeWire's loader should look for its support plugin:
+/// an operator's `pinned` list is kept if any entry has it, and otherwise
+/// the `candidates` that have it are used. `has_plugin` says whether a
+/// directory holds the plugin, the one file the loader can't start
+/// without. Neither having it means the detector must stay off.
+fn plan_spa_dirs(
+    pinned: Option<Vec<PathBuf>>,
+    candidates: Vec<PathBuf>,
+    has_plugin: impl Fn(&Path) -> bool,
+) -> Result<SpaPlan, SpaPluginsMissing> {
+    if let Some(pinned) = pinned {
+        return if pinned.iter().any(|dir| has_plugin(dir)) {
+            Ok(SpaPlan::KeepPinned)
+        } else {
+            Err(SpaPluginsMissing { searched: pinned })
+        };
+    }
+    let usable: Vec<PathBuf> = candidates
+        .iter()
+        .filter(|dir| has_plugin(dir))
+        .cloned()
+        .collect();
+    if usable.is_empty() {
+        Err(SpaPluginsMissing {
+            searched: candidates,
+        })
+    } else {
+        Ok(SpaPlan::Point(usable))
+    }
+}
+
+/// Where SPA plugins may live, in search order and each once: `baked`
+/// (the plugin dir pkg-config reported when this crate was built, a Nix
+/// store path for a Nix build); the Debian/Ubuntu multiarch dirs
+/// `/usr/lib/<triple>/spa-0.2` among `usr_lib` (the entries of
+/// `/usr/lib`) for this binary's `arch` only, since another
+/// architecture's plugins would pass the file check and then fail to
+/// load; then `/usr/lib/spa-0.2` (Arch and others) and
+/// `/usr/lib64/spa-0.2` (Fedora/RHEL/openSUSE).
+fn spa_candidates(
+    baked: Option<&str>,
+    usr_lib: impl IntoIterator<Item = PathBuf>,
+    arch: &str,
+) -> Vec<PathBuf> {
+    let triple_prefix = format!("{arch}-");
+    let mut multiarch: Vec<PathBuf> = usr_lib
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&triple_prefix))
+        })
+        .map(|entry| entry.join("spa-0.2"))
+        .collect();
+    multiarch.sort();
+    let fixed = ["/usr/lib/spa-0.2", "/usr/lib64/spa-0.2"].map(PathBuf::from);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in baked
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(multiarch)
+        .chain(fixed)
+    {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 /// The FFI-facing strip: the only code that touches `pipewire-native`.
 /// Deliberately thin — it wires registry/node events to the pure
 /// [`Tracker`] and forwards its reports. Not exercised by CI (needs a
@@ -244,7 +372,11 @@ mod ffi {
     use pipewire_native::proxy::{HasProxy, ProxyEvents};
     use pipewire_native::{context::Context, some_closure, thread_loop::ThreadLoop, types};
 
-    use super::{FfiError, NodeProps, Tracker};
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        FfiError, NodeProps, SpaPlan, SpaPluginsMissing, Tracker, plan_spa_dirs, spa_candidates,
+    };
     use crate::RemoteClient;
 
     /// One-time global init of the PipeWire support libraries.
@@ -252,48 +384,48 @@ mod ffi {
         pipewire_native::init();
     }
 
-    /// `pipewire-native` bakes a single SPA plugin directory at build time
-    /// (from `pkg-config` in whatever sandbox produced the binary) and
-    /// panics on init if `support/libspa-support` isn't there. A packaged
-    /// build rarely matches the host: our `.deb` bakes the pkg-config
-    /// fallback `/usr/lib64/spa-0.2`, but Debian/Ubuntu ship the plugins
-    /// under the multiarch `/usr/lib/<triple>/spa-0.2`. Point the loader at
-    /// the host's real dirs unless the operator already pinned one. The
-    /// loader searches a colon-separated list in order and skips dirs that
-    /// don't load, so we hand it every layout that exists and let it pick.
+    /// Point PipeWire's plugin loader at SPA plugins that are really
+    /// there, or report that there are none. `pipewire-native` loads its
+    /// support plugin (`support/libspa-support.so`) from `SPA_PLUGIN_DIR`,
+    /// else from a directory baked in at its build, and panics if it isn't
+    /// there. A packaged build rarely matches the host: our `.deb` bakes
+    /// pkg-config's fallback `/usr/lib64/spa-0.2` while Debian/Ubuntu ship
+    /// the multiarch `/usr/lib/<triple>/spa-0.2`, and a build that found
+    /// no pkg-config entry bakes a path a NixOS host doesn't have. So the
+    /// candidates (the operator's `SPA_PLUGIN_DIR`, else our own
+    /// build-time pkg-config answer and every FHS layout) are checked for
+    /// the support plugin, and `SPA_PLUGIN_DIR` is set to the ones that
+    /// have it. With none, the detector must stay off.
     ///
     /// # Safety
     ///
     /// It calls [`std::env::set_var`], so no other thread may exist yet: call
     /// it from `main` before the async runtime starts.
-    pub unsafe fn point_at_host_spa_plugins() {
-        if std::env::var_os("SPA_PLUGIN_DIR").is_some() {
-            return;
-        }
-        let mut dirs: Vec<String> = Vec::new();
-        // Debian/Ubuntu multiarch: /usr/lib/<triple>/spa-0.2.
-        if let Ok(entries) = std::fs::read_dir("/usr/lib") {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("spa-0.2");
-                if candidate.is_dir() {
-                    dirs.push(candidate.to_string_lossy().into_owned());
-                }
+    pub unsafe fn point_at_host_spa_plugins() -> Result<(), SpaPluginsMissing> {
+        let support_lib =
+            std::env::var("SPA_SUPPORT_LIB").unwrap_or_else(|_| "support/libspa-support".into());
+        let pinned = std::env::var_os("SPA_PLUGIN_DIR")
+            .map(|pinned| std::env::split_paths(&pinned).collect::<Vec<_>>());
+        let usr_lib: Vec<PathBuf> = std::fs::read_dir("/usr/lib")
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        let candidates = spa_candidates(
+            option_env!("TISVLAY_SPA_PLUGINDIR"),
+            usr_lib,
+            std::env::consts::ARCH,
+        );
+        let has_plugin = |dir: &Path| dir.join(format!("{support_lib}.so")).is_file();
+        match plan_spa_dirs(pinned, candidates, has_plugin)? {
+            SpaPlan::KeepPinned => Ok(()),
+            SpaPlan::Point(dirs) => {
+                let joined = std::env::join_paths(&dirs)
+                    .expect("plugin dirs from the filesystem and pkg-config hold no ':'");
+                // SAFETY: by this fn's contract no other thread exists yet,
+                // so nothing can read or write the environment concurrently.
+                unsafe { std::env::set_var("SPA_PLUGIN_DIR", joined) };
+                Ok(())
             }
         }
-        // Non-multiarch layouts: /usr/lib/spa-0.2 (Arch and others) and
-        // /usr/lib64/spa-0.2 (Fedora/RHEL/openSUSE, and the pkg-config
-        // fallback our own build bakes in).
-        for fixed in ["/usr/lib/spa-0.2", "/usr/lib64/spa-0.2"] {
-            if std::path::Path::new(fixed).is_dir() {
-                dirs.push(fixed.to_string());
-            }
-        }
-        if dirs.is_empty() {
-            return;
-        }
-        // SAFETY: by this fn's contract no other thread exists yet, so
-        // nothing can read or write the environment concurrently.
-        unsafe { std::env::set_var("SPA_PLUGIN_DIR", dirs.join(":")) };
     }
 
     /// Shared flags the callbacks flip: `done` on a broken pipe (server
@@ -320,7 +452,7 @@ mod ffi {
     fn node_props(props: &Properties) -> NodeProps {
         NodeProps {
             media_class: props.get(super::MEDIA_CLASS).map(str::to_string),
-            node_name: props.get(super::NODE_NAME).map(str::to_string),
+            media_name: props.get(super::MEDIA_NAME).map(str::to_string),
             state: None,
         }
     }
@@ -340,7 +472,13 @@ mod ffi {
         let props = Properties::new();
         let main_loop =
             ThreadLoop::new(&props).ok_or_else(|| std::io::Error::other("thread loop"))?;
-        let context = Context::new(main_loop.main_loop(), Properties::new())?;
+        // Skip PipeWire's client.conf: pipewire-native parses it (through
+        // the external spa-json-dump tool, which a service unit's PATH may
+        // lack) and never reads it, and the detector needs no client
+        // config. PIPEWIRE_CONFIG_NAME still overrides this.
+        let mut context_props = Properties::new();
+        context_props.set(pipewire_native::keys::CONFIG_NAME, "null".into());
+        let context = Context::new(main_loop.main_loop(), context_props)?;
         // The Core keeps only a Weak to the Context, and later callbacks
         // deref it — hold the Context alive alongside for the session.
         let core = context.connect(None)?;
@@ -369,19 +507,14 @@ mod ffi {
                 if type_ != types::interface::NODE {
                     return;
                 }
-                // Cheap borrowed pre-check before allocating: most graph
-                // nodes are not KWin captures, so only build a `NodeProps`
-                // (and bind the node) for one that matches the predicate.
-                if props.get(super::MEDIA_CLASS) != Some(super::SCREENCAST_MEDIA_CLASS)
-                    || props.get(super::NODE_NAME) != Some(super::KWIN_NODE_NAME)
-                {
+                // The global announcement carries only a few node keys:
+                // `media.class`, but not `media.name`. So bind each video
+                // output node and let its full info decide; most graph
+                // nodes fail this class check and are never bound.
+                if props.get(super::MEDIA_CLASS) != Some(super::SCREENCAST_MEDIA_CLASS) {
                     return;
                 }
-                let np = node_props(props);
-                let reports = locked(tracker).on_global(id, &np);
-                emit(client, flags, reports);
-                // A matching node: bind it to receive its run state for `detail`.
-                watch_node_state(&reg_for_bind, id, version, tracker, client, flags);
+                watch_node(&reg_for_bind, id, version, tracker, client, flags);
             }),
             global_remove: some_closure!([^(tracker, client, flags)] id, {
                 let reports = locked(tracker).on_removed(id);
@@ -416,7 +549,10 @@ mod ffi {
 
     /// Bind a matching node and forward its run-state changes into the
     /// tracker as detail updates.
-    fn watch_node_state(
+    /// Bind a candidate node: its info events (full properties first,
+    /// then run state) feed the tracker, which starts tracking it only if
+    /// the properties match.
+    fn watch_node(
         registry: &pipewire_native::proxy::registry::Registry,
         id: u32,
         version: u32,
@@ -432,7 +568,9 @@ mod ffi {
         };
         node.add_listener(NodeEvents {
             info: some_closure!([^(tracker, client, flags)] info, {
-                let reports = locked(tracker).on_state(info.id, state_label(info.state));
+                let mut np = node_props(info.props);
+                np.state = Some(state_label(info.state).to_string());
+                let reports = locked(tracker).on_info(info.id, &np);
                 emit(client, flags, reports);
             }),
             ..Default::default()
@@ -470,44 +608,94 @@ mod tests {
     fn props(class: Option<&str>, name: Option<&str>) -> NodeProps {
         NodeProps {
             media_class: class.map(str::to_string),
-            node_name: name.map(str::to_string),
+            media_name: name.map(str::to_string),
             state: None,
         }
     }
 
+    const OUTPUT_CAST: &str = "kwin-screencast-HDMI-A-1";
+
     fn kwin() -> NodeProps {
-        props(Some(SCREENCAST_MEDIA_CLASS), Some(KWIN_NODE_NAME))
+        props(Some(SCREENCAST_MEDIA_CLASS), Some(OUTPUT_CAST))
     }
 
     #[test]
     fn predicate_matches_only_kwin_video_output() {
         assert!(is_screencast(&kwin()));
+        // Every cast type shares the prefix: outputs, virtual outputs,
+        // windows (an app without a desktop file leaves the suffix empty)
+        // and regions.
+        for name in [
+            "kwin-screencast-Virtual-krdp",
+            "kwin-screencast-org.kde.konsole",
+            "kwin-screencast-",
+            "kwin-screencast-0,0 1920x1080",
+        ] {
+            assert!(is_screencast(&props(
+                Some(SCREENCAST_MEDIA_CLASS),
+                Some(name)
+            )));
+        }
         // Wrong class (an audio stream, a sink).
         assert!(!is_screencast(&props(
             Some("Stream/Input/Audio"),
-            Some(KWIN_NODE_NAME)
+            Some(OUTPUT_CAST)
         )));
         assert!(!is_screencast(&props(
             Some("Audio/Sink"),
-            Some(KWIN_NODE_NAME)
+            Some(OUTPUT_CAST)
         )));
-        // Right class, wrong producer (a webcam, an app capturing itself).
-        assert!(!is_screencast(&props(
-            Some(SCREENCAST_MEDIA_CLASS),
-            Some("v4l2")
-        )));
-        assert!(!is_screencast(&props(
-            Some(SCREENCAST_MEDIA_CLASS),
-            Some("Firefox")
-        )));
+        // Right class, another producer (Mutter's casts, a webcam, an app
+        // streaming itself).
+        for name in [
+            "meta-stream-source-source",
+            "v4l2",
+            "Firefox",
+            "kwin_wayland",
+        ] {
+            assert!(!is_screencast(&props(
+                Some(SCREENCAST_MEDIA_CLASS),
+                Some(name)
+            )));
+        }
         // Missing either property never matches.
         assert!(!is_screencast(&props(Some(SCREENCAST_MEDIA_CLASS), None)));
-        assert!(!is_screencast(&props(None, Some(KWIN_NODE_NAME))));
+        assert!(!is_screencast(&props(None, Some(OUTPUT_CAST))));
         assert!(!is_screencast(&props(None, None)));
         // The state field is irrelevant to the predicate.
         let mut suspended = kwin();
         suspended.state = Some("suspended".into());
         assert!(is_screencast(&suspended));
+    }
+
+    /// The first info event's full properties decide; later events (which
+    /// may carry no properties) only refresh a tracked node's state, and a
+    /// non-matching node never starts tracking.
+    #[test]
+    fn info_events_track_by_full_properties() {
+        let mut t = Tracker::default();
+        let mut first = kwin();
+        first.state = Some("idle".into());
+        let r = t.on_info(1, &first);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].active);
+        assert_eq!(r[0].detail, "1 node (idle)");
+        let later = NodeProps {
+            state: Some("running".into()),
+            ..NodeProps::default()
+        };
+        let r = t.on_info(1, &later);
+        assert!(
+            r.iter()
+                .any(|report| report.active && report.detail == "1 node (running)")
+        );
+        let mut other = props(
+            Some(SCREENCAST_MEDIA_CLASS),
+            Some("meta-stream-source-source"),
+        );
+        other.state = Some("running".into());
+        assert!(t.on_info(2, &other).is_empty());
+        assert!(t.on_info(3, &later).is_empty());
     }
 
     #[test]
@@ -606,5 +794,59 @@ mod tests {
         assert_eq!(r[0].detail, "1 node (running)");
         // Clearing an already-empty tracker is a no-op.
         assert!(t.clear().is_empty());
+    }
+
+    /// Candidates run baked dir first, then this architecture's multiarch
+    /// dirs, then the fixed layouts, each once.
+    #[test]
+    fn spa_candidates_order_filter_and_dedup() {
+        let usr_lib = [
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib/i386-linux-gnu",
+            "/usr/lib/firmware",
+        ]
+        .map(PathBuf::from);
+        assert_eq!(
+            spa_candidates(Some("/usr/lib64/spa-0.2"), usr_lib.clone(), "x86_64"),
+            [
+                "/usr/lib64/spa-0.2",
+                "/usr/lib/x86_64-linux-gnu/spa-0.2",
+                "/usr/lib/spa-0.2"
+            ]
+            .map(PathBuf::from)
+        );
+        assert_eq!(
+            spa_candidates(None, usr_lib, "x86_64"),
+            [
+                "/usr/lib/x86_64-linux-gnu/spa-0.2",
+                "/usr/lib/spa-0.2",
+                "/usr/lib64/spa-0.2"
+            ]
+            .map(PathBuf::from)
+        );
+    }
+
+    /// An operator's pin is kept when it holds the plugin and reported
+    /// when it doesn't; otherwise only candidates holding it are used, and
+    /// none holding it reports what was searched.
+    #[test]
+    fn spa_plan_respects_the_pin_and_needs_the_plugin() {
+        let good = PathBuf::from("/good");
+        let has = |dir: &Path| dir == Path::new("/good");
+        assert_eq!(
+            plan_spa_dirs(Some(vec!["/bad".into(), good.clone()]), vec![], has).unwrap(),
+            SpaPlan::KeepPinned
+        );
+        let missing = plan_spa_dirs(Some(vec!["/bad".into()]), vec![good.clone()], has)
+            .expect_err("a pin without the plugin isn't overridden");
+        assert_eq!(missing.searched, vec![PathBuf::from("/bad")]);
+        assert_eq!(
+            plan_spa_dirs(None, vec!["/bad".into(), good.clone()], has).unwrap(),
+            SpaPlan::Point(vec![good])
+        );
+        let missing = plan_spa_dirs(None, vec!["/bad".into()], has)
+            .expect_err("no candidate holds the plugin");
+        assert_eq!(missing.searched, vec![PathBuf::from("/bad")]);
+        assert!(missing.to_string().contains("SPA_PLUGIN_DIR"));
     }
 }

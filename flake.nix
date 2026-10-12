@@ -161,6 +161,9 @@
                 # out to. cargo-nfpm itself is not in nixpkgs — install
                 # with `cargo install cargo-nfpm` to drive `just package-*`.
                 nfpm
+                # pipewire's `libspa-0.2` pkg-config entry gives dev builds
+                # a real SPA plugin dir for the session's PipeWire client.
+                pipewire
                 pkg-config
                 prek
                 # slint-lsp on $PATH so editor integrations (VSCode Slint

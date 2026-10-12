@@ -12,7 +12,7 @@ Related deferrals filed separately: the world-side eager remote-state refresh ([
 
 ## Portability
 
-- **GNOME / Mutter.** The PipeWire node predicate (`node.name = "kwin_wayland"`) and the portal path assumptions are KWin-shaped. Mutter uses different node names and exposes some first-class remote-desktop APIs; a GNOME port would generalize the predicate and prefer the native APIs where they exist. Trigger: a GNOME user.
+- **GNOME / Mutter.** The PipeWire node predicate (KWin's `kwin-screencast-` stream name) and the portal path assumptions are KWin-shaped. Mutter names its streams differently and exposes some first-class remote-desktop APIs; a GNOME port would generalize the predicate and prefer the native APIs where they exist. The cross-desktop options are in [screencast-detection-coverage.md](screencast-detection-coverage.md). Trigger: a GNOME user.
 
 ## Configuration & UX
 

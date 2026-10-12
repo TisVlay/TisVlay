@@ -6813,6 +6813,7 @@ dependencies = [
  "futures-util",
  "libc",
  "pipewire-native",
+ "pkg-config",
  "serde",
  "serde_json",
  "tempfile",

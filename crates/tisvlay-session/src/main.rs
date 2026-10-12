@@ -51,14 +51,14 @@ fn default_config_path() -> PathBuf {
 fn main() -> anyhow::Result<()> {
     // SAFETY: the async runtime isn't built yet, so this is the only
     // thread and nothing else can touch the environment.
-    unsafe { tisvlay_session::point_at_host_spa_plugins() };
+    let spa_plugins = unsafe { tisvlay_session::point_at_host_spa_plugins() };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run())
+        .block_on(run(spa_plugins))
 }
 
-async fn run() -> anyhow::Result<()> {
+async fn run(spa_plugins: Result<(), tisvlay_session::SpaPluginsMissing>) -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
     tisvlay_runtime::logging::init(&["tisvlay_session=info", "zbus=warn"], &[])?;
@@ -128,8 +128,12 @@ async fn run() -> anyhow::Result<()> {
 
     // PipeWire screencast detector on its own supervised OS thread —
     // reports the `Screencast` remote source through the detector seam.
-    // Absent/unreachable PipeWire is handled inside (retry, quiet).
-    tisvlay_session::spawn_screencast_detector(stack.remote.clone());
+    // Absent/unreachable PipeWire is handled inside (retry, quiet);
+    // without SPA plugins it can't start at all, so it stays off.
+    match spa_plugins {
+        Ok(()) => tisvlay_session::spawn_screencast_detector(stack.remote.clone()),
+        Err(missing) => tracing::warn!(%missing, "screencast detection off"),
+    }
 
     // logind Remote-session detector on the system bus — reports a
     // `Logind` source for an own-uid `Remote=yes` session (xrdp-class).
