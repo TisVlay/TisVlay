@@ -407,9 +407,7 @@ impl DaemonClient {
     /// descriptor arrive as published state (`meta/vendor`,
     /// `meta/identity`) like everything else.
     pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
-        if let Some(mismatch) = self.handshake.known_mismatch() {
-            return Err(mismatch);
-        }
+        self.refuse_known_mismatch()?;
         let rows: Vec<(Uuid, mirror_row::Row)> = {
             let mirror = self.mirror.lock().expect("mirror lock");
             mirror
@@ -518,10 +516,13 @@ impl DaemonClient {
 
     /// Every pairing session's progress samples as `(tv, sample)`,
     /// hydrated from the deep pairing caches so a re-opened wizard
-    /// replays prior phases.
+    /// replays prior phases. Refused with [`Error::VersionMismatch`] while
+    /// the daemon is known to run another release, and silent while it
+    /// does.
     pub async fn pairing_progress_stream(
         &self,
     ) -> Result<impl futures_util::Stream<Item = (Uuid, PairingProgress)> + use<>> {
+        self.refuse_known_mismatch()?;
         let sub = self
             .session
             .declare_subscriber(keys::pairing_progress_wild(&self.site))
@@ -530,8 +531,12 @@ impl DaemonClient {
             .map_err(|e| Error::transport("subscribe to pairing progress", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
         let site = self.site.clone();
+        let handshake = Arc::clone(&self.handshake);
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                if handshake.known_mismatch().is_some() {
+                    continue;
+                }
                 let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str())
                 else {
                     continue;
@@ -602,11 +607,14 @@ impl DaemonClient {
         })
     }
 
-    /// One TV's `progress/power` phases (wake feedback).
+    /// One TV's `progress/power` phases (wake feedback). Refused with
+    /// [`Error::VersionMismatch`] while the daemon is known to run another
+    /// release, and silent while it does.
     pub async fn power_cycle_progress_stream(
         &self,
         tv: Uuid,
     ) -> Result<impl futures_util::Stream<Item = PowerPhase> + use<>> {
+        self.refuse_known_mismatch()?;
         let sub = self
             .session
             .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
@@ -614,8 +622,12 @@ impl DaemonClient {
             .await
             .map_err(|e| Error::transport("subscribe to power progress", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
+        let handshake = Arc::clone(&self.handshake);
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                if handshake.known_mismatch().is_some() {
+                    continue;
+                }
                 let Ok(progress) = serde_json::from_slice::<tisvlay_protocol::payload::PowerProgress>(
                     &sample.payload().to_bytes(),
                 ) else {
@@ -647,18 +659,25 @@ impl DaemonClient {
             .map(|_| ())
     }
 
-    /// Every discovery session's findings.
+    /// Every discovery session's findings. Refused with
+    /// [`Error::VersionMismatch`] while the daemon is known to run another
+    /// release, and silent while it does.
     pub async fn discovery_found_stream(
         &self,
     ) -> Result<impl futures_util::Stream<Item = DiscoveredTv> + use<>> {
+        self.refuse_known_mismatch()?;
         let sub = self
             .session
             .declare_subscriber(keys::discovery_found_wild(&self.site))
             .await
             .map_err(|e| Error::transport("subscribe to discovery findings", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
+        let handshake = Arc::clone(&self.handshake);
         tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
+                if handshake.known_mismatch().is_some() {
+                    continue;
+                }
                 let Ok(found) =
                     serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes())
                 else {
@@ -955,6 +974,15 @@ impl DaemonClient {
             .call::<R>(target, request)
             .await
             .map_err(|e| Error::from_rpc(Service::Daemon, e))
+    }
+
+    /// Fail when the daemon is already known to run another release: the
+    /// gate the mirror reads and progress streams share, which doesn't ask.
+    fn refuse_known_mismatch(&self) -> Result<()> {
+        match self.handshake.known_mismatch() {
+            Some(mismatch) => Err(mismatch),
+            None => Ok(()),
+        }
     }
 }
 

@@ -522,6 +522,14 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
         daemon.list_tvs().await,
         Err(tisvlay::Error::VersionMismatch { .. })
     ));
+    assert!(matches!(
+        daemon.pairing_progress_stream().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
+    assert!(matches!(
+        daemon.discovery_found_stream().await,
+        Err(tisvlay::Error::VersionMismatch { .. })
+    ));
     assert_eq!(
         daemon.version().await.unwrap(),
         "99.0.0",
