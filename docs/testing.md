@@ -119,10 +119,9 @@ The `tisvlay-lg` crate has its own fake SSAP server for testing without a real T
 
 ### On-hardware triage tooling
 
-Two Python scripts under `scripts/` complement the in-process LG tests by talking to a real TV. Both open their own SSAP WebSocket using the daemon's stored client key — stop the daemon (or stop the tray/GUI/session, leaving the daemon alone is OK too if it isn't holding the only registration) before running, so two clients don't fight over the same key.
+[`scripts/probe_power_state_timing.py`](../scripts/probe_power_state_timing.py) complements the in-process LG tests by talking to a real TV. It opens its own SSAP WebSocket using the daemon's stored client key — stop the daemon (or stop the tray/GUI/session, leaving the daemon alone is OK too if it isn't holding the only registration) before running, so two clients don't fight over the same key.
 
-- [`scripts/probe_power_state_timing.py`](../scripts/probe_power_state_timing.py) — wide-net probe of the SSAP power/screen subscription endpoints. Discovers what the firmware exposes (`getServiceList`), subscribes to a candidate set, fires SSAP `turnOff`, and prints every subscription push with elapsed time from the trigger. Used to characterize the `processing` / `onOff` discriminator behavior in the `getPowerState` payload — see [docs/lg/firmware-quirks.md](lg/firmware-quirks.md) for the captured payloads that motivated the parser changes.
-- [`scripts/triage_dispatch_perf.py`](../scripts/triage_dispatch_perf.py) — autonomous cold-start latency measurement. Induces a bad state (SSAP `turnOff` or a manual prompt for kernel-level packet drops), watches the daemon's published power state, requests screen-on — the user-facing entry point — and times the transition to `"active"`. Useful for benchmarking changes to the dispatch hot path without driving the desktop lock/unlock flow by hand. The 10 s `REQUEST_MS` "with_retry knock" finding in firmware-quirks.md was characterized with this script.
+It's a wide-net probe of the SSAP power/screen subscription endpoints. It discovers what the firmware exposes (`getServiceList`), subscribes to a candidate set, fires SSAP `turnOff`, and prints every subscription push with elapsed time from the trigger. It characterized the `processing` / `onOff` discriminator behavior in the `getPowerState` payload — see [docs/lg/firmware-quirks.md](lg/firmware-quirks.md) for the captured payloads that motivated the parser changes.
 
 ## Coverage
 

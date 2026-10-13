@@ -85,7 +85,7 @@ The graceful fallback declares success when the panel is demonstrably off, even 
 
 ## Field-test verification trace (post-fix)
 
-A single representative run of [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py) on the OLED65G4SUB after the Bug A, Bug B, discriminator-parser, and post-wake-settle fixes (n=1; expect a few-hundred-ms wall-clock variance run-to-run depending on TV firmware state and network conditions):
+A single representative run of the out-of-band reproducer (see [Bottom line](#bottom-line)) on the OLED65G4SUB after the Bug A, Bug B, discriminator-parser, and post-wake-settle fixes (n=1; expect a few-hundred-ms wall-clock variance run-to-run depending on TV firmware state and network conditions):
 
 ```
 [setup] initial PowerState: 'active'
@@ -128,7 +128,7 @@ Any approach that *bypasses* `screen_on` to avoid the 10 s wait skips this accid
 
 Three bypass attempts. Each was implemented during the original `feat/action-qos` spike (V1 architecture: only `screen_on` was reliable, gate was on cached `"standby"` only, no `processing`/`onOff` parsing yet), smoke-tested on real hardware, then reverted. The spike commits are archived on the `feat/action-qos` branch for the design-exploration record.
 
-The per-trial numbers below are pre-V2; the V2-era architecture still routes the in-band `screen_on` attempt through `with_connection` → backend `with_retry`, so the "knock" mechanism that costs each bypass its win is intact. If you re-measure on V2, expect the same qualitative shape (each bypass pessimizes the bad path) even if the absolute numbers shift. Re-running [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py) is the quickest way to validate.
+The per-trial numbers below are pre-V2; the V2-era architecture still routes the in-band `screen_on` attempt through `with_connection` → backend `with_retry`, so the "knock" mechanism that costs each bypass its win is intact. If you re-measure on V2, expect the same qualitative shape (each bypass pessimizes the bad path) even if the absolute numbers shift.
 
 #### Spike A — `screen_on` timeout race
 
@@ -203,9 +203,9 @@ Stale-WS-but-cached-`ScreenOff` scenarios continue to use the natural `REQUEST_M
 
 ### Bottom line
 
-Future engineers tempted to "shorten the slow path" should reproduce on V2 hardware with `scripts/triage_dispatch_perf.py` before shipping; the V1 spike numbers above tell you the *shape* of the regression (bypass wins on the wait, loses on recovery), not the V2 absolute numbers. Anything that bypasses `screen_on` under stale-WS conditions will lose the with_retry knock and pessimize the bad-path total. If you have a fix that *preserves* the knock (e.g., explicit synchronous reconnect-then-screen_on), it's worth trying — `SO_KEEPALIVE` with aggressive timing (`TCP_KEEPIDLE=5`, `TCP_KEEPINTVL=2`, `TCP_KEEPCNT=2`) is the only candidate we considered that fits this shape, but its blast radius (every WS on the daemon, fiddly to extract the raw fd from `MaybeTlsStream`) didn't justify proceeding without a stronger signal that the current floor is unacceptable.
+Future engineers tempted to "shorten the slow path" should reproduce on V2 hardware before shipping; the V1 spike numbers above tell you the *shape* of the regression (bypass wins on the wait, loses on recovery), not the V2 absolute numbers. Anything that bypasses `screen_on` under stale-WS conditions will lose the with_retry knock and pessimize the bad-path total. If you have a fix that *preserves* the knock (e.g., explicit synchronous reconnect-then-screen_on), it's worth trying — `SO_KEEPALIVE` with aggressive timing (`TCP_KEEPIDLE=5`, `TCP_KEEPINTVL=2`, `TCP_KEEPCNT=2`) is the only candidate we considered that fits this shape, but its blast radius (every WS on the daemon, fiddly to extract the raw fd from `MaybeTlsStream`) didn't justify proceeding without a stronger signal that the current floor is unacceptable.
 
-The autonomous reproducer used for the spike measurements is at [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py). It opens an out-of-band SSAP WebSocket via the daemon's existing `client_key`, sends `ssap://system/turnOff` to put the TV in `screen_off`, then dispatches reliable `screen_on` and times `t0 → PowerState == "active"`. Useful for repeat measurement of cold-start dispatch latency from a known TV state without driving the actual desktop lock/unlock flow.
+The spike measurements used an out-of-band reproducer. It opens its own SSAP WebSocket with the daemon's existing `client_key`, sends `ssap://system/turnOff` to put the TV in `screen_off`, then dispatches reliable `screen_on` and times `t0 → PowerState == "active"`. Useful for repeat measurement of cold-start dispatch latency from a known TV state without driving the actual desktop lock/unlock flow.
 
 ## Post-WoL input-switch timing (unmeasured)
 
