@@ -66,4 +66,3 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Crash-time diagnostic capture](ideas/crash-time-diagnostic-capture.md)
 - [Opt-in remote crash reporting (`dev-telemetry` feature)](ideas/dev-telemetry-remote-crash-reporting.md)
 - [Native crash capture via `minidumper`](ideas/native-crash-capture-minidumper.md)
-- [Triage script: capture `PowerCycleProgress` phases for panel-lit measurement](ideas/triage-power-cycle-progress-phases.md)

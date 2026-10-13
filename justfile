@@ -16,7 +16,7 @@ default:
 # drift: test profile, whole workspace, all targets + all features.
 check_flags := "--profile test --workspace --all-targets --all-features"
 
-# Format all Rust (rustfmt) and TOML (tombi; config in tombi.toml)
+# Format all Rust (rustfmt) and TOML (tombi; config in .config/tombi.toml)
 [group('check')]
 fmt:
     cargo fmt
@@ -56,10 +56,11 @@ shear:
     cargo shear --deny-warnings
 
 # Spell-check code, docs and identifiers, enforcing American English
-# (config: `_typos.toml`).
+# (config: `.config/typos.toml`). typos doesn't search `.config/` yet, so
+# the path is explicit; drop `--config` once crate-ci/typos#1445 lands.
 [group('check')]
 typos:
-    typos
+    typos --config .config/typos.toml
 
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]

@@ -280,7 +280,7 @@ get_unwrap = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
 # A panic in shipped code states its invariant: `expect("… because …")`,
-# never a bare `unwrap()`. Tests may unwrap and panic (clippy.toml; the
+# never a bare `unwrap()`. Tests may unwrap and panic (.config/clippy.toml; the
 # integration-test roots opt out, since clippy can't see their helpers).
 unwrap_used = "warn"
 panic = "warn"

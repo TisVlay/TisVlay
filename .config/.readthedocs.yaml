@@ -1,6 +1,11 @@
 # Read the Docs build for the user-facing mdBook site (docs/book/).
 # The developer docs under docs/*.md are NOT part of this build.
 #
+# Read the Docs only looks for this file at the repo root. The project's
+# Admin → Settings → "Path for .readthedocs.yaml" points it here, and the
+# file must keep the name `.readthedocs.yaml` (Read the Docs rejects any
+# other). Build commands still run from the repo root.
+#
 # The generated partials under docs/book/src/generated/ (CLI reference,
 # profile defaults, release version) are committed and refreshed via
 # `just docs-gen`; this build is a plain `mdbook build` and never runs
@@ -13,8 +18,8 @@ build:
   tools:
     rust: latest
   commands:
-    - cargo install mdbook --version 0.5.2 --locked
-    - cargo install mdbook-mermaid --version 0.17.0 --locked
+    - cargo install mdbook --version 0.5.4 --locked
+    - cargo install mdbook-mermaid --version 0.17.1 --locked
     # Regenerate the gitignored mermaid JS assets (idempotent on book.toml).
     - mdbook-mermaid install docs/book
     - mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html
