@@ -1,4 +1,4 @@
-# Version-bump + CHANGELOG automation via release-plz (config: release-plz.toml).
+# Version-bump + CHANGELOG automation via release-plz (config: .config/release-plz.toml).
 #
 # On every push to `main`, release-plz opens/updates a single "release" PR
 # that bumps the shared workspace version (from the conventional-commit
