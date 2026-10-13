@@ -37,3 +37,8 @@ SLINT_EMIT_DEBUG_INFO = "1"
 # processes. `relative = true` resolves the value against the
 # workspace root.
 LLVM_PROFILE_FILE = { value = "target/profraw/default_%m_%p.profraw", relative = true }
+# clippy's config lives in `.config/clippy.toml`, a directory clippy
+# doesn't search on its own. Set here rather than in the justfile so a
+# bare `cargo clippy` gets the same test allowances as `just clippy`.
+# The Nix package build reads this file but never runs clippy.
+CLIPPY_CONF_DIR = { value = ".config", relative = true }
