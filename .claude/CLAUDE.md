@@ -15,7 +15,10 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 
 ## What's Next
 
-P7 remainder (user-assisted): a week of full-stack systemd duty on the real hardware (soaking PR #106 with the post-parity cleanup pass), the G4/suspend/WoL field batch, and the v0.2.0 release PR into main. Follow-ups filed in docs/ideas/switchover-followups.md: IPC performance harness (intra-zenoh latency/fanout numbers), tray gettext re-wiring, coverage baseline re-measurement.
+- **First crates.io publish (manual, user-run).** Six crates are `publish = true` (core, ssdp, lg, cec, protocol, and the `tisvlay` SDK, which reserves the name); nothing is on crates.io yet. Follow docs/build.md § First-publish checklist (clean-tree `just package-check`, then publish in dependency order), then set up crates.io trusted publishing so release-plz handles later releases.
+- **v0.3.0 release:** release-plz's release PR, then release.yml's distro artifacts (cut on the `v*` tag; crates.io last, after the artifacts are verified).
+- **User docs:** the mdBook guide is live on Read the Docs; the open step in docs/plans/mdbook-docs-site.md is S1, a fragment-aware link/anchor checker in the CI `docs` job, after which that plan retires.
+- **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext, coverage baseline), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
 
 ## Current Project Structure
 
@@ -54,7 +57,10 @@ tisvlay/
 │   │                             # (notify.rs: settings service on the user socket)
 │   ├── tisvlay/                   # Client SDK: DaemonClient/SessionClient/TrayClient +
 │   │                             # StateWatcher (root-D-Bus-client-compatible surface)
-│   ├── tisvlay-cli/               # CLI (binary name: tisvlay) — pure zenoh client
+│   ├── tisvlay-cli/               # CLI (binary name: tisvlay) — pure zenoh client; its lib
+│   │                             # exposes the clap tree for docgen
+│   ├── tisvlay-docgen/            # gen-docs: renders the mdBook's generated partials
+│   │                             # (CLI reference, profile defaults, release version)
 │   ├── tisvlay-gui/               # Compiled Slint UI only (ui/*.slint, lang/ gettext;
 │   │                             # owns the gettext domain; lib name tisvlay_gui_ui)
 │   └── tisvlay-gui-app/           # Settings window: state, rpcs, tests, `tisvlay-gui`
@@ -70,9 +76,12 @@ tisvlay/
 │
 ├── docs/                         # design.md (RETIRED D-Bus stack, ≤ v0.2.0),
 │   ├── architecture.md           # ← current architecture reference
+│   ├── build.md                  # build, lint policy, public API policy, first-publish checklist
+│   ├── book/                     # mdBook user guide (Read the Docs); src/generated/ is docgen output
 │   ├── plans/                    # in-flight plan docs (README convention; git holds retired ones)
-│   ├── lg/, cec/, watchers/      # vendor + subsystem notes (transport-independent)
-│   └── firewall.md, testing.md, ideas.md, bugs.md
+│   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
+│   │   remote/                   # remote-session detectors
+│   └── firewall.md, testing.md, ideas.md, bugs.md, concerns.md
 └── .claude/CLAUDE.md             # This file
 ```
 
@@ -156,17 +165,19 @@ just stop-all
 just cli <verb…>         # any CLI verb against the dev sockets, e.g. `just cli list`
 ```
 
+After a `flake.nix` change, run `direnv reload` (or reopen the terminal) before restarting the stack: a stale dev shell rebuilds with the old inputs, e.g. the session without pipewire's pkg-config entry, so its screencast detector stays off.
+
 ### CLI smoke tests
 
 ```bash
-tisvlay status                       # daemon liveliness probe
+tisvlay status                       # daemon liveliness + release compatibility
 tisvlay vendors                      # vendor catalog
 tisvlay discover                     # SSDP + mock + cec scan
 tisvlay pair "Living Room" --vendor lg --params '{"ip":"192.168.1.50"}'
 tisvlay list                         # hydrate from publisher caches
 tisvlay watch                        # stream every data key: history, then live
 tisvlay set-volume <uuid> 40
-tisvlay get-config <uuid>
+tisvlay config <uuid>
 tisvlay config-set <uuid> '{"name":"Renamed"}'
 tisvlay profile list                 # system profiles (editable default included)
 tisvlay user-profile list --user-socket …
@@ -204,7 +215,10 @@ just test         # cargo nextest run + cargo test --doc
 just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
 just cov          # coverage summary
 just msrv / hack / audit  # CI-only checks, reproducible locally (docs/build.md)
+just package-check  # package the six published crates in one invocation (first-publish gate)
 just package-deb  # build the .deb package
+just docs-serve   # mdBook user guide, live (docs-build: one-shot build)
+just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI drift gate)
 ```
 
 `just` is provided by the Nix dev shell. Outside Nix, install with `cargo install just` or your distro package manager.
@@ -226,7 +240,7 @@ prek run -a                                          # all checks
 prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt only
 ```
 
-CI runs file checks via prek, then a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`). Design notes: `docs/build.md`.
+CI (`.github/workflows/ci.yml`) runs file checks via prek, then a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-build`) jobs. Design notes: `docs/build.md`.
 
 ### Code conventions
 
@@ -262,7 +276,10 @@ just cov / cov-html / cov-ratchet
 
 ## Reference Documentation
 
-- [docs/architecture.md](../docs/architecture.md) - **Current architecture**: topology, key space, world/reactor model, deployment, empirical zenoh laws
+- [docs/architecture.md](../docs/architecture.md) - **Current architecture**: topology, key space, world/reactor model, compatibility (release handshake), deployment, empirical zenoh laws
+- [docs/book/](../docs/book/) - User guide (mdBook, published on Read the Docs): install, pairing, profiles, automation, remote sessions, operations
+- [docs/build.md](../docs/build.md) - Build and lint policy, public API policy, first-publish checklist, review triggers
+- [docs/remote/detection.md](../docs/remote/detection.md) - Remote-session detectors (PipeWire, portal, logind, Sunshine) and their quirks
 - [docs/design.md](../docs/design.md) - The retired served-D-Bus architecture (≤ v0.2.0); kept for history
 - [docs/discovery.md](../docs/discovery.md) - SSDP transport, streaming discovery, manual-entry MAC enrichment
 - [docs/i18n.md](../docs/i18n.md) - Translation architecture and workflow
