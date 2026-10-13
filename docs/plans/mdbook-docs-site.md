@@ -217,7 +217,7 @@ The mdBook lives at **`docs/book/`** (`book.toml` + `src/`), namespaced so it ne
 ### 4. Content pages (adapt from `origin/docs` README, reconcile vs main)
 Map the `docs` branch README sections onto pages: Features/Supported Devices/Architecture(+mermaid) → Introduction; Install (Debian/Ubuntu, Fedora/RHEL, Bazzite/Silverblue rpm-ostree, Arch, Nix flake, Cargo) → Installation; Pairing + day-to-day control → Quick Start + Pairing; Profiles/resolution/options/action-vocabulary/example-configs → Configuration (+ Profiles stub); firewall recipes → adapt `docs/firewall.md` into Operations/Firewall & Discovery; `docs/diagnostics.md` → Troubleshooting; Requirements/Limitations → Reference/Requirements. **Reconcile every config/CLI mention against current `main`** (current clap surface — the CLI page is auto-gen so it's self-correcting; current `SystemProfileConfig`/`UserProfileConfig` fields incl. `on_dpms_off`/`on_dpms_on`; current packaging artifact names). Reuse the tray screenshot on the GUI & Tray page (carry over the `.gitattributes` LFS rule for `docs/screenshots/`).
 
-### 5. `.readthedocs.yaml` (repo root)
+### 5. `.config/.readthedocs.yaml`
 ```yaml
 version: 2
 build:
@@ -242,7 +242,7 @@ Pin mdbook to the **0.5.x** line that nixpkgs ships (avoid local-vs-RTD skew; co
 Keep `main`'s README **concise** (features + quickstart + a prominent link to the docs site); the comprehensive content from the `docs` branch lands in the book rather than re-bloating the README. (Recommendation — adjust at execution if you'd rather keep a fuller README too.)
 
 ## Critical files
-- New: `crates/tisvlay-cli/src/lib.rs`, `crates/tisvlay-cli/examples/gen-cli-docs.rs`, `docs/book/book.toml`, `docs/book/src/SUMMARY.md` + chapter files, `.readthedocs.yaml`
+- New: `crates/tisvlay-cli/src/lib.rs`, `crates/tisvlay-cli/examples/gen-cli-docs.rs`, `docs/book/book.toml`, `docs/book/src/SUMMARY.md` + chapter files, `.config/.readthedocs.yaml`
 - Edit: `crates/tisvlay-cli/src/main.rs`, `crates/tisvlay-cli/Cargo.toml`, `justfile`, `flake.nix`, `.github/workflows/ci.yml`, `.gitignore`, `README.md`
 - Reference (read-only content source): `git show docs:README.md`, `git show docs:crates/tisvlay-lg/README.md`, `docs/firewall.md`, `docs/diagnostics.md`, `docs/configs/*.toml`, current `crates/tisvlay-core/src/config.rs`
 
@@ -258,4 +258,4 @@ Keep `main`'s README **concise** (features + quickstart + a prominent link to th
 2. `nix develop -c just docs-cli-check` → clean (committed partial matches the clap tree).
 3. `nix develop -c just check` → the cli lib refactor keeps the workspace + `pair_snapshot` tests green.
 4. `nix develop -c just docs-serve` for live-reload authoring while filling pages.
-5. Connect the repo on Read the Docs, point at `.readthedocs.yaml`, confirm a successful cloud build + the Addons flyout.
+5. Connect the repo on Read the Docs, set Admin → Settings → "Path for .readthedocs.yaml" to `.config/.readthedocs.yaml`, confirm a successful cloud build + the Addons flyout.
