@@ -210,7 +210,7 @@ just build        # cargo build --profile test --workspace --all-targets --all-f
 just clippy       # cargo clippy (warnings denied via build.warnings)
 just doc          # cargo doc --workspace --no-deps (warnings denied)
 just shear        # unused / misplaced dependencies (cargo-shear)
-just typos        # spell check, American English (_typos.toml)
+just typos        # spell check, American English (.config/typos.toml)
 just test         # cargo nextest run + cargo test --doc
 just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
 just cov          # coverage summary

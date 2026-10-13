@@ -183,10 +183,11 @@
                 slintViewer
                 socat
                 tcpdump
-                # TOML formatter (`just fmt`; config in tombi.toml), pinned above.
+                # TOML formatter (`just fmt`; config in .config/tombi.toml),
+                # pinned above.
                 tombi
                 # Spell checker for code, docs and identifiers (`just typos`;
-                # config in _typos.toml).
+                # config in .config/typos.toml).
                 typos
                 wakeonlan
                 rust
