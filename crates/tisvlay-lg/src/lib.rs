@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
-// Published crate: every public item is documented (docs/build.md,
-// first-publish checklist).
+// Every public item is documented, which keeps the crate ready for
+// crates.io (docs/build.md, first-publish checklist).
 #![warn(missing_docs)]
 
 mod backend;

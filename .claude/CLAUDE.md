@@ -15,7 +15,7 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 
 ## What's Next
 
-- **First crates.io publish (manual, user-run).** Six crates are `publish = true` (core, ssdp, lg, cec, protocol, and the `tisvlay` SDK, which reserves the name); nothing is on crates.io yet. Follow docs/build.md § First-publish checklist (clean-tree `just package-check`, then publish in dependency order), then set up crates.io trusted publishing so release-plz handles later releases.
+- **First crates.io publish (manual, user-run).** Three crates are `publish = true`: the `tisvlay` SDK (which reserves the name) and the two it depends on, protocol and core. The vendor backends (lg, cec) and ssdp stay unpublished, since only the unpublished daemon uses them. Nothing is on crates.io yet. Follow docs/build.md § First-publish checklist (clean-tree `just package-check`, then publish in dependency order), then set up crates.io trusted publishing so release-plz handles later releases.
 - **v0.3.0 release:** release-plz's release PR, then release.yml's distro artifacts (cut on the `v*` tag; crates.io last, after the artifacts are verified).
 - **User docs:** the mdBook guide is live on Read the Docs; the open step in docs/plans/mdbook-docs-site.md is S1, a fragment-aware link/anchor checker in the CI `docs` job, after which that plan retires.
 - **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext, coverage baseline), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
@@ -215,7 +215,7 @@ just test         # cargo nextest run + cargo test --doc
 just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
 just cov          # coverage summary
 just msrv / hack / audit  # CI-only checks, reproducible locally (docs/build.md)
-just package-check  # package the six published crates in one invocation (first-publish gate)
+just package-check  # package the three published crates in one invocation (first-publish gate)
 just package-deb  # build the .deb package
 just docs-serve   # mdBook user guide, live (docs-build: one-shot build)
 just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI drift gate)
@@ -251,7 +251,7 @@ Rules the lints can't fully express; the lint policy and its reasons are in `doc
 - **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
 - **Secrets never reach `Debug`.** A typed secret is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. The LG client key is one everywhere it's typed (`Credentials`, `LgVendorConfig`, the register payloads, `WebOsClient`); a new credential field uses it too. The untyped vendor config is a `tisvlay_core::VendorConfig`, and the wire requests that carry one (`AddTv`, `UpdateConfig`) are hand-written the same way: their `Debug` prints key names only. `Secret` wraps secrecy 0.10 (redacted `Debug`, zeroize on drop, `Serialize` opt-in); zenoh-config still pins 0.8, so `deny.toml` skips that duplicate.
 - **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
-- **Published crates** (core, ssdp, lg, cec, protocol, and the `tisvlay` SDK) keep items private by default. `#[non_exhaustive]`, public-dependency and README rules are in `docs/build.md` § Public API policy; `just package-check` packages them.
+- **Published crates** (core, protocol, and the `tisvlay` SDK) keep items private by default. `#[non_exhaustive]`, public-dependency and README rules are in `docs/build.md` § Public API policy; `just package-check` packages them.
 - **A wire-visible change is a `feat` or a breaking commit, never a `fix`:** any change to a key, payload, rpc or decode rule. Clients and services check each other's release on `major.minor`, and release-plz bumps the minor only for those commit types, so a protocol change shipped as a patch would pass the check and fail at runtime.
 - **A new rpc is declared once** in its family's table in `tisvlay-protocol`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. A world-answered rpc also gets a `Command` variant, and the reactor's exhaustive match then demands its one-shot handler in `tisvlay-world`'s `systems/commands.rs`. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
 - **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.

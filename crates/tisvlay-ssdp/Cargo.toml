@@ -6,12 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-keywords = ["ssdp", "upnp", "discovery", "multicast", "async"]
-categories = ["network-programming", "asynchronous"]
-readme = "README.md"
-publish = true
+publish.workspace = true
 
 [dependencies]
 tokio = { workspace = true }

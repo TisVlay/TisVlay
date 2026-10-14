@@ -221,10 +221,10 @@ rtnetlink = "0.23"
 # is kept in the published manifest and would demand an unpublished crate
 # from crates.io, whereas a path-only dev-dependency is dropped on publish.
 tisvlay-core = { path = "crates/tisvlay-core", version = "0.3.0" }
-tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.3.0" }
-tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.3.0" }
+tisvlay-ssdp = { path = "crates/tisvlay-ssdp" }
+tisvlay-lg = { path = "crates/tisvlay-lg" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
-tisvlay-cec = { path = "crates/tisvlay-cec", version = "0.3.0" }
+tisvlay-cec = { path = "crates/tisvlay-cec" }
 tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-protocol = { path = "crates/tisvlay-protocol", version = "0.3.0" }
 tisvlay-world = { path = "crates/tisvlay-world" }

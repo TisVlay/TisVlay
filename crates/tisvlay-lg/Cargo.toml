@@ -6,16 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish = true
-homepage.workspace = true
-repository.workspace = true
-keywords = ["lg", "webos", "tv", "smart-tv", "ssap"]
-categories = ["hardware-support", "network-programming"]
-readme = "README.md"
-
-# The `discovery` feature gates `LgDiscovery`; document it on docs.rs.
-[package.metadata.docs.rs]
-all-features = true
+publish.workspace = true
 
 [dependencies]
 # Core abstractions

@@ -298,7 +298,7 @@ flowchart TD
 
 ### Rules for deciding where new test code lives
 
-1. **Does it implement a `tisvlay-core` trait?** → `tisvlay-mock`. It's a backend, just a fake one — same tier as `tisvlay-lg` (every daemon registers it), not test scaffolding. Unlike `tisvlay-lg` it isn't published to crates.io.
+1. **Does it implement a `tisvlay-core` trait?** → `tisvlay-mock`. It's a backend, just a fake one — same tier as `tisvlay-lg` (every daemon registers it), not test scaffolding.
 2. **Does it fake a system service we don't own (dbus-daemon, logind, ScreenSaver, etc.)?** → `tisvlay-test`.
 3. **Does it exercise a binary end to end?** → that binary crate's own `tests/` directory, booting the crate's public `serve()` and asserting over the wire.
 
