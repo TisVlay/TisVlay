@@ -136,6 +136,8 @@ just cov-ratchet  # fails if below baseline (CI uses this)
 
 The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Run `just cov` to see the current number.
 
+CI also uploads its `lcov.info` to [Codecov](https://app.codecov.io/gh/TisVlay/TisVlay) for trends and PR diff annotations. The upload authenticates with GitHub's OIDC token, so no Codecov secret is stored. A PR from a fork gets no OIDC token and uploads without one, which Codecov accepts for forks of public repos. The ratchet stays the gate; Codecov's own checks are informational.
+
 A failing test doesn't hide the report: the local `cov*` recipes run every test (`--no-fail-fast`), render the coverage of what ran, then exit with the test status ("tests failed … coverage reflects a failing run"). `cov-ratchet` checks that status first and fails before comparing, so partial coverage never passes or moves the baseline; `test-ci` stays fail-fast.
 
 CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. Every stage runs `--all-features`, same as local `just test`. Dev-only code is excluded from the coverage denominator via the `cov_exclude` regex in the justfile — `(tisvlay-(test|mock)/|test_server)` — so test infrastructure doesn't count against the ratchet. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
@@ -546,7 +548,6 @@ These document **why** the framework is shaped this way:
 
 Deferred until the framework matures or a specific need arises:
 
-- **Codecov upload** — pre-written in `.github/workflows/ci.yml`, commented out. Uncomment when the repo goes public (one-line change).
 - **Mutation testing** (`cargo-mutants`) — worth running once coverage stabilizes; would surface tests that pass but don't actually assert meaningful properties.
 - **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points; defer until something obvious emerges (e.g., SSAP message parsing).
 - **Benchmark infrastructure** (`criterion`, `bencher`) — ad-hoc measurement is script-driven today (`scripts/bench_network.py`, the triage scripts); a maintained benchmark suite waits for a recurring performance question.
