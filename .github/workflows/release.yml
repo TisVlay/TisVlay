@@ -8,10 +8,12 @@
 #      the artifacts.
 #
 # Version bumps + CHANGELOGs are prepared by the release PR in
-# release-plz.yml (merge it before tagging). The publish phase is a no-op
-# until a `CARGO_REGISTRY_TOKEN` secret is set: a crates.io token with only
-# the `publish-update` scope. Each crate's first publish is by hand, per
-# docs/build.md "First-publish checklist", so a token here can't create one.
+# release-plz.yml (merge it before tagging). The publish phase uses
+# crates.io trusted publishing, with no stored token: GitHub's OIDC token
+# for this workflow, in the `crates-io` environment, is exchanged for a
+# short-lived publish token. Trusted publishing can't create a crate, so
+# each crate's first publish is by hand, per docs/build.md "First-publish
+# checklist".
 name: Release
 
 on:
@@ -93,11 +95,25 @@ jobs:
 
   # Phase 2 (release finalized): publish the crates to crates.io. Runs when
   # you promote the verified draft to a full release. release-plz publishes
-  # only versions not already on crates.io, in dependency order; it's a
-  # no-op without CARGO_REGISTRY_TOKEN.
+  # only versions not already on crates.io, in dependency order.
+  #
+  # Each published crate's trusted publisher on crates.io names this repo,
+  # this workflow file and the `crates-io` environment. The environment
+  # only admits `v*` tags (repo Settings → Environments), so a run from a
+  # branch can't mint a publish token even if this workflow's triggers
+  # change. A typo here would make GitHub create a new, unrestricted
+  # environment, which crates.io then refuses: the name must match.
   publish-crates:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: write
+      # release-plz looks up the pull requests associated with the release
+      # commit; without this the GitHub API answers 403.
+      pull-requests: read
+      # The OIDC token release-plz trades for a crates.io publish token.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -125,4 +141,3 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
