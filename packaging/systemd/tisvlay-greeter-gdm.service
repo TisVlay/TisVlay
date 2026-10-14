@@ -1,6 +1,6 @@
 [Unit]
 Description=TisVlay greeter idle client (GDM)
-Documentation=https://github.com/ruffsl/tisvlay
+Documentation=https://github.com/TisVlay/TisVlay
 # A systemd *user* unit for GDM's greeter session. GDM launches the greeter via
 # `gnome-session --session=gnome-login`, which reaches
 # `gnome-session@gnome-login.target` — the greeter-only attach point (the GDM

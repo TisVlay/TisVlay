@@ -22,4 +22,4 @@ The matching decision is shared state with multiple consumers (tray, future GUI,
 - `Tv1.Desktop` interface stays minimal: `Connector` only.
 - `Tv1.HardwareId` (already there) carries vendor-side identity for icons / pretty names.
 - The library extraction is mechanical when GUI work starts (~250 LOC moved); no D-Bus API churn needed at that point.
-- An EDID hash field on `DesktopMapping` was considered and rejected — see the discussion in [PR #34](https://github.com/ruffsl/TisVlay/pull/34) and the cull that followed.
+- An EDID hash field on `DesktopMapping` was considered and rejected — see the discussion in [PR #34](https://github.com/TisVlay/TisVlay/pull/34) and the cull that followed.

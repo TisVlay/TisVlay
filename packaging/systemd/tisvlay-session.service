@@ -1,6 +1,6 @@
 [Unit]
 Description=TisVlay Session Event Monitor
-Documentation=https://github.com/ruffsl/tisvlay
+Documentation=https://github.com/TisVlay/TisVlay
 After=graphical-session.target
 PartOf=graphical-session.target
 

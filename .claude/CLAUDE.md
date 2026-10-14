@@ -187,7 +187,7 @@ tisvlay user-profile list --user-socket …
 
 ```nix
 # flake.nix input
-inputs.tisvlay.url = "github:ruffsl/tisvlay";
+inputs.tisvlay.url = "github:TisVlay/TisVlay";
 
 # configuration.nix
 { inputs, ... }: {

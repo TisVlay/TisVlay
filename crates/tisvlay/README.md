@@ -2,7 +2,7 @@
 
 Client library for TisVlay, the Linux daemon that controls smart TVs from the desktop they're plugged into. It lists and controls the TVs a TisVlay daemon manages (power, screen, volume, input, backlight), watches their state, and drives pairing, profiles and the per-user session and tray services.
 
-This is the library. The `tisvlay` command ships in distro packages and the Nix flake (see the [repository](https://github.com/ruffsl/tisvlay)); `cargo install tisvlay` finds no binary to install.
+This is the library. The `tisvlay` command ships in distro packages and the Nix flake (see the [repository](https://github.com/TisVlay/TisVlay)); `cargo install tisvlay` finds no binary to install.
 
 ## Example
 
