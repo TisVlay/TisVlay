@@ -22,7 +22,7 @@ Companion files outside this directory:
 
 ```nix
 {
-  inputs.tisvlay.url = "github:ruffsl/tisvlay";
+  inputs.tisvlay.url = "github:TisVlay/TisVlay";
   outputs = { nixpkgs, tisvlay, ... }: {
     nixosConfigurations.mybox = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";

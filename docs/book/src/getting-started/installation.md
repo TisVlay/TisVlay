@@ -25,11 +25,11 @@ On NixOS, list accounts in `services.tisvlay.users` instead (see [below](#nixos-
 
 ## Distro packages (.deb / .rpm / .pkg.tar.zst)
 
-Pre-built packages are published on the [releases page](https://github.com/ruffsl/tisvlay/releases) for each tagged version. They are built against a conservative glibc baseline, so one package runs on every in-support desktop and enterprise distro, immutable-root variants included.
+Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version. They are built against a conservative glibc baseline, so one package runs on every in-support desktop and enterprise distro, immutable-root variants included.
 
 ```sh
 {{#include ../generated/release-version.txt}}
-export BASE=https://github.com/ruffsl/tisvlay/releases/download/v${VERSION}
+export BASE=https://github.com/TisVlay/TisVlay/releases/download/v${VERSION}
 ```
 
 **Debian / Ubuntu**
@@ -70,7 +70,7 @@ The repository's flake provides a NixOS module that wires up the daemon, user se
 ```nix
 # flake.nix
 {
-  inputs.tisvlay.url = "github:ruffsl/tisvlay";
+  inputs.tisvlay.url = "github:TisVlay/TisVlay";
 
   outputs = { nixpkgs, tisvlay, ... }: {
     nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
@@ -99,17 +99,17 @@ The repository's flake provides a NixOS module that wires up the daemon, user se
 | `sunshinePort` | Where to find Sunshine if you moved it off its default port (see [Remote-Session Awareness](../guide/remote-sessions.md#sunshine-integration)). |
 | `logLevel`, `extraArgs` | The services' log level, and extra `tisvlay-daemon` arguments for anything the module doesn't expose. |
 
-Types and defaults are in each option's description in [`module.nix`](https://github.com/ruffsl/tisvlay/blob/main/packaging/nix/module.nix).
+Types and defaults are in each option's description in [`module.nix`](https://github.com/TisVlay/TisVlay/blob/main/packaging/nix/module.nix).
 
 ## Cargo (from source)
 
 ```sh
-git clone https://github.com/ruffsl/tisvlay
+git clone https://github.com/TisVlay/TisVlay
 cd tisvlay
 cargo build --release
 ```
 
-Binaries land in `target/release/`. Building from Cargo does **not** install the systemd units — copy those from [`packaging/`](https://github.com/ruffsl/tisvlay/tree/main/packaging) if you want the daemon and session services managed by systemd, and create the `tisvlay` group yourself.
+Binaries land in `target/release/`. Building from Cargo does **not** install the systemd units — copy those from [`packaging/`](https://github.com/TisVlay/TisVlay/tree/main/packaging) if you want the daemon and session services managed by systemd, and create the `tisvlay` group yourself.
 
 A recent stable Rust toolchain is required — at least the `rust-version` declared in the workspace `Cargo.toml`; install it from <https://rust-lang.org/tools/install/>.
 

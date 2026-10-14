@@ -1,6 +1,6 @@
 [Unit]
 Description=TisVlay System Tray
-Documentation=https://github.com/ruffsl/tisvlay
+Documentation=https://github.com/TisVlay/TisVlay
 After=graphical-session.target tisvlay-session.service
 PartOf=graphical-session.target
 

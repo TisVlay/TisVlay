@@ -1,6 +1,6 @@
 [Unit]
 Description=TisVlay TV Control Daemon
-Documentation=https://github.com/ruffsl/tisvlay
+Documentation=https://github.com/TisVlay/TisVlay
 After=network-online.target
 Wants=network-online.target
 

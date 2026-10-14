@@ -425,7 +425,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      documentation = [ "https://github.com/ruffsl/tisvlay" ];
+      documentation = [ "https://github.com/TisVlay/TisVlay" ];
       environment = {
         RUST_LOG = cfg.logLevel;
       };
@@ -556,7 +556,7 @@ in
       wantedBy = [ "graphical-session.target" ];
       after = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
-      documentation = [ "https://github.com/ruffsl/tisvlay" ];
+      documentation = [ "https://github.com/TisVlay/TisVlay" ];
       environment = {
         RUST_LOG = cfg.logLevel;
       };
@@ -587,7 +587,7 @@ in
         "tisvlay-session.service"
       ];
       partOf = [ "graphical-session.target" ];
-      documentation = [ "https://github.com/ruffsl/tisvlay" ];
+      documentation = [ "https://github.com/TisVlay/TisVlay" ];
       environment = {
         RUST_LOG = cfg.logLevel;
       };
@@ -614,7 +614,7 @@ in
       lib.mkMerge [
         {
           description = "tisvlay greeter idle client";
-          documentation = [ "https://github.com/ruffsl/tisvlay" ];
+          documentation = [ "https://github.com/TisVlay/TisVlay" ];
           environment = {
             RUST_LOG = cfg.logLevel;
           };

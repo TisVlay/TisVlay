@@ -38,4 +38,4 @@ Yes — pair each one, then target it by its **UUID** (from `tisvlay list`) as t
 
 ---
 
-Something not answered here? [Troubleshooting](../operations/troubleshooting.md) covers the common failure modes (discovery, Wake-on-LAN, pairing), and bug reports are welcome on [GitHub](https://github.com/ruffsl/tisvlay/issues).
+Something not answered here? [Troubleshooting](../operations/troubleshooting.md) covers the common failure modes (discovery, Wake-on-LAN, pairing), and bug reports are welcome on [GitHub](https://github.com/TisVlay/TisVlay/issues).

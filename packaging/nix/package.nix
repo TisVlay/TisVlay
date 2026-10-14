@@ -177,8 +177,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   meta = {
     description = "TV Display control for Linux";
-    homepage = "https://github.com/ruffsl/tisvlay";
-    changelog = "https://github.com/ruffsl/tisvlay/releases";
+    homepage = "https://github.com/TisVlay/TisVlay";
+    changelog = "https://github.com/TisVlay/TisVlay/releases";
     license = lib.licenses.asl20;
     maintainers = [
       {
