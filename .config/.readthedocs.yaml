@@ -17,9 +17,23 @@ build:
   os: ubuntu-lts-latest
   tools:
     rust: latest
-  commands:
-    - cargo install mdbook --version 0.5.4 --locked
-    - cargo install mdbook-mermaid --version 0.17.1 --locked
-    # Regenerate the gitignored mermaid JS assets (idempotent on book.toml).
-    - mdbook-mermaid install docs/book
-    - mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html
+  # The book's introduction includes the root README, whose banner and
+  # screenshots are Git LFS files. Read the Docs checks out without LFS,
+  # so they would ship as pointer stubs; git-lfs from Ubuntu fixes that.
+  apt_packages:
+    - git-lfs
+  # Neither `sphinx` nor `mkdocs` is set, so Read the Docs runs only the
+  # jobs listed here. apt packages install after `post_checkout`, so the
+  # LFS pull runs in `post_system_dependencies`.
+  jobs:
+    post_system_dependencies:
+      - git lfs install --local
+      - git lfs pull --include "docs/screenshots/*,docs/artwork/*"
+    install:
+      - cargo install mdbook --version 0.5.4 --locked
+      - cargo install mdbook-mermaid --version 0.17.1 --locked
+    build:
+      html:
+        # Regenerate the gitignored mermaid JS assets (idempotent on book.toml).
+        - mdbook-mermaid install docs/book
+        - mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html
