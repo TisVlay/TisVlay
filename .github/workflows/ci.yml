@@ -7,12 +7,86 @@ on:
   pull_request:
     branches:
       - "main"
+    # Drafts skip the heavy jobs, so marking a PR ready starts a full run.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   CARGO_TERM_COLOR: always
 
+# Default for every job; a job widens it only where it needs to.
+permissions:
+  contents: read
+
+# A new push to a PR cancels that PR's in-progress run. Pushes to main
+# group by commit, so none is ever cancelled or replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Which jobs this change needs. GitHub's `paths` filters only gate whole
+  # workflows, so the gate is a job whose outputs the others read.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      book: ${{ steps.classify.outputs.book }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify
+        id: classify
+        env:
+          # A PR checks out its merge commit, whose first parent is main.
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+        run: |
+          # Fail open: no diff, or an empty one, runs everything.
+          if ! files=$(git diff --name-only "$BASE" HEAD) || [ -z "$files" ]; then
+            printf 'code=true\nbook=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Docs-only paths. Crate READMEs are not: they're doctests.
+          docs='^(docs/|\.claude/|README\.md$|LICENSE$|\.config/\.readthedocs\.yaml$)'
+          # What the book build reads.
+          book='^(docs/(book|screenshots|artwork)/|README\.md$|\.config/\.readthedocs\.yaml$)'
+          code=false; grep -qvE "$docs" <<< "$files" && code=true
+          has_book=false; grep -qE "$book" <<< "$files" && has_book=true
+          printf 'code=%s\nbook=%s\n' "$code" "$has_book" >> "$GITHUB_OUTPUT"
+
+  # File checks and typos on every run, drafts and docs-only PRs included.
+  # On code changes the ci job's lint step repeats them with the Rust hooks.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            just
+            typos@1.50.2
+
+      - name: File checks
+        uses: j178/prek-action@v2
+        with:
+          extra-args: >-
+            --all-files
+            check-added-large-files check-merge-conflict check-toml
+            check-yaml end-of-file-fixer trailing-whitespace typos
+
   ci:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -131,6 +205,8 @@ jobs:
   # dependency that outgrows the floor fails here. Reproduce locally with
   # `just msrv` (Nix-provided toolchain).
   msrv:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -166,6 +242,8 @@ jobs:
   # with each feature on its own (and with none), so a crate that no longer
   # compiles with a feature off is caught. Same recipe as locally.
   features:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -197,8 +275,11 @@ jobs:
   # User-facing docs site (docs/book → Read the Docs). Kept off the
   # tuned `ci` job's cache/critical path: it only compiles tisvlay-docgen
   # (the CLI and core it renders, for the generated-partials freshness
-  # gate) plus mdbook.
+  # gate) plus mdbook. Runs on code changes too: the partials are rendered
+  # from the CLI and core.
   docs:
+    needs: changes
+    if: (needs.changes.outputs.code == 'true' || needs.changes.outputs.book == 'true') && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -231,3 +312,16 @@ jobs:
 
       - name: Build book
         run: just docs-build
+
+  # One stable check to require on main: fails if any job failed or was
+  # cancelled. Jobs the gate skipped count as passing.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [changes, checks, ci, msrv, features, docs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check job results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

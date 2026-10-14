@@ -22,13 +22,29 @@ Three checks take minutes cold or need the network, so they run as CI jobs rathe
 
 | Check | CI | Local | What it catches |
 |---|---|---|---|
-| MSRV floor | `msrv` job, every PR | `just msrv` | Code or a dependency that needs a newer compiler than `rust-version` |
-| Feature combinations | `features` job, every PR | `just hack` | A crate that doesn't build with one of its features on its own, or with none |
+| MSRV floor | `msrv` job, on code changes | `just msrv` | Code or a dependency that needs a newer compiler than `rust-version` |
+| Feature combinations | `features` job, on code changes | `just hack` | A crate that doesn't build with one of its features on its own, or with none |
 | Advisories | `audit.yml`, weekly + on `Cargo.lock` or `deny.toml` changes | `just audit` | RustSec advisories and yanked crates |
 
 - **MSRV:** the floor is read from `Cargo.toml` in both places. CI installs it with rustup. Locally, `just msrv` uses the flake's `msrv-rust` toolchain on `PATH` inside the dev shell. rustup-installed toolchains misbehave under the NixOS dev shell: `rustup run` still resolves the shell's own cargo, and they fail on `slint-macros`. There's no `--ignore-rust-version`, because the toolchain is the floor.
 - **Raising the floor:** only when an update needs a newer compiler, and never past the rustc that nixpkgs ships. The Nix package builds with the consumer's nixpkgs compiler, and cargo refuses any toolchain older than `rust-version`. Check before raising it: `nix eval --raw --inputs-from . nixpkgs#rustc.version`.
 - **Features:** `cargo hack check --each-feature --no-dev-deps`. `--no-dev-deps` strips dev-dependencies from the manifests for the run and restores them after, so rust-analyzer may flag phantom errors while it runs.
+
+### What runs when
+
+`ci.yml` gates its jobs on what a change touches, so a docs fix doesn't pay for a full Rust build. Its first job, `changes`, diffs the change (a PR's merge commit against main, or a push against the previous tip) and classifies the files:
+
+- **Docs-only:** `docs/`, `.claude/`, the root `README.md`, `LICENSE` and `.config/.readthedocs.yaml`. Crate READMEs don't count: each is its crate's rustdoc, and its examples run as doctests.
+- **Book inputs:** `docs/book/`, `docs/screenshots/`, `docs/artwork/`, the root `README.md` (the book's introduction includes it) and `.config/.readthedocs.yaml`.
+
+| Change | Jobs |
+|---|---|
+| Docs-only | `checks` (file checks and typos) |
+| Docs-only, touching the book | `checks`, `docs` |
+| Anything else | `checks`, `ci`, `msrv`, `features`, `docs` |
+| Draft PR | `checks` only; marking it ready starts the full run |
+
+If the diff can't be computed, everything runs. A new push to a PR cancels its in-progress run; pushes to main never cancel each other. The `CI result` job fails if any job failed or was cancelled, and counts gated-off jobs as passing, so it's the one check to require if main gets branch protection.
 
 ## Lint policy
 

@@ -239,7 +239,7 @@ prek run -a                                          # all checks
 prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt only
 ```
 
-CI (`.github/workflows/ci.yml`) runs file checks via prek, then a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-build`) jobs. Design notes: `docs/build.md`.
+CI (`.github/workflows/ci.yml`) gates its jobs on what a change touches: a `changes` job classifies the diff, so docs-only changes run only the fast `checks` job (prek file checks + typos), plus `docs` when the book is touched, and draft PRs run only `checks` (`docs/build.md` § What runs when). Code changes also run a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-build`) jobs. Design notes: `docs/build.md`.
 
 ### Code conventions
 
