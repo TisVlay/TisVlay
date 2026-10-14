@@ -15,9 +15,8 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 
 ## What's Next
 
-- **First crates.io publish (manual, user-run).** Three crates are `publish = true`: the `tisvlay` SDK (which reserves the name) and the two it depends on, protocol and core. The vendor backends (lg, cec) and ssdp stay unpublished, since only the unpublished daemon uses them. Nothing is on crates.io yet. Follow docs/build.md § First-publish checklist (clean-tree `just package-check`, then publish in dependency order), then set up crates.io trusted publishing so release-plz handles later releases.
-- **v0.3.0 release:** release-plz's release PR, then release.yml's distro artifacts (cut on the `v*` tag; crates.io last, after the artifacts are verified).
-- **User docs:** the mdBook guide is live on Read the Docs; the open step in docs/plans/mdbook-docs-site.md is S1, a fragment-aware link/anchor checker in the CI `docs` job, after which that plan retires.
+- **Release automation after v0.3.0.** v0.3.0 shipped 2026-10-14: the repo is public at TisVlay/TisVlay, and the three `publish = true` crates (core, protocol and the `tisvlay` SDK) were published to crates.io by hand. The vendor backends (lg, cec) and ssdp stay unpublished, since only the unpublished daemon uses them. Still to set up: each crate's trusted publisher plus the `crates-io` environment (docs/build.md § First-publish checklist, step 7); a `maintainers` org team as crates.io co-owner; then "Allow GitHub Actions to create and approve pull requests" and the release-plz workflow, which is disabled in GitHub's settings until then (`gh workflow enable release-plz.yml`).
+- **User docs:** the mdBook guide isn't on Read the Docs yet: import the public repo and set the project's "Path for .readthedocs.yaml" to `.config/.readthedocs.yaml`. The open step in docs/plans/mdbook-docs-site.md is S1, a fragment-aware link/anchor checker in the CI `docs` job, after which that plan retires.
 - **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext, coverage baseline), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
 
 ## Current Project Structure
