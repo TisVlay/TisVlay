@@ -195,7 +195,7 @@ sbom:
 # its gettext domain and `.pot` template; per-locale `.po` files live
 # under `crates/tisvlay-gui/lang/<locale>/LC_MESSAGES/tisvlay-gui.po`.
 # The tray's user-facing strings (menu items, notification copy) are
-# not gettext-wired yet — tracked in docs/ideas.md.
+# not gettext-wired yet — tracked in docs/ideas/switchover-followups.md.
 #
 # `i18n-extract` rebuilds the `.pot` template from source. The pass
 # combines Rust (`gettext("…")` via xgettext) and Slint (`@tr("…")`
