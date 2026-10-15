@@ -10,7 +10,7 @@
 //! data (capability tables, manufacture date, vendor blocks) calls
 //! the probe library directly with the connector name from this
 //! mapping rather than receiving structured detail over the wire. See
-//! [docs/ideas.md](../../../docs/ideas.md) for the rationale.
+//! `docs/ideas/probe-library-extraction.md` for the rationale.
 //!
 //! Empty string represents "unknown / not yet probed".
 

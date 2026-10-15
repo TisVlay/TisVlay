@@ -458,7 +458,7 @@ Slint propagates accessibility properties to descendants, so an `accessible-id` 
 
 ### What we deliberately don't do
 
-- **No pixel-snapshot tests.** Slint upstream ships none in `i-slint-backend-testing`, ecosystem research consistently flags pixel diffs as the most flake-prone test type, and the alternative (software renderer + bundled fonts + tolerance threshold) is heavy maintenance for low signal. Tabled in `docs/ideas.md` if a real need surfaces.
+- **No pixel-snapshot tests.** Slint upstream ships none in `i-slint-backend-testing`, ecosystem research consistently flags pixel diffs as the most flake-prone test type, and the alternative (software renderer + bundled fonts + tolerance threshold) is heavy maintenance for low signal. Tabled in `docs/ideas/` if a real need surfaces.
 - **No MCP-driven CI tests.** Slint's MCP server is a dev-time introspection surface; `.claude/slint.md` documents the reliability quirks. Tests use the in-process testing backend exclusively.
 
 ### Pin

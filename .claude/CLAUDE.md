@@ -80,7 +80,8 @@ tisvlay/
 │   ├── plans/                    # in-flight plan docs (README convention; git holds retired ones)
 │   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
 │   │   remote/                   # remote-session detectors
-│   └── firewall.md, testing.md, ideas.md, bugs.md, concerns.md
+│   ├── ideas/, bugs/, concerns/  # one doc per item; each folder's README.md is its index
+│   └── firewall.md, testing.md
 └── .claude/CLAUDE.md             # This file
 ```
 
@@ -224,7 +225,7 @@ just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI
 
 ## Internationalization (i18n)
 
-`tisvlay-gui` is wired for gettext translation (Slint `@tr()` + Rust `gettext()`); v1 ships English only. The ported tray is not gettext-wired yet (tracked in docs/ideas.md). Architecture and workflow: [docs/i18n.md](../docs/i18n.md). After adding or changing user-facing GUI strings, run `just i18n-extract` and commit the refreshed `.pot` diff.
+`tisvlay-gui` is wired for gettext translation (Slint `@tr()` + Rust `gettext()`); v1 ships English only. The ported tray is not gettext-wired yet (tracked in docs/ideas/switchover-followups.md). Architecture and workflow: [docs/i18n.md](../docs/i18n.md). After adding or changing user-facing GUI strings, run `just i18n-extract` and commit the refreshed `.pot` diff.
 
 - **Translate**: button labels, pane headers, status text, menu items, tooltip copy, error messages.
 - **Don't translate**: brand names (`"TisVlay"`, `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`), Unicode glyphs, technical placeholders, file paths, URLs.
@@ -288,4 +289,6 @@ just cov / cov-html / cov-ratchet
 - [docs/cec/testing.md](../docs/cec/testing.md) - CecLink seam + FakeCecLink
 - [docs/watchers/network.md](../docs/watchers/network.md) - Carrier detection, route resolution
 - [docs/firewall.md](../docs/firewall.md) - SSDP firewall configuration
-- [docs/ideas.md](../docs/ideas.md) - Deferred work + research notes
+- [docs/ideas/](../docs/ideas/README.md) - Deferred work + research notes
+- [docs/concerns/](../docs/concerns/README.md) - Design concerns + technical debt
+- [docs/bugs/](../docs/bugs/README.md) - Known bugs

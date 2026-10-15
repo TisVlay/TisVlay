@@ -9,7 +9,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 - Suggested destinations for the typical sections:
   - **Architecture / decisions** → `docs/architecture.md`.
   - **Field-test findings / failure modes** → `docs/lg/` (vendor-specific) or `docs/concerns/` (cross-cutting).
-  - **Deferred follow-up work** → `docs/ideas/<topic>.md` with an index entry in `docs/ideas.md`.
+  - **Deferred follow-up work** → `docs/ideas/<topic>.md` with an index entry in `docs/ideas/README.md`.
   - **Process retrospectives / experiment receipts** → fold into the destination doc as a "Lessons" subsection rather than carrying forward as a plan.
 - After a plan is migrated, sweep inbound references (`grep -rn 'docs/plans/<name>' --include='*.rs' --include='*.md'`) and re-point them at the new home.
 
