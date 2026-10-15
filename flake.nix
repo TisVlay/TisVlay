@@ -103,6 +103,12 @@
                 hash = "sha256-//t3ASNljC4rosk5oOmcJy8PZKRYjlQ0euzzAmfiSPQ=";
               };
             };
+            cargoNfpmSrc = pkgs.fetchCrate {
+              pname = "cargo-nfpm";
+              version = "0.1.3";
+              hash = "sha256-PpflbxUL6/xwqeHw2OhPLcB1fi0VLbItzhdYkLqZuP0=";
+            };
+            cargoNfpm = pkgs.callPackage (import "${cargoNfpmSrc}/nix/package.nix") { };
             # tombi (TOML formatter, `just fmt`) pinned to the version CI
             # installs (`tombi@1.7.1` in ci.yml), so local and CI formatting
             # can't disagree; nixpkgs lags behind. Bump both together, and
@@ -143,6 +149,9 @@
                 cargo-shear
                 # cargo-sbom emits a whole-workspace SBOM (SPDX) for `just sbom`.
                 cargo-sbom
+                # Cargo plugin that reads package metadata and invokes nfpm
+                # for `just package-*`; source and lockfile are pinned above.
+                cargoNfpm
                 # cargo-zigbuild + zig drive the release build: zig serves
                 # as the linker so the resulting glibc-dynamic binary
                 # carries an explicit min-glibc baseline (see justfile's
@@ -164,9 +173,7 @@
                 mdbook-mermaid
                 lldb
                 llvmPkgs.bintools-unwrapped
-                # nfpm (Go binary) is the packager that cargo-nfpm shells
-                # out to. cargo-nfpm itself is not in nixpkgs — install
-                # with `cargo install cargo-nfpm` to drive `just package-*`.
+                # nfpm (Go binary) is the packager that cargo-nfpm shells out to.
                 nfpm
                 # pipewire's `libspa-0.2` pkg-config entry gives dev builds
                 # a real SPA plugin dir for the session's PipeWire client.

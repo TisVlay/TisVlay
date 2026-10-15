@@ -135,7 +135,7 @@ The dev shell ([`flake.nix`](../flake.nix) `devShells.default`) provides:
 - `just` — recipe runner
 - All the build-time C deps (`fontconfig`, `libxkbcommon`, etc.) for the GUI link step
 
-`cargo-nfpm` (the Cargo plugin that reads `[package.metadata.nfpm]` from `Cargo.toml` and shells out to `nfpm`) is **not** in nixpkgs and must be installed separately:
+The dev shell provides `cargo-nfpm` (the Cargo plugin that reads `[package.metadata.nfpm]` from `Cargo.toml` and shells out to `nfpm`), pinned to its crates.io release. Outside the dev shell, install it with:
 
 ```bash
 cargo install cargo-nfpm
