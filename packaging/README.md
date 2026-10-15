@@ -200,12 +200,12 @@ One shared script pair (nfpm embeds [`scripts/postinstall.sh`](scripts/postinsta
 |---|---|---|
 | rpm | `%preun` gets an instance count: `0` = final removal, `≥1` = upgrade/reinstall; `%post` gets `1` = fresh, `≥2` = upgrade | numeric |
 | dpkg | `prerm` gets `remove`/`upgrade`/…; `postinst` gets `configure` with the old version in `$2` (empty on fresh install) | strings |
-| pacman | `pre_remove` runs **only** on real removal and gets a version string; `post_install` has an empty `$2` | version strings |
+| pacman | `pre_remove` runs **only** on real removal and gets the old version; `post_install` gets the new version, while `post_upgrade` gets new + old versions (`$2` is set) | version strings |
 
 Two rules follow, both burned in by field failures:
 
 - **Teardown guards by *excluding upgrades*** (`1 | upgrade | failed-upgrade | deconfigure` → skip), never by allow-listing removal values — pacman's version-string `$1` would never match an allow-list and Arch would silently skip cleanup, leaving the daemon running after `pacman -R`. On upgrade, the *old* package's preremove is what runs — so a host upgrading from a pre-guard package will still see one final stop/disable (the new postinstall re-enables and, on upgrade, `try-restart`s; a one-time hiccup that can't be fixed retroactively).
-- **Start only on genuinely fresh installs.** `enable` + `try-restart` run always (the restart swaps a *running* daemon onto the new binary; its no-op on an inactive unit is what respects an admin's deliberate stop across upgrades). The follow-up `start` fires only for deb `configure` with an empty `$2` — through `deb-systemd-invoke` when present, so `policy-rc.d` is honored in chroots and image builds — or rpm `$1 = 1`. pacman is deliberately excluded: Arch scriptlets never start services, so Arch users get one `systemctl start` (or a reboot) after first install.
+- **Start only on genuinely fresh installs.** `enable` + `try-restart` run always (the restart swaps a *running* daemon onto the new binary; its no-op on an inactive unit is what respects an admin's deliberate stop across upgrades). The follow-up `start` fires for deb `configure` with an empty `$2` — through `deb-systemd-invoke` when present, so `policy-rc.d` is honored in chroots and image builds — rpm `$1 = 1`, or pacman with a version-valued `$1` and empty `$2` (fresh `post_install`; `post_upgrade` supplies the old version in `$2`). RPM's numeric upgrade count does not match the pacman version check.
 
 **Log out and back in after upgrading.** The postinstall restarts only the system daemon; each logged-in user's session, tray and GUI keep running the old binaries until re-login. The rpc wire has no cross-version compatibility (every client ships with the daemon), so in that window an old user service and the new daemon may refuse each other's requests.
 
