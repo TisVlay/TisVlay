@@ -31,6 +31,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 ## Operational
 
 - [User service auto-start after `nixos-rebuild switch`](nixos-user-service-auto-start.md)
+- [Opt-in CEC setup for distro packages (device access and Pulse-Eight attach)](cec-distro-setup.md)
 
 ## CLI
 

@@ -128,14 +128,14 @@ This adds your account to the `tisvlay` group through polkit. The group change t
 <details>
 <summary id="hdmi-cec-backend-optional">HDMI-CEC backend (optional)</summary>
 
-The HDMI-CEC backend needs a CEC adapter that the kernel exposes as a `/dev/cecN` character device — most GPU HDMI ports don't wire the CEC pin. Two known-working sources:
+The HDMI-CEC backend needs a CEC adapter that appears as a `/dev/cecN` character device. Most GPU HDMI ports don't wire the CEC pin. Two known-working sources:
 
-- A **USB CEC adapter** (e.g. Pulse-Eight), via the kernel `pulse8-cec` driver.
+- A **USB CEC adapter** (e.g. Pulse-Eight), using the kernel `pulse8-cec` driver. Pulse-Eight adapters also need `inputattach --pulse8-cec` to bind the USB serial device and create `/dev/cecN`; some distributions provide this setup already. See the [kernel's USB dongle instructions](https://docs.kernel.org/admin-guide/media/cec.html#usb-cec-dongles).
 - An active **DisplayPort→HDMI adapter on an amdgpu or i915 output** — the GPU driver tunnels DP-AUX CEC. **Nvidia GPUs expose no CEC**, so use a USB adapter there.
 
 The daemon's sandbox hides `/dev` by default, so it needs device access granted once:
 
-- **NixOS:** `services.tisvlay.cec.enable = true` does it all.
+- **NixOS:** set `services.tisvlay.cec.enable = true` for a GPU adapter. For a Pulse-Eight USB adapter, set `services.tisvlay.cec.pulse8.enable = true`; it also enables device access and attaches the driver.
 - **Distro packages:** let the CEC devices through the sandbox with a drop-in (`sudo systemctl edit tisvlay-daemon`):
 
   ```ini
@@ -151,6 +151,8 @@ The daemon's sandbox hides `/dev` by default, so it needs device access granted 
   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=cec
   sudo systemctl restart tisvlay-daemon
   ```
+
+For a Pulse-Eight adapter, this grants the daemon access to `/dev/cecN` once it exists; the host still needs the `pulse8-cec` driver and `inputattach` setup described above.
 
 The backend depends on the LGPL-licensed [`linux-cec`](https://crates.io/crates/linux-cec) crate.
 
