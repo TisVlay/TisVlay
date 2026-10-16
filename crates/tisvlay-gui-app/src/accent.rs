@@ -68,3 +68,25 @@ pub(crate) async fn watch_accent_color(app_weak: slint::Weak<AppWindow>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ashpd_color_to_slint;
+
+    #[test]
+    fn portal_color_accepts_inclusive_rgb_range() {
+        assert!(ashpd_color_to_slint(ashpd::desktop::Color::new(0.0, 0.5, 1.0)).is_some());
+        assert!(ashpd_color_to_slint(ashpd::desktop::Color::new(1.0, 0.0, 0.0)).is_some());
+    }
+
+    #[test]
+    fn portal_color_rejects_out_of_range_components() {
+        for color in [
+            ashpd::desktop::Color::new(-0.01, 0.5, 0.5),
+            ashpd::desktop::Color::new(0.5, 1.01, 0.5),
+            ashpd::desktop::Color::new(0.5, 0.5, -0.01),
+        ] {
+            assert!(ashpd_color_to_slint(color).is_none());
+        }
+    }
+}
