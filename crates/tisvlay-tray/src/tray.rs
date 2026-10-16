@@ -1063,4 +1063,43 @@ mod tests {
                 if tv == tv_id && profile == system_default
         ));
     }
+
+    #[test]
+    fn input_submenu_selects_by_current_id_and_emits_input_id() {
+        let tv_id = Uuid::from_u128(1);
+        let mut view = tv("Office", true, false, false);
+        view.current_input = Some("HDMI_2".into());
+        view.inputs = vec![
+            ("HDMI_1".into(), "Console".into()),
+            ("HDMI_2".into(), "Workstation".into()),
+        ];
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(tv_id, view);
+        let mut menu = tray.menu();
+
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV entry is a submenu");
+        };
+        let input_index = tv_menu
+            .submenu
+            .iter()
+            .position(|item| matches!(item, MenuItem::SubMenu(submenu) if submenu.label == "Input"))
+            .expect("capable TV has an Input submenu");
+        let MenuItem::SubMenu(input) = &mut tv_menu.submenu[input_index] else {
+            panic!("Input entry is a submenu");
+        };
+        let MenuItem::RadioGroup(inputs) = &mut input.submenu[0] else {
+            panic!("Input submenu contains radio choices");
+        };
+        assert_eq!(inputs.selected, 1);
+        assert_eq!(inputs.options[0].label, "Console");
+        (inputs.select)(&mut tray, 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SwitchInput(tv, input))
+                if tv == tv_id && input == "HDMI_1"
+        ));
+    }
 }
