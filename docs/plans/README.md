@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`code-coverage.md`](code-coverage.md) — staged GUI-first coverage expansion: establish a fresh baseline, add deterministic GUI tests, then cover callback-driven workflows and re-rank follow-on gaps.
+- [`code-coverage.md`](code-coverage.md) — behavior-led coverage expansion: add GUI error-routing tests, then select measured gaps at the right UI, SDK, or service test layer without duplicating existing wire coverage.
 - [`mdbook-docs-site.md`](mdbook-docs-site.md) — user-facing documentation site built with mdBook and published on Read the Docs; CLI reference auto-generated from the clap tree, prose guide covering install, pairing, profiles, session automation, and troubleshooting.
 
 When a plan is in flight, list it here with
