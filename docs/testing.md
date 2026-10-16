@@ -414,6 +414,7 @@ async fn wire() -> Wire {
 - `tisvlay-tray/tests/it/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
 - `tisvlay-tray/tests/it/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
 - `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, and connect-before-daemon resilience.
+- `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, remote sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
 
 ### Zenoh testing gotchas
 
