@@ -4,7 +4,7 @@
 
 Increase meaningful production-code coverage in staged, reviewable increments. Start with deterministic GUI error-routing tests, then use a fresh report and the architecture's test boundaries to select the next behavior. Keep UI-state tests in the GUI, RPC and wire-contract tests in SDK/service suites, and avoid duplicating behavior already covered at those layers.
 
-The latest saved report showed approximately 64.4% line coverage (18,442 of 28,642 lines), while `cov_baseline_lines` is 52%. Treat that report as a pointer only: regenerate coverage on the intended checkout before setting targets or changing the ratchet. Coverage is a signal, not the goal; tests should assert behavior that matters.
+The latest saved report showed approximately 64.4% line coverage (18,442 of 28,642 lines), while `cov_baseline_lines` is 52%. Treat that report as a pointer only: regenerate coverage on the intended checkout before setting targets or changing the ratchet. The current llvm-cov report includes executable code from inline `#[cfg(test)]` modules in its source-file denominator; the CLI main-file line count increased when only a test was added. Distinguish newly covered production lines from test-source lines, and do not treat a raw aggregate increase as production-coverage gain. Coverage is a signal, not the goal; tests should assert behavior that matters.
 
 ## Scope and Sequence
 
@@ -42,7 +42,7 @@ Choose the next one or two slices from the fresh report and existing test invent
 
 ### 5. Raise the ratchet and retire this plan
 
-After tests pass and the measured denominator is stable, raise `cov_baseline_lines` to the verified value; never lower it. When the effort is complete, move durable testing guidance into `docs/testing.md`, remove this plan and its active-plan entry, and sweep inbound references as required by `docs/plans/README.md`.
+Before raising `cov_baseline_lines`, decide and document how inline unit-test code is handled in the denominator. Do not raise the ratchet based on aggregate increases caused by newly added test functions. Once the denominator policy is explicit and stable, raise the baseline to the verified value; never lower it. When the effort is complete, move durable testing guidance into `docs/testing.md`, remove this plan and its active-plan entry, and sweep inbound references as required by `docs/plans/README.md`.
 
 ## Validation
 
@@ -61,5 +61,6 @@ After tests pass and the measured denominator is stable, raise `cov_baseline_lin
 - Keep unrelated packaging and documentation edits out of scope and preserve existing user changes.
 - Callback tests are conditional. If a GUI-specific gap needs them, first prove deterministic event-loop handling for one callback and asynchronous `on_ui` update; otherwise test narrower decision/projection logic without refactoring startup.
 - Avoid duplication: daemon wire tests already cover core TV command/config/pairing contracts, and SDK client tests cover watcher/client behavior. GUI tests should add coverage for GUI-only state and rendering.
+- Inline `#[cfg(test)]` functions affect the llvm-cov source-line denominator. Track production-line gains separately and defer a ratchet increase until the denominator policy is resolved.
 - The helper slice is intentionally small and may yield only a modest workspace percentage increase; use it to improve failure-path confidence, then let the measured report guide higher-return work.
 - Keep tests hermetic. If a candidate needs D-Bus, compositor, filesystem, or other host state, introduce a documented seam/fake consistent with `docs/testing.md`, or defer it.

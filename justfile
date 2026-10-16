@@ -289,8 +289,9 @@ docs-gen-check: docs-gen
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.
 cov_baseline_lines := "52"
 
-# Exclude test infrastructure from coverage reports - measure production
-# code only. Matches crate names and test-only modules.
+# Exclude separate test infrastructure crates/files from coverage reports.
+# Inline #[cfg(test)] modules share source files with production and remain
+# in the llvm-cov denominator; see docs/testing.md.
 cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock)/|test_server)'"
 
 # Where `_cov-collect` records the test run's exit status, so the report
