@@ -621,7 +621,7 @@ pub(crate) async fn run_wizard_re_pair(
 /// wizard's phase/message Slint properties, gated by the generation
 /// counter so late updates from a cancelled-and-reopened wizard
 /// session are dropped.
-fn make_progress_callback(
+pub(crate) fn make_progress_callback(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
     captured_gen: u64,

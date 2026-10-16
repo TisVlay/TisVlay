@@ -206,6 +206,11 @@ mod tests {
             },
         ])));
         profiles.set_editor_can_reset_all(true);
+        let wizard = app.global::<crate::PairingWizard>();
+        let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(7));
+        let mut progress =
+            crate::wizard::make_progress_callback(app.as_weak(), generation.clone(), 7);
+        progress(tisvlay::PairingPhase::AwaitingTv, "waiting for TV");
         let tv_id = SharedString::from("tv-1");
         app.set_tvs(ModelRc::new(VecModel::from(vec![crate::TvViewModel {
             uuid: tv_id.clone(),
@@ -246,10 +251,19 @@ mod tests {
         assert_eq!(reload_error.title, "Reload failed: daemon.toml");
         assert_eq!(reload_error.message, "error: invalid TOML");
         assert_eq!(reload_error.tone, "error");
+        assert_eq!(wizard.get_pair_phase(), "awaiting_tv");
+        assert_eq!(wizard.get_pair_message(), "waiting for TV");
         assert_eq!(
             app.get_tvs().row_data(0).unwrap().power_cycle_phase,
             "connecting"
         );
+
+        progress(tisvlay::PairingPhase::AwaitingInput, "stale progress");
+        generation.store(8, std::sync::atomic::Ordering::SeqCst);
+        slint::quit_event_loop().expect("quit before draining stale progress");
+        slint::run_event_loop().expect("drain and reject stale wizard progress");
+        assert_eq!(wizard.get_pair_phase(), "awaiting_tv");
+        assert_eq!(wizard.get_pair_message(), "waiting for TV");
 
         crate::power_cycle::update_power_cycle_phase(&app.as_weak(), tv_id.as_str(), None);
         crate::profiles::clear_selection_in_slint(app.as_weak());
