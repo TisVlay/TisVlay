@@ -824,12 +824,15 @@ mod tests {
     };
 
     use super::{
-        AutofilledRow, WizardEntry, apply_manual_entry_helper_overrides, mark_field_invalid,
-        picked_tv_name, publish_wizard_entries, reset_wizard,
+        AutofilledRow, WizardEntry, apply_manual_entry_helper_overrides, localize_pair_failure,
+        mark_field_invalid, picked_tv_name, publish_wizard_entries, reset_wizard,
     };
     use crate::{AppWindow, PairingFieldRow, PairingWizard};
     use parking_lot::Mutex;
     use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+    use tisvlay::{
+        FailureCode, LinkMacOutcome, LinkMacReport, PairTerminal, PairingPhase, PairingProgress,
+    };
     use tokio::sync::oneshot;
 
     fn field_row(name: &str) -> PairingFieldRow {
@@ -983,6 +986,69 @@ mod tests {
             ("", String::new(), String::new())
         );
         assert_eq!(mac_notice(None), ("", String::new(), String::new()));
+    }
+
+    #[test]
+    fn pair_terminal_results_preserve_complete_and_failure_details() {
+        use super::{PairError, terminal_to_result};
+
+        let report = LinkMacReport {
+            reported: "84:90:0A:63:A9:94".into(),
+            outcome: LinkMacOutcome::Filled,
+        };
+        let Ok(complete) = terminal_to_result(Ok(PairTerminal::Complete {
+            tv: uuid::Uuid::nil(),
+            message: "paired".into(),
+            link_mac: Some(report.clone()),
+        })) else {
+            panic!("complete terminal succeeds")
+        };
+        assert_eq!(complete, Some(report));
+
+        let progress = PairingProgress {
+            attempt: uuid::Uuid::nil(),
+            phase: PairingPhase::Failed,
+            message: "permission denied".into(),
+            code: Some(FailureCode::DevicePermissionDenied),
+            path: Some("/dev/cec0".into()),
+            link_mac: None,
+        };
+        let failed = terminal_to_result(Ok(PairTerminal::Failed {
+            tv: uuid::Uuid::nil(),
+            progress: progress.clone(),
+        }))
+        .expect_err("failed terminal becomes a handshake error");
+        assert!(matches!(failed, PairError::Handshake(detail) if *detail == progress));
+
+        let rpc_error = tisvlay::Error::Timeout {
+            service: tisvlay::Service::Daemon,
+        };
+        assert!(matches!(
+            terminal_to_result(Err(rpc_error)),
+            Err(PairError::Rpc(tisvlay::Error::Timeout {
+                service: tisvlay::Service::Daemon
+            }))
+        ));
+    }
+
+    #[test]
+    fn device_permission_failure_names_the_node_or_uses_the_fallback() {
+        let detail = |path| PairingProgress {
+            attempt: uuid::Uuid::nil(),
+            phase: PairingPhase::Failed,
+            message: "permission denied".into(),
+            code: Some(FailureCode::DevicePermissionDenied),
+            path,
+            link_mac: None,
+        };
+        assert!(localize_pair_failure(&detail(Some("/dev/cec0".into()))).contains("/dev/cec0"));
+        assert!(localize_pair_failure(&detail(None)).contains("/dev/cec*"));
+
+        let unknown = PairingProgress {
+            code: Some(FailureCode::PairingRejected),
+            ..detail(None)
+        };
+        assert_eq!(localize_pair_failure(&unknown), "permission denied");
     }
 
     /// A missed MAC lookup prefixes the vendor's own helper rather than
