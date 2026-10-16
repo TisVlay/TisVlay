@@ -824,8 +824,9 @@ mod tests {
     };
 
     use super::{
-        AutofilledRow, WizardEntry, apply_manual_entry_helper_overrides, localize_pair_failure,
-        mark_field_invalid, picked_tv_name, publish_wizard_entries, reset_wizard,
+        AutofilledRow, WizardEntry, apply_manual_entry_helper_overrides, fill_picked_tv_name,
+        localize_pair_failure, mark_field_invalid, picked_tv_name, publish_wizard_entries,
+        reset_wizard,
     };
     use crate::{AppWindow, PairingFieldRow, PairingWizard};
     use parking_lot::Mutex;
@@ -1149,5 +1150,25 @@ mod tests {
     #[test]
     fn repick_keeps_a_hand_typed_name() {
         assert_eq!(picked_tv_name("Office", "OLED55G3PUA", "OLED42C3PUA"), None);
+    }
+
+    #[test]
+    fn fill_picked_name_tracks_autofill_without_overwriting_manual_text() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+
+        fill_picked_tv_name(&wizard, "Living Room");
+        assert_eq!(wizard.get_tv_name(), "Living Room");
+        assert_eq!(wizard.get_tv_name_autofilled(), "Living Room");
+
+        fill_picked_tv_name(&wizard, "Bedroom");
+        assert_eq!(wizard.get_tv_name(), "Bedroom");
+        assert_eq!(wizard.get_tv_name_autofilled(), "Bedroom");
+
+        wizard.set_tv_name(SharedString::from("Office"));
+        fill_picked_tv_name(&wizard, "Kitchen");
+        assert_eq!(wizard.get_tv_name(), "Office");
+        assert_eq!(wizard.get_tv_name_autofilled(), "Bedroom");
     }
 }
