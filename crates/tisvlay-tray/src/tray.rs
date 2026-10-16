@@ -952,6 +952,32 @@ mod tests {
     }
 
     #[test]
+    fn root_menu_handles_empty_catalog_and_live_remote_session_status() {
+        let mut tray = tray_with(&[]);
+        tray.mirror.daemon_alive = true;
+        let menu = tray.menu();
+        assert!(matches!(
+            menu.first(),
+            Some(MenuItem::Standard(item)) if item.label == "No TVs configured" && !item.enabled
+        ));
+
+        let tv_id = Uuid::from_u128(1);
+        let mut remote_tv = tv("Office", true, false, false);
+        remote_tv.remote_armed = true;
+        tray.mirror.tvs.insert(tv_id, remote_tv);
+        let menu = tray.menu();
+        assert!(menu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label == "Remote session active" && !item.enabled)
+        }));
+
+        tray.mirror.daemon_alive = false;
+        let menu = tray.menu();
+        assert!(!menu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label == "Remote session active")
+        }));
+    }
+
+    #[test]
     fn vertical_scroll_normalizes_delta_and_ignores_irrelevant_events() {
         let id = Uuid::from_u128(1);
         let (tx, mut rx) = mpsc::unbounded_channel();
