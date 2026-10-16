@@ -936,9 +936,35 @@ mod tests {
         let wizard = app.global::<PairingWizard>();
         wizard.set_active(true);
         wizard.set_step(3);
+        wizard.set_selected_index(2);
         wizard.set_tv_name(SharedString::from("Living Room"));
+        wizard.set_tv_name_autofilled(SharedString::from("Old TV"));
+        wizard.set_mac_notice(SharedString::from("differs"));
+        wizard.set_mac_reported(SharedString::from("84:90:0A:63:A9:94"));
+        wizard.set_mac_configured(SharedString::from("64:E4:A5:6C:AB:B4"));
+        wizard.set_mac_error(SharedString::from("MAC lookup failed"));
+        wizard.set_system_profile(SharedString::from("profile-1"));
+        wizard.set_managed(false);
+        wizard.set_manual_vendor_index(3);
+        wizard.set_manual_ip(SharedString::from("192.0.2.10"));
+        wizard.set_selected_vendor(SharedString::from("lg"));
+        wizard.set_selected_vendor_name(SharedString::from("LG WebOS"));
+        wizard.set_selected_address(SharedString::from("192.0.2.20"));
+        wizard.set_selected_hw_model(SharedString::from("OLED42C3"));
         wizard.set_discovery_streaming(true);
+        wizard.set_discovery_error(SharedString::from("discovery failed"));
         wizard.set_manual_lookup_streaming(true);
+        wizard.set_pair_phase(SharedString::from("awaiting_tv"));
+        wizard.set_pair_message(SharedString::from("waiting for TV"));
+        wizard.set_pair_tv_id(SharedString::from("tv-1"));
+        wizard.set_discovered(ModelRc::new(VecModel::from(vec![
+            crate::WizardDiscoveredTv {
+                name: SharedString::from("Living Room"),
+                ..Default::default()
+            },
+        ])));
+        wizard.set_schema_fields(ModelRc::new(VecModel::from(vec![field_row("ip")])));
+        wizard.set_schema_valid(true);
 
         let generation = Arc::new(AtomicU64::new(7));
         let (discovery_tx, mut discovery_rx) = oneshot::channel();
@@ -953,9 +979,30 @@ mod tests {
         assert!(lookup_rx.try_recv().is_ok());
         assert!(!wizard.get_active());
         assert_eq!(wizard.get_step(), 1);
+        assert_eq!(wizard.get_selected_index(), -1);
         assert!(wizard.get_tv_name().is_empty());
+        assert!(wizard.get_tv_name_autofilled().is_empty());
+        assert!(wizard.get_mac_notice().is_empty());
+        assert!(wizard.get_mac_reported().is_empty());
+        assert!(wizard.get_mac_configured().is_empty());
+        assert!(wizard.get_mac_error().is_empty());
+        assert!(wizard.get_system_profile().is_empty());
+        assert!(wizard.get_managed());
+        assert_eq!(wizard.get_manual_vendor_index(), 0);
+        assert!(wizard.get_manual_ip().is_empty());
+        assert!(wizard.get_selected_vendor().is_empty());
+        assert!(wizard.get_selected_vendor_name().is_empty());
+        assert!(wizard.get_selected_address().is_empty());
+        assert!(wizard.get_selected_hw_model().is_empty());
         assert!(!wizard.get_discovery_streaming());
+        assert!(wizard.get_discovery_error().is_empty());
         assert!(!wizard.get_manual_lookup_streaming());
+        assert!(wizard.get_pair_phase().is_empty());
+        assert!(wizard.get_pair_message().is_empty());
+        assert!(wizard.get_pair_tv_id().is_empty());
+        assert_eq!(wizard.get_discovered().row_count(), 0);
+        assert_eq!(wizard.get_schema_fields().row_count(), 0);
+        assert!(!wizard.get_schema_valid());
     }
 
     /// The done step speaks only when there's something to act on or know:
