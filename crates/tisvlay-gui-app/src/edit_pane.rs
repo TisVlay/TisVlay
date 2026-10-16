@@ -189,4 +189,19 @@ mod tests {
         assert!(row.error.is_empty());
         assert!(edit_pane.get_valid());
     }
+
+    #[test]
+    fn publish_edit_error_applies_worker_update_on_the_event_loop() {
+        i_slint_backend_testing::init_integration_test_with_system_time();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let edit_pane = app.global::<EditPane>();
+        edit_pane.set_saving(true);
+
+        publish_edit_error(&app.as_weak(), "schema unavailable".into());
+        slint::quit_event_loop().expect("quit the test event loop");
+        slint::run_event_loop().expect("drain the test event loop");
+
+        assert_eq!(edit_pane.get_error().as_str(), "schema unavailable");
+        assert!(!edit_pane.get_saving());
+    }
 }

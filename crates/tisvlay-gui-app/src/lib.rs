@@ -1478,8 +1478,8 @@ fn register_callbacks(
     });
 
     let coalescer = volume_coalescer;
-    daemon_global.on_set_volume(move |tv_id, value| {
-        coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
+    register_volume_callback(&daemon_global, move |tv_id, value| {
+        coalescer.fire(tv_id, value);
     });
 
     let d = daemon.clone();
@@ -2604,6 +2604,12 @@ fn build_notification_update(category: &str, enabled: bool) -> NotificationSetti
     patch
 }
 
+fn register_volume_callback(daemon: &Daemon, dispatch: impl Fn(String, u8) + 'static) {
+    daemon.on_set_volume(move |tv_id, value| {
+        dispatch(tv_id.to_string(), value.clamp(0, 100) as u8);
+    });
+}
+
 #[cfg(test)]
 mod notification_key_tests {
     use super::NotificationCategory;
@@ -2649,6 +2655,7 @@ mod notification_key_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
 
     fn outcome(
         file: &str,
@@ -2768,6 +2775,32 @@ mod tests {
         assert_eq!(
             error_text(&error),
             "connect to the daemon socket: permission denied"
+        );
+    }
+
+    #[test]
+    fn volume_callback_clamps_levels_and_preserves_tv_id() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let calls: Arc<Mutex<Vec<(String, u8)>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+
+        register_volume_callback(&app.global::<Daemon>(), move |tv_id, value| {
+            recorded.lock().push((tv_id, value));
+        });
+
+        let daemon = app.global::<Daemon>();
+        daemon.invoke_set_volume(SharedString::from("tv-low"), -5);
+        daemon.invoke_set_volume(SharedString::from("tv-mid"), 40);
+        daemon.invoke_set_volume(SharedString::from("tv-high"), 120);
+
+        assert_eq!(
+            *calls.lock(),
+            vec![
+                ("tv-low".into(), 0),
+                ("tv-mid".into(), 40),
+                ("tv-high".into(), 100),
+            ]
         );
     }
 }
