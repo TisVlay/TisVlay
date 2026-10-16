@@ -294,6 +294,10 @@ fn format_fields(value: &Value) -> String {
 
 /// Print one profile catalog row.
 fn print_profile(id: &str, body: &Value) {
+    print!("{}", format_profile(id, body));
+}
+
+fn format_profile(id: &str, body: &Value) -> String {
     let mut extras: Vec<String> = body
         .as_object()
         .into_iter()
@@ -302,12 +306,12 @@ fn print_profile(id: &str, body: &Value) {
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
     extras.sort();
-    println!(
+    format!(
         "{}  {}  {}",
         id,
-        body["name"].as_str().unwrap_or("?"),
+        body.get("name").and_then(Value::as_str).unwrap_or("?"),
         extras.join(" "),
-    );
+    ) + "\n"
 }
 
 /// Hydrate a cached catalog wildcard and print each body once the
@@ -1130,6 +1134,29 @@ mod tests {
     #[test]
     fn format_fields_renders_non_object_values_as_json() {
         assert_eq!(super::format_fields(&serde_json::json!([1, 2])), "[1,2]\n");
+    }
+
+    #[test]
+    fn format_profile_sorts_fields_and_handles_missing_or_non_object_names() {
+        assert_eq!(
+            super::format_profile(
+                "uuid",
+                &serde_json::json!({
+                    "name": "Office",
+                    "zeta": 2,
+                    "alpha": 1
+                })
+            ),
+            "uuid  Office  alpha=1 zeta=2\n"
+        );
+        assert_eq!(
+            super::format_profile("uuid", &serde_json::json!({ "zeta": 2 })),
+            "uuid  ?  zeta=2\n"
+        );
+        assert_eq!(
+            super::format_profile("uuid", &serde_json::json!([])),
+            "uuid  ?  \n"
+        );
     }
 
     #[test]
