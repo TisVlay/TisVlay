@@ -151,14 +151,14 @@ The isolated-networks fix (generic mechanism in prose, vendor specifics in a per
 
 ### S — Structural guards
 
-- S1 **Link and anchor checking in the docs CI job.** mdBook doesn't validate `#fragment` anchors, and this book cross-links heavily (every R item adds more). Add a checker that verifies fragments (e.g. lychee with `--include-fragments` over the built HTML, offline mode) to `just docs-build` or a sibling recipe.
+- [x] **S1 Link and anchor checking in the docs CI job (2026-10-15).** `just docs-links` builds the book and runs lychee 0.24.2 over the generated HTML with offline anchor-fragment checking; CI installs the same pinned version and runs the recipe.
 - S2 **A one-line authoring rule** in `docs/book/` (README or the plan): state a fact in its canonical page; elsewhere, a clause and a link. The R table above is the initial map of canonical homes.
 
 ### Proposed sequencing
 
 1. **Consolidate** R1–R15, H3–H10, and V1–V6. Prose-only, page by page, no new tooling; `just docs-build` + the anchor spot-checks per commit.
 2. **G2** (trivial) and **G1** (profile-defaults generator + drift gate), with a test that the partial is byte-stable.
-3. **S1** link/anchor checker in CI, so the consolidated cross-links can't rot.
+3. **S1 completed (2026-10-15).** The `docs-links` CI gate checks local HTML links and anchors.
 4. **Maintainer decisions** first: H1 (version string), H2 (badges), H5 (glibc + tested-models), G3 (NixOS options page now or later).
 
 **Step 1 done (2026-10-10)** — `9a753f4a` Getting Started, `15156e01` User Guide, and the Operations/Reference commit: every R, H3–H10, V item and the G3 consolidation applied; hand-written words ~11.5k → ~10.5k with the NixOS option table and CEC device-access steps added. Found while consolidating: distro packages never documented CEC device access (the packaged unit's `PrivateDevices` hides `/dev/cec*`; the unit file's own drop-in + udev instructions are now in Installation), and Pairing pointed at a nonexistent `[tv.cec]` block. Next: step 2 (G1, G2, H1).
@@ -172,7 +172,9 @@ The isolated-networks fix (generic mechanism in prose, vendor specifics in a per
 - **Version source:** the workspace `Cargo.toml` version, which on main always equals the latest release (maintainer-confirmed).
 - **Correctness win:** the generated defaults are the real stock mappings, modifiers included (e.g. `on_startup` restores the input; the off-going events carry `while_remote = true`), which the hand-copied bare tokens had dropped.
 
-**Step 2 done (2026-10-10)** — tisvlay-docgen + the four partials, `just docs-gen`/`docs-gen-check` wired into CI; `just check` (640 tests), the drift gate, the book build and prek all green. The global-flag details cli.md carried moved into the clap doc comments, so `--help` and the book share them. Next: step 3 (S1 fragment-aware link checker in the docs CI job).
+**Step 2 done (2026-10-10)** — tisvlay-docgen + the four partials, `just docs-gen`/`docs-gen-check` wired into CI; `just check` (640 tests), the drift gate, the book build and prek all green. The global-flag details cli.md carried moved into the clap doc comments, so `--help` and the book share them.
+
+**Step 3 done (2026-10-15)** — S1 adds an offline, fragment-aware check of the built HTML through `just docs-links`, run in the CI docs job. The remaining user-docs task is connecting the Read the Docs project if it has not already been done.
 
 **Decisions (maintainer, 2026-10-10):**
 - H1 — generate the release version from `Cargo.toml` into a partial behind the docs drift gate (joins G1/G2 in step 2).

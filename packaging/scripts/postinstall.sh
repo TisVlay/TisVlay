@@ -48,8 +48,9 @@ systemctl try-restart tisvlay-daemon.service 2>/dev/null || true
 # Start only on FIRST install — an upgrade must never override an
 # admin's runtime stop, and a printed "now start it" hint reaches no one
 # under an app-store install. Fresh install is $1=configure with no old
-# version in $2 (deb) or $1=1 (rpm); pacman passes a version string and
-# is deliberately excluded — Arch scriptlets never start services.
+# version in $2 (deb), $1=1 (rpm), or version-valued $1 with $2 empty
+# (pacman). RPM upgrade counts are numeric; pacman upgrades set $2 to the
+# old version.
 # Debian goes through deb-systemd-invoke when present so policy-rc.d is
 # honored in chroots and image builds.
 if [ "$1" = "configure" ] && [ -z "$2" ]; then
@@ -60,6 +61,10 @@ if [ "$1" = "configure" ] && [ -z "$2" ]; then
     fi
 elif [ "$1" = "1" ]; then
     systemctl start tisvlay-daemon.service 2>/dev/null || true
+elif [ -z "$2" ]; then
+    case "$1" in
+        *[!0-9]*) systemctl start tisvlay-daemon.service 2>/dev/null || true ;;
+    esac
 fi
 
 # Enable the per-user session + tray for every user's graphical session
@@ -81,8 +86,7 @@ systemctl --global enable tisvlay-session.service tisvlay-tray.service 2>/dev/nu
 systemctl --global enable tisvlay-greeter-gdm.service 2>/dev/null || true
 
 echo "tisvlay installed; the daemon is enabled and starts on fresh installs"
-echo "(upgrades keep its running state; on Arch, start it once with"
-echo "  sudo systemctl start tisvlay-daemon)."
+echo "(upgrades keep its running state)."
 echo "The user at the console has TV control automatically; grant an account"
 echo "durable access (SSH, remote, headless) with: tisvlay enable-access"
 echo "The session + tray start automatically on your next graphical login;"

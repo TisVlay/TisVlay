@@ -4,11 +4,9 @@
 **TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for heterogeneous multi-display setups, mitigating energy usage and display burn-in.
 
 [![CI Pipeline](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml/badge.svg)](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml)
-[![Crates.io Version](https://img.shields.io/crates/v/tisvlay)](https://crates.io/crates/tisvlay)
-[![Crates.io Dependencies](https://img.shields.io/deps-rs/tisvlay/latest)](https://crates.io/crates/tisvlay/dependencies)
-![Crates.io MSRV](https://img.shields.io/crates/msrv/tisvlay)
-![Crates.io Total Downloads](https://img.shields.io/crates/d/tisvlay)
-[![Crates.io License](https://img.shields.io/crates/l/tisvlay)](https://choosealicense.com/licenses/apache-2.0)
+[![Coverage](https://codecov.io/gh/TisVlay/TisVlay/branch/main/graph/badge.svg)](https://codecov.io/gh/TisVlay/TisVlay)
+[![Latest release](https://img.shields.io/github/v/release/TisVlay/TisVlay)](https://github.com/TisVlay/TisVlay/releases)
+[![License](https://img.shields.io/github/license/TisVlay/TisVlay)](https://github.com/TisVlay/TisVlay/blob/main/LICENSE)
 
 ## ✨ Features
 - 📺 Control multiple TVs & projectors just like conventional displays
@@ -95,7 +93,8 @@ Daemon -.->|WebSocket / WoL| TV2
 
 The user guide is an [mdBook](https://rust-lang.github.io/mdBook/) in [`docs/book/`](docs/book/) (`just docs-serve` renders it locally):
 
-- New here? Start with [Installation](docs/book/src/getting-started/installation.md), then [Quick Start](docs/book/src/getting-started/quick-start.md).
-- Already running? See the [CLI Reference](docs/book/src/guide/cli.md) and [Configuration](docs/book/src/guide/configuration.md).
-- Streaming in remotely? See [Remote-Session Awareness](docs/book/src/guide/remote-sessions.md).
-- Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
+- 🧭 New here? Start with [Installation](docs/book/src/getting-started/installation.md), then [Quick Start](docs/book/src/getting-started/quick-start.md).
+- 🎛️ Already running? See the [CLI Reference](docs/book/src/guide/cli.md) and [Configuration](docs/book/src/guide/configuration.md).
+- 🛰️ Streaming in remotely? See [Remote-Session Awareness](docs/book/src/guide/remote-sessions.md).
+- 🔎 Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
+- 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/operations/isolated-networks.md).
