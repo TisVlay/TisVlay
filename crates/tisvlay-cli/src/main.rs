@@ -262,9 +262,13 @@ async fn run() -> Result<()> {
 /// indent), sorted by key — the human view of config and resolved
 /// profile bodies.
 fn print_fields(value: &Value) {
-    fn walk(value: &Value, indent: usize) {
+    print!("{}", format_fields(value));
+}
+
+fn format_fields(value: &Value) -> String {
+    fn walk(value: &Value, indent: usize, lines: &mut Vec<String>) {
         let Some(object) = value.as_object() else {
-            println!("{value}");
+            lines.push(value.to_string());
             return;
         };
         let mut entries: Vec<(&String, &Value)> = object.iter().collect();
@@ -273,16 +277,19 @@ fn print_fields(value: &Value) {
             let pad = " ".repeat(indent);
             match val {
                 Value::Object(_) => {
-                    println!("{pad}{key}:");
-                    walk(val, indent + 2);
+                    lines.push(format!("{pad}{key}:"));
+                    walk(val, indent + 2, lines);
                 }
-                Value::Null => println!("{pad}{key} ="),
-                Value::String(s) => println!("{pad}{key} = {s}"),
-                other => println!("{pad}{key} = {other}"),
+                Value::Null => lines.push(format!("{pad}{key} =")),
+                Value::String(s) => lines.push(format!("{pad}{key} = {s}")),
+                other => lines.push(format!("{pad}{key} = {other}")),
             }
         }
     }
-    walk(value, 0);
+
+    let mut lines = Vec::new();
+    walk(value, 0, &mut lines);
+    lines.join("\n") + "\n"
 }
 
 /// Print one profile catalog row.
@@ -1102,6 +1109,27 @@ mod tests {
                  to use it: tisvlay config-set {id} '{{\"mac\":\"84:90:0A:63:A9:94\"}}'"
             )
         );
+    }
+
+    #[test]
+    fn format_fields_sorts_and_indents_nested_values() {
+        let value = serde_json::json!({
+            "zeta": 2,
+            "alpha": {
+                "text": "value",
+                "empty": null,
+                "enabled": true
+            }
+        });
+        assert_eq!(
+            super::format_fields(&value),
+            "alpha:\n  empty =\n  enabled = true\n  text = value\nzeta = 2\n"
+        );
+    }
+
+    #[test]
+    fn format_fields_renders_non_object_values_as_json() {
+        assert_eq!(super::format_fields(&serde_json::json!([1, 2])), "[1,2]\n");
     }
 
     #[test]
