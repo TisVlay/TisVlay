@@ -1100,4 +1100,68 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn reload_outcome_maps_service_results_and_formats_them() {
+        use super::{ReloadOutcome, reload_outcome};
+        use tisvlay_protocol::caller::RpcError;
+        use tisvlay_protocol::error::{ErrorCode, WireError};
+        use tisvlay_protocol::rpc::ReloadReport;
+
+        assert!(matches!(reload_outcome(None), ReloadOutcome::NotRunning));
+        assert!(matches!(
+            reload_outcome(Some(Err(RpcError::Unavailable {
+                key: "reload".into(),
+            }))),
+            ReloadOutcome::NotRunning
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Ok(ReloadReport { changed: true }))),
+            ReloadOutcome::Changed
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Ok(ReloadReport { changed: false }))),
+            ReloadOutcome::Unchanged
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Err(RpcError::Service(WireError {
+                code: ErrorCode::Internal,
+                message: "invalid TOML".into(),
+            })))),
+            ReloadOutcome::Failed(error) if error == "invalid TOML"
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Err(RpcError::Timeout {
+                key: "reload".into(),
+            }))),
+            ReloadOutcome::Failed(_)
+        ));
+
+        let outcomes = [
+            (
+                ReloadOutcome::Changed,
+                "applied the file's edit",
+                serde_json::json!({ "status": "changed" }),
+            ),
+            (
+                ReloadOutcome::Unchanged,
+                "the file is unchanged",
+                serde_json::json!({ "status": "unchanged" }),
+            ),
+            (
+                ReloadOutcome::NotRunning,
+                "not running",
+                serde_json::json!({ "status": "not-running" }),
+            ),
+            (
+                ReloadOutcome::Failed("invalid TOML".into()),
+                "failed",
+                serde_json::json!({ "status": "failed", "error": "invalid TOML" }),
+            ),
+        ];
+        for (outcome, description, json) in outcomes {
+            assert_eq!(outcome.describe(), description);
+            assert_eq!(outcome.to_json(), json);
+        }
+    }
 }
