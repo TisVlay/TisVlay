@@ -867,6 +867,71 @@ mod version_banner_tests {
     }
 
     #[test]
+    fn push_snapshot_refreshes_selected_profile_and_clears_deleted_selection() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let profiles = app.global::<Profiles>();
+        profiles.set_selected_kind(ProfileKind::System);
+        profiles.set_selected_uuid(SharedString::from("system-profile"));
+
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: Vec::new(),
+                system_profiles: vec![SharedString::from("Default")],
+                user_profiles: vec![SharedString::from("Personal")],
+                system_profile_rows: vec![ProfileRowRaw {
+                    uuid: SharedString::from("system-profile"),
+                    name: SharedString::from("Work"),
+                    display_name: SharedString::from("Work *"),
+                    is_default: false,
+                    referenced_by: vec![crate::state::ProfileTvRefRaw {
+                        uuid: SharedString::from("tv-1"),
+                        name: SharedString::from("Office"),
+                        automated: true,
+                    }],
+                    referenced_by_summary: SharedString::from("Office"),
+                    active: true,
+                }],
+                user_profile_rows: Vec::new(),
+            },
+        );
+
+        let system_rows = profiles.get_system();
+        let system_row = system_rows
+            .row_data(0)
+            .expect("the system profile row is projected");
+        assert_eq!(system_row.display_name, "Work *");
+        assert_eq!(system_row.referenced_by_summary, "Office");
+        assert!(system_row.active);
+        let references = system_row.referenced_by;
+        let reference = references
+            .row_data(0)
+            .expect("the profile reference is projected");
+        assert_eq!(reference.name, "Office");
+        assert!(reference.automated);
+        assert_eq!(profiles.get_selected_row().display_name, "Work *");
+        assert_eq!(
+            app.get_system_profiles().row_data(0).as_deref(),
+            Some("Default")
+        );
+        assert_eq!(app.global::<Profiles>().get_user().row_count(), 0);
+
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: Vec::new(),
+                system_profiles: Vec::new(),
+                user_profiles: Vec::new(),
+                system_profile_rows: Vec::new(),
+                user_profile_rows: Vec::new(),
+            },
+        );
+        assert!(profiles.get_selected_row().uuid.is_empty());
+        assert_eq!(profiles.get_system().row_count(), 0);
+    }
+
+    #[test]
     fn sync_vec_model_updates_existing_rows_and_tracks_length_changes() {
         let current = ModelRc::new(VecModel::from(vec![1, 2]));
 
