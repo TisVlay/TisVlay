@@ -655,7 +655,7 @@ pub(crate) fn make_progress_callback(
 /// Typed pair/re-pair outcome for [`publish_pair_outcome`]: the
 /// handshake failure's detail and the SDK error both stay typed, so an
 /// `invalid-field` refusal routes to its schema row.
-enum PairError {
+pub(crate) enum PairError {
     /// Terminal `failed` phase from the daemon — localize by its `code`.
     Handshake(Box<PairingProgress>),
     /// A sync-rpc or stream error (unknown vendor, `invalid-field`, the
@@ -730,7 +730,7 @@ fn mac_notice(report: Option<&LinkMacReport>) -> (&'static str, String, String) 
 /// (and `wizard_gen` bumped) since the captured value, the
 /// callback no-ops so a cancelled-and-reopened wizard isn't
 /// stomped by a late terminal outcome from the prior session.
-fn publish_pair_outcome(
+pub(crate) fn publish_pair_outcome(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: &WizardGen,
     captured_gen: u64,

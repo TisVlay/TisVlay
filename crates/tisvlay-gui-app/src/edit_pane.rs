@@ -265,6 +265,63 @@ mod tests {
         assert_eq!(wizard.get_pair_phase(), "awaiting_tv");
         assert_eq!(wizard.get_pair_message(), "waiting for TV");
 
+        let outcome_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(11));
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Ok(Some(tisvlay::LinkMacReport {
+                reported: "84:90:0A:63:A9:94".into(),
+                outcome: tisvlay::LinkMacOutcome::Filled,
+            })),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing pairing success");
+        slint::run_event_loop().expect("drain pairing success");
+        assert_eq!(wizard.get_pair_phase(), "complete");
+        assert_eq!(wizard.get_mac_notice(), "filled");
+        assert_eq!(wizard.get_mac_reported(), "84:90:0A:63:A9:94");
+        assert!(wizard.get_mac_configured().is_empty());
+
+        let schema_fields = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        wizard.set_schema_fields(schema_fields.clone());
+        wizard.set_schema_valid(true);
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Err(crate::wizard::PairError::Rpc(tisvlay::Error::Rpc {
+                code: ErrorCode::InvalidField,
+                message: "ip: not an IP address".into(),
+            })),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing invalid-field response");
+        slint::run_event_loop().expect("drain invalid-field response");
+        let invalid_ip = schema_fields
+            .row_data(0)
+            .expect("schema row remains present");
+        assert_eq!(invalid_ip.state, "invalid");
+        assert_eq!(invalid_ip.error, "not an IP address");
+        assert!(!wizard.get_schema_valid());
+        assert_eq!(wizard.get_step(), 2);
+
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Err(crate::wizard::PairError::Local(
+                "stale terminal result".into(),
+            )),
+            false,
+        );
+        outcome_generation.store(12, std::sync::atomic::Ordering::SeqCst);
+        slint::quit_event_loop().expect("quit before draining stale terminal outcome");
+        slint::run_event_loop().expect("reject stale terminal outcome");
+        assert_eq!(wizard.get_pair_phase(), "");
+        assert_eq!(wizard.get_pair_message(), "");
+        assert_eq!(wizard.get_step(), 2);
+
         crate::power_cycle::update_power_cycle_phase(&app.as_weak(), tv_id.as_str(), None);
         crate::profiles::clear_selection_in_slint(app.as_weak());
         slint::quit_event_loop().expect("quit after clearing the power phase");
