@@ -1496,8 +1496,8 @@ fn register_callbacks(
     });
 
     let coalescer = backlight_coalescer;
-    daemon_global.on_set_backlight(move |tv_id, value| {
-        coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
+    register_backlight_callback(&daemon_global, move |tv_id, value| {
+        coalescer.fire(tv_id, value);
     });
 
     let d = daemon.clone();
@@ -1529,11 +1529,9 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    daemon_global.on_switch_input(move |tv_id, input_id| {
+    register_input_callback(&daemon_global, move |tv_id, input_id| {
         let d = d.clone();
         let app_weak = app_weak.clone();
-        let tv_id = tv_id.to_string();
-        let input_id = input_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = with_id(&tv_id, |tv| d.switch_input(tv, &input_id)).await {
                 let msg = error_text(&*e);
@@ -2612,8 +2610,20 @@ fn register_mute_callback(daemon: &Daemon, dispatch: impl Fn(String, bool) + 'st
     daemon.on_set_mute(move |tv_id, muted| dispatch(tv_id.to_string(), muted));
 }
 
+fn register_backlight_callback(daemon: &Daemon, dispatch: impl Fn(String, u8) + 'static) {
+    daemon.on_set_backlight(move |tv_id, value| {
+        dispatch(tv_id.to_string(), value.clamp(0, 100) as u8);
+    });
+}
+
 fn register_screen_callback(daemon: &Daemon, dispatch: impl Fn(String, bool) + 'static) {
     daemon.on_set_screen(move |tv_id, on| dispatch(tv_id.to_string(), on));
+}
+
+fn register_input_callback(daemon: &Daemon, dispatch: impl Fn(String, String) + 'static) {
+    daemon.on_switch_input(move |tv_id, input_id| {
+        dispatch(tv_id.to_string(), input_id.to_string());
+    });
 }
 
 #[cfg(test)]
@@ -2876,6 +2886,36 @@ mod tests {
             vec![
                 ("mute".into(), "tv-mute".into(), true),
                 ("screen".into(), "tv-screen".into(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn backlight_and_input_callbacks_preserve_clamped_values_and_ids() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let calls: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let backlight_calls = Arc::clone(&calls);
+        register_backlight_callback(&app.global::<Daemon>(), move |tv_id, level| {
+            backlight_calls
+                .lock()
+                .push(("backlight".into(), tv_id, level.to_string()));
+        });
+        let input_calls = Arc::clone(&calls);
+        register_input_callback(&app.global::<Daemon>(), move |tv_id, input| {
+            input_calls.lock().push(("input".into(), tv_id, input));
+        });
+
+        let daemon = app.global::<Daemon>();
+        daemon.invoke_set_backlight(SharedString::from("tv-backlight"), 140);
+        daemon.invoke_switch_input(SharedString::from("tv-input"), SharedString::from("HDMI_2"));
+
+        assert_eq!(
+            *calls.lock(),
+            vec![
+                ("backlight".into(), "tv-backlight".into(), "100".into()),
+                ("input".into(), "tv-input".into(), "HDMI_2".into()),
             ]
         );
     }
