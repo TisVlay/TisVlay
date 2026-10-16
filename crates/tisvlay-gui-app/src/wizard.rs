@@ -817,14 +817,15 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     };
 
     use super::{
-        AutofilledRow, apply_manual_entry_helper_overrides, mark_field_invalid, picked_tv_name,
-        reset_wizard,
+        AutofilledRow, WizardEntry, apply_manual_entry_helper_overrides, mark_field_invalid,
+        picked_tv_name, publish_wizard_entries, reset_wizard,
     };
     use crate::{AppWindow, PairingFieldRow, PairingWizard};
     use parking_lot::Mutex;
@@ -883,6 +884,46 @@ mod tests {
         assert_eq!(row.state.as_str(), "valid");
         assert!(row.error.is_empty());
         assert!(wizard.get_schema_valid());
+    }
+
+    #[test]
+    fn publish_wizard_entries_projects_brand_source_and_access_warning() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        let entries = vec![
+            WizardEntry {
+                id: "cec-1".into(),
+                name: "Office TV".into(),
+                vendor: "cec".into(),
+                address: "/dev/cec0".into(),
+                hw_model: "Mock CEC".into(),
+                vendor_data: HashMap::from([
+                    ("brand".into(), "lg".into()),
+                    ("source".into(), "cec".into()),
+                    ("access".into(), "permission_denied".into()),
+                ]),
+            },
+            WizardEntry {
+                id: "manual-1".into(),
+                name: "Manual TV".into(),
+                vendor: "mock".into(),
+                ..Default::default()
+            },
+        ];
+
+        publish_wizard_entries(&wizard, &entries);
+
+        let rows = wizard.get_discovered();
+        assert_eq!(rows.row_count(), 2);
+        let discovered = rows.row_data(0).expect("discovered row is projected");
+        assert_eq!(discovered.brand, "lg");
+        assert_eq!(discovered.source_label, "CEC");
+        assert!(discovered.access_warning);
+        let manual = rows.row_data(1).expect("manual row is projected");
+        assert_eq!(manual.brand, "mock");
+        assert!(manual.source_label.is_empty());
+        assert!(!manual.access_warning);
     }
 
     #[test]
