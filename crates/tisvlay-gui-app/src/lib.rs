@@ -2612,7 +2612,8 @@ fn register_volume_callback(daemon: &Daemon, dispatch: impl Fn(String, u8) + 'st
 
 #[cfg(test)]
 mod notification_key_tests {
-    use super::NotificationCategory;
+    use super::{NotificationCategory, build_notification_update};
+    use tisvlay::NotificationSettingsPatch;
 
     /// The settings pane's `Daemon.set-notification("<key>", …)` string
     /// literals are a stringly-typed contract with
@@ -2648,6 +2649,47 @@ mod notification_key_tests {
             covered.len(),
             NotificationCategory::ALL.len(),
             "settings pane has a notification row with no matching category"
+        );
+    }
+
+    #[test]
+    fn notification_update_sets_only_the_named_category() {
+        let cases = [
+            (
+                "tv_connection",
+                NotificationSettingsPatch {
+                    tv_connection: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "tv_pairing",
+                NotificationSettingsPatch {
+                    tv_pairing: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "tv_wake",
+                NotificationSettingsPatch {
+                    tv_wake: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "daemon_offline",
+                NotificationSettingsPatch {
+                    daemon_offline: Some(false),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(build_notification_update(key, false), expected);
+        }
+        assert_eq!(
+            build_notification_update("unknown", true),
+            NotificationSettingsPatch::default()
         );
     }
 }
