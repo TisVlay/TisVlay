@@ -1,69 +1,49 @@
 # Installation
 
-tisvlay ships as pre-built distro packages, a NixOS module, and as source via Cargo. Pick the path that matches your system.
+Most Linux users can install a pre-built package below. Choose the instructions for your distribution.
 
-A distro-package install is zero-setup: the post-install hook enables and starts the system daemon (on Arch, start it once with `sudo systemctl start tisvlay-daemon` — pacman convention is that packages never start services), and the per-user services start automatically at your next graphical login. To start them right away without re-logging in:
+## Distro packages (.deb / .rpm / .pkg.tar.zst / flake)
 
-```sh
-systemctl --user start tisvlay-session tisvlay-tray
-```
-
-## Access
-
-The daemon runs as a dedicated `tisvlay` system user, keeps its state under `/var/lib/tisvlay/`, and is controlled over a local socket. Access to that socket is layered:
-
-- **At the console you already have access** — the daemon grants the active seat's logged-in user access automatically, the same way Linux grants the console user its sound card and camera. Nothing to configure. With fast user switching, the grant follows whoever is in the foreground.
-- **For SSH, remote, scripts, or headless use**, join the **`tisvlay` group** — the durable grant. One click:
-
-```sh
-tisvlay enable-access   # authenticates via polkit, adds you to the tisvlay group
-```
-
-A group change only takes effect on a *fresh* login — and on most desktops the systemd user manager survives a plain logout with the old groups, so a **reboot** is the reliable way to pick it up. (Console access needs none of this.) The login screen's greeter client has its own scoped grant.
-
-On NixOS, list accounts in `services.tisvlay.users` instead (see [below](#nixos-flake-module)).
-
-## Distro packages (.deb / .rpm / .pkg.tar.zst)
-
-Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version. They are built against a conservative glibc baseline, so one package runs on every in-support desktop and enterprise distro, immutable-root variants included.
+Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version.
 
 ```sh
 {{#include ../generated/release-version.txt}}
 export BASE=https://github.com/TisVlay/TisVlay/releases/download/v${VERSION}
 ```
 
-**Debian / Ubuntu**
+### Debian / Ubuntu
 
 ```sh
 wget ${BASE}/tisvlay_${VERSION}-1_amd64.deb
 sudo apt install ./tisvlay_${VERSION}-1_amd64.deb
 ```
 
-**Fedora / RHEL**
-
-```sh
-wget ${BASE}/tisvlay-${VERSION}-1.x86_64.rpm
-sudo dnf install ./tisvlay-${VERSION}-1.x86_64.rpm
-```
-
-**Bazzite / Silverblue** (immutable; reboot required)
-
-```sh
-sudo rpm-ostree install ./tisvlay-${VERSION}-1.x86_64.rpm
-```
-
-**Arch / CachyOS**
+### Arch / CachyOS
 
 ```sh
 wget ${BASE}/tisvlay-${VERSION}-1-x86_64.pkg.tar.zst
 sudo pacman -U ./tisvlay-${VERSION}-1-x86_64.pkg.tar.zst
 ```
 
-The post-install hook creates the `tisvlay` system user and group, enables and starts `tisvlay-daemon` (fresh installs only — an upgrade never overrides a daemon you deliberately stopped), and enables the per-user services for everyone's next graphical login. It deliberately adds no one to the `tisvlay` group (see [Access](#access)).
+### Fedora / RHEL
 
-The packages also install shell **tab completion** for the `tisvlay` CLI (bash, zsh, fish); see the [CLI Reference](../guide/cli.md). Bash needs the `bash-completion` loader package (the `.deb`/`.rpm` recommend it); zsh and fish work out of the box.
+```sh
+wget ${BASE}/tisvlay-${VERSION}-1.x86_64.rpm
+sudo dnf install ./tisvlay-${VERSION}-1.x86_64.rpm
+```
 
-## NixOS (flake module)
+#### Bazzite / Silverblue
+
+These immutable systems apply package changes after a reboot.
+
+```sh
+sudo rpm-ostree install ./tisvlay-${VERSION}-1.x86_64.rpm
+```
+
+### NixOS / Source Install
+
+<details>
+<summary id="nixos-flake-module">NixOS (flake module)</summary>
 
 The repository's flake provides a NixOS module that wires up the daemon, user services, and CLI together.
 
@@ -101,10 +81,13 @@ The repository's flake provides a NixOS module that wires up the daemon, user se
 
 Types and defaults are in each option's description in [`module.nix`](https://github.com/TisVlay/TisVlay/blob/main/packaging/nix/module.nix).
 
-## Cargo (from source)
+</details>
+
+<details>
+<summary id="cargo-from-source">cargo from source</summary>
 
 ```sh
-git clone https://github.com/TisVlay/TisVlay
+git clone https://github.com/TisVlay/TisVlay tisvlay
 cd tisvlay
 cargo build --release
 ```
@@ -113,7 +96,37 @@ Binaries land in `target/release/`. Building from Cargo does **not** install the
 
 A recent stable Rust toolchain is required — at least the `rust-version` declared in the workspace `Cargo.toml`; install it from <https://rust-lang.org/tools/install/>.
 
-## HDMI-CEC backend (optional)
+</details>
+
+## After installation
+
+After a fresh install, the system daemon starts automatically. The session and tray start at your next graphical login; to start them now:
+
+```sh
+systemctl --user start tisvlay-session tisvlay-tray
+```
+
+Packages also install shell completion for the `tisvlay` CLI (bash, zsh, fish); see the [CLI Reference](../guide/cli.md). Bash needs the `bash-completion` loader (recommended by the Debian and Fedora packages).
+
+At the desktop, no extra setup is needed: the daemon grants access to the user at the active seat.
+
+<details>
+<summary>Set up access for SSH, scripts, or headless use</summary>
+
+For SSH or headless use, grant your account persistent access, then run:
+
+```sh
+tisvlay enable-access
+```
+
+This adds your account to the `tisvlay` group through polkit. The group change takes effect at a fresh login; because some desktop services keep old group membership after logout, reboot if access is still denied.
+
+</details>
+
+## Optional Additions
+
+<details>
+<summary id="hdmi-cec-backend-optional">HDMI-CEC backend (optional)</summary>
 
 The HDMI-CEC backend needs a CEC adapter that the kernel exposes as a `/dev/cecN` character device — most GPU HDMI ports don't wire the CEC pin. Two known-working sources:
 
@@ -142,3 +155,5 @@ The daemon's sandbox hides `/dev` by default, so it needs device access granted 
 The backend depends on the LGPL-licensed [`linux-cec`](https://crates.io/crates/linux-cec) crate.
 
 No pairing prompt or credentials are involved — a CEC TV is added by picking its adapter; see [Pairing](./pairing.md#hdmi-cec-no-pairing-needed).
+
+</details>
