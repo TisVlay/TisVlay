@@ -2139,6 +2139,85 @@ mod tests {
             .expect("field present")
     }
 
+    fn raw_field(field_name: &str, current_value: &str) -> ProfileFieldRaw {
+        ProfileFieldRaw {
+            field_name: field_name.into(),
+            label: field_name.into(),
+            kind: "enum",
+            options: vec!["none".into(), "screen_on".into()],
+            current_value: current_value.into(),
+            number_value: 0,
+            min_value: 0,
+            max_value: 100,
+            step: 1,
+            unit: "",
+            bool_value: false,
+            is_locally_set: true,
+            has_toggles: true,
+            restore_value: false,
+            restore_enabled: true,
+            restore_differs: false,
+            remote_gate_value: false,
+            remote_gate_enabled: true,
+            remote_gate_differs: false,
+        }
+    }
+
+    #[test]
+    fn push_card_model_updates_same_profile_rows_in_place() {
+        i_slint_backend_testing::init_no_event_loop();
+        let existing = ModelRc::new(VecModel::from(vec![into_slint_entry(raw_field(
+            "on_startup",
+            "screen_off",
+        ))]));
+        let mut replacement = None;
+
+        push_card_model(
+            existing.clone(),
+            vec![raw_field("on_startup", "screen_on")],
+            true,
+            |model| replacement = Some(model),
+        );
+
+        assert!(replacement.is_none(), "same-shape refresh reuses the model");
+        let row = existing.row_data(0).expect("the existing row is updated");
+        assert_eq!(row.current_value, "screen_on");
+        assert_eq!(row.options.row_count(), 2);
+        assert!(row.has_toggles);
+    }
+
+    #[test]
+    fn push_card_model_replaces_rows_on_profile_switch_or_shape_change() {
+        i_slint_backend_testing::init_no_event_loop();
+        let existing = ModelRc::new(VecModel::from(vec![into_slint_entry(raw_field(
+            "on_startup",
+            "screen_off",
+        ))]));
+        let mut replacement = None;
+
+        push_card_model(
+            existing.clone(),
+            vec![raw_field("on_startup", "screen_on")],
+            false,
+            |model| replacement = Some(model),
+        );
+
+        let switched = replacement.take().expect("profile switch replaces rows");
+        assert_eq!(switched.row_data(0).unwrap().current_value, "screen_on");
+        assert_eq!(existing.row_data(0).unwrap().current_value, "screen_off");
+
+        push_card_model(
+            existing.clone(),
+            vec![raw_field("on_shutdown", "power_off")],
+            true,
+            |model| replacement = Some(model),
+        );
+
+        let reshaped = replacement.expect("field-shape change replaces rows");
+        assert_eq!(reshaped.row_data(0).unwrap().field_name, "on_shutdown");
+        assert_eq!(existing.row_data(0).unwrap().field_name, "on_startup");
+    }
+
     #[test]
     fn locally_set_system_field_wins() {
         let uuid = Uuid::new_v4();
