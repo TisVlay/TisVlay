@@ -927,4 +927,35 @@ mod tests {
         (closed_settings.activate)(&mut closed_tray);
         assert!(!closed_pending.load(Ordering::Relaxed));
     }
+
+    #[test]
+    fn vertical_scroll_normalizes_delta_and_ignores_irrelevant_events() {
+        let id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(id, tv("C3", true, true, true));
+
+        tray.scroll(120, ksni::Orientation::Vertical);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, 1)) if tv == id
+        ));
+
+        tray.scroll(-240, ksni::Orientation::Vertical);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, -2)) if tv == id
+        ));
+
+        tray.scroll(12, ksni::Orientation::Vertical);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, 1)) if tv == id
+        ));
+
+        tray.scroll(120, ksni::Orientation::Horizontal);
+        tray.scroll(0, ksni::Orientation::Vertical);
+        assert!(rx.try_recv().is_err());
+    }
 }
