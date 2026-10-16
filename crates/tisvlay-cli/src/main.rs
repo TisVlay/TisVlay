@@ -112,13 +112,7 @@ async fn run() -> Result<()> {
             params,
             address,
         } => {
-            let config = match (params, address) {
-                (Some(params), _) => {
-                    serde_json::from_str(&params).context("--params must be a JSON object")?
-                }
-                (None, Some(address)) => address_config(address),
-                (None, None) => bail!("provide --params or --address"),
-            };
+            let config = pairing_config(params, address)?;
             pair(&session, &caller, site, name, vendor, config).await
         }
         Command::Add {
@@ -656,6 +650,19 @@ async fn discover(
 /// A vendor config naming only an address (the mock shorthand).
 fn address_config(address: String) -> serde_json::Map<String, Value> {
     serde_json::Map::from_iter([("address".to_string(), Value::String(address))])
+}
+
+fn pairing_config(
+    params: Option<String>,
+    address: Option<String>,
+) -> Result<serde_json::Map<String, Value>> {
+    match (params, address) {
+        (Some(params), _) => {
+            serde_json::from_str(&params).context("--params must be a JSON object")
+        }
+        (None, Some(address)) => Ok(address_config(address)),
+        (None, None) => bail!("provide --params or --address"),
+    }
 }
 
 async fn pair(
@@ -1299,5 +1306,44 @@ mod tests {
             super::profile_body::<NamedProfile>("Office".into(), Some(r#"{"name":false}"#.into()))
                 .expect_err("a non-string profile name is rejected");
         assert!(format!("{invalid_name:#}").contains("invalid profile body"));
+    }
+
+    #[test]
+    fn pairing_config_prefers_json_params_and_supports_address_shortcut() {
+        let params = super::pairing_config(
+            Some(r#"{"ip":"192.0.2.4"}"#.into()),
+            Some("mock://ignored".into()),
+        )
+        .expect("JSON params are accepted");
+        assert_eq!(
+            params.get("ip").and_then(serde_json::Value::as_str),
+            Some("192.0.2.4")
+        );
+        assert!(!params.contains_key("address"));
+
+        let address = super::pairing_config(None, Some("mock://den".into()))
+            .expect("address shortcut is accepted");
+        assert_eq!(
+            address.get("address").and_then(serde_json::Value::as_str),
+            Some("mock://den")
+        );
+    }
+
+    #[test]
+    fn pairing_config_rejects_missing_or_non_object_params() {
+        assert_eq!(
+            super::pairing_config(None, None)
+                .expect_err("one pairing config source is required")
+                .to_string(),
+            "provide --params or --address"
+        );
+        assert!(
+            format!(
+                "{:#}",
+                super::pairing_config(Some("[]".into()), None)
+                    .expect_err("params must decode as an object")
+            )
+            .contains("--params must be a JSON object")
+        );
     }
 }
