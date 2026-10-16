@@ -946,7 +946,15 @@ mod version_banner_tests {
                     referenced_by_summary: SharedString::from("Office"),
                     active: true,
                 }],
-                user_profile_rows: Vec::new(),
+                user_profile_rows: vec![ProfileRowRaw {
+                    uuid: SharedString::from("user-profile"),
+                    name: SharedString::from("Personal"),
+                    display_name: SharedString::from("Personal"),
+                    is_default: true,
+                    referenced_by: Vec::new(),
+                    referenced_by_summary: SharedString::default(),
+                    active: false,
+                }],
             },
         );
 
@@ -968,7 +976,36 @@ mod version_banner_tests {
             app.get_system_profiles().row_data(0).as_deref(),
             Some("Default")
         );
-        assert_eq!(app.global::<Profiles>().get_user().row_count(), 0);
+        assert_eq!(profiles.get_user().row_count(), 1);
+        assert_eq!(
+            profiles.get_user().row_data(0).unwrap().display_name,
+            "Personal"
+        );
+
+        profiles.set_selected_kind(ProfileKind::User);
+        profiles.set_selected_uuid(SharedString::from("user-profile"));
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: Vec::new(),
+                system_profiles: Vec::new(),
+                user_profiles: Vec::new(),
+                system_profile_rows: Vec::new(),
+                user_profile_rows: vec![ProfileRowRaw {
+                    uuid: SharedString::from("user-profile"),
+                    name: SharedString::from("Personal"),
+                    display_name: SharedString::from("Personal (edited)"),
+                    is_default: true,
+                    referenced_by: Vec::new(),
+                    referenced_by_summary: SharedString::default(),
+                    active: true,
+                }],
+            },
+        );
+        assert_eq!(
+            profiles.get_selected_row().display_name,
+            "Personal (edited)"
+        );
 
         push_snapshot(
             &app,
