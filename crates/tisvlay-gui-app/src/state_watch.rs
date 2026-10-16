@@ -905,6 +905,21 @@ mod version_banner_tests {
     }
 
     #[test]
+    fn tray_notification_settings_project_each_category_without_swapping() {
+        let projected = settings_to_slint(&NotificationSettings {
+            tv_connection: true,
+            tv_pairing: false,
+            tv_wake: true,
+            daemon_offline: false,
+        });
+
+        assert!(projected.tv_connection);
+        assert!(!projected.tv_pairing);
+        assert!(projected.tv_wake);
+        assert!(!projected.daemon_offline);
+    }
+
+    #[test]
     fn push_snapshot_refreshes_selected_profile_and_clears_deleted_selection() {
         i_slint_backend_testing::init_no_event_loop();
         let app = AppWindow::new().expect("AppWindow::new");
