@@ -1484,9 +1484,8 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    daemon_global.on_set_mute(move |tv_id, muted| {
+    register_mute_callback(&daemon_global, move |tv_id, muted| {
         let d = d.clone();
-        let tv_id = tv_id.to_string();
         spawn_tv_rpc(
             &app_weak,
             tv_id.clone(),
@@ -1503,10 +1502,9 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    daemon_global.on_set_screen(move |tv_id, on| {
+    register_screen_callback(&daemon_global, move |tv_id, on| {
         let d = d.clone();
         let app_weak = app_weak.clone();
-        let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             let result = if on {
                 with_id(&tv_id, |tv| d.screen_on(tv)).await
@@ -2610,6 +2608,14 @@ fn register_volume_callback(daemon: &Daemon, dispatch: impl Fn(String, u8) + 'st
     });
 }
 
+fn register_mute_callback(daemon: &Daemon, dispatch: impl Fn(String, bool) + 'static) {
+    daemon.on_set_mute(move |tv_id, muted| dispatch(tv_id.to_string(), muted));
+}
+
+fn register_screen_callback(daemon: &Daemon, dispatch: impl Fn(String, bool) + 'static) {
+    daemon.on_set_screen(move |tv_id, on| dispatch(tv_id.to_string(), on));
+}
+
 #[cfg(test)]
 mod notification_key_tests {
     use super::{NotificationCategory, build_notification_update};
@@ -2842,6 +2848,34 @@ mod tests {
                 ("tv-low".into(), 0),
                 ("tv-mid".into(), 40),
                 ("tv-high".into(), 100),
+            ]
+        );
+    }
+
+    #[test]
+    fn mute_and_screen_callbacks_preserve_tv_id_and_boolean_intent() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let calls: Arc<Mutex<Vec<(String, String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let muted_calls = Arc::clone(&calls);
+        register_mute_callback(&app.global::<Daemon>(), move |tv_id, muted| {
+            muted_calls.lock().push(("mute".into(), tv_id, muted));
+        });
+        let screen_calls = Arc::clone(&calls);
+        register_screen_callback(&app.global::<Daemon>(), move |tv_id, on| {
+            screen_calls.lock().push(("screen".into(), tv_id, on));
+        });
+
+        let daemon = app.global::<Daemon>();
+        daemon.invoke_set_mute(SharedString::from("tv-mute"), true);
+        daemon.invoke_set_screen(SharedString::from("tv-screen"), false);
+
+        assert_eq!(
+            *calls.lock(),
+            vec![
+                ("mute".into(), "tv-mute".into(), true),
+                ("screen".into(), "tv-screen".into(), false),
             ]
         );
     }
