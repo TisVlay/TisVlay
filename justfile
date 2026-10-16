@@ -246,7 +246,7 @@ i18n-update: i18n-extract
 # CLI reference, the stock profile defaults, the release version) are
 # rendered from the code by the tisvlay-docgen crate and committed; Read
 # the Docs builds a plain `mdbook build`, so it never runs cargo — CI
-# gates the partials' freshness instead.
+# gates the partials' freshness and the built book's local links/fragments.
 
 # Generated include partials.
 generated_docs := "docs/book/src/generated"
@@ -257,6 +257,13 @@ generated_docs := "docs/book/src/generated"
 docs-build:
     mdbook-mermaid install docs/book
     mdbook build docs/book
+
+# Check local links and heading fragments in the rendered HTML. External
+# links are skipped so this gate is deterministic and needs no network.
+[group('docs')]
+docs-links: docs-build
+    lychee --offline --include-fragments=anchor-only \
+        --root-dir "$PWD/docs/book/book" docs/book/book/
 
 # Serve the docs site with live reload at http://localhost:3000.
 [group('docs')]

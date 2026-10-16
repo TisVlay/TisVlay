@@ -108,6 +108,8 @@ systemctl --user start tisvlay-session tisvlay-tray
 
 Packages also install shell completion for the `tisvlay` CLI (bash, zsh, fish); see the [CLI Reference](../guide/cli.md). Bash needs the `bash-completion` loader (recommended by the Debian and Fedora packages).
 
+### Access
+
 At the desktop, no extra setup is needed: the daemon grants access to the user at the active seat.
 
 <details>

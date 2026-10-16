@@ -282,8 +282,8 @@ jobs:
   # User-facing docs site (docs/book → Read the Docs). Kept off the
   # tuned `ci` job's cache/critical path: it only compiles tisvlay-docgen
   # (the CLI and core it renders, for the generated-partials freshness
-  # gate) plus mdbook. Runs on code changes too: the partials are rendered
-  # from the CLI and core.
+  # gate) plus mdbook, Mermaid, and lychee. Runs on code changes too: the
+  # partials are rendered from the CLI and core.
   docs:
     needs: changes
     if: (needs.changes.outputs.code == 'true' || needs.changes.outputs.book == 'true') && !github.event.pull_request.draft
@@ -301,6 +301,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: |
+            lychee@0.24.2
             mdbook
             mdbook-mermaid
             just
@@ -317,8 +318,8 @@ jobs:
       - name: Generated partials freshness
         run: just docs-gen-check
 
-      - name: Build book
-        run: just docs-build
+      - name: Build book and check links
+        run: just docs-links
 
   # One stable check to require on main: fails if any job failed or was
   # cancelled. Jobs the gate skipped count as passing.
