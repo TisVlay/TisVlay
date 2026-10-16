@@ -832,4 +832,56 @@ mod tests {
         tray.secondary_activate(0, 0);
         assert_eq!(tray.scroll_tv, None);
     }
+
+    #[test]
+    fn menu_distinguishes_connected_standby_from_live_and_honors_capabilities() {
+        let id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(id, tv("CEC", false, false, false));
+
+        let menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &menu[0] else {
+            panic!("configured TV is rendered as a submenu");
+        };
+        assert!(tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label == "Power On (Wake)")
+        }));
+        assert!(
+            !tv_menu.submenu.iter().any(|item| {
+                matches!(item, MenuItem::Standard(item) if item.label == "Power Off")
+            })
+        );
+        assert!(!tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label.starts_with("Volume"))
+        }));
+        let wake = tv_menu
+            .submenu
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Power On (Wake)" => Some(item),
+                _ => None,
+            })
+            .expect("wake item exists");
+        (wake.activate)(&mut tray);
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::PowerOn(tv)) if tv == id));
+
+        tray.mirror.tvs.insert(id, tv("CEC", true, false, false));
+        let live_menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &live_menu[0] else {
+            panic!("configured TV is rendered as a submenu");
+        };
+        assert!(
+            tv_menu.submenu.iter().any(|item| {
+                matches!(item, MenuItem::Standard(item) if item.label == "Power Off")
+            })
+        );
+        assert!(!tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label.starts_with("Volume"))
+        }));
+        assert!(!tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label.starts_with("Screen"))
+        }));
+    }
 }
