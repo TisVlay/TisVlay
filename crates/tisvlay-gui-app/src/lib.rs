@@ -2803,4 +2803,35 @@ mod tests {
             ]
         );
     }
+
+    #[tokio::test]
+    async fn with_id_forwards_a_parsed_uuid_to_the_sdk_call() {
+        let expected = uuid::Uuid::new_v4();
+        let id_text = expected.to_string();
+        let actual = with_id(&id_text, |id| async move { Ok::<_, tisvlay::Error>(id) })
+            .await
+            .expect("a valid model id parses");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn with_id_rejects_a_malformed_id_before_calling_the_sdk() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        let call_was_made = Arc::clone(&called);
+        let error = with_id("not-a-uuid", move |_| {
+            call_was_made.store(true, Ordering::SeqCst);
+            async { Ok::<_, tisvlay::Error>(()) }
+        })
+        .await
+        .expect_err("malformed model ids are rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "invalid id 'not-a-uuid' in the window's model"
+        );
+        assert!(!called.load(Ordering::SeqCst));
+    }
 }
