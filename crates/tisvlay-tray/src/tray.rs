@@ -988,4 +988,79 @@ mod tests {
             "Office:\n  volume 42 (muted)\n► backlight 50\nBedroom\n  off"
         );
     }
+
+    #[test]
+    fn profile_picker_selects_defaults_and_emits_the_matching_assignment() {
+        let tv_id = Uuid::from_u128(1);
+        let user_default = tisvlay_core::DEFAULT_USER_PROFILE_UUID;
+        let system_default = tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
+        let user_custom = Uuid::from_u128(u128::MAX - 1);
+        let system_custom = Uuid::from_u128(u128::MAX);
+        let mut view = tv("CEC", false, false, false);
+        view.user_profile = None;
+        view.system_profile = Some(system_custom);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(tv_id, view);
+        tray.mirror
+            .user_profiles
+            .insert(user_default, "default".into());
+        tray.mirror
+            .user_profiles
+            .insert(user_custom, "Personal".into());
+        tray.mirror
+            .system_profiles
+            .insert(system_default, "default".into());
+        tray.mirror
+            .system_profiles
+            .insert(system_custom, "Work".into());
+        let mut menu = tray.menu();
+
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV menu entry is a submenu");
+        };
+        let profiles_index = tv_menu
+            .submenu
+            .iter()
+            .position(
+                |item| matches!(item, MenuItem::SubMenu(submenu) if submenu.label == "Profiles"),
+            )
+            .expect("TV menu has a Profiles submenu");
+        let MenuItem::SubMenu(profiles) = &mut tv_menu.submenu[profiles_index] else {
+            panic!("Profiles entry is a submenu");
+        };
+        let MenuItem::SubMenu(user_picker) = &mut profiles.submenu[0] else {
+            panic!("User entry is a profile picker");
+        };
+        assert_eq!(user_picker.label, "User: default");
+        let MenuItem::RadioGroup(user_radio) = &mut user_picker.submenu[0] else {
+            panic!("User picker is a radio group");
+        };
+        assert_eq!(user_radio.selected, 0);
+        assert_eq!(user_radio.options[1].label, "Personal");
+        (user_radio.select)(&mut tray, 1);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetUserProfile(tv, Some(profile)))
+                if tv == tv_id && profile == user_custom
+        ));
+
+        let MenuItem::SubMenu(system_picker) = &mut profiles.submenu[1] else {
+            panic!("System entry is a profile picker");
+        };
+        assert_eq!(system_picker.label, "System: Work");
+        let MenuItem::RadioGroup(system_radio) = &mut system_picker.submenu[0] else {
+            panic!("System picker is a radio group");
+        };
+        assert_eq!(system_radio.selected, 1);
+        assert_eq!(system_radio.options[0].label, "default");
+        (system_radio.select)(&mut tray, 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetSystemProfile(tv, Some(profile)))
+                if tv == tv_id && profile == system_default
+        ));
+    }
 }
