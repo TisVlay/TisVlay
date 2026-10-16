@@ -165,7 +165,7 @@ enum ReloadSummary {
 
 /// Report a sidebar Reload at window level (see [`reload_summary`]). A
 /// Reload with no failure clears an earlier failure's banner.
-fn report_reload(app_weak: &slint::Weak<AppWindow>, outcomes: Vec<ReloadOutcome>) {
+pub(crate) fn report_reload(app_weak: &slint::Weak<AppWindow>, outcomes: Vec<ReloadOutcome>) {
     for outcome in &outcomes {
         if let Some(Err(e)) = &outcome.result {
             warn!(error = %e, file = %outcome.file, "reload_config failed");

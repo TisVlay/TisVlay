@@ -218,6 +218,16 @@ mod tests {
             "Power on failed".into(),
             "TV is unavailable".into(),
         );
+        crate::report_reload(
+            &app.as_weak(),
+            vec![crate::ReloadOutcome {
+                file: "daemon.toml".into(),
+                result: Some(Err(tisvlay::Error::Rpc {
+                    code: ErrorCode::StoreUnreadable,
+                    message: "error: invalid TOML".into(),
+                })),
+            }],
+        );
         crate::power_cycle::update_power_cycle_phase(
             &app.as_weak(),
             tv_id.as_str(),
@@ -232,6 +242,10 @@ mod tests {
         assert_eq!(tv_error.title, "Power on failed");
         assert_eq!(tv_error.message, "TV is unavailable");
         assert_eq!(tv_error.tone, "error");
+        let reload_error = app.global::<crate::Errors>().get_reload();
+        assert_eq!(reload_error.title, "Reload failed: daemon.toml");
+        assert_eq!(reload_error.message, "error: invalid TOML");
+        assert_eq!(reload_error.tone, "error");
         assert_eq!(
             app.get_tvs().row_data(0).unwrap().power_cycle_phase,
             "connecting"
