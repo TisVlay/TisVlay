@@ -1453,7 +1453,7 @@ fn remove_profile_from_editor(
 /// Clear the Slint-side selection + editor model. Fires when the
 /// selected profile was removed (by another client or by our own
 /// confirm-delete handler).
-fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
+pub(crate) fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
     on_ui(&app_weak, |app| {
         let profiles = app.global::<Profiles>();
         profiles.set_selected_kind(ProfileKind::None);

@@ -191,11 +191,21 @@ mod tests {
     }
 
     #[test]
-    fn publish_edit_error_applies_worker_update_on_the_event_loop() {
+    fn worker_ui_updates_apply_on_the_event_loop() {
         i_slint_backend_testing::init_integration_test_with_system_time();
         let app = AppWindow::new().expect("AppWindow::new");
         let edit_pane = app.global::<EditPane>();
         edit_pane.set_saving(true);
+        let profiles = app.global::<crate::Profiles>();
+        profiles.set_selected_kind(crate::ProfileKind::System);
+        profiles.set_selected_uuid(SharedString::from("profile-1"));
+        profiles.set_editor_fields(ModelRc::new(VecModel::from(vec![
+            crate::ProfileFieldEntry {
+                field_name: SharedString::from("on_startup"),
+                ..Default::default()
+            },
+        ])));
+        profiles.set_editor_can_reset_all(true);
         let tv_id = SharedString::from("tv-1");
         app.set_tvs(ModelRc::new(VecModel::from(vec![crate::TvViewModel {
             uuid: tv_id.clone(),
@@ -228,6 +238,7 @@ mod tests {
         );
 
         crate::power_cycle::update_power_cycle_phase(&app.as_weak(), tv_id.as_str(), None);
+        crate::profiles::clear_selection_in_slint(app.as_weak());
         slint::quit_event_loop().expect("quit after clearing the power phase");
         slint::run_event_loop().expect("drain the phase-clear event");
         assert!(
@@ -237,5 +248,10 @@ mod tests {
                 .power_cycle_phase
                 .is_empty()
         );
+        assert_eq!(profiles.get_selected_kind(), crate::ProfileKind::None);
+        assert!(profiles.get_selected_uuid().is_empty());
+        assert!(profiles.get_selected_row().uuid.is_empty());
+        assert_eq!(profiles.get_editor_fields().row_count(), 0);
+        assert!(!profiles.get_editor_can_reset_all());
     }
 }
