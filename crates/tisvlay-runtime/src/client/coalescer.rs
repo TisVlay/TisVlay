@@ -110,3 +110,67 @@ impl<K, V> std::fmt::Debug for Coalescer<K, V> {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::Coalescer;
+    use parking_lot::Mutex;
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn values_fired_during_apply_merge_into_one_follow_up() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let release = Arc::new(Mutex::new(Some(release_rx)));
+        let (applied_tx, mut applied_rx) = mpsc::unbounded_channel();
+        let coalescer = Coalescer::new(
+            |latest: i32, next| latest + next,
+            move |key: &str, value| {
+                let key = key.to_string();
+                let release = Arc::clone(&release);
+                let started_tx = started_tx.clone();
+                let applied_tx = applied_tx.clone();
+                async move {
+                    let wait = release.lock().take();
+                    if let Some(wait) = wait {
+                        started_tx
+                            .send((key.clone(), value))
+                            .expect("test is waiting for the first apply");
+                        wait.await.expect("test releases the first apply");
+                    }
+                    applied_tx
+                        .send((key, value))
+                        .expect("test is waiting for each applied value");
+                }
+            },
+        );
+
+        coalescer.fire("tv-1", 1);
+        assert_eq!(
+            timeout(Duration::from_secs(1), started_rx.recv())
+                .await
+                .expect("first apply starts")
+                .expect("first apply sends its start signal"),
+            ("tv-1".to_string(), 1)
+        );
+
+        coalescer.fire("tv-1", 2);
+        coalescer.fire("tv-1", 3);
+        release_tx.send(()).expect("first apply is waiting");
+
+        let first = timeout(Duration::from_secs(1), applied_rx.recv())
+            .await
+            .expect("first apply completes")
+            .expect("first apply sends its value");
+        let follow_up = timeout(Duration::from_secs(1), applied_rx.recv())
+            .await
+            .expect("merged follow-up completes")
+            .expect("follow-up sends its value");
+        assert_eq!(first, ("tv-1".to_string(), 1));
+        assert_eq!(follow_up, ("tv-1".to_string(), 5));
+    }
+}
