@@ -419,20 +419,14 @@ async fn watch_state(
                 // from here, and later refreshes fail without touching
                 // the list.
                 if service == Service::Daemon {
-                    on_ui(&app_weak, move |app| {
-                        app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
-                        app.set_tvs_connected_count(0);
-                    });
+                    on_ui(&app_weak, |app| clear_tvs(&app));
                 }
             }
             StateEvent::DaemonDisappeared => {
                 // The daemon's next lifetime gets a fresh release check.
                 mismatches.clear(Service::Daemon);
                 mismatches.publish(&app_weak);
-                on_ui(&app_weak, move |app| {
-                    app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
-                    app.set_tvs_connected_count(0);
-                });
+                on_ui(&app_weak, |app| clear_tvs(&app));
                 publish_services(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
@@ -741,6 +735,11 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
 /// gate in `ProfilesPane` reads `selected-row.uuid != ""`, so a
 /// blank-uuid push flips the gate back to "Select a profile".
 /// Mirrored from the inline literal in `profiles::clear_selection_in_slint`.
+fn clear_tvs(app: &AppWindow) {
+    app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
+    app.set_tvs_connected_count(0);
+}
+
 fn blank_profile_row() -> ProfileRow {
     ProfileRow {
         uuid: SharedString::default(),
@@ -847,6 +846,24 @@ mod version_banner_tests {
         assert_eq!(mismatches.0.len(), 1, "one line per service");
         mismatches.clear(Service::Daemon);
         assert!(mismatches.0.is_empty());
+    }
+
+    #[test]
+    fn clear_tvs_removes_stale_rows_and_resets_connected_count() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let stale = TvViewModel {
+            name: SharedString::from("Stale TV"),
+            connected: true,
+            ..Default::default()
+        };
+        app.set_tvs(ModelRc::new(VecModel::from(vec![stale])));
+        app.set_tvs_connected_count(1);
+
+        clear_tvs(&app);
+
+        assert_eq!(app.get_tvs().row_count(), 0);
+        assert_eq!(app.get_tvs_connected_count(), 0);
     }
 
     #[test]
