@@ -884,4 +884,47 @@ mod tests {
             matches!(item, MenuItem::Standard(item) if item.label.starts_with("Screen"))
         }));
     }
+
+    #[test]
+    fn settings_activation_coalesces_clicks_and_releases_closed_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let pending = Arc::new(AtomicBool::new(false));
+        let mut tray = TvTray::new(tx, Arc::clone(&pending));
+        let menu = tray.menu();
+        assert!(matches!(
+            menu.first(),
+            Some(MenuItem::Standard(item)) if item.label == "Daemon unavailable" && !item.enabled
+        ));
+        let settings = menu
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Settings" => Some(item),
+                _ => None,
+            })
+            .expect("Settings is always present");
+
+        (settings.activate)(&mut tray);
+        assert!(pending.load(Ordering::Relaxed));
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::OpenGui)));
+        (settings.activate)(&mut tray);
+        assert!(
+            rx.try_recv().is_err(),
+            "a pending activation drops extra clicks"
+        );
+
+        let (closed_tx, closed_rx) = mpsc::unbounded_channel();
+        drop(closed_rx);
+        let closed_pending = Arc::new(AtomicBool::new(false));
+        let mut closed_tray = TvTray::new(closed_tx, Arc::clone(&closed_pending));
+        let closed_menu = closed_tray.menu();
+        let closed_settings = closed_menu
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Settings" => Some(item),
+                _ => None,
+            })
+            .expect("Settings is always present");
+        (closed_settings.activate)(&mut closed_tray);
+        assert!(!closed_pending.load(Ordering::Relaxed));
+    }
 }
