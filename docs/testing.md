@@ -425,7 +425,9 @@ async fn wire() -> Wire {
 
 ## GUI testing (i-slint-backend-testing)
 
-`tisvlay-gui-app/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+`tisvlay-gui-app/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. These tests use `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+
+Worker-to-UI updates can use `init_integration_test_with_system_time()`: it enables Slint's simple event loop so a test can queue a real `invoke_from_event_loop` update, enqueue quit, then drain the loop with `slint::run_event_loop()`. The initializer is once per process, so keep event-loop-dependent assertions together or share one process-scoped setup. The edit-pane error update test covers this path; `cargo test -p tisvlay-gui-app --lib` verifies it coexists with the no-event-loop unit tests.
 
 ```rust
 use slint::{ModelRc, SharedString, VecModel};

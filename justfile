@@ -287,7 +287,7 @@ docs-gen-check: docs-gen
 # --- Coverage -----------------------------------------------------------
 
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.
-cov_baseline_lines := "52"
+cov_baseline_lines := "64"
 
 # Exclude separate test infrastructure crates/files from coverage reports.
 # Inline #[cfg(test)] modules share source files with production and remain
