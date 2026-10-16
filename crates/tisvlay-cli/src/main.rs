@@ -349,8 +349,11 @@ fn profile_body<T: serde::de::DeserializeOwned>(name: String, body: Option<Strin
         Some(body) => serde_json::from_str(&body)?,
         None => json!({}),
     };
-    if body["name"].is_null() {
-        body["name"] = Value::String(name);
+    let Some(object) = body.as_object_mut() else {
+        bail!("profile body must be a JSON object");
+    };
+    if object.get("name").is_none_or(Value::is_null) {
+        object.insert("name".into(), Value::String(name));
     }
     serde_json::from_value(body).map_err(|e| anyhow!("invalid profile body: {e}"))
 }
@@ -1206,6 +1209,10 @@ mod tests {
 
         let malformed = super::profile_body::<serde_json::Value>("Office".into(), Some("{".into()));
         assert!(malformed.is_err());
+
+        let non_object = super::profile_body::<NamedProfile>("Office".into(), Some("[]".into()))
+            .expect_err("non-object JSON should return an error");
+        assert_eq!(non_object.to_string(), "profile body must be a JSON object");
 
         let invalid_name =
             super::profile_body::<NamedProfile>("Office".into(), Some(r#"{"name":false}"#.into()))
