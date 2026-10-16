@@ -266,6 +266,8 @@ mod tests {
         assert_eq!(wizard.get_pair_message(), "waiting for TV");
 
         let outcome_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(11));
+        wizard.set_pair_message(SharedString::default());
+        wizard.set_mac_error(SharedString::from("old MAC error"));
         crate::wizard::publish_pair_outcome(
             app.as_weak(),
             &outcome_generation,
@@ -279,9 +281,23 @@ mod tests {
         slint::quit_event_loop().expect("quit after publishing pairing success");
         slint::run_event_loop().expect("drain pairing success");
         assert_eq!(wizard.get_pair_phase(), "complete");
+        assert_eq!(wizard.get_pair_message(), "Client key stored.");
         assert_eq!(wizard.get_mac_notice(), "filled");
         assert_eq!(wizard.get_mac_reported(), "84:90:0A:63:A9:94");
         assert!(wizard.get_mac_configured().is_empty());
+        assert!(wizard.get_mac_error().is_empty());
+
+        wizard.set_pair_message(SharedString::default());
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Ok(None),
+            false,
+        );
+        slint::quit_event_loop().expect("quit after publishing legacy pairing success");
+        slint::run_event_loop().expect("drain legacy pairing success");
+        assert_eq!(wizard.get_pair_message(), "Paired successfully.");
 
         let schema_fields = ModelRc::new(VecModel::from(vec![field_row("ip")]));
         wizard.set_schema_fields(schema_fields.clone());
