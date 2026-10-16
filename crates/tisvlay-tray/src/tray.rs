@@ -1102,4 +1102,54 @@ mod tests {
                 if tv == tv_id && input == "HDMI_1"
         ));
     }
+
+    #[test]
+    fn managed_menu_action_toggles_the_current_value() {
+        let tv_id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        let mut view = tv("Office", false, false, false);
+        view.managed = true;
+        tray.mirror.tvs.insert(tv_id, view);
+
+        let mut menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV entry is a submenu");
+        };
+        let unmanage = tv_menu
+            .submenu
+            .iter_mut()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Unmanage" => Some(item),
+                _ => None,
+            })
+            .expect("managed TV offers Unmanage");
+        (unmanage.activate)(&mut tray);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetManaged(tv, false)) if tv == tv_id
+        ));
+
+        let mut view = tv("Office", false, false, false);
+        view.managed = false;
+        tray.mirror.tvs.insert(tv_id, view);
+        let mut menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV entry is a submenu");
+        };
+        let manage = tv_menu
+            .submenu
+            .iter_mut()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Manage" => Some(item),
+                _ => None,
+            })
+            .expect("unmanaged TV offers Manage");
+        (manage.activate)(&mut tray);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetManaged(tv, true)) if tv == tv_id
+        ));
+    }
 }
