@@ -768,6 +768,29 @@ mod tests {
         tray
     }
 
+    fn find_standard_item<'a>(
+        items: &'a mut [MenuItem<TvTray>],
+        label: &str,
+    ) -> Option<&'a mut StandardItem<TvTray>> {
+        for item in items {
+            match item {
+                MenuItem::Standard(item) if item.label == label => return Some(item),
+                MenuItem::SubMenu(submenu) => {
+                    if let Some(item) = find_standard_item(&mut submenu.submenu, label) {
+                        return Some(item);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn activate_item(tray: &mut TvTray, menu: &mut [MenuItem<TvTray>], label: &str) {
+        let item = find_standard_item(menu, label).expect("menu item exists");
+        (item.activate)(tray);
+    }
+
     #[test]
     fn default_target_prefers_backlight_then_volume() {
         let id = Uuid::from_u128(1);
@@ -1150,6 +1173,48 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(TrayCommand::SetManaged(tv, true)) if tv == tv_id
+        ));
+    }
+
+    #[test]
+    fn live_menu_routes_power_screen_mute_volume_and_backlight_actions() {
+        let tv_id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        let mut view = tv("Office", true, true, true);
+        view.has_screen = true;
+        view.has_mute = true;
+        view.is_screen_on = true;
+        view.volume = Some(40);
+        view.muted = Some(false);
+        view.backlight = Some(60);
+        tray.mirror.tvs.insert(tv_id, view);
+        let mut menu = tray.menu();
+
+        activate_item(&mut tray, &mut menu, "Power Off");
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::PowerOff(tv)) if tv == tv_id));
+
+        activate_item(&mut tray, &mut menu, "Screen Off");
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::ScreenOff(tv)) if tv == tv_id));
+
+        activate_item(&mut tray, &mut menu, "Mute");
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::ToggleMute(tv)) if tv == tv_id));
+
+        activate_item(&mut tray, &mut menu, "Volume Up (+10)");
+        assert_eq!(tray.scroll_target, Some(ScrollTarget::Volume));
+        assert_eq!(tray.scroll_tv, Some(tv_id));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Volume, 10)) if tv == tv_id
+        ));
+
+        activate_item(&mut tray, &mut menu, "Backlight Down (-10)");
+        assert_eq!(tray.scroll_target, Some(ScrollTarget::Backlight));
+        assert_eq!(tray.scroll_tv, Some(tv_id));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, -10)) if tv == tv_id
         ));
     }
 }
