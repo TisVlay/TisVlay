@@ -99,4 +99,4 @@ The user guide is an [mdBook](https://rust-lang.github.io/mdBook/) in [`docs/boo
 - 🎛️ Already running? See the [CLI Reference](docs/book/src/guide/cli.md) and [Configuration](docs/book/src/guide/configuration.md).
 - 🛰️ Streaming in remotely? See [Remote-Session Awareness](docs/book/src/guide/remote-sessions.md).
 - 🔎 Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
-- 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/guide/tvs-on-isolated-network.md).
+- 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/operations/isolated-networks.md).
