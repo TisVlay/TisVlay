@@ -322,6 +322,57 @@ mod tests {
         assert_eq!(wizard.get_pair_message(), "");
         assert_eq!(wizard.get_step(), 2);
 
+        outcome_generation.store(13, std::sync::atomic::Ordering::SeqCst);
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            13,
+            Err(crate::wizard::PairError::Handshake(Box::new(
+                tisvlay::PairingProgress {
+                    attempt: uuid::Uuid::nil(),
+                    phase: tisvlay::PairingPhase::Failed,
+                    message: "permission denied".into(),
+                    code: Some(tisvlay::FailureCode::DevicePermissionDenied),
+                    path: Some("/dev/cec1".into()),
+                    link_mac: None,
+                },
+            ))),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing handshake failure");
+        slint::run_event_loop().expect("drain handshake failure");
+        assert_eq!(wizard.get_pair_phase(), "failed");
+        assert!(wizard.get_pair_message().contains("/dev/cec1"));
+
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            13,
+            Err(crate::wizard::PairError::Rpc(tisvlay::Error::Rpc {
+                code: ErrorCode::InvalidField,
+                message: "unknown_field: invalid value".into(),
+            })),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing unknown field error");
+        slint::run_event_loop().expect("drain unknown field error");
+        assert_eq!(wizard.get_pair_phase(), "failed");
+        assert!(wizard.get_pair_message().contains("unknown_field"));
+
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            13,
+            Err(crate::wizard::PairError::Local(
+                "local pairing error".into(),
+            )),
+            false,
+        );
+        slint::quit_event_loop().expect("quit after publishing local pairing failure");
+        slint::run_event_loop().expect("drain local pairing failure");
+        assert_eq!(wizard.get_pair_phase(), "failed");
+        assert_eq!(wizard.get_pair_message(), "local pairing error");
+
         crate::power_cycle::update_power_cycle_phase(&app.as_weak(), tv_id.as_str(), None);
         crate::profiles::clear_selection_in_slint(app.as_weak());
         slint::quit_event_loop().expect("quit after clearing the power phase");
