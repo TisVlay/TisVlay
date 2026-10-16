@@ -1,5 +1,12 @@
 # tisvlay
 
+[![CI Pipeline](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml/badge.svg)](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml)
+[![Crates.io Version](https://img.shields.io/crates/v/tisvlay)](https://crates.io/crates/tisvlay)
+[![Crates.io Dependencies](https://img.shields.io/deps-rs/tisvlay/latest)](https://crates.io/crates/tisvlay/dependencies)
+![Crates.io MSRV](https://img.shields.io/crates/msrv/tisvlay)
+![Crates.io Total Downloads](https://img.shields.io/crates/d/tisvlay)
+[![Crates.io License](https://img.shields.io/crates/l/tisvlay)](https://choosealicense.com/licenses/apache-2.0)
+
 Client library for TisVlay, the Linux daemon that controls smart TVs from the desktop they're plugged into. It lists and controls the TVs a TisVlay daemon manages (power, screen, volume, input, backlight), watches their state, and drives pairing, profiles and the per-user session and tray services.
 
 This is the library. The `tisvlay` command ships in distro packages and the Nix flake (see the [repository](https://github.com/TisVlay/TisVlay)); `cargo install tisvlay` finds no binary to install.

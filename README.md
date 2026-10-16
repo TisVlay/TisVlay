@@ -4,11 +4,9 @@
 **TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for heterogeneous multi-display setups, mitigating energy usage and display burn-in.
 
 [![CI Pipeline](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml/badge.svg)](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml)
-[![Crates.io Version](https://img.shields.io/crates/v/tisvlay)](https://crates.io/crates/tisvlay)
-[![Crates.io Dependencies](https://img.shields.io/deps-rs/tisvlay/latest)](https://crates.io/crates/tisvlay/dependencies)
-![Crates.io MSRV](https://img.shields.io/crates/msrv/tisvlay)
-![Crates.io Total Downloads](https://img.shields.io/crates/d/tisvlay)
-[![Crates.io License](https://img.shields.io/crates/l/tisvlay)](https://choosealicense.com/licenses/apache-2.0)
+[![Coverage](https://codecov.io/gh/TisVlay/TisVlay/branch/main/graph/badge.svg)](https://codecov.io/gh/TisVlay/TisVlay)
+[![Latest release](https://img.shields.io/github/v/release/TisVlay/TisVlay)](https://github.com/TisVlay/TisVlay/releases)
+[![License](https://img.shields.io/github/license/TisVlay/TisVlay)](https://github.com/TisVlay/TisVlay/blob/main/LICENSE)
 
 ## ✨ Features
 - 📺 Control multiple TVs & projectors just like conventional displays
