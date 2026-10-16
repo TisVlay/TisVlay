@@ -2825,6 +2825,63 @@ mod tests {
     }
 
     #[test]
+    fn find_tv_by_uuid_returns_only_the_matching_row() {
+        let tvs = ModelRc::new(VecModel::from(vec![
+            TvViewModel {
+                uuid: SharedString::from("tv-1"),
+                name: SharedString::from("Office"),
+                ..Default::default()
+            },
+            TvViewModel {
+                uuid: SharedString::from("tv-2"),
+                name: SharedString::from("Bedroom"),
+                ..Default::default()
+            },
+        ]));
+
+        assert_eq!(
+            find_tv_by_uuid(&tvs, "tv-2").map(|tv| tv.name),
+            Some(SharedString::from("Bedroom"))
+        );
+        assert!(find_tv_by_uuid(&tvs, "missing").is_none());
+    }
+
+    #[test]
+    fn current_selection_ignores_empty_invalid_and_none_selections() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let profiles = app.global::<Profiles>();
+        let weak = app.as_weak();
+
+        assert!(current_selection(&weak).is_none());
+
+        profiles.set_selected_kind(ProfileKind::System);
+        assert!(
+            current_selection(&weak).is_none(),
+            "empty UUID is not selected"
+        );
+
+        profiles.set_selected_uuid(SharedString::from("not-a-uuid"));
+        assert!(
+            current_selection(&weak).is_none(),
+            "invalid UUID is ignored"
+        );
+
+        let expected = uuid::Uuid::new_v4();
+        profiles.set_selected_uuid(SharedString::from(expected.to_string()));
+        assert_eq!(
+            current_selection(&weak),
+            Some((EditorKind::System, expected))
+        );
+
+        profiles.set_selected_kind(ProfileKind::None);
+        assert!(
+            current_selection(&weak).is_none(),
+            "None kind is not selected"
+        );
+    }
+
+    #[test]
     fn error_text_renders_the_cause_chain() {
         let error = tisvlay::Error::Transport {
             what: "connect to the daemon socket",
