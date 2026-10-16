@@ -84,6 +84,22 @@ pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: Str
 mod tests {
     use super::*;
 
+    fn field_row(name: &str) -> PairingFieldRow {
+        PairingFieldRow {
+            name: SharedString::from(name),
+            label: SharedString::default(),
+            helper: SharedString::default(),
+            field_type: SharedString::from("string"),
+            required: true,
+            placeholder: SharedString::default(),
+            options: ModelRc::new(VecModel::<SharedString>::default()),
+            value: SharedString::from("value"),
+            state: SharedString::from("valid"),
+            error: SharedString::default(),
+            autofilled: false,
+        }
+    }
+
     fn rpc_err(code: ErrorCode, message: &str) -> tisvlay::Error {
         tisvlay::Error::Rpc {
             code,
@@ -126,5 +142,51 @@ mod tests {
             extract_invalid_vendor_config(&err),
             Some(("ip".into(), "not an IP address: ::1::bad".into()))
         );
+    }
+
+    #[test]
+    fn mark_edit_field_invalid_marks_matching_row_and_invalidates_form() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let edit_pane = app.global::<EditPane>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        edit_pane.set_name(SharedString::from("Living Room"));
+        edit_pane.set_fields(model.clone());
+        edit_pane.set_valid(true);
+
+        assert!(mark_edit_field_invalid(
+            &edit_pane,
+            &model,
+            "ip",
+            "not a valid address"
+        ));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "invalid");
+        assert_eq!(row.error.as_str(), "not a valid address");
+        assert!(!edit_pane.get_valid());
+    }
+
+    #[test]
+    fn mark_edit_field_invalid_returns_false_for_unknown_field() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let edit_pane = app.global::<EditPane>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        edit_pane.set_name(SharedString::from("Living Room"));
+        edit_pane.set_fields(model.clone());
+        edit_pane.set_valid(true);
+
+        assert!(!mark_edit_field_invalid(
+            &edit_pane,
+            &model,
+            "unknown",
+            "not a valid address"
+        ));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "valid");
+        assert!(row.error.is_empty());
+        assert!(edit_pane.get_valid());
     }
 }

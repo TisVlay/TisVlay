@@ -817,7 +817,102 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{AutofilledRow, apply_manual_entry_helper_overrides, picked_tv_name};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    use super::{
+        AutofilledRow, apply_manual_entry_helper_overrides, mark_field_invalid, picked_tv_name,
+        reset_wizard,
+    };
+    use crate::{AppWindow, PairingFieldRow, PairingWizard};
+    use parking_lot::Mutex;
+    use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+    use tokio::sync::oneshot;
+
+    fn field_row(name: &str) -> PairingFieldRow {
+        PairingFieldRow {
+            name: SharedString::from(name),
+            label: SharedString::default(),
+            helper: SharedString::default(),
+            field_type: SharedString::from("string"),
+            required: true,
+            placeholder: SharedString::default(),
+            options: ModelRc::new(VecModel::<SharedString>::default()),
+            value: SharedString::from("value"),
+            state: SharedString::from("valid"),
+            error: SharedString::default(),
+            autofilled: false,
+        }
+    }
+
+    #[test]
+    fn mark_field_invalid_marks_matching_row_and_invalidates_schema() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        wizard.set_schema_fields(model.clone());
+        wizard.set_schema_valid(true);
+
+        assert!(mark_field_invalid(&wizard, "ip", "not a valid address"));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "invalid");
+        assert_eq!(row.error.as_str(), "not a valid address");
+        assert!(!wizard.get_schema_valid());
+    }
+
+    #[test]
+    fn mark_field_invalid_returns_false_for_unknown_field() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        wizard.set_schema_fields(model.clone());
+        wizard.set_schema_valid(true);
+
+        assert!(!mark_field_invalid(
+            &wizard,
+            "unknown",
+            "not a valid address"
+        ));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "valid");
+        assert!(row.error.is_empty());
+        assert!(wizard.get_schema_valid());
+    }
+
+    #[test]
+    fn reset_wizard_bumps_generation_cancels_tasks_and_clears_state() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        wizard.set_active(true);
+        wizard.set_step(3);
+        wizard.set_tv_name(SharedString::from("Living Room"));
+        wizard.set_discovery_streaming(true);
+        wizard.set_manual_lookup_streaming(true);
+
+        let generation = Arc::new(AtomicU64::new(7));
+        let (discovery_tx, mut discovery_rx) = oneshot::channel();
+        let (lookup_tx, mut lookup_rx) = oneshot::channel();
+        let discovery_cancel = Arc::new(Mutex::new(Some(discovery_tx)));
+        let lookup_cancel = Arc::new(Mutex::new(Some(lookup_tx)));
+
+        reset_wizard(&app, &generation, &discovery_cancel, &lookup_cancel);
+
+        assert_eq!(generation.load(Ordering::SeqCst), 8);
+        assert!(discovery_rx.try_recv().is_ok());
+        assert!(lookup_rx.try_recv().is_ok());
+        assert!(!wizard.get_active());
+        assert_eq!(wizard.get_step(), 1);
+        assert!(wizard.get_tv_name().is_empty());
+        assert!(!wizard.get_discovery_streaming());
+        assert!(!wizard.get_manual_lookup_streaming());
+    }
 
     /// The done step speaks only when there's something to act on or know:
     /// a filled MAC, or an entered one that differs from the TV's.
