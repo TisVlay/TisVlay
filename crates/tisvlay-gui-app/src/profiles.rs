@@ -1347,24 +1347,7 @@ pub(crate) fn handle_system_removed(
     app_weak: slint::Weak<AppWindow>,
     uuid: Uuid,
 ) {
-    let cleared = {
-        let mut state = editor.lock();
-        state.system.bodies.remove(&uuid);
-        if state.selection
-            == (Selection {
-                kind: Some(EditorKind::System),
-                uuid: Some(uuid),
-            })
-        {
-            state.selection = Selection::default();
-            // Bump so any in-flight select task targeting this
-            // UUID skips its publish.
-            state.system_gen.fetch_add(1, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
-    };
+    let cleared = remove_profile_from_editor(&mut editor.lock(), EditorKind::System, uuid);
     if cleared {
         clear_selection_in_slint(app_weak);
     }
@@ -1430,25 +1413,41 @@ pub(crate) fn handle_user_removed(
     app_weak: slint::Weak<AppWindow>,
     uuid: Uuid,
 ) {
-    let cleared = {
-        let mut state = editor.lock();
-        state.user.bodies.remove(&uuid);
-        if state.selection
-            == (Selection {
-                kind: Some(EditorKind::User),
-                uuid: Some(uuid),
-            })
-        {
-            state.selection = Selection::default();
-            state.user_gen.fetch_add(1, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
-    };
+    let cleared = remove_profile_from_editor(&mut editor.lock(), EditorKind::User, uuid);
     if cleared {
         clear_selection_in_slint(app_weak);
     }
+}
+
+fn remove_profile_from_editor(
+    state: &mut ProfileEditorState,
+    kind: EditorKind,
+    uuid: Uuid,
+) -> bool {
+    match kind {
+        EditorKind::System => {
+            state.system.bodies.remove(&uuid);
+        }
+        EditorKind::User => {
+            state.user.bodies.remove(&uuid);
+        }
+    }
+    if state.selection
+        != (Selection {
+            kind: Some(kind),
+            uuid: Some(uuid),
+        })
+    {
+        return false;
+    }
+
+    state.selection = Selection::default();
+    match kind {
+        EditorKind::System => &state.system_gen,
+        EditorKind::User => &state.user_gen,
+    }
+    .fetch_add(1, Ordering::SeqCst);
+    true
 }
 
 /// Clear the Slint-side selection + editor model. Fires when the
@@ -2217,6 +2216,63 @@ mod tests {
         assert_eq!(user.remote.len(), 1);
         assert_eq!(user.remote[0].field_name, "remote_screencast_arms");
         assert!(user.can_reset_all);
+    }
+
+    #[test]
+    fn removing_selected_profile_clears_selection_and_invalidates_its_generation() {
+        let system_uuid = Uuid::new_v4();
+        let user_uuid = Uuid::new_v4();
+        let unrelated_uuid = Uuid::new_v4();
+        let mut state = ProfileEditorState::default();
+        state
+            .system
+            .bodies
+            .insert(system_uuid, SystemProfileBody::default());
+        state
+            .user
+            .bodies
+            .insert(user_uuid, UserProfileBody::default());
+        state.system_gen.store(4, Ordering::SeqCst);
+        state.user_gen.store(9, Ordering::SeqCst);
+        state.selection = Selection {
+            kind: Some(EditorKind::System),
+            uuid: Some(system_uuid),
+        };
+
+        assert!(remove_profile_from_editor(
+            &mut state,
+            EditorKind::System,
+            system_uuid
+        ));
+        assert_eq!(state.selection, Selection::default());
+        assert_eq!(state.system_gen.load(Ordering::SeqCst), 5);
+        assert_eq!(state.user_gen.load(Ordering::SeqCst), 9);
+
+        state.selection = Selection {
+            kind: Some(EditorKind::User),
+            uuid: Some(user_uuid),
+        };
+        assert!(remove_profile_from_editor(
+            &mut state,
+            EditorKind::User,
+            user_uuid
+        ));
+        assert_eq!(state.selection, Selection::default());
+        assert_eq!(state.system_gen.load(Ordering::SeqCst), 5);
+        assert_eq!(state.user_gen.load(Ordering::SeqCst), 10);
+
+        state.selection = Selection {
+            kind: Some(EditorKind::System),
+            uuid: Some(unrelated_uuid),
+        };
+        let selection = state.selection;
+        assert!(!remove_profile_from_editor(
+            &mut state,
+            EditorKind::System,
+            system_uuid
+        ));
+        assert_eq!(state.selection, selection);
+        assert_eq!(state.system_gen.load(Ordering::SeqCst), 5);
     }
 
     #[test]
