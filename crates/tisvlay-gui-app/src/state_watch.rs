@@ -848,4 +848,27 @@ mod version_banner_tests {
         mismatches.clear(Service::Daemon);
         assert!(mismatches.0.is_empty());
     }
+
+    #[test]
+    fn sync_vec_model_updates_existing_rows_and_tracks_length_changes() {
+        let current = ModelRc::new(VecModel::from(vec![1, 2]));
+
+        sync_vec_model(&current, vec![3, 4, 5], |_| {
+            panic!("a VecModel should be updated in place")
+        });
+
+        let model = current
+            .as_any()
+            .downcast_ref::<VecModel<i32>>()
+            .expect("the model remains a VecModel");
+        assert_eq!(model.row_count(), 3);
+        assert_eq!(model.row_data(0), Some(3));
+        assert_eq!(model.row_data(2), Some(5));
+
+        sync_vec_model(&current, vec![9], |_| {
+            panic!("shrinking a VecModel should not replace it")
+        });
+        assert_eq!(model.row_count(), 1);
+        assert_eq!(model.row_data(0), Some(9));
+    }
 }
