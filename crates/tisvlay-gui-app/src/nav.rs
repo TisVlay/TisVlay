@@ -324,6 +324,15 @@ mod tests {
     }
 
     #[test]
+    fn resolve_tv_index_handles_found_missing_and_empty_ids() {
+        let app = app_with_selected_tv();
+
+        assert_eq!(resolve_tv_index(&app, &SharedString::from("tv-2")), 1);
+        assert_eq!(resolve_tv_index(&app, &SharedString::from("missing")), -1);
+        assert_eq!(resolve_tv_index(&app, &SharedString::default()), -1);
+    }
+
+    #[test]
     fn back_and_forward_restore_the_live_tv_selection() {
         let app = app_with_selected_tv();
         let mut history = history_for(&app);
