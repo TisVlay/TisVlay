@@ -1164,4 +1164,52 @@ mod tests {
             assert_eq!(outcome.to_json(), json);
         }
     }
+
+    #[test]
+    fn profile_body_fills_missing_name_and_preserves_explicit_body_fields() {
+        let from_positional: serde_json::Value =
+            super::profile_body("Office".into(), None).expect("valid positional profile");
+        assert_eq!(from_positional, serde_json::json!({ "name": "Office" }));
+
+        let from_body: serde_json::Value = super::profile_body(
+            "Fallback".into(),
+            Some(r#"{"name":"Studio","idle_timeout_seconds":900}"#.into()),
+        )
+        .expect("valid profile body");
+        assert_eq!(from_body["name"], "Studio");
+        assert_eq!(from_body["idle_timeout_seconds"], 900);
+
+        let null_name: serde_json::Value = super::profile_body(
+            "Fallback".into(),
+            Some(r#"{"name":null,"on_sleep":null}"#.into()),
+        )
+        .expect("null name falls back to the positional name");
+        assert_eq!(
+            null_name,
+            serde_json::json!({ "name": "Fallback", "on_sleep": null })
+        );
+    }
+
+    #[test]
+    fn profile_body_reports_json_and_typed_body_errors() {
+        #[derive(Debug, serde::Deserialize)]
+        struct NamedProfile {
+            name: String,
+        }
+
+        let valid = super::profile_body::<NamedProfile>(
+            "Fallback".into(),
+            Some(r#"{"name":"Studio"}"#.into()),
+        )
+        .expect("a string profile name deserializes");
+        assert_eq!(valid.name, "Studio");
+
+        let malformed = super::profile_body::<serde_json::Value>("Office".into(), Some("{".into()));
+        assert!(malformed.is_err());
+
+        let invalid_name =
+            super::profile_body::<NamedProfile>("Office".into(), Some(r#"{"name":false}"#.into()))
+                .expect_err("a non-string profile name is rejected");
+        assert!(format!("{invalid_name:#}").contains("invalid profile body"));
+    }
 }
