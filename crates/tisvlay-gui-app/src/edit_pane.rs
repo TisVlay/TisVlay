@@ -203,6 +203,11 @@ mod tests {
         }])));
 
         publish_edit_error(&app.as_weak(), "schema unavailable".into());
+        crate::push_tvs_error(
+            &app.as_weak(),
+            "Power on failed".into(),
+            "TV is unavailable".into(),
+        );
         crate::power_cycle::update_power_cycle_phase(
             &app.as_weak(),
             tv_id.as_str(),
@@ -213,6 +218,10 @@ mod tests {
 
         assert_eq!(edit_pane.get_error().as_str(), "schema unavailable");
         assert!(!edit_pane.get_saving());
+        let tv_error = app.global::<crate::Errors>().get_tvs();
+        assert_eq!(tv_error.title, "Power on failed");
+        assert_eq!(tv_error.message, "TV is unavailable");
+        assert_eq!(tv_error.tone, "error");
         assert_eq!(
             app.get_tvs().row_data(0).unwrap().power_cycle_phase,
             "connecting"
