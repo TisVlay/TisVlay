@@ -958,4 +958,34 @@ mod tests {
         tray.scroll(0, ksni::Orientation::Vertical);
         assert!(rx.try_recv().is_err());
     }
+
+    #[test]
+    fn status_title_and_tooltip_follow_mirror_state() {
+        let offline = tray_with(&[]);
+        assert_eq!(offline.title(), "TisVlay [daemon offline]");
+        assert_eq!(offline.status(), ksni::Status::Passive);
+        assert_eq!(offline.tool_tip().description, "Daemon not available");
+
+        let (connected_id, down_id) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut connected = tv("Office", true, true, true);
+        connected.volume = Some(42);
+        connected.muted = Some(true);
+        connected.backlight = Some(50);
+        let down = TvView {
+            name: "Bedroom".into(),
+            connected: false,
+            ..Default::default()
+        };
+        let mut tray = tray_with(&[(connected_id, connected), (down_id, down)]);
+        tray.mirror.daemon_alive = true;
+        tray.scroll_target = Some(ScrollTarget::Backlight);
+        tray.scroll_tv = Some(connected_id);
+
+        assert_eq!(tray.title(), "TisVlay [1/2]");
+        assert_eq!(tray.status(), ksni::Status::Active);
+        assert_eq!(
+            tray.tool_tip().description,
+            "Office:\n  volume 42 (muted)\n► backlight 50\nBedroom\n  off"
+        );
+    }
 }
