@@ -692,6 +692,10 @@ fn link_mac_line(id: Uuid, report: &payload::LinkMacReport) -> String {
     }
 }
 
+fn is_current_pairing_attempt(progress: &payload::PairingProgress, attempt: Uuid) -> bool {
+    progress.attempt == attempt
+}
+
 /// Stream a pairing attempt's progress phases to stdout until a terminal
 /// one; ctrl-c sends cancel-pair. Samples from other attempts (earlier
 /// sessions replayed from the cache) are skipped.
@@ -716,7 +720,7 @@ async fn watch_pairing(
                 else {
                     continue;
                 };
-                if progress.attempt != attempt {
+                if !is_current_pairing_attempt(&progress, attempt) {
                     continue;
                 }
                 println!("[{}] {}", progress.phase, progress.message);
@@ -1113,6 +1117,28 @@ mod tests {
                  to use it: tisvlay config-set {id} '{{\"mac\":\"84:90:0A:63:A9:94\"}}'"
             )
         );
+    }
+
+    #[test]
+    fn stale_pairing_progress_is_rejected_by_attempt_id() {
+        use tisvlay_protocol::payload::{PairingPhase, PairingProgress};
+
+        let current = uuid::Uuid::new_v4();
+        let stale = PairingProgress {
+            attempt: uuid::Uuid::new_v4(),
+            phase: PairingPhase::Complete,
+            message: "paired".into(),
+            code: None,
+            path: None,
+            link_mac: None,
+        };
+        let live = PairingProgress {
+            attempt: current,
+            ..stale.clone()
+        };
+
+        assert!(!super::is_current_pairing_attempt(&stale, current));
+        assert!(super::is_current_pairing_attempt(&live, current));
     }
 
     #[test]
