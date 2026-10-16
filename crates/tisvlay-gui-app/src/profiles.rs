@@ -911,6 +911,40 @@ enum SystemOrUser {
     User(UserProfileBody),
 }
 
+struct PreparedEditorRows {
+    main: Vec<ProfileFieldRaw>,
+    remote: Vec<ProfileFieldRaw>,
+    can_reset_all: bool,
+    same_profile: bool,
+}
+
+fn prepare_editor_rows(
+    state: &mut ProfileEditorState,
+    kind: EditorKind,
+    uuid: Uuid,
+) -> PreparedEditorRows {
+    // Both cards resolve off the same layer state; `can-reset-all`
+    // spans them. The system editor has no REMOTE SESSION card.
+    let ((main, main_reset), (remote, remote_reset)) = match kind {
+        EditorKind::System => (
+            build_system_rows(&state.system, uuid, SYSTEM_FIELDS),
+            (Vec::new(), false),
+        ),
+        EditorKind::User => (
+            build_user_rows(&state.user, uuid, USER_FIELDS),
+            build_user_rows(&state.user, uuid, USER_WHILE_REMOTE_FIELDS),
+        ),
+    };
+    let same_profile = state.displayed == Some((kind, uuid));
+    state.displayed = Some((kind, uuid));
+    PreparedEditorRows {
+        main,
+        remote,
+        can_reset_all: main_reset || remote_reset,
+        same_profile,
+    }
+}
+
 /// Build the `[ProfileFieldEntry]` model + the `can-reset-all` flag
 /// from the current layer state and push them into the Slint global.
 /// Pure-data plus an `on_ui` hop — no IO.
@@ -925,48 +959,28 @@ fn push_editor_rows(
     kind: EditorKind,
     uuid: Uuid,
 ) {
-    let (main_raw, remote_raw, can_reset_all, same_profile) = {
+    let prepared = {
         let mut state = editor.lock();
-        // Both cards resolve off the same layer state; `can-reset-all`
-        // is a catalog-body action spanning them, so OR their flags. The
-        // system editor has no REMOTE SESSION card — arming is a user
-        // policy and the per-event gate rides the action rows — so its
-        // remote card stays empty (no `SYSTEM_WHILE_REMOTE_FIELDS` build).
-        let ((main_raw, main_reset), (remote_raw, remote_reset)) = match kind {
-            EditorKind::System => (
-                build_system_rows(&state.system, uuid, SYSTEM_FIELDS),
-                (Vec::new(), false),
-            ),
-            EditorKind::User => (
-                build_user_rows(&state.user, uuid, USER_FIELDS),
-                build_user_rows(&state.user, uuid, USER_WHILE_REMOTE_FIELDS),
-            ),
-        };
-        // Is this a refresh of the profile already shown, or a switch to a
-        // different one? All profiles of a kind share the same field schema,
-        // so field-name shape alone can't tell them apart.
-        let same_profile = state.displayed == Some((kind, uuid));
-        state.displayed = Some((kind, uuid));
-        (
-            main_raw,
-            remote_raw,
-            main_reset || remote_reset,
-            same_profile,
-        )
+        prepare_editor_rows(&mut state, kind, uuid)
     };
 
     on_ui(&app_weak, move |app| {
         let profiles = app.global::<Profiles>();
-        push_card_model(profiles.get_editor_fields(), main_raw, same_profile, |m| {
-            profiles.set_editor_fields(m);
-        });
+        push_card_model(
+            profiles.get_editor_fields(),
+            prepared.main,
+            prepared.same_profile,
+            |m| {
+                profiles.set_editor_fields(m);
+            },
+        );
         push_card_model(
             profiles.get_editor_remote_fields(),
-            remote_raw,
-            same_profile,
+            prepared.remote,
+            prepared.same_profile,
             |m| profiles.set_editor_remote_fields(m),
         );
-        profiles.set_editor_can_reset_all(can_reset_all);
+        profiles.set_editor_can_reset_all(prepared.can_reset_all);
     });
 }
 
@@ -2161,6 +2175,48 @@ mod tests {
             remote_gate_enabled: true,
             remote_gate_differs: false,
         }
+    }
+
+    #[test]
+    fn prepare_editor_rows_tracks_profile_and_remote_card_state() {
+        let system_uuid = Uuid::new_v4();
+        let mut state = ProfileEditorState::default();
+        state.system.bodies.insert(
+            system_uuid,
+            SystemProfileBody {
+                name: "system".into(),
+                on_startup: Some(SessionAction::PowerOn.into()),
+                ..Default::default()
+            },
+        );
+
+        let system = prepare_editor_rows(&mut state, EditorKind::System, system_uuid);
+        assert!(!system.same_profile);
+        assert_eq!(system.main.len(), SYSTEM_FIELDS.len());
+        assert!(system.remote.is_empty());
+        assert!(system.can_reset_all);
+
+        let refreshed = prepare_editor_rows(&mut state, EditorKind::System, system_uuid);
+        assert!(refreshed.same_profile);
+
+        let switched = prepare_editor_rows(&mut state, EditorKind::System, Uuid::new_v4());
+        assert!(!switched.same_profile);
+
+        let user_uuid = Uuid::new_v4();
+        state.user.bodies.insert(
+            user_uuid,
+            UserProfileBody {
+                name: "user".into(),
+                remote_screencast_arms: Some(true),
+                ..Default::default()
+            },
+        );
+        let user = prepare_editor_rows(&mut state, EditorKind::User, user_uuid);
+        assert!(!user.same_profile);
+        assert_eq!(user.main.len(), USER_FIELDS.len());
+        assert_eq!(user.remote.len(), 1);
+        assert_eq!(user.remote[0].field_name, "remote_screencast_arms");
+        assert!(user.can_reset_all);
     }
 
     #[test]
