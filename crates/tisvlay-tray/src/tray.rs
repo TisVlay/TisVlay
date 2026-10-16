@@ -978,6 +978,12 @@ mod tests {
     }
 
     #[test]
+    fn missing_status_notifier_host_keeps_the_tray_service_running() {
+        let tray = tray_with(&[]);
+        assert!(tray.watcher_offline(ksni::OfflineReason::No));
+    }
+
+    #[test]
     fn vertical_scroll_normalizes_delta_and_ignores_irrelevant_events() {
         let id = Uuid::from_u128(1);
         let (tx, mut rx) = mpsc::unbounded_channel();
