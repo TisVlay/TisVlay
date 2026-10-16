@@ -81,7 +81,7 @@ pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: Str
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn field_row(name: &str) -> PairingFieldRow {
@@ -190,9 +190,7 @@ mod tests {
         assert!(edit_pane.get_valid());
     }
 
-    #[test]
-    fn worker_ui_updates_apply_on_the_event_loop() {
-        i_slint_backend_testing::init_integration_test_with_system_time();
+    pub(crate) fn worker_ui_updates_apply_on_the_event_loop() {
         let app = AppWindow::new().expect("AppWindow::new");
         let edit_pane = app.global::<EditPane>();
         edit_pane.set_saving(true);

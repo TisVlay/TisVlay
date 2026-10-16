@@ -2715,6 +2715,351 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
 
+    fn wait_for_ui(app: &AppWindow, ready: impl Fn(&AppWindow) -> bool + 'static) {
+        let completed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let completed_in_timer = completed.clone();
+        let weak = app.as_weak();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(5),
+            move || {
+                if ready(&weak.upgrade().unwrap()) {
+                    completed_in_timer.set(true);
+                    slint::quit_event_loop().unwrap();
+                } else if std::time::Instant::now() >= deadline {
+                    slint::quit_event_loop().unwrap();
+                }
+            },
+        );
+        slint::run_event_loop().unwrap();
+        assert!(
+            completed.get(),
+            "UI condition did not become true within ten seconds"
+        );
+    }
+
+    async fn wait_for_tvs(daemon: &DaemonClient, ready: impl Fn(&[tisvlay::TvInfo]) -> bool) {
+        let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if ready(&daemon.list_tvs().await.unwrap()) {
+                    break;
+                }
+                watcher.next().await.expect("state watcher remains open");
+            }
+        })
+        .await
+        .expect("daemon state condition did not become true within ten seconds");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn registered_callbacks_round_trip_gui_workflows() {
+        i_slint_backend_testing::init_integration_test_with_system_time();
+        edit_pane::tests::worker_ui_updates_apply_on_the_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("daemon.sock");
+        let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();
+        let _stack = tisvlay_daemon::serve(
+            &socket,
+            "main",
+            vec![
+                tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                    .with_discovery(Arc::new(discovery)),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+        ENDPOINTS.get_or_init(|| Endpoints {
+            system_socket: socket.clone(),
+            user_socket: directory.path().join("session.sock"),
+            site: "main".into(),
+        });
+        let daemon = Arc::new(DaemonClient::connect(&socket, "main").await.unwrap());
+        let mut watcher = tisvlay::StateWatcher::new(&daemon, None, None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !daemon.is_available().await {
+                watcher.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let session = Arc::new(RwLock::new(None));
+        let editor = new_editor();
+        let app = AppWindow::new().unwrap();
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let entries: WizardEntries = Arc::new(Mutex::new(Vec::new()));
+        let nav = nav::wire(&app, daemon.clone(), session.clone(), editor.clone());
+        register_callbacks(
+            &app,
+            daemon.clone(),
+            session,
+            Arc::new(RwLock::new(None)),
+            Reconcilers::default(),
+            entries.clone(),
+            generation.clone(),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            editor,
+            &nav,
+        );
+        let wizard = app.global::<PairingWizard>();
+        wizard.set_active(true);
+        wizard.set_step(1);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 1);
+        wizard.set_selected_index(99);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 1);
+
+        wizard.set_discovered(ModelRc::new(VecModel::from(vec![WizardDiscoveredTv {
+            vendor: "mock".into(),
+            address: "mock://office".into(),
+            hw_model: "Test TV".into(),
+            ..Default::default()
+        }])));
+        wizard.invoke_selected_changed(0);
+        assert_eq!(wizard.get_selected_vendor(), "mock");
+        assert_eq!(wizard.get_selected_vendor_name(), "mock");
+        assert_eq!(wizard.get_selected_address(), "mock://office");
+        assert_eq!(wizard.get_selected_hw_model(), "Test TV");
+        wizard.invoke_selected_changed(-1);
+        assert!(wizard.get_selected_vendor().is_empty());
+        assert!(wizard.get_selected_vendor_name().is_empty());
+        assert!(wizard.get_selected_address().is_empty());
+        assert!(wizard.get_selected_hw_model().is_empty());
+        wizard.invoke_manual_ip_edited("192.0.2.10".into());
+        assert_eq!(wizard.get_manual_ip(), "192.0.2.10");
+
+        wizard.set_schema_fields(ModelRc::new(VecModel::from(vec![PairingFieldRow {
+            name: "address".into(),
+            field_type: "string".into(),
+            required: true,
+            autofilled: true,
+            ..Default::default()
+        }])));
+        wizard.invoke_field_value_edited(0, "".into());
+        assert!(!wizard.get_schema_valid());
+        wizard.invoke_field_value_edited(0, "mock://office".into());
+        assert!(wizard.get_schema_valid());
+        let row = wizard.get_schema_fields().row_data(0).unwrap();
+        assert_eq!(row.value, "mock://office");
+        assert_eq!(row.state, "valid");
+        assert!(!row.autofilled);
+        wizard.invoke_field_value_edited(99, "ignored".into());
+        assert_eq!(wizard.get_schema_fields().row_data(0).unwrap(), row);
+
+        wizard.set_step(2);
+        wizard.set_tv_name(SharedString::default());
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 2);
+        wizard.set_step(3);
+        wizard.set_pair_phase("awaiting_tv".into());
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 3);
+        wizard.set_pair_phase("complete".into());
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 4);
+        wizard.invoke_step_back();
+        assert_eq!(wizard.get_step(), 3);
+        wizard.invoke_back_to_discovery();
+        assert_eq!(wizard.get_step(), 1);
+        assert!(wizard.get_pair_phase().is_empty());
+        wizard.invoke_step_back();
+        assert_eq!(wizard.get_step(), 1);
+        wizard.set_mac_notice("differs".into());
+        wizard.invoke_keep_configured_mac();
+        assert!(wizard.get_mac_notice().is_empty());
+        wizard.invoke_cancel();
+        assert!(!wizard.get_active());
+        assert_eq!(generation.load(std::sync::atomic::Ordering::SeqCst), 1);
+        wizard.set_active(true);
+        wizard.invoke_finish();
+        assert!(!wizard.get_active());
+        assert_eq!(generation.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        app.invoke_navigate(Pane::About);
+        assert_eq!(app.get_active_pane(), Pane::About);
+        app.invoke_navigate(Pane::Tvs);
+        app.invoke_nav_back();
+        assert_eq!(app.get_active_pane(), Pane::About);
+        app.invoke_nav_forward();
+        assert_eq!(app.get_active_pane(), Pane::Tvs);
+
+        entries.lock().push(WizardEntry {
+            id: "office".into(),
+            name: "Office".into(),
+            vendor: "mock".into(),
+            address: "mock://office".into(),
+            vendor_data: HashMap::from([
+                ("address".into(), "mock://office".into()),
+                ("pairing".into(), "accept".into()),
+            ]),
+            ..Default::default()
+        });
+        wizard.set_active(true);
+        wizard.set_selected_index(0);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 2);
+        wait_for_ui(&app, |app| app.global::<PairingWizard>().get_schema_valid());
+        assert_eq!(wizard.get_tv_name(), "Office");
+        assert_eq!(wizard.get_selected_vendor(), "mock");
+        wizard.set_managed(false);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 3);
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        let tv: uuid::Uuid = wizard.get_pair_tv_id().parse().unwrap();
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 4);
+        wizard.invoke_finish();
+        assert!(!wizard.get_active());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| info.uuid == tv && info.connected)
+        })
+        .await;
+        app.set_tvs(ModelRc::new(VecModel::from(vec![TvViewModel {
+            uuid: tv.to_string().into(),
+            name: "Office".into(),
+            vendor: "mock".into(),
+            ..Default::default()
+        }])));
+        let edit = app.global::<EditPane>();
+        edit.invoke_start(tv.to_string().into());
+        wait_for_ui(&app, |app| {
+            !app.global::<EditPane>().get_tv_uuid().is_empty()
+        });
+        assert_eq!(edit.get_name(), "Office");
+        assert!(edit.get_fields().row_count() > 0);
+        edit.invoke_name_edited("Renamed office".into());
+        assert!(edit.get_valid());
+        edit.invoke_save();
+        assert!(edit.get_saving());
+        wait_for_ui(&app, |app| {
+            app.global::<EditPane>().get_tv_uuid().is_empty()
+        });
+        assert!(!edit.get_saving());
+        assert!(edit.get_error().is_empty());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter()
+                .any(|info| info.uuid == tv && info.name == "Renamed office")
+        })
+        .await;
+
+        let controls = app.global::<Daemon>();
+        let input = daemon.list_tvs().await.unwrap()[0].inputs[1].0.clone();
+        controls.invoke_set_volume(tv.to_string().into(), 64);
+        controls.invoke_set_backlight(tv.to_string().into(), 24);
+        controls.invoke_set_mute(tv.to_string().into(), true);
+        controls.invoke_switch_input(tv.to_string().into(), input.clone().into());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| {
+                info.uuid == tv
+                    && info.volume == 64
+                    && info.backlight == 24
+                    && info.muted
+                    && info.current_input == input
+            })
+        })
+        .await;
+        controls.invoke_set_screen(tv.to_string().into(), false);
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| info.uuid == tv && !info.is_screen_on)
+        })
+        .await;
+        controls.invoke_set_screen(tv.to_string().into(), true);
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| info.uuid == tv && info.is_screen_on)
+        })
+        .await;
+        controls.invoke_set_primary_input(tv.to_string().into(), input.clone().into());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter()
+                .any(|info| info.uuid == tv && info.primary_input == input)
+        })
+        .await;
+
+        let profiles = app.global::<Profiles>();
+        profiles.invoke_confirm_create(ProfileKind::System, "Work".into());
+        wait_for_ui(&app, |app| {
+            !app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        let original = profiles.get_selected_uuid();
+        let original_id: uuid::Uuid = original.parse().unwrap();
+        assert_eq!(
+            daemon.list_system_profile_bodies().await[&original_id].name,
+            "Work"
+        );
+        profiles.invoke_confirm_duplicate(
+            ProfileKind::System,
+            original.clone(),
+            "Work copy".into(),
+        );
+        let original_for_wait = original.clone();
+        wait_for_ui(&app, move |app| {
+            app.global::<Profiles>().get_selected_uuid() != original_for_wait
+        });
+        let duplicate = profiles.get_selected_uuid();
+        let duplicate_id: uuid::Uuid = duplicate.parse().unwrap();
+        assert_eq!(
+            daemon.list_system_profile_bodies().await[&duplicate_id].name,
+            "Work copy"
+        );
+        controls.invoke_set_system_profile(tv.to_string().into(), "Work".into());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter()
+                .any(|info| info.uuid == tv && info.system_profile == Some(original_id))
+        })
+        .await;
+        profiles.invoke_confirm_delete(ProfileKind::System, duplicate);
+        wait_for_ui(&app, |app| {
+            app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        assert!(
+            !daemon
+                .list_system_profile_bodies()
+                .await
+                .contains_key(&duplicate_id)
+        );
+
+        profiles.invoke_open_tv(tv.to_string().into());
+        assert_eq!(app.get_active_pane(), Pane::Tvs);
+        assert_eq!(app.get_selected_tv_index(), 0);
+        controls.invoke_set_user_profile(tv.to_string().into(), "Personal".into());
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_tvs().title == "Session service unavailable"
+        });
+        controls.invoke_set_system_profile(tv.to_string().into(), "Deleted profile".into());
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_tvs().title == "Couldn't change system profile"
+        });
+        controls.invoke_set_mute("not-a-uuid".into(), true);
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_tvs().title == "Couldn't change mute"
+        });
+        assert!(
+            app.global::<Errors>()
+                .get_tvs()
+                .message
+                .contains("invalid id")
+        );
+
+        edit.invoke_start(tv.to_string().into());
+        wait_for_ui(&app, |app| {
+            !app.global::<EditPane>().get_tv_uuid().is_empty()
+        });
+        edit.invoke_name_edited(SharedString::default());
+        assert!(!edit.get_valid());
+        edit.invoke_cancel();
+        assert!(edit.get_tv_uuid().is_empty());
+        assert!(edit.get_name().is_empty());
+        assert_eq!(edit.get_fields().row_count(), 0);
+        assert!(!edit.get_valid());
+    }
+
     fn outcome(
         file: &str,
         result: Option<tisvlay::Result<tisvlay::ReloadReport>>,
