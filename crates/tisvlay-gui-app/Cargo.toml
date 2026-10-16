@@ -53,6 +53,7 @@ zbus = { workspace = true }
 [dev-dependencies]
 tisvlay-daemon = { workspace = true }
 tisvlay-mock = { workspace = true }
+tisvlay-session = { workspace = true }
 # Headless Slint backend for element-tree tests; preliminary API, so
 # pinned exactly with slint.
 i-slint-backend-testing = "=1.18.1"

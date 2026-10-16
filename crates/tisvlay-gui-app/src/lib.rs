@@ -2754,6 +2754,71 @@ mod tests {
         .expect("daemon state condition did not become true within ten seconds");
     }
 
+    async fn wait_for_system_profile(
+        daemon: &Arc<DaemonClient>,
+        editor: &ProfileEditor,
+        app: &AppWindow,
+        id: uuid::Uuid,
+        ready: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
+        let mut observed = serde_json::Value::Null;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let bodies = daemon.list_system_profile_bodies().await;
+                if let Some(body) = bodies.get(&id) {
+                    observed = serde_json::to_value(body).unwrap();
+                    if ready(&observed) {
+                        break;
+                    }
+                }
+                watcher
+                    .next()
+                    .await
+                    .expect("profile state watcher remains open");
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("system profile did not reach expected state; observed {observed}")
+        });
+        profiles::handle_system_changed(editor.clone(), daemon.clone(), app.as_weak(), id).await;
+    }
+
+    async fn wait_for_user_profile(
+        daemon: &DaemonClient,
+        session: &Arc<RwLock<Option<SessionClient>>>,
+        editor: &ProfileEditor,
+        app: &AppWindow,
+        id: uuid::Uuid,
+        ready: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        let client = session.read().await.as_ref().unwrap().clone();
+        let mut watcher =
+            tisvlay::StateWatcher::new(daemon, Some(&client), None, Default::default());
+        let mut observed = serde_json::Value::Null;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let bodies = client.list_user_profile_bodies().await;
+                if let Some(body) = bodies.get(&id) {
+                    observed = serde_json::to_value(body).unwrap();
+                    if ready(&observed) {
+                        break;
+                    }
+                }
+                watcher
+                    .next()
+                    .await
+                    .expect("user profile watcher remains open");
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("user profile did not reach expected state; observed {observed}")
+        });
+        profiles::handle_user_changed(editor.clone(), session.clone(), app.as_weak(), id).await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn registered_callbacks_round_trip_gui_workflows() {
         i_slint_backend_testing::init_integration_test_with_system_time();
@@ -2795,14 +2860,14 @@ mod tests {
         register_callbacks(
             &app,
             daemon.clone(),
-            session,
+            session.clone(),
             Arc::new(RwLock::new(None)),
             Reconcilers::default(),
             entries.clone(),
             generation.clone(),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
-            editor,
+            editor.clone(),
             &nav,
         );
         let wizard = app.global::<PairingWizard>();
@@ -3008,6 +3073,46 @@ mod tests {
             daemon.list_system_profile_bodies().await[&duplicate_id].name,
             "Work copy"
         );
+        profiles.invoke_value_edited("on_startup".into(), "screen_off".into());
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"] == "screen_off"
+        })
+        .await;
+        profiles.invoke_restore_edited("on_startup".into(), true);
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"]["restore_input"] == true
+        })
+        .await;
+        profiles.invoke_remote_gated("on_startup".into(), true);
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"]["restore_input"] == true
+                && body["on_startup"]["while_remote"] == true
+        })
+        .await;
+        profiles.invoke_reset_field("on_startup".into());
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"].is_null()
+        })
+        .await;
+        profiles.invoke_value_edited_number("idle_timeout_seconds".into(), 90);
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["idle_timeout_seconds"] == 90
+        })
+        .await;
+        profiles.invoke_rename_selected("Work renamed".into());
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["name"] == "Work renamed"
+        })
+        .await;
+        profiles.invoke_reset_all();
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["name"] == "Work renamed" && body["idle_timeout_seconds"].is_null()
+        })
+        .await;
+        assert_eq!(
+            daemon.list_system_profile_bodies().await[&original_id].name,
+            "Work"
+        );
         controls.invoke_set_system_profile(tv.to_string().into(), "Work".into());
         wait_for_tvs(&daemon, |tvs| {
             tvs.iter()
@@ -3058,6 +3163,102 @@ mod tests {
         assert!(edit.get_name().is_empty());
         assert_eq!(edit.get_fields().row_count(), 0);
         assert!(!edit.get_valid());
+
+        let user_socket = directory.path().join("session.sock");
+        let _session_stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
+            system_socket: socket,
+            user_socket: user_socket.clone(),
+            site: "main".into(),
+            store: None,
+            sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
+        })
+        .await
+        .unwrap();
+        let client = SessionClient::connect(&user_socket, "main").await.unwrap();
+        let mut watcher =
+            tisvlay::StateWatcher::new(&daemon, Some(&client), None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !client.is_available().await {
+                watcher.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        *session.write().await = Some(client.clone());
+        profiles.invoke_confirm_create(ProfileKind::User, "Personal".into());
+        wait_for_ui(&app, |app| {
+            !app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        let user_profile = profiles.get_selected_uuid();
+        let user_id: uuid::Uuid = user_profile.parse().unwrap();
+        assert_eq!(
+            client.list_user_profile_bodies().await[&user_id].name,
+            "Personal"
+        );
+        profiles.invoke_value_edited_bool("remote_screencast_arms".into(), true);
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["remote_screencast_arms"] == true
+        })
+        .await;
+        profiles.invoke_value_edited_number("locked_idle_timeout_seconds".into(), 120);
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["locked_idle_timeout_seconds"] == 120
+        })
+        .await;
+        profiles.invoke_value_edited("on_session_lock".into(), "screen_off".into());
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["on_session_lock"] == "screen_off"
+        })
+        .await;
+        profiles.invoke_rename_selected("Personal renamed".into());
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["name"] == "Personal renamed"
+        })
+        .await;
+        profiles.invoke_reset_field("on_session_lock".into());
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["on_session_lock"].is_null()
+        })
+        .await;
+        profiles.invoke_reset_all();
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["name"] == "Personal renamed"
+                && body["locked_idle_timeout_seconds"].is_null()
+                && body["remote_screencast_arms"].is_null()
+        })
+        .await;
+        controls.invoke_set_user_profile(tv.to_string().into(), "Personal renamed".into());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while client.get_tv_user_profile(tv).await != Some(user_id) {
+                watcher.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        profiles.invoke_confirm_duplicate(
+            ProfileKind::User,
+            user_profile.clone(),
+            "Personal copy".into(),
+        );
+        wait_for_ui(&app, move |app| {
+            app.global::<Profiles>().get_selected_uuid() != user_profile
+        });
+        let user_copy = profiles.get_selected_uuid();
+        let user_copy_id: uuid::Uuid = user_copy.parse().unwrap();
+        assert_eq!(
+            client.list_user_profile_bodies().await[&user_copy_id].name,
+            "Personal copy"
+        );
+        profiles.invoke_confirm_delete(ProfileKind::User, user_copy);
+        wait_for_ui(&app, |app| {
+            app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        assert!(
+            !client
+                .list_user_profile_bodies()
+                .await
+                .contains_key(&user_copy_id)
+        );
     }
 
     fn outcome(

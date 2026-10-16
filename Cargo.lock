@@ -6739,6 +6739,7 @@ dependencies = [
  "tisvlay-mock",
  "tisvlay-protocol",
  "tisvlay-runtime",
+ "tisvlay-session",
  "tokio",
  "tracing",
  "uuid",
