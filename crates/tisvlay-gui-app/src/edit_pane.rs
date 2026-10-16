@@ -196,12 +196,37 @@ mod tests {
         let app = AppWindow::new().expect("AppWindow::new");
         let edit_pane = app.global::<EditPane>();
         edit_pane.set_saving(true);
+        let tv_id = SharedString::from("tv-1");
+        app.set_tvs(ModelRc::new(VecModel::from(vec![crate::TvViewModel {
+            uuid: tv_id.clone(),
+            ..Default::default()
+        }])));
 
         publish_edit_error(&app.as_weak(), "schema unavailable".into());
+        crate::power_cycle::update_power_cycle_phase(
+            &app.as_weak(),
+            tv_id.as_str(),
+            Some(tisvlay::PowerPhase::Connecting),
+        );
         slint::quit_event_loop().expect("quit the test event loop");
         slint::run_event_loop().expect("drain the test event loop");
 
         assert_eq!(edit_pane.get_error().as_str(), "schema unavailable");
         assert!(!edit_pane.get_saving());
+        assert_eq!(
+            app.get_tvs().row_data(0).unwrap().power_cycle_phase,
+            "connecting"
+        );
+
+        crate::power_cycle::update_power_cycle_phase(&app.as_weak(), tv_id.as_str(), None);
+        slint::quit_event_loop().expect("quit after clearing the power phase");
+        slint::run_event_loop().expect("drain the phase-clear event");
+        assert!(
+            app.get_tvs()
+                .row_data(0)
+                .unwrap()
+                .power_cycle_phase
+                .is_empty()
+        );
     }
 }
