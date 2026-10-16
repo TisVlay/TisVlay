@@ -6740,12 +6740,14 @@ dependencies = [
  "tisvlay-protocol",
  "tisvlay-runtime",
  "tisvlay-session",
+ "tisvlay-tray",
  "tokio",
  "tracing",
  "uuid",
  "webbrowser",
  "wl-clipboard-rs",
  "zbus",
+ "zenoh",
 ]
 
 [[package]]

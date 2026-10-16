@@ -2740,6 +2740,23 @@ mod tests {
         );
     }
 
+    fn expect_toast(app: &AppWindow, invoke: impl FnOnce(), expected: &'static str) {
+        app.global::<Toast>().set_message(SharedString::default());
+        invoke();
+        wait_for_ui(app, move |app| {
+            app.global::<Toast>().get_message().contains(expected)
+        });
+    }
+
+    fn expect_tv_error(app: &AppWindow, invoke: impl FnOnce(), expected: &'static str) {
+        app.global::<Errors>().set_tvs(ErrorState::default());
+        invoke();
+        wait_for_ui(app, move |app| {
+            app.global::<Errors>().get_tvs().title == expected
+        });
+        assert!(!app.global::<Errors>().get_tvs().message.is_empty());
+    }
+
     async fn wait_for_tvs(daemon: &DaemonClient, ready: impl Fn(&[tisvlay::TvInfo]) -> bool) {
         let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -2852,6 +2869,7 @@ mod tests {
         .await
         .unwrap();
         let session = Arc::new(RwLock::new(None));
+        let tray_clients = Arc::new(RwLock::new(None));
         let editor = new_editor();
         let app = AppWindow::new().unwrap();
         let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2861,7 +2879,7 @@ mod tests {
             &app,
             daemon.clone(),
             session.clone(),
-            Arc::new(RwLock::new(None)),
+            tray_clients.clone(),
             Reconcilers::default(),
             entries.clone(),
             generation.clone(),
@@ -3156,6 +3174,22 @@ mod tests {
         wait_for_ui(&app, |app| {
             !app.global::<EditPane>().get_tv_uuid().is_empty()
         });
+        let address_index = edit
+            .get_fields()
+            .iter()
+            .position(|row| row.name == "address")
+            .unwrap() as i32;
+        edit.invoke_field_edited(address_index, SharedString::default());
+        assert!(!edit.get_valid());
+        edit.invoke_field_edited(address_index, "mock://office".into());
+        assert!(edit.get_valid());
+        edit.set_tv_uuid(uuid::Uuid::new_v4().to_string().into());
+        edit.invoke_save();
+        wait_for_ui(&app, |app| {
+            let edit = app.global::<EditPane>();
+            !edit.get_saving() && !edit.get_error().is_empty()
+        });
+        assert!(edit.get_error().contains("not-found"));
         edit.invoke_name_edited(SharedString::default());
         assert!(!edit.get_valid());
         edit.invoke_cancel();
@@ -3259,6 +3293,285 @@ mod tests {
                 .await
                 .contains_key(&user_copy_id)
         );
+
+        controls.invoke_request_pair();
+        assert!(wizard.get_active());
+        assert!(wizard.get_discovery_streaming());
+        wizard.invoke_cancel();
+        assert!(!wizard.get_active());
+        assert!(!wizard.get_discovery_streaming());
+        wizard.set_supported_vendors(ModelRc::new(VecModel::from(vec![VendorOption {
+            id: "mock".into(),
+            name: "Mock".into(),
+            ..Default::default()
+        }])));
+        controls.invoke_request_pair();
+        wizard.invoke_manual_add();
+        assert_eq!(wizard.get_step(), 1);
+        wizard.invoke_manual_ip_edited("mock://retry".into());
+        wizard.invoke_manual_add();
+        wait_for_ui(&app, |app| {
+            let wizard = app.global::<PairingWizard>();
+            wizard.get_step() == 2 && wizard.get_schema_valid()
+        });
+        assert!(!wizard.get_manual_lookup_streaming());
+        assert_eq!(wizard.get_selected_vendor_name(), "Mock");
+        assert_eq!(wizard.get_selected_address(), "mock://retry");
+        let pairing_index = wizard
+            .get_schema_fields()
+            .iter()
+            .position(|row| row.name == "pairing")
+            .unwrap() as i32;
+        wizard.set_tv_name("Retry TV".into());
+        wizard.set_managed(false);
+        wizard.invoke_field_value_edited(pairing_index, "reject".into());
+        wizard.invoke_step_next();
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "failed"
+        });
+        assert!(!wizard.get_pair_message().is_empty());
+        wizard.invoke_field_value_edited(pairing_index, "accept".into());
+        wizard.invoke_retry_pair();
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        let retry_tv: uuid::Uuid = wizard.get_pair_tv_id().parse().unwrap();
+        wizard.invoke_finish();
+        let mut rows: Vec<_> = app.get_tvs().iter().collect();
+        rows.push(TvViewModel {
+            uuid: retry_tv.to_string().into(),
+            name: "Retry TV".into(),
+            vendor: "mock".into(),
+            primary_descriptor: "mock://retry".into(),
+            ..Default::default()
+        });
+        app.set_tvs(ModelRc::new(VecModel::from(rows)));
+        controls.invoke_request_re_pair(retry_tv.to_string().into());
+        assert_eq!(wizard.get_step(), 3);
+        assert_eq!(wizard.get_tv_name(), "Retry TV");
+        assert_eq!(wizard.get_selected_vendor_name(), "Mock");
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        wizard.set_mac_notice("differs".into());
+        wizard.set_pair_tv_id(uuid::Uuid::new_v4().to_string().into());
+        wizard.set_mac_reported("84:90:0A:63:A9:94".into());
+        wizard.invoke_use_reported_mac();
+        wait_for_ui(&app, |app| {
+            !app.global::<PairingWizard>().get_mac_error().is_empty()
+        });
+        assert_eq!(wizard.get_mac_notice(), "differs");
+        wizard.set_pair_tv_id(retry_tv.to_string().into());
+        wizard.invoke_use_reported_mac();
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_mac_notice() == "saved"
+        });
+        assert!(wizard.get_mac_error().is_empty());
+        assert_eq!(
+            daemon.get_tv_config(retry_tv).await.unwrap().config["mac"],
+            "84:90:0A:63:A9:94"
+        );
+        wizard.invoke_finish();
+        assert!(!wizard.get_active());
+
+        let tray_path = directory.path().join("tray.toml");
+        let tray_link =
+            zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
+                .await
+                .unwrap();
+        let (notifier, mut notifications) = tisvlay_tray::notify::Notifier::capturing(
+            tisvlay_tray::notify::load_settings(&tray_path).unwrap(),
+        );
+        let tray_service = tokio::spawn(tisvlay_tray::notify::serve_settings(
+            tray_link,
+            "main".into(),
+            tray_path,
+            notifier,
+        ));
+        let tray_client = TrayClient::connect(&user_socket, "main").await.unwrap();
+        let mut tray_events = tisvlay::StateWatcher::new(
+            &daemon,
+            Some(&client),
+            Some(&tray_client),
+            Default::default(),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !tray_client.is_available().await {
+                tray_events.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        *tray_clients.write().await = Some(tray_client.clone());
+        let tray_ui = app.global::<Tray>();
+        tray_ui.invoke_set_notification("tv_wake".into(), false);
+        tray_ui.invoke_set_notification("tv_pairing".into(), false);
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let settings = tray_client.notification_settings().await.unwrap();
+                if !settings.tv_wake && !settings.tv_pairing {
+                    assert!(settings.tv_connection);
+                    break;
+                }
+                tray_events.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        tray_ui.invoke_send_test_notification();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), notifications.recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        controls.invoke_reload_config();
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_reload().tone == "error"
+        });
+        assert!(!app.global::<Errors>().get_reload().message.is_empty());
+
+        profiles.set_selected_kind(ProfileKind::System);
+        profiles.set_selected_uuid(original.clone());
+        expect_toast(
+            &app,
+            || profiles.invoke_value_edited("missing".into(), "screen_off".into()),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_value_edited_number("on_startup".into(), 10),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_value_edited_bool("on_startup".into(), true),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_restore_edited("missing".into(), true),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_remote_gated("missing".into(), true),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_reset_field("missing".into()),
+            "Reset field failed",
+        );
+        let missing = SharedString::from(uuid::Uuid::new_v4().to_string());
+        profiles.set_selected_uuid(missing.clone());
+        expect_toast(
+            &app,
+            || profiles.invoke_rename_selected("Missing".into()),
+            "Rename failed",
+        );
+        expect_toast(&app, || profiles.invoke_reset_all(), "Reset all failed");
+        expect_toast(
+            &app,
+            || {
+                profiles.invoke_confirm_duplicate(
+                    ProfileKind::System,
+                    missing.clone(),
+                    "Missing copy".into(),
+                );
+            },
+            "Duplicate profile failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_confirm_delete(ProfileKind::System, missing.clone()),
+            "Delete profile failed",
+        );
+        *session.write().await = None;
+        expect_toast(
+            &app,
+            || profiles.invoke_confirm_create(ProfileKind::User, "Unavailable".into()),
+            "Create profile failed",
+        );
+        expect_toast(
+            &app,
+            || {
+                profiles.invoke_confirm_duplicate(
+                    ProfileKind::User,
+                    missing.clone(),
+                    "Unavailable".into(),
+                );
+            },
+            "Duplicate profile failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_confirm_delete(ProfileKind::User, missing.clone()),
+            "Delete profile failed",
+        );
+        *session.write().await = Some(client.clone());
+
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_volume(missing.clone(), 20),
+            "Couldn't change volume",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_backlight(missing.clone(), 20),
+            "Couldn't change backlight",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_screen(missing.clone(), false),
+            "Couldn't turn screen off",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_screen(missing.clone(), true),
+            "Couldn't turn screen on",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_switch_input(missing.clone(), "HDMI_1".into()),
+            "Couldn't switch input",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_managed(missing.clone(), true),
+            "Couldn't update managed",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_primary_input(missing.clone(), "HDMI_1".into()),
+            "Couldn't change primary input",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_power_on(missing.clone()),
+            "Power on failed",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_power_off(missing.clone()),
+            "Power off failed",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_remove_tv(missing.clone()),
+            "Couldn't remove TV",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_system_profile(missing.clone(), "Work".into()),
+            "Couldn't change system profile",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_user_profile(tv.to_string().into(), "Missing profile".into()),
+            "Couldn't change user profile",
+        );
+        tray_service.abort();
     }
 
     fn outcome(
