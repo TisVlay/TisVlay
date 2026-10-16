@@ -820,6 +820,44 @@ fn sync_vec_model<T: Clone + 'static>(
 mod version_banner_tests {
     use super::*;
 
+    fn raw_tv(uuid: &str, name: &str, connected: bool) -> crate::state::TvViewRaw {
+        crate::state::TvViewRaw {
+            uuid: SharedString::from(uuid),
+            name: SharedString::from(name),
+            vendor: SharedString::from("mock"),
+            brand: SharedString::from("Mock"),
+            primary_descriptor: SharedString::from("mock://tv"),
+            connected,
+            power_state: SharedString::from(if connected { "active" } else { "unknown" }),
+            is_on: connected,
+            supports_wake: true,
+            has_screen: true,
+            has_volume: true,
+            has_mute: true,
+            has_input: true,
+            has_backlight: true,
+            is_screen_on: connected,
+            volume: 42,
+            muted: false,
+            backlight: 60,
+            current_input: SharedString::from("HDMI_1"),
+            available_input_ids: vec![SharedString::from("HDMI_1"), SharedString::from("HDMI_2")],
+            system_profile: SharedString::from("Work"),
+            system_profile_uuid: SharedString::from("system-profile"),
+            user_profile: SharedString::from("Personal"),
+            user_profile_uuid: SharedString::from("user-profile"),
+            primary_input: SharedString::from("HDMI_1"),
+            managed: true,
+            automated: connected,
+            hw_manufacturer: SharedString::from("Maker"),
+            hw_model: SharedString::from("Model"),
+            hw_serial: SharedString::from("Serial"),
+            desktop_connector: SharedString::from("card1-HDMI-A-1"),
+            vendor_config: vec![("MAC".into(), "aa:bb:cc:dd:ee:ff".into())],
+            vendor_info: vec![("transport".into(), "wss".into())],
+        }
+    }
+
     #[test]
     fn no_mismatch_no_banner() {
         assert_eq!(version_banner(&[]).title, "");
@@ -929,6 +967,50 @@ mod version_banner_tests {
         );
         assert!(profiles.get_selected_row().uuid.is_empty());
         assert_eq!(profiles.get_system().row_count(), 0);
+    }
+
+    #[test]
+    fn push_snapshot_projects_tv_rows_and_connected_count() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: vec![
+                    raw_tv("tv-1", "Office", true),
+                    raw_tv("tv-2", "Bedroom", false),
+                ],
+                system_profiles: Vec::new(),
+                user_profiles: Vec::new(),
+                system_profile_rows: Vec::new(),
+                user_profile_rows: Vec::new(),
+            },
+        );
+
+        let tvs = app.get_tvs();
+        assert_eq!(tvs.row_count(), 2);
+        assert_eq!(app.get_tvs_connected_count(), 1);
+        let office = tvs.row_data(0).expect("the first TV row is projected");
+        assert_eq!(office.uuid, "tv-1");
+        assert_eq!(office.name, "Office");
+        assert_eq!(office.brand, "Mock");
+        assert_eq!(office.current_input, "HDMI_1");
+        assert!(office.has_volume);
+        assert!(office.automated);
+        assert!(office.power_cycle_phase.is_empty());
+        let inputs = office.available_input_ids;
+        assert_eq!(inputs.row_count(), 2);
+        assert_eq!(inputs.row_data(1).as_deref(), Some("HDMI_2"));
+        let vendor_config = office.vendor_config;
+        assert_eq!(vendor_config.row_data(0).unwrap().label, "MAC");
+        let vendor_info = office.vendor_info;
+        assert_eq!(vendor_info.row_data(0).unwrap().value, "wss");
+
+        let bedroom = tvs.row_data(1).expect("the second TV row is projected");
+        assert!(!bedroom.connected);
+        assert!(!bedroom.is_on);
+        assert!(!bedroom.automated);
     }
 
     #[test]
