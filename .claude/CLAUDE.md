@@ -16,7 +16,7 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 ## What's Next
 
 - **Release automation after v0.3.0.** v0.3.0 shipped 2026-10-14: the repo is public at TisVlay/TisVlay, and the three `publish = true` crates (core, protocol and the `tisvlay` SDK) were published to crates.io by hand. The vendor backends (lg, cec) and ssdp stay unpublished, since only the unpublished daemon uses them. Still to set up: each crate's trusted publisher plus the `crates-io` environment (docs/build.md § First-publish checklist, step 7); a `maintainers` org team as crates.io co-owner; then "Allow GitHub Actions to create and approve pull requests" and the release-plz workflow, which is disabled in GitHub's settings until then (`gh workflow enable release-plz.yml`).
-- **User docs:** the mdBook guide isn't on Read the Docs yet: import the public repo and set the project's "Path for .readthedocs.yaml" to `.config/.readthedocs.yaml`. The fragment-aware `docs-links` gate is in CI; after connecting Read the Docs, retire docs/plans/mdbook-docs-site.md.
+- **User docs:** GitHub Pages is the canonical mdBook host at `https://tisvlay.github.io/TisVlay/`; the deployment workflow is in CI. Enable Pages with "GitHub Actions" as the source in repository Settings to publish. `.config/.readthedocs.yaml` is retained only as an optional alternate build; retire docs/plans/mdbook-docs-site.md after the Pages site is live.
 - **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext, coverage baseline), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
 
 ## Current Project Structure

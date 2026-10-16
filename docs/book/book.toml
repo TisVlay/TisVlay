@@ -9,6 +9,7 @@ language = "en"
 default-theme = "navy"
 git-repository-url = "https://github.com/TisVlay/TisVlay"
 edit-url-template = "https://github.com/TisVlay/TisVlay/edit/main/docs/book/{path}"
+site-url = "/TisVlay/"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.search]

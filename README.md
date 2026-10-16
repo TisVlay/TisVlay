@@ -91,10 +91,10 @@ Daemon -.->|WebSocket / WoL| TV2
 
 ## 📖 Documentation
 
-The user guide is an [mdBook](https://rust-lang.github.io/mdBook/) in [`docs/book/`](docs/book/) (`just docs-serve` renders it locally):
+The [user guide](https://tisvlay.github.io/TisVlay/) is built with [mdBook](https://rust-lang.github.io/mdBook/); run `just docs-serve` to preview it locally.
 
-- 🧭 New here? Start with [Installation](docs/book/src/getting-started/installation.md), then [Quick Start](docs/book/src/getting-started/quick-start.md).
-- 🎛️ Already running? See the [CLI Reference](docs/book/src/guide/cli.md) and [Configuration](docs/book/src/guide/configuration.md).
-- 🛰️ Streaming in remotely? See [Remote-Session Awareness](docs/book/src/guide/remote-sessions.md).
-- 🔎 Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
-- 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/operations/isolated-networks.md).
+- 🧭 New here? Start with [Installation](https://tisvlay.github.io/TisVlay/getting-started/installation.html), then [Quick Start](https://tisvlay.github.io/TisVlay/getting-started/quick-start.html).
+- 🎛️ Already running? See the [CLI Reference](https://tisvlay.github.io/TisVlay/guide/cli.html) and [Configuration](https://tisvlay.github.io/TisVlay/guide/configuration.html).
+- 🛰️ Streaming in remotely? See [Remote-Session Awareness](https://tisvlay.github.io/TisVlay/guide/remote-sessions.html).
+- 🔎 Discovery not finding your TV? See [Firewall & Discovery](https://tisvlay.github.io/TisVlay/operations/firewall-discovery.html).
+- 🕵️ TV discovering too much about you? See [TVs on an Isolated Network](https://tisvlay.github.io/TisVlay/operations/isolated-networks.html).

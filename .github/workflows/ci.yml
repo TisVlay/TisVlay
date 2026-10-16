@@ -279,11 +279,11 @@ jobs:
       - name: Check each feature
         run: just hack
 
-  # User-facing docs site (docs/book → Read the Docs). Kept off the
-  # tuned `ci` job's cache/critical path: it only compiles tisvlay-docgen
-  # (the CLI and core it renders, for the generated-partials freshness
-  # gate) plus mdbook, Mermaid, and lychee. Runs on code changes too: the
-  # partials are rendered from the CLI and core.
+  # User-facing docs site (docs/book → GitHub Pages). Kept off the tuned
+  # `ci` job's cache/critical path: it only compiles tisvlay-docgen (the
+  # CLI and core it renders, for generated-partials freshness) plus mdbook,
+  # Mermaid, and lychee. Runs on code changes too because partials are
+  # rendered from the CLI and core.
   docs:
     needs: changes
     if: (needs.changes.outputs.code == 'true' || needs.changes.outputs.book == 'true') && !github.event.pull_request.draft
@@ -293,6 +293,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          lfs: true
 
       - name: Toolchain
         run: rustup show
@@ -313,20 +315,42 @@ jobs:
 
       # Regenerate the book's generated partials (CLI reference, profile
       # defaults, release version) and fail if they differ from what's
-      # committed — Read the Docs serves the committed copies via a plain
-      # `mdbook build`, so a stale partial would silently ship outdated docs.
+      # committed — the published site serves committed copies via a plain
+      # `mdbook build`, so stale partials would otherwise ship outdated docs.
       - name: Generated partials freshness
         run: just docs-gen-check
 
       - name: Build book and check links
         run: just docs-links
 
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/book/book
+
+  deploy-pages:
+    needs: docs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy docs to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   # One stable check to require on main: fails if any job failed or was
   # cancelled. Jobs the gate skipped count as passing.
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, checks, ci, msrv, features, docs]
+    needs: [changes, checks, ci, msrv, features, docs, deploy-pages]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
