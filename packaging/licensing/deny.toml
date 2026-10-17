@@ -166,6 +166,7 @@ ignore = [
     # Unmaintained, no safe upgrade — accepted:
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; no safe upgrade; transitive" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; no safe upgrade; unconditional via zenoh-config 1.10/serde_yaml; TisVlay builds Zenoh config programmatically, not from YAML; revisit on Zenoh bump" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via winit sctk-adwaita" },
     # Fix available upstream — deferred to a dependency bump:
     { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
