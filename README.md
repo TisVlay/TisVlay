@@ -12,7 +12,7 @@
 - 📺 Control multiple TVs & projectors just like conventional displays
   - Power on/off with PC, Screen on/off with lock screen
   - Easily adjust backlight, volume, active input, and more
-- 🤖 Event driven automation driven via system and user events
+- 🤖 Event driven automation via system and user desktop events
   - System boot, reboot, shutdown, suspend, wake, DPMS
   - User lock/unlock, idle, remote session connect/disconnect
 - 🧰 Flexible profile customization and switching
@@ -91,10 +91,9 @@ Daemon -.->|WebSocket / WoL| TV2
 
 ## 📖 Documentation
 
-The user guide is an [mdBook](https://rust-lang.github.io/mdBook/) in [`docs/book/`](docs/book/) (`just docs-serve` renders it locally):
-
 - 🧭 New here? Start with [Installation](docs/book/src/getting-started/installation.md), then [Quick Start](docs/book/src/getting-started/quick-start.md).
-- 🎛️ Already running? See the [CLI Reference](docs/book/src/guide/cli.md) and [Configuration](docs/book/src/guide/configuration.md).
+- 🎛️ Setting things up? See [GUI & Tray](docs/book/src/guide/gui-tray.md) and [Automation](docs/book/src/guide/automation.md).
 - 🛰️ Streaming in remotely? See [Remote-Session Awareness](docs/book/src/guide/remote-sessions.md).
 - 🔎 Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
 - 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/operations/isolated-networks.md).
+- ⌨️ Scripting? See the [Command Line](docs/book/src/guide/cli.md) and [Configuration Files](docs/book/src/guide/configuration.md).

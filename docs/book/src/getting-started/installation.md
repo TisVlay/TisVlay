@@ -72,9 +72,9 @@ The repository's flake provides a NixOS module that wires up the daemon, user se
 |--------|--------------|
 | `users` | The durable [access](#access) grant: `tisvlay` group membership. List every account that should control TVs from SSH, scripts, or while not at the console. The console user has access anyway, but listing your user means access never depends on being the active seat. |
 | `seatAccess` | The presence grant for the active seat's graphical user (on by default). Set `false` to restrict the socket to `users` and the greeter. |
-| `settings` | Declarative TVs and profiles, rendered to a seed file (see [Configuration](../guide/configuration.md)). Re-applied on every start for TVs not already in the daemon's store, so runtime edits and pairing still persist. |
+| `settings` | Declarative TVs and profiles, rendered to a seed file (see [Configuration Files](../guide/configuration.md)). Re-applied on every start for TVs not already in the daemon's store, so runtime edits and pairing still persist. |
 | `cec.enable`, `cec.pulse8.enable` | Device access for the [HDMI-CEC backend](#hdmi-cec-backend-optional); the second also builds the in-tree Pulse-Eight USB-CEC driver. |
-| `greeter.enable` | The login-screen idle client (see [Session Automation](../guide/session-automation.md#login-screen-idle-greeter)). On automatically when plasma-login-manager or GDM is the display manager. |
+| `greeter.enable` | The login-screen idle client (see [Automation](../guide/automation.md#login-screen-idle)). On automatically when plasma-login-manager or GDM is the display manager. |
 | `openFirewall`, `bindPort` | Open the pinned discovery port in the host firewall (see [Firewall & Discovery](../operations/firewall-discovery.md)). |
 | `sunshinePort` | Where to find Sunshine if you moved it off its default port (see [Remote-Session Awareness](../guide/remote-sessions.md#sunshine-integration)). |
 | `logLevel`, `extraArgs` | The services' log level, and extra `tisvlay-daemon` arguments for anything the module doesn't expose. |
@@ -106,7 +106,7 @@ After a fresh install, the system daemon starts automatically. The session and t
 systemctl --user start tisvlay-session tisvlay-tray
 ```
 
-Packages also install shell completion for the `tisvlay` CLI (bash, zsh, fish); see the [CLI Reference](../guide/cli.md). Bash needs the `bash-completion` loader (recommended by the Debian and Fedora packages).
+Packages also install shell completion for the `tisvlay` CLI (bash, zsh, fish); see the [Command Line](../guide/cli.md) page. Bash needs the `bash-completion` loader (recommended by the Debian and Fedora packages).
 
 ### Access
 
@@ -158,6 +158,6 @@ For a Pulse-Eight adapter, this grants the daemon access to `/dev/cecN` once it 
 
 The backend depends on the LGPL-licensed [`linux-cec`](https://crates.io/crates/linux-cec) crate.
 
-No pairing prompt or credentials are involved — a CEC TV is added by picking its adapter; see [Pairing](./pairing.md#hdmi-cec-no-pairing-needed).
+No pairing prompt or credentials are involved — a CEC TV is added by picking its adapter; see [Adding a TV](./pairing.md#hdmi-cec-no-pairing-needed).
 
 </details>

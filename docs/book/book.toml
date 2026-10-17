@@ -1,5 +1,5 @@
 [book]
-title = "tisvlay"
+title = "TisVlay"
 authors = ["tisvlay contributors"]
 description = "User guide for tisvlay — TV display control for Linux."
 src = "src"

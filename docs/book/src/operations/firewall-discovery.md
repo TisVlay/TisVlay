@@ -1,16 +1,18 @@
 # Firewall & Discovery
 
-Network backends find TVs by multicast discovery: tisvlay sends a search to a multicast group and listens for replies. The LG backend uses SSDP (the same protocol DLNA/UPnP use), which is what this page's firewall rules cover. HDMI-CEC TVs aren't discovered over the network at all — the host's CEC adapters are probed instead.
+When you click **+** to add a TV, the pairing wizard scans your network. Network backends find TVs by multicast discovery: TisVlay sends a search to a multicast group and listens for replies. The LG backend uses SSDP (the same protocol DLNA and UPnP use), which is what this page's firewall rules cover. HDMI-CEC TVs aren't discovered over the network at all; the computer's CEC adapters are probed instead.
+
+Discovery is a convenience. You can always add a TV by typing its address under **Don't see your TV? Add it manually**, with no firewall changes; see [Adding a TV](../getting-started/pairing.md).
 
 ## The Linux gotcha
 
-LG TVs reply to SSDP from an **ephemeral** source port rather than the standard port 1900. On Linux, a default-deny firewall therefore drops the reply (the kernel has no conntrack entry that matches it), so discovery silently finds nothing — even though the TV is reachable and you can pair it by explicit IP.
+LG TVs reply to SSDP from an **ephemeral** source port rather than the standard port 1900. On Linux, a default-deny firewall therefore drops the reply (the kernel has no conntrack entry that matches it), so discovery silently finds nothing, even though the TV is reachable and you can add it by address.
 
-**Symptom:** `tisvlay discover` (or the GUI wizard's discovery) returns no TVs, but pairing by explicit IP works.
+**Symptom:** the wizard's scan finds no network TVs (or `tisvlay discover` returns none), but adding the TV by address works.
 
 ## Open the pinned source port
 
-tisvlay binds its SSDP source socket to a **fixed** port — **1901 by default** — so a single firewall rule lets the replies through instead of opening the whole ephemeral range. You don't need to configure the port; just allow inbound UDP on it:
+TisVlay binds its SSDP source socket to a **fixed** port, **1901 by default**, so a single firewall rule lets the replies through instead of opening the whole ephemeral range. You don't need to configure the port; just allow inbound UDP on it:
 
 ```sh
 # Ubuntu / Debian (ufw)
@@ -24,7 +26,7 @@ sudo firewall-cmd --reload
 sudo iptables -I INPUT -p udp --dport 1901 -j ACCEPT
 ```
 
-On NixOS the module opens it for you — its `bindPort` already defaults to 1901:
+On NixOS the module opens it for you; its `bindPort` already defaults to 1901:
 
 ```nix
 services.tisvlay.openFirewall = true;
@@ -32,7 +34,7 @@ services.tisvlay.openFirewall = true;
 networking.firewall.allowedUDPPorts = [ 1901 ];
 ```
 
-To use a different port — or an OS-chosen ephemeral one, which can't be narrowed to a single firewall rule — set it in the daemon config, or pass `tisvlay-daemon --ssdp-port <port>` (`0` = ephemeral):
+To use a different port, or an OS-chosen ephemeral one (which can't be narrowed to a single firewall rule), set it in the service's config, or pass `tisvlay-daemon --ssdp-port <port>` (`0` = ephemeral):
 
 ```toml
 # /var/lib/tisvlay/daemon.toml
@@ -40,7 +42,7 @@ To use a different port — or an OS-chosen ephemeral one, which can't be narrow
 bind_port = 1901   # the default; any unused port works, or 0 for ephemeral
 ```
 
-> Note: a `--sport 1900` rule does **not** work — the TV's reply comes from an ephemeral port, so you must match on the pinned *destination* port instead.
+> Note: a `--sport 1900` rule does **not** work. The TV's reply comes from an ephemeral port, so you must match on the pinned *destination* port instead.
 
 ## Alternative: allow UDP from your LAN
 
@@ -57,9 +59,14 @@ sudo firewall-cmd --reload
 
 ## Ways to discover and add a TV
 
-- `tisvlay discover` — a bounded scan; found TVs stream back as they answer.
-- `tisvlay discover-session` — an open-ended discovery session that keeps streaming findings until you stop it (ctrl-c).
-- The **GUI wizard** does the same, live, and lists the host's CEC adapters alongside the network scan.
-- **Manual entry** — if discovery can't reach the TV, type its IP; the GUI auto-fills the MAC address for Wake-on-LAN from the kernel's ARP/NDP cache (an "Auto-detected" badge marks it, clearing if you edit). A TV on another subnet or VLAN is invisible to that cache; see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac) and, for discovery across a VLAN, [TVs on an Isolated Network](./isolated-networks.md).
+- **The pairing wizard** scans live: TVs appear as they answer, and the host's CEC adapters are listed alongside the network scan.
+- **Manual entry** is the fallback when discovery can't reach the TV. Type its address; for an LG TV the wizard fills in the MAC address (used for Wake-on-LAN) from your computer's neighbor cache and marks it with an **Auto-detected** badge, which clears if you edit the value. A TV on another subnet or VLAN isn't visible to that cache; see [The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac) and, for discovery across a VLAN, [TVs on an Isolated Network](./isolated-networks.md).
 
-Discovery is a convenience — you can always [pair by IP address](../getting-started/pairing.md#pair-from-the-command-line), no firewall changes required.
+<details>
+<summary>From a terminal</summary>
+
+- `tisvlay discover` runs a bounded scan; found TVs stream back as they answer.
+- `tisvlay discover-session` is an open-ended scan that keeps streaming findings until you press ctrl-c.
+- `tisvlay pair` adds a TV by address; see [Adding a TV](../getting-started/pairing.md#pair-from-the-command-line).
+
+</details>

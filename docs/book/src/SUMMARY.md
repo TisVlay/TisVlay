@@ -6,23 +6,25 @@
 
 - [Installation](./getting-started/installation.md)
 - [Quick Start](./getting-started/quick-start.md)
-- [Pairing](./getting-started/pairing.md)
+- [Adding a TV](./getting-started/pairing.md)
 
-# User Guide
+# Using TisVlay
 
-- [CLI Reference](./guide/cli.md)
-- [Configuration](./guide/configuration.md)
-- [Profiles](./guide/profiles.md)
-- [Session Automation](./guide/session-automation.md)
-- [Remote-Session Awareness](./guide/remote-sessions.md)
 - [GUI & Tray](./guide/gui-tray.md)
+- [Automation](./guide/automation.md)
+- [Remote-Session Awareness](./guide/remote-sessions.md)
 
-# Operations
+# Help
 
+- [Troubleshooting](./operations/troubleshooting.md)
 - [Firewall & Discovery](./operations/firewall-discovery.md)
 - [Networking & Reliability](./operations/networking-reliability.md)
 - [TVs on an Isolated Network](./operations/isolated-networks.md)
-- [Troubleshooting](./operations/troubleshooting.md)
+
+# Advanced
+
+- [Command Line](./guide/cli.md)
+- [Configuration Files](./guide/configuration.md)
 
 # Reference
 
