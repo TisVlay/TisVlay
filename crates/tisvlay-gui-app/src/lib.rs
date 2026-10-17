@@ -2842,6 +2842,42 @@ mod tests {
         profiles::handle_user_changed(editor.clone(), session.clone(), app.as_weak(), id).await;
     }
 
+    /// Wait until system profile `id` leaves the daemon mirror: a delete
+    /// rpc can reply before the deletion's sample arrives.
+    async fn wait_for_system_profile_removed(daemon: &DaemonClient, id: uuid::Uuid) {
+        let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while daemon.list_system_profile_bodies().await.contains_key(&id) {
+                watcher
+                    .next()
+                    .await
+                    .expect("profile state watcher remains open");
+            }
+        })
+        .await
+        .expect("system profile still mirrored after ten seconds");
+    }
+
+    /// User-side mirror of [`wait_for_system_profile_removed`].
+    async fn wait_for_user_profile_removed(
+        daemon: &DaemonClient,
+        client: &SessionClient,
+        id: uuid::Uuid,
+    ) {
+        let mut watcher =
+            tisvlay::StateWatcher::new(daemon, Some(client), None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while client.list_user_profile_bodies().await.contains_key(&id) {
+                watcher
+                    .next()
+                    .await
+                    .expect("user profile watcher remains open");
+            }
+        })
+        .await
+        .expect("user profile still mirrored after ten seconds");
+    }
+
     async fn watcher_refreshes_services_and_models() {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("watch.sock");
@@ -3400,10 +3436,10 @@ mod tests {
         });
         let original = profiles.get_selected_uuid();
         let original_id: uuid::Uuid = original.parse().unwrap();
-        assert_eq!(
-            daemon.list_system_profile_bodies().await[&original_id].name,
-            "Work"
-        );
+        wait_for_system_profile(&daemon, &editor, &app, original_id, |body| {
+            body["name"] == "Work"
+        })
+        .await;
         profiles.invoke_confirm_duplicate(
             ProfileKind::System,
             original.clone(),
@@ -3415,10 +3451,10 @@ mod tests {
         });
         let duplicate = profiles.get_selected_uuid();
         let duplicate_id: uuid::Uuid = duplicate.parse().unwrap();
-        assert_eq!(
-            daemon.list_system_profile_bodies().await[&duplicate_id].name,
-            "Work copy"
-        );
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["name"] == "Work copy"
+        })
+        .await;
         profiles.invoke_value_edited("on_startup".into(), "screen_off".into());
         wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
             body["on_startup"] == "screen_off"
@@ -3469,12 +3505,7 @@ mod tests {
         wait_for_ui(&app, |app| {
             app.global::<Profiles>().get_selected_uuid().is_empty()
         });
-        assert!(
-            !daemon
-                .list_system_profile_bodies()
-                .await
-                .contains_key(&duplicate_id)
-        );
+        wait_for_system_profile_removed(&daemon, duplicate_id).await;
 
         profiles.invoke_open_tv(tv.to_string().into());
         assert_eq!(app.get_active_pane(), Pane::Tvs);
@@ -3553,10 +3584,10 @@ mod tests {
         });
         let user_profile = profiles.get_selected_uuid();
         let user_id: uuid::Uuid = user_profile.parse().unwrap();
-        assert_eq!(
-            client.list_user_profile_bodies().await[&user_id].name,
-            "Personal"
-        );
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["name"] == "Personal"
+        })
+        .await;
         profiles.invoke_value_edited_bool("remote_screencast_arms".into(), true);
         wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
             body["remote_screencast_arms"] == true
@@ -3607,20 +3638,15 @@ mod tests {
         });
         let user_copy = profiles.get_selected_uuid();
         let user_copy_id: uuid::Uuid = user_copy.parse().unwrap();
-        assert_eq!(
-            client.list_user_profile_bodies().await[&user_copy_id].name,
-            "Personal copy"
-        );
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_copy_id, |body| {
+            body["name"] == "Personal copy"
+        })
+        .await;
         profiles.invoke_confirm_delete(ProfileKind::User, user_copy);
         wait_for_ui(&app, |app| {
             app.global::<Profiles>().get_selected_uuid().is_empty()
         });
-        assert!(
-            !client
-                .list_user_profile_bodies()
-                .await
-                .contains_key(&user_copy_id)
-        );
+        wait_for_user_profile_removed(&daemon, &client, user_copy_id).await;
 
         controls.invoke_request_pair();
         assert!(wizard.get_active());
