@@ -3762,7 +3762,7 @@ mod tests {
         tray_ui.invoke_set_notification("tv_pairing".into(), false);
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let settings = tray_client.notification_settings().await.unwrap();
+                let settings = tray_client.notification_settings_status().await.unwrap();
                 if !settings.tv_wake && !settings.tv_pairing {
                     assert!(settings.tv_connection);
                     break;

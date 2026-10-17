@@ -63,7 +63,7 @@ async fn settings_round_trip_and_persistence() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let settings = client.notification_settings().await.unwrap();
+    let settings = client.notification_settings_status().await.unwrap();
     assert!(settings.tv_wake, "factory default on");
     // A fresh install has no file yet, and nothing to reload.
     assert!(!config_path.exists());
@@ -77,9 +77,22 @@ async fn settings_round_trip_and_persistence() {
         })
         .await
         .unwrap();
-    let settings = client.notification_settings().await.unwrap();
+    let settings = client.notification_settings_status().await.unwrap();
     assert!(!settings.tv_wake);
     assert!(settings.tv_pairing);
+    // The mirror sees the change once the tray republishes it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !client
+        .notification_settings()
+        .await
+        .is_some_and(|mirrored| mirrored == settings)
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the settings mirror never caught up"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let on_disk = load_settings(&config_path).unwrap();
     assert!(!on_disk.tv_wake && on_disk.tv_pairing);
 
@@ -90,7 +103,13 @@ async fn settings_round_trip_and_persistence() {
         .replace("tv_pairing = true", "tv_pairing = false");
     std::fs::write(&config_path, edited).unwrap();
     assert!(client.reload_config().await.unwrap().changed);
-    assert!(!client.notification_settings().await.unwrap().tv_pairing);
+    assert!(
+        !client
+            .notification_settings_status()
+            .await
+            .unwrap()
+            .tv_pairing
+    );
     assert!(!client.reload_config().await.unwrap().changed);
     let kept = std::fs::read_to_string(&config_path).unwrap();
     std::fs::remove_file(&config_path).unwrap();

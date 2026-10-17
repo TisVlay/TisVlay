@@ -37,18 +37,18 @@ pub use tisvlay_protocol::payload::{
     RemoteSessionState, RemoteSource, RemoteSourceKind,
 };
 pub use tisvlay_protocol::rpc::{
-    NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, TvConfigView,
-    VendorEntry,
+    NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, ServiceInfo,
+    TvConfigView, VendorEntry,
 };
 use tokio::sync::{broadcast, mpsc};
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use handshake::Handshake;
-use mirror::{SystemMirror, UserMirror};
+use mirror::{SystemMirror, TrayMirror, UserMirror};
 
 /// Profile bodies: the wire carries the config structs verbatim (name
 /// plus per-field options).
@@ -101,12 +101,14 @@ pub enum StateEvent {
     /// rpcs. Can repeat for one lifetime, so treat it idempotently.
     DaemonAppeared,
     /// The daemon's liveliness token went away (stopped, crashed, or the
-    /// link dropped). The mirror keeps its last state.
+    /// link dropped). Its TVs and system profiles have already left the
+    /// mirror, and [`DaemonClient::service_info`] has cleared.
     DaemonDisappeared,
     /// The session service's liveliness token appeared. Can repeat for
     /// one lifetime.
     SessionAppeared,
-    /// The session service's liveliness token went away.
+    /// The session service's liveliness token went away. The mirror keeps
+    /// its last state; [`SessionClient::service_info`] has cleared.
     SessionDisappeared,
     /// A TV's user-profile assignment changed; re-read
     /// [`SessionClient::get_tv_user_profile`] for the TVs shown.
@@ -131,7 +133,8 @@ pub enum StateEvent {
     /// The tray's liveliness token appeared. Can repeat for one
     /// lifetime.
     TrayAppeared,
-    /// The tray's liveliness token went away.
+    /// The tray's liveliness token went away. Its notification settings
+    /// stay in the mirror; [`TrayClient::service_info`] has cleared.
     TrayDisappeared,
     /// The tray published its notification settings, on connect and
     /// after every change; re-read
@@ -141,11 +144,17 @@ pub enum StateEvent {
     /// ([`StateWatcherConfig::fallback_poll_interval`]), also sent when
     /// the watcher fell behind and dropped events.
     FallbackPoll,
+    /// A service's release check settled for its current lifetime, so its
+    /// client's `service_info` ([`DaemonClient::service_info`] and the
+    /// session's and tray's) now answers. Sent once per service lifetime,
+    /// after its `*Appeared`, whatever the verdict; a watcher built after
+    /// the check settled gets it on start, and may then see it twice.
+    ReleaseChecked(Service),
     /// A service runs a release this client can't talk to: every rpc to
     /// it fails until it's restarted on a matching release. Sent once per
-    /// service lifetime, after its `*Appeared`; a watcher built while the
-    /// mismatch is already known gets it on start, and may then see it
-    /// twice.
+    /// service lifetime, right after its [`Self::ReleaseChecked`]; a
+    /// watcher built while the mismatch is already known gets it on start,
+    /// and may then see it twice.
     VersionMismatch {
         /// The mismatched service.
         service: Service,
@@ -375,13 +384,13 @@ impl DaemonClient {
                         }
                         state.daemon_alive = alive;
                     }
-                    let _ = events.send(if alive {
-                        StateEvent::DaemonAppeared
-                    } else {
-                        StateEvent::DaemonDisappeared
-                    });
-                    check_on_liveliness(
+                    on_liveliness(
                         alive,
+                        if alive {
+                            StateEvent::DaemonAppeared
+                        } else {
+                            StateEvent::DaemonDisappeared
+                        },
                         &handshake,
                         &events,
                         &caller,
@@ -406,6 +415,15 @@ impl DaemonClient {
     /// stopping, or run another release).
     pub async fn is_available(&self) -> bool {
         self.mirror.lock().expect("mirror lock").daemon_alive
+    }
+
+    /// What this lifetime's release check learned: the daemon's release
+    /// and store path. `None` while the daemon is down and until the
+    /// check settles ([`StateEvent::ReleaseChecked`]). Ungated, so it
+    /// reports a mismatched release too. A mirror read; [`Self::version`]
+    /// and [`Self::config_path`] ask the daemon instead.
+    pub async fn service_info(&self) -> Option<ServiceInfo> {
+        self.handshake.info()
     }
 
     /// Assemble the fleet snapshot the GUI renders from — a pure mirror
@@ -441,7 +459,7 @@ impl DaemonClient {
         Ok(self.info().await?.state_path)
     }
 
-    async fn info(&self) -> Result<rpc::ServiceInfo> {
+    async fn info(&self) -> Result<ServiceInfo> {
         self.caller
             .call::<manager::Info>(&(), &())
             .await
@@ -972,9 +990,7 @@ impl DaemonClient {
         target: &R::Target,
         request: &R::Request,
     ) -> Result<R::Response> {
-        self.handshake
-            .ensure(&self.events, || async { Ok(self.info().await?.version) })
-            .await?;
+        self.handshake.ensure(&self.events, || self.info()).await?;
         self.caller
             .call::<R>(target, request)
             .await
@@ -1049,13 +1065,13 @@ impl SessionClient {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let alive = sample.kind() == SampleKind::Put;
                     mirror.lock().expect("mirror lock").session_alive = alive;
-                    let _ = events.send(if alive {
-                        StateEvent::SessionAppeared
-                    } else {
-                        StateEvent::SessionDisappeared
-                    });
-                    check_on_liveliness(
+                    on_liveliness(
                         alive,
+                        if alive {
+                            StateEvent::SessionAppeared
+                        } else {
+                            StateEvent::SessionDisappeared
+                        },
                         &handshake,
                         &events,
                         &caller,
@@ -1078,6 +1094,13 @@ impl SessionClient {
     /// [`DaemonClient::is_available`].
     pub async fn is_available(&self) -> bool {
         self.mirror.lock().expect("mirror lock").session_alive
+    }
+
+    /// What this lifetime's release check learned: the session service's
+    /// release and state-file path. A mirror read, like
+    /// [`DaemonClient::service_info`].
+    pub async fn service_info(&self) -> Option<ServiceInfo> {
+        self.handshake.info()
     }
 
     /// The session service's release. Ungated, like the daemon's and the
@@ -1250,16 +1273,14 @@ impl SessionClient {
         target: &R::Target,
         request: &R::Request,
     ) -> Result<R::Response> {
-        self.handshake
-            .ensure(&self.events, || async { Ok(self.info().await?.version) })
-            .await?;
+        self.handshake.ensure(&self.events, || self.info()).await?;
         self.caller
             .call::<R>(target, request)
             .await
             .map_err(|e| Error::from_rpc(Service::Session, e))
     }
 
-    async fn info(&self) -> Result<rpc::ServiceInfo> {
+    async fn info(&self) -> Result<ServiceInfo> {
         self.caller
             .call::<user_profile::Info>(&(), &())
             .await
@@ -1273,7 +1294,7 @@ impl SessionClient {
 #[derive(Debug, Clone)]
 pub struct TrayClient {
     caller: Arc<Caller>,
-    alive: Arc<Mutex<bool>>,
+    mirror: Arc<Mutex<TrayMirror>>,
     events: broadcast::Sender<StateEvent>,
     handshake: Arc<Handshake>,
 }
@@ -1289,7 +1310,7 @@ impl TrayClient {
         )
         .await
         .map_err(|e| Error::transport("connect to the tray socket", e))?;
-        let alive = Arc::new(Mutex::new(false));
+        let mirror = Arc::new(Mutex::new(TrayMirror::default()));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let liveliness = session
             .liveliness()
@@ -1300,21 +1321,21 @@ impl TrayClient {
         let caller = Arc::new(Caller::new(session.clone(), site));
         let handshake = Arc::new(Handshake::new(Service::Tray));
         {
-            let alive = Arc::clone(&alive);
+            let mirror = Arc::clone(&mirror);
             let events = events.clone();
             let caller = Arc::clone(&caller);
             let handshake = Arc::clone(&handshake);
             tokio::spawn(async move {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let up = sample.kind() == SampleKind::Put;
-                    *alive.lock().expect("tray alive lock") = up;
-                    let _ = events.send(if up {
-                        StateEvent::TrayAppeared
-                    } else {
-                        StateEvent::TrayDisappeared
-                    });
-                    check_on_liveliness(
+                    mirror.lock().expect("mirror lock").tray_alive = up;
+                    on_liveliness(
                         up,
+                        if up {
+                            StateEvent::TrayAppeared
+                        } else {
+                            StateEvent::TrayDisappeared
+                        },
                         &handshake,
                         &events,
                         &caller,
@@ -1330,16 +1351,20 @@ impl TrayClient {
             .await
             .map_err(|e| Error::transport("subscribe to the tray settings", e))?;
         {
+            let mirror = Arc::clone(&mirror);
             let events = events.clone();
             tokio::spawn(async move {
-                while settings_sub.recv_async().await.is_ok() {
-                    let _ = events.send(StateEvent::TrayNotificationSettingsChanged);
+                while let Ok(sample) = settings_sub.recv_async().await {
+                    let event = mirror.lock().expect("mirror lock").apply(&sample);
+                    if let Some(event) = event {
+                        let _ = events.send(event);
+                    }
                 }
             });
         }
         Ok(Self {
             caller,
-            alive,
+            mirror,
             events,
             handshake,
         })
@@ -1348,7 +1373,14 @@ impl TrayClient {
     /// Whether the tray's liveliness token is present, with the same
     /// caveat as [`DaemonClient::is_available`]. No rpc.
     pub async fn is_available(&self) -> bool {
-        *self.alive.lock().expect("tray alive lock")
+        self.mirror.lock().expect("mirror lock").tray_alive
+    }
+
+    /// What this lifetime's release check learned: the tray's release and
+    /// settings-file path. A mirror read, like
+    /// [`DaemonClient::service_info`].
+    pub async fn service_info(&self) -> Option<ServiceInfo> {
+        self.handshake.info()
     }
 
     /// The tray's release. Ungated, so it reports what's running even
@@ -1370,9 +1402,21 @@ impl TrayClient {
     }
 
     /// The tray's notification switches, one per
-    /// [`NotificationCategory`]. Rpc; the client keeps no copy, so
-    /// re-read on [`StateEvent::TrayNotificationSettingsChanged`].
-    pub async fn notification_settings(&self) -> Result<NotificationSettings> {
+    /// [`NotificationCategory`], as it last published them: a mirror read,
+    /// updated on each [`StateEvent::TrayNotificationSettingsChanged`]. It
+    /// keeps the last switches while the tray is down. `None` until the
+    /// tray first publishes them, and against a tray on another release.
+    pub async fn notification_settings(&self) -> Option<NotificationSettings> {
+        if self.handshake.known_mismatch().is_some() {
+            return None;
+        }
+        self.mirror.lock().expect("mirror lock").settings
+    }
+
+    /// The tray's notification switches, read from the tray directly: the
+    /// active counterpart to [`Self::notification_settings`], which sees a
+    /// change only once the tray republishes it. Rpc.
+    pub async fn notification_settings_status(&self) -> Result<NotificationSettings> {
         self.call::<user_tray::Get>(&()).await
     }
 
@@ -1397,16 +1441,14 @@ impl TrayClient {
     }
 
     async fn call<R: Unary<Target = ()>>(&self, request: &R::Request) -> Result<R::Response> {
-        self.handshake
-            .ensure(&self.events, || async { Ok(self.info().await?.version) })
-            .await?;
+        self.handshake.ensure(&self.events, || self.info()).await?;
         self.caller
             .call::<R>(&(), request)
             .await
             .map_err(|e| Error::from_rpc(Service::Tray, e))
     }
 
-    async fn info(&self) -> Result<rpc::ServiceInfo> {
+    async fn info(&self) -> Result<ServiceInfo> {
         self.caller
             .call::<user_tray::Info>(&(), &())
             .await
@@ -1414,41 +1456,68 @@ impl TrayClient {
     }
 }
 
-/// Keep a client's verdict in step with its service's liveliness: a
-/// service that went away gets a fresh check in its next lifetime, and one
-/// that appeared is checked at once, so a mismatch reaches the watcher
-/// without waiting for a call. The check runs on its own task, so a slow
-/// `info` never holds up the next liveliness edge.
-fn check_on_liveliness<F, Fut>(
+/// Announce a service's liveliness edge (`announce`) and keep its client's
+/// release check in step: a service that went away loses its release
+/// before the announcement, so a reader acting on it sees none, and its
+/// next lifetime gets a fresh check. One that appeared is checked at once,
+/// after the announcement, so its release (and a mismatch) reaches the
+/// watcher without waiting for a call. A failed check is retried, backing
+/// off, for as long as that lifetime lasts. The check runs on its own
+/// task, so a slow `info` never holds up the next liveliness edge.
+fn on_liveliness<F, Fut>(
     alive: bool,
+    announce: StateEvent,
     handshake: &Arc<Handshake>,
     events: &broadcast::Sender<StateEvent>,
     caller: &Arc<Caller>,
     service: Service,
     info: F,
 ) where
-    F: FnOnce(Arc<Caller>) -> Fut + Send + 'static,
-    Fut: Future<Output = std::result::Result<rpc::ServiceInfo, tisvlay_protocol::caller::RpcError>>
+    F: Fn(Arc<Caller>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = std::result::Result<ServiceInfo, tisvlay_protocol::caller::RpcError>>
         + Send,
 {
     if !alive {
         handshake.reset();
+        let _ = events.send(announce);
         return;
     }
+    // Read before spawning, on the liveliness task: a `reset` for this
+    // service going away can only come after it.
+    let lifetime = handshake.lifetime();
+    let _ = events.send(announce);
     let handshake = Arc::clone(handshake);
     let events = events.clone();
     let caller = Arc::clone(caller);
     tokio::spawn(async move {
-        let _ = handshake
-            .ensure(&events, || async move {
-                info(caller)
-                    .await
-                    .map(|info| info.version)
-                    .map_err(|e| Error::from_rpc(service, e))
-            })
-            .await;
+        let mut backoff = CHECK_RETRY_FIRST;
+        loop {
+            let caller = Arc::clone(&caller);
+            let checked = handshake
+                .ensure(&events, || async {
+                    info(caller).await.map_err(|e| Error::from_rpc(service, e))
+                })
+                .await;
+            // Settled, a mismatch included; or the service went away, and
+            // its next lifetime gets its own check.
+            if handshake.info().is_some() || handshake.lifetime() != lifetime {
+                return;
+            }
+            if let Err(e) = checked {
+                debug!(%service, error = %e, ?backoff, "release check failed; retrying");
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(CHECK_RETRY_MAX);
+        }
     });
 }
+
+/// The first wait before a failed release check is retried, doubling up
+/// to [`CHECK_RETRY_MAX`].
+const CHECK_RETRY_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest wait between release-check retries.
+const CHECK_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// Watcher tuning: mirror deltas forward directly, so the one knob is
 /// the fallback poll interval.
@@ -1496,14 +1565,14 @@ impl StateWatcher {
         if let Some(tray) = tray {
             forward(tray.subscribe_events(), tx.clone());
         }
-        // Synthesize `*Appeared` for peers already alive, and
-        // `VersionMismatch` for mismatches already known: both fired into
-        // the client's broadcast before this watcher subscribed (a tokio
-        // broadcast drops events sent with no receivers), so consumers
-        // relying on edges alone would never learn of them. A
-        // level-triggered emit after subscription closes the window; a
-        // check finishing in between can announce twice, and consumers
-        // treat repeats idempotently.
+        // Synthesize `*Appeared` for peers already alive, and the
+        // `ReleaseChecked` / `VersionMismatch` of checks already settled:
+        // all fired into the client's broadcast before this watcher
+        // subscribed (a tokio broadcast drops events sent with no
+        // receivers), so consumers relying on edges alone would never
+        // learn of them. A level-triggered emit after subscription closes
+        // the window; a check finishing in between can announce twice, and
+        // consumers treat repeats idempotently.
         {
             let tx = tx.clone();
             let daemon = daemon.clone();
@@ -1513,14 +1582,14 @@ impl StateWatcher {
                 if daemon.is_available().await {
                     let _ = tx.send(StateEvent::DaemonAppeared);
                 }
-                if let Some(event) = daemon.handshake.known_mismatch_event() {
+                for event in daemon.handshake.settled_events() {
                     let _ = tx.send(event);
                 }
                 if let Some(session) = session {
                     if session.is_available().await {
                         let _ = tx.send(StateEvent::SessionAppeared);
                     }
-                    if let Some(event) = session.handshake.known_mismatch_event() {
+                    for event in session.handshake.settled_events() {
                         let _ = tx.send(event);
                     }
                 }
@@ -1528,7 +1597,7 @@ impl StateWatcher {
                     if tray.is_available().await {
                         let _ = tx.send(StateEvent::TrayAppeared);
                     }
-                    if let Some(event) = tray.handshake.known_mismatch_event() {
+                    for event in tray.handshake.settled_events() {
                         let _ = tx.send(event);
                     }
                 }
@@ -1552,6 +1621,13 @@ impl StateWatcher {
     /// tasks have stopped, which happens when the runtime shuts down.
     pub async fn next(&mut self) -> Option<StateEvent> {
         self.rx.recv().await
+    }
+
+    /// The next event if one is already queued, without waiting. Draining
+    /// these after [`Self::next`] lets a consumer act once on the state a
+    /// burst of events leaves, rather than once per event.
+    pub fn try_next(&mut self) -> Option<StateEvent> {
+        self.rx.try_recv().ok()
     }
 }
 

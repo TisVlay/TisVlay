@@ -443,6 +443,8 @@ async fn watch_state(
                 profiles::handle_user_removed(&editor, app_weak.clone(), uuid);
                 trigger_refresh();
             }
+            // The release probes below ask each service directly.
+            StateEvent::ReleaseChecked(_) => {}
             StateEvent::VersionMismatch {
                 service,
                 ours,
@@ -523,7 +525,7 @@ pub(crate) async fn refresh_tray_notifications(
     let body = {
         let guard = tray.read().await;
         match guard.as_ref() {
-            Some(client) => match client.notification_settings().await {
+            Some(client) => match client.notification_settings_status().await {
                 Ok(body) => body,
                 Err(e) => {
                     debug!(error = %e, "Tray notification_settings fetch failed");

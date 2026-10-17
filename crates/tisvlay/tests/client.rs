@@ -592,7 +592,11 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
 
     // The check runs as soon as the daemon appears, so the watcher hears
-    // of the mismatch without a call.
+    // of its release, and of the mismatch, without a call.
+    next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::ReleaseChecked(tisvlay::Service::Daemon))
+    })
+    .await;
     let event = next_matching(&mut watcher, |e| {
         matches!(e, StateEvent::VersionMismatch { .. })
     })
@@ -629,6 +633,11 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
         "99.0.0",
         "version() is ungated"
     );
+    assert_eq!(
+        daemon.service_info().await.unwrap().version,
+        "99.0.0",
+        "service_info() is ungated"
+    );
 
     // The service restarts on this release: its next lifetime is checked
     // afresh, and calls go through.
@@ -637,6 +646,10 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     task.abort();
     session.close().await.unwrap();
     next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonDisappeared)).await;
+    assert!(
+        daemon.service_info().await.is_none(),
+        "the release clears before the disappearance is announced"
+    );
     let _restarted = stub_service!(
         &socket,
         tisvlay_protocol::keys::manager_rpc_wild("t"),
@@ -645,8 +658,82 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
         tisvlay_protocol::VERSION
     );
     next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonAppeared)).await;
+    next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::ReleaseChecked(tisvlay::Service::Daemon))
+    })
+    .await;
+    assert_eq!(
+        daemon.service_info().await.unwrap().version,
+        tisvlay_protocol::VERSION
+    );
     assert!(!daemon.reload_config().await.unwrap().changed);
     assert!(daemon.list_tvs().await.is_ok());
+}
+
+/// A release check that fails is retried while the service stays up, so
+/// its release is known without any call: here the daemon's liveliness
+/// token comes up before it serves its `info` rpc.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_release_check_is_retried() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("sys.sock");
+    let session = zenoh::open(tisvlay_protocol::bootstrap::peer_config(&socket).unwrap())
+        .await
+        .unwrap();
+    let _token = session
+        .liveliness()
+        .declare_token(tisvlay_protocol::keys::daemon_alive("t"))
+        .await
+        .unwrap();
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonAppeared)).await;
+    // Outlast the first check, which waits out the matching deadline.
+    tokio::time::sleep(tisvlay_protocol::caller::MATCHING_DEADLINE + Duration::from_millis(500))
+        .await;
+    assert!(daemon.service_info().await.is_none());
+    let queryable = session
+        .declare_queryable(tisvlay_protocol::keys::manager_rpc_wild("t"))
+        .await
+        .unwrap();
+    let _serve = tokio::spawn(async move {
+        use tisvlay_protocol::endpoint::manager;
+        while let Ok(query) = queryable.recv_async().await {
+            if let Some(((), manager::Incoming::Info((), responder))) =
+                manager::Incoming::receive("t", query).await
+            {
+                let info = tisvlay::ServiceInfo {
+                    version: tisvlay_protocol::VERSION.into(),
+                    state_path: "/var/lib/tisvlay/state.toml".into(),
+                };
+                responder.ok(&info).await;
+            }
+        }
+    });
+    next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::ReleaseChecked(tisvlay::Service::Daemon))
+    })
+    .await;
+    let info = daemon.service_info().await.unwrap();
+    assert_eq!(info.version, tisvlay_protocol::VERSION);
+    assert_eq!(info.state_path, "/var/lib/tisvlay/state.toml");
+}
+
+/// `try_next` hands over a queued event without waiting, and nothing when
+/// the queue is empty.
+#[tokio::test(flavor = "multi_thread")]
+async fn try_next_drains_without_waiting() {
+    let dir = tisvlay_test::socket_tempdir();
+    let daemon = DaemonClient::connect(&dir.path().join("sys.sock"), "t")
+        .await
+        .unwrap();
+    let mut idle = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+    assert!(idle.try_next().is_none(), "no service, no events");
+    let mut config = StateWatcherConfig::default();
+    config.fallback_poll_interval = Duration::from_millis(20);
+    let mut polling = StateWatcher::new(&daemon, None, None, config);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(matches!(polling.try_next(), Some(StateEvent::FallbackPoll)));
 }
 
 /// A watcher built after the mismatch is already known still hears of it:
@@ -669,6 +756,10 @@ async fn a_watcher_built_late_still_hears_of_a_known_mismatch() {
         Err(tisvlay::Error::VersionMismatch { .. })
     ));
     let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::ReleaseChecked(tisvlay::Service::Daemon))
+    })
+    .await;
     let event = next_matching(&mut watcher, |e| {
         matches!(e, StateEvent::VersionMismatch { .. })
     })
@@ -730,4 +821,10 @@ async fn the_session_and_tray_clients_refuse_another_release() {
             ..
         })
     ));
+    assert_eq!(session.service_info().await.unwrap().version, "99.0.0");
+    assert_eq!(tray.service_info().await.unwrap().version, "99.0.0");
+    assert!(
+        tray.notification_settings().await.is_none(),
+        "the settings mirror is gated like the others"
+    );
 }
