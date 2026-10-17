@@ -317,6 +317,100 @@ async fn sdk_remote_session_arms_and_mirrors() {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_restart_discards_previous_lifetime_tvs_and_profiles() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("restart.sock");
+    let (connector, discovery, _handle) = new_test_parts();
+    let stack = tisvlay_daemon::serve(
+        &socket,
+        "t",
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |event| {
+        matches!(event, StateEvent::DaemonAppeared)
+    })
+    .await;
+    let old_tv = daemon
+        .pair_tv(
+            "Old TV",
+            "mock",
+            config(json!({"address": "mock://old", "pairing": "accept"})),
+            false,
+        )
+        .await
+        .unwrap()
+        .id;
+    wait_for(&daemon, |tvs| {
+        tvs.iter().any(|tv| tv.uuid == old_tv && tv.connected)
+    })
+    .await;
+    let old_profile = daemon.create_system_profile("Old profile").await.unwrap();
+    next_matching(
+        &mut watcher,
+        |event| matches!(event, StateEvent::SystemProfileAdded(id) if *id == old_profile),
+    )
+    .await;
+    assert!(
+        daemon
+            .list_system_profile_bodies()
+            .await
+            .contains_key(&old_profile)
+    );
+    stack.run_until(std::future::ready(())).await.unwrap();
+    next_matching(&mut watcher, |event| {
+        matches!(event, StateEvent::DaemonDisappeared)
+    })
+    .await;
+    assert!(daemon.list_system_profile_bodies().await.is_empty());
+    let (connector, discovery, _handle) = new_test_parts();
+    let restarted = tisvlay_daemon::serve(
+        &socket,
+        "t",
+        vec![
+            tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                .with_discovery(Arc::new(discovery)),
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+    next_matching(&mut watcher, |event| {
+        matches!(event, StateEvent::DaemonAppeared)
+    })
+    .await;
+    assert!(daemon.list_tvs().await.unwrap().is_empty());
+    assert!(
+        !daemon
+            .list_system_profile_bodies()
+            .await
+            .contains_key(&old_profile)
+    );
+    let new_tv = daemon
+        .pair_tv(
+            "New TV",
+            "mock",
+            config(json!({"address": "mock://new", "pairing": "accept"})),
+            false,
+        )
+        .await
+        .unwrap()
+        .id;
+    wait_for(&daemon, |tvs| {
+        tvs.len() == 1 && tvs[0].uuid == new_tv && tvs[0].connected
+    })
+    .await;
+    restarted.run_until(std::future::ready(())).await.unwrap();
+}
+
 async fn wait_for(daemon: &DaemonClient, pred: impl Fn(&[tisvlay::TvInfo]) -> bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
