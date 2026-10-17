@@ -3167,6 +3167,7 @@ mod tests {
     async fn registered_callbacks_round_trip_gui_workflows() {
         i_slint_backend_testing::init_integration_test_with_system_time();
         edit_pane::tests::worker_ui_updates_apply_on_the_event_loop();
+        dbus::tests::warm_activation_uses_the_window_not_the_cold_token_slot();
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("daemon.sock");
         let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();

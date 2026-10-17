@@ -98,7 +98,7 @@ pub(crate) fn spawn(socket: PathBuf, greeter: GreeterAccess) {
         loop {
             let started = tokio::time::Instant::now();
             let outcome = match zbus::Connection::system().await {
-                Ok(connection) => watch_seats(connection, &socket, &greeter).await,
+                Ok(connection) => watch_seats(connection, &socket, &greeter, RESYNC_PERIOD).await,
                 Err(e) => Err(e),
             };
             if started.elapsed() > Duration::from_secs(60) {
@@ -124,6 +124,7 @@ async fn watch_seats(
     connection: zbus::Connection,
     socket: &std::path::Path,
     greeter: &GreeterAccess,
+    resync_period: Duration,
 ) -> zbus::Result<()> {
     let manager = SeatManagerProxy::new(&connection).await?;
     let mut seat_new = manager.receive_seat_new().await?;
@@ -145,7 +146,7 @@ async fn watch_seats(
         // deadline arrives. The deadline is pinned *outside* the select so
         // property events can't reset it — it fires on wall-clock cadence,
         // which is what makes the stale-grant bound real on a busy host.
-        let resync = tokio::time::sleep(RESYNC_PERIOD);
+        let resync = tokio::time::sleep(resync_period);
         tokio::pin!(resync);
         loop {
             tokio::select! {
@@ -228,3 +229,6 @@ async fn qualifying_uid(connection: &zbus::Connection, path: &OwnedObjectPath) -
     debug!(uid, session = %path.as_str(), "active seat session qualifies for socket access");
     Some(uid)
 }
+
+#[cfg(test)]
+mod tests;
