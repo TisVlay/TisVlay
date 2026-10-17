@@ -1,4 +1,4 @@
-//! The client-side fleet mirror: every cached key the GUI renders from,
+//! The client-side mirrors: every cached key a client renders from,
 //! kept current by subscriber tasks and readable as a snapshot. Deltas
 //! surface as [`StateEvent`](crate::StateEvent)s on a broadcast channel.
 
@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde_json::Value;
 use tisvlay_core::SystemProfileConfig;
 use tisvlay_protocol::payload::StatePayload;
+use tisvlay_protocol::rpc::NotificationSettings;
 use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 use zenoh::sample::{Sample, SampleKind};
@@ -172,6 +173,26 @@ impl UserMirror {
             return Some(StateEvent::RemoteSessionChanged);
         }
         None
+    }
+}
+
+/// The tray settings service's published state.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TrayMirror {
+    /// The notification switches, as last published. Absent until the
+    /// tray first publishes them; kept while it's down.
+    pub settings: Option<NotificationSettings>,
+    pub tray_alive: bool,
+}
+
+impl TrayMirror {
+    /// Apply one sample of the tray's settings key.
+    pub(crate) fn apply(&mut self, sample: &Sample) -> Option<StateEvent> {
+        self.settings = match sample.kind() {
+            SampleKind::Put => Some(serde_json::from_slice(&sample.payload().to_bytes()).ok()?),
+            SampleKind::Delete => None,
+        };
+        Some(StateEvent::TrayNotificationSettingsChanged)
     }
 }
 

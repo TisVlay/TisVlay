@@ -39,7 +39,6 @@ use profiles::{
     EditorKind, ProfileEditor, dispatch_rename, dispatch_reset_all, dispatch_reset_field,
     dispatch_select_after_create, dispatch_value_edit, dispatch_value_edit_number, new_editor,
 };
-use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
     WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
@@ -794,9 +793,10 @@ pub fn run() -> Result<()> {
         &nav,
     );
 
-    // Background watcher: refresh on every signal-driven state change.
+    // Background reconciler: re-renders the view from the clients' mirrors
+    // after every burst of state events.
     let app_weak = app.as_weak();
-    tokio::spawn(initial_fetch_and_watch(
+    tokio::spawn(state_watch::watch(
         daemon,
         session,
         tray,
@@ -1734,10 +1734,9 @@ fn register_callbacks(
                 });
             }
             drop(session_ref);
-            // Tell the tray to re-read `tray.toml` too, then pull the
-            // body immediately rather than waiting only on the tray's
-            // settings-key echo — keeps the settings pane in sync
-            // with a hand-edited config on the same click.
+            // Tell the tray to re-read `tray.toml` too. It republishes
+            // changed switches, and the watch loop's render carries them
+            // from the mirror to the settings pane.
             let tray_ref = tr.read().await;
             if let Some(client) = tray_ref.as_ref() {
                 outcomes.push(ReloadOutcome {
@@ -1747,7 +1746,6 @@ fn register_callbacks(
             }
             drop(tray_ref);
             report_reload(&app_weak, outcomes);
-            state_watch::refresh_tray_notifications(&tr, &app_weak).await;
         });
     });
 
@@ -2893,7 +2891,7 @@ mod tests {
         app.set_daemon_available(true);
         app.set_session_available(true);
         app.set_tray_available(true);
-        let watcher = tokio::spawn(initial_fetch_and_watch(
+        let watcher = tokio::spawn(state_watch::watch(
             daemon.clone(),
             session.clone(),
             tray.clone(),
@@ -3762,7 +3760,7 @@ mod tests {
         tray_ui.invoke_set_notification("tv_pairing".into(), false);
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let settings = tray_client.notification_settings().await.unwrap();
+                let settings = tray_client.notification_settings_status().await.unwrap();
                 if !settings.tv_wake && !settings.tv_pairing {
                     assert!(settings.tv_connection);
                     break;

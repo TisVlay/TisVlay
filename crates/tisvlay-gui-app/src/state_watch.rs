@@ -1,9 +1,16 @@
-//! Long-running state-watch loop. Drives the bus-signal subscription
-//! that feeds GUI refreshes, applies value-ramping reconcilers, and
-//! pushes view-model snapshots into the AppWindow's models.
+//! The GUI's state reconciler. One loop drains each burst of
+//! [`StateEvent`]s, then renders the whole view from the clients'
+//! mirrors in one event-loop push: TVs, profiles, each service's presence
+//! and release, the tray's settings and the version banner. Events only
+//! say that something changed, and the render reads what is true now, so
+//! a late or coalesced event can't leave a stale value on screen.
+//!
+//! The render asks no service: an rpc there would hold the loop, and
+//! every change after it, behind that service's deadline. What only an
+//! rpc tells, and a service fixes for its lifetime (the vendor catalog,
+//! the profile floors), is fetched on a second task.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -11,41 +18,48 @@ use tisvlay::{
     DaemonClient, NotificationSettings, Service, SessionClient, StateEvent, StateWatcher,
     TrayClient,
 };
-use tisvlay_runtime::client::RefreshTrigger;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tracing::debug;
 
 use crate::about::{
-    PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version, service_health,
+    GUI_VERSION, PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version,
+    service_health,
 };
 use crate::profiles::{self, ProfileEditor};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
     AppWindow, ErrorState, Errors, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles,
-    Reconcilers, Tray, TrayNotificationSettings, TvViewModel, VendorInfoRow, VendorOption, on_ui,
+    Reconcilers, ServiceHealth, Tray, TrayNotificationSettings, TvViewModel, VendorInfoRow,
+    VendorOption, on_ui,
 };
 
-/// The services currently on a release this GUI can't talk to, each with
-/// (this GUI's release, the service's). Rendered as one app-level banner.
+/// A service as the render sees it: whether its liveliness token is up,
+/// and what its release check learned.
 #[derive(Default)]
-struct VersionMismatches(Vec<(Service, String, String)>);
+struct Peer {
+    up: bool,
+    info: Option<PeerInfo>,
+}
 
-impl VersionMismatches {
-    fn set(&mut self, service: Service, ours: String, theirs: String) {
-        self.clear(service);
-        self.0.push((service, ours, theirs));
+impl Peer {
+    fn health(&self) -> ServiceHealth {
+        service_health(self.up, self.info.as_ref())
     }
+}
 
-    fn clear(&mut self, service: Service) {
-        self.0.retain(|(known, ..)| *known != service);
-    }
-
-    fn publish(&self, app_weak: &slint::Weak<AppWindow>) {
-        let banner = version_banner(&self.0);
-        on_ui(app_weak, move |app| {
-            app.global::<Errors>().set_version(banner);
-        });
-    }
+/// Each live service on a release this GUI can't talk to, with (this
+/// GUI's release, the service's), for the version banner. The rule is
+/// the one that turns the service's About chip red, so the two always
+/// agree.
+fn mismatches(peers: &[(Service, &Peer)]) -> Vec<(Service, String, String)> {
+    peers
+        .iter()
+        .filter(|(_, peer)| peer.health() == ServiceHealth::Incompatible)
+        .filter_map(|(service, peer)| {
+            let info = peer.info.as_ref()?;
+            Some((*service, GUI_VERSION.to_owned(), info.version.clone()))
+        })
+        .collect()
 }
 
 /// The version banner for `mismatches`, or none when there are none.
@@ -73,32 +87,6 @@ fn version_banner(mismatches: &[(Service, String, String)]) -> ErrorState {
     }
 }
 
-/// Orders [`publish_services`] writes by when each call read liveliness.
-/// The watch loop and the refresh worker publish concurrently, and a
-/// call that saw a peer up probes it, which waits out the rpc deadline
-/// when the peer stops mid-probe. Unordered, that call's stale "up"
-/// lands after the disappearance's own publish and sticks until the
-/// next event. Each call takes a stamp before its liveliness reads, and
-/// the event loop drops a write older than one already applied: a
-/// later stamp read liveliness later, so the newest write always wins.
-#[derive(Clone, Default)]
-struct PublishOrder {
-    issued: Arc<AtomicU64>,
-    applied: Arc<AtomicU64>,
-}
-
-impl PublishOrder {
-    fn stamp(&self) -> u64 {
-        self.issued.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// Whether the write stamped `stamp` is newer than every write
-    /// applied so far; marks it applied when it is.
-    fn admit(&self, stamp: u64) -> bool {
-        self.applied.fetch_max(stamp, Ordering::Relaxed) < stamp
-    }
-}
-
 fn service_name(service: Service) -> String {
     match service {
         Service::Daemon => gettext("daemon"),
@@ -108,11 +96,17 @@ fn service_name(service: Service) -> String {
     }
 }
 
-/// Boot the state-watch loop. One-shot startup: do the initial state
-/// fetch, push the first snapshot, prime the supported-vendors cache,
-/// then hand off to [`watch_state`] for the long-running signal-driven
-/// refresh path.
-pub(crate) async fn initial_fetch_and_watch(
+/// Wakes for the lifetime fetches: the watch loop pokes one on each
+/// appearance of its service.
+#[derive(Default)]
+struct Appeared {
+    daemon: Notify,
+    session: Notify,
+}
+
+/// Run the reconciler for the window's lifetime: render once, then once
+/// per drained burst of events, beside the lifetime fetches.
+pub(crate) async fn watch(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
     tray: Arc<RwLock<Option<TrayClient>>>,
@@ -121,86 +115,234 @@ pub(crate) async fn initial_fetch_and_watch(
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
 ) {
-    // The client always exists (background-retry link); availability is
-    // the liveliness state, not the client's existence.
-    let initial_tray_available = match tray.read().await.as_ref() {
-        Some(client) => client.is_available().await,
-        None => false,
-    };
-    let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
-        Ok(mut s) => {
-            reconcilers.reconcile(&mut s);
-            Some(s)
-        }
-        Err(e) => {
-            debug!(error = %e, "Initial state fetch failed; daemon may be offline");
-            None
-        }
-    };
-
-    // Prime baseline + default body for each kind. The bodies catalog
-    // stays lazy — only the current selection's UUID gets fetched on
-    // demand by `profiles::select`. Errors here are non-fatal; the
-    // baselines fall back to all-`None` and the inherit walk lands
-    // on an empty resolved value rather than blowing up the editor.
-    profiles::prime_system_layers(&daemon, &editor).await;
-    if let Some(client) = session.read().await.as_ref() {
-        profiles::prime_user_layers(client, &editor).await;
-    }
-
-    // Fetch + publish the daemon's vendor list. If the daemon is
-    // offline at startup the call returns an empty list and the
-    // wizard's ComboBox renders blank; `watch_state` re-runs this on
-    // `DaemonAppeared` so a GUI launched before the daemon recovers
-    // once the daemon comes up.
-    fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
-
-    // Seed `Tray.notifications` with documented defaults from core
-    // before any successful fetch. Gives the settings pane sensible
-    // switch positions even if the GUI starts while the tray is
-    // offline; gets overwritten with real values once
-    // `refresh_tray_notifications` lands a fetch.
-    let initial_tray_notifications = settings_to_slint(&NotificationSettings::default());
-    on_ui(&app_weak, move |app| {
-        if let Some(snapshot) = initial_snapshot {
-            push_snapshot(&app, snapshot);
-        }
-        app.global::<Tray>()
-            .set_notifications(initial_tray_notifications);
-    });
-    // Every service-status copy goes through the single writer.
-    let order = PublishOrder::default();
-    publish_services(&daemon, &session, &tray, &app_weak, &order).await;
-
-    if initial_tray_available {
-        refresh_tray_notifications(&tray, &app_weak).await;
-    }
-    watch_state(
-        daemon,
-        session,
+    // Subscribe before the first read, so a change landing in between
+    // still arrives as an event. Session/tray events ride the clients
+    // built at startup (resilient links, never replaced), and the watcher
+    // synthesizes `*Appeared` for services already up, which starts their
+    // lifetime fetches.
+    let mut watcher = StateWatcher::new(
+        &daemon,
+        session.read().await.as_ref(),
+        tray.read().await.as_ref(),
+        tisvlay::StateWatcherConfig::default(),
+    );
+    profiles::seed_layers(&daemon, session.read().await.as_ref(), &editor).await;
+    let appeared = Appeared::default();
+    let mut view = View {
+        daemon: daemon.clone(),
+        session: session.clone(),
         tray,
         reconcilers,
-        app_weak,
-        supported_vendors_cache,
-        editor,
-        order,
-    )
-    .await;
+        app_weak: app_weak.clone(),
+        // Read once, since it spawns a process: after a package upgrade
+        // the About row shows the new CLI once the GUI restarts.
+        cli_version: probe_cli_version().await,
+        tray_settings: None,
+    };
+    view.render().await;
+    let events = async {
+        while let Some(event) = watcher.next().await {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                apply(event, &daemon, &session, &editor, &app_weak, &appeared).await;
+                next = watcher.try_next();
+            }
+            view.render().await;
+        }
+    };
+    let fetches = fetch_lifetime_facts(
+        &daemon,
+        &session,
+        &app_weak,
+        &supported_vendors_cache,
+        &editor,
+        &appeared,
+    );
+    // The fetches never end; the events end with the runtime.
+    tokio::select! {
+        () = events => {}
+        () = fetches => {}
+    }
+}
+
+/// What an event needs beyond the render: an appearance wakes its
+/// service's lifetime fetch, and a profile event updates the editor's
+/// body cache (mirror reads). Everything else is state the render reads.
+async fn apply(
+    event: StateEvent,
+    daemon: &Arc<DaemonClient>,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    editor: &ProfileEditor,
+    app_weak: &slint::Weak<AppWindow>,
+    appeared: &Appeared,
+) {
+    match event {
+        StateEvent::DaemonAppeared => appeared.daemon.notify_one(),
+        StateEvent::SessionAppeared => appeared.session.notify_one(),
+        StateEvent::SystemProfileChanged(uuid) => {
+            profiles::handle_system_changed(editor.clone(), daemon.clone(), app_weak.clone(), uuid)
+                .await;
+        }
+        StateEvent::SystemProfileAdded(uuid) => {
+            profiles::handle_system_added(editor.clone(), daemon.clone(), uuid).await;
+        }
+        StateEvent::SystemProfileRemoved(uuid) => {
+            profiles::handle_system_removed(editor, app_weak.clone(), uuid);
+        }
+        StateEvent::UserProfileChanged(uuid) => {
+            profiles::handle_user_changed(editor.clone(), session.clone(), app_weak.clone(), uuid)
+                .await;
+        }
+        StateEvent::UserProfileAdded(uuid) => {
+            profiles::handle_user_added(editor.clone(), session.clone(), uuid).await;
+        }
+        StateEvent::UserProfileRemoved(uuid) => {
+            profiles::handle_user_removed(editor, app_weak.clone(), uuid);
+        }
+        StateEvent::DaemonStateChanged(_)
+        | StateEvent::DaemonDisappeared
+        | StateEvent::SessionDisappeared
+        | StateEvent::TrayAppeared
+        | StateEvent::TrayDisappeared
+        | StateEvent::TvUserProfileChanged
+        | StateEvent::RemoteSessionChanged
+        | StateEvent::TrayNotificationSettingsChanged
+        | StateEvent::ReleaseChecked(_)
+        | StateEvent::VersionMismatch { .. }
+        | StateEvent::FallbackPoll => {}
+    }
+}
+
+/// What the render reads, and the one thing it remembers between renders.
+struct View {
+    daemon: Arc<DaemonClient>,
+    session: Arc<RwLock<Option<SessionClient>>>,
+    tray: Arc<RwLock<Option<TrayClient>>>,
+    reconcilers: Reconcilers,
+    app_weak: slint::Weak<AppWindow>,
+    cli_version: Option<String>,
+    /// The tray settings last written, so a render writes them only when
+    /// they change.
+    tray_settings: Option<NotificationSettings>,
+}
+
+impl View {
+    /// Write the whole view from the clients' mirrors in one event-loop
+    /// push. This is the single writer of every property it sets: the TV
+    /// and profile lists, each service's presence and health (window
+    /// props, the Tray/Profiles globals, the About rows), the version
+    /// banner and the tray's switches. Writing them all from one read
+    /// keeps the footer, the panes, the About rows and the banner from
+    /// ever disagreeing. Mirror reads only; see the module docs.
+    async fn render(&mut self) {
+        let session = self.session.read().await;
+        let tray = self.tray.read().await;
+        let mut snapshot = fetch_state(&self.daemon, session.as_ref()).await;
+        self.reconcilers.reconcile(&mut snapshot);
+        let daemon = Peer {
+            up: self.daemon.is_available().await,
+            info: self.daemon.service_info().await.map(PeerInfo::from),
+        };
+        let session_peer = match session.as_ref() {
+            Some(client) => Peer {
+                up: client.is_available().await,
+                info: client.service_info().await.map(PeerInfo::from),
+            },
+            None => Peer::default(),
+        };
+        let (tray_peer, tray_settings) = match tray.as_ref() {
+            Some(client) => (
+                Peer {
+                    up: client.is_available().await,
+                    info: client.service_info().await.map(PeerInfo::from),
+                },
+                client.notification_settings().await,
+            ),
+            None => (Peer::default(), None),
+        };
+        drop((session, tray));
+        // The documented defaults until the tray first publishes; the
+        // mirror keeps its last switches while it's down.
+        let tray_settings = tray_settings.unwrap_or_default();
+        let changed_settings =
+            (self.tray_settings != Some(tray_settings)).then(|| settings_to_slint(&tray_settings));
+        self.tray_settings = Some(tray_settings);
+        let banner = version_banner(&mismatches(&[
+            (Service::Daemon, &daemon),
+            (Service::Session, &session_peer),
+            (Service::Tray, &tray_peer),
+        ]));
+        let rows = make_about_components(
+            &crate::endpoints().site,
+            (daemon.up, daemon.info.as_ref()),
+            (session_peer.up, session_peer.info.as_ref()),
+            (tray_peer.up, tray_peer.info.as_ref()),
+            self.cli_version.as_deref(),
+        );
+        let (daemon_up, session_up, tray_up) = (daemon.up, session_peer.up, tray_peer.up);
+        let (daemon_health, session_health, tray_health) =
+            (daemon.health(), session_peer.health(), tray_peer.health());
+        on_ui(&self.app_weak, move |app| {
+            push_snapshot(&app, snapshot);
+            app.set_daemon_available(daemon_up);
+            app.set_session_available(session_up);
+            app.set_tray_available(tray_up);
+            app.global::<Tray>().set_available(tray_up);
+            app.global::<Profiles>().set_session_available(session_up);
+            app.set_daemon_health(daemon_health);
+            app.set_session_health(session_health);
+            app.set_tray_health(tray_health);
+            app.set_about_components(ModelRc::new(VecModel::from(rows)));
+            app.global::<Errors>().set_version(banner);
+            if let Some(settings) = changed_settings {
+                app.global::<Tray>().set_notifications(settings);
+            }
+        });
+    }
+}
+
+/// Fetch what a service fixes for its lifetime and only an rpc tells:
+/// the daemon's vendor catalog and system-profile floor, the session's
+/// user-profile floor. Runs beside the watch loop, so a service that
+/// stops mid-fetch holds up only this. A wake during a fetch queues one
+/// more (a [`Notify`] keeps one permit), so the last fetch always follows
+/// the last appearance.
+async fn fetch_lifetime_facts(
+    daemon: &DaemonClient,
+    session: &RwLock<Option<SessionClient>>,
+    app_weak: &slint::Weak<AppWindow>,
+    supported_vendors_cache: &SupportedVendorsCache,
+    editor: &ProfileEditor,
+    appeared: &Appeared,
+) {
+    loop {
+        tokio::select! {
+            () = appeared.daemon.notified() => {
+                // Gone again already: its next appearance wakes this.
+                if daemon.is_available().await {
+                    fetch_and_publish_vendors(daemon, app_weak, supported_vendors_cache).await;
+                    profiles::fetch_system_floor(daemon, editor, app_weak).await;
+                }
+            }
+            () = appeared.session.notified() => {
+                let client = session.read().await.as_ref().cloned();
+                if let Some(client) = client
+                    && client.is_available().await
+                {
+                    profiles::fetch_user_floor(&client, editor, app_weak).await;
+                }
+            }
+        }
+    }
 }
 
 /// Fetch the daemon's supported-vendor list (the `manager/vendors`
 /// catalog) and publish it to the pairing-wizard global plus the
-/// diagnostic-blob
-/// cache. Sorted by display name (case-insensitive) so the wizard's
-/// ComboBox renders in stable, scannable order regardless of registration
-/// order.
-///
-/// Idempotent — safe to call multiple times. Vendor lists are static
-/// per daemon binary today, so the second call is wasted work in the
-/// common case. Re-running on `DaemonAppeared` covers the regression
-/// case where the GUI started before the daemon: the initial fetch
-/// returns empty (`unwrap_or_default()`), without a re-fetch the
-/// wizard's vendor ComboBox stays blank until the GUI restarts.
+/// diagnostic-blob cache. Sorted by display name (case-insensitive) so
+/// the wizard's ComboBox renders in stable, scannable order regardless of
+/// registration order. Runs once per daemon lifetime, from
+/// [`fetch_lifetime_facts`] alone, which makes it the only writer of
+/// those properties.
 async fn fetch_and_publish_vendors(
     daemon: &DaemonClient,
     app_weak: &slint::Weak<AppWindow>,
@@ -303,242 +445,6 @@ struct PrimaryField {
     is_ip: bool,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the watch loop's entry: each handle it owns, plus the publish order the initial publish shares; a struct would only rename the list"
-)]
-async fn watch_state(
-    daemon: Arc<DaemonClient>,
-    session: Arc<RwLock<Option<SessionClient>>>,
-    tray: Arc<RwLock<Option<TrayClient>>>,
-    reconcilers: Reconcilers,
-    app_weak: slint::Weak<AppWindow>,
-    supported_vendors_cache: SupportedVendorsCache,
-    editor: ProfileEditor,
-    order: PublishOrder,
-) {
-    // No debounce: every state event triggers a refresh fire.
-    // `RefreshTrigger` folds concurrent fires into a single in-flight
-    // refresh plus one trailing-edge follow-up, so floods can't backlog.
-    //
-    // The daemon→GUI sample rate is therefore bounded by `fetch_state`
-    // latency (≈ms locally), not by a fixed timer.
-    // Slint's winit backend then rate-limits the visual side: it
-    // queries the live monitor refresh rate via
-    // `current_monitor().refresh_rate_millihertz()` and coalesces
-    // dirty-property updates between vsync frames (verified in
-    // `internal/backends/winit/frame_throttle.rs`). So we get whatever
-    // the display actually supports — 60 Hz, 120 Hz, VRR, mixed
-    // multi-monitor — without hardcoding a sample rate. Spamming
-    // `invoke_from_event_loop` is cheap; the property tracker dedups
-    // and only one paint per frame happens regardless of how many
-    // updates feed in.
-    let watcher_config = tisvlay::StateWatcherConfig::default();
-    // Session/tray events ride the clients built at startup (resilient
-    // links, never replaced); the watcher synthesizes `*Appeared` for
-    // peers already alive at construction, so the initial availability
-    // reads above can't leave the flags permanently stale.
-    let mut watcher = StateWatcher::new(
-        &daemon,
-        session.read().await.as_ref(),
-        tray.read().await.as_ref(),
-        watcher_config,
-    );
-
-    // `watcher.next() → refresh.await` inline halts signal_stream
-    // draining and wedges the connection under flood. See
-    // `RefreshTrigger`'s docstring for the bug history.
-    let trigger = RefreshTrigger::new();
-    let trigger_refresh = || {
-        let daemon = daemon.clone();
-        let session = session.clone();
-        let tray = tray.clone();
-        let reconcilers = reconcilers.clone();
-        let app_weak = app_weak.clone();
-        let order = order.clone();
-        trigger.fire(move || {
-            let daemon = daemon.clone();
-            let session = session.clone();
-            let tray = tray.clone();
-            let reconcilers = reconcilers.clone();
-            let app_weak = app_weak.clone();
-            let order = order.clone();
-            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak, &order).await }
-        });
-    };
-
-    // Services on a release this GUI can't talk to, for the version banner.
-    let mut mismatches = VersionMismatches::default();
-
-    loop {
-        let Some(event) = watcher.next().await else {
-            break;
-        };
-
-        match event {
-            StateEvent::DaemonAppeared => {
-                // Republish the vendor list — covers the GUI-started-
-                // before-the-daemon case where the initial fetch
-                // returned empty. Vendor lists are static per daemon
-                // binary, so a duplicate fetch is wasted work but
-                // cheap; `DaemonAppeared` isn't high-frequency.
-                fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
-                // Re-prime the system-side baseline + default body
-                // — the daemon may have been restarted with edited
-                // defaults on disk, in which case the inherit walk
-                // would otherwise resolve against a stale ancestor.
-                profiles::prime_system_layers(&daemon, &editor).await;
-                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
-                trigger_refresh();
-            }
-            StateEvent::DaemonStateChanged(_)
-            | StateEvent::TvUserProfileChanged
-            | StateEvent::RemoteSessionChanged
-            | StateEvent::FallbackPoll => {
-                trigger_refresh();
-            }
-            StateEvent::SystemProfileChanged(uuid) => {
-                // Editor cache + selected-row refresh. The master
-                // list also needs a redraw because `referenced_by`
-                // chip counts can shift when a profile's `name`
-                // changes.
-                let daemon = daemon.clone();
-                let editor = editor.clone();
-                let app_weak = app_weak.clone();
-                tokio::spawn(async move {
-                    profiles::handle_system_changed(editor, daemon, app_weak, uuid).await;
-                });
-                trigger_refresh();
-            }
-            StateEvent::SystemProfileAdded(uuid) => {
-                let daemon = daemon.clone();
-                let editor = editor.clone();
-                tokio::spawn(async move {
-                    profiles::handle_system_added(editor, daemon, uuid).await;
-                });
-                trigger_refresh();
-            }
-            StateEvent::SystemProfileRemoved(uuid) => {
-                profiles::handle_system_removed(&editor, app_weak.clone(), uuid);
-                trigger_refresh();
-            }
-            StateEvent::UserProfileChanged(uuid) => {
-                let session = session.clone();
-                let editor = editor.clone();
-                let app_weak = app_weak.clone();
-                tokio::spawn(async move {
-                    profiles::handle_user_changed(editor, session, app_weak, uuid).await;
-                });
-                trigger_refresh();
-            }
-            StateEvent::UserProfileAdded(uuid) => {
-                let session = session.clone();
-                let editor = editor.clone();
-                tokio::spawn(async move {
-                    profiles::handle_user_added(editor, session, uuid).await;
-                });
-                trigger_refresh();
-            }
-            StateEvent::UserProfileRemoved(uuid) => {
-                profiles::handle_user_removed(&editor, app_weak.clone(), uuid);
-                trigger_refresh();
-            }
-            StateEvent::VersionMismatch {
-                service,
-                ours,
-                theirs,
-            } => {
-                mismatches.set(service, ours, theirs);
-                mismatches.publish(&app_weak);
-                // A refresh that ran before the verdict may have listed
-                // the incompatible daemon's TVs; its mirror is off limits
-                // from here, and later refreshes fail without touching
-                // the list.
-                if service == Service::Daemon {
-                    on_ui(&app_weak, |app| clear_tvs(&app));
-                }
-            }
-            StateEvent::DaemonDisappeared => {
-                // The daemon's next lifetime gets a fresh release check.
-                mismatches.clear(Service::Daemon);
-                mismatches.publish(&app_weak);
-                on_ui(&app_weak, |app| clear_tvs(&app));
-                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
-            }
-            StateEvent::SessionAppeared => {
-                // The client exists from startup (background-retry link);
-                // the token arriving means the service is answering now.
-                if let Some(client) = session.read().await.as_ref() {
-                    profiles::prime_user_layers(client, &editor).await;
-                }
-                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
-                trigger_refresh();
-            }
-            StateEvent::SessionDisappeared => {
-                // The client stays — its resilient link redials and its
-                // liveliness subscriber delivers the next Appeared.
-                // Only the availability flags flip, and the next lifetime
-                // gets a fresh release check.
-                mismatches.clear(Service::Session);
-                mismatches.publish(&app_weak);
-                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
-                trigger_refresh();
-            }
-            StateEvent::TrayAppeared => {
-                // The client exists from startup (background-retry link).
-                {
-                    publish_services(&daemon, &session, &tray, &app_weak, &order).await;
-                    refresh_tray_notifications(&tray, &app_weak).await;
-                    trigger_refresh();
-                }
-            }
-            StateEvent::TrayDisappeared => {
-                // Client stays, same as the session arm above.
-                mismatches.clear(Service::Tray);
-                mismatches.publish(&app_weak);
-                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
-                trigger_refresh();
-            }
-            StateEvent::TrayNotificationSettingsChanged => {
-                // The tray republished its cached settings key —
-                // re-fetch the body and update the Slint global.
-                // Switch values get their new bindings on the next
-                // render.
-                refresh_tray_notifications(&tray, &app_weak).await;
-            }
-        }
-    }
-}
-
-/// Pull the current notification body from the tray and push into the
-/// `Tray.notifications` Slint global. Used on `TrayAppeared` (initial
-/// sync after the tray comes up) and on `TrayNotificationSettingsChanged`
-/// (every subsequent settings-key republish). Tray-offline → the
-/// fetch fails quietly and the global keeps its last-fetched values
-/// for the visible-but-disabled UX.
-pub(crate) async fn refresh_tray_notifications(
-    tray: &RwLock<Option<TrayClient>>,
-    app_weak: &slint::Weak<AppWindow>,
-) {
-    let body = {
-        let guard = tray.read().await;
-        match guard.as_ref() {
-            Some(client) => match client.notification_settings().await {
-                Ok(body) => body,
-                Err(e) => {
-                    debug!(error = %e, "Tray notification_settings fetch failed");
-                    return;
-                }
-            },
-            None => return,
-        }
-    };
-    let settings = settings_to_slint(&body);
-    on_ui(app_weak, move |app| {
-        app.global::<Tray>().set_notifications(settings);
-    });
-}
-
 /// Lower the tray's settings into the Slint `TrayNotificationSettings`
 /// struct. (`TrayNotificationSettings` is Slint-generated, so the field
 /// list can't route through `NotificationCategory::ALL`.)
@@ -549,105 +455,6 @@ fn settings_to_slint(settings: &NotificationSettings) -> TrayNotificationSetting
         tv_wake: settings.tv_wake,
         daemon_offline: settings.daemon_offline,
     }
-}
-
-async fn refresh(
-    daemon: &DaemonClient,
-    session: &RwLock<Option<SessionClient>>,
-    tray: &RwLock<Option<TrayClient>>,
-    reconcilers: &Reconcilers,
-    app_weak: &slint::Weak<AppWindow>,
-    order: &PublishOrder,
-) {
-    let session_ref = session.read().await;
-    match fetch_state(daemon, session_ref.as_ref()).await {
-        Ok(mut snapshot) => {
-            reconcilers.reconcile(&mut snapshot);
-            on_ui(app_weak, move |app| {
-                push_snapshot(&app, snapshot);
-            });
-        }
-        // Content-only failure: availability is liveliness's job
-        // (publish_services), never a fetch outcome's.
-        Err(e) => debug!(error = %e, "State refresh failed"),
-    }
-    drop(session_ref);
-    publish_services(daemon, session, tray, app_weak, order).await;
-}
-
-/// The single writer for every Slint service-status property: the
-/// presence flags (window props + the Tray/Profiles globals), each
-/// service's health for the footer dots, and the About pane's
-/// COMPONENTS rows. Presence is liveliness, only; rpc outcomes are
-/// content, never online/offline. Health adds the release each
-/// service's `info` reports, which answers even across a version
-/// mismatch. Writing everything from one probe is what keeps the
-/// footer, settings pane, profiles pane and About rows from ever
-/// disagreeing; `order` keeps an overlapping older call from
-/// overwriting a newer one.
-async fn publish_services(
-    daemon: &DaemonClient,
-    session: &RwLock<Option<SessionClient>>,
-    tray: &RwLock<Option<TrayClient>>,
-    app_weak: &slint::Weak<AppWindow>,
-    order: &PublishOrder,
-) {
-    async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
-    where
-        F1: Future<Output = tisvlay::Result<String>>,
-        F2: Future<Output = tisvlay::Result<String>>,
-    {
-        Some(PeerInfo {
-            version: version.await.ok()?,
-            config_path: config_path.await.unwrap_or_default(),
-        })
-    }
-
-    // Only a live peer is probed: an rpc to an absent one waits out the
-    // matching deadline, which would hold every indicator (and the watch
-    // loop) behind it. A failed probe on a live peer renders an online row
-    // with "—".
-    let stamp = order.stamp();
-    let daemon_up = daemon.is_available().await;
-    let daemon_info = if daemon_up {
-        probe(daemon.version(), daemon.config_path()).await
-    } else {
-        None
-    };
-    let (session_up, session_info) = match session.read().await.as_ref() {
-        Some(s) if s.is_available().await => (true, probe(s.version(), s.config_path()).await),
-        _ => (false, None),
-    };
-    let (tray_up, tray_info) = match tray.read().await.as_ref() {
-        Some(t) if t.is_available().await => (true, probe(t.version(), t.config_path()).await),
-        _ => (false, None),
-    };
-    let cli_version = probe_cli_version().await;
-    let daemon_health = service_health(daemon_up, daemon_info.as_ref());
-    let session_health = service_health(session_up, session_info.as_ref());
-    let tray_health = service_health(tray_up, tray_info.as_ref());
-    let rows = make_about_components(
-        &crate::endpoints().site,
-        (daemon_up, daemon_info.as_ref()),
-        (session_up, session_info.as_ref()),
-        (tray_up, tray_info.as_ref()),
-        cli_version.as_deref(),
-    );
-    let order = order.clone();
-    on_ui(app_weak, move |app| {
-        if !order.admit(stamp) {
-            return;
-        }
-        app.set_daemon_available(daemon_up);
-        app.set_session_available(session_up);
-        app.set_tray_available(tray_up);
-        app.global::<Tray>().set_available(tray_up);
-        app.global::<Profiles>().set_session_available(session_up);
-        app.set_daemon_health(daemon_health);
-        app.set_session_health(session_health);
-        app.set_tray_health(tray_health);
-        app.set_about_components(ModelRc::new(VecModel::from(rows)));
-    });
 }
 
 /// Wrap a fetched [`StateSnapshot`] into Slint models and push to the
@@ -779,11 +586,6 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
 /// gate in `ProfilesPane` reads `selected-row.uuid != ""`, so a
 /// blank-uuid push flips the gate back to "Select a profile".
 /// Mirrored from the inline literal in `profiles::clear_selection_in_slint`.
-fn clear_tvs(app: &AppWindow) {
-    app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
-    app.set_tvs_connected_count(0);
-}
-
 fn blank_profile_row() -> ProfileRow {
     ProfileRow {
         uuid: SharedString::default(),
@@ -921,35 +723,34 @@ mod version_banner_tests {
     }
 
     #[test]
-    fn a_restarted_service_drops_its_line() {
-        let mut mismatches = VersionMismatches::default();
-        mismatches.set(Service::Daemon, "0.4.0".into(), "0.3.2".into());
-        mismatches.set(Service::Daemon, "0.4.0".into(), "0.3.3".into());
-        assert_eq!(mismatches.0.len(), 1, "one line per service");
-        mismatches.clear(Service::Daemon);
-        assert!(mismatches.0.is_empty());
+    fn only_a_live_service_on_another_release_line_is_a_mismatch() {
+        let peer = |up, version: Option<&str>| Peer {
+            up,
+            info: version.map(|version| PeerInfo {
+                version: version.into(),
+                config_path: String::new(),
+            }),
+        };
+        let same = peer(true, Some(GUI_VERSION));
+        let unread = peer(true, None);
+        let stopped = peer(false, Some("99.0.0"));
+        let other = peer(true, Some("99.0.0"));
+        assert!(
+            mismatches(&[
+                (Service::Daemon, &same),
+                (Service::Session, &unread),
+                (Service::Tray, &stopped),
+            ])
+            .is_empty()
+        );
+        assert_eq!(
+            mismatches(&[(Service::Daemon, &same), (Service::Tray, &other)]),
+            [(Service::Tray, GUI_VERSION.to_owned(), "99.0.0".to_owned())]
+        );
     }
 
     #[test]
-    fn a_stale_service_publish_never_overwrites_a_newer_one() {
-        let order = PublishOrder::default();
-        // The refresh worker reads the daemon up, then the watch loop's
-        // disappearance publish (holding a clone) reads it down and
-        // lands first.
-        let watch_loop = order.clone();
-        let refresh = order.stamp();
-        let disappeared = watch_loop.stamp();
-        assert!(watch_loop.admit(disappeared));
-        assert!(!order.admit(refresh), "the older read is dropped");
-        // In-order arrivals all apply.
-        let next = order.stamp();
-        assert!(order.admit(next));
-        let last = order.stamp();
-        assert!(order.admit(last));
-    }
-
-    #[test]
-    fn clear_tvs_removes_stale_rows_and_resets_connected_count() {
+    fn an_empty_snapshot_clears_stale_rows_and_the_connected_count() {
         i_slint_backend_testing::init_no_event_loop();
         let app = AppWindow::new().expect("AppWindow::new");
         let stale = TvViewModel {
@@ -960,7 +761,16 @@ mod version_banner_tests {
         app.set_tvs(ModelRc::new(VecModel::from(vec![stale])));
         app.set_tvs_connected_count(1);
 
-        clear_tvs(&app);
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: Vec::new(),
+                system_profiles: Vec::new(),
+                user_profiles: Vec::new(),
+                system_profile_rows: Vec::new(),
+                user_profile_rows: Vec::new(),
+            },
+        );
 
         assert_eq!(app.get_tvs().row_count(), 0);
         assert_eq!(app.get_tvs_connected_count(), 0);

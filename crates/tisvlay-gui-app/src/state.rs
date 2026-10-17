@@ -6,14 +6,13 @@
 //! `Send`. The Slint event-loop closure then wraps the inner per-row
 //! lists into `ModelRc` (which holds `Rc`, `!Send`).
 //!
-//! [`fetch_state`] does the IO (daemon + session-service calls) and
+//! [`fetch_state`] reads the clients' mirrors and
 //! hands a [`SnapshotInputs`] off to the pure [`convert_snapshot`]
 //! function. Tests construct `SnapshotInputs` directly and assert on
 //! the resulting `StateSnapshot` without touching the wire.
 
 use std::collections::HashMap;
 
-use anyhow::Result;
 use gettextrs::gettext;
 use slint::SharedString;
 use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, TvInfo, UserProfileBody};
@@ -161,21 +160,19 @@ pub(crate) struct SnapshotInputs {
     pub user_profile_by_uuid: HashMap<Uuid, Uuid>,
 }
 
-/// Fetch every configured TV's state plus session-side user-profile
-/// assignment + global profile catalogs.
-///
-/// One mirror snapshot (`DaemonClient::list_tvs`, hydrated from the
-/// per-TV cached keys) plus a `get-config` query per TV, one daemon
-/// call for the system-profile
-/// body catalog, one optional session-service call for the
-/// user-profile body catalog, and one optional session-service call
-/// per TV for the user-profile assignment.
+/// Read every TV's state plus the session-side user-profile assignments
+/// and both profile catalogs, all from the clients' mirrors: no rpcs, so
+/// the watch loop renders inline without waiting on a service. A daemon
+/// on another release lists no TVs.
 pub(crate) async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
-) -> Result<StateSnapshot> {
-    let tvs = daemon.list_tvs().await?;
-    debug!(count = tvs.len(), "Fetched TVs from daemon");
+) -> StateSnapshot {
+    let tvs = daemon.list_tvs().await.unwrap_or_else(|e| {
+        debug!(error = %e, "TV list unavailable");
+        Vec::new()
+    });
+    debug!(count = tvs.len(), "Read TVs from the daemon mirror");
 
     let system_profile_bodies = daemon.list_system_profile_bodies().await;
 
@@ -194,12 +191,12 @@ pub(crate) async fn fetch_state(
         }
     }
 
-    Ok(convert_snapshot(SnapshotInputs {
+    convert_snapshot(SnapshotInputs {
         tvs,
         system_profile_bodies,
         user_profile_bodies,
         user_profile_by_uuid,
-    }))
+    })
 }
 
 /// Fetch a single system-profile body from the mirror, so callers can

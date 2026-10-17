@@ -39,7 +39,7 @@ async fn main() -> tisvlay::Result<()> {
 There are three clients: `DaemonClient` for the system daemon, and `SessionClient` and `TrayClient` for the per-user session service and the tray's settings service. A `StateWatcher` merges their change events into one stream.
 
 - **Connecting.** A client's `connect` returns once its local session is open. It neither waits for nor requires the service: the link dials in the background for as long as the client lives, and availability follows the service's liveliness (`is_available`, and the `*Appeared` / `*Disappeared` events).
-- **Mirror reads** send nothing. A client keeps a mirror of the state its service publishes, so a read such as `list_tvs` answers at once from the last published state, and keeps showing it while the service is down.
+- **Mirror reads** send nothing. A client keeps a mirror of the state its service publishes, so a read such as `list_tvs` answers at once from the last published state. The session's and tray's mirrors keep showing it while the service is down; the daemon's empties, so its TVs and profiles never outlive it.
 - **Rpcs** are round trips: commands, edits, pairing. Any rpc can fail with `Error::Unavailable`, `Error::Timeout`, `Error::VersionMismatch`, `Error::Transport` or `Error::Protocol`. A refusal is `Error::Rpc`, and each method's docs name the `ErrorCode`s it can be refused with.
 
 ## Requirements
@@ -50,7 +50,7 @@ There are three clients: `DaemonClient` for the system daemon, and `SessionClien
 
 ## Compatibility
 
-A client talks only to services of its own release line, the same `major.minor`: SDK 0.4.x works with services 0.4.x, and patch releases interoperate (a pre-release such as `0.5.0-rc.1` works only with exactly itself). Each client checks its service's release in each lifetime of the service, starting when the service appears. On a mismatch, its rpcs fail with `Error::VersionMismatch`, its mirror reads come back empty (`list_tvs` returns the error), and `StateEvent::VersionMismatch` fires, until the service restarts on a matching release. Upgrade the SDK with the daemon.
+A client talks only to services of its own release line, the same `major.minor`: SDK 0.4.x works with services 0.4.x, and patch releases interoperate (a pre-release such as `0.5.0-rc.1` works only with exactly itself). Each client checks its service's release in each lifetime of the service, starting when the service appears and retrying until it gets an answer. The answer is a mirror read, `service_info` (the service's release and state path), announced by `StateEvent::ReleaseChecked`. On a mismatch, its rpcs fail with `Error::VersionMismatch`, its mirror reads come back empty (`list_tvs` returns the error), and `StateEvent::VersionMismatch` fires, until the service restarts on a matching release. Upgrade the SDK with the daemon.
 
 ## Public dependencies
 
