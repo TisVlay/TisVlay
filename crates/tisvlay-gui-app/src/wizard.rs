@@ -211,7 +211,7 @@ pub(crate) fn reset_wizard(
     wizard.set_system_profile(SharedString::default());
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
-    // is sorted by display name in `state_watch::initial_fetch_and_watch`.
+    // is sorted by display name in `state_watch::fetch_and_publish_vendors`.
     // The vendor ThemedSelect derives its shown value from this index and
     // writes picks back through its `selected-index` callback.
     wizard.set_manual_vendor_index(0);

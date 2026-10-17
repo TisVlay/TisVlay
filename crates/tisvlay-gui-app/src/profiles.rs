@@ -23,10 +23,9 @@
 //!
 //! [`select`] primes the cache for the current selection only; the
 //! catalog list is populated lazily as the user clicks through rows.
-//! `baseline` and `default_body` are fetched at GUI start (and on
-//! `DaemonAppeared` / `SessionAppeared`) so the inherit walk always
-//! has both ancestors available without an extra round-trip at click
-//! time.
+//! `baseline` is each service's floor, fetched once per service lifetime,
+//! and `default_body` follows the mirror, so the inherit walk always has
+//! both ancestors available without a round-trip at click time.
 //!
 //! [`select`]: ProfileEditorState::select
 
@@ -351,12 +350,13 @@ fn field_label(wire: &str) -> String {
 
 /// Three-layer body cache for system profiles.
 ///
-/// - `baseline` — the hard-coded body the daemon exposes via
-///   `GetResolvedSystemProfileDefaults`. Fetched once at GUI start
-///   (and on `DaemonAppeared`); never invalidated mid-session.
+/// - `baseline` — the floor every field falls back to, as the daemon
+///   reports it (`profile/rpc/defaults`). The built-in floor until
+///   [`fetch_system_floor`] lands, once per daemon lifetime.
 /// - `default_body` — the reserved-default profile's body
-///   (`DEFAULT_SYSTEM_PROFILE_UUID`). Refreshed when its
-///   `SystemProfileChanged` signal arrives.
+///   (`DEFAULT_SYSTEM_PROFILE_UUID`). Seeded from the mirror at start,
+///   then refreshed when its `SystemProfileAdded` / `Changed` signal
+///   arrives.
 /// - `bodies` — the per-profile catalog keyed by UUID. Each entry
 ///   refreshes when its own `Changed` signal arrives. Filled lazily
 ///   on selection so a session with hundreds of profiles doesn't
@@ -728,9 +728,8 @@ impl std::fmt::Debug for ProfileEditorState {
 /// the Slint callback handlers.
 pub(crate) type ProfileEditor = Arc<Mutex<ProfileEditorState>>;
 
-/// Build a fresh editor state. Baseline / default bodies are filled
-/// in by [`prime_system_layers`] / [`prime_user_layers`] at startup
-/// + on every `*Appeared` event.
+/// Build a fresh editor state. Its layers start empty; the watch loop
+/// fills them when it starts ([`seed_layers`]), then keeps them current.
 pub(crate) fn new_editor() -> ProfileEditor {
     Arc::new(Mutex::new(ProfileEditorState::default()))
 }
@@ -739,57 +738,66 @@ pub(crate) fn new_editor() -> ProfileEditor {
 // Layer priming
 // =============================================================================
 
-/// Prime the baseline + default body for the system layers. Called at
-/// startup and on `DaemonAppeared`. Errors are logged but non-fatal —
-/// a stale baseline / default just means the inherit walk falls back
-/// to `SystemProfileBody::default()` (all-`None`), which the daemon
-/// rejects on dispatch with a `None` action (the same outcome a body
-/// with no fields produces today).
-pub(crate) async fn prime_system_layers(daemon: &DaemonClient, editor: &ProfileEditor) {
-    // Fallbacks are the hard-coded floor, never an empty body: a prime
-    // that races the background-dialing link (or a mirror that has not
-    // hydrated the default profile yet) must not leave inheriting rows
-    // rendering blank until the next re-prime.
-    let floor = || SystemProfileBody::full_default();
-    let baseline = match daemon.get_resolved_system_profile_defaults().await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "Priming system baseline failed; falling back to the floor");
-            floor()
+/// Fetch the daemon's system-profile floor into the editor's baseline,
+/// once per daemon lifetime (only a restart changes it). The daemon is
+/// the authority: a client on another patch release may carry other
+/// built-in values. On failure the editor keeps the floor it has.
+pub(crate) async fn fetch_system_floor(
+    daemon: &DaemonClient,
+    editor: &ProfileEditor,
+    app_weak: &slint::Weak<AppWindow>,
+) {
+    match daemon.get_resolved_system_profile_defaults().await {
+        Ok(floor) => {
+            editor.lock().system.baseline = floor;
+            refresh_editor_if_selected(editor, app_weak.clone());
         }
-    };
-    let default_body = daemon
-        .get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID)
-        .await
-        .unwrap_or_else(|| {
-            debug!("Default system profile not mirrored yet; using the floor");
-            floor()
-        });
-    let mut state = editor.lock();
-    state.system.baseline = baseline;
-    state.system.default_body = default_body;
+        Err(e) => warn!(error = %e, "Fetching the system-profile floor failed; keeping the last"),
+    }
 }
 
-/// User-side mirror of [`prime_system_layers`].
-pub(crate) async fn prime_user_layers(session: &SessionClient, editor: &ProfileEditor) {
-    let floor = || UserProfileBody::full_default();
-    let baseline = match session.get_resolved_user_profile_defaults().await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "Priming user baseline failed; falling back to the floor");
-            floor()
+/// User-side mirror of [`fetch_system_floor`], once per session-service
+/// lifetime.
+pub(crate) async fn fetch_user_floor(
+    session: &SessionClient,
+    editor: &ProfileEditor,
+    app_weak: &slint::Weak<AppWindow>,
+) {
+    match session.get_resolved_user_profile_defaults().await {
+        Ok(floor) => {
+            editor.lock().user.baseline = floor;
+            refresh_editor_if_selected(editor, app_weak.clone());
         }
-    };
-    let default_body = session
-        .get_user_profile(DEFAULT_USER_PROFILE_UUID)
+        Err(e) => warn!(error = %e, "Fetching the user-profile floor failed; keeping the last"),
+    }
+}
+
+/// Fill both kinds' layers as the watch loop starts. The baselines
+/// start as the built-in floor until [`fetch_system_floor`] /
+/// [`fetch_user_floor`] land. The default bodies come from the mirrors:
+/// the loop's `*Added` / `*Changed` handlers keep them current, but a
+/// mirror can hydrate before the loop subscribes, and those events go
+/// unheard. A default not mirrored yet starts as the floor too, never an
+/// empty body, so inheriting rows never render blank.
+pub(crate) async fn seed_layers(
+    daemon: &DaemonClient,
+    session: Option<&SessionClient>,
+    editor: &ProfileEditor,
+) {
+    let system_default = daemon
+        .get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID)
         .await
-        .unwrap_or_else(|| {
-            debug!("Default user profile not mirrored yet; using the floor");
-            floor()
-        });
+        .unwrap_or_else(SystemProfileBody::full_default);
+    let user_default = match session {
+        Some(session) => session.get_user_profile(DEFAULT_USER_PROFILE_UUID).await,
+        None => None,
+    }
+    .unwrap_or_else(UserProfileBody::full_default);
     let mut state = editor.lock();
-    state.user.baseline = baseline;
-    state.user.default_body = default_body;
+    state.system.baseline = SystemProfileBody::full_default();
+    state.system.default_body = system_default;
+    state.user.baseline = UserProfileBody::full_default();
+    state.user.default_body = user_default;
 }
 
 // =============================================================================
@@ -1315,9 +1323,8 @@ pub(crate) async fn handle_system_changed(
 }
 
 /// `SystemProfileAdded(uuid)`: fetch + insert so subsequent selects
-/// hit the cache without a fetch. The master-list refresh happens via
-/// the coarse `trigger_refresh` path in `state_watch.rs`; the editor
-/// doesn't redraw here.
+/// hit the cache without a fetch. The master list redraws in the watch
+/// loop's render (`state_watch.rs`); the editor doesn't redraw here.
 pub(crate) async fn handle_system_added(
     editor: ProfileEditor,
     daemon: Arc<DaemonClient>,
@@ -1326,9 +1333,9 @@ pub(crate) async fn handle_system_added(
     match fetch_system_profile_body(&daemon, uuid).await {
         Some(body) => {
             // In a fresh launch the default profile lands here (mirror
-            // hydration finishes after the startup prime); `cache_body`
+            // hydration finishes after the startup seed); `cache_body`
             // routes it to the inherit-chain slot so inheriting rows
-            // stop resolving against the stale prime fallback.
+            // stop resolving against the built-in fallback.
             editor.lock().system.cache_body(uuid, body);
         }
         None => {

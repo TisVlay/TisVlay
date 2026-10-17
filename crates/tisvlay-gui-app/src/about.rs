@@ -124,13 +124,22 @@ const COMPONENT_CATALOGUE: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Probed runtime metadata for a single peer process, from its `info`
-/// rpc. Always probed together because they ride one reply.
-/// `config_path` is empty when the peer has no config file (GUI).
+/// A peer process's release and config path, from its client's release
+/// check (`service_info`). `config_path` is empty when the peer has no
+/// config file (GUI).
 #[derive(Clone, Default, Debug)]
 pub(crate) struct PeerInfo {
     pub version: String,
     pub config_path: String,
+}
+
+impl From<tisvlay::ServiceInfo> for PeerInfo {
+    fn from(info: tisvlay::ServiceInfo) -> Self {
+        Self {
+            version: info.version,
+            config_path: info.state_path,
+        }
+    }
 }
 
 /// A present peer's health, from its release against this GUI's: the
@@ -213,8 +222,8 @@ pub(crate) async fn probe_cli_version() -> Option<String> {
 /// gets a status circle on the left and a version chip on the right,
 /// both colored by the row's health. Presence is liveliness, only:
 /// each peer's `online` comes from its liveliness flag, the same
-/// source as the sidebar footer, while the probed `PeerInfo` fills
-/// version/config *content* ("—" until a probe lands; a failed probe
+/// source as the sidebar footer, while the release check's `PeerInfo` fills
+/// version/config *content* ("—" until the check lands; an unanswered check
 /// never renders offline). GUI is hardcoded online with its
 /// compile-time `CARGO_PKG_VERSION`; the CLI row reflects the
 /// `--version` shell-out, compared against this GUI's release.

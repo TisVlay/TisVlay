@@ -31,7 +31,7 @@ tisvlay/
 │   ├── tisvlay-runtime/           # Binaries' process glue (unpublished): logging init,
 │   │                             # socket-group access, wayland + Mutter idle transports,
 │   │                             # durable state-file writes, GUI/tray client helpers
-│   │                             # (Coalescer/ReconcilerMap/RefreshTrigger, profile refs)
+│   │                             # (Coalescer/ReconcilerMap, profile refs)
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation (SSAP over wss)
 │   ├── tisvlay-cec/               # HDMI-CEC vendor implementation (linux-cec)
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)
