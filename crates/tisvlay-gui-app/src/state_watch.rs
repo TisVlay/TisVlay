@@ -3,6 +3,7 @@
 //! pushes view-model snapshots into the AppWindow's models.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -69,6 +70,32 @@ fn version_banner(mismatches: &[(Service, String, String)]) -> ErrorState {
         title: SharedString::from(gettext("Version mismatch")),
         message: SharedString::from(message),
         action_label: SharedString::default(),
+    }
+}
+
+/// Orders [`publish_services`] writes by when each call read liveliness.
+/// The watch loop and the refresh worker publish concurrently, and a
+/// call that saw a peer up probes it, which waits out the rpc deadline
+/// when the peer stops mid-probe. Unordered, that call's stale "up"
+/// lands after the disappearance's own publish and sticks until the
+/// next event. Each call takes a stamp before its liveliness reads, and
+/// the event loop drops a write older than one already applied: a
+/// later stamp read liveliness later, so the newest write always wins.
+#[derive(Clone, Default)]
+struct PublishOrder {
+    issued: Arc<AtomicU64>,
+    applied: Arc<AtomicU64>,
+}
+
+impl PublishOrder {
+    fn stamp(&self) -> u64 {
+        self.issued.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Whether the write stamped `stamp` is newer than every write
+    /// applied so far; marks it applied when it is.
+    fn admit(&self, stamp: u64) -> bool {
+        self.applied.fetch_max(stamp, Ordering::Relaxed) < stamp
     }
 }
 
@@ -142,7 +169,8 @@ pub(crate) async fn initial_fetch_and_watch(
             .set_notifications(initial_tray_notifications);
     });
     // Every service-status copy goes through the single writer.
-    publish_services(&daemon, &session, &tray, &app_weak).await;
+    let order = PublishOrder::default();
+    publish_services(&daemon, &session, &tray, &app_weak, &order).await;
 
     if initial_tray_available {
         refresh_tray_notifications(&tray, &app_weak).await;
@@ -155,6 +183,7 @@ pub(crate) async fn initial_fetch_and_watch(
         app_weak,
         supported_vendors_cache,
         editor,
+        order,
     )
     .await;
 }
@@ -274,6 +303,10 @@ struct PrimaryField {
     is_ip: bool,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the watch loop's entry: each handle it owns, plus the publish order the initial publish shares; a struct would only rename the list"
+)]
 async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
@@ -282,6 +315,7 @@ async fn watch_state(
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
+    order: PublishOrder,
 ) {
     // No debounce: every state event triggers a refresh fire.
     // `RefreshTrigger` folds concurrent fires into a single in-flight
@@ -321,13 +355,15 @@ async fn watch_state(
         let tray = tray.clone();
         let reconcilers = reconcilers.clone();
         let app_weak = app_weak.clone();
+        let order = order.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
             let tray = tray.clone();
             let reconcilers = reconcilers.clone();
             let app_weak = app_weak.clone();
-            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak).await }
+            let order = order.clone();
+            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak, &order).await }
         });
     };
 
@@ -352,7 +388,7 @@ async fn watch_state(
                 // defaults on disk, in which case the inherit walk
                 // would otherwise resolve against a stale ancestor.
                 profiles::prime_system_layers(&daemon, &editor).await;
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
@@ -427,7 +463,7 @@ async fn watch_state(
                 mismatches.clear(Service::Daemon);
                 mismatches.publish(&app_weak);
                 on_ui(&app_weak, |app| clear_tvs(&app));
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
             }
             StateEvent::SessionAppeared => {
                 // The client exists from startup (background-retry link);
@@ -435,7 +471,7 @@ async fn watch_state(
                 if let Some(client) = session.read().await.as_ref() {
                     profiles::prime_user_layers(client, &editor).await;
                 }
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
@@ -445,13 +481,13 @@ async fn watch_state(
                 // gets a fresh release check.
                 mismatches.clear(Service::Session);
                 mismatches.publish(&app_weak);
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
                 // The client exists from startup (background-retry link).
                 {
-                    publish_services(&daemon, &session, &tray, &app_weak).await;
+                    publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                     refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
                 }
@@ -460,7 +496,7 @@ async fn watch_state(
                 // Client stays, same as the session arm above.
                 mismatches.clear(Service::Tray);
                 mismatches.publish(&app_weak);
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::TrayNotificationSettingsChanged => {
@@ -521,6 +557,7 @@ async fn refresh(
     tray: &RwLock<Option<TrayClient>>,
     reconcilers: &Reconcilers,
     app_weak: &slint::Weak<AppWindow>,
+    order: &PublishOrder,
 ) {
     let session_ref = session.read().await;
     match fetch_state(daemon, session_ref.as_ref()).await {
@@ -535,7 +572,7 @@ async fn refresh(
         Err(e) => debug!(error = %e, "State refresh failed"),
     }
     drop(session_ref);
-    publish_services(daemon, session, tray, app_weak).await;
+    publish_services(daemon, session, tray, app_weak, order).await;
 }
 
 /// The single writer for every Slint service-status property: the
@@ -546,12 +583,14 @@ async fn refresh(
 /// service's `info` reports, which answers even across a version
 /// mismatch. Writing everything from one probe is what keeps the
 /// footer, settings pane, profiles pane and About rows from ever
-/// disagreeing.
+/// disagreeing; `order` keeps an overlapping older call from
+/// overwriting a newer one.
 async fn publish_services(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
     tray: &RwLock<Option<TrayClient>>,
     app_weak: &slint::Weak<AppWindow>,
+    order: &PublishOrder,
 ) {
     async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
     where
@@ -568,6 +607,7 @@ async fn publish_services(
     // matching deadline, which would hold every indicator (and the watch
     // loop) behind it. A failed probe on a live peer renders an online row
     // with "—".
+    let stamp = order.stamp();
     let daemon_up = daemon.is_available().await;
     let daemon_info = if daemon_up {
         probe(daemon.version(), daemon.config_path()).await
@@ -593,7 +633,11 @@ async fn publish_services(
         (tray_up, tray_info.as_ref()),
         cli_version.as_deref(),
     );
+    let order = order.clone();
     on_ui(app_weak, move |app| {
+        if !order.admit(stamp) {
+            return;
+        }
         app.set_daemon_available(daemon_up);
         app.set_session_available(session_up);
         app.set_tray_available(tray_up);
@@ -884,6 +928,24 @@ mod version_banner_tests {
         assert_eq!(mismatches.0.len(), 1, "one line per service");
         mismatches.clear(Service::Daemon);
         assert!(mismatches.0.is_empty());
+    }
+
+    #[test]
+    fn a_stale_service_publish_never_overwrites_a_newer_one() {
+        let order = PublishOrder::default();
+        // The refresh worker reads the daemon up, then the watch loop's
+        // disappearance publish (holding a clone) reads it down and
+        // lands first.
+        let watch_loop = order.clone();
+        let refresh = order.stamp();
+        let disappeared = watch_loop.stamp();
+        assert!(watch_loop.admit(disappeared));
+        assert!(!order.admit(refresh), "the older read is dropped");
+        // In-order arrivals all apply.
+        let next = order.stamp();
+        assert!(order.admit(next));
+        let last = order.stamp();
+        assert!(order.admit(last));
     }
 
     #[test]
