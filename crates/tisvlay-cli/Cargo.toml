@@ -34,5 +34,11 @@ uuid = { workspace = true }
 zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+tisvlay-daemon = { workspace = true }
+tisvlay-mock = { workspace = true }
+tisvlay-session = { workspace = true }
+
 [lints]
 workspace = true

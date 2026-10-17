@@ -81,8 +81,24 @@ pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: Str
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    fn field_row(name: &str) -> PairingFieldRow {
+        PairingFieldRow {
+            name: SharedString::from(name),
+            label: SharedString::default(),
+            helper: SharedString::default(),
+            field_type: SharedString::from("string"),
+            required: true,
+            placeholder: SharedString::default(),
+            options: ModelRc::new(VecModel::<SharedString>::default()),
+            value: SharedString::from("value"),
+            state: SharedString::from("valid"),
+            error: SharedString::default(),
+            autofilled: false,
+        }
+    }
 
     fn rpc_err(code: ErrorCode, message: &str) -> tisvlay::Error {
         tisvlay::Error::Rpc {
@@ -126,5 +142,266 @@ mod tests {
             extract_invalid_vendor_config(&err),
             Some(("ip".into(), "not an IP address: ::1::bad".into()))
         );
+    }
+
+    #[test]
+    fn mark_edit_field_invalid_marks_matching_row_and_invalidates_form() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let edit_pane = app.global::<EditPane>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        edit_pane.set_name(SharedString::from("Living Room"));
+        edit_pane.set_fields(model.clone());
+        edit_pane.set_valid(true);
+
+        assert!(mark_edit_field_invalid(
+            &edit_pane,
+            &model,
+            "ip",
+            "not a valid address"
+        ));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "invalid");
+        assert_eq!(row.error.as_str(), "not a valid address");
+        assert!(!edit_pane.get_valid());
+    }
+
+    #[test]
+    fn mark_edit_field_invalid_returns_false_for_unknown_field() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let edit_pane = app.global::<EditPane>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        edit_pane.set_name(SharedString::from("Living Room"));
+        edit_pane.set_fields(model.clone());
+        edit_pane.set_valid(true);
+
+        assert!(!mark_edit_field_invalid(
+            &edit_pane,
+            &model,
+            "unknown",
+            "not a valid address"
+        ));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "valid");
+        assert!(row.error.is_empty());
+        assert!(edit_pane.get_valid());
+    }
+
+    pub(crate) fn worker_ui_updates_apply_on_the_event_loop() {
+        let app = AppWindow::new().expect("AppWindow::new");
+        let edit_pane = app.global::<EditPane>();
+        edit_pane.set_saving(true);
+        let profiles = app.global::<crate::Profiles>();
+        profiles.set_selected_kind(crate::ProfileKind::System);
+        profiles.set_selected_uuid(SharedString::from("profile-1"));
+        profiles.set_editor_fields(ModelRc::new(VecModel::from(vec![
+            crate::ProfileFieldEntry {
+                field_name: SharedString::from("on_startup"),
+                ..Default::default()
+            },
+        ])));
+        profiles.set_editor_can_reset_all(true);
+        let wizard = app.global::<crate::PairingWizard>();
+        let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(7));
+        let mut progress =
+            crate::wizard::make_progress_callback(app.as_weak(), generation.clone(), 7);
+        progress(tisvlay::PairingPhase::AwaitingTv, "waiting for TV");
+        let tv_id = SharedString::from("tv-1");
+        app.set_tvs(ModelRc::new(VecModel::from(vec![crate::TvViewModel {
+            uuid: tv_id.clone(),
+            ..Default::default()
+        }])));
+
+        publish_edit_error(&app.as_weak(), "schema unavailable".into());
+        crate::push_tvs_error(
+            &app.as_weak(),
+            "Power on failed".into(),
+            "TV is unavailable".into(),
+        );
+        crate::report_reload(
+            &app.as_weak(),
+            vec![crate::ReloadOutcome {
+                file: "daemon.toml".into(),
+                result: Some(Err(tisvlay::Error::Rpc {
+                    code: ErrorCode::StoreUnreadable,
+                    message: "error: invalid TOML".into(),
+                })),
+            }],
+        );
+        crate::power_cycle::update_power_cycle_phase(
+            &app.as_weak(),
+            tv_id.as_str(),
+            Some(tisvlay::PowerPhase::Connecting),
+        );
+        slint::quit_event_loop().expect("quit the test event loop");
+        slint::run_event_loop().expect("drain the test event loop");
+
+        assert_eq!(edit_pane.get_error().as_str(), "schema unavailable");
+        assert!(!edit_pane.get_saving());
+        let tv_error = app.global::<crate::Errors>().get_tvs();
+        assert_eq!(tv_error.title, "Power on failed");
+        assert_eq!(tv_error.message, "TV is unavailable");
+        assert_eq!(tv_error.tone, "error");
+        let reload_error = app.global::<crate::Errors>().get_reload();
+        assert_eq!(reload_error.title, "Reload failed: daemon.toml");
+        assert_eq!(reload_error.message, "error: invalid TOML");
+        assert_eq!(reload_error.tone, "error");
+        assert_eq!(wizard.get_pair_phase(), "awaiting_tv");
+        assert_eq!(wizard.get_pair_message(), "waiting for TV");
+        assert_eq!(
+            app.get_tvs().row_data(0).unwrap().power_cycle_phase,
+            "connecting"
+        );
+
+        progress(tisvlay::PairingPhase::AwaitingInput, "stale progress");
+        generation.store(8, std::sync::atomic::Ordering::SeqCst);
+        slint::quit_event_loop().expect("quit before draining stale progress");
+        slint::run_event_loop().expect("drain and reject stale wizard progress");
+        assert_eq!(wizard.get_pair_phase(), "awaiting_tv");
+        assert_eq!(wizard.get_pair_message(), "waiting for TV");
+
+        let outcome_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(11));
+        wizard.set_pair_message(SharedString::default());
+        wizard.set_mac_error(SharedString::from("old MAC error"));
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Ok(Some(tisvlay::LinkMacReport {
+                reported: "84:90:0A:63:A9:94".into(),
+                outcome: tisvlay::LinkMacOutcome::Filled,
+            })),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing pairing success");
+        slint::run_event_loop().expect("drain pairing success");
+        assert_eq!(wizard.get_pair_phase(), "complete");
+        assert_eq!(wizard.get_pair_message(), "Client key stored.");
+        assert_eq!(wizard.get_mac_notice(), "filled");
+        assert_eq!(wizard.get_mac_reported(), "84:90:0A:63:A9:94");
+        assert!(wizard.get_mac_configured().is_empty());
+        assert!(wizard.get_mac_error().is_empty());
+
+        wizard.set_pair_message(SharedString::default());
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Ok(None),
+            false,
+        );
+        slint::quit_event_loop().expect("quit after publishing legacy pairing success");
+        slint::run_event_loop().expect("drain legacy pairing success");
+        assert_eq!(wizard.get_pair_message(), "Paired successfully.");
+
+        let schema_fields = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        wizard.set_schema_fields(schema_fields.clone());
+        wizard.set_schema_valid(true);
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Err(crate::wizard::PairError::Rpc(tisvlay::Error::Rpc {
+                code: ErrorCode::InvalidField,
+                message: "ip: not an IP address".into(),
+            })),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing invalid-field response");
+        slint::run_event_loop().expect("drain invalid-field response");
+        let invalid_ip = schema_fields
+            .row_data(0)
+            .expect("schema row remains present");
+        assert_eq!(invalid_ip.state, "invalid");
+        assert_eq!(invalid_ip.error, "not an IP address");
+        assert!(!wizard.get_schema_valid());
+        assert_eq!(wizard.get_step(), 2);
+
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            11,
+            Err(crate::wizard::PairError::Local(
+                "stale terminal result".into(),
+            )),
+            false,
+        );
+        outcome_generation.store(12, std::sync::atomic::Ordering::SeqCst);
+        slint::quit_event_loop().expect("quit before draining stale terminal outcome");
+        slint::run_event_loop().expect("reject stale terminal outcome");
+        assert_eq!(wizard.get_pair_phase(), "");
+        assert_eq!(wizard.get_pair_message(), "");
+        assert_eq!(wizard.get_step(), 2);
+
+        outcome_generation.store(13, std::sync::atomic::Ordering::SeqCst);
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            13,
+            Err(crate::wizard::PairError::Handshake(Box::new(
+                tisvlay::PairingProgress {
+                    attempt: uuid::Uuid::nil(),
+                    phase: tisvlay::PairingPhase::Failed,
+                    message: "permission denied".into(),
+                    code: Some(tisvlay::FailureCode::DevicePermissionDenied),
+                    path: Some("/dev/cec1".into()),
+                    link_mac: None,
+                },
+            ))),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing handshake failure");
+        slint::run_event_loop().expect("drain handshake failure");
+        assert_eq!(wizard.get_pair_phase(), "failed");
+        assert!(wizard.get_pair_message().contains("/dev/cec1"));
+
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            13,
+            Err(crate::wizard::PairError::Rpc(tisvlay::Error::Rpc {
+                code: ErrorCode::InvalidField,
+                message: "unknown_field: invalid value".into(),
+            })),
+            true,
+        );
+        slint::quit_event_loop().expect("quit after publishing unknown field error");
+        slint::run_event_loop().expect("drain unknown field error");
+        assert_eq!(wizard.get_pair_phase(), "failed");
+        assert!(wizard.get_pair_message().contains("unknown_field"));
+
+        crate::wizard::publish_pair_outcome(
+            app.as_weak(),
+            &outcome_generation,
+            13,
+            Err(crate::wizard::PairError::Local(
+                "local pairing error".into(),
+            )),
+            false,
+        );
+        slint::quit_event_loop().expect("quit after publishing local pairing failure");
+        slint::run_event_loop().expect("drain local pairing failure");
+        assert_eq!(wizard.get_pair_phase(), "failed");
+        assert_eq!(wizard.get_pair_message(), "local pairing error");
+
+        crate::power_cycle::update_power_cycle_phase(&app.as_weak(), tv_id.as_str(), None);
+        crate::profiles::clear_selection_in_slint(app.as_weak());
+        slint::quit_event_loop().expect("quit after clearing the power phase");
+        slint::run_event_loop().expect("drain the phase-clear event");
+        assert!(
+            app.get_tvs()
+                .row_data(0)
+                .unwrap()
+                .power_cycle_phase
+                .is_empty()
+        );
+        assert_eq!(profiles.get_selected_kind(), crate::ProfileKind::None);
+        assert!(profiles.get_selected_uuid().is_empty());
+        assert!(profiles.get_selected_row().uuid.is_empty());
+        assert_eq!(profiles.get_editor_fields().row_count(), 0);
+        assert!(!profiles.get_editor_can_reset_all());
     }
 }

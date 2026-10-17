@@ -98,6 +98,13 @@ pub(crate) async fn try_claim_and_serve(
         .await
         .context("Failed to connect to user D-Bus")?;
 
+    claim_on_connection(connection, config_path).await
+}
+
+async fn claim_on_connection(
+    connection: zbus::Connection,
+    config_path: Option<PathBuf>,
+) -> Result<(ClaimResult, Activation)> {
     let gui_service = GuiService::new(config_path);
     let (app_service, activation) = ApplicationService::new();
 
@@ -113,10 +120,14 @@ pub(crate) async fn try_claim_and_serve(
         .context("Failed to serve org.freedesktop.Application interface")?;
 
     let name = WellKnownName::try_from(GUI_BUS_NAME).expect("static bus name is well-formed");
-    let reply = connection
+    let reply = match connection
         .request_name_with_flags(name, RequestNameFlags::DoNotQueue.into())
         .await
-        .context("Failed to request org.tisvlay.Gui")?;
+    {
+        Ok(reply) => reply,
+        Err(zbus::Error::NameTaken) => RequestNameReply::Exists,
+        Err(error) => return Err(error).context("Failed to request org.tisvlay.Gui"),
+    };
 
     match reply {
         RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => {
@@ -346,4 +357,128 @@ impl ApplicationService {
 fn extract_activation_token(platform_data: &HashMap<String, OwnedValue>) -> Option<String> {
     let value = platform_data.get("activation-token")?.clone();
     String::try_from(value).ok()
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    pub(crate) fn warm_activation_uses_the_window_not_the_cold_token_slot() {
+        let app = AppWindow::new().unwrap();
+        let (service, activation) = ApplicationService::new();
+        assert!(activation.window.set(app.as_weak()).is_ok());
+        service.raise(Some("ignored-for-warm-activation".into()));
+        slint::quit_event_loop().unwrap();
+        slint::run_event_loop().unwrap();
+        assert!(activation.cold_spawn_token.lock().unwrap().is_none());
+        drop(app);
+        service.raise(Some("window-is-gone".into()));
+        slint::quit_event_loop().unwrap();
+        slint::run_event_loop().unwrap();
+        assert!(activation.cold_spawn_token.lock().unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn private_bus_claim_properties_activation_and_handoff() {
+        let bus = tisvlay_test::dbus::PrivateBus::isolated();
+        let (claim, activation) =
+            claim_on_connection(bus.connect().await.unwrap(), Some("/tmp/gui.toml".into()))
+                .await
+                .unwrap();
+        let ClaimResult::Primary(primary) = claim else {
+            panic!("first connection owns the GUI name")
+        };
+        let peer = bus.connect().await.unwrap();
+        let info = zbus::Proxy::new(&peer, GUI_BUS_NAME, GUI_OBJECT_PATH, "org.tisvlay.Gui1")
+            .await
+            .unwrap();
+        assert_eq!(
+            info.get_property::<String>("Version").await.unwrap(),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            info.get_property::<String>("ConfigPath").await.unwrap(),
+            "/tmp/gui.toml"
+        );
+        let app = zbus::Proxy::new(&peer, GUI_BUS_NAME, GUI_OBJECT_PATH, APPLICATION_INTERFACE)
+            .await
+            .unwrap();
+        let data = HashMap::from([("activation-token", Value::from("activate-token"))]);
+        let _: () = app.call("Activate", &(data,)).await.unwrap();
+        assert_eq!(
+            activation.cold_spawn_token.lock().unwrap().as_deref(),
+            Some("activate-token")
+        );
+        let data = HashMap::from([("activation-token", Value::from("open-token"))]);
+        let _: () = app
+            .call("Open", &(vec!["file:///tmp/example"], data))
+            .await
+            .unwrap();
+        assert_eq!(
+            activation.cold_spawn_token.lock().unwrap().as_deref(),
+            Some("open-token")
+        );
+        let data = HashMap::from([("activation-token", Value::from("action-token"))]);
+        let _: () = app
+            .call(
+                "ActivateAction",
+                &("settings", Vec::<Value<'_>>::new(), data),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            activation.cold_spawn_token.lock().unwrap().as_deref(),
+            Some("action-token")
+        );
+        let (second, _) = claim_on_connection(bus.connect().await.unwrap(), None)
+            .await
+            .unwrap();
+        assert!(matches!(second, ClaimResult::Proxied));
+        assert_eq!(
+            activation.cold_spawn_token.lock().unwrap().as_deref(),
+            Some("action-token")
+        );
+        primary.close().await.unwrap();
+        let (third, _) = claim_on_connection(bus.connect().await.unwrap(), None)
+            .await
+            .unwrap();
+        let ClaimResult::Primary(replacement) = third else {
+            panic!("name can be reclaimed after shutdown")
+        };
+        let replacement_info =
+            zbus::Proxy::new(&peer, GUI_BUS_NAME, GUI_OBJECT_PATH, "org.tisvlay.Gui1")
+                .await
+                .unwrap();
+        assert_eq!(
+            replacement_info
+                .get_property::<String>("ConfigPath")
+                .await
+                .unwrap(),
+            ""
+        );
+        replacement.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activation_without_a_primary_reports_the_proxy_error() {
+        let bus = tisvlay_test::dbus::PrivateBus::isolated();
+        let connection = bus.connect().await.unwrap();
+        let error = proxy_activate(&connection).await.unwrap_err();
+        assert!(error.to_string().contains("Failed to call Activate"));
+    }
+
+    #[test]
+    fn activation_tokens_require_a_string_and_absent_tokens_preserve_the_slot() {
+        let (service, activation) = ApplicationService::new();
+        service.raise(Some("kept".into()));
+        service.activate(HashMap::new());
+        service.activate(HashMap::from([(
+            "activation-token".into(),
+            OwnedValue::from(42u32),
+        )]));
+        assert_eq!(
+            activation.cold_spawn_token.lock().unwrap().as_deref(),
+            Some("kept")
+        );
+    }
 }

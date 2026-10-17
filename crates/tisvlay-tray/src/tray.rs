@@ -768,6 +768,29 @@ mod tests {
         tray
     }
 
+    fn find_standard_item<'a>(
+        items: &'a mut [MenuItem<TvTray>],
+        label: &str,
+    ) -> Option<&'a mut StandardItem<TvTray>> {
+        for item in items {
+            match item {
+                MenuItem::Standard(item) if item.label == label => return Some(item),
+                MenuItem::SubMenu(submenu) => {
+                    if let Some(item) = find_standard_item(&mut submenu.submenu, label) {
+                        return Some(item);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn activate_item(tray: &mut TvTray, menu: &mut [MenuItem<TvTray>], label: &str) {
+        let item = find_standard_item(menu, label).expect("menu item exists");
+        (item.activate)(tray);
+    }
+
     #[test]
     fn default_target_prefers_backlight_then_volume() {
         let id = Uuid::from_u128(1);
@@ -831,5 +854,399 @@ mod tests {
         let mut tray = tray_with(&[(id, tv("CEC", true, false, false))]);
         tray.secondary_activate(0, 0);
         assert_eq!(tray.scroll_tv, None);
+    }
+
+    #[test]
+    fn menu_distinguishes_connected_standby_from_live_and_honors_capabilities() {
+        let id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(id, tv("CEC", false, false, false));
+
+        let menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &menu[0] else {
+            panic!("configured TV is rendered as a submenu");
+        };
+        assert!(tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label == "Power On (Wake)")
+        }));
+        assert!(
+            !tv_menu.submenu.iter().any(|item| {
+                matches!(item, MenuItem::Standard(item) if item.label == "Power Off")
+            })
+        );
+        assert!(!tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label.starts_with("Volume"))
+        }));
+        let wake = tv_menu
+            .submenu
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Power On (Wake)" => Some(item),
+                _ => None,
+            })
+            .expect("wake item exists");
+        (wake.activate)(&mut tray);
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::PowerOn(tv)) if tv == id));
+
+        tray.mirror.tvs.insert(id, tv("CEC", true, false, false));
+        let live_menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &live_menu[0] else {
+            panic!("configured TV is rendered as a submenu");
+        };
+        assert!(
+            tv_menu.submenu.iter().any(|item| {
+                matches!(item, MenuItem::Standard(item) if item.label == "Power Off")
+            })
+        );
+        assert!(!tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label.starts_with("Volume"))
+        }));
+        assert!(!tv_menu.submenu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label.starts_with("Screen"))
+        }));
+    }
+
+    #[test]
+    fn settings_activation_coalesces_clicks_and_releases_closed_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let pending = Arc::new(AtomicBool::new(false));
+        let mut tray = TvTray::new(tx, Arc::clone(&pending));
+        let menu = tray.menu();
+        assert!(matches!(
+            menu.first(),
+            Some(MenuItem::Standard(item)) if item.label == "Daemon unavailable" && !item.enabled
+        ));
+        let settings = menu
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Settings" => Some(item),
+                _ => None,
+            })
+            .expect("Settings is always present");
+
+        (settings.activate)(&mut tray);
+        assert!(pending.load(Ordering::Relaxed));
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::OpenGui)));
+        (settings.activate)(&mut tray);
+        assert!(
+            rx.try_recv().is_err(),
+            "a pending activation drops extra clicks"
+        );
+
+        let (closed_tx, closed_rx) = mpsc::unbounded_channel();
+        drop(closed_rx);
+        let closed_pending = Arc::new(AtomicBool::new(false));
+        let mut closed_tray = TvTray::new(closed_tx, Arc::clone(&closed_pending));
+        let closed_menu = closed_tray.menu();
+        let closed_settings = closed_menu
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Settings" => Some(item),
+                _ => None,
+            })
+            .expect("Settings is always present");
+        (closed_settings.activate)(&mut closed_tray);
+        assert!(!closed_pending.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn root_menu_handles_empty_catalog_and_live_remote_session_status() {
+        let mut tray = tray_with(&[]);
+        tray.mirror.daemon_alive = true;
+        let menu = tray.menu();
+        assert!(matches!(
+            menu.first(),
+            Some(MenuItem::Standard(item)) if item.label == "No TVs configured" && !item.enabled
+        ));
+
+        let tv_id = Uuid::from_u128(1);
+        let mut remote_tv = tv("Office", true, false, false);
+        remote_tv.remote_armed = true;
+        tray.mirror.tvs.insert(tv_id, remote_tv);
+        let menu = tray.menu();
+        assert!(menu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label == "Remote session active" && !item.enabled)
+        }));
+
+        tray.mirror.daemon_alive = false;
+        let menu = tray.menu();
+        assert!(!menu.iter().any(|item| {
+            matches!(item, MenuItem::Standard(item) if item.label == "Remote session active")
+        }));
+    }
+
+    #[test]
+    fn missing_status_notifier_host_keeps_the_tray_service_running() {
+        let tray = tray_with(&[]);
+        assert!(tray.watcher_offline(ksni::OfflineReason::No));
+    }
+
+    #[test]
+    fn vertical_scroll_normalizes_delta_and_ignores_irrelevant_events() {
+        let id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(id, tv("C3", true, true, true));
+
+        tray.scroll(120, ksni::Orientation::Vertical);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, 1)) if tv == id
+        ));
+
+        tray.scroll(-240, ksni::Orientation::Vertical);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, -2)) if tv == id
+        ));
+
+        tray.scroll(12, ksni::Orientation::Vertical);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, 1)) if tv == id
+        ));
+
+        tray.scroll(120, ksni::Orientation::Horizontal);
+        tray.scroll(0, ksni::Orientation::Vertical);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn status_title_and_tooltip_follow_mirror_state() {
+        let offline = tray_with(&[]);
+        assert_eq!(offline.title(), "TisVlay [daemon offline]");
+        assert_eq!(offline.status(), ksni::Status::Passive);
+        assert_eq!(offline.tool_tip().description, "Daemon not available");
+
+        let (connected_id, down_id) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut connected = tv("Office", true, true, true);
+        connected.volume = Some(42);
+        connected.muted = Some(true);
+        connected.backlight = Some(50);
+        let down = TvView {
+            name: "Bedroom".into(),
+            connected: false,
+            ..Default::default()
+        };
+        let mut tray = tray_with(&[(connected_id, connected), (down_id, down)]);
+        tray.mirror.daemon_alive = true;
+        tray.scroll_target = Some(ScrollTarget::Backlight);
+        tray.scroll_tv = Some(connected_id);
+
+        assert_eq!(tray.title(), "TisVlay [1/2]");
+        assert_eq!(tray.status(), ksni::Status::Active);
+        assert_eq!(
+            tray.tool_tip().description,
+            "Office:\n  volume 42 (muted)\n► backlight 50\nBedroom\n  off"
+        );
+    }
+
+    #[test]
+    fn profile_picker_selects_defaults_and_emits_the_matching_assignment() {
+        let tv_id = Uuid::from_u128(1);
+        let user_default = tisvlay_core::DEFAULT_USER_PROFILE_UUID;
+        let system_default = tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
+        let user_custom = Uuid::from_u128(u128::MAX - 1);
+        let system_custom = Uuid::from_u128(u128::MAX);
+        let mut view = tv("CEC", false, false, false);
+        view.user_profile = None;
+        view.system_profile = Some(system_custom);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(tv_id, view);
+        tray.mirror
+            .user_profiles
+            .insert(user_default, "default".into());
+        tray.mirror
+            .user_profiles
+            .insert(user_custom, "Personal".into());
+        tray.mirror
+            .system_profiles
+            .insert(system_default, "default".into());
+        tray.mirror
+            .system_profiles
+            .insert(system_custom, "Work".into());
+        let mut menu = tray.menu();
+
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV menu entry is a submenu");
+        };
+        let profiles_index = tv_menu
+            .submenu
+            .iter()
+            .position(
+                |item| matches!(item, MenuItem::SubMenu(submenu) if submenu.label == "Profiles"),
+            )
+            .expect("TV menu has a Profiles submenu");
+        let MenuItem::SubMenu(profiles) = &mut tv_menu.submenu[profiles_index] else {
+            panic!("Profiles entry is a submenu");
+        };
+        let MenuItem::SubMenu(user_picker) = &mut profiles.submenu[0] else {
+            panic!("User entry is a profile picker");
+        };
+        assert_eq!(user_picker.label, "User: default");
+        let MenuItem::RadioGroup(user_radio) = &mut user_picker.submenu[0] else {
+            panic!("User picker is a radio group");
+        };
+        assert_eq!(user_radio.selected, 0);
+        assert_eq!(user_radio.options[1].label, "Personal");
+        (user_radio.select)(&mut tray, 1);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetUserProfile(tv, Some(profile)))
+                if tv == tv_id && profile == user_custom
+        ));
+
+        let MenuItem::SubMenu(system_picker) = &mut profiles.submenu[1] else {
+            panic!("System entry is a profile picker");
+        };
+        assert_eq!(system_picker.label, "System: Work");
+        let MenuItem::RadioGroup(system_radio) = &mut system_picker.submenu[0] else {
+            panic!("System picker is a radio group");
+        };
+        assert_eq!(system_radio.selected, 1);
+        assert_eq!(system_radio.options[0].label, "default");
+        (system_radio.select)(&mut tray, 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetSystemProfile(tv, Some(profile)))
+                if tv == tv_id && profile == system_default
+        ));
+    }
+
+    #[test]
+    fn input_submenu_selects_by_current_id_and_emits_input_id() {
+        let tv_id = Uuid::from_u128(1);
+        let mut view = tv("Office", true, false, false);
+        view.current_input = Some("HDMI_2".into());
+        view.inputs = vec![
+            ("HDMI_1".into(), "Console".into()),
+            ("HDMI_2".into(), "Workstation".into()),
+        ];
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        tray.mirror.tvs.insert(tv_id, view);
+        let mut menu = tray.menu();
+
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV entry is a submenu");
+        };
+        let input_index = tv_menu
+            .submenu
+            .iter()
+            .position(|item| matches!(item, MenuItem::SubMenu(submenu) if submenu.label == "Input"))
+            .expect("capable TV has an Input submenu");
+        let MenuItem::SubMenu(input) = &mut tv_menu.submenu[input_index] else {
+            panic!("Input entry is a submenu");
+        };
+        let MenuItem::RadioGroup(inputs) = &mut input.submenu[0] else {
+            panic!("Input submenu contains radio choices");
+        };
+        assert_eq!(inputs.selected, 1);
+        assert_eq!(inputs.options[0].label, "Console");
+        (inputs.select)(&mut tray, 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SwitchInput(tv, input))
+                if tv == tv_id && input == "HDMI_1"
+        ));
+    }
+
+    #[test]
+    fn managed_menu_action_toggles_the_current_value() {
+        let tv_id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        let mut view = tv("Office", false, false, false);
+        view.managed = true;
+        tray.mirror.tvs.insert(tv_id, view);
+
+        let mut menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV entry is a submenu");
+        };
+        let unmanage = tv_menu
+            .submenu
+            .iter_mut()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Unmanage" => Some(item),
+                _ => None,
+            })
+            .expect("managed TV offers Unmanage");
+        (unmanage.activate)(&mut tray);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetManaged(tv, false)) if tv == tv_id
+        ));
+
+        let mut view = tv("Office", false, false, false);
+        view.managed = false;
+        tray.mirror.tvs.insert(tv_id, view);
+        let mut menu = tray.menu();
+        let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
+            panic!("TV entry is a submenu");
+        };
+        let manage = tv_menu
+            .submenu
+            .iter_mut()
+            .find_map(|item| match item {
+                MenuItem::Standard(item) if item.label == "Manage" => Some(item),
+                _ => None,
+            })
+            .expect("unmanaged TV offers Manage");
+        (manage.activate)(&mut tray);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::SetManaged(tv, true)) if tv == tv_id
+        ));
+    }
+
+    #[test]
+    fn live_menu_routes_power_screen_mute_volume_and_backlight_actions() {
+        let tv_id = Uuid::from_u128(1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
+        tray.mirror.daemon_alive = true;
+        let mut view = tv("Office", true, true, true);
+        view.has_screen = true;
+        view.has_mute = true;
+        view.is_screen_on = true;
+        view.volume = Some(40);
+        view.muted = Some(false);
+        view.backlight = Some(60);
+        tray.mirror.tvs.insert(tv_id, view);
+        let mut menu = tray.menu();
+
+        activate_item(&mut tray, &mut menu, "Power Off");
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::PowerOff(tv)) if tv == tv_id));
+
+        activate_item(&mut tray, &mut menu, "Screen Off");
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::ScreenOff(tv)) if tv == tv_id));
+
+        activate_item(&mut tray, &mut menu, "Mute");
+        assert!(matches!(rx.try_recv(), Ok(TrayCommand::ToggleMute(tv)) if tv == tv_id));
+
+        activate_item(&mut tray, &mut menu, "Volume Up (+10)");
+        assert_eq!(tray.scroll_target, Some(ScrollTarget::Volume));
+        assert_eq!(tray.scroll_tv, Some(tv_id));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Volume, 10)) if tv == tv_id
+        ));
+
+        activate_item(&mut tray, &mut menu, "Backlight Down (-10)");
+        assert_eq!(tray.scroll_target, Some(ScrollTarget::Backlight));
+        assert_eq!(tray.scroll_tv, Some(tv_id));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TrayCommand::ScrollBy(tv, ScrollTarget::Backlight, -10)) if tv == tv_id
+        ));
     }
 }

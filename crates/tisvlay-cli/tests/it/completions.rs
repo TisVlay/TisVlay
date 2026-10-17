@@ -1,4 +1,4 @@
-//! `COMPLETE=<shell> tisvlay` must emit each shell's registration script —
+//! `COMPLETE=<shell> tisvlay` must emit each shell's registration script --
 //! the bootstrap that packaging ships into the autoload dirs. Asserting the
 //! per-shell marker here catches a `clap_complete` bump that changes the
 //! template in CI, without needing a live shell.

@@ -3,6 +3,7 @@
 //! pushes view-model snapshots into the AppWindow's models.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -69,6 +70,32 @@ fn version_banner(mismatches: &[(Service, String, String)]) -> ErrorState {
         title: SharedString::from(gettext("Version mismatch")),
         message: SharedString::from(message),
         action_label: SharedString::default(),
+    }
+}
+
+/// Orders [`publish_services`] writes by when each call read liveliness.
+/// The watch loop and the refresh worker publish concurrently, and a
+/// call that saw a peer up probes it, which waits out the rpc deadline
+/// when the peer stops mid-probe. Unordered, that call's stale "up"
+/// lands after the disappearance's own publish and sticks until the
+/// next event. Each call takes a stamp before its liveliness reads, and
+/// the event loop drops a write older than one already applied: a
+/// later stamp read liveliness later, so the newest write always wins.
+#[derive(Clone, Default)]
+struct PublishOrder {
+    issued: Arc<AtomicU64>,
+    applied: Arc<AtomicU64>,
+}
+
+impl PublishOrder {
+    fn stamp(&self) -> u64 {
+        self.issued.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Whether the write stamped `stamp` is newer than every write
+    /// applied so far; marks it applied when it is.
+    fn admit(&self, stamp: u64) -> bool {
+        self.applied.fetch_max(stamp, Ordering::Relaxed) < stamp
     }
 }
 
@@ -142,7 +169,8 @@ pub(crate) async fn initial_fetch_and_watch(
             .set_notifications(initial_tray_notifications);
     });
     // Every service-status copy goes through the single writer.
-    publish_services(&daemon, &session, &tray, &app_weak).await;
+    let order = PublishOrder::default();
+    publish_services(&daemon, &session, &tray, &app_weak, &order).await;
 
     if initial_tray_available {
         refresh_tray_notifications(&tray, &app_weak).await;
@@ -155,6 +183,7 @@ pub(crate) async fn initial_fetch_and_watch(
         app_weak,
         supported_vendors_cache,
         editor,
+        order,
     )
     .await;
 }
@@ -274,6 +303,10 @@ struct PrimaryField {
     is_ip: bool,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the watch loop's entry: each handle it owns, plus the publish order the initial publish shares; a struct would only rename the list"
+)]
 async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
@@ -282,6 +315,7 @@ async fn watch_state(
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
     editor: ProfileEditor,
+    order: PublishOrder,
 ) {
     // No debounce: every state event triggers a refresh fire.
     // `RefreshTrigger` folds concurrent fires into a single in-flight
@@ -321,13 +355,15 @@ async fn watch_state(
         let tray = tray.clone();
         let reconcilers = reconcilers.clone();
         let app_weak = app_weak.clone();
+        let order = order.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
             let tray = tray.clone();
             let reconcilers = reconcilers.clone();
             let app_weak = app_weak.clone();
-            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak).await }
+            let order = order.clone();
+            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak, &order).await }
         });
     };
 
@@ -352,7 +388,7 @@ async fn watch_state(
                 // defaults on disk, in which case the inherit walk
                 // would otherwise resolve against a stale ancestor.
                 profiles::prime_system_layers(&daemon, &editor).await;
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
@@ -419,21 +455,15 @@ async fn watch_state(
                 // from here, and later refreshes fail without touching
                 // the list.
                 if service == Service::Daemon {
-                    on_ui(&app_weak, move |app| {
-                        app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
-                        app.set_tvs_connected_count(0);
-                    });
+                    on_ui(&app_weak, |app| clear_tvs(&app));
                 }
             }
             StateEvent::DaemonDisappeared => {
                 // The daemon's next lifetime gets a fresh release check.
                 mismatches.clear(Service::Daemon);
                 mismatches.publish(&app_weak);
-                on_ui(&app_weak, move |app| {
-                    app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
-                    app.set_tvs_connected_count(0);
-                });
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                on_ui(&app_weak, |app| clear_tvs(&app));
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
             }
             StateEvent::SessionAppeared => {
                 // The client exists from startup (background-retry link);
@@ -441,7 +471,7 @@ async fn watch_state(
                 if let Some(client) = session.read().await.as_ref() {
                     profiles::prime_user_layers(client, &editor).await;
                 }
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::SessionDisappeared => {
@@ -451,13 +481,13 @@ async fn watch_state(
                 // gets a fresh release check.
                 mismatches.clear(Service::Session);
                 mismatches.publish(&app_weak);
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::TrayAppeared => {
                 // The client exists from startup (background-retry link).
                 {
-                    publish_services(&daemon, &session, &tray, &app_weak).await;
+                    publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                     refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
                 }
@@ -466,7 +496,7 @@ async fn watch_state(
                 // Client stays, same as the session arm above.
                 mismatches.clear(Service::Tray);
                 mismatches.publish(&app_weak);
-                publish_services(&daemon, &session, &tray, &app_weak).await;
+                publish_services(&daemon, &session, &tray, &app_weak, &order).await;
                 trigger_refresh();
             }
             StateEvent::TrayNotificationSettingsChanged => {
@@ -527,6 +557,7 @@ async fn refresh(
     tray: &RwLock<Option<TrayClient>>,
     reconcilers: &Reconcilers,
     app_weak: &slint::Weak<AppWindow>,
+    order: &PublishOrder,
 ) {
     let session_ref = session.read().await;
     match fetch_state(daemon, session_ref.as_ref()).await {
@@ -541,7 +572,7 @@ async fn refresh(
         Err(e) => debug!(error = %e, "State refresh failed"),
     }
     drop(session_ref);
-    publish_services(daemon, session, tray, app_weak).await;
+    publish_services(daemon, session, tray, app_weak, order).await;
 }
 
 /// The single writer for every Slint service-status property: the
@@ -552,12 +583,14 @@ async fn refresh(
 /// service's `info` reports, which answers even across a version
 /// mismatch. Writing everything from one probe is what keeps the
 /// footer, settings pane, profiles pane and About rows from ever
-/// disagreeing.
+/// disagreeing; `order` keeps an overlapping older call from
+/// overwriting a newer one.
 async fn publish_services(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
     tray: &RwLock<Option<TrayClient>>,
     app_weak: &slint::Weak<AppWindow>,
+    order: &PublishOrder,
 ) {
     async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
     where
@@ -574,6 +607,7 @@ async fn publish_services(
     // matching deadline, which would hold every indicator (and the watch
     // loop) behind it. A failed probe on a live peer renders an online row
     // with "—".
+    let stamp = order.stamp();
     let daemon_up = daemon.is_available().await;
     let daemon_info = if daemon_up {
         probe(daemon.version(), daemon.config_path()).await
@@ -599,7 +633,11 @@ async fn publish_services(
         (tray_up, tray_info.as_ref()),
         cli_version.as_deref(),
     );
+    let order = order.clone();
     on_ui(app_weak, move |app| {
+        if !order.admit(stamp) {
+            return;
+        }
         app.set_daemon_available(daemon_up);
         app.set_session_available(session_up);
         app.set_tray_available(tray_up);
@@ -741,6 +779,11 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
 /// gate in `ProfilesPane` reads `selected-row.uuid != ""`, so a
 /// blank-uuid push flips the gate back to "Select a profile".
 /// Mirrored from the inline literal in `profiles::clear_selection_in_slint`.
+fn clear_tvs(app: &AppWindow) {
+    app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
+    app.set_tvs_connected_count(0);
+}
+
 fn blank_profile_row() -> ProfileRow {
     ProfileRow {
         uuid: SharedString::default(),
@@ -821,6 +864,44 @@ fn sync_vec_model<T: Clone + 'static>(
 mod version_banner_tests {
     use super::*;
 
+    fn raw_tv(uuid: &str, name: &str, connected: bool) -> crate::state::TvViewRaw {
+        crate::state::TvViewRaw {
+            uuid: SharedString::from(uuid),
+            name: SharedString::from(name),
+            vendor: SharedString::from("mock"),
+            brand: SharedString::from("Mock"),
+            primary_descriptor: SharedString::from("mock://tv"),
+            connected,
+            power_state: SharedString::from(if connected { "active" } else { "unknown" }),
+            is_on: connected,
+            supports_wake: true,
+            has_screen: true,
+            has_volume: true,
+            has_mute: true,
+            has_input: true,
+            has_backlight: true,
+            is_screen_on: connected,
+            volume: 42,
+            muted: false,
+            backlight: 60,
+            current_input: SharedString::from("HDMI_1"),
+            available_input_ids: vec![SharedString::from("HDMI_1"), SharedString::from("HDMI_2")],
+            system_profile: SharedString::from("Work"),
+            system_profile_uuid: SharedString::from("system-profile"),
+            user_profile: SharedString::from("Personal"),
+            user_profile_uuid: SharedString::from("user-profile"),
+            primary_input: SharedString::from("HDMI_1"),
+            managed: true,
+            automated: connected,
+            hw_manufacturer: SharedString::from("Maker"),
+            hw_model: SharedString::from("Model"),
+            hw_serial: SharedString::from("Serial"),
+            desktop_connector: SharedString::from("card1-HDMI-A-1"),
+            vendor_config: vec![("MAC".into(), "aa:bb:cc:dd:ee:ff".into())],
+            vendor_info: vec![("transport".into(), "wss".into())],
+        }
+    }
+
     #[test]
     fn no_mismatch_no_banner() {
         assert_eq!(version_banner(&[]).title, "");
@@ -847,5 +928,225 @@ mod version_banner_tests {
         assert_eq!(mismatches.0.len(), 1, "one line per service");
         mismatches.clear(Service::Daemon);
         assert!(mismatches.0.is_empty());
+    }
+
+    #[test]
+    fn a_stale_service_publish_never_overwrites_a_newer_one() {
+        let order = PublishOrder::default();
+        // The refresh worker reads the daemon up, then the watch loop's
+        // disappearance publish (holding a clone) reads it down and
+        // lands first.
+        let watch_loop = order.clone();
+        let refresh = order.stamp();
+        let disappeared = watch_loop.stamp();
+        assert!(watch_loop.admit(disappeared));
+        assert!(!order.admit(refresh), "the older read is dropped");
+        // In-order arrivals all apply.
+        let next = order.stamp();
+        assert!(order.admit(next));
+        let last = order.stamp();
+        assert!(order.admit(last));
+    }
+
+    #[test]
+    fn clear_tvs_removes_stale_rows_and_resets_connected_count() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let stale = TvViewModel {
+            name: SharedString::from("Stale TV"),
+            connected: true,
+            ..Default::default()
+        };
+        app.set_tvs(ModelRc::new(VecModel::from(vec![stale])));
+        app.set_tvs_connected_count(1);
+
+        clear_tvs(&app);
+
+        assert_eq!(app.get_tvs().row_count(), 0);
+        assert_eq!(app.get_tvs_connected_count(), 0);
+    }
+
+    #[test]
+    fn tray_notification_settings_project_each_category_without_swapping() {
+        let projected = settings_to_slint(&NotificationSettings {
+            tv_connection: true,
+            tv_pairing: false,
+            tv_wake: true,
+            daemon_offline: false,
+        });
+
+        assert!(projected.tv_connection);
+        assert!(!projected.tv_pairing);
+        assert!(projected.tv_wake);
+        assert!(!projected.daemon_offline);
+    }
+
+    #[test]
+    fn push_snapshot_refreshes_selected_profile_and_clears_deleted_selection() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let profiles = app.global::<Profiles>();
+        profiles.set_selected_kind(ProfileKind::System);
+        profiles.set_selected_uuid(SharedString::from("system-profile"));
+
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: Vec::new(),
+                system_profiles: vec![SharedString::from("Default")],
+                user_profiles: vec![SharedString::from("Personal")],
+                system_profile_rows: vec![ProfileRowRaw {
+                    uuid: SharedString::from("system-profile"),
+                    name: SharedString::from("Work"),
+                    display_name: SharedString::from("Work *"),
+                    is_default: false,
+                    referenced_by: vec![crate::state::ProfileTvRefRaw {
+                        uuid: SharedString::from("tv-1"),
+                        name: SharedString::from("Office"),
+                        automated: true,
+                    }],
+                    referenced_by_summary: SharedString::from("Office"),
+                    active: true,
+                }],
+                user_profile_rows: vec![ProfileRowRaw {
+                    uuid: SharedString::from("user-profile"),
+                    name: SharedString::from("Personal"),
+                    display_name: SharedString::from("Personal"),
+                    is_default: true,
+                    referenced_by: Vec::new(),
+                    referenced_by_summary: SharedString::default(),
+                    active: false,
+                }],
+            },
+        );
+
+        let system_rows = profiles.get_system();
+        let system_row = system_rows
+            .row_data(0)
+            .expect("the system profile row is projected");
+        assert_eq!(system_row.display_name, "Work *");
+        assert_eq!(system_row.referenced_by_summary, "Office");
+        assert!(system_row.active);
+        let references = system_row.referenced_by;
+        let reference = references
+            .row_data(0)
+            .expect("the profile reference is projected");
+        assert_eq!(reference.name, "Office");
+        assert!(reference.automated);
+        assert_eq!(profiles.get_selected_row().display_name, "Work *");
+        assert_eq!(
+            app.get_system_profiles().row_data(0).as_deref(),
+            Some("Default")
+        );
+        assert_eq!(profiles.get_user().row_count(), 1);
+        assert_eq!(
+            profiles.get_user().row_data(0).unwrap().display_name,
+            "Personal"
+        );
+
+        profiles.set_selected_kind(ProfileKind::User);
+        profiles.set_selected_uuid(SharedString::from("user-profile"));
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: Vec::new(),
+                system_profiles: Vec::new(),
+                user_profiles: Vec::new(),
+                system_profile_rows: Vec::new(),
+                user_profile_rows: vec![ProfileRowRaw {
+                    uuid: SharedString::from("user-profile"),
+                    name: SharedString::from("Personal"),
+                    display_name: SharedString::from("Personal (edited)"),
+                    is_default: true,
+                    referenced_by: Vec::new(),
+                    referenced_by_summary: SharedString::default(),
+                    active: true,
+                }],
+            },
+        );
+        assert_eq!(
+            profiles.get_selected_row().display_name,
+            "Personal (edited)"
+        );
+
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: Vec::new(),
+                system_profiles: Vec::new(),
+                user_profiles: Vec::new(),
+                system_profile_rows: Vec::new(),
+                user_profile_rows: Vec::new(),
+            },
+        );
+        assert!(profiles.get_selected_row().uuid.is_empty());
+        assert_eq!(profiles.get_system().row_count(), 0);
+    }
+
+    #[test]
+    fn push_snapshot_projects_tv_rows_and_connected_count() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+
+        push_snapshot(
+            &app,
+            StateSnapshot {
+                tvs: vec![
+                    raw_tv("tv-1", "Office", true),
+                    raw_tv("tv-2", "Bedroom", false),
+                ],
+                system_profiles: Vec::new(),
+                user_profiles: Vec::new(),
+                system_profile_rows: Vec::new(),
+                user_profile_rows: Vec::new(),
+            },
+        );
+
+        let tvs = app.get_tvs();
+        assert_eq!(tvs.row_count(), 2);
+        assert_eq!(app.get_tvs_connected_count(), 1);
+        let office = tvs.row_data(0).expect("the first TV row is projected");
+        assert_eq!(office.uuid, "tv-1");
+        assert_eq!(office.name, "Office");
+        assert_eq!(office.brand, "Mock");
+        assert_eq!(office.current_input, "HDMI_1");
+        assert!(office.has_volume);
+        assert!(office.automated);
+        assert!(office.power_cycle_phase.is_empty());
+        let inputs = office.available_input_ids;
+        assert_eq!(inputs.row_count(), 2);
+        assert_eq!(inputs.row_data(1).as_deref(), Some("HDMI_2"));
+        let vendor_config = office.vendor_config;
+        assert_eq!(vendor_config.row_data(0).unwrap().label, "MAC");
+        let vendor_info = office.vendor_info;
+        assert_eq!(vendor_info.row_data(0).unwrap().value, "wss");
+
+        let bedroom = tvs.row_data(1).expect("the second TV row is projected");
+        assert!(!bedroom.connected);
+        assert!(!bedroom.is_on);
+        assert!(!bedroom.automated);
+    }
+
+    #[test]
+    fn sync_vec_model_updates_existing_rows_and_tracks_length_changes() {
+        let current = ModelRc::new(VecModel::from(vec![1, 2]));
+
+        sync_vec_model(&current, vec![3, 4, 5], |_| {
+            panic!("a VecModel should be updated in place")
+        });
+
+        let model = current
+            .as_any()
+            .downcast_ref::<VecModel<i32>>()
+            .expect("the model remains a VecModel");
+        assert_eq!(model.row_count(), 3);
+        assert_eq!(model.row_data(0), Some(3));
+        assert_eq!(model.row_data(2), Some(5));
+
+        sync_vec_model(&current, vec![9], |_| {
+            panic!("shrinking a VecModel should not replace it")
+        });
+        assert_eq!(model.row_count(), 1);
+        assert_eq!(model.row_data(0), Some(9));
     }
 }

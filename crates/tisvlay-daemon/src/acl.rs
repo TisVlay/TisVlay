@@ -269,7 +269,7 @@ fn removexattr(path: &Path) -> std::io::Result<()> {
 }
 
 /// Read the current ACL xattr; `None` when the file has none.
-fn getxattr(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+pub(super) fn getxattr(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     let cpath = cpath(path)?;
     let mut buf = vec![0u8; 256];
     loop {

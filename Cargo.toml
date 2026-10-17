@@ -64,7 +64,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "
 
 # WebSocket
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring"] }
 futures-util = "0.3"
 
 # Serialization
@@ -144,6 +144,7 @@ futures-core = "0.3"
 
 # Wayland (for idle detection / greeter wake)
 wayland-client = "0.31"
+wayland-server = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # PipeWire graph introspection (the session's screencast detector). Native
@@ -232,10 +233,11 @@ tisvlay-icons = { path = "crates/tisvlay-icons" }
 tisvlay-runtime = { path = "crates/tisvlay-runtime" }
 tisvlay-gui = { path = "crates/tisvlay-gui" }
 tisvlay = { path = "crates/tisvlay", version = "0.3.0" }
-# Binary crates exposed as libs: the daemon and session for cross-crate
+# Binary crates exposed as libs: services for cross-crate
 # integration tests, the CLI for the user-guide generator (tisvlay-docgen).
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }
 tisvlay-session = { path = "crates/tisvlay-session" }
+tisvlay-tray = { path = "crates/tisvlay-tray" }
 tisvlay-cli = { path = "crates/tisvlay-cli" }
 
 # Testing

@@ -112,13 +112,7 @@ async fn run() -> Result<()> {
             params,
             address,
         } => {
-            let config = match (params, address) {
-                (Some(params), _) => {
-                    serde_json::from_str(&params).context("--params must be a JSON object")?
-                }
-                (None, Some(address)) => address_config(address),
-                (None, None) => bail!("provide --params or --address"),
-            };
+            let config = pairing_config(params, address)?;
             pair(&session, &caller, site, name, vendor, config).await
         }
         Command::Add {
@@ -262,9 +256,13 @@ async fn run() -> Result<()> {
 /// indent), sorted by key — the human view of config and resolved
 /// profile bodies.
 fn print_fields(value: &Value) {
-    fn walk(value: &Value, indent: usize) {
+    print!("{}", format_fields(value));
+}
+
+fn format_fields(value: &Value) -> String {
+    fn walk(value: &Value, indent: usize, lines: &mut Vec<String>) {
         let Some(object) = value.as_object() else {
-            println!("{value}");
+            lines.push(value.to_string());
             return;
         };
         let mut entries: Vec<(&String, &Value)> = object.iter().collect();
@@ -273,20 +271,27 @@ fn print_fields(value: &Value) {
             let pad = " ".repeat(indent);
             match val {
                 Value::Object(_) => {
-                    println!("{pad}{key}:");
-                    walk(val, indent + 2);
+                    lines.push(format!("{pad}{key}:"));
+                    walk(val, indent + 2, lines);
                 }
-                Value::Null => println!("{pad}{key} ="),
-                Value::String(s) => println!("{pad}{key} = {s}"),
-                other => println!("{pad}{key} = {other}"),
+                Value::Null => lines.push(format!("{pad}{key} =")),
+                Value::String(s) => lines.push(format!("{pad}{key} = {s}")),
+                other => lines.push(format!("{pad}{key} = {other}")),
             }
         }
     }
-    walk(value, 0);
+
+    let mut lines = Vec::new();
+    walk(value, 0, &mut lines);
+    lines.join("\n") + "\n"
 }
 
 /// Print one profile catalog row.
 fn print_profile(id: &str, body: &Value) {
+    print!("{}", format_profile(id, body));
+}
+
+fn format_profile(id: &str, body: &Value) -> String {
     let mut extras: Vec<String> = body
         .as_object()
         .into_iter()
@@ -295,12 +300,12 @@ fn print_profile(id: &str, body: &Value) {
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
     extras.sort();
-    println!(
+    format!(
         "{}  {}  {}",
         id,
-        body["name"].as_str().unwrap_or("?"),
+        body.get("name").and_then(Value::as_str).unwrap_or("?"),
         extras.join(" "),
-    );
+    ) + "\n"
 }
 
 /// Hydrate a cached catalog wildcard and print each body once the
@@ -349,8 +354,11 @@ fn profile_body<T: serde::de::DeserializeOwned>(name: String, body: Option<Strin
         Some(body) => serde_json::from_str(&body)?,
         None => json!({}),
     };
-    if body["name"].is_null() {
-        body["name"] = Value::String(name);
+    let Some(object) = body.as_object_mut() else {
+        bail!("profile body must be a JSON object");
+    };
+    if object.get("name").is_none_or(Value::is_null) {
+        object.insert("name".into(), Value::String(name));
     }
     serde_json::from_value(body).map_err(|e| anyhow!("invalid profile body: {e}"))
 }
@@ -644,6 +652,19 @@ fn address_config(address: String) -> serde_json::Map<String, Value> {
     serde_json::Map::from_iter([("address".to_string(), Value::String(address))])
 }
 
+fn pairing_config(
+    params: Option<String>,
+    address: Option<String>,
+) -> Result<serde_json::Map<String, Value>> {
+    match (params, address) {
+        (Some(params), _) => {
+            serde_json::from_str(&params).context("--params must be a JSON object")
+        }
+        (None, Some(address)) => Ok(address_config(address)),
+        (None, None) => bail!("provide --params or --address"),
+    }
+}
+
 async fn pair(
     session: &Session,
     caller: &Caller,
@@ -678,6 +699,10 @@ fn link_mac_line(id: Uuid, report: &payload::LinkMacReport) -> String {
     }
 }
 
+fn is_current_pairing_attempt(progress: &payload::PairingProgress, attempt: Uuid) -> bool {
+    progress.attempt == attempt
+}
+
 /// Stream a pairing attempt's progress phases to stdout until a terminal
 /// one; ctrl-c sends cancel-pair. Samples from other attempts (earlier
 /// sessions replayed from the cache) are skipped.
@@ -702,7 +727,7 @@ async fn watch_pairing(
                 else {
                     continue;
                 };
-                if progress.attempt != attempt {
+                if !is_current_pairing_attempt(&progress, attempt) {
                     continue;
                 }
                 println!("[{}] {}", progress.phase, progress.message);
@@ -1098,6 +1123,227 @@ mod tests {
                 "mac: TV reports 84:90:0A:63:A9:94, configured 64:E4:A5:6C:AB:B4; \
                  to use it: tisvlay config-set {id} '{{\"mac\":\"84:90:0A:63:A9:94\"}}'"
             )
+        );
+    }
+
+    #[test]
+    fn stale_pairing_progress_is_rejected_by_attempt_id() {
+        use tisvlay_protocol::payload::{PairingPhase, PairingProgress};
+
+        let current = uuid::Uuid::new_v4();
+        let stale = PairingProgress {
+            attempt: uuid::Uuid::new_v4(),
+            phase: PairingPhase::Complete,
+            message: "paired".into(),
+            code: None,
+            path: None,
+            link_mac: None,
+        };
+        let live = PairingProgress {
+            attempt: current,
+            ..stale.clone()
+        };
+
+        assert!(!super::is_current_pairing_attempt(&stale, current));
+        assert!(super::is_current_pairing_attempt(&live, current));
+    }
+
+    #[test]
+    fn format_fields_sorts_and_indents_nested_values() {
+        let value = serde_json::json!({
+            "zeta": 2,
+            "alpha": {
+                "text": "value",
+                "empty": null,
+                "enabled": true
+            }
+        });
+        assert_eq!(
+            super::format_fields(&value),
+            "alpha:\n  empty =\n  enabled = true\n  text = value\nzeta = 2\n"
+        );
+    }
+
+    #[test]
+    fn format_fields_renders_non_object_values_as_json() {
+        assert_eq!(super::format_fields(&serde_json::json!([1, 2])), "[1,2]\n");
+    }
+
+    #[test]
+    fn format_profile_sorts_fields_and_handles_missing_or_non_object_names() {
+        assert_eq!(
+            super::format_profile(
+                "uuid",
+                &serde_json::json!({
+                    "name": "Office",
+                    "zeta": 2,
+                    "alpha": 1
+                })
+            ),
+            "uuid  Office  alpha=1 zeta=2\n"
+        );
+        assert_eq!(
+            super::format_profile("uuid", &serde_json::json!({ "zeta": 2 })),
+            "uuid  ?  zeta=2\n"
+        );
+        assert_eq!(
+            super::format_profile("uuid", &serde_json::json!([])),
+            "uuid  ?  \n"
+        );
+    }
+
+    #[test]
+    fn reload_outcome_maps_service_results_and_formats_them() {
+        use super::{ReloadOutcome, reload_outcome};
+        use tisvlay_protocol::caller::RpcError;
+        use tisvlay_protocol::error::{ErrorCode, WireError};
+        use tisvlay_protocol::rpc::ReloadReport;
+
+        assert!(matches!(reload_outcome(None), ReloadOutcome::NotRunning));
+        assert!(matches!(
+            reload_outcome(Some(Err(RpcError::Unavailable {
+                key: "reload".into(),
+            }))),
+            ReloadOutcome::NotRunning
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Ok(ReloadReport { changed: true }))),
+            ReloadOutcome::Changed
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Ok(ReloadReport { changed: false }))),
+            ReloadOutcome::Unchanged
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Err(RpcError::Service(WireError {
+                code: ErrorCode::Internal,
+                message: "invalid TOML".into(),
+            })))),
+            ReloadOutcome::Failed(error) if error == "invalid TOML"
+        ));
+        assert!(matches!(
+            reload_outcome(Some(Err(RpcError::Timeout {
+                key: "reload".into(),
+            }))),
+            ReloadOutcome::Failed(_)
+        ));
+
+        let outcomes = [
+            (
+                ReloadOutcome::Changed,
+                "applied the file's edit",
+                serde_json::json!({ "status": "changed" }),
+            ),
+            (
+                ReloadOutcome::Unchanged,
+                "the file is unchanged",
+                serde_json::json!({ "status": "unchanged" }),
+            ),
+            (
+                ReloadOutcome::NotRunning,
+                "not running",
+                serde_json::json!({ "status": "not-running" }),
+            ),
+            (
+                ReloadOutcome::Failed("invalid TOML".into()),
+                "failed",
+                serde_json::json!({ "status": "failed", "error": "invalid TOML" }),
+            ),
+        ];
+        for (outcome, description, json) in outcomes {
+            assert_eq!(outcome.describe(), description);
+            assert_eq!(outcome.to_json(), json);
+        }
+    }
+
+    #[test]
+    fn profile_body_fills_missing_name_and_preserves_explicit_body_fields() {
+        let from_positional: serde_json::Value =
+            super::profile_body("Office".into(), None).expect("valid positional profile");
+        assert_eq!(from_positional, serde_json::json!({ "name": "Office" }));
+
+        let from_body: serde_json::Value = super::profile_body(
+            "Fallback".into(),
+            Some(r#"{"name":"Studio","idle_timeout_seconds":900}"#.into()),
+        )
+        .expect("valid profile body");
+        assert_eq!(from_body["name"], "Studio");
+        assert_eq!(from_body["idle_timeout_seconds"], 900);
+
+        let null_name: serde_json::Value = super::profile_body(
+            "Fallback".into(),
+            Some(r#"{"name":null,"on_sleep":null}"#.into()),
+        )
+        .expect("null name falls back to the positional name");
+        assert_eq!(
+            null_name,
+            serde_json::json!({ "name": "Fallback", "on_sleep": null })
+        );
+    }
+
+    #[test]
+    fn profile_body_reports_json_and_typed_body_errors() {
+        #[derive(Debug, serde::Deserialize)]
+        struct NamedProfile {
+            name: String,
+        }
+
+        let valid = super::profile_body::<NamedProfile>(
+            "Fallback".into(),
+            Some(r#"{"name":"Studio"}"#.into()),
+        )
+        .expect("a string profile name deserializes");
+        assert_eq!(valid.name, "Studio");
+
+        let malformed = super::profile_body::<serde_json::Value>("Office".into(), Some("{".into()));
+        assert!(malformed.is_err());
+
+        let non_object = super::profile_body::<NamedProfile>("Office".into(), Some("[]".into()))
+            .expect_err("non-object JSON should return an error");
+        assert_eq!(non_object.to_string(), "profile body must be a JSON object");
+
+        let invalid_name =
+            super::profile_body::<NamedProfile>("Office".into(), Some(r#"{"name":false}"#.into()))
+                .expect_err("a non-string profile name is rejected");
+        assert!(format!("{invalid_name:#}").contains("invalid profile body"));
+    }
+
+    #[test]
+    fn pairing_config_prefers_json_params_and_supports_address_shortcut() {
+        let params = super::pairing_config(
+            Some(r#"{"ip":"192.0.2.4"}"#.into()),
+            Some("mock://ignored".into()),
+        )
+        .expect("JSON params are accepted");
+        assert_eq!(
+            params.get("ip").and_then(serde_json::Value::as_str),
+            Some("192.0.2.4")
+        );
+        assert!(!params.contains_key("address"));
+
+        let address = super::pairing_config(None, Some("mock://den".into()))
+            .expect("address shortcut is accepted");
+        assert_eq!(
+            address.get("address").and_then(serde_json::Value::as_str),
+            Some("mock://den")
+        );
+    }
+
+    #[test]
+    fn pairing_config_rejects_missing_or_non_object_params() {
+        assert_eq!(
+            super::pairing_config(None, None)
+                .expect_err("one pairing config source is required")
+                .to_string(),
+            "provide --params or --address"
+        );
+        assert!(
+            format!(
+                "{:#}",
+                super::pairing_config(Some("[]".into()), None)
+                    .expect_err("params must decode as an object")
+            )
+            .contains("--params must be a JSON object")
         );
     }
 }

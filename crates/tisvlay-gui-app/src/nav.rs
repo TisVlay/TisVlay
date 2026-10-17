@@ -47,6 +47,34 @@ struct NavHistory {
     cursor: usize,
 }
 
+impl NavHistory {
+    fn navigate(&mut self, app: &AppWindow, pane: Pane, sel: NavSel) -> bool {
+        let cur = self.cursor;
+        let cur_pane = self.entries[cur].pane;
+        self.entries[cur].sel = read_current_sel(app, cur_pane);
+        if self.entries[cur].pane == pane && self.entries[cur].sel == sel {
+            return false;
+        }
+        self.entries.truncate(cur + 1);
+        self.entries.push(NavEntry { pane, sel });
+        self.cursor = self.entries.len() - 1;
+        true
+    }
+
+    fn step(&mut self, app: &AppWindow, forward: bool) -> Option<(Pane, NavSel)> {
+        let cur = self.cursor;
+        let next = if forward {
+            (cur + 1 < self.entries.len()).then_some(cur + 1)?
+        } else {
+            cur.checked_sub(1)?
+        };
+        let cur_pane = self.entries[cur].pane;
+        self.entries[cur].sel = read_current_sel(app, cur_pane);
+        self.cursor = next;
+        Some((self.entries[next].pane, self.entries[next].sel.clone()))
+    }
+}
+
 // `Rc<dyn Fn>` aliases for the navigation closures — readable call sites
 // with clippy's `type_complexity` lint satisfied in one place.
 type ApplyFn = Rc<dyn Fn(&AppWindow, Pane, &NavSel)>;
@@ -96,28 +124,13 @@ pub(crate) fn wire(
         }
     });
 
-    // Record a new destination: snapshot the outgoing pane's live
-    // selection, drop any forward history, push, apply.
+    // Record a new destination and apply it.
     let go: GoFn = {
         let history = history.clone();
         let apply = apply.clone();
         Rc::new(move |app: &AppWindow, pane: Pane, sel: NavSel| {
-            {
-                let mut h = history.borrow_mut();
-                let cur = h.cursor;
-                let cur_pane = h.entries[cur].pane;
-                h.entries[cur].sel = read_current_sel(app, cur_pane);
-                // Re-selecting the active pane + selection (e.g. clicking
-                // the current sidebar item) shouldn't grow the history.
-                if h.entries[cur].pane == pane && h.entries[cur].sel == sel {
-                    return;
-                }
-                h.entries.truncate(cur + 1);
-                h.entries.push(NavEntry {
-                    pane,
-                    sel: sel.clone(),
-                });
-                h.cursor = h.entries.len() - 1;
+            if !history.borrow_mut().navigate(app, pane, sel.clone()) {
+                return;
             }
             apply(app, pane, &sel);
         })
@@ -128,26 +141,9 @@ pub(crate) fn wire(
     let step: StepFn = {
         let apply = apply.clone();
         Rc::new(move |app: &AppWindow, forward: bool| {
-            let dest = {
-                let mut h = history.borrow_mut();
-                let cur = h.cursor;
-                let next = if forward {
-                    if cur + 1 >= h.entries.len() {
-                        return;
-                    }
-                    cur + 1
-                } else {
-                    if cur == 0 {
-                        return;
-                    }
-                    cur - 1
-                };
-                let cur_pane = h.entries[cur].pane;
-                h.entries[cur].sel = read_current_sel(app, cur_pane);
-                h.cursor = next;
-                (h.entries[next].pane, h.entries[next].sel.clone())
-            };
-            apply(app, dest.0, &dest.1);
+            if let Some((pane, sel)) = history.borrow_mut().step(app, forward) {
+                apply(app, pane, &sel);
+            }
         })
     };
 
@@ -289,4 +285,96 @@ fn select_profile_in_ui(
     tokio::spawn(async move {
         profiles::select(editor, daemon, session, weak, editor_kind, uuid).await;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TvViewModel;
+    use slint::{ModelRc, VecModel};
+
+    fn app_with_selected_tv() -> AppWindow {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        app.set_tvs(ModelRc::new(VecModel::from(vec![
+            TvViewModel {
+                uuid: SharedString::from("tv-1"),
+                name: SharedString::from("Office"),
+                ..Default::default()
+            },
+            TvViewModel {
+                uuid: SharedString::from("tv-2"),
+                name: SharedString::from("Bedroom"),
+                ..Default::default()
+            },
+        ])));
+        app.set_active_pane(Pane::Tvs);
+        app.set_selected_tv_index(1);
+        app
+    }
+
+    fn history_for(app: &AppWindow) -> NavHistory {
+        NavHistory {
+            entries: vec![NavEntry {
+                pane: app.get_active_pane(),
+                sel: NavSel::None,
+            }],
+            cursor: 0,
+        }
+    }
+
+    #[test]
+    fn resolve_tv_index_handles_found_missing_and_empty_ids() {
+        let app = app_with_selected_tv();
+
+        assert_eq!(resolve_tv_index(&app, &SharedString::from("tv-2")), 1);
+        assert_eq!(resolve_tv_index(&app, &SharedString::from("missing")), -1);
+        assert_eq!(resolve_tv_index(&app, &SharedString::default()), -1);
+    }
+
+    #[test]
+    fn back_and_forward_restore_the_live_tv_selection() {
+        let app = app_with_selected_tv();
+        let mut history = history_for(&app);
+
+        assert!(history.navigate(&app, Pane::About, NavSel::None));
+        app.set_active_pane(Pane::About);
+        assert!(history.step(&app, false).is_some());
+
+        let (pane, selection) = history
+            .step(&app, true)
+            .unwrap_or_else(|| panic!("forward history should remain after stepping back"));
+        assert!(pane == Pane::About);
+        assert!(matches!(selection, NavSel::None));
+
+        app.set_active_pane(Pane::Tvs);
+        app.set_selected_tv_index(1);
+        let (pane, selection) = history
+            .step(&app, false)
+            .unwrap_or_else(|| panic!("back history should remain after stepping forward"));
+        assert!(pane == Pane::Tvs);
+        assert!(matches!(selection, NavSel::Tv(uuid) if uuid == "tv-2"));
+    }
+
+    #[test]
+    fn repeated_destination_is_ignored_and_new_navigation_truncates_forward_history() {
+        let app = app_with_selected_tv();
+        let mut history = history_for(&app);
+
+        assert!(!history.step(&app, false).is_some());
+        assert!(history.navigate(&app, Pane::About, NavSel::None));
+        app.set_active_pane(Pane::About);
+        assert!(!history.navigate(&app, Pane::About, NavSel::None));
+        assert_eq!(history.entries.len(), 2);
+
+        assert!(history.step(&app, false).is_some());
+        app.set_active_pane(Pane::Tvs);
+        assert!(history.navigate(
+            &app,
+            Pane::Profiles,
+            NavSel::Profile(ProfileKind::System, SharedString::from("profile-1")),
+        ));
+        assert_eq!(history.entries.len(), 2);
+        assert!(history.step(&app, true).is_none());
+    }
 }

@@ -621,7 +621,7 @@ pub(crate) async fn run_wizard_re_pair(
 /// wizard's phase/message Slint properties, gated by the generation
 /// counter so late updates from a cancelled-and-reopened wizard
 /// session are dropped.
-fn make_progress_callback(
+pub(crate) fn make_progress_callback(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
     captured_gen: u64,
@@ -655,7 +655,7 @@ fn make_progress_callback(
 /// Typed pair/re-pair outcome for [`publish_pair_outcome`]: the
 /// handshake failure's detail and the SDK error both stay typed, so an
 /// `invalid-field` refusal routes to its schema row.
-enum PairError {
+pub(crate) enum PairError {
     /// Terminal `failed` phase from the daemon — localize by its `code`.
     Handshake(Box<PairingProgress>),
     /// A sync-rpc or stream error (unknown vendor, `invalid-field`, the
@@ -730,7 +730,7 @@ fn mac_notice(report: Option<&LinkMacReport>) -> (&'static str, String, String) 
 /// (and `wizard_gen` bumped) since the captured value, the
 /// callback no-ops so a cancelled-and-reopened wizard isn't
 /// stomped by a late terminal outcome from the prior session.
-fn publish_pair_outcome(
+pub(crate) fn publish_pair_outcome(
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: &WizardGen,
     captured_gen: u64,
@@ -817,7 +817,194 @@ fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{AutofilledRow, apply_manual_entry_helper_overrides, picked_tv_name};
+    use std::collections::HashMap;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    use super::{
+        AutofilledRow, WizardEntry, apply_manual_entry_helper_overrides, fill_picked_tv_name,
+        localize_pair_failure, mark_field_invalid, picked_tv_name, publish_wizard_entries,
+        reset_wizard,
+    };
+    use crate::{AppWindow, PairingFieldRow, PairingWizard};
+    use parking_lot::Mutex;
+    use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+    use tisvlay::{
+        FailureCode, LinkMacOutcome, LinkMacReport, PairTerminal, PairingPhase, PairingProgress,
+    };
+    use tokio::sync::oneshot;
+
+    fn field_row(name: &str) -> PairingFieldRow {
+        PairingFieldRow {
+            name: SharedString::from(name),
+            label: SharedString::default(),
+            helper: SharedString::default(),
+            field_type: SharedString::from("string"),
+            required: true,
+            placeholder: SharedString::default(),
+            options: ModelRc::new(VecModel::<SharedString>::default()),
+            value: SharedString::from("value"),
+            state: SharedString::from("valid"),
+            error: SharedString::default(),
+            autofilled: false,
+        }
+    }
+
+    #[test]
+    fn mark_field_invalid_marks_matching_row_and_invalidates_schema() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        wizard.set_schema_fields(model.clone());
+        wizard.set_schema_valid(true);
+
+        assert!(mark_field_invalid(&wizard, "ip", "not a valid address"));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "invalid");
+        assert_eq!(row.error.as_str(), "not a valid address");
+        assert!(!wizard.get_schema_valid());
+    }
+
+    #[test]
+    fn mark_field_invalid_returns_false_for_unknown_field() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        let model = ModelRc::new(VecModel::from(vec![field_row("ip")]));
+        wizard.set_schema_fields(model.clone());
+        wizard.set_schema_valid(true);
+
+        assert!(!mark_field_invalid(
+            &wizard,
+            "unknown",
+            "not a valid address"
+        ));
+
+        let row = model.row_data(0).expect("the schema row remains present");
+        assert_eq!(row.state.as_str(), "valid");
+        assert!(row.error.is_empty());
+        assert!(wizard.get_schema_valid());
+    }
+
+    #[test]
+    fn publish_wizard_entries_projects_brand_source_and_access_warning() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        let entries = vec![
+            WizardEntry {
+                id: "cec-1".into(),
+                name: "Office TV".into(),
+                vendor: "cec".into(),
+                address: "/dev/cec0".into(),
+                hw_model: "Mock CEC".into(),
+                vendor_data: HashMap::from([
+                    ("brand".into(), "lg".into()),
+                    ("source".into(), "cec".into()),
+                    ("access".into(), "permission_denied".into()),
+                ]),
+            },
+            WizardEntry {
+                id: "manual-1".into(),
+                name: "Manual TV".into(),
+                vendor: "mock".into(),
+                ..Default::default()
+            },
+        ];
+
+        publish_wizard_entries(&wizard, &entries);
+
+        let rows = wizard.get_discovered();
+        assert_eq!(rows.row_count(), 2);
+        let discovered = rows.row_data(0).expect("discovered row is projected");
+        assert_eq!(discovered.brand, "lg");
+        assert_eq!(discovered.source_label, "CEC");
+        assert!(discovered.access_warning);
+        let manual = rows.row_data(1).expect("manual row is projected");
+        assert_eq!(manual.brand, "mock");
+        assert!(manual.source_label.is_empty());
+        assert!(!manual.access_warning);
+    }
+
+    #[test]
+    fn reset_wizard_bumps_generation_cancels_tasks_and_clears_state() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+        wizard.set_active(true);
+        wizard.set_step(3);
+        wizard.set_selected_index(2);
+        wizard.set_tv_name(SharedString::from("Living Room"));
+        wizard.set_tv_name_autofilled(SharedString::from("Old TV"));
+        wizard.set_mac_notice(SharedString::from("differs"));
+        wizard.set_mac_reported(SharedString::from("84:90:0A:63:A9:94"));
+        wizard.set_mac_configured(SharedString::from("64:E4:A5:6C:AB:B4"));
+        wizard.set_mac_error(SharedString::from("MAC lookup failed"));
+        wizard.set_system_profile(SharedString::from("profile-1"));
+        wizard.set_managed(false);
+        wizard.set_manual_vendor_index(3);
+        wizard.set_manual_ip(SharedString::from("192.0.2.10"));
+        wizard.set_selected_vendor(SharedString::from("lg"));
+        wizard.set_selected_vendor_name(SharedString::from("LG WebOS"));
+        wizard.set_selected_address(SharedString::from("192.0.2.20"));
+        wizard.set_selected_hw_model(SharedString::from("OLED42C3"));
+        wizard.set_discovery_streaming(true);
+        wizard.set_discovery_error(SharedString::from("discovery failed"));
+        wizard.set_manual_lookup_streaming(true);
+        wizard.set_pair_phase(SharedString::from("awaiting_tv"));
+        wizard.set_pair_message(SharedString::from("waiting for TV"));
+        wizard.set_pair_tv_id(SharedString::from("tv-1"));
+        wizard.set_discovered(ModelRc::new(VecModel::from(vec![
+            crate::WizardDiscoveredTv {
+                name: SharedString::from("Living Room"),
+                ..Default::default()
+            },
+        ])));
+        wizard.set_schema_fields(ModelRc::new(VecModel::from(vec![field_row("ip")])));
+        wizard.set_schema_valid(true);
+
+        let generation = Arc::new(AtomicU64::new(7));
+        let (discovery_tx, mut discovery_rx) = oneshot::channel();
+        let (lookup_tx, mut lookup_rx) = oneshot::channel();
+        let discovery_cancel = Arc::new(Mutex::new(Some(discovery_tx)));
+        let lookup_cancel = Arc::new(Mutex::new(Some(lookup_tx)));
+
+        reset_wizard(&app, &generation, &discovery_cancel, &lookup_cancel);
+
+        assert_eq!(generation.load(Ordering::SeqCst), 8);
+        assert!(discovery_rx.try_recv().is_ok());
+        assert!(lookup_rx.try_recv().is_ok());
+        assert!(!wizard.get_active());
+        assert_eq!(wizard.get_step(), 1);
+        assert_eq!(wizard.get_selected_index(), -1);
+        assert!(wizard.get_tv_name().is_empty());
+        assert!(wizard.get_tv_name_autofilled().is_empty());
+        assert!(wizard.get_mac_notice().is_empty());
+        assert!(wizard.get_mac_reported().is_empty());
+        assert!(wizard.get_mac_configured().is_empty());
+        assert!(wizard.get_mac_error().is_empty());
+        assert!(wizard.get_system_profile().is_empty());
+        assert!(wizard.get_managed());
+        assert_eq!(wizard.get_manual_vendor_index(), 0);
+        assert!(wizard.get_manual_ip().is_empty());
+        assert!(wizard.get_selected_vendor().is_empty());
+        assert!(wizard.get_selected_vendor_name().is_empty());
+        assert!(wizard.get_selected_address().is_empty());
+        assert!(wizard.get_selected_hw_model().is_empty());
+        assert!(!wizard.get_discovery_streaming());
+        assert!(wizard.get_discovery_error().is_empty());
+        assert!(!wizard.get_manual_lookup_streaming());
+        assert!(wizard.get_pair_phase().is_empty());
+        assert!(wizard.get_pair_message().is_empty());
+        assert!(wizard.get_pair_tv_id().is_empty());
+        assert_eq!(wizard.get_discovered().row_count(), 0);
+        assert_eq!(wizard.get_schema_fields().row_count(), 0);
+        assert!(!wizard.get_schema_valid());
+    }
 
     /// The done step speaks only when there's something to act on or know:
     /// a filled MAC, or an entered one that differs from the TV's.
@@ -847,6 +1034,69 @@ mod tests {
             ("", String::new(), String::new())
         );
         assert_eq!(mac_notice(None), ("", String::new(), String::new()));
+    }
+
+    #[test]
+    fn pair_terminal_results_preserve_complete_and_failure_details() {
+        use super::{PairError, terminal_to_result};
+
+        let report = LinkMacReport {
+            reported: "84:90:0A:63:A9:94".into(),
+            outcome: LinkMacOutcome::Filled,
+        };
+        let Ok(complete) = terminal_to_result(Ok(PairTerminal::Complete {
+            tv: uuid::Uuid::nil(),
+            message: "paired".into(),
+            link_mac: Some(report.clone()),
+        })) else {
+            panic!("complete terminal succeeds")
+        };
+        assert_eq!(complete, Some(report));
+
+        let progress = PairingProgress {
+            attempt: uuid::Uuid::nil(),
+            phase: PairingPhase::Failed,
+            message: "permission denied".into(),
+            code: Some(FailureCode::DevicePermissionDenied),
+            path: Some("/dev/cec0".into()),
+            link_mac: None,
+        };
+        let failed = terminal_to_result(Ok(PairTerminal::Failed {
+            tv: uuid::Uuid::nil(),
+            progress: progress.clone(),
+        }))
+        .expect_err("failed terminal becomes a handshake error");
+        assert!(matches!(failed, PairError::Handshake(detail) if *detail == progress));
+
+        let rpc_error = tisvlay::Error::Timeout {
+            service: tisvlay::Service::Daemon,
+        };
+        assert!(matches!(
+            terminal_to_result(Err(rpc_error)),
+            Err(PairError::Rpc(tisvlay::Error::Timeout {
+                service: tisvlay::Service::Daemon
+            }))
+        ));
+    }
+
+    #[test]
+    fn device_permission_failure_names_the_node_or_uses_the_fallback() {
+        let detail = |path| PairingProgress {
+            attempt: uuid::Uuid::nil(),
+            phase: PairingPhase::Failed,
+            message: "permission denied".into(),
+            code: Some(FailureCode::DevicePermissionDenied),
+            path,
+            link_mac: None,
+        };
+        assert!(localize_pair_failure(&detail(Some("/dev/cec0".into()))).contains("/dev/cec0"));
+        assert!(localize_pair_failure(&detail(None)).contains("/dev/cec*"));
+
+        let unknown = PairingProgress {
+            code: Some(FailureCode::PairingRejected),
+            ..detail(None)
+        };
+        assert_eq!(localize_pair_failure(&unknown), "permission denied");
     }
 
     /// A missed MAC lookup prefixes the vendor's own helper rather than
@@ -900,5 +1150,25 @@ mod tests {
     #[test]
     fn repick_keeps_a_hand_typed_name() {
         assert_eq!(picked_tv_name("Office", "OLED55G3PUA", "OLED42C3PUA"), None);
+    }
+
+    #[test]
+    fn fill_picked_name_tracks_autofill_without_overwriting_manual_text() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let wizard = app.global::<PairingWizard>();
+
+        fill_picked_tv_name(&wizard, "Living Room");
+        assert_eq!(wizard.get_tv_name(), "Living Room");
+        assert_eq!(wizard.get_tv_name_autofilled(), "Living Room");
+
+        fill_picked_tv_name(&wizard, "Bedroom");
+        assert_eq!(wizard.get_tv_name(), "Bedroom");
+        assert_eq!(wizard.get_tv_name_autofilled(), "Bedroom");
+
+        wizard.set_tv_name(SharedString::from("Office"));
+        fill_picked_tv_name(&wizard, "Kitchen");
+        assert_eq!(wizard.get_tv_name(), "Office");
+        assert_eq!(wizard.get_tv_name_autofilled(), "Bedroom");
     }
 }

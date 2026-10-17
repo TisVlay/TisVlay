@@ -94,6 +94,21 @@ mod tests {
     }
 
     #[test]
+    fn percent_encodes_reserved_uri_bytes() {
+        let path = PathBuf::from("/tmp/a%?#.toml");
+        assert_eq!(path_to_uri(&path).unwrap(), "file:///tmp/a%25%3F%23.toml");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+        assert!(path_to_uri(&path).is_err());
+    }
+
+    #[test]
     fn rejects_relative() {
         assert!(path_to_uri(Path::new("relative/path")).is_err());
     }

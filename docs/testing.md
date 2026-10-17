@@ -140,7 +140,7 @@ CI also uploads its `lcov.info` to [Codecov](https://app.codecov.io/gh/TisVlay/T
 
 A failing test doesn't hide the report: the local `cov*` recipes run every test (`--no-fail-fast`), render the coverage of what ran, then exit with the test status ("tests failed … coverage reflects a failing run"). `cov-ratchet` checks that status first and fails before comparing, so partial coverage never passes or moves the baseline; `test-ci` stays fail-fast.
 
-CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. Every stage runs `--all-features`, same as local `just test`. Dev-only code is excluded from the coverage denominator via the `cov_exclude` regex in the justfile — `(tisvlay-(test|mock)/|test_server)` — so test infrastructure doesn't count against the ratchet. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
+CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. Every stage runs `--all-features`, same as local `just test`. The `cov_exclude` regex in the justfile excludes separate test-only crates and files — `(tisvlay-(test|mock)/|test_server)` — from the denominator. Inline `#[cfg(test)]` modules share production source files and are still counted by llvm-cov, so aggregate percentage changes must distinguish added test-source lines from newly covered production lines. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
 
 ## Mock backend (tisvlay-mock)
 
@@ -410,10 +410,15 @@ async fn wire() -> Wire {
 - `tisvlay-daemon/tests/it/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
 - `tisvlay-daemon/tests/it/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
 - `tisvlay-daemon/tests/it/access.rs` — socket-permission flips against a live daemon: granting or revoking access mid-run, the kernel-level path a seat ACL change takes.
+- `tisvlay-daemon/src/seat/tests.rs` — private logind manager/seat/session objects drive the real seat-access watch against a temporary Unix socket. Assertions inspect socket/directory ACLs, qualification gates, user switches, empty seats, seat add/remove, read-failure holding, and periodic repair. Only the private watch's resync interval is shortened; production retains its five-minute cadence.
+- `tisvlay-greeter/src/lib.rs` (`tests`) — real Zenoh router/cache tests cover startup presence, timeout hydration, idle/resume deduplication, history replay, and clean exit. An idle-watch factory supplies transitions without a compositor; separate virtual-time tests cover Wayland retry and Mutter fallback decisions. Filesystem discovery takes explicit directories, with no test-runner environment mutation.
+- `tisvlay-gui-app/src/dbus.rs` (`tests`) — isolated buses verify GUI properties, all Application activation methods, cold tokens, name ownership, and duplicate-instance handoff. Zbus reports a taken name as `Error::NameTaken`, which must follow the proxy-activation path. Warm/dropped-window activation assertions share the existing Slint event-loop initializer.
 - `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the ScreenSaver adapter (via `FakeScreenSaver`), user-store persistence, and the idle-timeout watch.
-- `tisvlay-tray/tests/it/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
+- `tisvlay-tray/tests/it/mirror.rs` — the tray's pure state projection against the real wire, `Mirror::apply_*` fed by plain subscribers, without ksni.
 - `tisvlay-tray/tests/it/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
-- `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, and connect-before-daemon resilience.
+- `tisvlay-tray/src/lib.rs` (`orchestration_tests`) — real daemon/session stacks drive the production mirror pumps, command dispatcher, scroll coalescers, and captured pairing/liveliness notifications. A private handle adapter substitutes an in-memory tray for ksni updates without changing RPC or subscription behavior. Daemon-lifetime changes must discard old TVs and system profiles; the session-owned user catalog is independent.
+- `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, and discarding cached TVs/profiles across daemon lifetimes.
+- `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, remote sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
 
 ### Zenoh testing gotchas
 
@@ -423,9 +428,21 @@ async fn wire() -> Wire {
 - **Hydration is subscriber-history-only.** The daemon's cached publications replay to late joiners only through an `AdvancedSubscriber` with history enabled (`.history(HistoryConfig::default().detect_late_publishers())`). A plain subscriber sees only live samples; a `get` does not serve the cache.
 - **Deadline-bounded drains, not sleeps.** `recv_until` / `assert_no_sample` helpers time out against a deadline and panic with everything they saw, so a hang produces a diagnosable failure instead of a silent stall.
 
+## Wayland transport testing
+
+`tisvlay-runtime/src/wayland/tests.rs` runs a minimal `wayland-server` display over a Unix socket pair, not the user's compositor. It advertises seat/idle-notifier globals, records requested timeouts and bound versions, and emits real idle/resume events. Tests verify tag forwarding, version caps, missing globals, closed sockets, compositor disconnect, and stopping the watch when its handle drops. The server has its own stop pipe and joins its thread at teardown. Environment-based connection errors run in a deadline-bounded child process with isolated Wayland variables; no test mutates the test runner's environment. Server bindings are dev dependencies only.
+
+```bash
+cargo nextest run --workspace --all-features -E 'package(tisvlay-runtime) & test(/^wayland::tests::/)'
+```
+
 ## GUI testing (i-slint-backend-testing)
 
-`tisvlay-gui-app/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+`tisvlay-gui-app/tests/` instantiates an `AppWindow` against synthetic models and queries the element tree via `i_slint_backend_testing::ElementHandle`. These tests use `init_no_event_loop()` — multiple `#[test]` functions per binary; no daemon, no wire, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+
+Worker-to-UI updates can use `init_integration_test_with_system_time()`: it enables Slint's simple event loop so a test can queue a real `invoke_from_event_loop` update, enqueue quit, then drain the loop with `slint::run_event_loop()`. The initializer is once per process, so keep event-loop-dependent assertions together or share one process-scoped setup. The registered-callback workflow test owns this initializer and shares it with the edit-pane update assertions. It drives the production callback registrar against socket-scoped mock daemon, session, and headless tray-settings services. Scenarios cover wizard pairing/retry/re-pair, manual entry, MAC adoption, edit-form saves, TV controls, system/user profile editing, notification settings, reload, and surfaced errors; test notifications are captured rather than sent to the desktop. Bounded UI predicates and SDK state watchers wait for actual completion. Sequential profile edits use the production profile-change handlers to refresh the editor cache after each observed write, matching the state watcher's role in the application. `cargo test -p tisvlay-gui-app --lib` verifies this coexists with the no-event-loop unit tests.
+
+The same initializer also hosts a separate-window watcher scenario running the real `initial_fetch_and_watch` loop. Clients start before their services; assertions cover late service appearance, live TV/profile/settings updates, selected-editor refresh, service loss, and daemon/tray restart recovery. This scenario never calls profile-change handlers or pushes snapshots itself: the production watcher must synchronize the UI. Its watcher task is aborted and awaited during teardown, and service stacks are shut down explicitly.
 
 ```rust
 use slint::{ModelRc, SharedString, VecModel};

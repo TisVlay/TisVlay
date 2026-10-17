@@ -124,3 +124,86 @@ impl Default for RefreshTrigger {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::timeout;
+
+    use super::RefreshTrigger;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fires_during_refresh_schedule_one_trailing_refresh() {
+        let trigger = RefreshTrigger::new();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Mutex::new(None::<oneshot::Sender<()>>));
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (completed_tx, mut completed_rx) = mpsc::unbounded_channel();
+
+        let refresh = {
+            let runs = Arc::clone(&runs);
+            let release = Arc::clone(&release);
+            Arc::new(move || -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                let run = runs.fetch_add(1, Ordering::SeqCst);
+                let release = Arc::clone(&release);
+                let started_tx = started_tx.clone();
+                let completed_tx = completed_tx.clone();
+                Box::pin(async move {
+                    if run == 0 {
+                        let (tx, rx) = oneshot::channel();
+                        *release.lock() = Some(tx);
+                        started_tx.send(()).expect("test awaits first refresh");
+                        rx.await.expect("test releases first refresh");
+                    }
+                    completed_tx
+                        .send(run)
+                        .expect("test awaits refresh completion");
+                })
+            })
+                as Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>
+        };
+
+        let first = Arc::clone(&refresh);
+        trigger.fire(move || first());
+        timeout(Duration::from_secs(1), started_rx.recv())
+            .await
+            .expect("first refresh starts")
+            .expect("first refresh signals its start");
+
+        for _ in 0..3 {
+            let refresh = Arc::clone(&refresh);
+            trigger.fire(move || refresh());
+        }
+        release
+            .lock()
+            .take()
+            .expect("first refresh stores its release")
+            .send(())
+            .expect("first refresh is waiting");
+
+        assert_eq!(
+            timeout(Duration::from_secs(1), completed_rx.recv())
+                .await
+                .expect("first refresh completes")
+                .expect("first refresh sends its run index"),
+            0
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(1), completed_rx.recv())
+                .await
+                .expect("trailing refresh completes")
+                .expect("trailing refresh sends its run index"),
+            1
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+}

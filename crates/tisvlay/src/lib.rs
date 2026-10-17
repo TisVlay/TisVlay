@@ -368,7 +368,13 @@ impl DaemonClient {
             tokio::spawn(async move {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let alive = sample.kind() == SampleKind::Put;
-                    mirror.lock().expect("mirror lock").daemon_alive = alive;
+                    {
+                        let mut state = mirror.lock().expect("mirror lock");
+                        if !alive {
+                            state.end_lifetime();
+                        }
+                        state.daemon_alive = alive;
+                    }
                     let _ = events.send(if alive {
                         StateEvent::DaemonAppeared
                     } else {

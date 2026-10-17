@@ -5518,9 +5518,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -6387,7 +6387,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
@@ -6613,8 +6613,12 @@ dependencies = [
  "clap_complete",
  "serde",
  "serde_json",
+ "tempfile",
+ "tisvlay-daemon",
+ "tisvlay-mock",
  "tisvlay-protocol",
  "tisvlay-runtime",
+ "tisvlay-session",
  "tokio",
  "uuid",
  "zenoh",
@@ -6693,6 +6697,7 @@ dependencies = [
  "anyhow",
  "clap",
  "serde_json",
+ "tempfile",
  "tisvlay-protocol",
  "tisvlay-runtime",
  "tokio",
@@ -6729,16 +6734,22 @@ dependencies = [
  "tempfile",
  "tisvlay",
  "tisvlay-core",
+ "tisvlay-daemon",
  "tisvlay-gui",
  "tisvlay-icons",
+ "tisvlay-mock",
  "tisvlay-protocol",
  "tisvlay-runtime",
+ "tisvlay-session",
+ "tisvlay-test",
+ "tisvlay-tray",
  "tokio",
  "tracing",
  "uuid",
  "webbrowser",
  "wl-clipboard-rs",
  "zbus",
+ "zenoh",
 ]
 
 [[package]]
@@ -6821,6 +6832,7 @@ dependencies = [
  "uuid",
  "wayland-client",
  "wayland-protocols",
+ "wayland-server",
  "zbus",
 ]
 
@@ -7717,6 +7729,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]
@@ -7754,6 +7767,19 @@ dependencies = [
  "proc-macro2",
  "quick-xml",
  "quote",
+]
+
+[[package]]
+name = "wayland-server"
+version = "0.31.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dde9c29be0f723a573977de51ee455bf3dfa03652730a74f9dd3b337e374d75"
+dependencies = [
+ "bitflags 2.13.2",
+ "downcast-rs 1.2.1",
+ "rustix 1.1.5",
+ "wayland-backend",
+ "wayland-scanner",
 ]
 
 [[package]]

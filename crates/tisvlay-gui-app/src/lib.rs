@@ -165,7 +165,7 @@ enum ReloadSummary {
 
 /// Report a sidebar Reload at window level (see [`reload_summary`]). A
 /// Reload with no failure clears an earlier failure's banner.
-fn report_reload(app_weak: &slint::Weak<AppWindow>, outcomes: Vec<ReloadOutcome>) {
+pub(crate) fn report_reload(app_weak: &slint::Weak<AppWindow>, outcomes: Vec<ReloadOutcome>) {
     for outcome in &outcomes {
         if let Some(Err(e)) = &outcome.result {
             warn!(error = %e, file = %outcome.file, "reload_config failed");
@@ -1478,15 +1478,14 @@ fn register_callbacks(
     });
 
     let coalescer = volume_coalescer;
-    daemon_global.on_set_volume(move |tv_id, value| {
-        coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
+    register_volume_callback(&daemon_global, move |tv_id, value| {
+        coalescer.fire(tv_id, value);
     });
 
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    daemon_global.on_set_mute(move |tv_id, muted| {
+    register_mute_callback(&daemon_global, move |tv_id, muted| {
         let d = d.clone();
-        let tv_id = tv_id.to_string();
         spawn_tv_rpc(
             &app_weak,
             tv_id.clone(),
@@ -1497,16 +1496,15 @@ fn register_callbacks(
     });
 
     let coalescer = backlight_coalescer;
-    daemon_global.on_set_backlight(move |tv_id, value| {
-        coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
+    register_backlight_callback(&daemon_global, move |tv_id, value| {
+        coalescer.fire(tv_id, value);
     });
 
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    daemon_global.on_set_screen(move |tv_id, on| {
+    register_screen_callback(&daemon_global, move |tv_id, on| {
         let d = d.clone();
         let app_weak = app_weak.clone();
-        let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             let result = if on {
                 with_id(&tv_id, |tv| d.screen_on(tv)).await
@@ -1531,11 +1529,9 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    daemon_global.on_switch_input(move |tv_id, input_id| {
+    register_input_callback(&daemon_global, move |tv_id, input_id| {
         let d = d.clone();
         let app_weak = app_weak.clone();
-        let tv_id = tv_id.to_string();
-        let input_id = input_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = with_id(&tv_id, |tv| d.switch_input(tv, &input_id)).await {
                 let msg = error_text(&*e);
@@ -2604,9 +2600,36 @@ fn build_notification_update(category: &str, enabled: bool) -> NotificationSetti
     patch
 }
 
+fn register_volume_callback(daemon: &Daemon, dispatch: impl Fn(String, u8) + 'static) {
+    daemon.on_set_volume(move |tv_id, value| {
+        dispatch(tv_id.to_string(), value.clamp(0, 100) as u8);
+    });
+}
+
+fn register_mute_callback(daemon: &Daemon, dispatch: impl Fn(String, bool) + 'static) {
+    daemon.on_set_mute(move |tv_id, muted| dispatch(tv_id.to_string(), muted));
+}
+
+fn register_backlight_callback(daemon: &Daemon, dispatch: impl Fn(String, u8) + 'static) {
+    daemon.on_set_backlight(move |tv_id, value| {
+        dispatch(tv_id.to_string(), value.clamp(0, 100) as u8);
+    });
+}
+
+fn register_screen_callback(daemon: &Daemon, dispatch: impl Fn(String, bool) + 'static) {
+    daemon.on_set_screen(move |tv_id, on| dispatch(tv_id.to_string(), on));
+}
+
+fn register_input_callback(daemon: &Daemon, dispatch: impl Fn(String, String) + 'static) {
+    daemon.on_switch_input(move |tv_id, input_id| {
+        dispatch(tv_id.to_string(), input_id.to_string());
+    });
+}
+
 #[cfg(test)]
 mod notification_key_tests {
-    use super::NotificationCategory;
+    use super::{NotificationCategory, build_notification_update};
+    use tisvlay::NotificationSettingsPatch;
 
     /// The settings pane's `Daemon.set-notification("<key>", …)` string
     /// literals are a stringly-typed contract with
@@ -2644,11 +2667,1267 @@ mod notification_key_tests {
             "settings pane has a notification row with no matching category"
         );
     }
+
+    #[test]
+    fn notification_update_sets_only_the_named_category() {
+        let cases = [
+            (
+                "tv_connection",
+                NotificationSettingsPatch {
+                    tv_connection: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "tv_pairing",
+                NotificationSettingsPatch {
+                    tv_pairing: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "tv_wake",
+                NotificationSettingsPatch {
+                    tv_wake: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "daemon_offline",
+                NotificationSettingsPatch {
+                    daemon_offline: Some(false),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(build_notification_update(key, false), expected);
+        }
+        assert_eq!(
+            build_notification_update("unknown", true),
+            NotificationSettingsPatch::default()
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
+
+    #[track_caller]
+    fn wait_for_ui(app: &AppWindow, ready: impl Fn(&AppWindow) -> bool + 'static) {
+        let completed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let completed_in_timer = completed.clone();
+        let weak = app.as_weak();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(5),
+            move || {
+                if ready(&weak.upgrade().unwrap()) {
+                    completed_in_timer.set(true);
+                    slint::quit_event_loop().unwrap();
+                } else if std::time::Instant::now() >= deadline {
+                    slint::quit_event_loop().unwrap();
+                }
+            },
+        );
+        slint::run_event_loop().unwrap();
+        assert!(
+            completed.get(),
+            "UI condition did not become true within ten seconds; daemon available: {}, TVs: {:?}",
+            app.get_daemon_available(),
+            app.get_tvs()
+                .iter()
+                .map(|row| (row.uuid, row.name, row.connected))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn expect_toast(app: &AppWindow, invoke: impl FnOnce(), expected: &'static str) {
+        app.global::<Toast>().set_message(SharedString::default());
+        invoke();
+        wait_for_ui(app, move |app| {
+            app.global::<Toast>().get_message().contains(expected)
+        });
+    }
+
+    fn expect_tv_error(app: &AppWindow, invoke: impl FnOnce(), expected: &'static str) {
+        app.global::<Errors>().set_tvs(ErrorState::default());
+        invoke();
+        wait_for_ui(app, move |app| {
+            app.global::<Errors>().get_tvs().title == expected
+        });
+        assert!(!app.global::<Errors>().get_tvs().message.is_empty());
+    }
+
+    async fn wait_for_tvs(daemon: &DaemonClient, ready: impl Fn(&[tisvlay::TvInfo]) -> bool) {
+        let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if ready(&daemon.list_tvs().await.unwrap()) {
+                    break;
+                }
+                watcher.next().await.expect("state watcher remains open");
+            }
+        })
+        .await
+        .expect("daemon state condition did not become true within ten seconds");
+    }
+
+    async fn wait_for_system_profile(
+        daemon: &Arc<DaemonClient>,
+        editor: &ProfileEditor,
+        app: &AppWindow,
+        id: uuid::Uuid,
+        ready: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
+        let mut observed = serde_json::Value::Null;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let bodies = daemon.list_system_profile_bodies().await;
+                if let Some(body) = bodies.get(&id) {
+                    observed = serde_json::to_value(body).unwrap();
+                    if ready(&observed) {
+                        break;
+                    }
+                }
+                watcher
+                    .next()
+                    .await
+                    .expect("profile state watcher remains open");
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("system profile did not reach expected state; observed {observed}")
+        });
+        profiles::handle_system_changed(editor.clone(), daemon.clone(), app.as_weak(), id).await;
+    }
+
+    async fn wait_for_user_profile(
+        daemon: &DaemonClient,
+        session: &Arc<RwLock<Option<SessionClient>>>,
+        editor: &ProfileEditor,
+        app: &AppWindow,
+        id: uuid::Uuid,
+        ready: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        let client = session.read().await.as_ref().unwrap().clone();
+        let mut watcher =
+            tisvlay::StateWatcher::new(daemon, Some(&client), None, Default::default());
+        let mut observed = serde_json::Value::Null;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let bodies = client.list_user_profile_bodies().await;
+                if let Some(body) = bodies.get(&id) {
+                    observed = serde_json::to_value(body).unwrap();
+                    if ready(&observed) {
+                        break;
+                    }
+                }
+                watcher
+                    .next()
+                    .await
+                    .expect("user profile watcher remains open");
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("user profile did not reach expected state; observed {observed}")
+        });
+        profiles::handle_user_changed(editor.clone(), session.clone(), app.as_weak(), id).await;
+    }
+
+    /// Wait until system profile `id` leaves the daemon mirror: a delete
+    /// rpc can reply before the deletion's sample arrives.
+    async fn wait_for_system_profile_removed(daemon: &DaemonClient, id: uuid::Uuid) {
+        let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while daemon.list_system_profile_bodies().await.contains_key(&id) {
+                watcher
+                    .next()
+                    .await
+                    .expect("profile state watcher remains open");
+            }
+        })
+        .await
+        .expect("system profile still mirrored after ten seconds");
+    }
+
+    /// User-side mirror of [`wait_for_system_profile_removed`].
+    async fn wait_for_user_profile_removed(
+        daemon: &DaemonClient,
+        client: &SessionClient,
+        id: uuid::Uuid,
+    ) {
+        let mut watcher =
+            tisvlay::StateWatcher::new(daemon, Some(client), None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while client.list_user_profile_bodies().await.contains_key(&id) {
+                watcher
+                    .next()
+                    .await
+                    .expect("user profile watcher remains open");
+            }
+        })
+        .await
+        .expect("user profile still mirrored after ten seconds");
+    }
+
+    async fn watcher_refreshes_services_and_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("watch.sock");
+        let user_socket = directory.path().join("watch-user.sock");
+        let daemon = Arc::new(DaemonClient::connect(&socket, "main").await.unwrap());
+        let session_client = SessionClient::connect(&user_socket, "main").await.unwrap();
+        let tray_client = TrayClient::connect(&user_socket, "main").await.unwrap();
+        let session = Arc::new(RwLock::new(Some(session_client.clone())));
+        let tray = Arc::new(RwLock::new(Some(tray_client.clone())));
+        let editor = new_editor();
+        let vendors = Arc::new(std::sync::RwLock::new(Vec::new()));
+        let app = AppWindow::new().unwrap();
+        app.set_daemon_available(true);
+        app.set_session_available(true);
+        app.set_tray_available(true);
+        let watcher = tokio::spawn(initial_fetch_and_watch(
+            daemon.clone(),
+            session.clone(),
+            tray.clone(),
+            Reconcilers::default(),
+            app.as_weak(),
+            vendors.clone(),
+            editor.clone(),
+        ));
+        wait_for_ui(&app, |app| {
+            !app.get_daemon_available() && !app.get_session_available() && !app.get_tray_available()
+        });
+        let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();
+        let stack = tisvlay_daemon::serve(
+            &socket,
+            "main",
+            vec![
+                tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                    .with_discovery(Arc::new(discovery)),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+        wait_for_ui(&app, |app| {
+            app.get_daemon_available()
+                && app
+                    .global::<PairingWizard>()
+                    .get_supported_vendors()
+                    .row_count()
+                    == 1
+        });
+        assert_eq!(
+            app.global::<PairingWizard>()
+                .get_supported_vendors()
+                .row_data(0)
+                .unwrap()
+                .name,
+            "Mock"
+        );
+        assert!(!vendors.read().unwrap().is_empty());
+        let tv = daemon
+            .pair_tv(
+                "Watcher TV",
+                "mock",
+                serde_json::from_value(
+                    serde_json::json!({"address": "mock://watcher", "pairing": "accept"}),
+                )
+                .unwrap(),
+                false,
+            )
+            .await
+            .unwrap()
+            .id;
+        wait_for_ui(&app, |app| {
+            app.get_tvs()
+                .iter()
+                .any(|row| row.name == "Watcher TV" && row.connected)
+        });
+        assert_eq!(app.get_tvs_connected_count(), 1);
+        daemon.set_volume(tv, 73).await.unwrap();
+        wait_for_ui(&app, |app| app.get_tvs().iter().any(|row| row.volume == 73));
+        let profile = daemon.create_system_profile("Watcher work").await.unwrap();
+        wait_for_ui(&app, move |app| {
+            app.global::<Profiles>()
+                .get_system()
+                .iter()
+                .any(|row| row.uuid == profile.to_string())
+        });
+        app.global::<Profiles>()
+            .set_selected_kind(ProfileKind::System);
+        app.global::<Profiles>()
+            .set_selected_uuid(profile.to_string().into());
+        profiles::select(
+            editor.clone(),
+            daemon.clone(),
+            session.clone(),
+            app.as_weak(),
+            EditorKind::System,
+            profile,
+        )
+        .await;
+        wait_for_ui(&app, move |app| {
+            app.global::<Profiles>().get_selected_uuid() == profile.to_string()
+        });
+        let mut body = daemon.get_system_profile(profile).await.unwrap();
+        body.name = "Watcher work renamed".into();
+        body.on_startup = Some(tisvlay_core::EventAction::Plain(
+            tisvlay_core::SessionAction::ScreenOff,
+        ));
+        daemon.update_system_profile(profile, body).await.unwrap();
+        wait_for_ui(&app, |app| {
+            let profiles = app.global::<Profiles>();
+            profiles.get_selected_row().name == "Watcher work renamed"
+                && profiles
+                    .get_editor_fields()
+                    .iter()
+                    .any(|row| row.field_name == "on_startup" && row.current_value == "screen_off")
+        });
+        daemon.delete_system_profile(profile).await.unwrap();
+        wait_for_ui(&app, move |app| {
+            let profiles = app.global::<Profiles>();
+            profiles.get_selected_uuid().is_empty()
+                && !profiles
+                    .get_system()
+                    .iter()
+                    .any(|row| row.uuid == profile.to_string())
+        });
+        let session_stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
+            system_socket: socket.clone(),
+            user_socket: user_socket.clone(),
+            site: "main".into(),
+            store: None,
+            sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
+        })
+        .await
+        .unwrap();
+        wait_for_ui(&app, |app| {
+            app.get_session_available() && app.global::<Profiles>().get_session_available()
+        });
+        let user_profile = session_client
+            .create_user_profile("Watcher personal")
+            .await
+            .unwrap();
+        wait_for_ui(&app, move |app| {
+            app.global::<Profiles>()
+                .get_user()
+                .iter()
+                .any(|row| row.uuid == user_profile.to_string())
+        });
+        app.global::<Profiles>()
+            .set_selected_kind(ProfileKind::User);
+        app.global::<Profiles>()
+            .set_selected_uuid(user_profile.to_string().into());
+        profiles::select(
+            editor.clone(),
+            daemon.clone(),
+            session.clone(),
+            app.as_weak(),
+            EditorKind::User,
+            user_profile,
+        )
+        .await;
+        let mut user_body = session_client.get_user_profile(user_profile).await.unwrap();
+        user_body.name = "Watcher personal renamed".into();
+        user_body.locked_idle_timeout_seconds = Some(123);
+        session_client
+            .update_user_profile(user_profile, user_body)
+            .await
+            .unwrap();
+        wait_for_ui(&app, |app| {
+            let profiles = app.global::<Profiles>();
+            profiles.get_selected_row().name == "Watcher personal renamed"
+                && profiles.get_editor_fields().iter().any(|row| {
+                    row.field_name == "locked_idle_timeout_seconds" && row.number_value == 123
+                })
+        });
+        session_client
+            .delete_user_profile(user_profile)
+            .await
+            .unwrap();
+        wait_for_ui(&app, move |app| {
+            let profiles = app.global::<Profiles>();
+            profiles.get_selected_uuid().is_empty()
+                && !profiles
+                    .get_user()
+                    .iter()
+                    .any(|row| row.uuid == user_profile.to_string())
+        });
+
+        let tray_path = directory.path().join("watch-tray.toml");
+        let link = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
+            .await
+            .unwrap();
+        let (notifier, _notifications) = tisvlay_tray::notify::Notifier::capturing(
+            tisvlay_tray::notify::load_settings(&tray_path).unwrap(),
+        );
+        let tray_service = tokio::spawn(tisvlay_tray::notify::serve_settings(
+            link,
+            "main".into(),
+            tray_path.clone(),
+            notifier,
+        ));
+        wait_for_ui(&app, |app| {
+            app.get_tray_available() && app.global::<Tray>().get_available()
+        });
+        tray_client
+            .update_notification_settings(NotificationSettingsPatch {
+                tv_wake: Some(false),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for_ui(&app, |app| {
+            !app.global::<Tray>().get_notifications().tv_wake
+        });
+        assert!(app.global::<Tray>().get_notifications().tv_pairing);
+        tray_service.abort();
+        assert!(tray_service.await.unwrap_err().is_cancelled());
+        wait_for_ui(&app, |app| {
+            !app.get_tray_available() && !app.global::<Tray>().get_available()
+        });
+        let link = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
+            .await
+            .unwrap();
+        let (notifier, _notifications) = tisvlay_tray::notify::Notifier::capturing(
+            tisvlay_tray::notify::load_settings(&tray_path).unwrap(),
+        );
+        let tray_restarted = tokio::spawn(tisvlay_tray::notify::serve_settings(
+            link,
+            "main".into(),
+            tray_path,
+            notifier,
+        ));
+        wait_for_ui(&app, |app| {
+            app.get_tray_available() && !app.global::<Tray>().get_notifications().tv_wake
+        });
+        tray_client
+            .update_notification_settings(NotificationSettingsPatch {
+                tv_pairing: Some(false),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for_ui(&app, |app| {
+            !app.global::<Tray>().get_notifications().tv_pairing
+        });
+        tray_restarted.abort();
+        assert!(tray_restarted.await.unwrap_err().is_cancelled());
+        wait_for_ui(&app, |app| !app.get_tray_available());
+        drop(session_stack);
+        wait_for_ui(&app, |app| {
+            !app.get_session_available() && !app.global::<Profiles>().get_session_available()
+        });
+        daemon.remove_tv(tv).await.unwrap();
+        wait_for_ui(&app, |app| {
+            app.get_tvs().row_count() == 0 && app.get_tvs_connected_count() == 0
+        });
+        daemon
+            .pair_tv(
+                "Before restart",
+                "mock",
+                serde_json::from_value(
+                    serde_json::json!({"address": "mock://before", "pairing": "accept"}),
+                )
+                .unwrap(),
+                false,
+            )
+            .await
+            .unwrap();
+        wait_for_ui(&app, |app| {
+            app.get_tvs()
+                .iter()
+                .any(|row| row.name == "Before restart" && row.connected)
+        });
+        stack.run_until(std::future::ready(())).await.unwrap();
+        wait_for_ui(&app, |app| {
+            !app.get_daemon_available()
+                && app.get_tvs().row_count() == 0
+                && app.get_tvs_connected_count() == 0
+        });
+        let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();
+        let restarted = tisvlay_daemon::serve(
+            &socket,
+            "main",
+            vec![
+                tisvlay_daemon::VendorReg::new("mock", "Mock restarted", Arc::new(connector))
+                    .with_discovery(Arc::new(discovery)),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+        wait_for_ui(&app, |app| {
+            app.get_daemon_available()
+                && app.get_tvs().row_count() == 0
+                && app
+                    .global::<PairingWizard>()
+                    .get_supported_vendors()
+                    .iter()
+                    .any(|row| row.name == "Mock restarted")
+        });
+        let after = daemon
+            .pair_tv(
+                "After restart",
+                "mock",
+                serde_json::from_value(
+                    serde_json::json!({"address": "mock://after", "pairing": "accept"}),
+                )
+                .unwrap(),
+                false,
+            )
+            .await
+            .unwrap()
+            .id;
+        wait_for_ui(&app, move |app| {
+            app.get_tvs().row_count() == 1
+                && app.get_tvs().iter().any(|row| {
+                    row.uuid == after.to_string() && row.name == "After restart" && row.connected
+                })
+        });
+        watcher.abort();
+        assert!(watcher.await.unwrap_err().is_cancelled());
+        restarted.run_until(std::future::ready(())).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn registered_callbacks_round_trip_gui_workflows() {
+        i_slint_backend_testing::init_integration_test_with_system_time();
+        edit_pane::tests::worker_ui_updates_apply_on_the_event_loop();
+        dbus::tests::warm_activation_uses_the_window_not_the_cold_token_slot();
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("daemon.sock");
+        let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();
+        let _stack = tisvlay_daemon::serve(
+            &socket,
+            "main",
+            vec![
+                tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                    .with_discovery(Arc::new(discovery)),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+        ENDPOINTS.get_or_init(|| Endpoints {
+            system_socket: socket.clone(),
+            user_socket: directory.path().join("session.sock"),
+            site: "main".into(),
+        });
+        let daemon = Arc::new(DaemonClient::connect(&socket, "main").await.unwrap());
+        let mut watcher = tisvlay::StateWatcher::new(&daemon, None, None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !daemon.is_available().await {
+                watcher.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let session = Arc::new(RwLock::new(None));
+        let tray_clients = Arc::new(RwLock::new(None));
+        let editor = new_editor();
+        let app = AppWindow::new().unwrap();
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let entries: WizardEntries = Arc::new(Mutex::new(Vec::new()));
+        let nav = nav::wire(&app, daemon.clone(), session.clone(), editor.clone());
+        register_callbacks(
+            &app,
+            daemon.clone(),
+            session.clone(),
+            tray_clients.clone(),
+            Reconcilers::default(),
+            entries.clone(),
+            generation.clone(),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            editor.clone(),
+            &nav,
+        );
+        let wizard = app.global::<PairingWizard>();
+        wizard.set_active(true);
+        wizard.set_step(1);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 1);
+        wizard.set_selected_index(99);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 1);
+
+        wizard.set_discovered(ModelRc::new(VecModel::from(vec![WizardDiscoveredTv {
+            vendor: "mock".into(),
+            address: "mock://office".into(),
+            hw_model: "Test TV".into(),
+            ..Default::default()
+        }])));
+        wizard.invoke_selected_changed(0);
+        assert_eq!(wizard.get_selected_vendor(), "mock");
+        assert_eq!(wizard.get_selected_vendor_name(), "mock");
+        assert_eq!(wizard.get_selected_address(), "mock://office");
+        assert_eq!(wizard.get_selected_hw_model(), "Test TV");
+        wizard.invoke_selected_changed(-1);
+        assert!(wizard.get_selected_vendor().is_empty());
+        assert!(wizard.get_selected_vendor_name().is_empty());
+        assert!(wizard.get_selected_address().is_empty());
+        assert!(wizard.get_selected_hw_model().is_empty());
+        wizard.invoke_manual_ip_edited("192.0.2.10".into());
+        assert_eq!(wizard.get_manual_ip(), "192.0.2.10");
+
+        wizard.set_schema_fields(ModelRc::new(VecModel::from(vec![PairingFieldRow {
+            name: "address".into(),
+            field_type: "string".into(),
+            required: true,
+            autofilled: true,
+            ..Default::default()
+        }])));
+        wizard.invoke_field_value_edited(0, "".into());
+        assert!(!wizard.get_schema_valid());
+        wizard.invoke_field_value_edited(0, "mock://office".into());
+        assert!(wizard.get_schema_valid());
+        let row = wizard.get_schema_fields().row_data(0).unwrap();
+        assert_eq!(row.value, "mock://office");
+        assert_eq!(row.state, "valid");
+        assert!(!row.autofilled);
+        wizard.invoke_field_value_edited(99, "ignored".into());
+        assert_eq!(wizard.get_schema_fields().row_data(0).unwrap(), row);
+
+        wizard.set_step(2);
+        wizard.set_tv_name(SharedString::default());
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 2);
+        wizard.set_step(3);
+        wizard.set_pair_phase("awaiting_tv".into());
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 3);
+        wizard.set_pair_phase("complete".into());
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 4);
+        wizard.invoke_step_back();
+        assert_eq!(wizard.get_step(), 3);
+        wizard.invoke_back_to_discovery();
+        assert_eq!(wizard.get_step(), 1);
+        assert!(wizard.get_pair_phase().is_empty());
+        wizard.invoke_step_back();
+        assert_eq!(wizard.get_step(), 1);
+        wizard.set_mac_notice("differs".into());
+        wizard.invoke_keep_configured_mac();
+        assert!(wizard.get_mac_notice().is_empty());
+        wizard.invoke_cancel();
+        assert!(!wizard.get_active());
+        assert_eq!(generation.load(std::sync::atomic::Ordering::SeqCst), 1);
+        wizard.set_active(true);
+        wizard.invoke_finish();
+        assert!(!wizard.get_active());
+        assert_eq!(generation.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        app.invoke_navigate(Pane::About);
+        assert_eq!(app.get_active_pane(), Pane::About);
+        app.invoke_navigate(Pane::Tvs);
+        app.invoke_nav_back();
+        assert_eq!(app.get_active_pane(), Pane::About);
+        app.invoke_nav_forward();
+        assert_eq!(app.get_active_pane(), Pane::Tvs);
+
+        entries.lock().push(WizardEntry {
+            id: "office".into(),
+            name: "Office".into(),
+            vendor: "mock".into(),
+            address: "mock://office".into(),
+            vendor_data: HashMap::from([
+                ("address".into(), "mock://office".into()),
+                ("pairing".into(), "accept".into()),
+            ]),
+            ..Default::default()
+        });
+        wizard.set_active(true);
+        wizard.set_selected_index(0);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 2);
+        wait_for_ui(&app, |app| app.global::<PairingWizard>().get_schema_valid());
+        assert_eq!(wizard.get_tv_name(), "Office");
+        assert_eq!(wizard.get_selected_vendor(), "mock");
+        wizard.set_managed(false);
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 3);
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        let tv: uuid::Uuid = wizard.get_pair_tv_id().parse().unwrap();
+        wizard.invoke_step_next();
+        assert_eq!(wizard.get_step(), 4);
+        wizard.invoke_finish();
+        assert!(!wizard.get_active());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| info.uuid == tv && info.connected)
+        })
+        .await;
+        app.set_tvs(ModelRc::new(VecModel::from(vec![TvViewModel {
+            uuid: tv.to_string().into(),
+            name: "Office".into(),
+            vendor: "mock".into(),
+            ..Default::default()
+        }])));
+        let edit = app.global::<EditPane>();
+        edit.invoke_start(tv.to_string().into());
+        wait_for_ui(&app, |app| {
+            !app.global::<EditPane>().get_tv_uuid().is_empty()
+        });
+        assert_eq!(edit.get_name(), "Office");
+        assert!(edit.get_fields().row_count() > 0);
+        edit.invoke_name_edited("Renamed office".into());
+        assert!(edit.get_valid());
+        edit.invoke_save();
+        assert!(edit.get_saving());
+        wait_for_ui(&app, |app| {
+            app.global::<EditPane>().get_tv_uuid().is_empty()
+        });
+        assert!(!edit.get_saving());
+        assert!(edit.get_error().is_empty());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter()
+                .any(|info| info.uuid == tv && info.name == "Renamed office")
+        })
+        .await;
+
+        let controls = app.global::<Daemon>();
+        let input = daemon.list_tvs().await.unwrap()[0].inputs[1].0.clone();
+        controls.invoke_set_volume(tv.to_string().into(), 64);
+        controls.invoke_set_backlight(tv.to_string().into(), 24);
+        controls.invoke_set_mute(tv.to_string().into(), true);
+        controls.invoke_switch_input(tv.to_string().into(), input.clone().into());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| {
+                info.uuid == tv
+                    && info.volume == 64
+                    && info.backlight == 24
+                    && info.muted
+                    && info.current_input == input
+            })
+        })
+        .await;
+        controls.invoke_set_screen(tv.to_string().into(), false);
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| info.uuid == tv && !info.is_screen_on)
+        })
+        .await;
+        controls.invoke_set_screen(tv.to_string().into(), true);
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| info.uuid == tv && info.is_screen_on)
+        })
+        .await;
+        controls.invoke_set_primary_input(tv.to_string().into(), input.clone().into());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter()
+                .any(|info| info.uuid == tv && info.primary_input == input)
+        })
+        .await;
+
+        let profiles = app.global::<Profiles>();
+        profiles.invoke_confirm_create(ProfileKind::System, "Work".into());
+        wait_for_ui(&app, |app| {
+            !app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        let original = profiles.get_selected_uuid();
+        let original_id: uuid::Uuid = original.parse().unwrap();
+        wait_for_system_profile(&daemon, &editor, &app, original_id, |body| {
+            body["name"] == "Work"
+        })
+        .await;
+        profiles.invoke_confirm_duplicate(
+            ProfileKind::System,
+            original.clone(),
+            "Work copy".into(),
+        );
+        let original_for_wait = original.clone();
+        wait_for_ui(&app, move |app| {
+            app.global::<Profiles>().get_selected_uuid() != original_for_wait
+        });
+        let duplicate = profiles.get_selected_uuid();
+        let duplicate_id: uuid::Uuid = duplicate.parse().unwrap();
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["name"] == "Work copy"
+        })
+        .await;
+        profiles.invoke_value_edited("on_startup".into(), "screen_off".into());
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"] == "screen_off"
+        })
+        .await;
+        profiles.invoke_restore_edited("on_startup".into(), true);
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"]["restore_input"] == true
+        })
+        .await;
+        profiles.invoke_remote_gated("on_startup".into(), true);
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"]["restore_input"] == true
+                && body["on_startup"]["while_remote"] == true
+        })
+        .await;
+        profiles.invoke_reset_field("on_startup".into());
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["on_startup"].is_null()
+        })
+        .await;
+        profiles.invoke_value_edited_number("idle_timeout_seconds".into(), 90);
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["idle_timeout_seconds"] == 90
+        })
+        .await;
+        profiles.invoke_rename_selected("Work renamed".into());
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["name"] == "Work renamed"
+        })
+        .await;
+        profiles.invoke_reset_all();
+        wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
+            body["name"] == "Work renamed" && body["idle_timeout_seconds"].is_null()
+        })
+        .await;
+        assert_eq!(
+            daemon.list_system_profile_bodies().await[&original_id].name,
+            "Work"
+        );
+        controls.invoke_set_system_profile(tv.to_string().into(), "Work".into());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter()
+                .any(|info| info.uuid == tv && info.system_profile == Some(original_id))
+        })
+        .await;
+        profiles.invoke_confirm_delete(ProfileKind::System, duplicate);
+        wait_for_ui(&app, |app| {
+            app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        wait_for_system_profile_removed(&daemon, duplicate_id).await;
+
+        profiles.invoke_open_tv(tv.to_string().into());
+        assert_eq!(app.get_active_pane(), Pane::Tvs);
+        assert_eq!(app.get_selected_tv_index(), 0);
+        controls.invoke_set_user_profile(tv.to_string().into(), "Personal".into());
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_tvs().title == "Session service unavailable"
+        });
+        controls.invoke_set_system_profile(tv.to_string().into(), "Deleted profile".into());
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_tvs().title == "Couldn't change system profile"
+        });
+        controls.invoke_set_mute("not-a-uuid".into(), true);
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_tvs().title == "Couldn't change mute"
+        });
+        assert!(
+            app.global::<Errors>()
+                .get_tvs()
+                .message
+                .contains("invalid id")
+        );
+
+        edit.invoke_start(tv.to_string().into());
+        wait_for_ui(&app, |app| {
+            !app.global::<EditPane>().get_tv_uuid().is_empty()
+        });
+        let address_index = edit
+            .get_fields()
+            .iter()
+            .position(|row| row.name == "address")
+            .unwrap() as i32;
+        edit.invoke_field_edited(address_index, SharedString::default());
+        assert!(!edit.get_valid());
+        edit.invoke_field_edited(address_index, "mock://office".into());
+        assert!(edit.get_valid());
+        edit.set_tv_uuid(uuid::Uuid::new_v4().to_string().into());
+        edit.invoke_save();
+        wait_for_ui(&app, |app| {
+            let edit = app.global::<EditPane>();
+            !edit.get_saving() && !edit.get_error().is_empty()
+        });
+        assert!(edit.get_error().contains("not-found"));
+        edit.invoke_name_edited(SharedString::default());
+        assert!(!edit.get_valid());
+        edit.invoke_cancel();
+        assert!(edit.get_tv_uuid().is_empty());
+        assert!(edit.get_name().is_empty());
+        assert_eq!(edit.get_fields().row_count(), 0);
+        assert!(!edit.get_valid());
+
+        let user_socket = directory.path().join("session.sock");
+        let _session_stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
+            system_socket: socket,
+            user_socket: user_socket.clone(),
+            site: "main".into(),
+            store: None,
+            sunshine: tisvlay_session::sunshine::StaticProbe::absent(),
+        })
+        .await
+        .unwrap();
+        let client = SessionClient::connect(&user_socket, "main").await.unwrap();
+        let mut watcher =
+            tisvlay::StateWatcher::new(&daemon, Some(&client), None, Default::default());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !client.is_available().await {
+                watcher.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        *session.write().await = Some(client.clone());
+        profiles.invoke_confirm_create(ProfileKind::User, "Personal".into());
+        wait_for_ui(&app, |app| {
+            !app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        let user_profile = profiles.get_selected_uuid();
+        let user_id: uuid::Uuid = user_profile.parse().unwrap();
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["name"] == "Personal"
+        })
+        .await;
+        profiles.invoke_value_edited_bool("remote_screencast_arms".into(), true);
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["remote_screencast_arms"] == true
+        })
+        .await;
+        profiles.invoke_value_edited_number("locked_idle_timeout_seconds".into(), 120);
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["locked_idle_timeout_seconds"] == 120
+        })
+        .await;
+        profiles.invoke_value_edited("on_session_lock".into(), "screen_off".into());
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["on_session_lock"] == "screen_off"
+        })
+        .await;
+        profiles.invoke_rename_selected("Personal renamed".into());
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["name"] == "Personal renamed"
+        })
+        .await;
+        profiles.invoke_reset_field("on_session_lock".into());
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["on_session_lock"].is_null()
+        })
+        .await;
+        profiles.invoke_reset_all();
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
+            body["name"] == "Personal renamed"
+                && body["locked_idle_timeout_seconds"].is_null()
+                && body["remote_screencast_arms"].is_null()
+        })
+        .await;
+        controls.invoke_set_user_profile(tv.to_string().into(), "Personal renamed".into());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while client.get_tv_user_profile(tv).await != Some(user_id) {
+                watcher.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        profiles.invoke_confirm_duplicate(
+            ProfileKind::User,
+            user_profile.clone(),
+            "Personal copy".into(),
+        );
+        wait_for_ui(&app, move |app| {
+            app.global::<Profiles>().get_selected_uuid() != user_profile
+        });
+        let user_copy = profiles.get_selected_uuid();
+        let user_copy_id: uuid::Uuid = user_copy.parse().unwrap();
+        wait_for_user_profile(&daemon, &session, &editor, &app, user_copy_id, |body| {
+            body["name"] == "Personal copy"
+        })
+        .await;
+        profiles.invoke_confirm_delete(ProfileKind::User, user_copy);
+        wait_for_ui(&app, |app| {
+            app.global::<Profiles>().get_selected_uuid().is_empty()
+        });
+        wait_for_user_profile_removed(&daemon, &client, user_copy_id).await;
+
+        controls.invoke_request_pair();
+        assert!(wizard.get_active());
+        assert!(wizard.get_discovery_streaming());
+        wizard.invoke_cancel();
+        assert!(!wizard.get_active());
+        assert!(!wizard.get_discovery_streaming());
+        wizard.set_supported_vendors(ModelRc::new(VecModel::from(vec![VendorOption {
+            id: "mock".into(),
+            name: "Mock".into(),
+            ..Default::default()
+        }])));
+        controls.invoke_request_pair();
+        wizard.invoke_manual_add();
+        assert_eq!(wizard.get_step(), 1);
+        wizard.invoke_manual_ip_edited("mock://retry".into());
+        wizard.invoke_manual_add();
+        wait_for_ui(&app, |app| {
+            let wizard = app.global::<PairingWizard>();
+            wizard.get_step() == 2 && wizard.get_schema_valid()
+        });
+        assert!(!wizard.get_manual_lookup_streaming());
+        assert_eq!(wizard.get_selected_vendor_name(), "Mock");
+        assert_eq!(wizard.get_selected_address(), "mock://retry");
+        let pairing_index = wizard
+            .get_schema_fields()
+            .iter()
+            .position(|row| row.name == "pairing")
+            .unwrap() as i32;
+        wizard.set_tv_name("Retry TV".into());
+        wizard.set_managed(false);
+        wizard.invoke_field_value_edited(pairing_index, "reject".into());
+        wizard.invoke_step_next();
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "failed"
+        });
+        assert!(!wizard.get_pair_message().is_empty());
+        wizard.invoke_field_value_edited(pairing_index, "accept".into());
+        wizard.invoke_retry_pair();
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        let retry_tv: uuid::Uuid = wizard.get_pair_tv_id().parse().unwrap();
+        wizard.invoke_finish();
+        let mut rows: Vec<_> = app.get_tvs().iter().collect();
+        rows.push(TvViewModel {
+            uuid: retry_tv.to_string().into(),
+            name: "Retry TV".into(),
+            vendor: "mock".into(),
+            primary_descriptor: "mock://retry".into(),
+            ..Default::default()
+        });
+        app.set_tvs(ModelRc::new(VecModel::from(rows)));
+        controls.invoke_request_re_pair(retry_tv.to_string().into());
+        assert_eq!(wizard.get_step(), 3);
+        assert_eq!(wizard.get_tv_name(), "Retry TV");
+        assert_eq!(wizard.get_selected_vendor_name(), "Mock");
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        wizard.set_mac_notice("differs".into());
+        wizard.set_pair_tv_id(uuid::Uuid::new_v4().to_string().into());
+        wizard.set_mac_reported("84:90:0A:63:A9:94".into());
+        wizard.invoke_use_reported_mac();
+        wait_for_ui(&app, |app| {
+            !app.global::<PairingWizard>().get_mac_error().is_empty()
+        });
+        assert_eq!(wizard.get_mac_notice(), "differs");
+        wizard.set_pair_tv_id(retry_tv.to_string().into());
+        wizard.invoke_use_reported_mac();
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_mac_notice() == "saved"
+        });
+        assert!(wizard.get_mac_error().is_empty());
+        assert_eq!(
+            daemon.get_tv_config(retry_tv).await.unwrap().config["mac"],
+            "84:90:0A:63:A9:94"
+        );
+        wizard.invoke_finish();
+        assert!(!wizard.get_active());
+
+        let tray_path = directory.path().join("tray.toml");
+        let tray_link =
+            zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
+                .await
+                .unwrap();
+        let (notifier, mut notifications) = tisvlay_tray::notify::Notifier::capturing(
+            tisvlay_tray::notify::load_settings(&tray_path).unwrap(),
+        );
+        let tray_service = tokio::spawn(tisvlay_tray::notify::serve_settings(
+            tray_link,
+            "main".into(),
+            tray_path,
+            notifier,
+        ));
+        let tray_client = TrayClient::connect(&user_socket, "main").await.unwrap();
+        let mut tray_events = tisvlay::StateWatcher::new(
+            &daemon,
+            Some(&client),
+            Some(&tray_client),
+            Default::default(),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !tray_client.is_available().await {
+                tray_events.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        *tray_clients.write().await = Some(tray_client.clone());
+        let tray_ui = app.global::<Tray>();
+        tray_ui.invoke_set_notification("tv_wake".into(), false);
+        tray_ui.invoke_set_notification("tv_pairing".into(), false);
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let settings = tray_client.notification_settings().await.unwrap();
+                if !settings.tv_wake && !settings.tv_pairing {
+                    assert!(settings.tv_connection);
+                    break;
+                }
+                tray_events.next().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        tray_ui.invoke_send_test_notification();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), notifications.recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        controls.invoke_reload_config();
+        wait_for_ui(&app, |app| {
+            app.global::<Errors>().get_reload().tone == "error"
+        });
+        assert!(!app.global::<Errors>().get_reload().message.is_empty());
+
+        profiles.set_selected_kind(ProfileKind::System);
+        profiles.set_selected_uuid(original.clone());
+        expect_toast(
+            &app,
+            || profiles.invoke_value_edited("missing".into(), "screen_off".into()),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_value_edited_number("on_startup".into(), 10),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_value_edited_bool("on_startup".into(), true),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_restore_edited("missing".into(), true),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_remote_gated("missing".into(), true),
+            "Save change failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_reset_field("missing".into()),
+            "Reset field failed",
+        );
+        let missing = SharedString::from(uuid::Uuid::new_v4().to_string());
+        profiles.set_selected_uuid(missing.clone());
+        expect_toast(
+            &app,
+            || profiles.invoke_rename_selected("Missing".into()),
+            "Rename failed",
+        );
+        expect_toast(&app, || profiles.invoke_reset_all(), "Reset all failed");
+        expect_toast(
+            &app,
+            || {
+                profiles.invoke_confirm_duplicate(
+                    ProfileKind::System,
+                    missing.clone(),
+                    "Missing copy".into(),
+                );
+            },
+            "Duplicate profile failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_confirm_delete(ProfileKind::System, missing.clone()),
+            "Delete profile failed",
+        );
+        *session.write().await = None;
+        expect_toast(
+            &app,
+            || profiles.invoke_confirm_create(ProfileKind::User, "Unavailable".into()),
+            "Create profile failed",
+        );
+        expect_toast(
+            &app,
+            || {
+                profiles.invoke_confirm_duplicate(
+                    ProfileKind::User,
+                    missing.clone(),
+                    "Unavailable".into(),
+                );
+            },
+            "Duplicate profile failed",
+        );
+        expect_toast(
+            &app,
+            || profiles.invoke_confirm_delete(ProfileKind::User, missing.clone()),
+            "Delete profile failed",
+        );
+        *session.write().await = Some(client.clone());
+
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_volume(missing.clone(), 20),
+            "Couldn't change volume",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_backlight(missing.clone(), 20),
+            "Couldn't change backlight",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_screen(missing.clone(), false),
+            "Couldn't turn screen off",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_screen(missing.clone(), true),
+            "Couldn't turn screen on",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_switch_input(missing.clone(), "HDMI_1".into()),
+            "Couldn't switch input",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_managed(missing.clone(), true),
+            "Couldn't update managed",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_primary_input(missing.clone(), "HDMI_1".into()),
+            "Couldn't change primary input",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_power_on(missing.clone()),
+            "Power on failed",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_power_off(missing.clone()),
+            "Power off failed",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_remove_tv(missing.clone()),
+            "Couldn't remove TV",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_system_profile(missing.clone(), "Work".into()),
+            "Couldn't change system profile",
+        );
+        expect_tv_error(
+            &app,
+            || controls.invoke_set_user_profile(tv.to_string().into(), "Missing profile".into()),
+            "Couldn't change user profile",
+        );
+        tray_service.abort();
+        watcher_refreshes_services_and_models().await;
+    }
 
     fn outcome(
         file: &str,
@@ -2760,6 +4039,63 @@ mod tests {
     }
 
     #[test]
+    fn find_tv_by_uuid_returns_only_the_matching_row() {
+        let tvs = ModelRc::new(VecModel::from(vec![
+            TvViewModel {
+                uuid: SharedString::from("tv-1"),
+                name: SharedString::from("Office"),
+                ..Default::default()
+            },
+            TvViewModel {
+                uuid: SharedString::from("tv-2"),
+                name: SharedString::from("Bedroom"),
+                ..Default::default()
+            },
+        ]));
+
+        assert_eq!(
+            find_tv_by_uuid(&tvs, "tv-2").map(|tv| tv.name),
+            Some(SharedString::from("Bedroom"))
+        );
+        assert!(find_tv_by_uuid(&tvs, "missing").is_none());
+    }
+
+    #[test]
+    fn current_selection_ignores_empty_invalid_and_none_selections() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let profiles = app.global::<Profiles>();
+        let weak = app.as_weak();
+
+        assert!(current_selection(&weak).is_none());
+
+        profiles.set_selected_kind(ProfileKind::System);
+        assert!(
+            current_selection(&weak).is_none(),
+            "empty UUID is not selected"
+        );
+
+        profiles.set_selected_uuid(SharedString::from("not-a-uuid"));
+        assert!(
+            current_selection(&weak).is_none(),
+            "invalid UUID is ignored"
+        );
+
+        let expected = uuid::Uuid::new_v4();
+        profiles.set_selected_uuid(SharedString::from(expected.to_string()));
+        assert_eq!(
+            current_selection(&weak),
+            Some((EditorKind::System, expected))
+        );
+
+        profiles.set_selected_kind(ProfileKind::None);
+        assert!(
+            current_selection(&weak).is_none(),
+            "None kind is not selected"
+        );
+    }
+
+    #[test]
     fn error_text_renders_the_cause_chain() {
         let error = tisvlay::Error::Transport {
             what: "connect to the daemon socket",
@@ -2769,5 +4105,120 @@ mod tests {
             error_text(&error),
             "connect to the daemon socket: permission denied"
         );
+    }
+
+    #[test]
+    fn volume_callback_clamps_levels_and_preserves_tv_id() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let calls: Arc<Mutex<Vec<(String, u8)>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+
+        register_volume_callback(&app.global::<Daemon>(), move |tv_id, value| {
+            recorded.lock().push((tv_id, value));
+        });
+
+        let daemon = app.global::<Daemon>();
+        daemon.invoke_set_volume(SharedString::from("tv-low"), -5);
+        daemon.invoke_set_volume(SharedString::from("tv-mid"), 40);
+        daemon.invoke_set_volume(SharedString::from("tv-high"), 120);
+
+        assert_eq!(
+            *calls.lock(),
+            vec![
+                ("tv-low".into(), 0),
+                ("tv-mid".into(), 40),
+                ("tv-high".into(), 100),
+            ]
+        );
+    }
+
+    #[test]
+    fn mute_and_screen_callbacks_preserve_tv_id_and_boolean_intent() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let calls: Arc<Mutex<Vec<(String, String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let muted_calls = Arc::clone(&calls);
+        register_mute_callback(&app.global::<Daemon>(), move |tv_id, muted| {
+            muted_calls.lock().push(("mute".into(), tv_id, muted));
+        });
+        let screen_calls = Arc::clone(&calls);
+        register_screen_callback(&app.global::<Daemon>(), move |tv_id, on| {
+            screen_calls.lock().push(("screen".into(), tv_id, on));
+        });
+
+        let daemon = app.global::<Daemon>();
+        daemon.invoke_set_mute(SharedString::from("tv-mute"), true);
+        daemon.invoke_set_screen(SharedString::from("tv-screen"), false);
+
+        assert_eq!(
+            *calls.lock(),
+            vec![
+                ("mute".into(), "tv-mute".into(), true),
+                ("screen".into(), "tv-screen".into(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn backlight_and_input_callbacks_preserve_clamped_values_and_ids() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        let calls: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let backlight_calls = Arc::clone(&calls);
+        register_backlight_callback(&app.global::<Daemon>(), move |tv_id, level| {
+            backlight_calls
+                .lock()
+                .push(("backlight".into(), tv_id, level.to_string()));
+        });
+        let input_calls = Arc::clone(&calls);
+        register_input_callback(&app.global::<Daemon>(), move |tv_id, input| {
+            input_calls.lock().push(("input".into(), tv_id, input));
+        });
+
+        let daemon = app.global::<Daemon>();
+        daemon.invoke_set_backlight(SharedString::from("tv-backlight"), 140);
+        daemon.invoke_switch_input(SharedString::from("tv-input"), SharedString::from("HDMI_2"));
+
+        assert_eq!(
+            *calls.lock(),
+            vec![
+                ("backlight".into(), "tv-backlight".into(), "100".into()),
+                ("input".into(), "tv-input".into(), "HDMI_2".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn with_id_forwards_a_parsed_uuid_to_the_sdk_call() {
+        let expected = uuid::Uuid::new_v4();
+        let id_text = expected.to_string();
+        let actual = with_id(&id_text, |id| async move { Ok::<_, tisvlay::Error>(id) })
+            .await
+            .expect("a valid model id parses");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn with_id_rejects_a_malformed_id_before_calling_the_sdk() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        let call_was_made = Arc::clone(&called);
+        let error = with_id("not-a-uuid", move |_| {
+            call_was_made.store(true, Ordering::SeqCst);
+            async { Ok::<_, tisvlay::Error>(()) }
+        })
+        .await
+        .expect_err("malformed model ids are rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "invalid id 'not-a-uuid' in the window's model"
+        );
+        assert!(!called.load(Ordering::SeqCst));
     }
 }
