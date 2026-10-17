@@ -92,9 +92,13 @@ test:
 # coverage data for doctest harnesses — they execute but don't
 # contribute to the report.
 #
-# Each run clears stale `.profraw` first so `report` aggregates only
-# this run. No rebuild cost. If coverage still looks off, escalate
-# to `cargo clean` (compile-cache, separate axis).
+# Each run first clears the workspace crates' instrumented artifacts
+# and stale `.profraw`. `report` reads every test binary in the target
+# dir, and one built from older source counts its files' regions again,
+# uncovered, pulling the total below what this run covered. The clean
+# costs a rebuild of the workspace crates, which CI does anyway
+# (rust-cache doesn't keep them); dependencies stay cached.
+# `_cov-collect` gets the same clean from `cargo llvm-cov`'s default.
 [group('check')]
 test-ci:
     #!/usr/bin/env bash
@@ -104,7 +108,7 @@ test-ci:
     export {{ deny_warnings }}
     export CARGO_TARGET_DIR=target/llvm-cov-target
     eval "$(cargo llvm-cov show-env --sh)"
-    cargo llvm-cov clean --profraw-only
+    cargo llvm-cov clean --workspace
     cargo clippy --workspace --all-targets --all-features
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
