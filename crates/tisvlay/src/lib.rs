@@ -371,8 +371,7 @@ impl DaemonClient {
                     {
                         let mut state = mirror.lock().expect("mirror lock");
                         if !alive {
-                            state.tvs.clear();
-                            state.profiles.clear();
+                            state.end_lifetime();
                         }
                         state.daemon_alive = alive;
                     }

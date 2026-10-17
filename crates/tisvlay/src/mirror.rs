@@ -2,7 +2,7 @@
 //! kept current by subscriber tasks and readable as a snapshot. Deltas
 //! surface as [`StateEvent`](crate::StateEvent)s on a broadcast channel.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde_json::Value;
 use tisvlay_core::SystemProfileConfig;
@@ -10,6 +10,7 @@ use tisvlay_protocol::payload::StatePayload;
 use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 use zenoh::sample::{Sample, SampleKind};
+use zenoh::session::ZenohId;
 
 use crate::StateEvent;
 
@@ -31,12 +32,36 @@ pub(crate) struct SystemMirror {
     pub tvs: BTreeMap<Uuid, TvRow>,
     pub profiles: BTreeMap<Uuid, SystemProfileConfig>,
     pub daemon_alive: bool,
+    /// The sessions whose samples built this lifetime's state.
+    sources: HashSet<ZenohId>,
+    /// The sessions of lifetimes that ended. A sample one sent just before
+    /// it stopped can still arrive after its liveliness token went, since
+    /// subscriptions aren't ordered against each other; it's dropped, so
+    /// a stopped daemon's state never comes back. A restarted daemon is a
+    /// new session, so its samples apply even ahead of its token.
+    retired: HashSet<ZenohId>,
 }
 
 impl SystemMirror {
+    /// The daemon's lifetime ended: drop its state, and any sample its
+    /// sessions still send.
+    pub(crate) fn end_lifetime(&mut self) {
+        self.tvs.clear();
+        self.profiles.clear();
+        self.retired.extend(self.sources.drain());
+    }
+
     /// Apply one system-socket sample; the returned event (if any) is
     /// what a watcher should broadcast.
     pub(crate) fn apply(&mut self, site: &str, sample: &Sample) -> Option<StateEvent> {
+        // The daemon's publishers stamp their samples with their source.
+        if let Some(info) = sample.source_info() {
+            let session = info.source_id().zid();
+            if self.retired.contains(&session) {
+                return None;
+            }
+            self.sources.insert(session);
+        }
         let key = sample.key_expr().as_str();
         if let Some((tv, path)) = keys::parse_tv_path(site, key) {
             if sample.kind() == SampleKind::Delete {
@@ -157,5 +182,42 @@ fn assign<T: serde::de::DeserializeOwned>(slot: &mut Option<T>, sample: &Sample)
             true
         }
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zenoh::key_expr::KeyExpr;
+    use zenoh::sample::{SampleBuilder, SourceInfo};
+    use zenoh::session::EntityGlobalId;
+
+    use super::*;
+
+    /// A TV's `meta` sample as the daemon session `session` publishes it.
+    fn meta_from(session: &str, tv: Uuid) -> Sample {
+        let key = KeyExpr::try_from(keys::tv_path("t", &tv, payload::Meta::PATH))
+            .expect("a TV key is a valid key expression");
+        let body = serde_json::to_vec(&payload::Meta::new(false)).expect("meta serializes");
+        let source = EntityGlobalId::new(session.parse().expect("a hex session id"), 1);
+        SampleBuilder::put(key, body)
+            .source_info(SourceInfo::new(source, 0))
+            .into()
+    }
+
+    /// A sample a stopped daemon sent before its token went, arriving
+    /// after, stays out; a restarted daemon's samples apply, even ahead of
+    /// its token.
+    #[test]
+    fn a_stopped_daemons_late_samples_stay_out() {
+        let (old_tv, new_tv) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut mirror = SystemMirror::default();
+        assert!(mirror.apply("t", &meta_from("a1", old_tv)).is_some());
+        mirror.end_lifetime();
+        assert!(mirror.tvs.is_empty());
+
+        assert!(mirror.apply("t", &meta_from("a1", old_tv)).is_none());
+        assert!(mirror.tvs.is_empty(), "the stopped daemon's TV stays gone");
+        assert!(mirror.apply("t", &meta_from("b2", new_tv)).is_some());
+        assert_eq!(mirror.tvs.keys().collect::<Vec<_>>(), [&new_tv]);
     }
 }
