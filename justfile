@@ -243,37 +243,44 @@ i18n-update: i18n-extract
         fi; \
     done
 
-# --- Documentation site (mdBook → Read the Docs) ------------------------
+# --- Documentation site (mdBook → GitHub Pages) -------------------------
 #
 # User-facing docs live in docs/book/ (book.toml + src/), separate from
 # the developer-facing docs/*.md. The partials under src/generated/ (the
 # CLI reference, the stock profile defaults, the release version) are
-# rendered from the code by the tisvlay-docgen crate and committed; Read
-# the Docs builds a plain `mdbook build`, so it never runs cargo — CI
-# gates the partials' freshness and the built book's local links/fragments.
+# rendered from the code by the tisvlay-docgen crate and committed. GitHub
+# Pages publishes the built HTML; the optional Read the Docs config remains
+# an alternate host. Neither host runs cargo to regenerate partials.
 
 # Generated include partials.
 generated_docs := "docs/book/src/generated"
 
-# Build the docs site into docs/book/book/ (gitignored). Installs the
-# mdbook-mermaid JS assets first (gitignored, regenerated each build).
-[group('docs')]
-docs-build:
+# Build and stage the static site, including LFS-backed README images.
+[private]
+_docs-build:
     mdbook-mermaid install docs/book
     mdbook build docs/book
+    mkdir -p docs/book/book/docs
+    cp -a docs/artwork docs/screenshots docs/book/book/docs/
+
+# Build the docs site into docs/book/book/ (gitignored).
+[group('docs')]
+docs-build: _docs-build
 
 # Check local links and heading fragments in the rendered HTML. External
 # links are skipped so this gate is deterministic and needs no network.
+# mdBook's generated 404 page links to the deployment root (/TisVlay/), which
+# is valid on Pages but cannot resolve as a local file.
 [group('docs')]
 docs-links: docs-build
     lychee --offline --include-fragments=anchor-only \
-        --root-dir "$PWD/docs/book/book" docs/book/book/
+        --root-dir "$PWD/docs/book/book" \
+        --exclude-path '(^|/)404\.html$' docs/book/book/
 
 # Serve the docs site with live reload at http://localhost:3000.
 [group('docs')]
-docs-serve:
-    mdbook-mermaid install docs/book
-    mdbook serve docs/book --open
+docs-serve: _docs-build
+    MDBOOK_OUTPUT__HTML__SITE_URL=/ mdbook serve docs/book --open
 
 # Regenerate every generated partial from the code it documents.
 [group('docs')]

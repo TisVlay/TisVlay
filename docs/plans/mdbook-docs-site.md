@@ -1,6 +1,12 @@
-# User-facing documentation site: mdBook → Read the Docs
+# User-facing documentation site: mdBook hosting
 
-## Status (after merging main, 2026-06-11)
+## Current hosting decision (2026-10-16)
+
+GitHub Pages is the canonical host at `https://tisvlay.github.io/TisVlay/`. The CI `docs` job builds and validates the mdBook; pushes to `main` upload the rendered site and deploy it with the Pages Actions workflow. Repository Settings must select **GitHub Actions** as the Pages source for the first deployment. The root README links to the Pages site. `.config/.readthedocs.yaml` remains as an optional alternate build, not the default host.
+
+The sections below preserve the original Read the Docs implementation and content audit for history. This plan can be retired after Pages is enabled and its first deployment succeeds.
+
+## Original implementation status (after merging main, 2026-06-11)
 
 Implementation §1–§3 and §5–§7 are **done** on this branch (CLI lib refactor `a33d250`, scaffold + content + RTD `9cb1dde`, mermaid `3e16c0a`): the site builds, the CLI reference is auto-generated with a CI freshness gate, RTD is connected, and the README is the concise variant linking to the site. §4's v1 pages all have real content (introduction, installation, quick-start, pairing, CLI, configuration, firewall-discovery, troubleshooting, requirements); the four planned stubs (profiles, session-automation, gui-tray, FAQ) remain "work in progress" pages by design.
 

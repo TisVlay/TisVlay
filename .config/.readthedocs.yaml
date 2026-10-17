@@ -1,4 +1,5 @@
-# Read the Docs build for the user-facing mdBook site (docs/book/).
+# Optional Read the Docs build for the user-facing mdBook site (docs/book/).
+# GitHub Pages is the canonical host; see docs/plans/mdbook-docs-site.md.
 # The developer docs under docs/*.md are NOT part of this build.
 #
 # Read the Docs only looks for this file at the repo root. The project's
@@ -51,4 +52,4 @@ build:
       html:
         # Regenerate the gitignored mermaid JS assets (idempotent on book.toml).
         - PATH=$HOME/bin:$PATH mdbook-mermaid install docs/book
-        - PATH=$HOME/bin:$PATH mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html
+        - PATH=$HOME/bin:$PATH MDBOOK_OUTPUT__HTML__SITE_URL="/$READTHEDOCS_LANGUAGE/$READTHEDOCS_VERSION/" mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html
