@@ -411,8 +411,9 @@ async fn wire() -> Wire {
 - `tisvlay-daemon/tests/it/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
 - `tisvlay-daemon/tests/it/access.rs` — socket-permission flips against a live daemon: granting or revoking access mid-run, the kernel-level path a seat ACL change takes.
 - `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the ScreenSaver adapter (via `FakeScreenSaver`), user-store persistence, and the idle-timeout watch.
-- `tisvlay-tray/tests/it/mirror.rs` — the tray's state mirror against the real wire, `Mirror::apply_*` fed by plain subscribers. No ksni (the SNI bus needs a desktop); the mirror is the part with logic.
+- `tisvlay-tray/tests/it/mirror.rs` — the tray's pure state projection against the real wire, `Mirror::apply_*` fed by plain subscribers, without ksni.
 - `tisvlay-tray/tests/it/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
+- `tisvlay-tray/src/lib.rs` (`orchestration_tests`) — real daemon/session stacks drive the production mirror pumps, command dispatcher, scroll coalescers, and captured pairing/liveliness notifications. A private handle adapter substitutes an in-memory tray for ksni updates without changing RPC or subscription behavior. Daemon-lifetime changes must discard old TVs and system profiles; the session-owned user catalog is independent.
 - `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, and discarding cached TVs/profiles across daemon lifetimes.
 - `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, remote sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
 
@@ -423,6 +424,14 @@ async fn wire() -> Wire {
 - **A get matching zero queryables completes instantly with no reply.** The bridge may still be declaring its queryables right after `serve()` returns, so the shared `call()` helpers retry the no-reply case under a deadline. Only the first rpc after boot needs this; a reply (even an error reply) proves the queryable is up.
 - **Hydration is subscriber-history-only.** The daemon's cached publications replay to late joiners only through an `AdvancedSubscriber` with history enabled (`.history(HistoryConfig::default().detect_late_publishers())`). A plain subscriber sees only live samples; a `get` does not serve the cache.
 - **Deadline-bounded drains, not sleeps.** `recv_until` / `assert_no_sample` helpers time out against a deadline and panic with everything they saw, so a hang produces a diagnosable failure instead of a silent stall.
+
+## Wayland transport testing
+
+`tisvlay-runtime/src/wayland/tests.rs` runs a minimal `wayland-server` display over a Unix socket pair, not the user's compositor. It advertises seat/idle-notifier globals, records requested timeouts and bound versions, and emits real idle/resume events. Tests verify tag forwarding, version caps, missing globals, closed sockets, compositor disconnect, and stopping the watch when its handle drops. The server has its own stop pipe and joins its thread at teardown. Environment-based connection errors run in a deadline-bounded child process with isolated Wayland variables; no test mutates the test runner's environment. Server bindings are dev dependencies only.
+
+```bash
+cargo nextest run --workspace --all-features -E 'package(tisvlay-runtime) & test(/^wayland::tests::/)'
+```
 
 ## GUI testing (i-slint-backend-testing)
 

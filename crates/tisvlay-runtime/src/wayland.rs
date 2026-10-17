@@ -395,3 +395,6 @@ impl std::fmt::Display for WaylandIdleError {
 }
 
 impl std::error::Error for WaylandIdleError {}
+
+#[cfg(test)]
+mod tests;

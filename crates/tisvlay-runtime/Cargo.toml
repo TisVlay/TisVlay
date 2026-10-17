@@ -66,6 +66,8 @@ mutter-idle = ["wayland", "dep:zbus", "dep:futures-util"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+wayland-server = { workspace = true }
+wayland-protocols = { workspace = true, features = ["server"] }
 
 [lints]
 workspace = true

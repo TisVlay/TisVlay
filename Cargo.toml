@@ -144,6 +144,7 @@ futures-core = "0.3"
 
 # Wayland (for idle detection / greeter wake)
 wayland-client = "0.31"
+wayland-server = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # PipeWire graph introspection (the session's screencast detector). Native
