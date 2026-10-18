@@ -9,16 +9,16 @@
 [![License](https://img.shields.io/github/license/TisVlay/TisVlay)](https://github.com/TisVlay/TisVlay/blob/main/LICENSE)
 
 ## ✨ Features
-- 📺 Control multiple TVs & projectors just like conventional displays
+- 📺 Conventional multi-monitor control
   - Power on/off with PC, Screen on/off with lock screen
   - Easily adjust backlight, volume, active input, and more
-- 🤖 Event driven automation via system and user desktop events
+- 🤖 Automation via system/user events
   - System boot, reboot, shutdown, suspend, wake, DPMS
   - User lock/unlock, idle, remote session connect/disconnect
-- 🧰 Flexible profile customization and switching
+- 🧰 Flexible profile customization
   - System-wide and per-user profiles for per-device behavior
   - Unified API and CLI for further scripting and integrations
-- 🧩 Vendor agnostic & modular architecture
+- 🧩 Modular & vendor agnostic
   - Supports HDMI CEC, Network IP Control (LG WebOS SSAP)
   - Generalized for further interfaces, protocols, and transports
 - 🩺 Self-healing connectivity
