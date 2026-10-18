@@ -5,40 +5,35 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
+use tisvlay_cli::hydrate;
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{tv, vendors};
 use tisvlay_protocol::keys;
 use uuid::Uuid;
 use zenoh::Session;
-use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
 
 use crate::call;
 
-/// Hydrate from the publisher caches (AdvancedSubscriber history — the
-/// cache's queryable lives under the verbatim `@adv` suffix, so plain
-/// wildcard gets can't reach it) and render one line per TV.
+/// Hydrate every TV's keys from the publisher caches and render one line
+/// per TV.
 pub(crate) async fn list(
     session: &Session,
     caller: &Caller,
     site: &str,
     json_out: bool,
 ) -> Result<()> {
-    let subscriber = session
-        .declare_subscriber(keys::tv_all(site))
-        .history(HistoryConfig::default().detect_late_publishers())
-        .await
-        .map_err(|e| anyhow!("subscribe: {e}"))?;
+    let values = hydrate(
+        session,
+        &keys::tv_all(site),
+        Duration::from_millis(400),
+        |_| false,
+    )
+    .await
+    .map_err(|e| anyhow!("subscribe: {e}"))?;
     let mut tvs: BTreeMap<Uuid, BTreeMap<String, Value>> = BTreeMap::new();
-    // History replays immediately; stop after a quiet window.
-    while let Ok(Ok(sample)) =
-        tokio::time::timeout(Duration::from_millis(400), subscriber.recv_async()).await
-    {
-        if sample.kind() != SampleKind::Put {
-            continue;
-        }
-        if let Some((id, path)) = keys::parse_tv_path(site, sample.key_expr().as_str()) {
-            let value = serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+    for (key, value) in values {
+        if let Some((id, path)) = keys::parse_tv_path(site, &key) {
             tvs.entry(id).or_default().insert(path.to_string(), value);
         }
     }

@@ -17,7 +17,7 @@ pub struct UpdateConfig {
 }
 ```
 
-`Option<Option<_>>` keeps "leave alone" apart from "clear" (with `serde_with`'s double-option or a hand-written deserializer). The immutable-key check moves into decoding (`id`/`vendor` in the flattened map are refused), `apply_config_patch` becomes field assignments plus the vendor merge, and the key-names-only `Debug` covers the `vendor` map alone. The GUI's edit-pane save and the CLI's `config-set` build the struct instead of a map. Alternatively, drop the settings half and have the edit pane call the dedicated setters, leaving `update-config` vendor-only.
+`Option<Option<_>>` keeps "leave alone" apart from "clear" (with `serde_with`'s double-option or a hand-written deserializer). The immutable-key check moves into decoding (`id`/`vendor` in the flattened map are refused), `apply_config_patch` becomes field assignments plus the vendor merge, and the key-names-only `Debug` covers the `vendor` map alone. The GUI's edit-pane save and the CLI's `config <tv> <patch>` build the struct instead of a map. Alternatively, drop the settings half and have the edit pane call the dedicated setters, leaving `update-config` vendor-only.
 
 ## Trigger conditions
 

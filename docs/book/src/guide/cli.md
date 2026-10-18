@@ -12,12 +12,12 @@ Everything in the TisVlay app is also available from a terminal with the `tisvla
 | **+** (add a TV) | `tisvlay discover`, then `tisvlay pair` |
 | **Power on / off** | `tisvlay power <id> on\|off` |
 | **Screen** switch | `tisvlay screen <id> on\|off` |
-| **Backlight**, **Volume**, **Mute** | `tisvlay backlight`, `set-volume`, `mute` |
+| **Backlight**, **Volume**, **Mute** | `tisvlay backlight`, `tisvlay volume`, `tisvlay mute` |
 | **Current** input / **Primary** input | `tisvlay input`, `tisvlay primary-input` |
-| **Managed** switch | `tisvlay managed <id> true\|false` |
-| **PROFILES** dropdowns | `tisvlay assign`, `tisvlay user-profile assign` |
-| **Profiles** page | `tisvlay profile …`, `tisvlay user-profile …` |
-| **CONFIG** (edit a TV) | `tisvlay config`, `tisvlay config-set` |
+| **Managed** switch | `tisvlay managed <id> on\|off` |
+| **PROFILES** dropdowns | `tisvlay system-profile`, `tisvlay user-profile` |
+| **Profiles** page | `tisvlay profile system …`, `tisvlay profile user …` |
+| **CONFIG** (edit a TV) | `tisvlay config` |
 | **Re-pair** / **Remove TV** | `tisvlay repair`, `tisvlay remove` |
 | Sidebar **Reload** | `tisvlay reload` |
 | **Enable TV control** banner | `tisvlay enable-access` |
@@ -28,6 +28,25 @@ Everything in the TisVlay app is also available from a terminal with the `tisvla
 - `tisvlay list` shows every TV and its current state (connection, power, input, …).
 - `tisvlay status` checks that the service is up and reports its release.
 - `tisvlay watch` streams every state change (history first, then live). It's the go-to for scripting and for watching automation happen.
+
+## Reading and changing a TV
+
+Every per-TV setting and state works the same way: give a value to change it, leave the value out to read it.
+
+```sh
+tisvlay volume <id> 30        # set the volume
+tisvlay volume <id>           # print it: 30
+tisvlay mute <id> --toggle    # flip mute, printing what was sent: on
+```
+
+- A read prints what you'd type to set it (`on`/`off`, a number, an input or profile id), so its output can be fed straight back in. With `--json` it prints the bare JSON value.
+- On/off settings accept `on`/`off` (or `true`/`false`, `yes`/`no`, `1`/`0`) and take `--toggle`.
+- Settings that can be unset (the primary input, the assigned profiles) take `--clear`. A TV with no assigned profile reads as the default profile's id; an unset primary input prints nothing.
+- Commands that change something print nothing when they succeed. A failure exits non-zero with the reason on stderr.
+- `power` reads `on` only when the TV is connected and awake, so a TV switched off with its remote reads `off`, and `power --toggle` wakes it.
+- Values the TV reports, such as volume or the current input, come from its last report. If the TV is disconnected the command still prints the value, with a warning on stderr that it may be stale; if the TV hasn't reported it since the service started, the command fails.
+- Two `--toggle`s in quick succession can both see the old value, so a hotkey can miss a very fast double press.
+- In a script, quote a read you pass on to another command: an empty result would otherwise turn the second command into a read.
 
 ## Scripting
 

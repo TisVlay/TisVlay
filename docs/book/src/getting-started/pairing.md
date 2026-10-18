@@ -77,17 +77,17 @@ tisvlay pair "<name>" --vendor lg --params '{"ip":"192.168.1.100"}'
 ```
 
 - `"<name>"` is the friendly name, shown in `tisvlay list` and the app.
-- `--vendor lg` selects the backend. `tisvlay vendors` lists the registered backends, and `tisvlay schema <vendor>` shows a backend's pairing fields.
+- `--vendor lg` selects the backend. `tisvlay vendor` lists the registered backends, and `tisvlay vendor <vendor>` shows a backend's pairing fields.
 - `--params` is the backend's pairing fields as a JSON object. For LG: `ip` (required) and `mac` (optional; `wake_id` is accepted as an alias). Leave `mac` out and tisvlay reads it from the TV.
 
-Accept the prompt on the TV. On success the TV appears in `tisvlay list` with its **UUID**, the id you pass to every other command. Pairing by IP address works whether or not [discovery](../operations/firewall-discovery.md) can see the TV.
+Accept the prompt on the TV. On success the command prints the TV's **UUID**, the id you pass to every other command (`tisvlay list` shows it too). Pairing by IP address works whether or not [discovery](../operations/firewall-discovery.md) can see the TV.
 
 The command reports the MAC on a `mac:` line:
 
 - `mac: detected AA:BB:CC:DD:EE:FF (saved)`: you didn't supply a MAC, so the TV's was stored.
 - `mac: AA:BB:CC:DD:EE:FF (matches the TV)`: the MAC you supplied is right.
-- `mac: TV reports …, configured …; to use it: tisvlay config-set <id> '{"mac":"…"}'`: yours differs and was kept; run the printed command to switch to the TV's.
+- `mac: TV reports …, configured …; to use it: tisvlay config <id> '{"mac":"…"}'`: yours differs and was kept; run the printed command to switch to the TV's.
 
-To pair a TV for manual control only, mark it unmanaged afterward with `tisvlay managed <id> false`. To re-pair, run `tisvlay repair <id>`.
+To pair a TV for manual control only, add `--unmanaged` (or later run `tisvlay managed <id> off`). To re-pair, run `tisvlay repair <id>`.
 
 </details>

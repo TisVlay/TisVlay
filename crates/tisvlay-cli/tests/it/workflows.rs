@@ -1,9 +1,24 @@
+#![expect(
+    unsafe_code,
+    reason = "sending SIGINT to the spawned CLI goes through libc::kill"
+)]
+
 use std::path::PathBuf;
-use std::process::Output;
+use std::process::{Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
+use tisvlay_core::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
+use tisvlay_protocol::caller::Caller;
+use tisvlay_protocol::endpoint::manager;
+use tisvlay_protocol::rpc;
+use tokio::io::{AsyncBufReadExt, BufReader};
+
+/// How long `eventually` keeps polling a getter: a set's ack and the
+/// state update it causes travel separately, so a read right after a
+/// write can still see the old value.
+const SETTLE: Duration = Duration::from_secs(10);
 
 struct CliDaemon {
     _directory: tempfile::TempDir,
@@ -55,34 +70,43 @@ impl CliDaemon {
         rig
     }
 
+    fn cli(&self, args: &[&str]) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_tisvlay"));
+        command
+            .env_remove("COMPLETE")
+            .env("TOKIO_WORKER_THREADS", "2")
+            .arg("--socket")
+            .arg(&self.socket)
+            .arg("--user-socket")
+            .arg(&self.user_socket)
+            .args(["--site", "test"])
+            .args(args)
+            .kill_on_drop(true);
+        command
+    }
+
     async fn command(&self, args: &[&str]) -> Output {
-        tokio::time::timeout(
-            Duration::from_secs(15),
-            tokio::process::Command::new(env!("CARGO_BIN_EXE_tisvlay"))
-                .env_remove("COMPLETE")
-                .env("TOKIO_WORKER_THREADS", "2")
-                .arg("--socket")
-                .arg(&self.socket)
-                .arg("--user-socket")
-                .arg(&self.user_socket)
-                .args(["--site", "test"])
-                .args(args)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .expect("CLI command timed out")
-        .expect("run tisvlay")
+        tokio::time::timeout(Duration::from_secs(15), self.cli(args).output())
+            .await
+            .expect("CLI command timed out")
+            .expect("run tisvlay")
+    }
+
+    /// Run a command that must succeed: its stdout and stderr.
+    async fn run(&self, args: &[&str]) -> (String, String) {
+        let output = self.command(args).await;
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{args:?} failed: {stderr}");
+        (String::from_utf8(output.stdout).unwrap(), stderr)
     }
 
     async fn success(&self, args: &[&str]) -> String {
-        let output = self.command(args).await;
-        assert!(
-            output.status.success(),
-            "{args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap()
+        self.run(args).await.0
+    }
+
+    /// Run a writer, which prints nothing on success.
+    async fn silent(&self, args: &[&str]) {
+        assert_eq!(self.success(args).await, "", "{args:?} printed output");
     }
 
     async fn json(&self, args: &[&str]) -> Value {
@@ -100,97 +124,191 @@ impl CliDaemon {
             "{args:?}: expected {expected:?}, got {error:?}"
         );
     }
+
+    /// Poll a getter until it prints `expected`.
+    async fn eventually(&self, args: &[&str], expected: &str) {
+        let deadline = tokio::time::Instant::now() + SETTLE;
+        loop {
+            let printed = self.success(args).await;
+            if printed.trim() == expected {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{args:?} printed {printed:?}, expected {expected:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Pair a mock TV that accepts at once; `pair` prints its UUID.
+    async fn pair(&self, name: &str, address: &str) -> String {
+        let params = json!({ "address": address, "pairing": "accept" }).to_string();
+        let id = self
+            .success(&["pair", name, "--vendor", "mock", "--params", &params])
+            .await;
+        let id = id.trim().to_string();
+        uuid::Uuid::parse_str(&id).unwrap();
+        id
+    }
+
+    /// Enroll a mock TV without pairing, straight over the add-tv rpc (the
+    /// CLI only pairs).
+    async fn add(&self, name: &str, config: Value) -> String {
+        let session =
+            zenoh::open(tisvlay_protocol::bootstrap::client_config(&self.socket).unwrap())
+                .await
+                .unwrap();
+        let request = rpc::AddTv {
+            id: None,
+            name: name.into(),
+            vendor: "mock".into(),
+            managed: true,
+            config: serde_json::from_value(config).unwrap(),
+        };
+        let created = Caller::new(session, "test")
+            .call::<manager::AddTv>(&(), &request)
+            .await
+            .unwrap();
+        created.id.to_string()
+    }
+
+    /// Wait until `list` reports the TV's link down.
+    async fn until_disconnected(&self, tv: &str) {
+        let deadline = tokio::time::Instant::now() + SETTLE;
+        while self.json(&["list"]).await[tv]["state/link"]["connected"] != false {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{tv} never disconnected"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn tv_commands_round_trip_and_render_state() {
+async fn tv_attributes_set_read_back_and_toggle() {
     let rig = CliDaemon::start().await;
     assert!(rig.success(&["status"]).await.contains("daemon"));
     assert!(rig.json(&["status"]).await.is_object());
-    assert_eq!(rig.json(&["vendors"]).await[0]["id"], "mock");
-    let schema = rig.json(&["schema", "mock"]).await;
+    assert_eq!(rig.json(&["vendor"]).await[0]["id"], "mock");
+    let vendor = rig.json(&["vendor", "mock"]).await;
+    assert_eq!(vendor["id"], "mock");
     assert!(
-        schema
+        vendor["schema"]
             .as_array()
             .unwrap()
             .iter()
             .any(|field| field["name"] == "address")
     );
+    assert!(rig.success(&["vendor", "mock"]).await.contains("address"));
     assert!(rig.success(&["list"]).await.contains("No TVs configured"));
-    rig.success(&[
-        "pair",
-        "Office",
-        "--vendor",
-        "mock",
-        "--params",
-        r#"{"address":"mock://office","pairing":"accept"}"#,
-    ])
-    .await;
-    let listed = rig.json(&["list"]).await;
-    let id = listed.as_object().unwrap().keys().next().unwrap().clone();
-    rig.success(&["managed", &id, "false"]).await;
-    rig.success(&["set-volume", &id, "64"]).await;
-    rig.success(&["backlight", &id, "24"]).await;
-    rig.success(&["mute", &id, "true"]).await;
-    rig.success(&["rename", &id, "Renamed office"]).await;
+
+    let tv = rig.pair("Office", "mock://office").await;
+    let tv = tv.as_str();
+    rig.eventually(&["power", tv], "on").await;
+    assert_eq!(rig.json(&["power", tv]).await, "active");
+    rig.eventually(&["screen", tv], "on").await;
+    rig.eventually(&["volume", tv], "30").await;
+
+    rig.silent(&["volume", tv, "64"]).await;
+    rig.eventually(&["volume", tv], "64").await;
+    assert_eq!(rig.json(&["volume", tv]).await, 64);
+    rig.silent(&["backlight", tv, "24"]).await;
+    rig.eventually(&["backlight", tv], "24").await;
+    rig.silent(&["input", tv, "HDMI_2"]).await;
+    rig.eventually(&["input", tv], "HDMI_2").await;
+    assert_eq!(rig.json(&["input", tv]).await, "HDMI_2");
+    rig.silent(&["mute", tv, "true"]).await;
+    rig.eventually(&["mute", tv], "on").await;
+    assert_eq!(rig.json(&["mute", tv]).await, true);
+    assert_eq!(rig.success(&["mute", tv, "--toggle"]).await, "off\n");
+    rig.eventually(&["mute", tv], "off").await;
+
+    rig.silent(&["name", tv, "Renamed office"]).await;
+    assert_eq!(rig.success(&["name", tv]).await, "Renamed office\n");
+    rig.silent(&["managed", tv, "off"]).await;
+    assert_eq!(rig.success(&["managed", tv]).await, "off\n");
+    assert_eq!(rig.json(&["managed", tv]).await, false);
+
     let state = rig.json(&["list"]).await;
-    assert_eq!(state[&id]["meta/identity"]["name"], "Renamed office");
-    assert_eq!(state[&id]["state/volume"]["level"], 64);
-    assert_eq!(state[&id]["state/volume"]["muted"], true);
-    assert_eq!(state[&id]["state/backlight"]["level"], 24);
+    assert_eq!(state[tv]["meta/identity"]["name"], "Renamed office");
+    assert_eq!(state[tv]["state/volume"]["level"], 64);
+    assert_eq!(state[tv]["state/backlight"]["level"], 24);
     let rendered = rig.success(&["list"]).await;
     assert!(rendered.contains("Renamed office"));
     assert!(rendered.contains("mock://office"));
     assert!(rendered.contains("[unmanaged]"));
-    rig.success(&["remove", &id]).await;
+
+    assert_eq!(rig.json(&["managed", tv, "--toggle"]).await, true);
+    assert_eq!(rig.success(&["managed", tv]).await, "on\n");
+    rig.silent(&["remove", tv]).await;
     assert!(rig.json(&["list"]).await.as_object().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn profiles_configuration_and_catalog_commands_round_trip() {
     let rig = CliDaemon::start().await;
-    assert!(rig.success(&["vendors"]).await.contains("Mock"));
-    assert!(rig.success(&["schema", "mock"]).await.contains("address"));
+    assert!(rig.success(&["vendor"]).await.contains("Mock"));
     assert!(
-        rig.success(&["discover", "--vendor", "mock", "--timeout-ms", "10"])
+        rig.success(&["discover", "--vendor", "mock", "--timeout", "10ms"])
             .await
             .contains("nothing found")
     );
     assert_eq!(
-        rig.json(&["discover", "--vendor", "mock", "--timeout-ms", "10"])
+        rig.json(&["discover", "--vendor", "mock", "--timeout", "10ms"])
             .await,
-        serde_json::json!([])
+        json!([])
     );
-    assert!(rig.json(&["profile", "defaults"]).await.is_object());
+    assert!(
+        rig.json(&["profile", "system", "defaults"])
+            .await
+            .is_object()
+    );
 
-    let created = rig.success(&["profile", "create", "Work"]).await;
-    let profile = created.trim().strip_prefix("created: ").unwrap();
+    let profile = rig.success(&["profile", "system", "create", "Work"]).await;
+    let profile = profile.trim();
     uuid::Uuid::parse_str(profile).unwrap();
-    rig.success(&["profile", "update", profile, r#"{"name":"Work edited"}"#])
+    rig.silent(&[
+        "profile",
+        "system",
+        "update",
+        profile,
+        r#"{"name":"Work edited"}"#,
+    ])
+    .await;
+    let duplicate = rig
+        .success(&["profile", "system", "duplicate", profile, "Work copy"])
         .await;
-    let duplicated = rig
-        .success(&["profile", "duplicate", profile, "Work copy"])
-        .await;
-    let duplicate = duplicated.trim().strip_prefix("created: ").unwrap();
-    let catalog = rig.json(&["profile", "list"]).await;
+    let duplicate = duplicate.trim();
+    let catalog = rig.json(&["profile", "system", "list"]).await;
     assert_eq!(catalog[profile]["name"], "Work edited");
     assert_eq!(catalog[duplicate]["name"], "Work copy");
     assert!(
-        rig.success(&["profile", "list"])
+        rig.success(&["profile", "system", "list"])
             .await
             .contains("Work edited")
     );
 
-    let added = rig
-        .success(&["add", "Office", "--address", "mock://office", "--unmanaged"])
+    let tv = rig
+        .add("Office", json!({ "address": "mock://office" }))
         .await;
-    let tv = added.trim().strip_prefix("added: ").unwrap();
-    uuid::Uuid::parse_str(tv).unwrap();
-    rig.success(&["assign", tv, profile]).await;
-    assert!(rig.json(&["profile", "effective", tv]).await.is_object());
-    rig.success(&["assign", tv]).await;
-    rig.success(&[
-        "config-set",
+    let tv = tv.as_str();
+    let default = DEFAULT_SYSTEM_PROFILE_UUID.to_string();
+    assert_eq!(rig.success(&["system-profile", tv]).await.trim(), default);
+    rig.silent(&["system-profile", tv, profile]).await;
+    assert_eq!(rig.success(&["system-profile", tv]).await.trim(), profile);
+    assert_eq!(rig.json(&["system-profile", tv]).await, profile);
+    assert!(
+        rig.json(&["system-profile", tv, "--effective"])
+            .await
+            .is_object()
+    );
+    rig.silent(&["system-profile", tv, "--clear"]).await;
+    assert_eq!(rig.success(&["system-profile", tv]).await.trim(), default);
+
+    rig.silent(&[
+        "config",
         tv,
         r#"{"name":"Configured office","pairing":"accept"}"#,
     ])
@@ -198,35 +316,41 @@ async fn profiles_configuration_and_catalog_commands_round_trip() {
     let config = rig.json(&["config", tv]).await;
     assert!(config.to_string().contains("Configured office"));
     assert!(rig.success(&["config", tv]).await.contains("mock://office"));
-    rig.success(&["input", tv, "HDMI_2"]).await;
-    rig.success(&["primary-input", tv, "HDMI_1"]).await;
-    rig.success(&["primary-input", tv]).await;
-    rig.success(&["screen", tv, "off"]).await;
-    rig.success(&["screen", tv, "on"]).await;
-    rig.success(&["repair", tv]).await;
-    rig.success(&["power", tv, "off"]).await;
-    rig.success(&["power", tv, "on"]).await;
-    rig.success(&["reconnect", tv]).await;
-    rig.success(&["profile", "delete", duplicate]).await;
+
+    assert_eq!(rig.success(&["primary-input", tv]).await, "");
+    assert_eq!(rig.json(&["primary-input", tv]).await, Value::Null);
+    rig.silent(&["primary-input", tv, "HDMI_1"]).await;
+    assert_eq!(rig.success(&["primary-input", tv]).await, "HDMI_1\n");
+    rig.silent(&["primary-input", tv, "--clear"]).await;
+    assert_eq!(rig.success(&["primary-input", tv]).await, "");
+
+    rig.silent(&["screen", tv, "off"]).await;
+    rig.silent(&["screen", tv, "on"]).await;
+    assert_eq!(rig.success(&["repair", tv]).await.trim(), tv);
+    rig.silent(&["power", tv, "off"]).await;
+    rig.silent(&["power", tv, "on"]).await;
+    rig.silent(&["reconnect", tv]).await;
+    rig.silent(&["profile", "system", "delete", duplicate])
+        .await;
     assert!(
-        rig.json(&["profile", "list"])
+        rig.json(&["profile", "system", "list"])
             .await
             .get(duplicate)
             .is_none()
     );
-    rig.success(&["remove", tv]).await;
+    rig.silent(&["remove", tv]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_input_and_rpc_refusals_exit_unsuccessfully() {
     let rig = CliDaemon::start().await;
     let missing = uuid::Uuid::new_v4().to_string();
-    rig.failure(&["set-volume", "not-a-uuid", "20"], "invalid value")
+    rig.failure(&["volume", "not-a-uuid", "20"], "invalid value")
         .await;
-    rig.failure(&["config-set", &missing, "[]"], "JSON object")
+    rig.failure(&["config", &missing, "[]"], "JSON object")
         .await;
     rig.failure(
-        &["profile", "create", "Work", "--body", "[]"],
+        &["profile", "system", "create", "Work", "--body", "[]"],
         "JSON object",
     )
     .await;
@@ -235,60 +359,110 @@ async fn malformed_input_and_rpc_refusals_exit_unsuccessfully() {
         "JSON object",
     )
     .await;
-    rig.failure(&["schema", "missing-vendor"], "unknown-vendor")
+    rig.failure(&["vendor", "missing-vendor"], "unknown-vendor")
         .await;
     rig.failure(&["remove", &missing], "not-found").await;
+    rig.failure(&["volume", &missing], "not-found").await;
+    rig.failure(&["power", &missing], "not-found").await;
+    rig.failure(&["power", &missing, "--toggle"], "not-found")
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tv_that_never_connected_reads_off_and_reports_no_state() {
+    let rig = CliDaemon::start().await;
+    let tv = rig
+        .add(
+            "Unreachable",
+            json!({ "address": "mock://unreachable", "refuse_connect": true }),
+        )
+        .await;
+    let tv = tv.as_str();
+    assert_eq!(rig.success(&["power", tv]).await, "off\n");
+    assert_eq!(rig.success(&["screen", tv]).await, "off\n");
+    rig.failure(&["volume", tv], "hasn't reported its volume")
+        .await;
+    rig.failure(&["mute", tv, "--toggle"], "disconnected").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disconnected_tv_reads_off_warns_on_stale_state_and_toggles_on() {
+    let rig = CliDaemon::start().await;
+    let tv = rig.pair("Den", "mock://den").await;
+    let tv = tv.as_str();
+    rig.eventually(&["volume", tv], "30").await;
+    // The mock models a network TV: powering off drops its link.
+    rig.silent(&["power", tv, "off"]).await;
+    rig.until_disconnected(tv).await;
+
+    assert_eq!(rig.success(&["power", tv]).await, "off\n");
+    assert_eq!(rig.success(&["screen", tv]).await, "off\n");
+    let (volume, warning) = rig.run(&["volume", tv]).await;
+    assert_eq!(volume, "30\n");
+    assert!(warning.contains("disconnected"), "{warning:?}");
+    rig.failure(&["mute", tv, "--toggle"], "disconnected").await;
+
+    // A toggle on a disconnected TV powers it on, through the wake path.
+    assert_eq!(rig.success(&["power", tv, "--toggle"]).await, "on\n");
+    rig.eventually(&["power", tv], "on").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn user_profiles_and_remote_sources_use_the_session_socket() {
     let rig = CliDaemon::with_session().await;
-    assert!(rig.json(&["user-profile", "defaults"]).await.is_object());
-    let created = rig.success(&["user-profile", "create", "Personal"]).await;
-    let profile = created.trim().strip_prefix("created: ").unwrap();
-    rig.success(&[
-        "user-profile",
+    assert!(rig.json(&["profile", "user", "defaults"]).await.is_object());
+    let profile = rig
+        .success(&["profile", "user", "create", "Personal"])
+        .await;
+    let profile = profile.trim();
+    rig.silent(&[
+        "profile",
+        "user",
         "update",
         profile,
         r#"{"name":"Personal edited"}"#,
     ])
     .await;
-    let duplicated = rig
-        .success(&["user-profile", "duplicate", profile, "Personal copy"])
+    let duplicate = rig
+        .success(&["profile", "user", "duplicate", profile, "Personal copy"])
         .await;
-    let duplicate = duplicated.trim().strip_prefix("created: ").unwrap();
-    let catalog = rig.json(&["user-profile", "list"]).await;
+    let duplicate = duplicate.trim();
+    let catalog = rig.json(&["profile", "user", "list"]).await;
     assert_eq!(catalog[profile]["name"], "Personal edited");
     assert_eq!(catalog[duplicate]["name"], "Personal copy");
     assert!(
-        rig.success(&["user-profile", "list"])
+        rig.success(&["profile", "user", "list"])
             .await
             .contains("Personal edited")
     );
-    let added = rig
-        .success(&["add", "Office", "--address", "mock://office", "--unmanaged"])
+
+    let tv = rig
+        .add("Office", json!({ "address": "mock://office" }))
         .await;
-    let tv = added.trim().strip_prefix("added: ").unwrap();
-    rig.success(&["user-profile", "assign", tv, profile]).await;
+    let tv = tv.as_str();
+    let default = DEFAULT_USER_PROFILE_UUID.to_string();
+    assert_eq!(rig.success(&["user-profile", tv]).await.trim(), default);
+    rig.silent(&["user-profile", tv, profile]).await;
+    rig.eventually(&["user-profile", tv], profile).await;
     assert!(
-        rig.json(&["user-profile", "effective", tv])
+        rig.json(&["user-profile", tv, "--effective"])
             .await
             .is_object()
     );
-    rig.success(&["user-profile", "assign", tv]).await;
-    rig.success(&["user-profile", "delete", duplicate]).await;
+    rig.silent(&["user-profile", tv, "--clear"]).await;
+    rig.eventually(&["user-profile", tv], &default).await;
+    let missing = uuid::Uuid::new_v4().to_string();
+    rig.failure(&["user-profile", &missing], "not-found").await;
+    rig.silent(&["profile", "user", "delete", duplicate]).await;
     assert!(
-        rig.json(&["user-profile", "list"])
+        rig.json(&["profile", "user", "list"])
             .await
             .get(duplicate)
             .is_none()
     );
 
-    assert!(
-        rig.success(&["remote-session", "start", "--source", "cli-test"])
-            .await
-            .contains("armed source 'cli-test'")
-    );
+    rig.silent(&["remote-session", "start", "--source", "cli-test"])
+        .await;
     assert!(
         rig.json(&["remote-session", "status"])
             .await
@@ -300,17 +474,45 @@ async fn user_profiles_and_remote_sources_use_the_session_socket() {
             .await
             .contains("cli-test")
     );
-    assert!(
-        rig.success(&["remote-session", "stop", "--source", "cli-test"])
-            .await
-            .contains("disarmed source 'cli-test'")
-    );
+    rig.silent(&["remote-session", "stop", "--source", "cli-test"])
+        .await;
     assert!(
         !rig.json(&["remote-session", "status"])
             .await
             .to_string()
             .contains("cli-test")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_watch_streams_until_interrupted() {
+    let rig = CliDaemon::start().await;
+    let mut child = rig
+        .cli(&["discover", "--watch", "--vendor", "mock"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+    let banner = tokio::time::timeout(SETTLE, stderr.next_line())
+        .await
+        .expect("no discovery banner")
+        .unwrap()
+        .unwrap();
+    assert!(banner.contains("ctrl-c stops"), "{banner:?}");
+    let pid = libc::pid_t::try_from(child.id().unwrap()).unwrap();
+    // SAFETY: `pid` is our own live child (it just printed its banner and
+    // we hold its handle, so it can't have been reaped); SIGINT is the
+    // ctrl-c the verb waits for.
+    let sent = unsafe { libc::kill(pid, libc::SIGINT) };
+    assert_eq!(sent, 0);
+    let status = tokio::time::timeout(SETTLE, child.wait())
+        .await
+        .expect("discover --watch didn't stop on SIGINT")
+        .unwrap();
+    assert!(status.success());
+    let rest = stderr.next_line().await.unwrap().unwrap_or_default();
+    assert_eq!(rest, "stopped");
 }
 
 #[tokio::test(flavor = "multi_thread")]

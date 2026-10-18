@@ -9,8 +9,9 @@ use tisvlay_protocol::rpc;
 use crate::call;
 use crate::render::print_reply;
 
-/// Arm/disarm a remote-session source, or show the current fact. Rides
-/// the user socket (the session service serves the verb rpc there).
+/// Arm/disarm a remote-session source (silent on success), or show the
+/// current fact. Rides the user socket (the session service serves the
+/// verb rpc there).
 pub(crate) async fn remote_session_cmd(
     user_caller: &Caller,
     cmd: RemoteSessionCmd,
@@ -19,24 +20,18 @@ pub(crate) async fn remote_session_cmd(
     match cmd {
         RemoteSessionCmd::Start { source } => {
             let request = rpc::RemoteSet {
-                source: Some(source.clone()),
+                source: Some(source),
                 active: true,
             };
             call::<user_remote::Set>(user_caller, &(), &request).await?;
-            if !json_out {
-                println!("armed source '{source}'");
-            }
             Ok(())
         }
         RemoteSessionCmd::Stop { source } => {
             let request = rpc::RemoteSet {
-                source: Some(source.clone()),
+                source: Some(source),
                 active: false,
             };
             call::<user_remote::Set>(user_caller, &(), &request).await?;
-            if !json_out {
-                println!("disarmed source '{source}'");
-            }
             Ok(())
         }
         RemoteSessionCmd::Status => {

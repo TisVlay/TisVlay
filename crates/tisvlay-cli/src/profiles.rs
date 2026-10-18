@@ -5,16 +5,18 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
-use tisvlay_cli::{ProfileCmd, UserProfileCmd};
+use tisvlay_cli::{SystemProfileCmd, UserProfileCmd, hydrate};
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{profile, user_profile};
 use tisvlay_protocol::rpc;
 use zenoh::Session;
-use zenoh::sample::SampleKind;
-use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use crate::render::print_reply;
 use crate::{ack, call};
+
+/// How long a catalog read waits for the next profile before taking what
+/// it has.
+const CATALOG_QUIET: Duration = Duration::from_millis(600);
 
 /// Print one profile catalog row.
 fn print_profile(id: &str, body: &Value) {
@@ -40,30 +42,15 @@ fn format_profile(id: &str, body: &Value) -> String {
 
 /// Hydrate a cached catalog wildcard and print each body once the
 /// stream goes quiet.
-async fn list_catalog(session: &Session, keyexpr: String, json_out: bool) -> Result<()> {
-    let sub = session
-        .declare_subscriber(keyexpr)
-        .history(HistoryConfig::default().detect_late_publishers())
+async fn list_catalog(session: &Session, keyexpr: &str, json_out: bool) -> Result<()> {
+    let values = hydrate(session, keyexpr, CATALOG_QUIET, |_| false)
         .await
         .map_err(|e| anyhow!("subscribe catalog: {e}"))?;
-    let mut rows: BTreeMap<String, Value> = BTreeMap::new();
-    while let Ok(Ok(sample)) =
-        tokio::time::timeout(Duration::from_millis(600), sub.recv_async()).await
-    {
-        if sample.kind() != SampleKind::Put {
-            continue;
-        }
-        let id = sample
-            .key_expr()
-            .as_str()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let body: Value =
-            serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-        rows.insert(id, body);
-    }
+    // The last key segment is the profile's UUID.
+    let rows: BTreeMap<String, Value> = values
+        .into_iter()
+        .map(|(key, body)| (key.rsplit('/').next().unwrap_or_default().to_string(), body))
+        .collect();
     if json_out {
         let out: serde_json::Map<String, Value> = rows.into_iter().collect();
         println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
@@ -93,58 +80,51 @@ fn profile_body<T: serde::de::DeserializeOwned>(name: String, body: Option<Strin
     serde_json::from_value(body).map_err(|e| anyhow!("invalid profile body: {e}"))
 }
 
+/// `profile system …`. `create` and `duplicate` print the new UUID
+/// alone, so `id=$(…)` captures it.
 pub(crate) async fn profile_cmd(
     session: &Session,
     caller: &Caller,
     site: &str,
-    cmd: ProfileCmd,
+    cmd: SystemProfileCmd,
     json_out: bool,
 ) -> Result<()> {
     match cmd {
-        ProfileCmd::List => {
-            list_catalog(
-                session,
-                format!("tisvlay/{site}/profile/system/*"),
-                json_out,
-            )
-            .await
+        SystemProfileCmd::List => {
+            let keyexpr = format!("tisvlay/{site}/profile/system/*");
+            list_catalog(session, &keyexpr, json_out).await
         }
-        ProfileCmd::Create { name, body } => {
+        SystemProfileCmd::Create { name, body } => {
             let request = rpc::ProfileCreate {
                 id: None,
                 body: profile_body(name, body)?,
             };
             let created = call::<profile::Create>(caller, &(), &request).await?;
-            println!("created: {}", created.id);
+            println!("{}", created.id);
             Ok(())
         }
-        ProfileCmd::Update { id, body } => {
+        SystemProfileCmd::Update { id, body } => {
             let body = serde_json::from_str(&body)?;
             ack::<profile::Update>(caller, &(), &rpc::ProfileUpdate { id, body }).await
         }
-        ProfileCmd::Duplicate { id, name } => {
+        SystemProfileCmd::Duplicate { id, name } => {
             let created =
                 call::<profile::Duplicate>(caller, &(), &rpc::ProfileDuplicate { id, name })
                     .await?;
-            println!("created: {}", created.id);
+            println!("{}", created.id);
             Ok(())
         }
-        ProfileCmd::Delete { id } => {
-            call::<profile::Delete>(caller, &(), &rpc::TvRef { id }).await?;
-            println!("deleted");
-            Ok(())
+        SystemProfileCmd::Delete { id } => {
+            ack::<profile::Delete>(caller, &(), &rpc::TvRef { id }).await
         }
-        ProfileCmd::Defaults => {
+        SystemProfileCmd::Defaults => {
             let defaults = call::<profile::Defaults>(caller, &(), &()).await?;
             print_reply(&defaults, json_out)
-        }
-        ProfileCmd::Effective { tv } => {
-            let effective = call::<profile::Effective>(caller, &(), &rpc::TvRef { id: tv }).await?;
-            print_reply(&effective, json_out)
         }
     }
 }
 
+/// `profile user …`, on the session service.
 pub(crate) async fn user_profile_cmd(
     user: &Session,
     user_caller: &Caller,
@@ -154,7 +134,7 @@ pub(crate) async fn user_profile_cmd(
 ) -> Result<()> {
     match cmd {
         UserProfileCmd::List => {
-            list_catalog(user, format!("tisvlay/{site}/user/profile/*"), json_out).await
+            list_catalog(user, &format!("tisvlay/{site}/user/profile/*"), json_out).await
         }
         UserProfileCmd::Create { name, body } => {
             let request = rpc::UserProfileCreate {
@@ -162,7 +142,7 @@ pub(crate) async fn user_profile_cmd(
                 body: profile_body(name, body)?,
             };
             let created = call::<user_profile::Create>(user_caller, &(), &request).await?;
-            println!("created: {}", created.id);
+            println!("{}", created.id);
             Ok(())
         }
         UserProfileCmd::Update { id, body } => {
@@ -173,25 +153,15 @@ pub(crate) async fn user_profile_cmd(
         UserProfileCmd::Duplicate { id, name } => {
             let request = rpc::ProfileDuplicate { id, name };
             let created = call::<user_profile::Duplicate>(user_caller, &(), &request).await?;
-            println!("created: {}", created.id);
+            println!("{}", created.id);
             Ok(())
         }
         UserProfileCmd::Delete { id } => {
-            call::<user_profile::Delete>(user_caller, &(), &rpc::TvRef { id }).await?;
-            println!("deleted");
-            Ok(())
+            ack::<user_profile::Delete>(user_caller, &(), &rpc::TvRef { id }).await
         }
         UserProfileCmd::Defaults => {
             let defaults = call::<user_profile::Defaults>(user_caller, &(), &()).await?;
             print_reply(&defaults, json_out)
-        }
-        UserProfileCmd::Effective { tv } => {
-            let request = rpc::TvRef { id: tv };
-            let effective = call::<user_profile::Effective>(user_caller, &(), &request).await?;
-            print_reply(&effective, json_out)
-        }
-        UserProfileCmd::Assign { tv, profile } => {
-            ack::<user_profile::Assign>(user_caller, &(), &rpc::UserAssign { tv, profile }).await
         }
     }
 }

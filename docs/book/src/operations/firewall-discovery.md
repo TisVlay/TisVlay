@@ -66,7 +66,7 @@ sudo firewall-cmd --reload
 <summary>From a terminal</summary>
 
 - `tisvlay discover` runs a bounded scan; found TVs stream back as they answer.
-- `tisvlay discover-session` is an open-ended scan that keeps streaming findings until you press ctrl-c.
+- `tisvlay discover --watch` keeps scanning, streaming findings until you press ctrl-c.
 - `tisvlay pair` adds a TV by address; see [Adding a TV](../getting-started/pairing.md#pair-from-the-command-line).
 
 </details>

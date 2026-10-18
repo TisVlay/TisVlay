@@ -136,7 +136,7 @@ The book has grown by accretion: four main syncs, two new chapters, each fact ad
 - G1 **Profile defaults partial.** A generator (the `gen-cli-docs` pattern: an optional-feature bin, a committed partial, a `just` drift gate in the docs CI job) renders `SystemProfileConfig::default()` / `UserProfileConfig::default()` as the TOML blocks configuration.md shows today, with each field's doc comment as its trailing comment. Removes the largest hand-copied surface (R4) and makes field renames and default flips self-updating.
 - G2 **Drop cli.md's hand-written global-flags list.** The generated reference already renders `--socket`, `--user-socket`, `--site`, `--json` from their doc comments; cli.md keeps the observability and tab-completion intro.
 - G3 *(optional, larger)* NixOS module options. installation, firewall-discovery, remote-sessions and isolated-networks each quote option names and defaults from `module.nix`. A generated options page (`nixosOptionsDoc`) would own them; the prose would then name the option and link. Worth it only if the option surface keeps growing.
-- G4 *(defer)* Per-vendor pairing fields and capabilities (`tisvlay schema` / the vendor catalog) could generate the backend tables. Hold until a second network backend exists; one LG row doesn't justify a generator.
+- G4 *(defer)* Per-vendor pairing fields and capabilities (`tisvlay vendor <vendor>` / the vendor catalog) could generate the backend tables. Hold until a second network backend exists; one LG row doesn't justify a generator.
 
 ### V — Vendor-specific framing (book-wide)
 

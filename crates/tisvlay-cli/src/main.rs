@@ -7,6 +7,7 @@
     reason = "the CLI prints its output"
 )]
 
+mod attributes;
 mod pairing;
 mod profiles;
 mod reload;
@@ -15,24 +16,22 @@ mod render;
 mod status;
 mod tvs;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
-use tisvlay_cli::{Cli, Command};
+use tisvlay_cli::{Cli, Command, ProfileScope};
 use tisvlay_protocol::caller::{Caller, RpcError};
-use tisvlay_protocol::endpoint::{Unary, manager, tv, user_profile, vendors};
+use tisvlay_protocol::endpoint::{Unary, manager, tv, user_profile};
 use tisvlay_protocol::rpc;
 use zenoh::Session;
 
-use crate::pairing::{
-    address_config, discover, discover_session, pair, pairing_config, watch_pairing,
-};
+use crate::attributes::Assignment;
+use crate::pairing::{discover, discover_session, pair, vendor, watch_pairing};
 use crate::profiles::{profile_cmd, user_profile_cmd};
 use crate::reload::reload;
 use crate::remote::remote_session_cmd;
-use crate::render::print_reply;
 use crate::status::status;
 use crate::tvs::{list, watch};
 
@@ -93,14 +92,14 @@ async fn run() -> Result<()> {
     let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
     // Commands that send the daemon rpcs check its release first; `status`
-    // reports it, `watch` is a passive view, the user-socket commands
+    // reports it, `watch` is a passive view, the session-only commands
     // check the session service instead, and `reload` checks each service
-    // it reloads.
+    // it reloads. `user-profile` talks to both, so it checks both.
     if !matches!(
         cli.command,
         Command::Status
             | Command::Watch
-            | Command::UserProfile(_)
+            | Command::Profile(ProfileScope::User(_))
             | Command::RemoteSession(_)
             | Command::Reload
     ) {
@@ -113,150 +112,83 @@ async fn run() -> Result<()> {
         Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
-        Command::Discover { vendor, timeout_ms } => {
-            discover(&caller, vendor, timeout_ms, json_out).await
-        }
+        Command::Discover {
+            vendor,
+            watch: true,
+            ..
+        } => discover_session(&session, &caller, site, vendor, json_out).await,
+        Command::Discover {
+            vendor,
+            timeout,
+            watch: false,
+        } => discover(&caller, vendor, timeout, json_out).await,
         Command::Pair {
             name,
             vendor,
             params,
-            address,
-        } => {
-            let config = pairing_config(params, address)?;
-            pair(&session, &caller, site, name, vendor, config).await
-        }
-        Command::Add {
-            name,
-            address,
-            vendor,
             unmanaged,
+        } => pair(&session, &caller, site, name, vendor, &params, !unmanaged).await,
+        Command::Repair { tv } => {
+            let started = call::<tv::RePair>(&caller, &tv, &()).await?;
+            eprintln!("re-pairing session {tv} started");
+            watch_pairing(&session, &caller, site, tv, started.attempt).await
+        }
+        Command::Reconnect { tv } => ack::<tv::Reconnect>(&caller, &tv, &()).await,
+        Command::Remove { tv } => ack::<tv::Remove>(&caller, &tv, &()).await,
+        Command::Vendor { vendor: id } => vendor(&caller, id, json_out).await,
+        Command::Power { tv, switch } => {
+            attributes::power(&session, &caller, site, tv, switch, json_out).await
+        }
+        Command::Screen { tv, switch } => {
+            attributes::screen(&session, &caller, site, tv, switch, json_out).await
+        }
+        Command::Mute { tv, switch } => {
+            attributes::mute(&session, &caller, site, tv, switch, json_out).await
+        }
+        Command::Managed { tv, switch } => attributes::managed(&caller, tv, switch, json_out).await,
+        Command::Volume { tv, level } => {
+            attributes::volume(&session, &caller, site, tv, level, json_out).await
+        }
+        Command::Backlight { tv, level } => {
+            attributes::backlight(&session, &caller, site, tv, level, json_out).await
+        }
+        Command::Input { tv, input } => {
+            attributes::input(&session, &caller, site, tv, input, json_out).await
+        }
+        Command::PrimaryInput { tv, input, clear } => {
+            attributes::primary_input(&caller, tv, input, clear, json_out).await
+        }
+        Command::Name { tv, name } => attributes::name(&caller, tv, name, json_out).await,
+        Command::Config { tv, patch } => attributes::config_cmd(&caller, tv, patch, json_out).await,
+        Command::SystemProfile {
+            tv,
+            profile,
+            clear,
+            effective,
         } => {
-            let request = rpc::AddTv {
-                id: None,
-                name,
-                vendor,
-                managed: !unmanaged,
-                config: address_config(address),
-            };
-            let created = call::<manager::AddTv>(&caller, &(), &request).await?;
-            println!("added: {}", created.id);
-            Ok(())
+            let assignment = Assignment::new(profile, clear, effective);
+            attributes::system_profile(&caller, tv, assignment, json_out).await
         }
-        Command::SetVolume { id, level } => {
-            ack::<tv::SetVolume>(&caller, &id, &rpc::SetVolume { level }).await
-        }
-        Command::Input { id, input } => {
-            ack::<tv::SwitchInput>(&caller, &id, &rpc::SwitchInput { input }).await
-        }
-        Command::Backlight { id, level } => {
-            ack::<tv::SetBacklight>(&caller, &id, &rpc::SetBacklight { level }).await
-        }
-        Command::Screen { id, state } => {
-            let request = rpc::SetScreen::manual(state == "on");
-            ack::<tv::SetScreen>(&caller, &id, &request).await
-        }
-        Command::Rename { id, name } => {
-            ack::<tv::SetName>(&caller, &id, &rpc::SetName { name }).await
-        }
-        Command::Managed { id, managed } => {
-            ack::<tv::SetManaged>(&caller, &id, &rpc::SetManaged { managed }).await
-        }
-        Command::Config { id } => {
-            let config = call::<tv::GetConfig>(&caller, &id, &()).await?;
-            print_reply(&config, json_out)
-        }
-        Command::ConfigSet { id, patch } => {
-            let patch: rpc::UpdateConfig = serde_json::from_str(&patch)
-                .map_err(|e| anyhow!("the patch must be a JSON object: {e}"))?;
-            ack::<tv::UpdateConfig>(&caller, &id, &patch).await
-        }
-        Command::Repair { id } => {
-            let started = call::<tv::RePair>(&caller, &id, &()).await?;
-            println!("re-pairing session {id} started");
-            watch_pairing(&session, &caller, site, id, started.attempt).await
-        }
-        Command::Power { id, state } => {
-            if state == "on" {
-                ack::<tv::PowerOn>(&caller, &id, &rpc::PowerOn::default()).await
-            } else {
-                ack::<tv::PowerOff>(&caller, &id, &()).await
-            }
-        }
-        Command::Reconnect { id } => ack::<tv::Reconnect>(&caller, &id, &()).await,
-        Command::Remove { id } => {
-            call::<tv::Remove>(&caller, &id, &()).await?;
-            println!("removed");
-            Ok(())
-        }
-        Command::Mute { id, muted } => {
-            ack::<tv::SetMuted>(&caller, &id, &rpc::SetMuted { muted }).await
-        }
-        Command::PrimaryInput { id, input } => {
-            ack::<tv::SetPrimaryInput>(&caller, &id, &rpc::SetPrimaryInput { input }).await
-        }
-        Command::Assign { id, profile } => {
-            ack::<tv::SetSystemProfile>(&caller, &id, &rpc::SetSystemProfile { profile }).await
-        }
-        Command::Vendors => {
-            let vendors = call::<vendors::Catalog>(&caller, &(), &()).await?;
-            if json_out {
-                return print_reply(&vendors, true);
-            }
-            for vendor in vendors {
-                println!(
-                    "{}  {}  [{}]",
-                    vendor.id,
-                    vendor.name,
-                    vendor.capabilities.join(", "),
-                );
-            }
-            Ok(())
-        }
-        Command::Schema { vendor } => {
-            let schema = call::<vendors::Schema>(&caller, vendor.as_str(), &()).await?;
-            if json_out {
-                return print_reply(&schema, true);
-            }
-            for field in schema {
-                let required = if field.required { " (required)" } else { "" };
-                println!("{}{}  {}", field.name, required, field.helper,);
-            }
-            Ok(())
-        }
-        Command::DiscoverSession { vendor } => {
-            discover_session(&session, &caller, site, vendor, json_out).await
-        }
-        Command::Profile(cmd) => profile_cmd(&session, &caller, site, cmd, json_out).await,
-        Command::UserProfile(cmd) => {
-            let user_socket = cli
-                .user_socket
-                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
+        Command::UserProfile {
+            tv,
+            profile,
+            clear,
+            effective,
+        } => {
+            let (user, user_caller) = open_user(cli.user_socket, site).await?;
+            let assignment = Assignment::new(profile, clear, effective);
+            attributes::user_profile(&caller, &user, &user_caller, site, tv, assignment, json_out)
                 .await
-                .map_err(|e| {
-                    anyhow!(
-                        "session service unreachable at {}: {e}",
-                        user_socket.display()
-                    )
-                })?;
-            let user_caller = Caller::new(user.clone(), site.as_str());
-            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+        }
+        Command::Profile(ProfileScope::System(cmd)) => {
+            profile_cmd(&session, &caller, site, cmd, json_out).await
+        }
+        Command::Profile(ProfileScope::User(cmd)) => {
+            let (user, user_caller) = open_user(cli.user_socket, site).await?;
             user_profile_cmd(&user, &user_caller, site, cmd, json_out).await
         }
         Command::RemoteSession(cmd) => {
-            let user_socket = cli
-                .user_socket
-                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
-                .await
-                .map_err(|e| {
-                    anyhow!(
-                        "session service unreachable at {}: {e}",
-                        user_socket.display()
-                    )
-                })?;
-            let user_caller = Caller::new(user.clone(), site.as_str());
-            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+            let (_user, user_caller) = open_user(cli.user_socket, site).await?;
             remote_session_cmd(&user_caller, cmd, json_out).await
         }
     }
@@ -281,6 +213,23 @@ async fn open_client(socket: &Path) -> Result<Session> {
         })
 }
 
+/// Open the session service's user socket and check its release.
+async fn open_user(user_socket: Option<PathBuf>, site: &str) -> Result<(Session, Caller)> {
+    let user_socket =
+        user_socket.unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+    let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "session service unreachable at {}: {e}",
+                user_socket.display()
+            )
+        })?;
+    let user_caller = Caller::new(user.clone(), site);
+    check_release::<user_profile::Info>(&user_caller, "session service").await?;
+    Ok((user, user_caller))
+}
+
 /// One typed rpc round-trip; a failure keeps its cause chain for the
 /// terminal.
 async fn call<R: Unary>(
@@ -291,14 +240,13 @@ async fn call<R: Unary>(
     Ok(caller.call::<R>(target, request).await?)
 }
 
-/// One acknowledged rpc: call, print the human ack.
+/// One acknowledged rpc. Success prints nothing; a refusal is the error.
 async fn ack<R: Unary<Response = rpc::Ack>>(
     caller: &Caller,
     target: &R::Target,
     request: &R::Request,
 ) -> Result<()> {
     call::<R>(caller, target, request).await?;
-    println!("ok");
     Ok(())
 }
 

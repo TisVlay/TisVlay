@@ -9,11 +9,10 @@ It was left out of the CLI getter/setter rework deliberately, because it opens s
 - **Renames racing scripts.** A script that addresses TVs by name breaks silently when someone renames one in the GUI. UUIDs are stable; names are display text. Docs would have to steer scripts back to UUIDs.
 - **Matching rules.** Exact, case-insensitive, or prefix? Prefix matching is convenient interactively and dangerous in scripts.
 - **Cost per command.** Resolving a name means hydrating every TV's `meta/identity` before the command runs, where a UUID needs no lookup.
-- **Both sockets.** The user-socket verbs (`user-profile <tv>`) would need the daemon's TV list to resolve a name, adding a second connection.
 
 ## Path forward
 
-A single resolver in `tisvlay-cli` (a clap `value_parser` can't do it, since resolution needs the daemon): parse as a UUID first; otherwise hydrate identities and accept exactly one case-insensitive exact match, failing with the candidates listed otherwise. `cli-update-config-shorthand.md` mentions the same dual lookup; land both together if that one is picked up.
+A single resolver in `tisvlay-cli` (a clap `value_parser` can't do it, since resolution needs the daemon): parse as a UUID first; otherwise hydrate identities and accept exactly one case-insensitive exact match, failing with the candidates listed otherwise.
 
 ## Trigger conditions
 

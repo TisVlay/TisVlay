@@ -3,33 +3,43 @@
 //! guide (`just docs-gen`). `main.rs` parses and dispatches these types;
 //! keeping them here is the reason this crate has a lib target. The
 //! dynamic-completion value sources live here too, because the derive
-//! attributes (`#[arg(add = …)]`) reference them.
+//! attributes (`#[arg(add = …)]`) reference them, and so does the cache
+//! read ([`hydrate`]) they share with the binary.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::builder::NonEmptyStringValueParser;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde_json::Value;
 use tisvlay_protocol::caller::Caller;
-use tisvlay_protocol::endpoint::vendors;
-use tisvlay_protocol::keys;
+use tisvlay_protocol::endpoint::{manager, vendors};
+use tisvlay_protocol::{keys, rpc};
 use uuid::Uuid;
+use zenoh::Session;
 use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "tisvlay", author, version, about = "TisVlay TV control")]
 #[command(propagate_version = true)]
+#[command(
+    after_long_help = "A TV setting or state reads when its value is left out and sets when it's \
+                       given: `tisvlay volume <TV>` prints the volume, `tisvlay volume <TV> 30` \
+                       sets it. On/off settings take `--toggle`, and settings that can be unset \
+                       take `--clear`. Commands that change something print nothing on success."
+)]
 pub struct Cli {
     /// Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock,
     /// falling back to the packaged /run/tisvlay/zenoh.sock).
     #[arg(long)]
     pub socket: Option<PathBuf>,
 
-    /// Session-service user socket for the `user-profile` and
-    /// `remote-session` verbs (default:
+    /// Session-service user socket for the `profile user`, `user-profile`
+    /// and `remote-session` verbs (default:
     /// $XDG_RUNTIME_DIR/tisvlay/session.sock).
     #[arg(long)]
     pub user_socket: Option<PathBuf>,
@@ -63,12 +73,17 @@ pub enum Command {
     List,
     /// Stream every data key: history first, then live samples.
     Watch,
-    /// Scan for TVs (bounded window; findings stream back as replies).
+    /// Scan for TVs: a bounded window, or with `--watch` until ctrl-c.
     Discover {
         #[arg(long, add = vendor_completions())]
         vendor: Option<String>,
-        #[arg(long, default_value_t = 3000)]
-        timeout_ms: u64,
+        /// How long to scan, e.g. `3s` or `500ms` (default: the
+        /// daemon's window; it scans for at most its own cap).
+        #[arg(long, value_parser = parse_scan_window, conflicts_with = "watch")]
+        timeout: Option<Duration>,
+        /// Keep scanning, streaming findings until ctrl-c.
+        #[arg(long)]
+        watch: bool,
     },
     /// Pair a new TV, streaming the pairing progress (ctrl-c cancels).
     Pair {
@@ -77,136 +92,211 @@ pub enum Command {
         vendor: String,
         /// Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'.
         #[arg(long)]
-        params: Option<String>,
-        /// Mock shorthand for --params '{"address":"mock://…"}'.
-        #[arg(long)]
-        address: Option<String>,
-    },
-    /// Add a mock TV (shortcut around the add-tv rpc).
-    Add {
-        name: String,
-        /// Mock vendor address, e.g. mock://den.
-        #[arg(long)]
-        address: String,
-        #[arg(long, default_value = "mock", add = vendor_completions())]
-        vendor: String,
+        params: String,
+        /// Enroll the TV unmanaged: the daemon won't automate it.
         #[arg(long)]
         unmanaged: bool,
     },
-    /// Set a TV's volume.
-    SetVolume {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        level: u8,
-    },
-    /// Switch a TV's input.
-    Input {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        input: String,
-    },
-    /// Set a TV's backlight level.
-    Backlight {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        level: u8,
-    },
-    /// Blank or wake the screen.
-    Screen {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        #[arg(value_parser = ["on", "off"])]
-        state: String,
-    },
-    /// Rename a TV.
-    Rename {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        name: String,
-    },
-    /// Toggle whether the daemon drives this TV.
-    Managed {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
-        managed: bool,
-    },
-    /// Read a TV's config (vendor secrets redacted).
-    Config {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-    },
-    /// Patch a TV's config with a JSON object (null unsets a vendor key).
-    ConfigSet {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        patch: String,
-    },
     /// Re-run the pairing handshake for an existing TV.
     Repair {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-    },
-    /// Power a TV on or off.
-    Power {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        #[arg(value_parser = ["on", "off"])]
-        state: String,
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
     },
     /// Ask a downed TV to reconnect.
     Reconnect {
-        #[arg(add = tv_completions())]
-        id: Uuid,
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
     },
     /// Remove a TV (deletes all its keys).
     Remove {
-        #[arg(add = tv_completions())]
-        id: Uuid,
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
     },
-    /// Mute or unmute a TV.
-    Mute {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        #[arg(value_parser = clap::value_parser!(bool), action = clap::ArgAction::Set)]
-        muted: bool,
-    },
-    /// Set (or with no value clear) the TV's primary input.
-    PrimaryInput {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        input: Option<String>,
-    },
-    /// Assign (or with no value clear) the TV's system profile.
-    Assign {
-        #[arg(add = tv_completions())]
-        id: Uuid,
-        #[arg(add = system_profile_completions())]
-        profile: Option<Uuid>,
-    },
-    /// List registered vendor backends with their capabilities.
-    Vendors,
-    /// Show a vendor's pairing form schema.
-    Schema {
+    /// List the vendor backends, or show one's capabilities and pairing
+    /// fields.
+    Vendor {
         #[arg(add = vendor_completions())]
-        vendor: String,
-    },
-    /// Open-ended discovery session: findings stream until ctrl-c.
-    DiscoverSession {
-        #[arg(long, add = vendor_completions())]
         vendor: Option<String>,
     },
-    /// System-profile catalog (daemon-side).
+    /// Power a TV on or off, or print whether it's on (connected and
+    /// awake).
+    Power {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        #[command(flatten)]
+        switch: Switch,
+    },
+    /// Blank or wake a TV's screen, or print whether it shows a picture.
+    Screen {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        #[command(flatten)]
+        switch: Switch,
+    },
+    /// Mute or unmute a TV, or print whether it's muted.
+    Mute {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        #[command(flatten)]
+        switch: Switch,
+    },
+    /// Set whether the daemon automates a TV, or print it.
+    Managed {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        #[command(flatten)]
+        switch: Switch,
+    },
+    /// Set a TV's volume, or print it.
+    Volume {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// 0–100; leave it out to print the current level.
+        level: Option<u8>,
+    },
+    /// Set a TV's backlight level, or print it.
+    Backlight {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// 0–100; leave it out to print the current level.
+        level: Option<u8>,
+    },
+    /// Switch a TV's input, or print the current one.
+    Input {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// The input ID; leave it out to print the current one.
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        input: Option<String>,
+    },
+    /// Set a TV's primary input (the one automation restores and
+    /// compares against), or print it.
+    PrimaryInput {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// The input ID; leave it out to print the primary one.
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        input: Option<String>,
+        /// Unset the primary input.
+        #[arg(long, conflicts_with = "input")]
+        clear: bool,
+    },
+    /// Rename a TV, or print its name.
+    Name {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// The new name; leave it out to print the current one.
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        name: Option<String>,
+    },
+    /// Patch a TV's config, or print it (vendor secrets redacted).
+    Config {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// A JSON object merged into the config (null unsets a vendor
+        /// key); leave it out to print the config.
+        patch: Option<String>,
+    },
+    /// Assign a TV's system profile, or print the assigned one.
+    SystemProfile {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// The profile to assign; leave it out to print the assigned one
+        /// (the default profile's UUID when none is).
+        #[arg(add = system_profile_completions())]
+        profile: Option<Uuid>,
+        /// Unassign, so the TV follows the default profile.
+        #[arg(long, conflicts_with = "profile")]
+        clear: bool,
+        /// Print the TV's resolved profile: the assigned one over the
+        /// stock defaults.
+        #[arg(long, conflicts_with_all = ["profile", "clear"])]
+        effective: bool,
+    },
+    /// Assign a TV's user profile (via --user-socket), or print the
+    /// assigned one.
+    UserProfile {
+        #[arg(value_name = "TV", add = tv_completions())]
+        tv: Uuid,
+        /// The profile to assign; leave it out to print the assigned one
+        /// (the default profile's UUID when none is).
+        #[arg(add = user_profile_completions())]
+        profile: Option<Uuid>,
+        /// Unassign, so the TV follows the default profile.
+        #[arg(long, conflicts_with = "profile")]
+        clear: bool,
+        /// Print the TV's resolved profile: the assigned one over the
+        /// stock defaults.
+        #[arg(long, conflicts_with_all = ["profile", "clear"])]
+        effective: bool,
+    },
+    /// The profile catalogs: system profiles hold what TVs do on power
+    /// events, user profiles what they do on lock, idle and remote
+    /// sessions.
     #[command(subcommand)]
-    Profile(ProfileCmd),
-    /// User-profile catalog (session-service side, via --user-socket).
-    #[command(subcommand)]
-    UserProfile(UserProfileCmd),
+    Profile(ProfileScope),
     /// Arm or query a remote-session source (session-service side, via
     /// --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd`
     /// integration (do = start, undo = stop).
     #[command(subcommand)]
     RemoteSession(RemoteSessionCmd),
+}
+
+/// An on/off attribute's value: set it, flip it, or (with neither) print
+/// it.
+#[derive(Args, Debug)]
+pub struct Switch {
+    /// Turn it on or off; leave it out to print the current value.
+    pub value: Option<OnOff>,
+    /// Flip the current value, printing the one sent.
+    #[arg(long, conflicts_with = "value")]
+    pub toggle: bool,
+}
+
+/// The value of an on/off attribute. Help and completion offer `on` and
+/// `off`; the aliases accept the other common spellings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OnOff {
+    #[value(alias = "true", alias = "yes", alias = "1")]
+    On,
+    #[value(alias = "false", alias = "no", alias = "0")]
+    Off,
+}
+
+impl From<bool> for OnOff {
+    fn from(on: bool) -> Self {
+        if on { Self::On } else { Self::Off }
+    }
+}
+
+impl From<OnOff> for bool {
+    fn from(value: OnOff) -> Self {
+        value == OnOff::On
+    }
+}
+
+impl fmt::Display for OnOff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::On => "on",
+            Self::Off => "off",
+        })
+    }
+}
+
+/// System and user profiles are different schemas, not one schema at two
+/// scopes: a system profile maps power events (the daemon's), a user
+/// profile maps lock, idle and remote-session events (the session
+/// service's). So each scope is its own command family rather than a
+/// `--user` flag that would silently change what `--body` means.
+#[derive(Subcommand, Debug)]
+pub enum ProfileScope {
+    /// System profiles (daemon-side).
+    #[command(subcommand)]
+    System(SystemProfileCmd),
+    /// User profiles (session-service side, via --user-socket).
+    #[command(subcommand)]
+    User(UserProfileCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -226,10 +316,11 @@ pub enum RemoteSessionCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ProfileCmd {
+pub enum SystemProfileCmd {
     /// List profile bodies from the catalog caches.
     List,
-    /// Create a profile: `--body` is a SystemProfileConfig body.
+    /// Create a profile, printing its UUID: `--body` is a
+    /// SystemProfileConfig body.
     Create {
         name: String,
         #[arg(long)]
@@ -241,7 +332,7 @@ pub enum ProfileCmd {
         id: Uuid,
         body: String,
     },
-    /// Copy a profile under a new name.
+    /// Copy a profile under a new name, printing the copy's UUID.
     Duplicate {
         #[arg(add = system_profile_completions())]
         id: Uuid,
@@ -254,18 +345,14 @@ pub enum ProfileCmd {
     },
     /// The stock mapping unset fields inherit.
     Defaults,
-    /// One TV's resolved mapping (assigned profile over stock).
-    Effective {
-        #[arg(add = tv_completions())]
-        tv: Uuid,
-    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum UserProfileCmd {
     /// List profile bodies from the catalog caches.
     List,
-    /// Create a profile: `--body` is a UserProfileConfig body.
+    /// Create a profile, printing its UUID: `--body` is a
+    /// UserProfileConfig body.
     Create {
         name: String,
         #[arg(long)]
@@ -277,7 +364,7 @@ pub enum UserProfileCmd {
         id: Uuid,
         body: String,
     },
-    /// Copy a profile under a new name.
+    /// Copy a profile under a new name, printing the copy's UUID.
     Duplicate {
         #[arg(add = user_profile_completions())]
         id: Uuid,
@@ -290,18 +377,75 @@ pub enum UserProfileCmd {
     },
     /// The stock mapping unset fields inherit.
     Defaults,
-    /// One TV's resolved mapping (assigned profile over stock).
-    Effective {
-        #[arg(add = tv_completions())]
-        tv: Uuid,
-    },
-    /// Assign (or with no value clear) a TV's user profile.
-    Assign {
-        #[arg(add = tv_completions())]
-        tv: Uuid,
-        #[arg(add = user_profile_completions())]
-        profile: Option<Uuid>,
-    },
+}
+
+/// The longest scan the daemon honors. It clamps every requested window
+/// through [`manager::discover_scan`], so asking for the longest possible
+/// one reads the cap.
+fn discover_cap() -> Duration {
+    manager::discover_scan(&rpc::Discover {
+        vendor: None,
+        timeout_ms: Some(u64::MAX),
+    })
+}
+
+/// A duration in jiff's friendly format (`3s`, `1.5s`, `500ms`).
+fn friendly(duration: Duration) -> String {
+    match jiff::SignedDuration::try_from(duration) {
+        Ok(duration) => format!("{duration:#}"),
+        Err(_) => format!("{duration:?}"),
+    }
+}
+
+/// `--timeout` for `discover`: a duration (`3s`, `500ms`, or ISO 8601)
+/// no longer than the daemon's cap, so a longer one fails here instead of
+/// being clamped silently.
+fn parse_scan_window(value: &str) -> Result<Duration, String> {
+    let window: jiff::SignedDuration = value.parse().map_err(|e: jiff::Error| e.to_string())?;
+    let window = Duration::try_from(window).map_err(|_| "the window can't be negative")?;
+    let cap = discover_cap();
+    if window > cap {
+        return Err(format!("the daemon scans for at most {}", friendly(cap)));
+    }
+    Ok(window)
+}
+
+/// Drain what the publisher caches hold for `keyexpr`, keyed by key and
+/// decoded as JSON (a payload that isn't JSON reads as `null`). The cache
+/// is AdvancedSubscriber history: its queryable lives under the verbatim
+/// `@adv` suffix, so a plain wildcard get can't reach it. Stops once
+/// `done` holds over what has arrived, or when no sample lands for
+/// `quiet`. History carries no cross-key order, so `done` judges the
+/// whole set; a key that's legitimately absent can't satisfy it, and
+/// costs the full quiet window.
+pub async fn hydrate(
+    session: &Session,
+    keyexpr: &str,
+    quiet: Duration,
+    mut done: impl FnMut(&BTreeMap<String, Value>) -> bool,
+) -> zenoh::Result<BTreeMap<String, Value>> {
+    let subscriber = session
+        .declare_subscriber(keyexpr.to_string())
+        .history(HistoryConfig::default().detect_late_publishers())
+        .await?;
+    let mut values = BTreeMap::new();
+    while !done(&values) {
+        let Ok(Ok(sample)) = tokio::time::timeout(quiet, subscriber.recv_async()).await else {
+            break;
+        };
+        let key = sample.key_expr().as_str().to_string();
+        match sample.kind() {
+            SampleKind::Put => {
+                let value =
+                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                values.insert(key, value);
+            }
+            SampleKind::Delete => {
+                values.remove(&key);
+            }
+        }
+    }
+    Ok(values)
 }
 
 /// Hard ceiling on the daemon round-trip a `<TAB>` triggers, so a wedged
@@ -309,31 +453,35 @@ pub enum UserProfileCmd {
 /// this; the budget only bites when the daemon is reachable but silent.
 const COMPLETION_BUDGET: Duration = Duration::from_millis(600);
 
+/// How long a completion's cache read waits for the next sample before
+/// taking what it has.
+const COMPLETION_QUIET: Duration = Duration::from_millis(150);
+
 // Value-candidate sources, one per arg kind. Each is wrapped in its own
 // helper so a churn in the unstable completion API is a single edit, not
 // one per call site. They resolve default sockets and the `main` site
 // because completers run before clap parses argv (no `--socket`/`--site`/
 // `--user-socket` visibility).
 
-/// TV UUIDs (daemon TV cache) — for the device verbs.
+/// TV UUIDs (daemon TV cache) — for the per-TV verbs.
 fn tv_completions() -> ArgValueCandidates {
     ArgValueCandidates::new(tv_candidates)
 }
 
-/// System-profile UUIDs (daemon catalog) — for the `profile` subcommand's
-/// ids and `--profile` on `assign`.
+/// System-profile UUIDs (daemon catalog) — for the `profile system`
+/// subcommands' ids and `system-profile`'s profile.
 fn system_profile_completions() -> ArgValueCandidates {
     ArgValueCandidates::new(system_profile_candidates)
 }
 
 /// User-profile UUIDs (session-service catalog on the default user socket)
-/// — for the `user-profile` subcommand's ids and `--profile`.
+/// — for the `profile user` subcommands' ids and `user-profile`'s profile.
 fn user_profile_completions() -> ArgValueCandidates {
     ArgValueCandidates::new(user_profile_candidates)
 }
 
 /// Vendor ids (daemon vendor catalog) — for the `--vendor` args and
-/// `schema <vendor>`.
+/// `vendor <vendor>`.
 fn vendor_completions() -> ArgValueCandidates {
     ArgValueCandidates::new(vendor_candidates)
 }
@@ -384,6 +532,15 @@ fn blocking_candidates(
         .unwrap_or_default()
 }
 
+/// A completion candidate described by a display name, when there is one.
+fn named_candidate(value: String, name: Option<String>) -> CompletionCandidate {
+    let candidate = CompletionCandidate::new(value);
+    match name {
+        Some(name) => candidate.help(Some(name.into())),
+        None => candidate,
+    }
+}
+
 /// Hydrate the TV wildcard from the publisher caches and turn each TV into
 /// a completion candidate. `None` on any transport error.
 async fn collect_tv_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>> {
@@ -391,38 +548,23 @@ async fn collect_tv_candidates(socket: &Path) -> Option<Vec<CompletionCandidate>
         .await
         .ok()?;
     let site = "main";
-    let subscriber = session
-        .declare_subscriber(keys::tv_all(site))
-        .history(HistoryConfig::default().detect_late_publishers())
+    let values = hydrate(&session, &keys::tv_all(site), COMPLETION_QUIET, |_| false)
         .await
         .ok()?;
     let mut names: BTreeMap<Uuid, Option<String>> = BTreeMap::new();
-    while let Ok(Ok(sample)) =
-        tokio::time::timeout(Duration::from_millis(150), subscriber.recv_async()).await
-    {
-        if sample.kind() != SampleKind::Put {
-            continue;
-        }
-        let Some((id, path)) = keys::parse_tv_path(site, sample.key_expr().as_str()) else {
+    for (key, value) in &values {
+        let Some((id, path)) = keys::parse_tv_path(site, key) else {
             continue;
         };
         let entry = names.entry(id).or_default();
         if path == "meta/identity" {
-            let value: Value =
-                serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
             *entry = value["name"].as_str().map(str::to_string);
         }
     }
     Some(
         names
             .into_iter()
-            .map(|(id, name)| {
-                let candidate = CompletionCandidate::new(id.to_string());
-                match name {
-                    Some(name) => candidate.help(Some(name.into())),
-                    None => candidate,
-                }
-            })
+            .map(|(id, name)| named_candidate(id.to_string(), name))
             .collect(),
     )
 }
@@ -438,37 +580,15 @@ async fn collect_catalog_candidates(
     let session = zenoh::open(tisvlay_protocol::bootstrap::client_config(socket).ok()?)
         .await
         .ok()?;
-    let subscriber = session
-        .declare_subscriber(wildcard.to_string())
-        .history(HistoryConfig::default().detect_late_publishers())
+    let values = hydrate(&session, wildcard, COMPLETION_QUIET, |_| false)
         .await
         .ok()?;
-    let mut rows: BTreeMap<String, Option<String>> = BTreeMap::new();
-    while let Ok(Ok(sample)) =
-        tokio::time::timeout(Duration::from_millis(150), subscriber.recv_async()).await
-    {
-        if sample.kind() != SampleKind::Put {
-            continue;
-        }
-        let id = sample
-            .key_expr()
-            .as_str()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let body: Value =
-            serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-        rows.insert(id, body["name"].as_str().map(str::to_string));
-    }
     Some(
-        rows.into_iter()
-            .map(|(id, name)| {
-                let candidate = CompletionCandidate::new(id);
-                match name {
-                    Some(name) => candidate.help(Some(name.into())),
-                    None => candidate,
-                }
+        values
+            .into_iter()
+            .map(|(key, body)| {
+                let id = key.rsplit('/').next().unwrap_or_default().to_string();
+                named_candidate(id, body["name"].as_str().map(str::to_string))
             })
             .collect(),
     )
@@ -497,6 +617,10 @@ async fn collect_vendor_candidates(socket: &Path) -> Option<Vec<CompletionCandid
 mod tests {
     use std::time::{Duration, Instant};
 
+    use clap::{Parser, ValueEnum};
+
+    use super::{Cli, Command, OnOff};
+
     /// clap's self-check: catches conflicting arg ids (a global flag
     /// shadowing a subcommand field of the same name panics at access
     /// time in release, but here at test time). Also exercises the
@@ -504,7 +628,73 @@ mod tests {
     #[test]
     fn clap_definition_is_consistent() {
         use clap::CommandFactory;
-        super::Cli::command().debug_assert();
+        Cli::command().debug_assert();
+    }
+
+    const TV: &str = "00000000-0000-0000-0000-000000000001";
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("tisvlay").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn on_off_accepts_its_aliases_and_round_trips_through_display() {
+        for (spelling, expected) in [
+            ("on", OnOff::On),
+            ("true", OnOff::On),
+            ("yes", OnOff::On),
+            ("1", OnOff::On),
+            ("off", OnOff::Off),
+            ("false", OnOff::Off),
+            ("no", OnOff::Off),
+            ("0", OnOff::Off),
+        ] {
+            let Command::Mute { switch, .. } = parse(&["mute", TV, spelling]).unwrap().command
+            else {
+                panic!("parsed as another command");
+            };
+            assert_eq!(switch.value, Some(expected), "{spelling}");
+            assert_eq!(
+                OnOff::from_str(&expected.to_string(), false),
+                Ok(expected),
+                "Display must parse back"
+            );
+        }
+        assert!(parse(&["mute", TV, "maybe"]).is_err());
+    }
+
+    #[test]
+    fn value_replacing_flags_exclude_a_value() {
+        let other = "00000000-0000-0000-0000-000000000002";
+        for args in [
+            &["mute", TV, "on", "--toggle"][..],
+            &["primary-input", TV, "HDMI_1", "--clear"],
+            &["system-profile", TV, other, "--effective"],
+            &["user-profile", TV, other, "--clear"],
+            &["system-profile", TV, "--clear", "--effective"],
+            &["discover", "--timeout", "1s", "--watch"],
+        ] {
+            assert!(parse(args).is_err(), "{args:?} should be rejected");
+        }
+        assert!(parse(&["power", TV, "--toggle"]).is_ok());
+        assert!(parse(&["system-profile", TV, "--effective"]).is_ok());
+    }
+
+    #[test]
+    fn empty_values_and_overlong_scans_are_rejected() {
+        for args in [
+            &["input", TV, ""][..],
+            &["primary-input", TV, ""],
+            &["name", TV, ""],
+        ] {
+            assert!(parse(args).is_err(), "{args:?} should be rejected");
+        }
+        let cap = super::friendly(super::discover_cap());
+        assert!(parse(&["discover", "--timeout", &cap]).is_ok());
+        assert!(parse(&["discover", "--timeout", "500ms"]).is_ok());
+        assert!(parse(&["discover", "--timeout", "-1s"]).is_err());
+        let error = parse(&["discover", "--timeout", "1h"]).unwrap_err();
+        assert!(error.to_string().contains(&cap), "{error}");
     }
 
     /// A socket that can never connect stands in for "no daemon": the
