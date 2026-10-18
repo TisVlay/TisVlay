@@ -1,16 +1,18 @@
 //! PipeWire screencast detector: the `Screencast` remote source.
 //!
-//! Any KWin-serviced screen capture appears in the PipeWire graph as a
+//! Any KWin-serviced display capture appears in the PipeWire graph as a
 //! node with `media.class = "Stream/Output/Video"` and a `media.name`
-//! starting `kwin-screencast-` (krdp in both modes, RustDesk, plus
-//! plain captures like OBS or a browser tab-share — the signal carries no
-//! app attribution, which is why the unattributed `Screencast` kind arms
-//! only when the resolved profile opts in). The detector watches the
-//! graph and reports one logical `Screencast` source that is ON while any
-//! matching node is present (regardless of the node's run state — capture
-//! setup precedes injected input, so arming on mere appearance closes the
-//! race) and OFF when the last one goes away. The current node state
-//! rides in the source `detail` for observability only.
+//! starting `kwin-screencast-` followed by an output identifier (physical
+//! DRM outputs, virtual outputs like krdp's `Virtual-krdp`, or nested
+//! outputs; plain window captures like Plasma's task manager thumbnail
+//! previews and region snips are excluded to avoid false positives). The
+//! signal carries no app attribution, which is why the unattributed
+//! `Screencast` kind arms only when the resolved profile opts in. The
+//! detector watches the graph and reports one logical `Screencast` source
+//! that is ON while any matching node is present (regardless of the node's
+//! run state — capture setup precedes injected input, so arming on mere
+//! appearance closes the race) and OFF when the last one goes away. The
+//! current node state rides in the source `detail` for observability only.
 //!
 //! The PipeWire client is `!Send` and drives its own event loop, so the
 //! glue lives on a dedicated OS thread; a `pipewire_native::ThreadLoop`
@@ -49,7 +51,43 @@ const SCREENCAST_MEDIA_CLASS: &str = "Stream/Output/Video";
 /// copies the stream name into `media.name`. The prefix has held since
 /// KWin 5.20. `node.name` won't do: it defaults to the process binary,
 /// which packaging renames (`.kwin_wayland-wrapped` under NixOS).
+///
+/// Only output and virtual output captures count: window captures
+/// (which Plasma's task manager creates on mouse hover for thumbnail
+/// previews, and Alt-Tab window switcher previews) and region captures
+/// (Spectacle rectangular snips) must not arm the remote screencast state.
 const KWIN_STREAM_PREFIX: &str = "kwin-screencast-";
+
+/// Standard DRM connector type names as reported by the Linux kernel DRM
+/// subsystem (see `drm_connector_enum_list` in Linux `drivers/gpu/drm/drm_connector.c`),
+/// KWin virtual outputs (`Virtual-…`), and nested compositor outputs (`X11-…`, `WL-…`).
+const DRM_CONNECTOR_PREFIXES: &[&str] = &[
+    "HDMI-A-",
+    "HDMI-B-",
+    "HDMI-",
+    "DP-",
+    "eDP-",
+    "DVI-I-",
+    "DVI-D-",
+    "DVI-A-",
+    "DVI-",
+    "VGA-",
+    "DisplayPort-",
+    "Composite-",
+    "SVIDEO-",
+    "LVDS-",
+    "Component-",
+    "DIN-",
+    "TV-",
+    "DSI-",
+    "DPI-",
+    "Writeback-",
+    "SPI-",
+    "USB-",
+    "HEADLESS-",
+];
+
+const NESTED_OUTPUT_PREFIXES: &[&str] = &["X11-", "WL-", "wayland-"];
 
 /// The properties the predicate needs, lifted out of a PipeWire
 /// `Properties` bag into an owned struct so the predicate and the tracker
@@ -70,7 +108,33 @@ pub(crate) fn is_screencast(props: &NodeProps) -> bool {
 }
 
 fn is_kwin_stream_name(name: &str) -> bool {
-    name.starts_with(KWIN_STREAM_PREFIX)
+    let Some(target) = name.strip_prefix(KWIN_STREAM_PREFIX) else {
+        return false;
+    };
+    is_kwin_output_target(target)
+}
+
+fn is_kwin_output_target(target: &str) -> bool {
+    // 1. Virtual outputs (e.g. "Virtual-krdp", "Virtual-0", "Virtual-1").
+    if let Some(rest) = target.strip_prefix("Virtual-") {
+        return !rest.is_empty()
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    }
+    // 2. Nested compositor outputs (e.g. "X11-1", "WL-1", "wayland-0").
+    for prefix in NESTED_OUTPUT_PREFIXES {
+        if let Some(rest) = target.strip_prefix(prefix) {
+            return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric());
+        }
+    }
+    // 3. DRM connector outputs (e.g. "HDMI-A-1", "DP-2", "eDP-1", "DVI-D-1", "VGA-1").
+    for prefix in DRM_CONNECTOR_PREFIXES {
+        if let Some(rest) = target.strip_prefix(prefix) {
+            return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+        }
+    }
+    false
 }
 
 /// Tracks the matching nodes present in the graph and turns node-info /
@@ -622,19 +686,39 @@ mod tests {
     #[test]
     fn predicate_matches_only_kwin_video_output() {
         assert!(is_screencast(&kwin()));
-        // Every cast type shares the prefix: outputs, virtual outputs,
-        // windows (an app without a desktop file leaves the suffix empty)
-        // and regions.
+        // Physical outputs, virtual outputs, and nested compositor outputs match.
         for name in [
+            "kwin-screencast-HDMI-A-1",
+            "kwin-screencast-DP-2",
+            "kwin-screencast-eDP-1",
+            "kwin-screencast-DVI-D-1",
+            "kwin-screencast-VGA-1",
             "kwin-screencast-Virtual-krdp",
+            "kwin-screencast-Virtual-0",
+            "kwin-screencast-WL-1",
+            "kwin-screencast-X11-1",
+        ] {
+            assert!(
+                is_screencast(&props(Some(SCREENCAST_MEDIA_CLASS), Some(name))),
+                "expected {name} to match as an output screencast"
+            );
+        }
+        // Windows (taskbar thumbnail previews, app window shares) and regions
+        // (screenshot snips) must not match.
+        for name in [
             "kwin-screencast-org.kde.konsole",
+            "kwin-screencast-org.kde.dolphin",
+            "kwin-screencast-code",
+            "kwin-screencast-firefox",
             "kwin-screencast-",
             "kwin-screencast-0,0 1920x1080",
+            "kwin-screencast-Virtual-",
+            "kwin-screencast-HDMI-A-",
         ] {
-            assert!(is_screencast(&props(
-                Some(SCREENCAST_MEDIA_CLASS),
-                Some(name)
-            )));
+            assert!(
+                !is_screencast(&props(Some(SCREENCAST_MEDIA_CLASS), Some(name))),
+                "expected {name} to be rejected as a non-output capture"
+            );
         }
         // Wrong class (an audio stream, a sink).
         assert!(!is_screencast(&props(
