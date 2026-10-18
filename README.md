@@ -1,7 +1,7 @@
 <!-- ANCHOR: overview -->
 ![Banner](docs/artwork/banner.png)
 
-**TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for heterogeneous multi-display setups, mitigating energy usage and display burn-in.
+**TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for heterogeneous multi-display setups, mitigating energy usage and OLED panel burn-in or projector bulb burn-out.
 
 [![CI Pipeline](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml/badge.svg)](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/TisVlay/TisVlay/branch/main/graph/badge.svg)](https://codecov.io/gh/TisVlay/TisVlay)
@@ -9,16 +9,16 @@
 [![License](https://img.shields.io/github/license/TisVlay/TisVlay)](https://github.com/TisVlay/TisVlay/blob/main/LICENSE)
 
 ## ✨ Features
-- 📺 Control multiple TVs & projectors just like conventional displays
+- 📺 Conventional multi-monitor control
   - Power on/off with PC, Screen on/off with lock screen
   - Easily adjust backlight, volume, active input, and more
-- 🤖 Event driven automation via system and user desktop events
+- 🤖 Automation via system/user events
   - System boot, reboot, shutdown, suspend, wake, DPMS
   - User lock/unlock, idle, remote session connect/disconnect
-- 🧰 Flexible profile customization and switching
+- 🧰 Flexible profile customization
   - System-wide and per-user profiles for per-device behavior
   - Unified API and CLI for further scripting and integrations
-- 🧩 Vendor agnostic & modular architecture
+- 🧩 Modular & vendor agnostic
   - Supports HDMI CEC, Network IP Control (LG WebOS SSAP)
   - Generalized for further interfaces, protocols, and transports
 - 🩺 Self-healing connectivity
@@ -100,11 +100,11 @@ Daemon -.->|WebSocket / WoL| TV2
 
 ## 🙏 Acknowledgments
 
-See third-party notice included with releases for full details. Key Rust dependencies include:
+Full third-party notice included with releases. Notable Rust crates include:
 
-- [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `tisvlay-gui`'s responsive desktop interface
-- [Bevy](https://bevyengine.org) – ECS used in `tisvlay-daemon` to manage device interactions and system events
-- [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub protocol unifying socket IPC across the `tisvlay` stack
-- [ksni](https://github.com/iovxw/ksni) – Implementation of the Freedesktop StatusNotifierItem spec powering `tisvlay-tray`
-- [linux-cec](https://gitlab.steamos.cloud/holo/linux-cec/) – Linux CEC userspace bindings used by `tisvlay-cec` for HDMI-CEC support
-- [netflector](https://github.com/netflector/netflector) – Network reflector enabling mDNS, SSDP, and WoL while preserving user privacy
+- [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `tisvlay-gui`'s responsive interface
+- [Bevy](https://bevyengine.org) – ECS used in `tisvlay-daemon` to manage device interactions and events
+- [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub unifying socket IPC across the `tisvlay` stack
+- [ksni](https://github.com/iovxw/ksni) – Freedesktop StatusNotifierItem library powering `tisvlay-tray`
+- [linux-cec](https://gitlab.steamos.cloud/holo/linux-cec/) – Linux userspace bindings used by `tisvlay-cec` for HDMI-CEC
+- [netflector](https://github.com/netflector/netflector) – Reflector enabling mDNS, SSDP, WoL while preserving VLAN privacy
