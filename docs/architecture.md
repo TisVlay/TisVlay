@@ -11,7 +11,7 @@ The current (v0.3.0+) architecture: a **bevy_ecs world** owns every daemon state
 | `tisvlay-tray` | ksni tray over a live mirror, desktop notifications, settings service | connect-only peer → system; supervised **client** → user socket (it serves there) |
 | `tisvlay-greeter` | Login-greeter idle client (`ext-idle-notify` → `greeter/idle`) | connect-only peer → system socket |
 | `tisvlay-gui` | Slint settings window | connect-only peers → both sockets |
-| `tisvlay` (CLI) | Pure zenoh client | connect-only peers → both sockets |
+| `tisvlay` (CLI) | Pure zenoh client | client → both sockets (one-shot, fails fast) |
 
 ## Two-socket topology
 

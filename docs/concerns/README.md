@@ -18,7 +18,7 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 ## CLI
 
-- [CLI `pair` can't carry vendor-specific fields](cli-pair-vendor-fields.md)
+- [CLI `pair` gets no vendor schema defaults](cli-pair-vendor-fields.md)
 
 ## GUI
 

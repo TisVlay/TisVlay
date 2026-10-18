@@ -25,7 +25,7 @@ A woken TV takes a few seconds (typically 1–5) to boot before it accepts comma
 ```sh
 tisvlay config <id>        # shows the stored MAC
 tisvlay repair <id>        # re-pairs and reads the MAC from the TV
-tisvlay config-set <id> '{"mac":"AA:BB:CC:DD:EE:FF"}'
+tisvlay config <id> '{"mac":"AA:BB:CC:DD:EE:FF"}'
 ```
 
 </details>
@@ -108,9 +108,9 @@ Work through these in the app:
 <summary>From a terminal</summary>
 
 ```sh
-tisvlay managed <id> true
-tisvlay profile effective <id>            # the TV's resolved system mapping
-tisvlay user-profile effective <id>       # the same for your user profile
+tisvlay managed <id> on
+tisvlay system-profile <id> --effective   # the TV's resolved system mapping
+tisvlay user-profile <id> --effective     # the same for your user profile
 systemctl --user status tisvlay-session
 ```
 
@@ -131,10 +131,11 @@ When you're done, **Remove TV** under **DANGER ZONE** deletes it.
 <summary>From a terminal</summary>
 
 ```sh
-tisvlay add "mock-test" --address mock://test
-tisvlay list                       # get its id
-tisvlay set-volume <id> 50
-tisvlay remove <id>
+id=$(tisvlay pair "mock-test" --vendor mock \
+    --params '{"address":"mock://test","pairing":"accept"}')
+tisvlay volume "$id" 50
+tisvlay volume "$id"              # reads it back: 50
+tisvlay remove "$id"
 ```
 
 </details>

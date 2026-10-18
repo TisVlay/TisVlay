@@ -17,7 +17,7 @@ Net effect: users who type only an IP at pair-time get WoL automatically the mom
 - **Manual-entry autofill misses when the ARP cache is cold and the active probe arrives too late.** Users on cold-cache LANs (firewall-blocked SSDP responses, fresh boot) might still see an empty MAC field. The pair flow's TCP handshake is a much more reliable cache-warming event than the manual-entry probe's single UDP byte.
 - **Catches users who edited the MAC field to empty.** Even if autofill worked, a user might delete the value before submitting (thinking they don't need it). Pair-time capture is the safety net.
 - **No additional UI surface.** This is pure daemon-side enrichment; the user sees the MAC populated in the TVs-pane after pair without any extra step.
-- **Future-proofs against the GUI flow being skipped.** Users pairing via `tisvlay pair <name> <vendor> <ip>` from the CLI don't get the wizard's autofill path at all today.
+- **Future-proofs against the GUI flow being skipped.** Users pairing via `tisvlay pair <name> --params '{"ip":…}'` from the CLI don't get the wizard's autofill path at all today.
 
 ## Mechanics
 

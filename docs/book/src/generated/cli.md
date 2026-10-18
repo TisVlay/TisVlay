@@ -8,42 +8,37 @@
 * [`tisvlay watch`↴](#tisvlay-watch)
 * [`tisvlay discover`↴](#tisvlay-discover)
 * [`tisvlay pair`↴](#tisvlay-pair)
-* [`tisvlay add`↴](#tisvlay-add)
-* [`tisvlay set-volume`↴](#tisvlay-set-volume)
-* [`tisvlay input`↴](#tisvlay-input)
-* [`tisvlay backlight`↴](#tisvlay-backlight)
-* [`tisvlay screen`↴](#tisvlay-screen)
-* [`tisvlay rename`↴](#tisvlay-rename)
-* [`tisvlay managed`↴](#tisvlay-managed)
-* [`tisvlay config`↴](#tisvlay-config)
-* [`tisvlay config-set`↴](#tisvlay-config-set)
 * [`tisvlay repair`↴](#tisvlay-repair)
-* [`tisvlay power`↴](#tisvlay-power)
 * [`tisvlay reconnect`↴](#tisvlay-reconnect)
 * [`tisvlay remove`↴](#tisvlay-remove)
+* [`tisvlay vendor`↴](#tisvlay-vendor)
+* [`tisvlay power`↴](#tisvlay-power)
+* [`tisvlay screen`↴](#tisvlay-screen)
 * [`tisvlay mute`↴](#tisvlay-mute)
+* [`tisvlay managed`↴](#tisvlay-managed)
+* [`tisvlay volume`↴](#tisvlay-volume)
+* [`tisvlay backlight`↴](#tisvlay-backlight)
+* [`tisvlay input`↴](#tisvlay-input)
 * [`tisvlay primary-input`↴](#tisvlay-primary-input)
-* [`tisvlay assign`↴](#tisvlay-assign)
-* [`tisvlay vendors`↴](#tisvlay-vendors)
-* [`tisvlay schema`↴](#tisvlay-schema)
-* [`tisvlay discover-session`↴](#tisvlay-discover-session)
-* [`tisvlay profile`↴](#tisvlay-profile)
-* [`tisvlay profile list`↴](#tisvlay-profile-list)
-* [`tisvlay profile create`↴](#tisvlay-profile-create)
-* [`tisvlay profile update`↴](#tisvlay-profile-update)
-* [`tisvlay profile duplicate`↴](#tisvlay-profile-duplicate)
-* [`tisvlay profile delete`↴](#tisvlay-profile-delete)
-* [`tisvlay profile defaults`↴](#tisvlay-profile-defaults)
-* [`tisvlay profile effective`↴](#tisvlay-profile-effective)
+* [`tisvlay name`↴](#tisvlay-name)
+* [`tisvlay config`↴](#tisvlay-config)
+* [`tisvlay system-profile`↴](#tisvlay-system-profile)
 * [`tisvlay user-profile`↴](#tisvlay-user-profile)
-* [`tisvlay user-profile list`↴](#tisvlay-user-profile-list)
-* [`tisvlay user-profile create`↴](#tisvlay-user-profile-create)
-* [`tisvlay user-profile update`↴](#tisvlay-user-profile-update)
-* [`tisvlay user-profile duplicate`↴](#tisvlay-user-profile-duplicate)
-* [`tisvlay user-profile delete`↴](#tisvlay-user-profile-delete)
-* [`tisvlay user-profile defaults`↴](#tisvlay-user-profile-defaults)
-* [`tisvlay user-profile effective`↴](#tisvlay-user-profile-effective)
-* [`tisvlay user-profile assign`↴](#tisvlay-user-profile-assign)
+* [`tisvlay profile`↴](#tisvlay-profile)
+* [`tisvlay profile system`↴](#tisvlay-profile-system)
+* [`tisvlay profile system list`↴](#tisvlay-profile-system-list)
+* [`tisvlay profile system create`↴](#tisvlay-profile-system-create)
+* [`tisvlay profile system update`↴](#tisvlay-profile-system-update)
+* [`tisvlay profile system duplicate`↴](#tisvlay-profile-system-duplicate)
+* [`tisvlay profile system delete`↴](#tisvlay-profile-system-delete)
+* [`tisvlay profile system defaults`↴](#tisvlay-profile-system-defaults)
+* [`tisvlay profile user`↴](#tisvlay-profile-user)
+* [`tisvlay profile user list`↴](#tisvlay-profile-user-list)
+* [`tisvlay profile user create`↴](#tisvlay-profile-user-create)
+* [`tisvlay profile user update`↴](#tisvlay-profile-user-update)
+* [`tisvlay profile user duplicate`↴](#tisvlay-profile-user-duplicate)
+* [`tisvlay profile user delete`↴](#tisvlay-profile-user-delete)
+* [`tisvlay profile user defaults`↴](#tisvlay-profile-user-defaults)
 * [`tisvlay remote-session`↴](#tisvlay-remote-session)
 * [`tisvlay remote-session start`↴](#tisvlay-remote-session-start)
 * [`tisvlay remote-session stop`↴](#tisvlay-remote-session-stop)
@@ -55,6 +50,8 @@ TisVlay TV control
 
 **Usage:** `tisvlay [OPTIONS] <COMMAND>`
 
+A TV setting or state reads when its value is left out and sets when it's given: `tisvlay volume <TV>` prints the volume, `tisvlay volume <TV> 30` sets it. On/off settings take `--toggle`, and settings that can be unset take `--clear`. Commands that change something print nothing on success.
+
 ###### **Subcommands:**
 
 * `enable-access` — Grant the current user TV control by adding it to the daemon's socket group (one-click, authenticated via polkit). Log out and back in afterward for it to take effect
@@ -62,35 +59,31 @@ TisVlay TV control
 * `reload` — Apply hand edits of the state files: the daemon's, the session's and the tray's (what the GUI's Reload button does)
 * `list` — List TVs with their current state (hydrates from publisher caches)
 * `watch` — Stream every data key: history first, then live samples
-* `discover` — Scan for TVs (bounded window; findings stream back as replies)
+* `discover` — Scan for TVs: a bounded window, or with `--watch` until ctrl-c
 * `pair` — Pair a new TV, streaming the pairing progress (ctrl-c cancels)
-* `add` — Add a mock TV (shortcut around the add-tv rpc)
-* `set-volume` — Set a TV's volume
-* `input` — Switch a TV's input
-* `backlight` — Set a TV's backlight level
-* `screen` — Blank or wake the screen
-* `rename` — Rename a TV
-* `managed` — Toggle whether the daemon drives this TV
-* `config` — Read a TV's config (vendor secrets redacted)
-* `config-set` — Patch a TV's config with a JSON object (null unsets a vendor key)
 * `repair` — Re-run the pairing handshake for an existing TV
-* `power` — Power a TV on or off
 * `reconnect` — Ask a downed TV to reconnect
 * `remove` — Remove a TV (deletes all its keys)
-* `mute` — Mute or unmute a TV
-* `primary-input` — Set (or with no value clear) the TV's primary input
-* `assign` — Assign (or with no value clear) the TV's system profile
-* `vendors` — List registered vendor backends with their capabilities
-* `schema` — Show a vendor's pairing form schema
-* `discover-session` — Open-ended discovery session: findings stream until ctrl-c
-* `profile` — System-profile catalog (daemon-side)
-* `user-profile` — User-profile catalog (session-service side, via --user-socket)
+* `vendor` — List the vendor backends, or show one's capabilities and pairing fields
+* `power` — Power a TV on or off, or print whether it's on (connected and awake)
+* `screen` — Blank or wake a TV's screen, or print whether it shows a picture
+* `mute` — Mute or unmute a TV, or print whether it's muted
+* `managed` — Set whether the daemon automates a TV, or print it
+* `volume` — Set a TV's volume, or print it
+* `backlight` — Set a TV's backlight level, or print it
+* `input` — Switch a TV's input, or print the current one
+* `primary-input` — Set a TV's primary input (the one automation restores and compares against), or print it
+* `name` — Rename a TV, or print its name
+* `config` — Patch a TV's config, or print it (vendor secrets redacted)
+* `system-profile` — Assign a TV's system profile, or print the assigned one
+* `user-profile` — Assign a TV's user profile (via --user-socket), or print the assigned one
+* `profile` — The profile catalogs: system profiles hold what TVs do on power events, user profiles what they do on lock, idle and remote sessions
 * `remote-session` — Arm or query a remote-session source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
 
 ###### **Options:**
 
 * `--socket <SOCKET>` — Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
-* `--user-socket <USER_SOCKET>` — Session-service user socket for the `user-profile` and `remote-session` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
+* `--user-socket <USER_SOCKET>` — Session-service user socket for the `profile user`, `user-profile` and `remote-session` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
 * `--site <SITE>` — Site chunk used in all key expressions; leave it unless you run more than one daemon
 
   Default value: `main`
@@ -140,16 +133,15 @@ Stream every data key: history first, then live samples
 
 ## `tisvlay discover`
 
-Scan for TVs (bounded window; findings stream back as replies)
+Scan for TVs: a bounded window, or with `--watch` until ctrl-c
 
 **Usage:** `tisvlay discover [OPTIONS]`
 
 ###### **Options:**
 
 * `--vendor <VENDOR>`
-* `--timeout-ms <TIMEOUT_MS>`
-
-  Default value: `3000`
+* `--timeout <TIMEOUT>` — How long to scan, e.g. `3s` or `500ms` (default: the daemon's window; it scans for at most its own cap)
+* `--watch` — Keep scanning, streaming findings until ctrl-c
 
 
 
@@ -157,7 +149,7 @@ Scan for TVs (bounded window; findings stream back as replies)
 
 Pair a new TV, streaming the pairing progress (ctrl-c cancels)
 
-**Usage:** `tisvlay pair [OPTIONS] <NAME>`
+**Usage:** `tisvlay pair [OPTIONS] --params <PARAMS> <NAME>`
 
 ###### **Arguments:**
 
@@ -169,136 +161,7 @@ Pair a new TV, streaming the pairing progress (ctrl-c cancels)
 
   Default value: `lg`
 * `--params <PARAMS>` — Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'
-* `--address <ADDRESS>` — Mock shorthand for --params '{"address":"mock://…"}'
-
-
-
-## `tisvlay add`
-
-Add a mock TV (shortcut around the add-tv rpc)
-
-**Usage:** `tisvlay add [OPTIONS] --address <ADDRESS> <NAME>`
-
-###### **Arguments:**
-
-* `<NAME>`
-
-###### **Options:**
-
-* `--address <ADDRESS>` — Mock vendor address, e.g. mock://den
-* `--vendor <VENDOR>`
-
-  Default value: `mock`
-* `--unmanaged`
-
-
-
-## `tisvlay set-volume`
-
-Set a TV's volume
-
-**Usage:** `tisvlay set-volume <ID> <LEVEL>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<LEVEL>`
-
-
-
-## `tisvlay input`
-
-Switch a TV's input
-
-**Usage:** `tisvlay input <ID> <INPUT>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<INPUT>`
-
-
-
-## `tisvlay backlight`
-
-Set a TV's backlight level
-
-**Usage:** `tisvlay backlight <ID> <LEVEL>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<LEVEL>`
-
-
-
-## `tisvlay screen`
-
-Blank or wake the screen
-
-**Usage:** `tisvlay screen <ID> <STATE>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<STATE>`
-
-  Possible values: `on`, `off`
-
-
-
-
-## `tisvlay rename`
-
-Rename a TV
-
-**Usage:** `tisvlay rename <ID> <NAME>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<NAME>`
-
-
-
-## `tisvlay managed`
-
-Toggle whether the daemon drives this TV
-
-**Usage:** `tisvlay managed <ID> <MANAGED>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<MANAGED>`
-
-  Possible values: `true`, `false`
-
-
-
-
-## `tisvlay config`
-
-Read a TV's config (vendor secrets redacted)
-
-**Usage:** `tisvlay config <ID>`
-
-###### **Arguments:**
-
-* `<ID>`
-
-
-
-## `tisvlay config-set`
-
-Patch a TV's config with a JSON object (null unsets a vendor key)
-
-**Usage:** `tisvlay config-set <ID> <PATCH>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<PATCH>`
+* `--unmanaged` — Enroll the TV unmanaged: the daemon won't automate it
 
 
 
@@ -306,27 +169,11 @@ Patch a TV's config with a JSON object (null unsets a vendor key)
 
 Re-run the pairing handshake for an existing TV
 
-**Usage:** `tisvlay repair <ID>`
+**Usage:** `tisvlay repair <TV>`
 
 ###### **Arguments:**
 
-* `<ID>`
-
-
-
-## `tisvlay power`
-
-Power a TV on or off
-
-**Usage:** `tisvlay power <ID> <STATE>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<STATE>`
-
-  Possible values: `on`, `off`
-
+* `<TV>`
 
 
 
@@ -334,11 +181,11 @@ Power a TV on or off
 
 Ask a downed TV to reconnect
 
-**Usage:** `tisvlay reconnect <ID>`
+**Usage:** `tisvlay reconnect <TV>`
 
 ###### **Arguments:**
 
-* `<ID>`
+* `<TV>`
 
 
 
@@ -346,69 +193,19 @@ Ask a downed TV to reconnect
 
 Remove a TV (deletes all its keys)
 
-**Usage:** `tisvlay remove <ID>`
+**Usage:** `tisvlay remove <TV>`
 
 ###### **Arguments:**
 
-* `<ID>`
+* `<TV>`
 
 
 
-## `tisvlay mute`
+## `tisvlay vendor`
 
-Mute or unmute a TV
+List the vendor backends, or show one's capabilities and pairing fields
 
-**Usage:** `tisvlay mute <ID> <MUTED>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<MUTED>`
-
-  Possible values: `true`, `false`
-
-
-
-
-## `tisvlay primary-input`
-
-Set (or with no value clear) the TV's primary input
-
-**Usage:** `tisvlay primary-input <ID> [INPUT]`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<INPUT>`
-
-
-
-## `tisvlay assign`
-
-Assign (or with no value clear) the TV's system profile
-
-**Usage:** `tisvlay assign <ID> [PROFILE]`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<PROFILE>`
-
-
-
-## `tisvlay vendors`
-
-List registered vendor backends with their capabilities
-
-**Usage:** `tisvlay vendors`
-
-
-
-## `tisvlay schema`
-
-Show a vendor's pairing form schema
-
-**Usage:** `tisvlay schema <VENDOR>`
+**Usage:** `tisvlay vendor [VENDOR]`
 
 ###### **Arguments:**
 
@@ -416,150 +213,247 @@ Show a vendor's pairing form schema
 
 
 
-## `tisvlay discover-session`
+## `tisvlay power`
 
-Open-ended discovery session: findings stream until ctrl-c
+Power a TV on or off, or print whether it's on (connected and awake)
 
-**Usage:** `tisvlay discover-session [OPTIONS]`
-
-###### **Options:**
-
-* `--vendor <VENDOR>`
-
-
-
-## `tisvlay profile`
-
-System-profile catalog (daemon-side)
-
-**Usage:** `tisvlay profile <COMMAND>`
-
-###### **Subcommands:**
-
-* `list` — List profile bodies from the catalog caches
-* `create` — Create a profile: `--body` is a SystemProfileConfig body
-* `update` — Replace a profile's body (full JSON body; name required inside)
-* `duplicate` — Copy a profile under a new name
-* `delete` — Delete a profile (assignments referring to it fall back to default)
-* `defaults` — The stock mapping unset fields inherit
-* `effective` — One TV's resolved mapping (assigned profile over stock)
-
-
-
-## `tisvlay profile list`
-
-List profile bodies from the catalog caches
-
-**Usage:** `tisvlay profile list`
-
-
-
-## `tisvlay profile create`
-
-Create a profile: `--body` is a SystemProfileConfig body
-
-**Usage:** `tisvlay profile create [OPTIONS] <NAME>`
-
-###### **Arguments:**
-
-* `<NAME>`
-
-###### **Options:**
-
-* `--body <BODY>`
-
-
-
-## `tisvlay profile update`
-
-Replace a profile's body (full JSON body; name required inside)
-
-**Usage:** `tisvlay profile update <ID> <BODY>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<BODY>`
-
-
-
-## `tisvlay profile duplicate`
-
-Copy a profile under a new name
-
-**Usage:** `tisvlay profile duplicate <ID> <NAME>`
-
-###### **Arguments:**
-
-* `<ID>`
-* `<NAME>`
-
-
-
-## `tisvlay profile delete`
-
-Delete a profile (assignments referring to it fall back to default)
-
-**Usage:** `tisvlay profile delete <ID>`
-
-###### **Arguments:**
-
-* `<ID>`
-
-
-
-## `tisvlay profile defaults`
-
-The stock mapping unset fields inherit
-
-**Usage:** `tisvlay profile defaults`
-
-
-
-## `tisvlay profile effective`
-
-One TV's resolved mapping (assigned profile over stock)
-
-**Usage:** `tisvlay profile effective <TV>`
+**Usage:** `tisvlay power [OPTIONS] <TV> [VALUE]`
 
 ###### **Arguments:**
 
 * `<TV>`
+* `<VALUE>` — Turn it on or off; leave it out to print the current value
+
+  Possible values: `on`, `off`
+
+
+###### **Options:**
+
+* `--toggle` — Flip the current value, printing the one sent
+
+
+
+## `tisvlay screen`
+
+Blank or wake a TV's screen, or print whether it shows a picture
+
+**Usage:** `tisvlay screen [OPTIONS] <TV> [VALUE]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<VALUE>` — Turn it on or off; leave it out to print the current value
+
+  Possible values: `on`, `off`
+
+
+###### **Options:**
+
+* `--toggle` — Flip the current value, printing the one sent
+
+
+
+## `tisvlay mute`
+
+Mute or unmute a TV, or print whether it's muted
+
+**Usage:** `tisvlay mute [OPTIONS] <TV> [VALUE]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<VALUE>` — Turn it on or off; leave it out to print the current value
+
+  Possible values: `on`, `off`
+
+
+###### **Options:**
+
+* `--toggle` — Flip the current value, printing the one sent
+
+
+
+## `tisvlay managed`
+
+Set whether the daemon automates a TV, or print it
+
+**Usage:** `tisvlay managed [OPTIONS] <TV> [VALUE]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<VALUE>` — Turn it on or off; leave it out to print the current value
+
+  Possible values: `on`, `off`
+
+
+###### **Options:**
+
+* `--toggle` — Flip the current value, printing the one sent
+
+
+
+## `tisvlay volume`
+
+Set a TV's volume, or print it
+
+**Usage:** `tisvlay volume <TV> [LEVEL]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<LEVEL>` — 0–100; leave it out to print the current level
+
+
+
+## `tisvlay backlight`
+
+Set a TV's backlight level, or print it
+
+**Usage:** `tisvlay backlight <TV> [LEVEL]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<LEVEL>` — 0–100; leave it out to print the current level
+
+
+
+## `tisvlay input`
+
+Switch a TV's input, or print the current one
+
+**Usage:** `tisvlay input <TV> [INPUT]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<INPUT>` — The input ID; leave it out to print the current one
+
+
+
+## `tisvlay primary-input`
+
+Set a TV's primary input (the one automation restores and compares against), or print it
+
+**Usage:** `tisvlay primary-input [OPTIONS] <TV> [INPUT]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<INPUT>` — The input ID; leave it out to print the primary one
+
+###### **Options:**
+
+* `--clear` — Unset the primary input
+
+
+
+## `tisvlay name`
+
+Rename a TV, or print its name
+
+**Usage:** `tisvlay name <TV> [NAME]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<NAME>` — The new name; leave it out to print the current one
+
+
+
+## `tisvlay config`
+
+Patch a TV's config, or print it (vendor secrets redacted)
+
+**Usage:** `tisvlay config <TV> [PATCH]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<PATCH>` — A JSON object merged into the config (null unsets a vendor key); leave it out to print the config
+
+
+
+## `tisvlay system-profile`
+
+Assign a TV's system profile, or print the assigned one
+
+**Usage:** `tisvlay system-profile [OPTIONS] <TV> [PROFILE]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<PROFILE>` — The profile to assign; leave it out to print the assigned one (the default profile's UUID when none is)
+
+###### **Options:**
+
+* `--clear` — Unassign, so the TV follows the default profile
+* `--effective` — Print the TV's resolved profile: the assigned one over the stock defaults
 
 
 
 ## `tisvlay user-profile`
 
-User-profile catalog (session-service side, via --user-socket)
+Assign a TV's user profile (via --user-socket), or print the assigned one
 
-**Usage:** `tisvlay user-profile <COMMAND>`
+**Usage:** `tisvlay user-profile [OPTIONS] <TV> [PROFILE]`
+
+###### **Arguments:**
+
+* `<TV>`
+* `<PROFILE>` — The profile to assign; leave it out to print the assigned one (the default profile's UUID when none is)
+
+###### **Options:**
+
+* `--clear` — Unassign, so the TV follows the default profile
+* `--effective` — Print the TV's resolved profile: the assigned one over the stock defaults
+
+
+
+## `tisvlay profile`
+
+The profile catalogs: system profiles hold what TVs do on power events, user profiles what they do on lock, idle and remote sessions
+
+**Usage:** `tisvlay profile <COMMAND>`
+
+###### **Subcommands:**
+
+* `system` — System profiles (daemon-side)
+* `user` — User profiles (session-service side, via --user-socket)
+
+
+
+## `tisvlay profile system`
+
+System profiles (daemon-side)
+
+**Usage:** `tisvlay profile system <COMMAND>`
 
 ###### **Subcommands:**
 
 * `list` — List profile bodies from the catalog caches
-* `create` — Create a profile: `--body` is a UserProfileConfig body
+* `create` — Create a profile, printing its UUID: `--body` is a SystemProfileConfig body
 * `update` — Replace a profile's body (full JSON body; name required inside)
-* `duplicate` — Copy a profile under a new name
+* `duplicate` — Copy a profile under a new name, printing the copy's UUID
 * `delete` — Delete a profile (assignments referring to it fall back to default)
 * `defaults` — The stock mapping unset fields inherit
-* `effective` — One TV's resolved mapping (assigned profile over stock)
-* `assign` — Assign (or with no value clear) a TV's user profile
 
 
 
-## `tisvlay user-profile list`
+## `tisvlay profile system list`
 
 List profile bodies from the catalog caches
 
-**Usage:** `tisvlay user-profile list`
+**Usage:** `tisvlay profile system list`
 
 
 
-## `tisvlay user-profile create`
+## `tisvlay profile system create`
 
-Create a profile: `--body` is a UserProfileConfig body
+Create a profile, printing its UUID: `--body` is a SystemProfileConfig body
 
-**Usage:** `tisvlay user-profile create [OPTIONS] <NAME>`
+**Usage:** `tisvlay profile system create [OPTIONS] <NAME>`
 
 ###### **Arguments:**
 
@@ -571,11 +465,11 @@ Create a profile: `--body` is a UserProfileConfig body
 
 
 
-## `tisvlay user-profile update`
+## `tisvlay profile system update`
 
 Replace a profile's body (full JSON body; name required inside)
 
-**Usage:** `tisvlay user-profile update <ID> <BODY>`
+**Usage:** `tisvlay profile system update <ID> <BODY>`
 
 ###### **Arguments:**
 
@@ -584,11 +478,11 @@ Replace a profile's body (full JSON body; name required inside)
 
 
 
-## `tisvlay user-profile duplicate`
+## `tisvlay profile system duplicate`
 
-Copy a profile under a new name
+Copy a profile under a new name, printing the copy's UUID
 
-**Usage:** `tisvlay user-profile duplicate <ID> <NAME>`
+**Usage:** `tisvlay profile system duplicate <ID> <NAME>`
 
 ###### **Arguments:**
 
@@ -597,11 +491,11 @@ Copy a profile under a new name
 
 
 
-## `tisvlay user-profile delete`
+## `tisvlay profile system delete`
 
 Delete a profile (assignments referring to it fall back to default)
 
-**Usage:** `tisvlay user-profile delete <ID>`
+**Usage:** `tisvlay profile system delete <ID>`
 
 ###### **Arguments:**
 
@@ -609,36 +503,98 @@ Delete a profile (assignments referring to it fall back to default)
 
 
 
-## `tisvlay user-profile defaults`
+## `tisvlay profile system defaults`
 
 The stock mapping unset fields inherit
 
-**Usage:** `tisvlay user-profile defaults`
+**Usage:** `tisvlay profile system defaults`
 
 
 
-## `tisvlay user-profile effective`
+## `tisvlay profile user`
 
-One TV's resolved mapping (assigned profile over stock)
+User profiles (session-service side, via --user-socket)
 
-**Usage:** `tisvlay user-profile effective <TV>`
+**Usage:** `tisvlay profile user <COMMAND>`
+
+###### **Subcommands:**
+
+* `list` — List profile bodies from the catalog caches
+* `create` — Create a profile, printing its UUID: `--body` is a UserProfileConfig body
+* `update` — Replace a profile's body (full JSON body; name required inside)
+* `duplicate` — Copy a profile under a new name, printing the copy's UUID
+* `delete` — Delete a profile (assignments referring to it fall back to default)
+* `defaults` — The stock mapping unset fields inherit
+
+
+
+## `tisvlay profile user list`
+
+List profile bodies from the catalog caches
+
+**Usage:** `tisvlay profile user list`
+
+
+
+## `tisvlay profile user create`
+
+Create a profile, printing its UUID: `--body` is a UserProfileConfig body
+
+**Usage:** `tisvlay profile user create [OPTIONS] <NAME>`
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<NAME>`
+
+###### **Options:**
+
+* `--body <BODY>`
 
 
 
-## `tisvlay user-profile assign`
+## `tisvlay profile user update`
 
-Assign (or with no value clear) a TV's user profile
+Replace a profile's body (full JSON body; name required inside)
 
-**Usage:** `tisvlay user-profile assign <TV> [PROFILE]`
+**Usage:** `tisvlay profile user update <ID> <BODY>`
 
 ###### **Arguments:**
 
-* `<TV>`
-* `<PROFILE>`
+* `<ID>`
+* `<BODY>`
+
+
+
+## `tisvlay profile user duplicate`
+
+Copy a profile under a new name, printing the copy's UUID
+
+**Usage:** `tisvlay profile user duplicate <ID> <NAME>`
+
+###### **Arguments:**
+
+* `<ID>`
+* `<NAME>`
+
+
+
+## `tisvlay profile user delete`
+
+Delete a profile (assignments referring to it fall back to default)
+
+**Usage:** `tisvlay profile user delete <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+
+
+## `tisvlay profile user defaults`
+
+The stock mapping unset fields inherit
+
+**Usage:** `tisvlay profile user defaults`
 
 
 

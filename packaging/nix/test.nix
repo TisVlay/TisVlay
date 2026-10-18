@@ -69,7 +69,7 @@ pkgs.testers.runNixOSTest {
 
     # The vendor catalog includes the LG backend.
     vendors = machine.succeed(
-        "tisvlay --socket /run/tisvlay/zenoh.sock vendors"
+        "tisvlay --socket /run/tisvlay/zenoh.sock vendor"
     )
     assert "lg" in vendors, f"expected lg vendor in {vendors!r}"
 

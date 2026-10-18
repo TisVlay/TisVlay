@@ -7,24 +7,33 @@
     reason = "the CLI prints its output"
 )]
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+mod attributes;
+mod pairing;
+mod profiles;
+mod reload;
+mod remote;
+mod render;
+mod status;
+mod tvs;
 
-use anyhow::{Context, Result, anyhow, bail};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Result, anyhow, bail};
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
-use serde_json::{Value, json};
-use tisvlay_cli::{Cli, Command, ProfileCmd, RemoteSessionCmd, UserProfileCmd};
+use tisvlay_cli::{Cli, Command, ProfileScope};
 use tisvlay_protocol::caller::{Caller, RpcError};
-use tisvlay_protocol::endpoint::{
-    Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
-};
-use tisvlay_protocol::{keys, payload, rpc};
-use uuid::Uuid;
+use tisvlay_protocol::endpoint::{Unary, manager, tv, user_profile};
+use tisvlay_protocol::rpc;
 use zenoh::Session;
-use zenoh::sample::SampleKind;
-use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
+
+use crate::attributes::Assignment;
+use crate::pairing::{discover, discover_session, pair, vendor, watch_pairing};
+use crate::profiles::{profile_cmd, user_profile_cmd};
+use crate::reload::reload;
+use crate::remote::remote_session_cmd;
+use crate::status::status;
+use crate::tvs::{list, watch};
 
 fn main() -> Result<()> {
     // Answer completion requests before building a runtime. The dynamic
@@ -83,14 +92,14 @@ async fn run() -> Result<()> {
     let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
     // Commands that send the daemon rpcs check its release first; `status`
-    // reports it, `watch` is a passive view, the user-socket commands
+    // reports it, `watch` is a passive view, the session-only commands
     // check the session service instead, and `reload` checks each service
-    // it reloads.
+    // it reloads. `user-profile` talks to both, so it checks both.
     if !matches!(
         cli.command,
         Command::Status
             | Command::Watch
-            | Command::UserProfile(_)
+            | Command::Profile(ProfileScope::User(_))
             | Command::RemoteSession(_)
             | Command::Reload
     ) {
@@ -103,460 +112,86 @@ async fn run() -> Result<()> {
         Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
-        Command::Discover { vendor, timeout_ms } => {
-            discover(&caller, vendor, timeout_ms, json_out).await
-        }
+        Command::Discover {
+            vendor,
+            watch: true,
+            ..
+        } => discover_session(&session, &caller, site, vendor, json_out).await,
+        Command::Discover {
+            vendor,
+            timeout,
+            watch: false,
+        } => discover(&caller, vendor, timeout, json_out).await,
         Command::Pair {
             name,
             vendor,
             params,
-            address,
-        } => {
-            let config = pairing_config(params, address)?;
-            pair(&session, &caller, site, name, vendor, config).await
-        }
-        Command::Add {
-            name,
-            address,
-            vendor,
             unmanaged,
+        } => pair(&session, &caller, site, name, vendor, &params, !unmanaged).await,
+        Command::Repair { tv } => {
+            let started = call::<tv::RePair>(&caller, &tv, &()).await?;
+            eprintln!("re-pairing session {tv} started");
+            watch_pairing(&session, &caller, site, tv, started.attempt).await
+        }
+        Command::Reconnect { tv } => ack::<tv::Reconnect>(&caller, &tv, &()).await,
+        Command::Remove { tv } => ack::<tv::Remove>(&caller, &tv, &()).await,
+        Command::Vendor { vendor: id } => vendor(&caller, id, json_out).await,
+        Command::Power { tv, switch } => {
+            attributes::power(&session, &caller, site, tv, switch, json_out).await
+        }
+        Command::Screen { tv, switch } => {
+            attributes::screen(&session, &caller, site, tv, switch, json_out).await
+        }
+        Command::Mute { tv, switch } => {
+            attributes::mute(&session, &caller, site, tv, switch, json_out).await
+        }
+        Command::Managed { tv, switch } => attributes::managed(&caller, tv, switch, json_out).await,
+        Command::Volume { tv, level } => {
+            attributes::volume(&session, &caller, site, tv, level, json_out).await
+        }
+        Command::Backlight { tv, level } => {
+            attributes::backlight(&session, &caller, site, tv, level, json_out).await
+        }
+        Command::Input { tv, input } => {
+            attributes::input(&session, &caller, site, tv, input, json_out).await
+        }
+        Command::PrimaryInput { tv, input, clear } => {
+            attributes::primary_input(&caller, tv, input, clear, json_out).await
+        }
+        Command::Name { tv, name } => attributes::name(&caller, tv, name, json_out).await,
+        Command::Config { tv, patch } => attributes::config_cmd(&caller, tv, patch, json_out).await,
+        Command::SystemProfile {
+            tv,
+            profile,
+            clear,
+            effective,
         } => {
-            let request = rpc::AddTv {
-                id: None,
-                name,
-                vendor,
-                managed: !unmanaged,
-                config: address_config(address),
-            };
-            let created = call::<manager::AddTv>(&caller, &(), &request).await?;
-            println!("added: {}", created.id);
-            Ok(())
+            let assignment = Assignment::new(profile, clear, effective);
+            attributes::system_profile(&caller, tv, assignment, json_out).await
         }
-        Command::SetVolume { id, level } => {
-            ack::<tv::SetVolume>(&caller, &id, &rpc::SetVolume { level }).await
-        }
-        Command::Input { id, input } => {
-            ack::<tv::SwitchInput>(&caller, &id, &rpc::SwitchInput { input }).await
-        }
-        Command::Backlight { id, level } => {
-            ack::<tv::SetBacklight>(&caller, &id, &rpc::SetBacklight { level }).await
-        }
-        Command::Screen { id, state } => {
-            let request = rpc::SetScreen::manual(state == "on");
-            ack::<tv::SetScreen>(&caller, &id, &request).await
-        }
-        Command::Rename { id, name } => {
-            ack::<tv::SetName>(&caller, &id, &rpc::SetName { name }).await
-        }
-        Command::Managed { id, managed } => {
-            ack::<tv::SetManaged>(&caller, &id, &rpc::SetManaged { managed }).await
-        }
-        Command::Config { id } => {
-            let config = call::<tv::GetConfig>(&caller, &id, &()).await?;
-            print_reply(&config, json_out)
-        }
-        Command::ConfigSet { id, patch } => {
-            let patch: rpc::UpdateConfig = serde_json::from_str(&patch)
-                .map_err(|e| anyhow!("the patch must be a JSON object: {e}"))?;
-            ack::<tv::UpdateConfig>(&caller, &id, &patch).await
-        }
-        Command::Repair { id } => {
-            let started = call::<tv::RePair>(&caller, &id, &()).await?;
-            println!("re-pairing session {id} started");
-            watch_pairing(&session, &caller, site, id, started.attempt).await
-        }
-        Command::Power { id, state } => {
-            if state == "on" {
-                ack::<tv::PowerOn>(&caller, &id, &rpc::PowerOn::default()).await
-            } else {
-                ack::<tv::PowerOff>(&caller, &id, &()).await
-            }
-        }
-        Command::Reconnect { id } => ack::<tv::Reconnect>(&caller, &id, &()).await,
-        Command::Remove { id } => {
-            call::<tv::Remove>(&caller, &id, &()).await?;
-            println!("removed");
-            Ok(())
-        }
-        Command::Mute { id, muted } => {
-            ack::<tv::SetMuted>(&caller, &id, &rpc::SetMuted { muted }).await
-        }
-        Command::PrimaryInput { id, input } => {
-            ack::<tv::SetPrimaryInput>(&caller, &id, &rpc::SetPrimaryInput { input }).await
-        }
-        Command::Assign { id, profile } => {
-            ack::<tv::SetSystemProfile>(&caller, &id, &rpc::SetSystemProfile { profile }).await
-        }
-        Command::Vendors => {
-            let vendors = call::<vendors::Catalog>(&caller, &(), &()).await?;
-            if json_out {
-                return print_reply(&vendors, true);
-            }
-            for vendor in vendors {
-                println!(
-                    "{}  {}  [{}]",
-                    vendor.id,
-                    vendor.name,
-                    vendor.capabilities.join(", "),
-                );
-            }
-            Ok(())
-        }
-        Command::Schema { vendor } => {
-            let schema = call::<vendors::Schema>(&caller, vendor.as_str(), &()).await?;
-            if json_out {
-                return print_reply(&schema, true);
-            }
-            for field in schema {
-                let required = if field.required { " (required)" } else { "" };
-                println!("{}{}  {}", field.name, required, field.helper,);
-            }
-            Ok(())
-        }
-        Command::DiscoverSession { vendor } => {
-            discover_session(&session, &caller, site, vendor, json_out).await
-        }
-        Command::Profile(cmd) => profile_cmd(&session, &caller, site, cmd, json_out).await,
-        Command::UserProfile(cmd) => {
-            let user_socket = cli
-                .user_socket
-                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
+        Command::UserProfile {
+            tv,
+            profile,
+            clear,
+            effective,
+        } => {
+            let (user, user_caller) = open_user(cli.user_socket, site).await?;
+            let assignment = Assignment::new(profile, clear, effective);
+            attributes::user_profile(&caller, &user, &user_caller, site, tv, assignment, json_out)
                 .await
-                .map_err(|e| {
-                    anyhow!(
-                        "session service unreachable at {}: {e}",
-                        user_socket.display()
-                    )
-                })?;
-            let user_caller = Caller::new(user.clone(), site.as_str());
-            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+        }
+        Command::Profile(ProfileScope::System(cmd)) => {
+            profile_cmd(&session, &caller, site, cmd, json_out).await
+        }
+        Command::Profile(ProfileScope::User(cmd)) => {
+            let (user, user_caller) = open_user(cli.user_socket, site).await?;
             user_profile_cmd(&user, &user_caller, site, cmd, json_out).await
         }
         Command::RemoteSession(cmd) => {
-            let user_socket = cli
-                .user_socket
-                .unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
-            let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
-                .await
-                .map_err(|e| {
-                    anyhow!(
-                        "session service unreachable at {}: {e}",
-                        user_socket.display()
-                    )
-                })?;
-            let user_caller = Caller::new(user.clone(), site.as_str());
-            check_release::<user_profile::Info>(&user_caller, "session service").await?;
+            let (_user, user_caller) = open_user(cli.user_socket, site).await?;
             remote_session_cmd(&user_caller, cmd, json_out).await
         }
     }
-}
-
-/// Render a flat JSON object as `key = value` lines (nested objects
-/// indent), sorted by key — the human view of config and resolved
-/// profile bodies.
-fn print_fields(value: &Value) {
-    print!("{}", format_fields(value));
-}
-
-fn format_fields(value: &Value) -> String {
-    fn walk(value: &Value, indent: usize, lines: &mut Vec<String>) {
-        let Some(object) = value.as_object() else {
-            lines.push(value.to_string());
-            return;
-        };
-        let mut entries: Vec<(&String, &Value)> = object.iter().collect();
-        entries.sort_by_key(|(key, _)| key.as_str());
-        for (key, val) in entries {
-            let pad = " ".repeat(indent);
-            match val {
-                Value::Object(_) => {
-                    lines.push(format!("{pad}{key}:"));
-                    walk(val, indent + 2, lines);
-                }
-                Value::Null => lines.push(format!("{pad}{key} =")),
-                Value::String(s) => lines.push(format!("{pad}{key} = {s}")),
-                other => lines.push(format!("{pad}{key} = {other}")),
-            }
-        }
-    }
-
-    let mut lines = Vec::new();
-    walk(value, 0, &mut lines);
-    lines.join("\n") + "\n"
-}
-
-/// Print one profile catalog row.
-fn print_profile(id: &str, body: &Value) {
-    print!("{}", format_profile(id, body));
-}
-
-fn format_profile(id: &str, body: &Value) -> String {
-    let mut extras: Vec<String> = body
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter(|(key, _)| *key != "name")
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect();
-    extras.sort();
-    format!(
-        "{}  {}  {}",
-        id,
-        body.get("name").and_then(Value::as_str).unwrap_or("?"),
-        extras.join(" "),
-    ) + "\n"
-}
-
-/// Hydrate a cached catalog wildcard and print each body once the
-/// stream goes quiet.
-async fn list_catalog(session: &Session, keyexpr: String, json_out: bool) -> Result<()> {
-    let sub = session
-        .declare_subscriber(keyexpr)
-        .history(HistoryConfig::default().detect_late_publishers())
-        .await
-        .map_err(|e| anyhow!("subscribe catalog: {e}"))?;
-    let mut rows: BTreeMap<String, Value> = BTreeMap::new();
-    while let Ok(Ok(sample)) =
-        tokio::time::timeout(Duration::from_millis(600), sub.recv_async()).await
-    {
-        if sample.kind() != SampleKind::Put {
-            continue;
-        }
-        let id = sample
-            .key_expr()
-            .as_str()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let body: Value =
-            serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-        rows.insert(id, body);
-    }
-    if json_out {
-        let out: serde_json::Map<String, Value> = rows.into_iter().collect();
-        println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
-        return Ok(());
-    }
-    if rows.is_empty() {
-        println!("no profiles");
-    }
-    for (id, body) in rows {
-        print_profile(&id, &body);
-    }
-    Ok(())
-}
-
-/// Build a profile body: `--body` merged over the positional name.
-fn profile_body<T: serde::de::DeserializeOwned>(name: String, body: Option<String>) -> Result<T> {
-    let mut body = match body {
-        Some(body) => serde_json::from_str(&body)?,
-        None => json!({}),
-    };
-    let Some(object) = body.as_object_mut() else {
-        bail!("profile body must be a JSON object");
-    };
-    if object.get("name").is_none_or(Value::is_null) {
-        object.insert("name".into(), Value::String(name));
-    }
-    serde_json::from_value(body).map_err(|e| anyhow!("invalid profile body: {e}"))
-}
-
-async fn profile_cmd(
-    session: &Session,
-    caller: &Caller,
-    site: &str,
-    cmd: ProfileCmd,
-    json_out: bool,
-) -> Result<()> {
-    match cmd {
-        ProfileCmd::List => {
-            list_catalog(
-                session,
-                format!("tisvlay/{site}/profile/system/*"),
-                json_out,
-            )
-            .await
-        }
-        ProfileCmd::Create { name, body } => {
-            let request = rpc::ProfileCreate {
-                id: None,
-                body: profile_body(name, body)?,
-            };
-            let created = call::<profile::Create>(caller, &(), &request).await?;
-            println!("created: {}", created.id);
-            Ok(())
-        }
-        ProfileCmd::Update { id, body } => {
-            let body = serde_json::from_str(&body)?;
-            ack::<profile::Update>(caller, &(), &rpc::ProfileUpdate { id, body }).await
-        }
-        ProfileCmd::Duplicate { id, name } => {
-            let created =
-                call::<profile::Duplicate>(caller, &(), &rpc::ProfileDuplicate { id, name })
-                    .await?;
-            println!("created: {}", created.id);
-            Ok(())
-        }
-        ProfileCmd::Delete { id } => {
-            call::<profile::Delete>(caller, &(), &rpc::TvRef { id }).await?;
-            println!("deleted");
-            Ok(())
-        }
-        ProfileCmd::Defaults => {
-            let defaults = call::<profile::Defaults>(caller, &(), &()).await?;
-            print_reply(&defaults, json_out)
-        }
-        ProfileCmd::Effective { tv } => {
-            let effective = call::<profile::Effective>(caller, &(), &rpc::TvRef { id: tv }).await?;
-            print_reply(&effective, json_out)
-        }
-    }
-}
-
-async fn user_profile_cmd(
-    user: &Session,
-    user_caller: &Caller,
-    site: &str,
-    cmd: UserProfileCmd,
-    json_out: bool,
-) -> Result<()> {
-    match cmd {
-        UserProfileCmd::List => {
-            list_catalog(user, format!("tisvlay/{site}/user/profile/*"), json_out).await
-        }
-        UserProfileCmd::Create { name, body } => {
-            let request = rpc::UserProfileCreate {
-                id: None,
-                body: profile_body(name, body)?,
-            };
-            let created = call::<user_profile::Create>(user_caller, &(), &request).await?;
-            println!("created: {}", created.id);
-            Ok(())
-        }
-        UserProfileCmd::Update { id, body } => {
-            let body = serde_json::from_str(&body)?;
-            ack::<user_profile::Update>(user_caller, &(), &rpc::UserProfileUpdate { id, body })
-                .await
-        }
-        UserProfileCmd::Duplicate { id, name } => {
-            let request = rpc::ProfileDuplicate { id, name };
-            let created = call::<user_profile::Duplicate>(user_caller, &(), &request).await?;
-            println!("created: {}", created.id);
-            Ok(())
-        }
-        UserProfileCmd::Delete { id } => {
-            call::<user_profile::Delete>(user_caller, &(), &rpc::TvRef { id }).await?;
-            println!("deleted");
-            Ok(())
-        }
-        UserProfileCmd::Defaults => {
-            let defaults = call::<user_profile::Defaults>(user_caller, &(), &()).await?;
-            print_reply(&defaults, json_out)
-        }
-        UserProfileCmd::Effective { tv } => {
-            let request = rpc::TvRef { id: tv };
-            let effective = call::<user_profile::Effective>(user_caller, &(), &request).await?;
-            print_reply(&effective, json_out)
-        }
-        UserProfileCmd::Assign { tv, profile } => {
-            ack::<user_profile::Assign>(user_caller, &(), &rpc::UserAssign { tv, profile }).await
-        }
-    }
-}
-
-/// Arm/disarm a remote-session source, or show the current fact. Rides
-/// the user socket (the session service serves the verb rpc there).
-async fn remote_session_cmd(
-    user_caller: &Caller,
-    cmd: RemoteSessionCmd,
-    json_out: bool,
-) -> Result<()> {
-    match cmd {
-        RemoteSessionCmd::Start { source } => {
-            let request = rpc::RemoteSet {
-                source: Some(source.clone()),
-                active: true,
-            };
-            call::<user_remote::Set>(user_caller, &(), &request).await?;
-            if !json_out {
-                println!("armed source '{source}'");
-            }
-            Ok(())
-        }
-        RemoteSessionCmd::Stop { source } => {
-            let request = rpc::RemoteSet {
-                source: Some(source.clone()),
-                active: false,
-            };
-            call::<user_remote::Set>(user_caller, &(), &request).await?;
-            if !json_out {
-                println!("disarmed source '{source}'");
-            }
-            Ok(())
-        }
-        RemoteSessionCmd::Status => {
-            let state = call::<user_remote::Status>(user_caller, &(), &()).await?;
-            print_reply(&state, json_out)
-        }
-    }
-}
-
-/// Start an open-ended discovery session, stream findings, stop on
-/// ctrl-c. `--json` emits one JSON object per finding (JSONL).
-async fn discover_session(
-    session: &Session,
-    caller: &Caller,
-    site: &str,
-    vendor: Option<String>,
-    json_out: bool,
-) -> Result<()> {
-    let id = call::<manager::DiscoverStart>(caller, &(), &rpc::DiscoverStart { vendor })
-        .await?
-        .session;
-    if !json_out {
-        println!("discovery session {id} — ctrl-c stops");
-    }
-    let sub = session
-        .declare_subscriber(format!("tisvlay/{site}/discovery/{id}/found/*"))
-        .await
-        .map_err(|e| anyhow!("subscribe findings: {e}"))?;
-    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
-    loop {
-        tokio::select! {
-            sample = sub.recv_async() => {
-                let Ok(sample) = sample else { break };
-                let tv: Value = serde_json::from_slice(&sample.payload().to_bytes())
-                    .unwrap_or(Value::Null);
-                let finding = tv["id"].as_str().unwrap_or_default().to_string();
-                if seen.insert(finding, ()).is_none() {
-                    if json_out {
-                        println!("{tv}");
-                        continue;
-                    }
-                    let mac = tv["vendor_data"]["mac"]
-                        .as_str()
-                        .map(|mac| format!("  mac={mac}"))
-                        .unwrap_or_default();
-                    println!(
-                        "{}  {}  {}  id={}{}",
-                        tv["vendor"].as_str().unwrap_or("?"),
-                        tv["name"].as_str().unwrap_or("?"),
-                        tv["address"].as_str().unwrap_or("?"),
-                        tv["id"].as_str().unwrap_or("?"),
-                        mac,
-                    );
-                }
-            }
-            _ = tokio::signal::ctrl_c() => break,
-        }
-    }
-    call::<manager::DiscoverStop>(caller, &(), &rpc::DiscoverStop { session: id }).await?;
-    if !json_out {
-        println!("stopped");
-    }
-    Ok(())
 }
 
 async fn open_client(socket: &Path) -> Result<Session> {
@@ -578,6 +213,23 @@ async fn open_client(socket: &Path) -> Result<Session> {
         })
 }
 
+/// Open the session service's user socket and check its release.
+async fn open_user(user_socket: Option<PathBuf>, site: &str) -> Result<(Session, Caller)> {
+    let user_socket =
+        user_socket.unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
+    let user = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?)
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "session service unreachable at {}: {e}",
+                user_socket.display()
+            )
+        })?;
+    let user_caller = Caller::new(user.clone(), site);
+    check_release::<user_profile::Info>(&user_caller, "session service").await?;
+    Ok((user, user_caller))
+}
+
 /// One typed rpc round-trip; a failure keeps its cause chain for the
 /// terminal.
 async fn call<R: Unary>(
@@ -588,355 +240,14 @@ async fn call<R: Unary>(
     Ok(caller.call::<R>(target, request).await?)
 }
 
-/// Print a reply: pretty JSON with `--json`, aligned fields otherwise.
-/// Going through `serde_json::Value` keeps key order sorted and stable.
-fn print_reply(reply: &impl serde::Serialize, json_out: bool) -> Result<()> {
-    let value = serde_json::to_value(reply)?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-    } else {
-        print_fields(&value);
-    }
-    Ok(())
-}
-
-/// One acknowledged rpc: call, print the human ack.
+/// One acknowledged rpc. Success prints nothing; a refusal is the error.
 async fn ack<R: Unary<Response = rpc::Ack>>(
     caller: &Caller,
     target: &R::Target,
     request: &R::Request,
 ) -> Result<()> {
     call::<R>(caller, target, request).await?;
-    println!("ok");
     Ok(())
-}
-
-async fn discover(
-    caller: &Caller,
-    vendor: Option<String>,
-    timeout_ms: u64,
-    json_out: bool,
-) -> Result<()> {
-    let request = rpc::Discover {
-        vendor,
-        timeout_ms: Some(timeout_ms),
-    };
-    let found = caller.call_many::<manager::Discover>(&(), &request).await?;
-    if json_out {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::to_value(&found)?)?
-        );
-        return Ok(());
-    }
-    if found.is_empty() {
-        println!("nothing found");
-        return Ok(());
-    }
-    for tv in found {
-        let mac = tv
-            .vendor_data
-            .get("mac")
-            .map(|mac| format!("  mac={mac}"))
-            .unwrap_or_default();
-        println!(
-            "{}  {}  {}  id={}{}",
-            tv.vendor, tv.name, tv.address, tv.id, mac,
-        );
-    }
-    Ok(())
-}
-
-/// A vendor config naming only an address (the mock shorthand).
-fn address_config(address: String) -> serde_json::Map<String, Value> {
-    serde_json::Map::from_iter([("address".to_string(), Value::String(address))])
-}
-
-fn pairing_config(
-    params: Option<String>,
-    address: Option<String>,
-) -> Result<serde_json::Map<String, Value>> {
-    match (params, address) {
-        (Some(params), _) => {
-            serde_json::from_str(&params).context("--params must be a JSON object")
-        }
-        (None, Some(address)) => Ok(address_config(address)),
-        (None, None) => bail!("provide --params or --address"),
-    }
-}
-
-async fn pair(
-    session: &Session,
-    caller: &Caller,
-    site: &str,
-    name: String,
-    vendor: String,
-    config: serde_json::Map<String, Value>,
-) -> Result<()> {
-    let request = rpc::AddTv {
-        id: None,
-        name,
-        vendor,
-        managed: true,
-        config,
-    };
-    let started = call::<manager::Pair>(caller, &(), &request).await?;
-    println!("pairing session {} started", started.id);
-    watch_pairing(session, caller, site, started.id, started.attempt).await
-}
-
-/// One line on what the pairing did with the device-reported link MAC.
-fn link_mac_line(id: Uuid, report: &payload::LinkMacReport) -> String {
-    use tisvlay_protocol::payload::LinkMacOutcome;
-    let reported = &report.reported;
-    match &report.outcome {
-        LinkMacOutcome::Filled => format!("mac: detected {reported} (saved)"),
-        LinkMacOutcome::Matches => format!("mac: {reported} (matches the TV)"),
-        LinkMacOutcome::Differs { configured } => format!(
-            "mac: TV reports {reported}, configured {configured}; to use it: \
-             tisvlay config-set {id} '{{\"mac\":\"{reported}\"}}'"
-        ),
-    }
-}
-
-fn is_current_pairing_attempt(progress: &payload::PairingProgress, attempt: Uuid) -> bool {
-    progress.attempt == attempt
-}
-
-/// Stream a pairing attempt's progress phases to stdout until a terminal
-/// one; ctrl-c sends cancel-pair. Samples from other attempts (earlier
-/// sessions replayed from the cache) are skipped.
-async fn watch_pairing(
-    session: &Session,
-    caller: &Caller,
-    site: &str,
-    id: Uuid,
-    attempt: Uuid,
-) -> Result<()> {
-    let subscriber = session
-        .declare_subscriber(keys::pairing_progress(site, &id))
-        .history(HistoryConfig::default().detect_late_publishers())
-        .await
-        .map_err(|e| anyhow!("subscribe progress: {e}"))?;
-    loop {
-        tokio::select! {
-            sample = subscriber.recv_async() => {
-                let Ok(sample) = sample else { bail!("progress stream closed") };
-                let Ok(progress) =
-                    serde_json::from_slice::<payload::PairingProgress>(&sample.payload().to_bytes())
-                else {
-                    continue;
-                };
-                if !is_current_pairing_attempt(&progress, attempt) {
-                    continue;
-                }
-                println!("[{}] {}", progress.phase, progress.message);
-                match progress.phase {
-                    payload::PairingPhase::Complete => {
-                        println!("paired: {id}");
-                        if let Some(report) = &progress.link_mac {
-                            println!("{}", link_mac_line(id, report));
-                        }
-                        return Ok(());
-                    }
-                    payload::PairingPhase::Failed => bail!(
-                        "pairing failed: {}",
-                        progress.code.map_or("unknown", payload::FailureCode::as_str)
-                    ),
-                    payload::PairingPhase::AwaitingTv | payload::PairingPhase::AwaitingInput => {}
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                println!("cancelling…");
-                let _ = call::<manager::CancelPair>(caller, &(), &rpc::TvRef { id }).await;
-            }
-        }
-    }
-}
-
-/// Reload every service's state file, as the GUI's Reload button does:
-/// the daemon's, then the session's and the tray's over the user socket.
-/// A service that isn't running has nothing to reload, so it's reported
-/// rather than failed; any other error fails the command after the report.
-async fn reload(
-    caller: &Caller,
-    user_socket: Option<PathBuf>,
-    site: &str,
-    json_out: bool,
-) -> Result<()> {
-    let daemon = match release_mismatch::<manager::Info>(caller, "daemon").await {
-        Err(_) => ReloadOutcome::NotRunning,
-        Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
-        Ok(None) => reload_outcome(Some(caller.call::<manager::Reload>(&(), &()).await)),
-    };
-    let user_socket =
-        user_socket.unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);
-    let user = match zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket)?).await {
-        Ok(user) => Some(Caller::new(user, site)),
-        Err(_) => None,
-    };
-    let (session, tray) = match &user {
-        Some(user) => (
-            match release_mismatch::<user_profile::Info>(user, "session service").await {
-                Err(_) => ReloadOutcome::NotRunning,
-                Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
-                Ok(None) => reload_outcome(Some(user.call::<user_profile::Reload>(&(), &()).await)),
-            },
-            match release_mismatch::<user_tray::Info>(user, "tray").await {
-                Err(_) => ReloadOutcome::NotRunning,
-                Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
-                Ok(None) => reload_outcome(Some(user.call::<user_tray::Reload>(&(), &()).await)),
-            },
-        ),
-        None => (ReloadOutcome::NotRunning, ReloadOutcome::NotRunning),
-    };
-    let outcomes = [("daemon", daemon), ("session", session), ("tray", tray)];
-    if json_out {
-        let report: serde_json::Map<String, Value> = outcomes
-            .iter()
-            .map(|(service, outcome)| ((*service).to_string(), outcome.to_json()))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        for (service, outcome) in &outcomes {
-            println!("{:<8} {}", format!("{service}:"), outcome.describe());
-        }
-        // Each failure's report after the table: a file the service
-        // couldn't parse reads like a compiler error, path included.
-        for (service, outcome) in &outcomes {
-            if let ReloadOutcome::Failed(report) = outcome {
-                println!();
-                if report.starts_with("error: ") {
-                    println!("{report}");
-                } else {
-                    println!("error: {service}: {report}");
-                }
-            }
-        }
-    }
-    let failed: Vec<&str> = outcomes
-        .iter()
-        .filter(|(_, outcome)| matches!(outcome, ReloadOutcome::Failed(_)))
-        .map(|(service, _)| *service)
-        .collect();
-    if !failed.is_empty() {
-        bail!("reload failed for {}", failed.join(", "));
-    }
-    Ok(())
-}
-
-/// One service's part of a [`reload`].
-enum ReloadOutcome {
-    Changed,
-    Unchanged,
-    NotRunning,
-    Failed(String),
-}
-
-impl ReloadOutcome {
-    fn describe(&self) -> String {
-        match self {
-            Self::Changed => "applied the file's edit".into(),
-            Self::Unchanged => "the file is unchanged".into(),
-            Self::NotRunning => "not running".into(),
-            Self::Failed(_) => "failed".into(),
-        }
-    }
-
-    fn to_json(&self) -> Value {
-        match self {
-            Self::Changed => json!({ "status": "changed" }),
-            Self::Unchanged => json!({ "status": "unchanged" }),
-            Self::NotRunning => json!({ "status": "not-running" }),
-            Self::Failed(error) => json!({ "status": "failed", "error": error }),
-        }
-    }
-}
-
-/// `None` (no user socket to reach) and an rpc no service answered both
-/// mean the service isn't running.
-fn reload_outcome(
-    result: Option<std::result::Result<rpc::ReloadReport, RpcError>>,
-) -> ReloadOutcome {
-    match result {
-        None | Some(Err(RpcError::Unavailable { .. })) => ReloadOutcome::NotRunning,
-        Some(Ok(rpc::ReloadReport { changed: true })) => ReloadOutcome::Changed,
-        Some(Ok(rpc::ReloadReport { changed: false })) => ReloadOutcome::Unchanged,
-        Some(Err(RpcError::Service(e))) => ReloadOutcome::Failed(e.message),
-        Some(Err(e)) => ReloadOutcome::Failed(e.to_string()),
-    }
-}
-
-async fn status(
-    session: &Session,
-    caller: &Caller,
-    site: &str,
-    socket: &Path,
-    json_out: bool,
-) -> Result<()> {
-    let replies = session
-        .liveliness()
-        .get(keys::daemon_alive(site).as_str())
-        .timeout(Duration::from_secs(2))
-        .await
-        .map_err(|e| anyhow!("liveliness get: {e}"))?;
-    let alive = matches!(replies.recv_async().await, Ok(reply) if reply.result().is_ok());
-    let release = match alive {
-        true => caller
-            .call::<manager::Info>(&(), &())
-            .await
-            .ok()
-            .map(|info| info.version),
-        false => None,
-    };
-    let compatible = release
-        .as_deref()
-        .map(|release| tisvlay_protocol::compatible(tisvlay_protocol::VERSION, release));
-    if json_out {
-        println!(
-            "{}",
-            json!({
-                "alive": alive,
-                "site": site,
-                "socket": socket,
-                "release": release,
-                "compatible": compatible,
-            })
-        );
-    }
-    let healthy = alive && compatible != Some(false);
-    if json_out {
-        if !healthy {
-            #[expect(
-                clippy::exit,
-                reason = "`status --json` reports a missing or incompatible daemon as exit code 1 after printing its JSON, with no error text"
-            )]
-            std::process::exit(1);
-        }
-        return Ok(());
-    }
-    if alive {
-        println!("daemon alive: site '{site}' at {}", socket.display());
-        if let Some(release) = &release {
-            println!(
-                "daemon release: {release} (this CLI: {})",
-                tisvlay_protocol::VERSION
-            );
-        }
-        if compatible == Some(false) {
-            bail!(
-                "the daemon runs release {}, which this CLI ({}) can't talk to; restart it or upgrade so they match",
-                release.as_deref().unwrap_or_default(),
-                tisvlay_protocol::VERSION
-            );
-        }
-        Ok(())
-    } else {
-        bail!(
-            "no daemon liveliness token for site '{site}' at {}",
-            socket.display()
-        );
-    }
 }
 
 /// Refuse to send rpcs to a service on a release this CLI can't talk to
@@ -978,372 +289,4 @@ where
             tisvlay_protocol::VERSION
         )
     }))
-}
-
-/// Hydrate from the publisher caches (AdvancedSubscriber history — the
-/// cache's queryable lives under the verbatim `@adv` suffix, so plain
-/// wildcard gets can't reach it) and render one line per TV.
-async fn list(session: &Session, caller: &Caller, site: &str, json_out: bool) -> Result<()> {
-    let subscriber = session
-        .declare_subscriber(keys::tv_all(site))
-        .history(HistoryConfig::default().detect_late_publishers())
-        .await
-        .map_err(|e| anyhow!("subscribe: {e}"))?;
-    let mut tvs: BTreeMap<Uuid, BTreeMap<String, Value>> = BTreeMap::new();
-    // History replays immediately; stop after a quiet window.
-    while let Ok(Ok(sample)) =
-        tokio::time::timeout(Duration::from_millis(400), subscriber.recv_async()).await
-    {
-        if sample.kind() != SampleKind::Put {
-            continue;
-        }
-        if let Some((id, path)) = keys::parse_tv_path(site, sample.key_expr().as_str()) {
-            let value = serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-            tvs.entry(id).or_default().insert(path.to_string(), value);
-        }
-    }
-    if json_out {
-        let out: serde_json::Map<String, Value> = tvs
-            .into_iter()
-            .map(|(id, fields)| (id.to_string(), Value::Object(fields.into_iter().collect())))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
-        return Ok(());
-    }
-    if tvs.is_empty() {
-        println!("No TVs configured. Use 'tisvlay pair' to add one.");
-        return Ok(());
-    }
-    println!("Configured TVs:");
-    let mut descriptor_fields: BTreeMap<String, Option<String>> = BTreeMap::new();
-    for (id, fields) in &tvs {
-        let identity = fields.get("meta/identity").cloned().unwrap_or(Value::Null);
-        let name = identity["name"].as_str().unwrap_or("?");
-        let vendor = identity["vendor"].as_str().unwrap_or("?");
-        let status = if fields
-            .get("state/link")
-            .is_some_and(|v| v["connected"] == true)
-        {
-            "connected"
-        } else {
-            "disconnected"
-        };
-        let managed = if fields
-            .get("meta/config")
-            .is_none_or(|v| v["managed"] != false)
-        {
-            ""
-        } else {
-            " [unmanaged]"
-        };
-        // Backend's primary descriptor (LG: IP): the vendor schema's
-        // first field names it, the redacted config carries the value.
-        let descriptor = match descriptor_field(caller, vendor, &mut descriptor_fields).await {
-            Some(field) => call::<tv::GetConfig>(caller, id, &())
-                .await
-                .ok()
-                .and_then(|view| view.config.get(&field)?.as_str().map(str::to_string)),
-            None => None,
-        }
-        .unwrap_or_else(|| "?".into());
-        println!("  {id} - {name} ({descriptor}) [{status}] <{vendor}>{managed}");
-    }
-    Ok(())
-}
-
-/// The vendor schema's first field name — the backend's primary
-/// descriptor, per the schema-ordering convention. Cached per vendor.
-async fn descriptor_field(
-    caller: &Caller,
-    vendor: &str,
-    cache: &mut BTreeMap<String, Option<String>>,
-) -> Option<String> {
-    if let Some(field) = cache.get(vendor) {
-        return field.clone();
-    }
-    let field = call::<vendors::Schema>(caller, vendor, &())
-        .await
-        .ok()
-        .and_then(|schema| schema.into_iter().next().map(|field| field.name));
-    cache.insert(vendor.to_string(), field.clone());
-    field
-}
-
-async fn watch(session: &Session, site: &str) -> Result<()> {
-    let subscriber = session
-        .declare_subscriber(keys::all(site))
-        .history(HistoryConfig::default().detect_late_publishers())
-        .recovery(RecoveryConfig::default().heartbeat())
-        .await
-        .map_err(|e| anyhow!("subscribe: {e}"))?;
-    println!("watching {} (ctrl-c to stop)", keys::all(site));
-    loop {
-        tokio::select! {
-            sample = subscriber.recv_async() => match sample {
-                Ok(sample) => {
-                    let payload = sample
-                        .payload()
-                        .try_to_string()
-                        .unwrap_or_else(|e| e.to_string().into());
-                    println!("{:6} {} {}", sample.kind().to_string(), sample.key_expr(), payload);
-                }
-                Err(_) => return Ok(()),
-            },
-            _ = tokio::signal::ctrl_c() => return Ok(()),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn link_mac_line_names_each_outcome() {
-        use tisvlay_protocol::payload::{LinkMacOutcome, LinkMacReport};
-        let id = uuid::Uuid::nil();
-        let report = |outcome| LinkMacReport {
-            reported: "84:90:0A:63:A9:94".into(),
-            outcome,
-        };
-        assert_eq!(
-            super::link_mac_line(id, &report(LinkMacOutcome::Filled)),
-            "mac: detected 84:90:0A:63:A9:94 (saved)"
-        );
-        assert_eq!(
-            super::link_mac_line(id, &report(LinkMacOutcome::Matches)),
-            "mac: 84:90:0A:63:A9:94 (matches the TV)"
-        );
-        assert_eq!(
-            super::link_mac_line(
-                id,
-                &report(LinkMacOutcome::Differs {
-                    configured: "64:E4:A5:6C:AB:B4".into()
-                })
-            ),
-            format!(
-                "mac: TV reports 84:90:0A:63:A9:94, configured 64:E4:A5:6C:AB:B4; \
-                 to use it: tisvlay config-set {id} '{{\"mac\":\"84:90:0A:63:A9:94\"}}'"
-            )
-        );
-    }
-
-    #[test]
-    fn stale_pairing_progress_is_rejected_by_attempt_id() {
-        use tisvlay_protocol::payload::{PairingPhase, PairingProgress};
-
-        let current = uuid::Uuid::new_v4();
-        let stale = PairingProgress {
-            attempt: uuid::Uuid::new_v4(),
-            phase: PairingPhase::Complete,
-            message: "paired".into(),
-            code: None,
-            path: None,
-            link_mac: None,
-        };
-        let live = PairingProgress {
-            attempt: current,
-            ..stale.clone()
-        };
-
-        assert!(!super::is_current_pairing_attempt(&stale, current));
-        assert!(super::is_current_pairing_attempt(&live, current));
-    }
-
-    #[test]
-    fn format_fields_sorts_and_indents_nested_values() {
-        let value = serde_json::json!({
-            "zeta": 2,
-            "alpha": {
-                "text": "value",
-                "empty": null,
-                "enabled": true
-            }
-        });
-        assert_eq!(
-            super::format_fields(&value),
-            "alpha:\n  empty =\n  enabled = true\n  text = value\nzeta = 2\n"
-        );
-    }
-
-    #[test]
-    fn format_fields_renders_non_object_values_as_json() {
-        assert_eq!(super::format_fields(&serde_json::json!([1, 2])), "[1,2]\n");
-    }
-
-    #[test]
-    fn format_profile_sorts_fields_and_handles_missing_or_non_object_names() {
-        assert_eq!(
-            super::format_profile(
-                "uuid",
-                &serde_json::json!({
-                    "name": "Office",
-                    "zeta": 2,
-                    "alpha": 1
-                })
-            ),
-            "uuid  Office  alpha=1 zeta=2\n"
-        );
-        assert_eq!(
-            super::format_profile("uuid", &serde_json::json!({ "zeta": 2 })),
-            "uuid  ?  zeta=2\n"
-        );
-        assert_eq!(
-            super::format_profile("uuid", &serde_json::json!([])),
-            "uuid  ?  \n"
-        );
-    }
-
-    #[test]
-    fn reload_outcome_maps_service_results_and_formats_them() {
-        use super::{ReloadOutcome, reload_outcome};
-        use tisvlay_protocol::caller::RpcError;
-        use tisvlay_protocol::error::{ErrorCode, WireError};
-        use tisvlay_protocol::rpc::ReloadReport;
-
-        assert!(matches!(reload_outcome(None), ReloadOutcome::NotRunning));
-        assert!(matches!(
-            reload_outcome(Some(Err(RpcError::Unavailable {
-                key: "reload".into(),
-            }))),
-            ReloadOutcome::NotRunning
-        ));
-        assert!(matches!(
-            reload_outcome(Some(Ok(ReloadReport { changed: true }))),
-            ReloadOutcome::Changed
-        ));
-        assert!(matches!(
-            reload_outcome(Some(Ok(ReloadReport { changed: false }))),
-            ReloadOutcome::Unchanged
-        ));
-        assert!(matches!(
-            reload_outcome(Some(Err(RpcError::Service(WireError {
-                code: ErrorCode::Internal,
-                message: "invalid TOML".into(),
-            })))),
-            ReloadOutcome::Failed(error) if error == "invalid TOML"
-        ));
-        assert!(matches!(
-            reload_outcome(Some(Err(RpcError::Timeout {
-                key: "reload".into(),
-            }))),
-            ReloadOutcome::Failed(_)
-        ));
-
-        let outcomes = [
-            (
-                ReloadOutcome::Changed,
-                "applied the file's edit",
-                serde_json::json!({ "status": "changed" }),
-            ),
-            (
-                ReloadOutcome::Unchanged,
-                "the file is unchanged",
-                serde_json::json!({ "status": "unchanged" }),
-            ),
-            (
-                ReloadOutcome::NotRunning,
-                "not running",
-                serde_json::json!({ "status": "not-running" }),
-            ),
-            (
-                ReloadOutcome::Failed("invalid TOML".into()),
-                "failed",
-                serde_json::json!({ "status": "failed", "error": "invalid TOML" }),
-            ),
-        ];
-        for (outcome, description, json) in outcomes {
-            assert_eq!(outcome.describe(), description);
-            assert_eq!(outcome.to_json(), json);
-        }
-    }
-
-    #[test]
-    fn profile_body_fills_missing_name_and_preserves_explicit_body_fields() {
-        let from_positional: serde_json::Value =
-            super::profile_body("Office".into(), None).expect("valid positional profile");
-        assert_eq!(from_positional, serde_json::json!({ "name": "Office" }));
-
-        let from_body: serde_json::Value = super::profile_body(
-            "Fallback".into(),
-            Some(r#"{"name":"Studio","idle_timeout_seconds":900}"#.into()),
-        )
-        .expect("valid profile body");
-        assert_eq!(from_body["name"], "Studio");
-        assert_eq!(from_body["idle_timeout_seconds"], 900);
-
-        let null_name: serde_json::Value = super::profile_body(
-            "Fallback".into(),
-            Some(r#"{"name":null,"on_sleep":null}"#.into()),
-        )
-        .expect("null name falls back to the positional name");
-        assert_eq!(
-            null_name,
-            serde_json::json!({ "name": "Fallback", "on_sleep": null })
-        );
-    }
-
-    #[test]
-    fn profile_body_reports_json_and_typed_body_errors() {
-        #[derive(Debug, serde::Deserialize)]
-        struct NamedProfile {
-            name: String,
-        }
-
-        let valid = super::profile_body::<NamedProfile>(
-            "Fallback".into(),
-            Some(r#"{"name":"Studio"}"#.into()),
-        )
-        .expect("a string profile name deserializes");
-        assert_eq!(valid.name, "Studio");
-
-        let malformed = super::profile_body::<serde_json::Value>("Office".into(), Some("{".into()));
-        assert!(malformed.is_err());
-
-        let non_object = super::profile_body::<NamedProfile>("Office".into(), Some("[]".into()))
-            .expect_err("non-object JSON should return an error");
-        assert_eq!(non_object.to_string(), "profile body must be a JSON object");
-
-        let invalid_name =
-            super::profile_body::<NamedProfile>("Office".into(), Some(r#"{"name":false}"#.into()))
-                .expect_err("a non-string profile name is rejected");
-        assert!(format!("{invalid_name:#}").contains("invalid profile body"));
-    }
-
-    #[test]
-    fn pairing_config_prefers_json_params_and_supports_address_shortcut() {
-        let params = super::pairing_config(
-            Some(r#"{"ip":"192.0.2.4"}"#.into()),
-            Some("mock://ignored".into()),
-        )
-        .expect("JSON params are accepted");
-        assert_eq!(
-            params.get("ip").and_then(serde_json::Value::as_str),
-            Some("192.0.2.4")
-        );
-        assert!(!params.contains_key("address"));
-
-        let address = super::pairing_config(None, Some("mock://den".into()))
-            .expect("address shortcut is accepted");
-        assert_eq!(
-            address.get("address").and_then(serde_json::Value::as_str),
-            Some("mock://den")
-        );
-    }
-
-    #[test]
-    fn pairing_config_rejects_missing_or_non_object_params() {
-        assert_eq!(
-            super::pairing_config(None, None)
-                .expect_err("one pairing config source is required")
-                .to_string(),
-            "provide --params or --address"
-        );
-        assert!(
-            format!(
-                "{:#}",
-                super::pairing_config(Some("[]".into()), None)
-                    .expect_err("params must decode as an object")
-            )
-            .contains("--params must be a JSON object")
-        );
-    }
 }

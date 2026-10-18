@@ -25,9 +25,11 @@ anyhow = { workspace = true }
 # maps to Arg::add, which is gated behind it.
 clap = { workspace = true, features = ["unstable-ext"] }
 clap_complete = { workspace = true }
+jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tisvlay-core = { workspace = true }
 tisvlay-runtime = { workspace = true, features = ["access"] }
 tisvlay-protocol = { workspace = true }
 uuid = { workspace = true }
@@ -35,6 +37,7 @@ zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
 
 [dev-dependencies]
+libc = { workspace = true }
 tempfile = { workspace = true }
 tisvlay-daemon = { workspace = true }
 tisvlay-mock = { workspace = true }

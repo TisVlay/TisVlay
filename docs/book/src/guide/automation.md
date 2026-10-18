@@ -127,7 +127,7 @@ So a profile only spells out what it changes, and it keeps tracking the default 
 
 User profiles add one layer: your profile → your default → an admin-set baseline (a system-wide default for user profiles) → built-ins. On a single-user machine you can ignore the admin layer.
 
-To see exactly what a TV will do, use the command line's `tisvlay profile effective <tv>`; the app shows set versus inheriting per field.
+To see exactly what a TV will do, use the command line's `tisvlay system-profile <tv> --effective` (and `user-profile` for your user profile); the app shows set versus inheriting per field.
 
 ## Making sure it's running
 
@@ -137,15 +137,15 @@ Lock and idle events need the per-user session service. The sidebar's **Session*
 <summary>Command-line equivalents</summary>
 
 ```sh
-tisvlay profile list                       # system profiles, with ids
-tisvlay profile create "guest" --body '{"on_startup":"none","on_wake":"none"}'
-tisvlay assign <tv-id> <profile-id>        # omit the profile id to clear
-tisvlay user-profile list                  # user profiles
-tisvlay user-profile assign <tv-id> <profile-id>
-tisvlay profile effective <tv-id>          # one TV's fully resolved mapping
-tisvlay managed <tv-id> false              # stop automating a TV
+tisvlay profile system list                  # system profiles, with ids
+tisvlay profile system create "guest" --body '{"on_startup":"none","on_wake":"none"}'
+tisvlay system-profile <tv-id> <profile-id>  # assign; --clear unassigns, no id prints it
+tisvlay profile user list                    # user profiles
+tisvlay user-profile <tv-id> <profile-id>
+tisvlay system-profile <tv-id> --effective   # one TV's fully resolved mapping
+tisvlay managed <tv-id> off                  # stop automating a TV
 ```
 
-`tisvlay profile defaults` and `tisvlay user-profile defaults` print the stock mappings. The full schema, with every field and its stock default, is in [Configuration](./configuration.md#profiles); the verbs are in the [CLI Reference](./cli.md).
+`tisvlay profile system defaults` and `tisvlay profile user defaults` print the stock mappings. The full schema, with every field and its stock default, is in [Configuration](./configuration.md#profiles); the verbs are in the [CLI Reference](./cli.md).
 
 </details>

@@ -171,16 +171,16 @@ After a `flake.nix` change, run `direnv reload` (or reopen the terminal) before 
 
 ```bash
 tisvlay status                       # daemon liveliness + release compatibility
-tisvlay vendors                      # vendor catalog
-tisvlay discover                     # SSDP + mock + cec scan
+tisvlay vendor                       # vendor catalog (`vendor lg`: pairing fields)
+tisvlay discover                     # SSDP + mock + cec scan (--watch: until ctrl-c)
 tisvlay pair "Living Room" --vendor lg --params '{"ip":"192.168.1.50"}'
 tisvlay list                         # hydrate from publisher caches
 tisvlay watch                        # stream every data key: history, then live
-tisvlay set-volume <uuid> 40
-tisvlay config <uuid>
-tisvlay config-set <uuid> '{"name":"Renamed"}'
-tisvlay profile list                 # system profiles (editable default included)
-tisvlay user-profile list --user-socket …
+tisvlay volume <uuid> 40             # set; `tisvlay volume <uuid>` reads it back
+tisvlay mute <uuid> --toggle
+tisvlay config <uuid> '{"name":"Renamed"}'
+tisvlay profile system list          # system profiles (editable default included)
+tisvlay profile user list --user-socket …
 ```
 
 ### NixOS Installation

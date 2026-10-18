@@ -25,7 +25,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](remote-session-followups.md)
 - [Screencast detection beyond KWin (no blessed cross-desktop signal; per-producer, class-and-producer, compositor-PID and Hyprland options; upstream `media.role=Screen` and portal-monitor proposals; NixOS VM test)](screencast-detection-coverage.md)
 - [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](zenoh-typed-queryables.md)
-- [SDK methods for the rpcs only the CLI reaches (add-tv, discover, user effective)](sdk-cli-only-rpcs.md)
+- [SDK methods for the rpcs the GUI can't reach (add-tv, discover, user effective)](sdk-cli-only-rpcs.md)
 - [A typed `update-config` request (settings fields + flattened vendor map)](typed-update-config.md)
 
 ## Operational
@@ -35,9 +35,10 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 ## CLI
 
-- [CLI shorthand for `Tv1.UpdateConfig`](cli-update-config-shorthand.md)
+- [`key=value` shorthand for `tisvlay config`](cli-update-config-shorthand.md)
 - [Support-bundle CLI subcommand (`tisvlay diagnostic`)](support-bundle-cli.md)
 - [Shell-completion follow-ups: no-daemon knob, UUID cache, non-default socket/site](completion-followups.md)
+- [TV names as CLI selectors (accept a name wherever a TV UUID is taken)](cli-tv-name-selectors.md)
 
 ## GUI
 

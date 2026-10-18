@@ -29,7 +29,7 @@ primary_input = "HDMI_1"   # the input this PC uses (for input-aware automation)
 managed = true             # participate in automation
 
 [tv.profile]
-system = "…"               # assigned system profile, by id (see `tisvlay profile list`)
+system = "…"               # assigned system profile, by id (see `tisvlay profile system list`)
 
 [tv.config]
 ip = "192.168.1.170"
