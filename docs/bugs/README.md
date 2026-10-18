@@ -4,6 +4,7 @@
 
 - [Session event handler `last_action` cache survives daemon reconnects](last-action-cache-survives-reconnect.md)
 - [`run_pairing_handshake` has no timeout on `wait_for_completion`](pair-tv-no-timeout.md)
+- [GUI and tray show a remote-off LG TV as powered on](power-switch-active-standby.md)
 
 ## Closed
 

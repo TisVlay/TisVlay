@@ -16,7 +16,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 ## Active plans
 
 - [`mdbook-docs-site.md`](mdbook-docs-site.md) — user-facing documentation site built with mdBook and published on Read the Docs; CLI reference auto-generated from the clap tree, prose guide covering install, pairing, profiles, session automation, and troubleshooting.
-- [`cli-reword.md`](cli-reword.md) — CLI rework: one getter/setter grammar for TV attributes (`--toggle`, `--clear`, on/off values), profile catalogs split by scope, per-TV profile assignment verbs, `vendor`/`discover --watch` consolidation; one breaking release, no aliases.
+- [`cli-reword.md`](cli-reword.md) — CLI rework: one getter/setter grammar for TV attributes (`--toggle`, `--clear`, on/off values, silent writers), profile catalogs split by scope, per-TV profile assignment verbs, `vendor`/`discover --watch` consolidation, `add` removed; one breaking release, no aliases.
 
 When a plan is in flight, list it here with
 a one-line summary of the work it covers:
