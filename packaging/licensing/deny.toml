@@ -168,6 +168,13 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro" },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; no safe upgrade; unconditional via zenoh-config 1.10/serde_yaml; TisVlay builds Zenoh config programmatically, not from YAML; revisit on Zenoh bump" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via winit sctk-adwaita" },
+    # zbus 6 absorbed its helper crates, which zbus 5 still depends on.
+    # ashpd, slint's winit backend, ksni and notify-rust are all on zbus 5,
+    # as are our consumed-D-Bus adapters (through zbus's re-exports, never
+    # directly); revisit together on the zbus 6 migration.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6 as its wire module); no safe upgrade; via zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6 as its names module); no safe upgrade; via zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6); no safe upgrade; via zbus 5" },
     # Fix available upstream — deferred to a dependency bump:
     { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
 ]
