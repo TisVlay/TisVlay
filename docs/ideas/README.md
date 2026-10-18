@@ -38,6 +38,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [CLI shorthand for `Tv1.UpdateConfig`](cli-update-config-shorthand.md)
 - [Support-bundle CLI subcommand (`tisvlay diagnostic`)](support-bundle-cli.md)
 - [Shell-completion follow-ups: no-daemon knob, UUID cache, non-default socket/site](completion-followups.md)
+- [TV names as CLI selectors (accept a name wherever a TV UUID is taken)](cli-tv-name-selectors.md)
 
 ## GUI
 
