@@ -100,11 +100,11 @@ Daemon -.->|WebSocket / WoL| TV2
 
 ## 🙏 Acknowledgments
 
-See third-party notice included with releases for full details. Key Rust dependencies include:
+Full third-party notice included with releases. Notable Rust crates include:
 
-- [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `tisvlay-gui`'s responsive desktop interface
-- [Bevy](https://bevyengine.org) – ECS used in `tisvlay-daemon` to manage device interactions and system events
-- [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub protocol unifying socket IPC across the `tisvlay` stack
-- [ksni](https://github.com/iovxw/ksni) – Implementation of the Freedesktop StatusNotifierItem spec powering `tisvlay-tray`
-- [linux-cec](https://gitlab.steamos.cloud/holo/linux-cec/) – Linux CEC userspace bindings used by `tisvlay-cec` for HDMI-CEC support
-- [netflector](https://github.com/netflector/netflector) – Network reflector enabling mDNS, SSDP, and WoL while preserving user privacy
+- [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `tisvlay-gui`'s responsive interface
+- [Bevy](https://bevyengine.org) – ECS used in `tisvlay-daemon` to manage device interactions and events
+- [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub unifying socket IPC across the `tisvlay` stack
+- [ksni](https://github.com/iovxw/ksni) – Freedesktop StatusNotifierItem library powering `tisvlay-tray`
+- [linux-cec](https://gitlab.steamos.cloud/holo/linux-cec/) – Linux userspace bindings used by `tisvlay-cec` for HDMI-CEC
+- [netflector](https://github.com/netflector/netflector) – Reflector enabling mDNS, SSDP, WoL while preserving VLAN privacy
