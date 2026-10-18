@@ -13,7 +13,7 @@ LG control works over IPv4 or IPv6; its SSDP discovery and Wake-on-LAN are IPv4-
 ## Host requirements
 
 - **Linux** — the daemon needs no D-Bus (it uses a local IPC socket). The desktop **session and tray** services do use the session/system D-Bus for desktop integration (logind, the screensaver, the system tray, and notifications), so they expect a normal desktop bus.
-- **Socket access** — automatic for the user at the console; everyone else needs the `tisvlay` group. See [Access](../getting-started/installation.md#access).
+- **Socket access** — automatic for the user at the console; everyone else needs the `tisvlay` group (the app offers an **Enable TV control** button if you need it). See [Access](../getting-started/installation.md#access).
 - **Network reachability** (network backends) — the host can reach the TV; waking it from standby also needs the same L2 network or a relay. See [Troubleshooting → The TV won't power on](../operations/troubleshooting.md#the-tv-wont-power-on).
 - **Idle & lock-wake detection** (optional; powers the in-session idle timer and unblanking the TV when you touch the lock screen) — a Wayland compositor with `ext-idle-notify-v1` (KDE Plasma, wlroots compositors) **or GNOME** (detected through Mutter's own idle monitor).
 - For the DPMS display-blank automation, the host must expose the matched connector's power state via `/sys/class/drm/*/dpms` (verified on KDE Plasma Wayland).
@@ -22,7 +22,7 @@ LG control works over IPv4 or IPv6; its SSDP discovery and Wake-on-LAN are IPv4-
 
 - `tisvlay-daemon` runs as a dedicated `tisvlay` system user; it owns the control socket (`/run/tisvlay/zenoh.sock` when packaged) and keeps its state under `/var/lib/tisvlay/`.
 - `tisvlay-session` and `tisvlay-tray` run as per-user services and reach the daemon over that socket.
-- The `tisvlay` CLI targets the same socket; see the [CLI Reference](../guide/cli.md) for overriding it.
+- The `tisvlay` CLI targets the same socket; see the [Command Line](../guide/cli.md) page for overriding it.
 
 ## Limitations
 

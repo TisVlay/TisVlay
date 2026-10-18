@@ -261,3 +261,14 @@ Keep `main`'s README **concise** (features + quickstart + a prominent link to th
 3. `nix develop -c just check` → the cli lib refactor keeps the workspace + `pair_snapshot` tests green.
 4. `nix develop -c just docs-serve` for live-reload authoring while filling pages.
 5. Connect the repo on Read the Docs, set Admin → Settings → "Path for .readthedocs.yaml" to `.config/.readthedocs.yaml`, confirm a successful cloud build + the Addons flyout.
+
+## GUI-first restructure (2026-10)
+
+The book now leads with the app and tucks the command line and raw TOML into an Advanced section, for readers new to Linux. Navigation: Getting Started (Installation, Quick Start, Adding a TV) → Using TisVlay (GUI & Tray, Automation, Remote-Session Awareness) → Help (Troubleshooting, Firewall & Discovery, Networking & Reliability, TVs on an Isolated Network) → Advanced (Command Line, Configuration Files) → Reference. File paths are unchanged apart from removing `guide/profiles.md` and `guide/session-automation.md`, merged into `guide/automation.md`.
+
+Authoring rules (supersedes S2):
+
+- Describe tasks with the labels the GUI shows (taken from `crates/tisvlay-gui/ui/`); keep implementation vocabulary (UUIDs, sockets, field names) out of the main path.
+- Command-line equivalents live in one of two places: the "Which command does what the app does" table in the Command Line page, or a collapsed "From a terminal" `<details>` aside where a terminal really is the fix (Troubleshooting, Adding a TV).
+- Canonical homes changed: profile semantics, inheritance, the automation gate, and event meanings → Automation; the file schema and reload rules → Configuration Files; remote-session behavior → Remote-Session Awareness; tray and window behavior → GUI & Tray; WoL checklist → Troubleshooting; MAC explanation → Adding a TV.
+- When the GUI labels change, grep the book for the old label (notification names, tooltip strings, and field labels are quoted verbatim).

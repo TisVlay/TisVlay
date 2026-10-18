@@ -1,43 +1,49 @@
 # Remote-Session Awareness
 
-When you remote into this machine — Sunshine/Moonlight game streaming, RustDesk, or krdp/RDP — the remote session unlocks the desktop and feeds it virtual keyboard and mouse input. To your desktop that looks exactly like someone sitting down: the idle timer resets, the outputs un-blank, and tisvlay's normal automation would **power the physical TV on for an empty room**. Remote-session awareness stops that.
+When you connect to this computer from elsewhere (game streaming with Sunshine and Moonlight, RustDesk, or an RDP client), the remote session unlocks the desktop and feeds it virtual keyboard and mouse input. Your desktop treats that exactly like someone sitting down, so without help TisVlay would **power on the physical TV in an empty room**.
 
-While a remote session is active, tisvlay marks the affected TVs as **armed** and suppresses the wake actions, while still letting blanks and power-offs through. When you physically walk back to the TV, it wakes on your **first local input** (`on_local_return`) — with the usual unlock/lock-wake/idle paths covering the locked and idled cases as before.
+Remote-session awareness prevents that. While a remote session is active, TisVlay marks the affected TVs as **armed**: it holds back the actions that would turn them on, while still letting blanks and power-offs through. When you walk back to the machine, the TV wakes on your first touch of the mouse or keyboard.
 
-The feature is **inert on a stock desktop** — nothing arms until a detector or hook fires — so it costs you nothing until you actually stream in.
+You don't need to set anything up for the common cases. Just connect.
 
 ## What it does when armed
 
-- **Wake events are suppressed** — `on_session_unlock`, `on_lock_wake`, `on_idle_resume`, and the daemon's `on_dpms_on`/`on_wake` don't fire while the TV is armed. This is the suppress-by-default rule: a plain action is quiet while armed.
-- **Off-going events still fire** — blanks and power-offs (`on_session_lock`, idle blank, `on_sleep`, `on_dpms_off`, …) are exempt, so a TV that's on still darkens for the empty room.
-- **The arm and disarm edges act** — `on_remote_connect` fires when the session arms the TV (default `screen_off`, so the panel blanks) and `on_remote_disconnect` when it ends (also `screen_off` — the room is still empty).
-- **Your return wakes it** — after a disconnect, the first genuine local input fires `on_local_return` (default `screen_on`, restoring your PC's input). This closes the stranded-dark gap: if the desktop never locked and never idled while you were away, no unlock or idle-resume edge exists to relight the panel — the return event is what catches you walking back in.
+- **Wake actions are held back.** Unlocking, touching the lock screen, activity resuming from idle, and your display waking (DPMS) don't turn the TV on while it's armed.
+- **Blanks and power-offs still happen.** Locking, idle blanking, sleep, and display blanking go through, so a TV that's on still darkens for the empty room.
+- **Connecting and disconnecting have their own actions.** When a session arms the TV, the profile's **On remote connect** action runs (by default `screen_off`, so the panel blanks). When it ends, **On remote disconnect** runs (also `screen_off`, since the room is still empty).
+- **Your return wakes it.** After a session ends, your first genuine touch of the PC's mouse or keyboard runs **On local return** (by default `screen_on`, switching back to your PC's input). This covers the case where your desktop never locked or idled while you were away, so no unlock event would otherwise relight the TV.
 
-Every one of these is a per-event choice: each action row carries a **while-remote** toggle (in the GUI, or `while_remote = true` on the action in TOML) that opts the event back into firing while armed. See [Configuration](./configuration.md#action-vocabulary) and [Profiles](./profiles.md#the-remote-session-gate).
+You can override the hold-back per event. In the **Profiles** editor, each event row has a network icon: when it shows **Suppressed during remote session**, the event is held back while armed; click it so it shows **Fires during remote session** to let the event run anyway. See [Automation](./automation.md#changing-what-happens).
 
-## What tisvlay recognizes
+## What counts as a remote session
 
-| Source | Arms | Notes |
-|--------|------|-------|
-| Sunshine / Moonlight | automatically | zero-config (a loopback status poll); no hook required |
-| RustDesk, krdp/RDP | automatically | detected through the desktop's screen-capture portal |
-| Any screen capture (OBS, browser tab-share, …) | only if **Screen capture arms** is on | it can't tell *who* is capturing, so it's opt-in |
-| Manual / your own script | when you call the CLI verb | the escape hatch for anything else |
+| Source | Arms the TV | Notes |
+|--------|-------------|-------|
+| Sunshine / Moonlight | automatically | no setup; TisVlay detects it |
+| RustDesk, RDP | automatically | detected through the desktop's screen-sharing system |
+| Any other screen capture (OBS, a browser tab share, …) | only if you turn on **Screen capture arms** | TisVlay can't tell who's capturing, so it's opt-in |
+| Your own script or tool | when it tells TisVlay | see [Advanced](#advanced-sunshine-and-manual-control) |
 
-A software-KVM like **lan-mouse** (which holds a standing input-capture session while you're physically present) never arms. Plain SSH sessions don't arm either — only a graphical remote *desktop* does.
+Software KVMs such as lan-mouse never arm, because they run while you're physically present. A plain SSH login doesn't arm either; only a graphical remote desktop does.
 
-The **Screen capture arms** switch lives on the user profile's REMOTE SESSION card in the GUI (or `remote_screencast_arms = true` in the profile). Turn it on if you want any screen recording to suppress TV wakes; leave it off (the default) and only the recognized remote apps arm.
+**Screen capture arms** is a switch on the **REMOTE SESSION** card of a *user* profile, in the **Profiles** page. Turn it on if you want any screen recording to hold back TV wakes. Leave it off (the default) and only the recognized remote apps arm.
 
-## Sunshine integration
+## Seeing it work
 
-Sunshine's default capture on Nvidia is invisible to the desktop portal, so tisvlay watches Sunshine's own status endpoint on loopback instead — which means Sunshine works **with no configuration at all**. Just stream in; the TV stays asleep.
+While any TV is armed, the tray menu shows a read-only **Remote session active** line. That's the quickest way to tell that TV wakes are being held back on purpose; see [GUI & Tray](./gui-tray.md#tray-applet-tisvlay-tray).
 
-That endpoint sits on Sunshine's base port, 47989 by default. If you've moved Sunshine to another `port` (for example, to leave the GameStream defaults to Moonshine), tell the session service where to look, or it will poll whatever now answers on the default port:
+## Advanced: Sunshine and manual control
+
+Everything here is optional. Sunshine works without it, and the command line is only needed to arm TisVlay from your own scripts.
+
+### Sunshine integration
+
+TisVlay detects Sunshine by watching Sunshine's own status endpoint on this computer, which is why no configuration is needed. That endpoint sits on Sunshine's base port, 47989 by default. If you've moved Sunshine to another `port`, tell TisVlay where to look, or it will poll whatever now answers on the default port:
 
 - **NixOS:** `services.tisvlay.sunshinePort = 48989;` (Sunshine's configured `port`).
 - **Other distros:** add `--sunshine-port 48989` to the session service's command line with `systemctl --user edit --full tisvlay-session`, then `systemctl --user restart tisvlay-session`.
 
-If you want the TV armed the *instant* Sunshine launches (a second or two ahead of the status poll), add a prep-command hook to Sunshine's `global_prep_cmd` setting:
+To arm the TV the instant Sunshine launches, a second or two ahead of the status check, add a prep-command hook to Sunshine's `global_prep_cmd` setting:
 
 ```json
 {
@@ -51,11 +57,11 @@ If you want the TV armed the *instant* Sunshine launches (a second or two ahead 
 }
 ```
 
-The hook is optional and purely a latency optimization — the poll covers the disarm and works on its own. If you run an unpackaged build (a dev checkout, a manually installed CLI), give the hook the absolute path to `tisvlay` and pass the `--socket`/`--user-socket` flags explicitly, since Sunshine runs hooks outside your shell environment.
+The hook is purely a latency optimization. If you run an unpackaged build, give the hook the absolute path to `tisvlay` and pass the `--socket` and `--user-socket` flags explicitly, since Sunshine runs hooks outside your shell environment.
 
-## Manual control
+### Manual control
 
-For anything tisvlay doesn't recognize, arm and disarm it yourself:
+For a remote tool TisVlay doesn't recognize, arm and disarm it yourself:
 
 ```sh
 tisvlay remote-session start --source myapp   # arm
@@ -63,10 +69,4 @@ tisvlay remote-session stop  --source myapp   # disarm
 tisvlay remote-session status                 # show live sources + armed TVs
 ```
 
-These run against the session service, so include `--user-socket` if you've moved it from the default.
-
-## Seeing it work
-
-- The tray shows a read-only **Remote session active** indicator while any TV is armed.
-- `tisvlay remote-session status` prints the current sources and which TVs are armed.
-- `tisvlay --user-socket <sock> watch` streams the remote-session fact live alongside everything else.
+These talk to your user session service, so add `--user-socket` if you've moved it from the default. `tisvlay --user-socket <sock> watch` streams the remote-session state live alongside everything else.

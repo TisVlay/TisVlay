@@ -9,7 +9,7 @@ This applies to TVs controlled over the network. A TV driven over HDMI-CEC talks
 | Feature | Traffic | Crosses a router? | What to do |
 |---------|---------|-------------------|------------|
 | Control (power, screen, input, …) | A unicast connection from tisvlay to the TV | **Yes**, it's ordinary routed traffic | Allow it in the router's firewall |
-| Discovery | Multicast search and replies | No | Reflect it, or pair by IP address |
+| Discovery | Multicast search and replies | No | Reflect it, or add the TV by IP address |
 | Wake from standby | Wake-on-LAN broadcast | No | Reflect it |
 | MAC auto-fill when you type an IP | The host's ARP cache | No — it only ever sees the router | Read from the TV at pairing, where the backend supports it; otherwise enter it by hand |
 
@@ -50,7 +50,7 @@ wol  = true         # wake: magic packets go LAN → IoT
 
 - **Direction matters.** `source_if` is the side that searches and wakes (your desktop's network); `target_if` is the TV's. netflector relays searches and wakes source → target, and proxies the TV's replies back.
 - **Interface names** come from the router: run `ip -br addr` on it and match each network's subnet to its interface. A UniFi gateway, for example, names its default LAN `br0` and each additional network a `br<N>` bridge. Name the per-network interface, not a VLAN trunk — netflector ignores VLAN-tagged frames.
-- **`macs`** is optional. It narrows the entry to specific devices; use the MAC of the interface the TV is actually connected through (wired or Wi-Fi) — the one stored for the TV, which `tisvlay config <id>` shows.
+- **`macs`** is optional. It narrows the entry to specific devices; use the MAC of the interface the TV is actually connected through (wired or Wi-Fi) — the one stored for the TV, which you can see under **CONFIG** on the TV's page (or with `tisvlay config <id>`).
 - **Other protocols** aren't used by tisvlay unless a backend discovers with them. Enable `mdns` and `dial` too if you want phones on the LAN to cast to the TV.
 
 Many routers ship an mDNS reflector. It only helps backends that discover over mDNS — LG uses SSDP — and it won't relay Wake-on-LAN.
@@ -60,7 +60,7 @@ Many routers ship an mDNS reflector. It only helps backends that discover over m
 With the reflector and firewall rules in place, the TV behaves almost like one on your own network:
 
 - **Discovery** finds the TV at its real address on the IoT VLAN. The TV's reply reaches your host through the reflector, so your host firewall rule for discovery replies applies unchanged (for SSDP, the [pinned source port](./firewall-discovery.md#open-the-pinned-source-port)).
-- **The MAC** won't be auto-filled when you enter the TV's IP by hand ("MAC not detected"), because the host's ARP cache only sees the router. If the backend can read it from the TV (LG can — see [Pairing → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac)), leave the field blank; otherwise enter it by hand — it's in the TV's network settings.
+- **The MAC** won't be auto-filled when you enter the TV's IP by hand (the wizard shows no **Auto-detected** badge), because the host's ARP cache only sees the router. If the backend can read it from the TV (LG can — see [Adding a TV → The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac)), leave the field blank; otherwise enter it by hand — it's in the TV's network settings.
 - **Wake-on-LAN** works across the boundary. Expect the TV to answer a few seconds after the wake, a little later than one on your own network — tisvlay keeps retrying the connection while it boots, so nothing needs tuning. A TV on Wi-Fi still needs its wake-over-Wi-Fi setting turned on (on LG, **"TV On via Wi-Fi"**).
 - **Network awareness** follows the route through the router, so cable pulls and Wi-Fi drops on your side are still noticed straight away (see [Networking & Reliability](./networking-reliability.md)).
 
@@ -68,5 +68,5 @@ With the reflector and firewall rules in place, the TV behaves almost like one o
 
 If you can't run a reflector, tisvlay still works, with two limits:
 
-- **[Pair by IP address](../getting-started/pairing.md#pair-from-the-command-line)**, since discovery can't see the TV.
-- **tisvlay can't wake a TV from standby.** Once the TV is powered off, only its remote (or an [HDMI-CEC](../getting-started/pairing.md#hdmi-cec-no-pairing-needed) adapter, if you have one) can bring it back. So change any profile action that powers the TV off to `screen_off`, keeping the TV reachable for the next session; the [stock defaults](../guide/configuration.md#system-profile) show which events do.
+- **[Add the TV by address](../getting-started/pairing.md)** (in the wizard, use *Don't see your TV? Add it manually*), since discovery can't see it.
+- **tisvlay can't wake a TV from standby.** Once the TV is powered off, only its remote (or an [HDMI-CEC](../getting-started/pairing.md#hdmi-cec-no-pairing-needed) adapter, if you have one) can bring it back. So on the **Profiles** page, change any event that powers the TV off to `screen_off`, keeping the TV reachable for the next session; the [stock defaults](../guide/configuration.md#system-profile) show which events do.

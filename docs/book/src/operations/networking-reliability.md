@@ -28,4 +28,4 @@ Together these mean automation reaches the state you asked for from any starting
 
 ## When something's off
 
-If a wake or screen action doesn't land, the usual cause is a Wake-on-LAN prerequisite; walk through [Troubleshooting → The TV won't power on](./troubleshooting.md#the-tv-wont-power-on), and use `tisvlay watch` to see the connection and power-cycle state change live.
+If a wake or screen action doesn't land, look at the text beside **Power on** on the TV's page, which shows how far the wake got, and walk through [Troubleshooting → The TV won't power on](./troubleshooting.md#the-tv-wont-power-on). To watch connection and power state change live from a terminal, use `tisvlay watch`.
