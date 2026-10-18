@@ -97,3 +97,14 @@ Daemon -.->|WebSocket / WoL| TV2
 - 🔎 Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
 - 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/operations/isolated-networks.md).
 - ⌨️ Scripting? See the [Command Line](docs/book/src/guide/cli.md) and [Configuration Files](docs/book/src/guide/configuration.md).
+
+## 🙏 Acknowledgments
+
+See third-party notice included with releases for full details. Key Rust dependencies include:
+
+- [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `tisvlay-gui`'s responsive desktop interface
+- [Bevy](https://bevyengine.org) – ECS used in `tisvlay-daemon` to manage device interactions and system events
+- [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub protocol unifying socket IPC across the `tisvlay` stack
+- [ksni](https://github.com/iovxw/ksni) – Implementation of the Freedesktop StatusNotifierItem spec powering `tisvlay-tray`
+- [linux-cec](https://gitlab.steamos.cloud/holo/linux-cec/) – Linux CEC userspace bindings used by `tisvlay-cec` for HDMI-CEC support
+- [netflector](https://github.com/netflector/netflector) – Network reflector enabling mDNS, SSDP, and WoL while preserving user privacy
