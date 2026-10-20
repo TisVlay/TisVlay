@@ -93,7 +93,7 @@ Services ship as `tisvlay` CLI subcommands; `tisvlay-gui` as separate binary.
 
 ## 📖 Documentation
 
-Rendered docs available at [tisvlay.readthedocs.io](https://tisvlay.readthedocs.io/). Relative source links below:  
+Rendered docs available at [tisvlay.readthedocs.io](https://tisvlay.readthedocs.io/). Relative source links below:
 
 - 🧭 New here? Start with [Installation](docs/book/src/getting-started/installation.md), then [Quick Start](docs/book/src/getting-started/quick-start.md).
 - 🎛️ Setting things up? See [GUI & Tray](docs/book/src/guide/gui-tray.md) and [Automation](docs/book/src/guide/automation.md).
