@@ -1,7 +1,8 @@
 # Release lifecycle. Two phases, both keyed off the GitHub release you cut:
 #
 #   1. Push a `vX.Y.Z` tag      -> build the distro packages (.deb/.rpm/.pkg)
-#      and attach them to a DRAFT GitHub release. Download + test them.
+#      and attach them to a DRAFT GitHub release, and push the Nix package
+#      to tisvlay.cachix.org. Download + test them.
 #   2. Promote that release to a full (non-prerelease) release
 #      -> publish the crates to crates.io. crates.io is irreversible
 #      (yank-only), so it intentionally comes LAST, after you've verified
@@ -96,6 +97,40 @@ jobs:
             target/x86_64-unknown-linux-gnu/release/tisvlay-*.rpm
             target/x86_64-unknown-linux-gnu/release/tisvlay-*.pkg.tar.zst
             target/x86_64-unknown-linux-gnu/release/checksums-sha256.txt
+
+  # Phase 1 (tag push): build the flake's package and push it to the public
+  # tisvlay.cachix.org cache (packaging/nix/README.md "Binary cache").
+  #
+  # The push token lives in the `cachix` environment, which only admits `v*`
+  # tags (repo Settings → Environments), so a branch run can't push even if
+  # these triggers change. The job only writes to the cache: it builds from
+  # cache.nixos.org alone (`skipAddingSubstituter`), keeping this workflow's
+  # no-cache rule above.
+  nix-cache:
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    environment: cachix
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: tisvlay
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipAddingSubstituter: true
+
+      - name: Build
+        run: nix build --print-build-logs .#default
 
   # Phase 2 (release finalized): publish the crates to crates.io. Runs when
   # you promote the verified draft to a full release. release-plz publishes

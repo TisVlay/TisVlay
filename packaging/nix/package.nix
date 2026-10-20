@@ -163,8 +163,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # build would also compile the dev-only crates (tisvlay-mock /
   # tisvlay-test).
 
-  # No binary cache for this flake, so every consumer builds from source —
-  # the checkPhase would re-run, from scratch, the same suite CI already
+  # Most consumers build from source (only release builds of the flake's
+  # own package are in the binary cache), so the checkPhase would re-run, from scratch, the same suite CI already
   # gates on, compiling far more than the shipping build (the dev-only
   # crates plus every feature). Skip it here; `checks.tests` in flake.nix
   # flips doCheck back on for `nix flake check`, keeping the flags below
