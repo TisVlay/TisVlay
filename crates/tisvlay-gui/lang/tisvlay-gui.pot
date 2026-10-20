@@ -839,13 +839,13 @@ msgctxt "TvDetail"
 msgid "Couldn't save TV config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:989
-msgctxt "TvDetail"
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:621
+msgctxt "TvConfigEditForm"
 msgid "Friendly name"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:995
-msgctxt "TvDetail"
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:627
+msgctxt "TvConfigEditForm"
 msgid "e.g. Living Room G4"
 msgstr ""
 
@@ -956,8 +956,8 @@ msgctxt "TvsPane"
 msgid "Re-pair"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/schema_form.slint:148
-msgctxt "SchemaForm"
+#: crates/tisvlay-gui/ui/components/schema_form.slint:143
+msgctxt "SchemaFieldRow"
 msgid "Auto-detected"
 msgstr ""
 
