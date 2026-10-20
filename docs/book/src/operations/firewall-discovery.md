@@ -34,7 +34,7 @@ services.tisvlay.openFirewall = true;
 networking.firewall.allowedUDPPorts = [ 1901 ];
 ```
 
-To use a different port, or an OS-chosen ephemeral one (which can't be narrowed to a single firewall rule), set it in the service's config, or pass `tisvlay-daemon --ssdp-port <port>` (`0` = ephemeral):
+To use a different port, or an OS-chosen ephemeral one (which can't be narrowed to a single firewall rule), set it in the service's config, or pass `tisvlay service daemon --ssdp-port <port>` (`0` = ephemeral):
 
 ```toml
 # /var/lib/tisvlay/daemon.toml

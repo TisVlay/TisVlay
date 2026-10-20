@@ -423,7 +423,7 @@ daemon-start:
         dpms=(--dpms-connector "{{ dpms_connector }}")
     fi
     RUST_LOG="{{ _daemon_log }}" \
-        cargo run --profile {{ _dev_profile }} --bin tisvlay-daemon -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay -- service daemon \
             --socket "{{ socket }}" --site "{{ site }}" \
             --ssdp-port "{{ ssdp_port }}" {{ _ephemeral_flag }} "${dpms[@]}"
 
@@ -431,7 +431,7 @@ daemon-start:
 [group('dev')]
 session-start:
     RUST_LOG="{{ _session_log }}" \
-        cargo run --profile {{ _dev_profile }} --bin tisvlay-session -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay -- service session \
             --system-socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}" {{ _ephemeral_flag }}
 
@@ -439,14 +439,14 @@ session-start:
 [group('dev')]
 greeter-start:
     RUST_LOG="{{ _greeter_log }}" \
-        cargo run --profile {{ _dev_profile }} --bin tisvlay-greeter -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay -- service greeter \
             --socket "{{ socket }}" --site "{{ site }}"
 
 # Start the tray (user profiles appear when session-start is up).
 [group('dev')]
 tray-start:
     RUST_LOG="{{ _tray_log }}" \
-        cargo run --profile {{ _dev_profile }} --bin tisvlay-tray -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay -- service tray \
             --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}"
 
@@ -487,17 +487,15 @@ gui-start:
 # Kill all running dev processes
 [group('dev')]
 stop-all:
-    -pkill -f 'tisvlay-daemon'
-    -pkill -f 'tisvlay-session'
-    -pkill -f 'tisvlay-greeter'
-    -pkill -f 'tisvlay-tray'
-    -pkill -f 'tisvlay-gui'
+    # Matched on the dev build's path, so packaged services keep running.
+    -pkill -f 'target/(debug|release)/tisvlay service (daemon|session|greeter|tray)'
+    -pkill -f 'target/(debug|release)/tisvlay-gui'
     # SIGTERM returns immediately; wait until the processes are gone so
     # a follow-up start can't race the exit. Stale socket files are
     # fine — zenoh's `.lock` protocol takes over an unclean listener
     # path on the next bind. 5 s timeout (`|| true`) so a stuck
     # process can't wedge the recipe.
-    @timeout 5 sh -c 'while pgrep -f "target/(debug|release)/tisvlay-(daemon|session|greeter|tray|gui)" > /dev/null; do sleep 0.1; done' || true
+    @timeout 5 sh -c 'while pgrep -f "target/(debug|release)/(tisvlay service (daemon|session|greeter|tray)|tisvlay-gui)" > /dev/null; do sleep 0.1; done' || true
     @echo "All stopped"
 
 # Show CLI status (manual smoke test)
@@ -547,17 +545,17 @@ completions:
 # Build .deb package
 [group('package')]
 package-deb: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f deb
+    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target x86_64-unknown-linux-gnu -f deb
 
 # Build .rpm package
 [group('package')]
 package-rpm: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f rpm
+    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target x86_64-unknown-linux-gnu -f rpm
 
 # Build Arch Linux package
 [group('package')]
 package-archlinux: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f archlinux
+    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target x86_64-unknown-linux-gnu -f archlinux
 
 # Build all package formats
 [group('package')]

@@ -44,7 +44,7 @@ tisvlay/
 │   │                             # WireError, session bootstrap (peer/router/client configs)
 │   ├── tisvlay-world/             # bevy_ecs world: components, systems, reactor loop,
 │   │                             # backend bridge (deferred acks via CommandDone)
-│   ├── tisvlay-daemon/            # System daemon binary+lib: world + zenoh bridge,
+│   ├── tisvlay-daemon/            # System daemon lib: world + zenoh bridge,
 │   │   └── src/                  # store (TOML persistence), seed config, discovery,
 │   │                             # per-connector dpms watchers, logind, netlink, arp,
 │   │                             # probe (EDID matcher driving the watcher set)
@@ -56,8 +56,9 @@ tisvlay/
 │   │                             # (notify.rs: settings service on the user socket)
 │   ├── tisvlay/                   # Client SDK: DaemonClient/SessionClient/TrayClient +
 │   │                             # StateWatcher (root-D-Bus-client-compatible surface)
-│   ├── tisvlay-cli/               # CLI (binary name: tisvlay) — pure zenoh client; its lib
-│   │                             # exposes the clap tree for docgen
+│   ├── tisvlay-cli/               # The `tisvlay` binary: zenoh CLI client + the
+│   │                             # `service` verbs (daemon/session/tray/greeter);
+│   │                             # its lib exposes the clap tree for docgen
 │   ├── tisvlay-docgen/            # gen-docs: renders the mdBook's generated partials
 │   │                             # (CLI reference, profile defaults, release version)
 │   ├── tisvlay-gui/               # Compiled Slint UI only (ui/*.slint, lang/ gettext;

@@ -1,3 +1,5 @@
+//! `tisvlay service session`: the session service's command line, run
+//! from the `tisvlay` binary.
 #![expect(
     unsafe_code,
     reason = "main sets SPA_PLUGIN_DIR before the async runtime starts any thread"
@@ -6,12 +8,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::Parser;
-use tisvlay_session::sunshine::{HostProbe, SunshineProbe};
+use crate::sunshine::{HostProbe, SunshineProbe};
 
-#[derive(Parser, Debug)]
-#[command(name = "tisvlay-session", about = "TisVlay per-user session service")]
-struct Args {
+/// The session service's flags, under `tisvlay service session`.
+#[derive(clap::Args, Debug)]
+pub struct Args {
     /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
     #[arg(long)]
     system_socket: Option<PathBuf>,
@@ -38,7 +39,7 @@ struct Args {
     /// Sunshine's base port on loopback, where its unauthenticated
     /// `/serverinfo` answers. Set it when Sunshine runs on a non-default
     /// base port (e.g. moved aside so Moonshine keeps the defaults).
-    #[arg(long, default_value_t = tisvlay_session::sunshine::DEFAULT_PORT)]
+    #[arg(long, default_value_t = crate::sunshine::DEFAULT_PORT)]
     sunshine_port: u16,
 }
 
@@ -48,21 +49,31 @@ fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("tisvlay-session.toml"))
 }
 
-fn main() -> anyhow::Result<()> {
-    // SAFETY: the async runtime isn't built yet, so this is the only
-    // thread and nothing else can touch the environment.
-    let spa_plugins = unsafe { tisvlay_session::point_at_host_spa_plugins() };
+/// Run the session service until ctrl-c, on a runtime of its own.
+///
+/// # Safety
+///
+/// No other thread may exist yet: this points `SPA_PLUGIN_DIR` at the
+/// host's PipeWire plugins by setting the process environment, which
+/// races any concurrent environment read.
+pub unsafe fn main(args: Args) -> anyhow::Result<()> {
+    // SAFETY: the caller guarantees this is the only thread, and the async
+    // runtime isn't built yet, so nothing else can touch the environment.
+    let spa_plugins = unsafe { crate::point_at_host_spa_plugins() };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(spa_plugins))
+        .block_on(run(args, spa_plugins))
 }
 
-async fn run(spa_plugins: Result<(), tisvlay_session::SpaPluginsMissing>) -> anyhow::Result<()> {
+async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
-    tisvlay_runtime::logging::init(&["tisvlay_session=info", "zbus=warn"], &[])?;
-    let args = Args::parse();
+    tisvlay_runtime::logging::init(
+        "tisvlay-session",
+        &["tisvlay_session=info", "zbus=warn"],
+        &[],
+    )?;
     let store = if args.ephemeral {
         None
     } else {
@@ -71,7 +82,7 @@ async fn run(spa_plugins: Result<(), tisvlay_session::SpaPluginsMissing>) -> any
     let sunshine: Arc<dyn SunshineProbe> = Arc::new(HostProbe {
         port: args.sunshine_port,
     });
-    let stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
+    let stack = crate::serve(crate::SessionOptions {
         system_socket: args
             .system_socket
             .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path),
@@ -99,7 +110,7 @@ async fn run(spa_plugins: Result<(), tisvlay_session::SpaPluginsMissing>) -> any
     // supervised watcher below re-seeds and follows live edges regardless.
     if tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        tisvlay_session::seed_lock_state(&is_locked, &is_active),
+        crate::seed_lock_state(&is_locked, &is_active),
     )
     .await
     .is_err()
@@ -110,16 +121,16 @@ async fn run(spa_plugins: Result<(), tisvlay_session::SpaPluginsMissing>) -> any
     // cross-desktop lock-state signal — plus the session's `Active` state
     // for arbitration. Absent/unreachable bus is handled inside (supervised
     // retry, quiet).
-    tisvlay_session::spawn_lock_watcher(stack.client.clone(), is_locked.clone(), is_active);
+    crate::spawn_lock_watcher(stack.client.clone(), is_locked.clone(), is_active);
     // Portal monitor on the session bus (out-of-band name→PID lookups for
     // the remote screencast attribution). Absent bus = monitor disabled.
     match zbus::Connection::session().await {
-        Ok(connection) => tisvlay_session::spawn_portal_monitor(connection, stack.remote.clone()),
+        Ok(connection) => crate::spawn_portal_monitor(connection, stack.remote.clone()),
         Err(e) => tracing::warn!(%e, "no session bus, portal monitor disabled"),
     }
     // User idle via wayland (ext-idle-notify) or GNOME's Mutter idle
     // monitor; unavailable transports are handled inside.
-    tokio::spawn(tisvlay_session::idle_adapter(
+    tokio::spawn(crate::idle_adapter(
         stack.idle_timeouts.clone(),
         stack.client.clone(),
         is_locked,
@@ -131,14 +142,14 @@ async fn run(spa_plugins: Result<(), tisvlay_session::SpaPluginsMissing>) -> any
     // Absent/unreachable PipeWire is handled inside (retry, quiet);
     // without SPA plugins it can't start at all, so it stays off.
     match spa_plugins {
-        Ok(()) => tisvlay_session::spawn_screencast_detector(stack.remote.clone()),
+        Ok(()) => crate::spawn_screencast_detector(stack.remote.clone()),
         Err(missing) => tracing::warn!(%missing, "screencast detection off"),
     }
 
     // logind Remote-session detector on the system bus — reports a
     // `Logind` source for an own-uid `Remote=yes` session (xrdp-class).
     // Absent/unreachable system bus is handled inside (retry, quiet).
-    tisvlay_session::spawn_logind_detector(stack.remote.clone());
+    crate::spawn_logind_detector(stack.remote.clone());
 
     // Sunshine level poll — a continuous `/serverinfo` detector, gated on
     // a sunshine process being present, that arms a `Sunshine` source on
@@ -146,7 +157,7 @@ async fn run(spa_plugins: Result<(), tisvlay_session::SpaPluginsMissing>) -> any
     // its own source key, coexisting with the optional `global_prep_cmd`
     // hook: the hook is the instant arm, the poll owns disarm, self-heal,
     // and the zero-config fallback. Runs for the session lifetime.
-    tisvlay_session::spawn_sunshine_detector(stack.remote.clone(), sunshine);
+    crate::spawn_sunshine_detector(stack.remote.clone(), sunshine);
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down");

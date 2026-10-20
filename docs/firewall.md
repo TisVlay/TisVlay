@@ -18,7 +18,7 @@ If discovery returns 0 TVs but the TV is reachable (WebSocket connection works),
 `tisvlay-daemon` binds its SSDP source socket to **port 1901 by default**, so discovery replies arrive at a known port and a single `--dport` rule suffices — no config needed. Override only to use a different port or to opt back into ephemeral, via the daemon's `--ssdp-port` flag (`0` = ephemeral):
 
 ```bash
-tisvlay-daemon --ssdp-port 1901   # the default; any unused port above 1024 works
+tisvlay service daemon --ssdp-port 1901   # the default; any unused port above 1024 works
 ```
 
 1901 is adjacent to SSDP's well-known 1900 and isn't assigned by IANA. Restart the daemon after changing it.

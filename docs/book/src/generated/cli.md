@@ -43,6 +43,11 @@
 * [`tisvlay remote-session start`↴](#tisvlay-remote-session-start)
 * [`tisvlay remote-session stop`↴](#tisvlay-remote-session-stop)
 * [`tisvlay remote-session status`↴](#tisvlay-remote-session-status)
+* [`tisvlay service`↴](#tisvlay-service)
+* [`tisvlay service daemon`↴](#tisvlay-service-daemon)
+* [`tisvlay service session`↴](#tisvlay-service-session)
+* [`tisvlay service tray`↴](#tisvlay-service-tray)
+* [`tisvlay service greeter`↴](#tisvlay-service-greeter)
 
 ## `tisvlay`
 
@@ -79,6 +84,7 @@ A TV setting or state reads when its value is left out and sets when it's given:
 * `user-profile` — Assign a TV's user profile (via --user-socket), or print the assigned one
 * `profile` — The profile catalogs: system profiles hold what TVs do on power events, user profiles what they do on lock, idle and remote sessions
 * `remote-session` — Arm or query a remote-session source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
+* `service` — Run one of TisVlay's services in the foreground. Their systemd units start them; run one by hand to debug it or try its flags
 
 ###### **Options:**
 
@@ -645,3 +651,101 @@ Disarm the named source
 Show the current remote-session fact (live sources + armed TVs)
 
 **Usage:** `tisvlay remote-session status`
+
+
+
+## `tisvlay service`
+
+Run one of TisVlay's services in the foreground. Their systemd units start them; run one by hand to debug it or try its flags
+
+**Usage:** `tisvlay service <COMMAND>`
+
+###### **Subcommands:**
+
+* `daemon` — The system daemon: owns the TVs and the system socket
+* `session` — The per-user session service: user profiles, lock, idle and remote-session handling, on the user socket
+* `tray` — The system tray
+* `greeter` — The login-screen idle client, run inside the greeter session
+
+
+
+## `tisvlay service daemon`
+
+The system daemon: owns the TVs and the system socket
+
+**Usage:** `tisvlay service daemon [OPTIONS]`
+
+###### **Options:**
+
+* `--socket <SOCKET>` — Unix socket to listen on (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--site <SITE>` — Site chunk used in all key expressions
+
+  Default value: `main`
+* `--config <CONFIG>` — The daemon's own file — persisted TV table with credentials (default: $XDG_CONFIG_HOME/tisvlay/daemon.toml); --ephemeral disables
+* `--ephemeral` — Run without persistence (state lives only in the world)
+* `--seed <SEED>` — Seed config (TOML): declaratively provisioned TVs, re-applied each start; ids already in the daemon's own file win
+* `--dpms-connector <DPMS_CONNECTOR>` — Watch this DRM connector's DPMS state in addition to the EDID-matched ones the daemon watches automatically; its transitions dispatch to every automated TV — the override for setups where the EDID match fails (e.g. card1-HDMI-A-1)
+* `--ssdp-port <SSDP_PORT>` — SSDP source port for LG discovery — replies return to this port, so it must match your firewall rule (docs/firewall.md); 0 = ephemeral
+
+  Default value: `1901`
+* `--greeter-access` — Grant the login-screen greeter socket access by applying a POSIX ACL for the display manager's greeter group, auto-detected from the known set (`gdm`, `Debian-gdm`). The modern GDM greeter is a dynamic-userdb account that `/etc/group` membership can't reach
+* `--greeter-group <GREETER_GROUP>` — Explicit greeter group for the socket ACL, overriding --greeter-access — for a DM whose greeter group isn't auto-detected (e.g. a plasma-login greeter)
+* `--seat-access <SEAT_ACCESS>` — Grant each seat's active graphical user socket access via a POSIX ACL while their session is the seat foreground (uaccess-style presence grant; the tisvlay group remains the durable grant). `--seat-access=false` restricts the socket to the group + greeter
+
+  Default value: `true`
+
+  Possible values: `true`, `false`
+
+
+
+
+## `tisvlay service session`
+
+The per-user session service: user profiles, lock, idle and remote-session handling, on the user socket
+
+**Usage:** `tisvlay service session [OPTIONS]`
+
+###### **Options:**
+
+* `--system-socket <SYSTEM_SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--user-socket <USER_SOCKET>` — Per-user socket to listen on (default: $XDG_RUNTIME_DIR/tisvlay/ session.sock)
+* `--site <SITE>` — Site chunk used in all key expressions
+
+  Default value: `main`
+* `--config <CONFIG>` — The session service's own file — persisted user profiles + assignments (default: $XDG_CONFIG_HOME/tisvlay/session.toml); --ephemeral disables
+* `--ephemeral` — Run without persistence
+* `--sunshine-port <SUNSHINE_PORT>` — Sunshine's base port on loopback, where its unauthenticated `/serverinfo` answers. Set it when Sunshine runs on a non-default base port (e.g. moved aside so Moonshine keeps the defaults)
+
+  Default value: `47989`
+
+
+
+## `tisvlay service tray`
+
+The system tray
+
+**Usage:** `tisvlay service tray [OPTIONS]`
+
+###### **Options:**
+
+* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--user-socket <USER_SOCKET>` — Session-service user socket (default: $XDG_RUNTIME_DIR/tisvlay/ session.sock). Missing socket just hides user profiles
+* `--site <SITE>` — Site chunk used in all key expressions
+
+  Default value: `main`
+* `--config <CONFIG>` — The tray's own file — notification settings (default: $XDG_CONFIG_HOME/tisvlay/tray.toml)
+
+
+
+## `tisvlay service greeter`
+
+The login-screen idle client, run inside the greeter session
+
+**Usage:** `tisvlay service greeter [OPTIONS]`
+
+###### **Options:**
+
+* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--site <SITE>` — Site chunk used in all key expressions
+
+  Default value: `main`

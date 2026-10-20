@@ -16,7 +16,8 @@ PartOf=gnome-session@gnome-login.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/tisvlay-greeter --socket /run/tisvlay/zenoh.sock
+ExecStart=/usr/bin/tisvlay service greeter --socket /run/tisvlay/zenoh.sock
+SyslogIdentifier=tisvlay-greeter
 # on-failure (not always): a clean exit — compositor disconnect at login, the
 # timeout-disabled early exit, or an unreadable socket — must not restart-loop.
 Restart=on-failure

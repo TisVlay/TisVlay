@@ -358,7 +358,11 @@ pub(crate) fn endpoints() -> &'static Endpoints {
 /// thin shim that calls this; the GUI's own integration tests reach
 /// the types and submodules behind this library crate directly.
 pub fn run() -> Result<()> {
-    tisvlay_runtime::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"], &[])?;
+    tisvlay_runtime::logging::init(
+        "tisvlay-gui",
+        &["tisvlay_gui=info", "zbus=warn", "slint=warn"],
+        &[],
+    )?;
 
     // Localization: one `tisvlay-gui` gettext catalog serves Slint's
     // `@tr()` and our Rust-side `gettextrs::gettext()` calls; installed

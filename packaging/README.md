@@ -7,7 +7,7 @@ High-level overview of every channel we ship through, why the build pipeline is 
 | Channel | Source of truth | Use case |
 |---|---|---|
 | **Nix flake / NixOS module** | [`nix/package.nix`](nix/package.nix), [`nix/module.nix`](nix/module.nix) | NixOS hosts, declarative service config. See [`nix/README.md`](nix/README.md) for the full deep-dive on the Nix derivation, hardening posture, VM test, and module options. |
-| **`.deb` / `.rpm` / `.pkg.tar.zst`** (this directory) | [`crates/tisvlay-daemon/Cargo.toml`](../crates/tisvlay-daemon/Cargo.toml) `[package.metadata.nfpm*]` + [`justfile`](../justfile) `package-*` recipes | Debian/Ubuntu, Fedora/RHEL, Arch Linux. One bundled package per format containing all five binaries plus systemd units, the GUI desktop entry, and the CLI's shell completions. |
+| **`.deb` / `.rpm` / `.pkg.tar.zst`** (this directory) | [`crates/tisvlay-cli/Cargo.toml`](../crates/tisvlay-cli/Cargo.toml) `[package.metadata.nfpm*]` + [`justfile`](../justfile) `package-*` recipes | Debian/Ubuntu, Fedora/RHEL, Arch Linux. One bundled package per format containing all five binaries plus systemd units, the GUI desktop entry, and the CLI's shell completions. |
 | **Test container** | [`docker/Dockerfile`](docker/Dockerfile) | Reproducible Ubuntu environment for verifying the build matrix without touching CI, and for smoke-testing the resulting `.rpm`/`.deb` against a clean glibc target. |
 | **Dev-shell native build** | [`flake.nix`](../flake.nix) `devShells.default` | `cargo run` / `cargo test` / `just check` directly from the Nix dev shell. **Not** what produces shippable binaries — see "Build pipeline" below. |
 
@@ -27,11 +27,11 @@ The rest of this document is about the second channel — the cross-distro `.deb
 ┌─────────────────────────────┐
 │ target/x86_64-unknown-linux │
 │        -gnu/dist/            │
-│   tisvlay-daemon, tisvlay,         │   ELF interpreter:
-│   tisvlay-session,           │     /lib64/ld-linux-x86-64.so.2
-│   tisvlay-tray, tisvlay-gui  │   glibc symbols: ≥ glibc_baseline
+│   tisvlay (CLI + services),  │   ELF interpreter:
+│   tisvlay-gui                │     /lib64/ld-linux-x86-64.so.2
+│                              │   glibc symbols: ≥ glibc_baseline
 └──────────────┬──────────────┘
-               │  cargo nfpm package -p tisvlay-daemon ... -f deb|rpm|archlinux
+               │  cargo nfpm package -p tisvlay-cli ... -f deb|rpm|archlinux
                ▼
 ┌─────────────────────────────┐
 │ tisvlay_<ver>_amd64.deb     │
@@ -68,7 +68,7 @@ Bumping the baseline is a one-line change in `glibc_baseline`. The 2.34 anchor w
 
 Both categories must be reflected in the per-format `depends` lists in [`crates/tisvlay-daemon/Cargo.toml`](../crates/tisvlay-daemon/Cargo.toml). The package manager only knows about declared deps; if the user installs the `.rpm` on a minimal headless distro, missing libGL/libwayland will surface at first GUI launch.
 
-The daemon, CLI, session, and tray binaries have no runtime deps beyond glibc. They ride along in the same package because shipping one bundle is simpler than four — if a future use case (servers, embedded) needs a daemon-only install, a `tisvlay-server` subpackage is straightforward to add.
+The `tisvlay` binary (the CLI plus the daemon, session, tray and greeter services) has no runtime deps beyond glibc. It shares a package with the GUI because shipping one bundle is simpler than two — if a future use case (servers, embedded) needs a daemon-only install, a `tisvlay-server` subpackage is straightforward to add.
 
 ## Why this approach (and not the obvious alternatives)
 

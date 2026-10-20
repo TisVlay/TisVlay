@@ -9,7 +9,8 @@ Type=simple
 # System socket explicit: the packaged daemon listens in /run/tisvlay,
 # not the per-user runtime dir the dev default points at. The per-user
 # socket (user profiles) keeps its $XDG_RUNTIME_DIR default.
-ExecStart=/usr/bin/tisvlay-session --system-socket /run/tisvlay/zenoh.sock
+ExecStart=/usr/bin/tisvlay service session --system-socket /run/tisvlay/zenoh.sock
+SyslogIdentifier=tisvlay-session
 Restart=on-failure
 RestartSec=5
 

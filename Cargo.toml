@@ -240,6 +240,7 @@ tisvlay = { path = "crates/tisvlay", version = "0.3.0" }
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }
 tisvlay-session = { path = "crates/tisvlay-session" }
 tisvlay-tray = { path = "crates/tisvlay-tray" }
+tisvlay-greeter = { path = "crates/tisvlay-greeter" }
 tisvlay-cli = { path = "crates/tisvlay-cli" }
 
 # Testing

@@ -15,7 +15,8 @@ PartOf=plasma-login-wayland.target
 [Service]
 Type=simple
 # The greeter user must be in the tisvlay group to reach the socket.
-ExecStart=/usr/bin/tisvlay-greeter --socket /run/tisvlay/zenoh.sock
+ExecStart=/usr/bin/tisvlay service greeter --socket /run/tisvlay/zenoh.sock
+SyslogIdentifier=tisvlay-greeter
 # on-failure (not always): a clean exit — compositor disconnect at login, or
 # the timeout-disabled early-exit — must not restart-loop.
 Restart=on-failure

@@ -1,4 +1,4 @@
-# Sample seed config for tisvlay-daemon (--seed). Provisioning
+# Sample seed config for the daemon (`tisvlay service daemon --seed`). Provisioning
 # semantics: re-applied on every start; an entry lands only when its
 # id is absent from the daemon's own file (daemon.toml), so runtime
 # edits stick, new declarations appear on restart, and a still-

@@ -15,6 +15,7 @@ mod logind;
 mod monitor;
 mod remote;
 mod screencast;
+pub mod service;
 mod store;
 pub mod sunshine;
 

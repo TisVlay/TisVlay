@@ -1,10 +1,11 @@
+//! `tisvlay service daemon`: the system daemon's command line, run from
+//! the `tisvlay` binary.
+
 use std::path::PathBuf;
 
-use clap::Parser;
-
-#[derive(Parser, Debug)]
-#[command(name = "tisvlay-daemon", about = "TisVlay system daemon")]
-struct Args {
+/// The daemon's flags, under `tisvlay service daemon`.
+#[derive(clap::Args, Debug)]
+pub struct Args {
     /// Unix socket to listen on (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
     #[arg(long)]
     socket: Option<PathBuf>,
@@ -67,21 +68,28 @@ fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("tisvlay-daemon.toml"))
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// Run the daemon until it shuts down, on a runtime of its own.
+pub fn main(args: Args) -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_daemon(args))
+}
+
+async fn run_daemon(args: Args) -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
     tisvlay_runtime::logging::init(
+        "tisvlay-daemon",
         &["tisvlay_daemon=info", "tisvlay_world=info", "zbus=warn"],
         &["netlink_packet_route"],
     )?;
-    let args = Args::parse();
     let store = if args.ephemeral {
         None
     } else {
         Some(args.config.unwrap_or_else(default_config_path))
     };
-    tisvlay_daemon::run(tisvlay_daemon::DaemonOptions {
+    crate::run(crate::DaemonOptions {
         socket: args
             .socket
             .unwrap_or_else(tisvlay_protocol::bootstrap::default_socket_path),
@@ -91,9 +99,9 @@ async fn main() -> anyhow::Result<()> {
         dpms_connector: args.dpms_connector,
         ssdp_port: args.ssdp_port,
         greeter: match (args.greeter_group, args.greeter_access) {
-            (Some(name), _) => tisvlay_daemon::GreeterAccess::Group(name),
-            (None, true) => tisvlay_daemon::GreeterAccess::Auto,
-            (None, false) => tisvlay_daemon::GreeterAccess::Disabled,
+            (Some(name), _) => crate::GreeterAccess::Group(name),
+            (None, true) => crate::GreeterAccess::Auto,
+            (None, false) => crate::GreeterAccess::Disabled,
         },
         seat_access: args.seat_access,
     })
