@@ -28,14 +28,15 @@ below), then attach via the project-root `.mcp.json`.
   `init_testing_backends` → `mcp_server::init()`). Absent the env var,
   init is a no-op — so a `slint/mcp` build without the port is inert.
 
-- **`SLINT_EMIT_DEBUG_INFO=1` must be set at *build time*, not just at
-  runtime.** The element tree is dead without it — `get_element_tree`
-  returns only the root and `query_element_descendants` returns empty
-  arrays. With `cargo run` (build + run in one), set both on the
-  invocation:
+- **Element ids must be compiled in.** The element tree is dead
+  without them: `get_element_tree` returns only the root and
+  `query_element_descendants` returns empty arrays. tisvlay-gui's
+  build.rs emits them for every non-release profile and overrides
+  `SLINT_EMIT_DEBUG_INFO`, so a `--release` build has none. Build with
+  the test (or dev) profile and set the port at runtime:
   ```sh
-  SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315 \
-      cargo run -p tisvlay-gui-app --features slint/mcp
+  SLINT_MCP_PORT=9315 \
+      cargo run --profile test -p tisvlay-gui-app --features slint/mcp
   ```
 
 - **Disabling Slint's `accessibility` default feature does NOT break
@@ -326,9 +327,8 @@ The MCP server must never ship in production builds, but it does *not*
 need a crate feature to gate it. `slint/mcp` is a dependency feature
 passed on the command line (`cargo run --features slint/mcp`), so a
 plain `cargo build` — and `--all-features`, since it's not one of our
-crate's own features — never compiles it in. The env vars
-(`SLINT_EMIT_DEBUG_INFO`, `SLINT_MCP_PORT`) then activate it at runtime;
-without them the built-in server is inert.
+crate's own features — never compiles it in. `SLINT_MCP_PORT` then
+activates it at runtime; without it the built-in server is inert.
 
 ## Operational rituals
 
@@ -337,7 +337,7 @@ The user-driven workflow that worked for me:
 1. **I rebuild + restart the GUI.** User does not. They only click in
    the live UI when I ask, since they aren't running my Bash for me.
 2. **After a code change, kill + relaunch via Bash:** `pkill -x
-   tisvlay-gui; sleep 1; SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315
+   tisvlay-gui; sleep 1; SLINT_MCP_PORT=9315
    ./target/debug/tisvlay-gui &> /tmp/gui-mcp.log &`
 3. **I screenshot via MCP, then read the PNG with the Read tool.**
    Visual feedback loop that doesn't require the user.

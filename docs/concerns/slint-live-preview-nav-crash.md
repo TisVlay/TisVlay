@@ -27,7 +27,7 @@ None for users — the interpreter never ships, and every packaged build (compil
 
 ### Mitigation
 
-- **Run compiled + MCP for navigation testing** — `GUI_LIVE=false GUI_MCP=true just gui-start`. MCP element IDs come from the global `SLINT_EMIT_DEBUG_INFO` (`.cargo/config.toml`), so the element tree, clicks, and screenshots all work against the compiled UI with no interpreter to crash. Reserve `GUI_LIVE=true` for hot-reloading layout/style edits you can observe without triggering a navigation callback.
+- **Run compiled + MCP for navigation testing** — `GUI_LIVE=false GUI_MCP=true just gui-start`. MCP element IDs come from tisvlay-gui's build.rs, which emits them for the test profile `gui-start` builds with, so the element tree, clicks, and screenshots all work against the compiled UI with no interpreter to crash. Reserve `GUI_LIVE=true` for hot-reloading layout/style edits you can observe without triggering a navigation callback.
 - **`visible:` instead of `if` (rejected).** The upstream workaround keeps the element in the tree and toggles `visible` rather than conditionally instantiating it; applied to the pane switch that means always-instantiating all four panes and toggling visibility — a real per-launch memory/build cost to placate a dev-only interpreter quirk, not worth contorting the shipped UI for.
 
 ### Re-evaluation triggers
