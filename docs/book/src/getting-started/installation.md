@@ -66,6 +66,48 @@ The repository's flake provides a NixOS module that wires up the daemon, user se
 }
 ```
 
+<details><summary id="prebuilt-binaries-optional">Prebuilt binaries (optional)</summary>
+
+By default the module builds tisvlay against your system's nixpkgs, so it compiles locally on every install and update. Each [release](https://github.com/TisVlay/TisVlay/releases) is also built by CI and published to the public `tisvlay.cachix.org` binary cache, for x86_64 and aarch64 Linux. To use those builds instead, pin the input to a release tag, trust the cache, and point the module at the flake's own package:
+
+```nix
+# flake.nix
+{
+  inputs.tisvlay.url = "github:TisVlay/TisVlay/vX.Y.Z"; # a release tag
+  # No `inputs.tisvlay.inputs.nixpkgs.follows`: it would change the build
+  # and miss the cache.
+
+  outputs = { nixpkgs, tisvlay, ... }: {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+      modules = [
+        tisvlay.nixosModules.default
+        ({ pkgs, ... }: {
+          nix.settings.substituters = [ "https://tisvlay.cachix.org" ];
+          nix.settings.trusted-public-keys = [
+            "tisvlay.cachix.org-1:pa9AnLlywwXfm4cwUzRD1afQh2VbGTbYF6a9iQgzb/g="
+          ];
+          services.tisvlay.enable = true;
+          services.tisvlay.package =
+            tisvlay.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        })
+      ];
+    };
+  };
+}
+```
+
+The `nix.settings` lines take effect once a switch activates them, so pass the cache on the command line for the first switch, or it builds locally:
+
+```sh
+sudo nixos-rebuild switch --flake .#your-host \
+  --option extra-substituters https://tisvlay.cachix.org \
+  --option extra-trusted-public-keys tisvlay.cachix.org-1:pa9AnLlywwXfm4cwUzRD1afQh2VbGTbYF6a9iQgzb/g=
+```
+
+Later switches pick the cache up from `nix.settings` alone.
+
+</details>
+
 `services.tisvlay.enable` runs `tisvlay-daemon` (as the `tisvlay` user), the `tisvlay-session` and `tisvlay-tray` user services, and the `tisvlay` CLI in `$PATH`. The module's options, all under `services.tisvlay`:
 
 | Option | What it does |

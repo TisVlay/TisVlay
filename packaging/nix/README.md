@@ -42,6 +42,15 @@ Authoritative option reference: read [`module.nix`](module.nix) directly — eve
 - `services.tisvlay.settings` — declarative seed config (TOML), rendered to the Nix store and passed as `--seed <path>`. Provisioning semantics: re-applied every start, ids already in the daemon-owned `/var/lib/tisvlay/daemon.toml` win, pairing still persists there — and a still-declared TV removed at runtime returns on the next start (drop the entry to drop the TV).
 - `services.tisvlay.user` / `group` — defaults `"tisvlay"` / `"tisvlay"`. `uid` / `gid` default to `null`, letting NixOS pick a system UID and pin it via `/var/lib/nixos/uid-map`. Override only if you need the UID fixed across multiple hosts.
 
+## Binary cache
+
+Release builds of the flake's package are in the public [tisvlay.cachix.org](https://app.cachix.org/organization/tisvlay/cache/tisvlay) cache (public key `tisvlay.cachix.org-1:pa9AnLlywwXfm4cwUzRD1afQh2VbGTbYF6a9iQgzb/g=`), for x86_64-linux and aarch64-linux.
+
+- **What's pushed:** `packages.${system}.default`, built from the flake's own `flake.lock`, and only its runtime closure. Build-only paths such as the vendored crate sources stay out, and so does anything cache.nixos.org already serves. Each build is pinned as `<tag>-<system>` (e.g. `v0.3.1-x86_64-linux`), keeping one revision, so eviction can't drop a release, and a re-pushed tag moves the pin to its new build. The module's default `package` builds against the host's nixpkgs, so it never matches the cache; using the cache is opt-in (the book's install guide, "Prebuilt binaries"). Users who keep the default build locally, as before.
+- **When:** the `nix-cache` job in [`release.yml`](../../.github/workflows/release.yml) runs on every `v*` tag push, beside the distro package build. Nothing on `main` or in pull requests is pushed.
+- **Access:** the push token (`CACHIX_AUTH_TOKEN`) lives in the `cachix` environment, which only admits `v*` tags. The job builds from cache.nixos.org alone and never substitutes from this cache, so it only writes to it.
+- **Budget:** Cachix's free open-source plan holds 5 GB and evicts the least recently used paths past that. Paths already on cache.nixos.org aren't stored again.
+
 ## How the package builds
 
 - `cargoLock.lockFile = ../../Cargo.lock` rather than `cargoHash`. Local workspace → no re-hashing needed on every dependency bump.

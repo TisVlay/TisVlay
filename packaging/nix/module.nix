@@ -47,7 +47,10 @@ in
       description = ''
         The tisvlay package to use. Defaults to `pkgs.tisvlay` when the
         flake's `overlays.default` is applied; otherwise falls back to
-        building from this module's sibling `package.nix`.
+        building from this module's sibling `package.nix`. Either way it
+        builds against the host's nixpkgs; set this to the flake's
+        `packages.''${system}.default` to use the release builds in the
+        tisvlay.cachix.org binary cache instead.
       '';
     };
 

@@ -73,8 +73,8 @@
         checks.vm = pkgs.callPackage ./packaging/nix/test.nix { };
 
         # Cargo unit + integration suite in the Nix sandbox. The package
-        # ships with doCheck = false (no binary cache means consumers build
-        # from source and shouldn't re-run CI's suite); this output keeps it
+        # ships with doCheck = false (most consumers build from source and
+        # shouldn't re-run CI's suite); this output keeps it
         # reachable via `nix flake check` and for a future nixpkgs submission.
         checks.tests = self.packages.${system}.tisvlay.overrideAttrs (_: {
           doCheck = true;

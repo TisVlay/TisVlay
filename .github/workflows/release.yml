@@ -1,7 +1,8 @@
 # Release lifecycle. Two phases, both keyed off the GitHub release you cut:
 #
 #   1. Push a `vX.Y.Z` tag      -> build the distro packages (.deb/.rpm/.pkg)
-#      and attach them to a DRAFT GitHub release. Download + test them.
+#      and attach them to a DRAFT GitHub release, and push the Nix package
+#      to tisvlay.cachix.org. Download + test them.
 #   2. Promote that release to a full (non-prerelease) release
 #      -> publish the crates to crates.io. crates.io is irreversible
 #      (yank-only), so it intentionally comes LAST, after you've verified
@@ -96,6 +97,62 @@ jobs:
             target/x86_64-unknown-linux-gnu/release/tisvlay-*.rpm
             target/x86_64-unknown-linux-gnu/release/tisvlay-*.pkg.tar.zst
             target/x86_64-unknown-linux-gnu/release/checksums-sha256.txt
+
+  # Phase 1 (tag push): build the flake's package and push it to the public
+  # tisvlay.cachix.org cache (packaging/nix/README.md "Binary cache").
+  #
+  # The push token lives in the `cachix` environment, which only admits `v*`
+  # tags (repo Settings → Environments), so a branch run can't push even if
+  # these triggers change. The job only writes to the cache: it builds from
+  # cache.nixos.org alone (`skipAddingSubstituter`), keeping this workflow's
+  # no-cache rule above.
+  nix-cache:
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-26.04
+            system: x86_64-linux
+          - runner: ubuntu-26.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    environment: cachix
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Nix
+        uses: cachix/install-nix-action@v31
+
+      # Installs the cachix CLI only: no substituter, no automatic push.
+      - name: Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: tisvlay
+          skipAddingSubstituter: true
+          skipPush: true
+
+      - name: Build
+        run: nix build --print-build-logs .#default
+
+      # Push the output's runtime closure, not every path the build made:
+      # the vendored crate sources are build-only and mostly missing from
+      # cache.nixos.org (docs/ideas/nix-cache-main-builds.md). Then pin it
+      # under the tag so cache churn can't evict it. Keeping one revision
+      # means a re-pushed tag moves the pin to the new build, and the old
+      # one falls to normal eviction.
+      - name: Push
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          PIN: ${{ github.ref_name }}-${{ matrix.system }}
+        run: |
+          out=$(nix build --no-link --print-out-paths .#default)
+          cachix push tisvlay "$out"
+          cachix pin tisvlay "$PIN" "$out" --keep-revisions 1
 
   # Phase 2 (release finalized): publish the crates to crates.io. Runs when
   # you promote the verified draft to a full release. release-plz publishes
