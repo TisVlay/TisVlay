@@ -602,6 +602,41 @@ component TvDetailHeader inherits Rectangle {
     }
 }
 
+// Edit mode of the CONFIG card: friendly name input + vendor
+// `UserInput` schema fields. The schema form is the same component the
+// pairing wizard uses, so per-field validation + server-side error
+// routing are shared.
+//
+// A component rather than an inline `if …: VerticalLayout` in the card:
+// Slint 1.18 under-measures wrapped text (the schema helpers) inside an
+// inline layout that has a sibling ahead of it, so the card ended before
+// the form did. See `SchemaFieldRow` in schema_form.slint.
+component TvConfigEditForm {
+    VerticalLayout {
+        spacing: Design.gap-row;
+
+        VerticalLayout {
+            spacing: Design.gap-form;
+            Text {
+                text: @tr("Friendly name");
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-weight: 500;
+            }
+            LineEditField {
+                placeholder-text: @tr("e.g. Living Room G4");
+                text <=> EditPane.name;
+                edited(v) => { EditPane.name-edited(v); }
+            }
+        }
+
+        SchemaForm {
+            schema-fields: EditPane.fields;
+            value-edited(i, v) => { EditPane.field-edited(i, v); }
+        }
+    }
+}
+
 component TvDetail inherits Rectangle {
     in property <TvViewModel> tv;
     in property <[string]> system-profiles;
@@ -974,35 +1009,7 @@ component TvDetail inherits Rectangle {
                                 dismissable: false;
                             }
 
-                            // Edit mode: friendly name input +
-                            // vendor `UserInput` schema fields. The
-                            // schema form is the same component the
-                            // pairing wizard uses, so per-field
-                            // validation + server-side error
-                            // routing are shared.
-                            if root.in-edit-mode: VerticalLayout {
-                                spacing: Design.gap-row;
-
-                                VerticalLayout {
-                                    spacing: Design.gap-form;
-                                    Text {
-                                        text: @tr("Friendly name");
-                                        color: Theme.text;
-                                        font-size: Design.font-meta;
-                                        font-weight: 500;
-                                    }
-                                    LineEditField {
-                                        placeholder-text: @tr("e.g. Living Room G4");
-                                        text <=> EditPane.name;
-                                        edited(v) => { EditPane.name-edited(v); }
-                                    }
-                                }
-
-                                SchemaForm {
-                                    schema-fields: EditPane.fields;
-                                    value-edited(i, v) => { EditPane.field-edited(i, v); }
-                                }
-                            }
+                            if root.in-edit-mode: TvConfigEditForm {}
 
                             // View mode: name + vendor `UserInput`
                             // rows as read-only labels. Same set

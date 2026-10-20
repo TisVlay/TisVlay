@@ -37,19 +37,14 @@ use crate::VENDOR_ID;
 /// fake that yields a scripted link with no hardware.
 #[async_trait]
 pub(crate) trait CecLinkOpener: Send + Sync + std::fmt::Debug {
-    /// Open a tx handle for `device`, claiming the adapter's physical and
-    /// Playback logical addresses.
-    ///
-    /// `osd_name` is the label the adapter advertises for itself — what the
-    /// TV shows for the PC's HDMI input; `None` advertises nothing. Only the
-    /// connection-holding opens pass it: the bare wake and the discovery
-    /// probe pass `None`, since they release the address before a TV would
-    /// poll for a name.
+    /// Open a tx handle for `device`, with the adapter holding a Playback
+    /// logical address. `claim` says whether this open takes the claim over
+    /// (and with which OSD name) or reuses one the adapter already holds.
     async fn open(
         &self,
         device: &str,
         physical_address: PhysicalAddress,
-        osd_name: Option<&str>,
+        claim: Claim<'_>,
     ) -> Result<Box<dyn CecLink>>;
 
     /// Open a *second*, follower-mode handle on the same device for
@@ -102,6 +97,59 @@ pub(crate) trait CecMonitor: Send + Sync + std::fmt::Debug {
     async fn recv(&self) -> Result<Option<(LogicalAddress, Message)>>;
 }
 
+/// What an open does with the adapter's logical-address claim.
+///
+/// The kernel keeps a claim, and the OSD name it carries, after every handle
+/// closes, so an open either takes the claim over or leaves it alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Claim<'a> {
+    /// Claim afresh, advertising this OSD name (`None`: no name): the label
+    /// the TV shows for the PC's HDMI input. The connection-holding opens
+    /// (`connect`, `wake_and_connect`) own the label and use this.
+    Advertise(Option<&'a str>),
+    /// Reuse a held claim and its name as they are, and claim without a
+    /// name only when the adapter holds none. The bare wake and the
+    /// discovery probe use this, so they never change the label a
+    /// connection advertised.
+    Keep,
+}
+
+/// The steps an open takes on the adapter, from its [`Claim`] and whether
+/// the adapter already holds a logical address.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ClaimPlan {
+    /// Use the held claim untouched.
+    Reuse,
+    /// Clear the held claim when `clear`, set `name`, then claim.
+    Claim { clear: bool, name: Option<String> },
+}
+
+impl ClaimPlan {
+    /// Plan an open. The name is clamped here (14-byte CEC field, empty →
+    /// nothing) as idempotent defense: config normalizes at parse, but this
+    /// seam takes any `&str`.
+    ///
+    /// **Load-bearing order:** a held claim is cleared *before* the name is
+    /// set. On a clear the kernel blanks its stored name and copies its
+    /// config back over linux-cec's, so a name set first is lost. That is
+    /// what happens when `set_logical_address` clears a held claim itself,
+    /// and the kernel then refuses the TV's `<Give OSD Name>`, so the input
+    /// reads "HDMI 1".
+    pub(crate) fn new(claim: Claim<'_>, claimed: bool) -> Self {
+        match claim {
+            Claim::Keep if claimed => Self::Reuse,
+            Claim::Keep => Self::Claim {
+                clear: false,
+                name: None,
+            },
+            Claim::Advertise(name) => Self::Claim {
+                clear: claimed,
+                name: name.and_then(crate::identity::clamp_osd_name),
+            },
+        }
+    }
+}
+
 /// Production [`CecLinkOpener`] backed by `linux_cec::AsyncDevice`.
 #[derive(Debug)]
 pub(crate) struct LinuxCecLinkOpener;
@@ -112,10 +160,10 @@ impl CecLinkOpener for LinuxCecLinkOpener {
         &self,
         device: &str,
         physical_address: PhysicalAddress,
-        osd_name: Option<&str>,
+        claim: Claim<'_>,
     ) -> Result<Box<dyn CecLink>> {
         Ok(Box::new(
-            LinuxCecLink::open(device, physical_address, osd_name).await?,
+            LinuxCecLink::open(device, physical_address, claim).await?,
         ))
     }
 
@@ -196,11 +244,19 @@ impl LinuxCecLink {
     async fn open(
         device: &str,
         physical_address: PhysicalAddress,
-        osd_name: Option<&str>,
+        claim: Claim<'_>,
     ) -> Result<Self> {
         let dev = AsyncDevice::open(device)
             .await
             .map_err(|e| map_open_err(device, e))?;
+        let claimed = !dev
+            .get_logical_addresses()
+            .await
+            .map_err(map_cec_err)?
+            .is_empty();
+        let ClaimPlan::Claim { clear, name } = ClaimPlan::new(claim, claimed) else {
+            return Ok(Self { device: dev });
+        };
         // Enable transmit before configuring any addresses.
         dev.set_initiator_mode(InitiatorMode::Enabled)
             .await
@@ -221,16 +277,17 @@ impl LinuxCecLink {
                 .await
                 .map_err(map_cec_err)?;
         }
+        if clear {
+            dev.clear_logical_addresses().await.map_err(map_cec_err)?;
+        }
         // Advertise our OSD name before claiming the logical address, so the
         // name rides the same log-address configuration the kernel then
-        // auto-answers <Give OSD Name> from. The clamp (14-byte CEC field,
-        // empty → nothing) is idempotent defense — config normalizes at
-        // parse, but this seam takes any &str. Set while still Unregistered,
-        // so this only writes the local config — no frame leaves before we
-        // are on the bus. Best-effort by design: the name is cosmetic, so a
-        // failure here logs and continues rather than costing the caller the
-        // whole connection (and with it all power/screen control).
-        if let Some(name) = osd_name.and_then(crate::identity::clamp_osd_name) {
+        // auto-answers <Give OSD Name> from. Set while unregistered, so this
+        // only writes the local config: no frame leaves before we are on the
+        // bus. Best-effort by design: the name is cosmetic, so a failure
+        // here logs and continues rather than costing the caller the whole
+        // connection (and with it all power/screen control).
+        if let Some(name) = name {
             tracing::debug!(device, osd_name = %name, "advertising CEC OSD name");
             if let Err(error) = dev.set_osd_name(&name).await {
                 tracing::warn!(
@@ -528,6 +585,9 @@ mod fake {
         /// argument — so tests observe the advertised bytes and clamp
         /// regressions surface in the advertise assertions.
         opened_with: Mutex<Vec<Option<String>>>,
+        /// The adapter's claim as the kernel holds it across opens: `None`
+        /// when unclaimed, else the OSD name it answers the TV with.
+        adapter: Mutex<Option<Option<String>>>,
     }
 
     impl FakeCecLinkOpener {
@@ -542,6 +602,7 @@ mod fake {
                 identity: None,
                 deny_permission: false,
                 opened_with: Mutex::new(Vec::new()),
+                adapter: Mutex::new(None),
             }
         }
 
@@ -556,6 +617,7 @@ mod fake {
                 identity: None,
                 deny_permission: false,
                 opened_with: Mutex::new(Vec::new()),
+                adapter: Mutex::new(None),
             }
         }
 
@@ -582,6 +644,7 @@ mod fake {
                 identity: None,
                 deny_permission: false,
                 opened_with: Mutex::new(Vec::new()),
+                adapter: Mutex::new(None),
             }
         }
 
@@ -596,6 +659,7 @@ mod fake {
                 identity: Some((osd_name.to_string(), vendor_id)),
                 deny_permission: false,
                 opened_with: Mutex::new(Vec::new()),
+                adapter: Mutex::new(None),
             }
         }
 
@@ -610,6 +674,7 @@ mod fake {
                 identity: None,
                 deny_permission: true,
                 opened_with: Mutex::new(Vec::new()),
+                adapter: Mutex::new(None),
             }
         }
 
@@ -625,12 +690,20 @@ mod fake {
                 identity: None,
                 deny_permission: false,
                 opened_with: Mutex::new(Vec::new()),
+                adapter: Mutex::new(None),
             }
         }
         /// The OSD name each `open` call would advertise (post-clamp), in
         /// order — `None` for an open that advertises nothing.
         pub fn opened_osd_names(&self) -> Vec<Option<String>> {
             self.opened_with.lock().clone()
+        }
+
+        /// The OSD name the adapter answers the TV's `<Give OSD Name>`
+        /// with after every open so far — `None` when unclaimed or claimed
+        /// without a name (the TV then shows its own input label).
+        pub fn adapter_osd_name(&self) -> Option<String> {
+            self.adapter.lock().clone().flatten()
         }
     }
 
@@ -640,18 +713,30 @@ mod fake {
             &self,
             device: &str,
             _physical_address: PhysicalAddress,
-            osd_name: Option<&str>,
+            claim: Claim<'_>,
         ) -> Result<Box<dyn CecLink>> {
-            // Record through the same clamp production advertises through,
-            // so the assertions see the on-bus bytes.
-            self.opened_with
-                .lock()
-                .push(osd_name.and_then(crate::identity::clamp_osd_name));
+            let mut adapter = self.adapter.lock();
+            let plan = ClaimPlan::new(claim, adapter.is_some());
+            // Record through the same plan production follows, so the
+            // assertions see the clamped, on-bus bytes.
+            self.opened_with.lock().push(match &plan {
+                ClaimPlan::Reuse => None,
+                ClaimPlan::Claim { name, .. } => name.clone(),
+            });
             if self.deny_permission {
                 return Err(Error::PermissionDenied {
                     path: device.to_string(),
                 });
             }
+            if let ClaimPlan::Claim { clear, name } = plan {
+                if clear {
+                    *adapter = None;
+                }
+                // `set_logical_address` clears a held claim itself first,
+                // and the kernel blanks the name we set on that clear.
+                *adapter = Some(if adapter.is_some() { None } else { name });
+            }
+            drop(adapter);
             let (osd_name, vendor_id) = self.identity.clone().unwrap_or_default();
             Ok(Box::new(FakeCecLink {
                 power: Mutex::new(self.initial),

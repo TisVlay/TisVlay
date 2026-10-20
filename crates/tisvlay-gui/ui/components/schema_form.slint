@@ -97,7 +97,66 @@ export component FieldRenderer {
 }
 
 // =============================================================================
-// SchemaForm — full list of `FieldRenderer` rows with aligned labels.
+// SchemaFieldRow — one field: label row above its `FieldRenderer`.
+// =============================================================================
+//
+// A component, not an inline layout in `SchemaForm`'s `for`, on purpose.
+// When the repeated element is an inline `VerticalLayout` whose children
+// include something ahead of the renderer (the label row), Slint 1.18
+// under-measures the height of the row's wrapped helper text: the form
+// reports less height than it draws, so its card ends early or the next
+// sibling overlaps its last rows. A repeated component is measured
+// correctly.
+component SchemaFieldRow {
+    in property <PairingFieldRow> field;
+    callback value-edited(string);
+
+    VerticalLayout {
+        spacing: Design.gap-form;
+        if root.field.field-type != "bool": HorizontalLayout {
+            spacing: Design.gap-stack;
+            alignment: start;
+            Text {
+                text: root.field.required ? root.field.label + " *" : root.field.label;
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-weight: 500;
+                vertical-alignment: center;
+            }
+            // "Auto-detected" trust badge — appears when the
+            // row's `value` came from autofill (SSDP discovery
+            // or manual-entry MAC enrichment) rather than the
+            // user typing. Cleared on first user edit by the
+            // Rust-side `field-value-edited` handler flipping
+            // `autofilled = false` for the row.
+            if root.field.autofilled: Rectangle {
+                background: Theme.success-soft;
+                border-color: Theme.success;
+                border-width: Design.border-thin;
+                border-radius: 4px;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    padding-top: 2px;
+                    padding-bottom: 2px;
+                    Text {
+                        text: @tr("Auto-detected");
+                        color: Theme.success-text;
+                        font-size: Design.font-mini;
+                        font-weight: 500;
+                    }
+                }
+            }
+        }
+        FieldRenderer {
+            field: root.field;
+            value-edited(v) => { root.value-edited(v); }
+        }
+    }
+}
+
+// =============================================================================
+// SchemaForm — full list of `SchemaFieldRow`s with aligned labels.
 // =============================================================================
 //
 // Drops in wherever a schema-driven form is needed. Bool fields
@@ -116,47 +175,9 @@ export component SchemaForm {
     VerticalLayout {
         spacing: Design.gap-row;
 
-        for f[i] in root.schema-fields: VerticalLayout {
-            spacing: Design.gap-form;
-            if f.field-type != "bool": HorizontalLayout {
-                spacing: Design.gap-stack;
-                alignment: start;
-                Text {
-                    text: f.required ? f.label + " *" : f.label;
-                    color: Theme.text;
-                    font-size: Design.font-meta;
-                    font-weight: 500;
-                    vertical-alignment: center;
-                }
-                // "Auto-detected" trust badge — appears when the
-                // row's `value` came from autofill (SSDP discovery
-                // or manual-entry MAC enrichment) rather than the
-                // user typing. Cleared on first user edit by the
-                // Rust-side `field-value-edited` handler flipping
-                // `autofilled = false` for the row.
-                if f.autofilled: Rectangle {
-                    background: Theme.success-soft;
-                    border-color: Theme.success;
-                    border-width: Design.border-thin;
-                    border-radius: 4px;
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        padding-top: 2px;
-                        padding-bottom: 2px;
-                        Text {
-                            text: @tr("Auto-detected");
-                            color: Theme.success-text;
-                            font-size: Design.font-mini;
-                            font-weight: 500;
-                        }
-                    }
-                }
-            }
-            FieldRenderer {
-                field: f;
-                value-edited(v) => { root.value-edited(i, v); }
-            }
+        for f[i] in root.schema-fields: SchemaFieldRow {
+            field: f;
+            value-edited(v) => { root.value-edited(i, v); }
         }
     }
 }
