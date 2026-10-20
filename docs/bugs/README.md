@@ -2,6 +2,7 @@
 
 ## Open
 
+- [Upstream: linux-cec re-claim drops the OSD name](upstream-linux-cec-reclaim-drops-osd-name.md) — draft for linux-cec, not filed; held until our workaround (`8f764d5`) soaks
 - [Session event handler `last_action` cache survives daemon reconnects](last-action-cache-survives-reconnect.md)
 - [`run_pairing_handshake` has no timeout on `wait_for_completion`](pair-tv-no-timeout.md)
 
