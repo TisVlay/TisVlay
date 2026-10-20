@@ -142,7 +142,11 @@
                 # cargo-hack checks each feature in isolation (`just hack`);
                 # every other gate builds with --all-features.
                 cargo-hack
-                cargo-llvm-cov
+                # nixpkgs' cargo-llvm-cov fails its own test suite (the
+                # instrumented test binaries segfault under nixpkgs' rustc),
+                # so the binary cache has no build of it; skip those tests.
+                # Drop the override once nixpkgs builds it again.
+                (pkgs.cargo-llvm-cov.overrideAttrs { doCheck = false; })
                 cargo-nextest
                 # cargo-shear finds unused and misplaced dependencies
                 # (`just shear`) by parsing sources; no build needed.
