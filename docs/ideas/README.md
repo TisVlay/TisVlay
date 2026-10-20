@@ -60,6 +60,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ci-nightly-build-knobs.md)
 - [Replace hardcoded sleeps in dispatch integration tests with poll-with-deadline](dispatch-test-event-driven-waits.md)
 - [Seat-watch regression coverage over a fake logind Seat surface](seat-watch-fake-logind-coverage.md)
+- [Cache `main` builds in tisvlay.cachix.org (closure-only push, release pins)](nix-cache-main-builds.md)
 
 ## Diagnostics & telemetry
 
