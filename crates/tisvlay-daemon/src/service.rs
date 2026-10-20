@@ -80,6 +80,7 @@ async fn run_daemon(args: Args) -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
     tisvlay_runtime::logging::init(
+        "tisvlay-daemon",
         &["tisvlay_daemon=info", "tisvlay_world=info", "zbus=warn"],
         &["netlink_packet_route"],
     )?;

@@ -12,7 +12,7 @@ TisVlay is configured with TOML, spread across a few files:
 
 Each service rewrites its own file as state changes, so changes you make in the app, the tray, or the command line are persisted without any file editing. You can also [edit a file by hand and reload it](#hand-editing-and-reloading).
 
-To declare TVs **declaratively** (for a reproducible or headless setup), give the daemon a **seed file** with `tisvlay-daemon --seed <file>`; on NixOS, the module's `settings` option writes it for you. The seed is re-applied on every start, but only for TVs whose `id` is absent from `daemon.toml`, so runtime edits stick, and a still-declared TV that you removed at runtime comes back (drop the seed entry to drop it). Omit an entry's `id` and it is derived deterministically from the entry's content.
+To declare TVs **declaratively** (for a reproducible or headless setup), give the daemon a **seed file** with `tisvlay service daemon --seed <file>`; on NixOS, the module's `settings` option writes it for you. The seed is re-applied on every start, but only for TVs whose `id` is absent from `daemon.toml`, so runtime edits stick, and a still-declared TV that you removed at runtime comes back (drop the seed entry to drop it). Omit an entry's `id` and it is derived deterministically from the entry's content.
 
 ## TV definitions
 

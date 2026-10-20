@@ -79,7 +79,7 @@ Per-protocol scope: this coalescing is within one discovery protocol (SSDP). A f
 Discovery's bind-port story exposes a pattern worth naming: **deployment-knob CLI flags stay out of the daemon's writable state**. The shape:
 
 - The daemon's writable state file (`/var/lib/tisvlay/daemon.toml`) is read/written by `tisvlay-daemon` itself — pairing persists vendor credentials there. Owned by the daemon, not by any declarative-config tool.
-- The CLI flag (`tisvlay-daemon --ssdp-port <PORT>`) overrides the built-in default (1901) — so an unset port still resolves to a known, firewall-targetable value. The NixOS module's `bindPort` option (itself defaulting to 1901) translates to an `--ssdp-port` arg on `ExecStart`. The state file stays fully daemon-owned; declarative deployment still controls the firewall-shaped knob.
+- The CLI flag (`tisvlay service daemon --ssdp-port <PORT>`) overrides the built-in default (1901) — so an unset port still resolves to a known, firewall-targetable value. The NixOS module's `bindPort` option (itself defaulting to 1901) translates to an `--ssdp-port` arg on `ExecStart`. The state file stays fully daemon-owned; declarative deployment still controls the firewall-shaped knob.
 
 `services.tisvlay.openFirewall = true` then adds the port to `networking.firewall.allowedUDPPorts`. The two options are asserted together — `openFirewall` without `bindPort` is rejected at NixOS evaluation time.
 

@@ -6,7 +6,8 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/tisvlay-tray --socket /run/tisvlay/zenoh.sock
+ExecStart=/usr/bin/tisvlay service tray --socket /run/tisvlay/zenoh.sock
+SyslogIdentifier=tisvlay-tray
 Restart=on-failure
 RestartSec=5
 

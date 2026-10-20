@@ -132,7 +132,7 @@ in
         "/etc/tisvlay/seed.toml"
       ];
       description = ''
-        Extra command-line arguments appended to `tisvlay-daemon`'s
+        Extra command-line arguments appended to `tisvlay service daemon`'s
         `ExecStart`. Use for one-off overrides the module does not
         expose directly.
       '';
@@ -153,7 +153,7 @@ in
         who wants the port opened need only set `openFirewall = true`
         — no need to also name the port.
 
-        Plumbed via tisvlay-daemon's `--ssdp-port` CLI flag.
+        Plumbed via `tisvlay service daemon --ssdp-port`.
 
         Set to `0` for an OS-chosen ephemeral port — a firewall rule
         then can't target a single port. Set to `null` to omit the flag
@@ -433,9 +433,12 @@ in
         RUST_LOG = cfg.logLevel;
       };
       serviceConfig = {
+        SyslogIdentifier = "tisvlay-daemon";
         ExecStart = lib.escapeShellArgs (
           [
-            (lib.getExe' cfg.package "tisvlay-daemon")
+            (lib.getExe' cfg.package "tisvlay")
+            "service"
+            "daemon"
             "--socket"
             systemSocket
             "--config"
@@ -564,9 +567,12 @@ in
         RUST_LOG = cfg.logLevel;
       };
       serviceConfig = {
+        SyslogIdentifier = "tisvlay-session";
         ExecStart = lib.escapeShellArgs (
           [
-            (lib.getExe' cfg.package "tisvlay-session")
+            (lib.getExe' cfg.package "tisvlay")
+            "service"
+            "session"
             "--system-socket"
             systemSocket
           ]
@@ -595,8 +601,11 @@ in
         RUST_LOG = cfg.logLevel;
       };
       serviceConfig = {
+        SyslogIdentifier = "tisvlay-tray";
         ExecStart = lib.escapeShellArgs [
-          (lib.getExe' cfg.package "tisvlay-tray")
+          (lib.getExe' cfg.package "tisvlay")
+          "service"
+          "tray"
           "--socket"
           systemSocket
         ];
@@ -622,8 +631,11 @@ in
             RUST_LOG = cfg.logLevel;
           };
           serviceConfig = {
+            SyslogIdentifier = "tisvlay-greeter";
             ExecStart = lib.escapeShellArgs [
-              (lib.getExe' cfg.package "tisvlay-greeter")
+              (lib.getExe' cfg.package "tisvlay")
+              "service"
+              "greeter"
               "--socket"
               systemSocket
             ];

@@ -14,6 +14,11 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, registry::
 /// Initialize tracing with journald support, EnvFilter directives, and
 /// per-crate bridge-level suppression for noisy `log::warn!()` callers.
 ///
+/// `identifier` — the journal's `SYSLOG_IDENTIFIER` for this service
+/// (`tisvlay-daemon`, …). Services share the `tisvlay` binary, so the
+/// process name can't tell their entries apart; `journalctl -t` filters
+/// by this.
+///
 /// `directives` — tracing filter strings like `"tisvlay_daemon=info"` /
 /// `"zenoh=warn"`. Applied via `EnvFilter`, the standard target+level
 /// matcher. RUST_LOG overrides these entirely when set.
@@ -54,7 +59,11 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, registry::
 /// without `default-features = false`, re-enabling the bridge in every
 /// binary. This file's approach is robust to that — the filter happens
 /// at the bridge regardless of who else turns the bridge on.
-pub fn init(directives: &[&str], ignored_log_crates: &[&str]) -> anyhow::Result<()> {
+pub fn init(
+    identifier: &str,
+    directives: &[&str],
+    ignored_log_crates: &[&str],
+) -> anyhow::Result<()> {
     let mut tracer = LogTracer::builder();
     for c in ignored_log_crates {
         tracer = tracer.ignore_crate((*c).to_string());
@@ -74,7 +83,9 @@ pub fn init(directives: &[&str], ignored_log_crates: &[&str]) -> anyhow::Result<
     };
 
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    let journald_layer = tracing_journald::layer().ok();
+    let journald_layer = tracing_journald::layer()
+        .ok()
+        .map(|layer| layer.with_syslog_identifier(identifier.to_owned()));
 
     let subscriber = tracing_subscriber::registry().with(env_filter);
     match (interactive, journald_layer) {

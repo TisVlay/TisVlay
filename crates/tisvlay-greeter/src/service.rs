@@ -26,7 +26,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 async fn run_greeter(args: Args) -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
-    tisvlay_runtime::logging::init(&["tisvlay_greeter=info"], &[])?;
+    tisvlay_runtime::logging::init("tisvlay-greeter", &["tisvlay_greeter=info"], &[])?;
     let socket = args
         .socket
         .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path);

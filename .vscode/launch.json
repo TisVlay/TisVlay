@@ -4,11 +4,11 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug: daemon (session bus)",
+            "name": "Debug: daemon",
             "cargo": {
-                "args": ["build", "--bin", "tisvlayd"]
+                "args": ["build", "--profile", "test", "--bin", "tisvlay"]
             },
-            "args": ["--session"],
+            "args": ["service", "daemon", "--ephemeral"],
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug,zbus=warn,rustls=warn,tungstenite=warn"
@@ -19,9 +19,9 @@
             "request": "launch",
             "name": "Debug: session service",
             "cargo": {
-                "args": ["build", "--bin", "tisvlay-session"]
+                "args": ["build", "--profile", "test", "--bin", "tisvlay"]
             },
-            "args": ["--user"],
+            "args": ["service", "session", "--ephemeral"],
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug,zbus=warn"
@@ -32,9 +32,9 @@
             "request": "launch",
             "name": "Debug: tray",
             "cargo": {
-                "args": ["build", "--bin", "tisvlay-tray"]
+                "args": ["build", "--profile", "test", "--bin", "tisvlay"]
             },
-            "args": ["--user"],
+            "args": ["service", "tray"],
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug,zbus=warn,ksni=warn"
@@ -45,9 +45,9 @@
             "request": "launch",
             "name": "Debug: CLI status",
             "cargo": {
-                "args": ["build", "--bin", "tisvlay"]
+                "args": ["build", "--profile", "test", "--bin", "tisvlay"]
             },
-            "args": ["--user", "status"],
+            "args": ["status"],
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug,zbus=warn"
@@ -56,11 +56,11 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug: CLI mute toggle",
+            "name": "Debug: CLI list",
             "cargo": {
-                "args": ["build", "--bin", "tisvlay"]
+                "args": ["build", "--profile", "test", "--bin", "tisvlay"]
             },
-            "args": ["--user", "mute", "toggle"],
+            "args": ["list"],
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug,zbus=warn"

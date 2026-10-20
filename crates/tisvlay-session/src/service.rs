@@ -69,7 +69,11 @@ pub unsafe fn main(args: Args) -> anyhow::Result<()> {
 async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
-    tisvlay_runtime::logging::init(&["tisvlay_session=info", "zbus=warn"], &[])?;
+    tisvlay_runtime::logging::init(
+        "tisvlay-session",
+        &["tisvlay_session=info", "zbus=warn"],
+        &[],
+    )?;
     let store = if args.ephemeral {
         None
     } else {

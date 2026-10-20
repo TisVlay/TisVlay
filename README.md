@@ -87,6 +87,8 @@ Daemon -.->|WebSocket / WoL| TV2
 | `tisvlay-gui` | Device management, profile editor, settings panel |
 | `tisvlay-greeter` |  Login greeter idle detection absent of active session |
 
+The CLI and the four services ship as one `tisvlay` binary (the services run as `tisvlay service daemon` and so on, each from its own systemd unit); the GUI is `tisvlay-gui`.
+
 <!-- ANCHOR_END: overview -->
 
 ## 📖 Documentation

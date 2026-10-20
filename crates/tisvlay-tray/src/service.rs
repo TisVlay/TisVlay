@@ -36,7 +36,11 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 async fn run_tray(args: Args) -> anyhow::Result<()> {
     // journald when non-TTY (systemd service), stderr when interactive;
     // RUST_LOG overrides these defaults entirely (see the justfile).
-    tisvlay_runtime::logging::init(&["tisvlay_tray=info", "zbus=warn", "ksni=warn"], &[])?;
+    tisvlay_runtime::logging::init(
+        "tisvlay-tray",
+        &["tisvlay_tray=info", "zbus=warn", "ksni=warn"],
+        &[],
+    )?;
     crate::run(crate::TrayOptions {
         system_socket: args
             .socket

@@ -31,8 +31,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   cargoLock.lockFile = ../../Cargo.lock;
 
   # tisvlay-gui dlopens Slint's femtovg + winit runtime libs;
-  # tisvlay-session and tisvlay-greeter dlopen libwayland-client.so via
-  # wayland-sys for their ext-idle-notify idle watchers. patchelf doesn't
+  # `tisvlay`'s session and greeter services dlopen libwayland-client.so
+  # via wayland-sys for their ext-idle-notify idle watchers. patchelf doesn't
   # see dlopen targets, so they don't end up on the default rpath — splice
   # them on explicitly in postFixup and disable the default patchelf pass
   # so it doesn't strip them back out. The session/greeter technically only
@@ -162,8 +162,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   postFixup = ''
     patchelf --add-rpath "${lib.makeLibraryPath finalAttrs.rpathLibs}" \
       $out/bin/tisvlay-gui \
-      $out/bin/tisvlay-session \
-      $out/bin/tisvlay-greeter
+      $out/bin/tisvlay
   '';
   dontPatchELF = true;
 

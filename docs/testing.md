@@ -243,7 +243,7 @@ config = { address = "mock://den" }
 ```
 
 ```bash
-cargo run --bin tisvlay-daemon -- --seed docs/configs/seed.toml
+cargo run --bin tisvlay -- service daemon --seed docs/configs/seed.toml
 # or, with the dev defaults (socket, site, state dir):
 just daemon-start
 ```

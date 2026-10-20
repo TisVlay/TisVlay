@@ -80,7 +80,7 @@ systemctl --global enable tisvlay-session.service tisvlay-tray.service 2>/dev/nu
 # hangs off gnome-session@gnome-login.target, active only inside a GDM
 # greeter session, so the --global symlink is inert under other display
 # managers. The greeter reaches the socket through the daemon's
-# greeter-group ACL (tisvlay-daemon --greeter-access) — no group edit here,
+# greeter-group ACL (`tisvlay service daemon --greeter-access`) — no group edit here,
 # since the modern GDM greeter is a dynamic-userdb account /etc/group can't
 # reach.
 systemctl --global enable tisvlay-greeter-gdm.service 2>/dev/null || true

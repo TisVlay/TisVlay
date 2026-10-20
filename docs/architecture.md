@@ -13,6 +13,8 @@ The current (v0.3.0+) architecture: a **bevy_ecs world** owns every daemon state
 | `tisvlay-gui` | Slint settings window | connect-only peers → both sockets |
 | `tisvlay` (CLI) | Pure zenoh client | client → both sockets (one-shot, fails fast) |
 
+The daemon, session, tray and greeter aren't binaries of their own: each runs from the CLI's `tisvlay` binary as `tisvlay service <name>` (the service crates are libraries with a `service` module holding their flags and entry point). Their systemd units and journal identifiers keep the names above. One binary links zenoh, tokio, zbus and the SDK once instead of five times: under the `dist` profile the CLI and the four services went from 45.4 MiB as five binaries to 17.0 MiB as one. The GUI stays separate because it alone links Slint and the system graphics libraries (fontconfig, freetype, libpng and others), which every CLI call would otherwise load.
+
 ## Two-socket topology
 
 Zenoh peer routing is transitive: one connected mesh would let any client read any key, so separate sockets alone don't reproduce D-Bus's session isolation. The design is an **application-level gateway**:
