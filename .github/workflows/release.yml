@@ -111,9 +111,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-26.04
             system: x86_64-linux
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04-arm
             system: aarch64-linux
     runs-on: ${{ matrix.runner }}
     environment: cachix

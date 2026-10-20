@@ -23,7 +23,7 @@ NixOS users build `tisvlay` from source today: the flake has no binary cache, so
 ### 2. CI: push the release build (`release.yml`)
 
 - [x] A `nix-cache` job in phase 1 (tag push), next to `build`, so the cache is warm while the draft release is verified. The maintainer can then test the cached install before promoting the release. A tag moved to a later commit before promotion just pushes the new build alongside the old one; the cache keys on store paths, not tags.
-- [x] A runner matrix of `ubuntu-latest` and `ubuntu-24.04-arm`, covering x86_64-linux and aarch64-linux.
+- [x] A runner matrix of `ubuntu-26.04` and `ubuntu-26.04-arm`, covering x86_64-linux and aarch64-linux.
 - [x] No cache poisoning: `release.yml` restores no caches, and the job keeps that rule. With `skipAddingSubstituter` it never substitutes from our own cache, so it only writes to it, and only tag runs in the `cachix` environment hold the token.
 - [x] **Closure-only push.** cachix-action's automatic push would upload every path the job built, including about 580 MiB per architecture of vendored crate sources that cache.nixos.org lacks; its `pushFilter` is a deny-list regex that can't name them. Instead the action only installs the CLI (`skipPush`), and a step pushes the output's runtime closure with `cachix push` (measurements in [docs/ideas/nix-cache-main-builds.md](../ideas/nix-cache-main-builds.md)).
 - [x] **Release pins.** Each build is pinned as `<tag>-<system>` with `--keep-revisions 1`: eviction can't drop a release, and a tag re-pushed to a new commit moves its pin to the new build, leaving the old one to normal eviction.
