@@ -15,6 +15,9 @@ use zenoh::sample::{Sample, SampleKind};
 pub struct TvView {
     pub name: String,
     pub connected: bool,
+    /// Awake, per `PowerState::is_awake` (the GUI's and CLI's rule too),
+    /// not the payload's broader `is_on`: a remote-off LG in
+    /// `activestandby` is dark and must offer wake, not power-off.
     pub is_on: bool,
     pub is_screen_on: bool,
     pub volume: Option<u8>,
@@ -90,7 +93,7 @@ impl Mirror {
                 let Some(power) = decode::<payload::Power>(sample) else {
                     return false;
                 };
-                view.is_on = power.is_on;
+                view.is_on = power.state.is_awake();
                 view.is_screen_on = power.is_screen_on;
             }
             p if p == payload::Volume::PATH => {

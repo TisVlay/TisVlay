@@ -1,6 +1,6 @@
 # GUI and tray show a remote-off LG TV as powered on
 
-**Status:** open.
+**Status:** closed (2026-10-19). A new `PowerState::is_awake` (active, screensaver, screen-off) names the CLI's rule, and the GUI, tray and CLI all build their Power state from it; `needs_wake_preflight` is now its negation. The `state/power` payload is unchanged, so the fix isn't wire-visible. The core table test pins every variant's `is_awake` verdict.
 
 After the user turns an LG TV off with its remote, the TV reports `activestandby` for a while before settling into deep standby: the network card stays up, the panel is dark and the red standby LED is on (see [LG firmware quirks](../lg/firmware-quirks.md)). `PowerState::is_on` counts `ActiveStandby` as on, and both clients build their Power state from it:
 

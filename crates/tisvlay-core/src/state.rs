@@ -133,20 +133,28 @@ impl PowerState {
         )
     }
 
-    /// Whether a `screen_on` must ride the power path first: in every
-    /// state outside this whitelist, screen commands stall or
-    /// false-ACK (`ActiveStandby` acknowledges without ever lighting
-    /// the panel), so the reliable-dispatch tier wakes the TV instead
-    /// of retrying a command it cannot win.
+    /// Whether the TV is awake: usable without a wake, so a client's
+    /// power switch reads on. Narrower than [`Self::is_on`], which keeps
+    /// `ActiveStandby` on because its NIC is alive; but that is LG's
+    /// dark substate after a remote power-off, and a switch keyed on
+    /// `is_on` would offer power-off for a TV the user can see is off.
     ///
-    /// `ScreenOff` is deliberately *not* wake-needy — a lock-screen
-    /// blank leaves the cache there, and a plain `screen_on` suffices;
-    /// waking would be pure added latency. The whitelist form keeps
+    /// `ScreenOff` is awake: a lock-screen blank leaves the cache there,
+    /// and a plain `screen_on` lights it. The whitelist form keeps
     /// `Unknown` and future `#[non_exhaustive]` variants on the safe
-    /// fall-through the enum docs prescribe: treat as wake-preflight
-    /// needed.
+    /// fall-through the enum docs prescribe: not awake, so they wake.
+    pub fn is_awake(self) -> bool {
+        matches!(self, Self::Active | Self::ScreenSaver | Self::ScreenOff)
+    }
+
+    /// Whether a `screen_on` must ride the power path first: in every
+    /// state that isn't [awake](Self::is_awake), screen commands stall
+    /// or false-ACK (`ActiveStandby` acknowledges without ever lighting
+    /// the panel), so the reliable-dispatch tier wakes the TV instead
+    /// of retrying a command it cannot win. `ScreenOff` is deliberately
+    /// *not* wake-needy: waking would be pure added latency.
     pub fn needs_wake_preflight(self) -> bool {
-        !matches!(self, Self::Active | Self::ScreenSaver | Self::ScreenOff)
+        !self.is_awake()
     }
 }
 
@@ -286,28 +294,31 @@ mod tests {
         );
     }
 
-    /// Pin the wake-preflight set variant by variant: only the states
-    /// where a screen command can actually land (`Active`,
-    /// `ScreenSaver`, `ScreenOff`) skip the power path. `Unknown`
-    /// pins the `#[non_exhaustive]` fall-through — a state the daemon
-    /// can't vouch for must wake rather than retry into a void — and
-    /// `ScreenOff` pins the lock-screen case that must *not* wake.
+    /// Pin the awake set variant by variant, and the wake-preflight set
+    /// as its complement: only the states where a screen command can
+    /// actually land (`Active`, `ScreenSaver`, `ScreenOff`) read awake
+    /// and skip the power path. `ActiveStandby` pins the remote-off LG
+    /// the clients' power switches must read as off, `Unknown` the
+    /// `#[non_exhaustive]` fall-through (a state the daemon can't vouch
+    /// for must wake rather than retry into a void), and `ScreenOff`
+    /// the lock-screen case that must *not* wake.
     #[test]
-    fn wake_preflight_set_is_pinned() {
-        for (state, needs_wake) in [
-            (PowerState::Active, false),
-            (PowerState::ScreenSaver, false),
-            (PowerState::ScreenOff, false),
-            (PowerState::ActiveStandby, true),
-            (PowerState::Standby, true),
-            (PowerState::Suspend, true),
-            (PowerState::WarmingUp, true),
-            (PowerState::CoolingDown, true),
-            (PowerState::Unknown, true),
+    fn awake_and_wake_preflight_sets_are_pinned() {
+        for (state, awake) in [
+            (PowerState::Active, true),
+            (PowerState::ScreenSaver, true),
+            (PowerState::ScreenOff, true),
+            (PowerState::ActiveStandby, false),
+            (PowerState::Standby, false),
+            (PowerState::Suspend, false),
+            (PowerState::WarmingUp, false),
+            (PowerState::CoolingDown, false),
+            (PowerState::Unknown, false),
         ] {
+            assert_eq!(state.is_awake(), awake, "is_awake mismatch for {state:?}");
             assert_eq!(
                 state.needs_wake_preflight(),
-                needs_wake,
+                !awake,
                 "needs_wake_preflight mismatch for {state:?}",
             );
         }
