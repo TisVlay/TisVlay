@@ -4,4 +4,5 @@
 )]
 
 mod completions;
+mod services;
 mod workflows;
