@@ -118,6 +118,7 @@ Vendor/protocol quirks (unchanged by the rewrite):
 - SSAP subscription updates carry the original request ID, not the URI — routing uses a request-ID→URI map
 - LG pairing is two-phase (`Response` prompt shown → `Registered` accepted); see docs/lg/firmware-quirks.md
 - CEC: Connected ≠ powered (reachable in standby); `power_on` = Image View On wake-in-place; INPUT capability deliberately not advertised — see docs/cec/protocol.md
+- CEC: the kernel keeps a logical-address claim after the handle closes, and clearing it blanks the OSD name — so the connection-holding opens clear before setting the name, and the probe/bare wake reuse a held claim (`link::Claim`)
 - SSDP discovery pins source port 1901 to match the firewall rule (docs/firewall.md)
 - KWin on Wayland writes DPMS-off through to the legacy sysfs `dpms` connector attribute, so the daemon polls it without a per-DE compositor protocol; the watcher gates on `status == connected`
 

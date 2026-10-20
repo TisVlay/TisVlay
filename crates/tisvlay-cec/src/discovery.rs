@@ -24,7 +24,7 @@ use linux_cec::PhysicalAddress;
 use tisvlay_core::{DiscoveredTv, Error, Result, TvDiscovery};
 use tracing::{debug, warn};
 
-use crate::link::{CecLinkOpener, LinuxCecLinkOpener};
+use crate::link::{CecLinkOpener, Claim, LinuxCecLinkOpener};
 
 /// The physical address the probe claims when opening a node — the same
 /// `1.0.0.0` (HDMI 1) default the config uses; it only matters for the
@@ -76,9 +76,9 @@ impl TvDiscovery for CecDiscovery {
             // or a TV that answers nothing leaves the bare entry intact.
             let link = match self
                 .opener
-                // A scan must not momentarily claim a name on every node it
-                // probes — it releases the address before a TV would poll.
-                .open(&tv.address, probe_physical_address(), None)
+                // A scan must not name the adapter, nor rename one a
+                // connection named: it reuses a held claim as is.
+                .open(&tv.address, probe_physical_address(), Claim::Keep)
                 .await
             {
                 Ok(link) => link,
@@ -180,6 +180,7 @@ mod tests {
     use super::*;
     use crate::link::FakeCecLinkOpener;
     use linux_cec::operand::PowerStatus;
+    use tisvlay_core::{TvConnector, VendorConfig};
 
     /// An opener that succeeds but reports no identity — the probe then
     /// leaves each node as its bare `/dev/cecN` entry.
@@ -279,6 +280,45 @@ mod tests {
             vec![None],
             "the discovery probe advertises nothing",
         );
+    }
+
+    /// A connector and a discovery sharing one fake adapter, whose claim
+    /// persists across their opens the way the kernel's does.
+    fn shared_adapter() -> (
+        Arc<FakeCecLinkOpener>,
+        crate::CecConnector,
+        CecDiscovery,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::File::create(tmp.path().join("cec0")).expect("create fixture");
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
+        let connector = crate::CecConnector::with_opener(opener.clone());
+        let discovery = CecDiscovery::with_dir_and_opener(tmp.path(), opener.clone());
+        (opener, connector, discovery, tmp)
+    }
+
+    #[tokio::test]
+    async fn connect_after_a_probe_advertises_its_name() {
+        // The pairing wizard's scan claims the adapter first, and the kernel
+        // keeps that claim after the probe closes. The pair's connect must
+        // still leave the adapter answering with its name; re-claiming over
+        // the probe's claim used to blank it, and the input read "HDMI 1".
+        let (opener, connector, discovery, _tmp) = shared_adapter();
+        discovery.discover(Duration::ZERO).await.expect("discover");
+        let cfg: VendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        connector.connect(&cfg).await.expect("connect");
+        assert_eq!(opener.adapter_osd_name().as_deref(), Some("TisVlay"));
+    }
+
+    #[tokio::test]
+    async fn probe_and_wake_keep_a_connections_name() {
+        let (opener, connector, discovery, _tmp) = shared_adapter();
+        let cfg: VendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        connector.connect(&cfg).await.expect("connect");
+        discovery.discover(Duration::ZERO).await.expect("discover");
+        connector.wake(&cfg).await.expect("wake");
+        assert_eq!(opener.adapter_osd_name().as_deref(), Some("TisVlay"));
     }
 
     #[tokio::test]

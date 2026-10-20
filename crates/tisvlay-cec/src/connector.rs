@@ -21,7 +21,7 @@ use tracing::instrument;
 
 use crate::config::{CecVendorConfig, DEFAULT_OSD_NAME};
 use crate::connection::CecConnection;
-use crate::link::{CecLinkOpener, LinuxCecLinkOpener};
+use crate::link::{CecLinkOpener, Claim, LinuxCecLinkOpener};
 
 /// Delay between post-wake power-status probes, and how many to try before
 /// giving up. A CEC TV can take a second or more to report `On` after
@@ -72,13 +72,15 @@ fn reachable(status: PowerStatus) -> bool {
     matches!(status, PowerStatus::On | PowerStatus::ToOn)
 }
 
-/// The OSD name a connection-holding open advertises: the configured name
-/// when advertising is on, nothing when it's off. (The bare wake and the
-/// discovery probe never advertise — they pass `None` directly.)
-fn advertised_name(config: &CecVendorConfig) -> Option<&str> {
-    config
-        .advertise_osd_name
-        .then_some(config.osd_name.as_str())
+/// The claim a connection-holding open makes: advertising the configured
+/// name when advertising is on, no name when it's off. (The bare wake and
+/// the discovery probe pass [`Claim::Keep`] directly.)
+fn advertising_claim(config: &CecVendorConfig) -> Claim<'_> {
+    Claim::Advertise(
+        config
+            .advertise_osd_name
+            .then_some(config.osd_name.as_str()),
+    )
 }
 
 #[async_trait]
@@ -112,7 +114,7 @@ impl TvConnector for CecConnector {
             .open(
                 &config.device,
                 config.physical_address.to_linux(),
-                advertised_name(&config),
+                advertising_claim(&config),
             )
             .await?;
         // Probe power to confirm the TV actually answers on the bus — a
@@ -145,7 +147,11 @@ impl TvConnector for CecConnector {
         let config = vendor_config.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
         let link = self
             .opener
-            .open(&config.device, config.physical_address.to_linux(), None)
+            .open(
+                &config.device,
+                config.physical_address.to_linux(),
+                Claim::Keep,
+            )
             .await?;
         link.power_on().await
     }
@@ -161,7 +167,7 @@ impl TvConnector for CecConnector {
             .open(
                 &config.device,
                 config.physical_address.to_linux(),
-                advertised_name(&config),
+                advertising_claim(&config),
             )
             .await?;
         // Image View On is fire-and-forget, a freshly-opened adapter is
@@ -188,7 +194,7 @@ impl TvConnector for CecConnector {
                         .open(
                             &config.device,
                             config.physical_address.to_linux(),
-                            advertised_name(&config),
+                            advertising_claim(&config),
                         )
                         .await
                     {
@@ -527,6 +533,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconnect_keeps_advertising_the_name() {
+        // The kernel keeps the first connect's claim after it closes, so
+        // the second connect re-claims over it.
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
+        let conn = CecConnector::with_opener(opener.clone());
+        let cfg: VendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        conn.connect(&cfg).await.expect("connect");
+        conn.connect(&cfg).await.expect("reconnect");
+        assert_eq!(opener.adapter_osd_name().as_deref(), Some("TisVlay"));
+    }
+
+    #[tokio::test]
+    async fn connect_with_advertising_off_drops_a_held_name() {
+        let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
+        let conn = CecConnector::with_opener(opener.clone());
+        let named: VendorConfig = toml::from_str(r#"device = "/dev/cec0""#).unwrap();
+        conn.connect(&named).await.expect("connect");
+        let off = VendorConfig::from_typed(&CecVendorConfig {
+            advertise_osd_name: false,
+            ..Default::default()
+        })
+        .unwrap();
+        conn.connect(&off).await.expect("reconnect");
+        assert_eq!(
+            opener.adapter_osd_name(),
+            None,
+            "turning advertising off must not leave the old name claimed",
+        );
+    }
+
+    #[tokio::test]
     async fn connect_advertises_default_tisvlay_when_unset() {
         let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::On));
         let conn = CecConnector::with_opener(opener.clone());
@@ -542,8 +579,8 @@ mod tests {
 
     #[tokio::test]
     async fn wake_advertises_nothing_even_with_a_name_configured() {
-        // The bare wake opens, fires Image View On, and drops — it releases
-        // the logical address before the TV would poll, so it names nothing.
+        // The bare wake opens, fires Image View On, and drops. It doesn't
+        // hold the connection, so it doesn't own the label.
         let opener = Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby));
         let conn = CecConnector::with_opener(opener.clone());
         let cfg = VendorConfig::from_typed(&CecVendorConfig {
