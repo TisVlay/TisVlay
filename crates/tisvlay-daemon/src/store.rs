@@ -36,6 +36,21 @@ fn read_for_reload(path: &Path) -> Result<StoreSnapshot, WireError> {
 /// Debounce window between a snapshot arriving and the write landing.
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
+/// Whether `snapshot` adds a TV or changes one's vendor config relative to
+/// `disk`. Those carry credentials, like the client key a pairing just
+/// minted, and skip the debounce: a crash in the window would lose the
+/// key and force a re-pair. That includes any panic in the CI-built
+/// binaries, which abort (Cargo.toml's `dist` profile). Such edits are
+/// rare, so writing each one costs nothing.
+fn changes_vendor_config(snapshot: &StoreSnapshot, disk: &StoreSnapshot) -> bool {
+    snapshot.tv.iter().any(|tv| {
+        disk.tv
+            .iter()
+            .find(|on_disk| on_disk.id == tv.id)
+            .is_none_or(|on_disk| on_disk.config != tv.config)
+    })
+}
+
 /// A request to apply a hand edit of the store file (the reload rpc, or
 /// SIGHUP with no reply).
 #[derive(Debug)]
@@ -64,8 +79,13 @@ pub(crate) async fn store_task(
         tokio::select! {
             msg = snapshots.recv() => match msg {
                 Some(StoreMsg::Persist(snapshot)) => {
+                    let delay = if changes_vendor_config(&snapshot, &base) {
+                        Duration::ZERO
+                    } else {
+                        DEBOUNCE
+                    };
                     pending = Some(*snapshot);
-                    due = Instant::now().checked_add(DEBOUNCE);
+                    due = Instant::now().checked_add(delay);
                 }
                 Some(StoreMsg::Reloaded(applied)) => {
                     reloading = false;
@@ -256,6 +276,46 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         await_contains(&path, "Hand edit").await;
+        drop(persist_tx);
+        task.await.unwrap();
+    }
+
+    /// A new TV (a pairing's fresh credentials) is written at once, while
+    /// an edit that leaves every vendor config alone still waits out the
+    /// debounce.
+    #[tokio::test]
+    async fn vendor_config_changes_skip_the_debounce() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.toml");
+        let base = StoreSnapshot::default();
+        assert!(write_store(&path, &base));
+        let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
+        let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+        let (_reload_tx, reload_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(store_task(path.clone(), base, persist_rx, reload_rx, world));
+
+        let paired = one_tv("Paired");
+        let sent = Instant::now();
+        persist_tx
+            .send(StoreMsg::Persist(Box::new(paired.clone())))
+            .unwrap();
+        await_contains(&path, "Paired").await;
+        assert!(
+            sent.elapsed() < DEBOUNCE,
+            "the new TV waited out the debounce"
+        );
+
+        let mut renamed = paired;
+        renamed.tv[0].name = "Renamed".into();
+        persist_tx
+            .send(StoreMsg::Persist(Box::new(renamed)))
+            .unwrap();
+        tokio::time::sleep(DEBOUNCE / 3).await;
+        assert!(
+            !std::fs::read_to_string(&path).unwrap().contains("Renamed"),
+            "a rename skipped the debounce"
+        );
+        await_contains(&path, "Renamed").await;
         drop(persist_tx);
         task.await.unwrap();
     }

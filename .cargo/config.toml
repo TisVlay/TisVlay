@@ -8,14 +8,10 @@
 # the just-invoked subset) or workflow `env:` blocks (which only
 # catch CI).
 #
-# `SLINT_EMIT_DEBUG_INFO=1` makes Slint's compiler emit element-id
-# info into the generated Rust code, which `i-slint-backend-testing`
-# needs for `find_by_element_id` / `accessible_id()` queries. Without
-# it those finders silently return empty iterators and tests look
-# like they "found nothing." See `crates/tisvlay-gui-app/tests/` and
-# `crates/tisvlay-harness/tests/gui_*.rs` for consumers.
+# Slint's element-id debug info isn't set here: [env] can't vary by
+# profile, and release builds ship without it, so tisvlay-gui's build.rs
+# decides per profile.
 [env]
-SLINT_EMIT_DEBUG_INFO = "1"
 # Default LLVM coverage-runtime output path. Without this,
 # instrumented test binaries (which can sneak into `target/debug/`
 # from past `cargo llvm-cov` invocations that didn't isolate to

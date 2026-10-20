@@ -577,12 +577,13 @@ async fn store_round_trips_profiles_and_assignment() {
         .await
         .expect("assign ok");
 
-    // Wait for the debounced write to capture the assignment.
+    // Wait for the debounced write that captures the assignment. Both ids
+    // reach the file earlier (a new TV skips the debounce), so match the
+    // assignment itself.
+    let assignment = format!("system_profile = \"{profile_id}\"");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if std::fs::read_to_string(&store)
-            .is_ok_and(|t| t.contains(&profile_id.to_string()) && t.contains(&tv.to_string()))
-        {
+        if std::fs::read_to_string(&store).is_ok_and(|t| t.contains(&assignment)) {
             break;
         }
         assert!(

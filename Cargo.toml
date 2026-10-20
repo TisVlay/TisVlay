@@ -319,11 +319,33 @@ split-debuginfo = "unpacked"
 split-debuginfo = "unpacked"
 debug = "line-tables-only"
 
-# Tuning for shipped binaries (Nix, musl release, .deb/.rpm/.archlinux).
-# Cargo's default codegen units and no LTO, on purpose: `codegen-units = 1`
-# serializes each crate's optimization (zenoh and the Slint-generated GUI
-# stall the whole build on one core), and thin LTO adds a mostly serial
-# pass per binary. TisVlay waits on sockets, D-Bus and timers, so the
-# cross-crate inlining those buy isn't worth a build ~30% slower.
+# Tuning for binaries built where they run (NixOS module default,
+# `cargo build --release`). Cargo's default codegen units and no LTO, on
+# purpose: `codegen-units = 1` serializes each crate's optimization
+# (zenoh and the Slint-generated GUI stall the whole build on one core),
+# and thin LTO adds a mostly serial pass per binary. TisVlay waits on
+# sockets, D-Bus and timers, so the cross-crate inlining those buy isn't
+# worth a build ~30% slower for everyone who compiles it.
 [profile.release]
 strip = "symbols"
+
+# Binaries built once in CI and downloaded: the distro packages
+# (`just package-*`) and the flake's own package, which the release
+# workflow pushes to tisvlay.cachix.org. Size over build time, since only
+# CI pays for the build. Measured on the six shipped binaries (host build,
+# 2026-10-20): 126 MiB under `release`, 71 MiB here (44 → 25 MiB zstd).
+#   - thin LTO + one codegen unit: −18%. Fat LTO was only 7% smaller
+#     again, for about twice the build time.
+#   - `panic = "abort"`: −14% on top. A panic ends the process, and
+#     systemd restarts it, instead of unwinding one task and running on
+#     degraded. The daemon's store writes credential edits immediately
+#     for this, rather than after its debounce.
+#   - `opt-level = "s"`: about −20% more. CLI round trips and GUI render
+#     cost (120 fps, CPU per frame) were within noise of opt-level 3;
+#     "z" was only 4% smaller and turns off loop vectorization.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+opt-level = "s"

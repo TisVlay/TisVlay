@@ -82,7 +82,7 @@ jobs:
 
       - name: Checksums
         run: |
-          cd target/x86_64-unknown-linux-gnu/release
+          cd target/x86_64-unknown-linux-gnu/dist
           sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst > checksums-sha256.txt
           cat checksums-sha256.txt
 
@@ -93,10 +93,10 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            target/x86_64-unknown-linux-gnu/release/tisvlay_*.deb
-            target/x86_64-unknown-linux-gnu/release/tisvlay-*.rpm
-            target/x86_64-unknown-linux-gnu/release/tisvlay-*.pkg.tar.zst
-            target/x86_64-unknown-linux-gnu/release/checksums-sha256.txt
+            target/x86_64-unknown-linux-gnu/dist/tisvlay_*.deb
+            target/x86_64-unknown-linux-gnu/dist/tisvlay-*.rpm
+            target/x86_64-unknown-linux-gnu/dist/tisvlay-*.pkg.tar.zst
+            target/x86_64-unknown-linux-gnu/dist/checksums-sha256.txt
 
   # Phase 1 (tag push): build the flake's package and push it to the public
   # tisvlay.cachix.org cache (packaging/nix/README.md "Binary cache").

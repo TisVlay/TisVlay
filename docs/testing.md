@@ -462,9 +462,9 @@ fn diagnostics_button_announces_its_label() {
 
 ### Required build env
 
-Slint's compiler embeds element-id metadata only when `SLINT_EMIT_DEBUG_INFO=1` is set **at build time** (when `slint_build::compile` runs in `build.rs`). Without it, `find_by_element_id` / `accessible_id()` silently return nothing and tests look like they "found no elements."
+Slint's compiler embeds element-id metadata only when asked to **at build time** (when `slint_build` runs in `build.rs`). Without it, `find_by_element_id` / `accessible_id()` silently return nothing and tests look like they "found no elements."
 
-The repo sets this once in `.cargo/config.toml [env]`, which Cargo reads from the workspace root for every invocation — `just build`, bare `cargo test`, rust-analyzer, IDE check-on-save, CI workflow steps. The justfile deliberately doesn't carry it because that would only apply to cargo invocations made via `just` (and would silently break direct `cargo` calls during local dev).
+`crates/tisvlay-gui/build.rs` turns it on for every profile except release-derived ones (`CompilerConfiguration::with_debug_info`), so `just build`, bare `cargo test`, rust-analyzer, IDE check-on-save and CI all get it with no environment variable, while shipped builds leave the extra code out. The build script's setting overrides `SLINT_EMIT_DEBUG_INFO`.
 
 ### Naming conventions
 

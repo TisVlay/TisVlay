@@ -387,6 +387,13 @@ dpms_connector := env("DPMS_CONNECTOR", "")
 # rule (docs/firewall.md); 0 = ephemeral.
 ssdp_port := env("SSDP_PORT", "1901")
 
+# Cargo profile for the dev-run recipes. `test` reuses what `just build`,
+# clippy and `just test` already compiled, keeps debug assertions on, and
+# keeps the Slint element ids the MCP server needs (tisvlay-gui's build.rs
+# emits them for every non-release profile). RELEASE=true runs the
+# shipped profile instead, to check release-only behavior.
+_dev_profile := if env("RELEASE", "false") == "true" { "release" } else { "test" }
+
 # GUI only. "true" → build with `--features slint/mcp` and start the
 # Slint MCP server on http://127.0.0.1:9315/mcp. See `.claude/slint.md`.
 gui_mcp := env("GUI_MCP", "true")
@@ -416,7 +423,7 @@ daemon-start:
         dpms=(--dpms-connector "{{ dpms_connector }}")
     fi
     RUST_LOG="{{ _daemon_log }}" \
-        cargo run --release --bin tisvlay-daemon -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay-daemon -- \
             --socket "{{ socket }}" --site "{{ site }}" \
             --ssdp-port "{{ ssdp_port }}" {{ _ephemeral_flag }} "${dpms[@]}"
 
@@ -424,7 +431,7 @@ daemon-start:
 [group('dev')]
 session-start:
     RUST_LOG="{{ _session_log }}" \
-        cargo run --release --bin tisvlay-session -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay-session -- \
             --system-socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}" {{ _ephemeral_flag }}
 
@@ -432,14 +439,14 @@ session-start:
 [group('dev')]
 greeter-start:
     RUST_LOG="{{ _greeter_log }}" \
-        cargo run --release --bin tisvlay-greeter -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay-greeter -- \
             --socket "{{ socket }}" --site "{{ site }}"
 
 # Start the tray (user profiles appear when session-start is up).
 [group('dev')]
 tray-start:
     RUST_LOG="{{ _tray_log }}" \
-        cargo run --release --bin tisvlay-tray -- \
+        cargo run --profile {{ _dev_profile }} --bin tisvlay-tray -- \
             --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}"
 
@@ -454,8 +461,9 @@ gui-start:
     set -euo pipefail
     env_prefix=(RUST_LOG="{{ _gui_log }}")
     features=()
-    # SLINT_EMIT_DEBUG_INFO (needed for the MCP element tree) is set
-    # globally in .cargo/config.toml, so only the port + feature here.
+    # The MCP element tree needs Slint's debug info, which tisvlay-gui's
+    # build.rs emits for the test profile (not RELEASE=true), so only the
+    # port + feature here.
     if [ "{{ gui_mcp }}" = "true" ]; then
         env_prefix+=(SLINT_MCP_PORT=9315)
         features+=("slint/mcp")
@@ -472,7 +480,7 @@ gui-start:
     # expansion aren't treated as env assignments by bash — env applies
     # them explicitly.
     env "${env_prefix[@]}" \
-        cargo run "${feature_arg[@]}" --release --bin tisvlay-gui -- \
+        cargo run "${feature_arg[@]}" --profile {{ _dev_profile }} --bin tisvlay-gui -- \
             --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
             --site "{{ site }}"
 
@@ -489,18 +497,18 @@ stop-all:
     # fine — zenoh's `.lock` protocol takes over an unclean listener
     # path on the next bind. 5 s timeout (`|| true`) so a stuck
     # process can't wedge the recipe.
-    @timeout 5 sh -c 'while pgrep -f "target/debug/tisvlay-(daemon|session|greeter|tray|gui)" > /dev/null; do sleep 0.1; done' || true
+    @timeout 5 sh -c 'while pgrep -f "target/(debug|release)/tisvlay-(daemon|session|greeter|tray|gui)" > /dev/null; do sleep 0.1; done' || true
     @echo "All stopped"
 
 # Show CLI status (manual smoke test)
 [group('dev')]
 cli-status:
-    cargo run --release --bin tisvlay -- --socket "{{ socket }}" --site "{{ site }}" status
+    cargo run --profile {{ _dev_profile }} --bin tisvlay -- --socket "{{ socket }}" --site "{{ site }}" status
 
 # Run any CLI verb against the dev sockets, e.g. `just cli list`.
 [group('dev')]
 cli *args:
-    cargo run --release --bin tisvlay -- \
+    cargo run --profile {{ _dev_profile }} --bin tisvlay -- \
         --socket "{{ socket }}" --user-socket "{{ user_socket }}" \
         --site "{{ site }}" {{ args }}
 
@@ -511,13 +519,15 @@ cli *args:
 glibc_baseline := "2.34"
 
 # Cross-distro release build — see packaging/README.md for the full
-# pipeline rationale. Output lands in target/x86_64-unknown-linux-gnu
-# /release/; zigbuild strips the `.<glibc>` suffix when invoking cargo.
+# pipeline rationale. Builds with the `dist` profile (Cargo.toml: size
+# over build time, since only CI builds the packages). Output lands in
+# target/x86_64-unknown-linux-gnu/dist/; zigbuild strips the `.<glibc>`
+# suffix when invoking cargo.
 # Crate scoping comes from `workspace.default-members` (the shipping
 # binaries) in the root Cargo.toml — no `-p` flags repeated here.
 [private]
 package-build:
-    cargo zigbuild --release \
+    cargo zigbuild --profile dist \
         --target x86_64-unknown-linux-gnu.{{ glibc_baseline }}
 
 # Generate the CLI's shell-completion bootstraps (one per shell) into
@@ -537,17 +547,17 @@ completions:
 # Build .deb package
 [group('package')]
 package-deb: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f deb
+    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f deb
 
 # Build .rpm package
 [group('package')]
 package-rpm: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f rpm
+    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f rpm
 
 # Build Arch Linux package
 [group('package')]
 package-archlinux: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f archlinux
+    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f archlinux
 
 # Build all package formats
 [group('package')]

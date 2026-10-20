@@ -39,7 +39,10 @@
       in
       {
         packages = {
-          tisvlay = pkgs.callPackage ./packaging/nix/package.nix { };
+          # The `dist` profile: smaller binaries for the build CI pushes to
+          # tisvlay.cachix.org. The overlay and the module's fallback keep
+          # `release`, since those hosts compile it themselves.
+          tisvlay = pkgs.callPackage ./packaging/nix/package.nix { cargoProfile = "dist"; };
           default = self.packages.${system}.tisvlay;
 
           # Out-of-tree build of the in-tree pulse8-cec HDMI-CEC driver, so

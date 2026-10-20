@@ -9,11 +9,22 @@
   makeDesktopItem,
   copyDesktopItems,
   installShellFiles,
+  # Cargo profile for the shipped binaries. `release` builds fastest, for
+  # hosts that compile tisvlay themselves (the module's default package,
+  # the overlay); the flake's own package passes `dist`, the smaller
+  # profile CI builds once for tisvlay.cachix.org (Cargo.toml has both).
+  cargoProfile ? "release",
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tisvlay";
   version = "0.3.0";
+
+  buildType = cargoProfile;
+  # The test suite always builds under `release`: `dist`'s LTO would make
+  # every test binary slow to link, and `checks.tests` reuses this
+  # package with doCheck on.
+  checkType = "release";
 
   src = lib.cleanSource ../../.;
 
@@ -164,9 +175,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # tisvlay-test).
 
   # Most consumers build from source (only release builds of the flake's
-  # own package are in the binary cache), so the checkPhase would re-run, from scratch, the same suite CI already
-  # gates on, compiling far more than the shipping build (the dev-only
-  # crates plus every feature). Skip it here; `checks.tests` in flake.nix
+  # own package are in the binary cache), so the checkPhase would re-run,
+  # from scratch, the same suite CI already gates on, compiling far more
+  # than the shipping build (the dev-only crates plus every feature). Skip it here; `checks.tests` in flake.nix
   # flips doCheck back on for `nix flake check`, keeping the flags below
   # exercised.
   doCheck = false;

@@ -26,7 +26,7 @@ The rest of this document is about the second channel — the cross-distro `.deb
                ▼
 ┌─────────────────────────────┐
 │ target/x86_64-unknown-linux │
-│        -gnu/release/         │
+│        -gnu/dist/            │
 │   tisvlay-daemon, tisvlay,         │   ELF interpreter:
 │   tisvlay-session,           │     /lib64/ld-linux-x86-64.so.2
 │   tisvlay-tray, tisvlay-gui  │   glibc symbols: ≥ glibc_baseline
@@ -122,11 +122,13 @@ Everything dispatches through [`justfile`](../justfile):
 
 ```bash
 just package-build   # private — invoked by the per-format recipes
-just package-deb     # produces target/x86_64-unknown-linux-gnu/release/tisvlay_*.deb
-just package-rpm     # produces target/x86_64-unknown-linux-gnu/release/tisvlay-*.rpm
+just package-deb     # produces target/x86_64-unknown-linux-gnu/dist/tisvlay_*.deb
+just package-rpm     # produces target/x86_64-unknown-linux-gnu/dist/tisvlay-*.rpm
 just package-archlinux
 just package-all     # all three
 ```
+
+The packages build with the `dist` Cargo profile, not `release`: thin LTO, one codegen unit, `panic = "abort"` and `opt-level = "s"`, which roughly halves the binaries. Its comment in the root [`Cargo.toml`](../Cargo.toml) has the measurements. Only CI builds packages, so it can afford the slower build that `release` avoids for people compiling locally.
 
 The dev shell ([`flake.nix`](../flake.nix) `devShells.default`) provides:
 
