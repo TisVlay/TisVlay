@@ -40,9 +40,10 @@ pub(crate) struct TvViewRaw {
     pub primary_descriptor: SharedString,
     pub connected: bool,
     pub power_state: SharedString,
-    /// Connected *and* powered on (via `PowerState::is_on`). The power
-    /// button keys on this rather than `connected` so a connected-in-standby
-    /// CEC TV still offers "Power on".
+    /// Connected *and* awake (via `PowerState::is_awake`, the CLI's and
+    /// tray's rule too). The power button keys on this rather than
+    /// `connected` so a connected-in-standby CEC TV still offers "Power
+    /// on", and so does a remote-off LG in `activestandby`.
     pub is_on: bool,
     pub supports_wake: bool,
     /// Per-capability flags from the identity payload's capability
@@ -275,7 +276,7 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
             power_state: SharedString::from(power_state_token(tv.power_state)),
-            is_on: tv.connected && tv.power_state.is_on(),
+            is_on: tv.connected && tv.power_state.is_awake(),
             supports_wake: tv.supports_wake,
             has_screen: tv.capabilities.contains(Capabilities::SCREEN),
             has_volume: tv.capabilities.contains(Capabilities::VOLUME),
@@ -622,6 +623,22 @@ mod tests {
         let row = &snap.tvs[0];
         assert!(row.connected, "still connected on the bus");
         assert!(!row.is_on, "standby is not on");
+    }
+
+    #[test]
+    fn connected_active_standby_is_not_on() {
+        // An LG TV turned off with its remote reports `activestandby`,
+        // NIC still up but the panel dark. The power button must offer
+        // "Power on", or the user's first press powers off a dark TV.
+        let mut tv = sample_tv("00000000-0000-0000-0000-00000000000a", "LG TV");
+        tv.connected = true;
+        tv.power_state = PowerState::ActiveStandby;
+
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        assert!(!snap.tvs[0].is_on, "active standby is not on");
     }
 
     #[test]

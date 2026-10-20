@@ -50,18 +50,18 @@ impl TvSnapshot {
         self.link.as_ref().is_some_and(|link| link.connected)
     }
 
-    /// On means connected and awake: active, screensaver or screen-off,
-    /// the states the daemon's wake check needs no wake for. LG's
-    /// `activestandby` after a remote power-off is dark and on its way to
-    /// standby, so it reads off, and a toggle wakes it. A TV that dropped
-    /// its link reads off whatever it last reported: a network TV drops
-    /// it in standby, while a standby-reachable bus (CEC) keeps it.
+    /// On means connected and [awake](tisvlay_core::PowerState::is_awake),
+    /// the rule the GUI and tray share. LG's `activestandby` after a
+    /// remote power-off is dark and on its way to standby, so it reads
+    /// off, and a toggle wakes it. A TV that dropped its link reads off
+    /// whatever it last reported: a network TV drops it in standby, while
+    /// a standby-reachable bus (CEC) keeps it.
     fn power_on(&self) -> bool {
         self.connected()
             && self
                 .power
                 .as_ref()
-                .is_some_and(|power| !power.state.needs_wake_preflight())
+                .is_some_and(|power| power.state.is_awake())
     }
 
     /// Whether the panel shows a picture; a disconnected TV's doesn't.

@@ -33,7 +33,7 @@ No compatibility aliases or did-you-mean hints for old names: they're replaced o
 | `--effective` | `key = value` lines (as today) | the object (as today) | `effective` rpcs |
 | `config` | `key = value` lines (as today) | the config view (as today) | `GetConfig` rpc |
 
-"Awake" is the daemon's existing wake check, `!PowerState::needs_wake_preflight()`: active, screensaver and screen-off count as on; everything else, including LG's `activestandby` after a remote power-off, counts as off. The GUI's Power switch and the tray count `activestandby` as on today; that mismatch is filed as [docs/bugs/power-switch-active-standby.md](../bugs/power-switch-active-standby.md), and the CLI takes the awake rule rather than copying it. A CEC TV stays connected in standby, so the rule holds there too.
+"Awake" is `PowerState::is_awake`, the complement of the daemon's wake check (`needs_wake_preflight`): active, screensaver and screen-off count as on; everything else, including LG's `activestandby` after a remote power-off, counts as off. The GUI's Power switch and the tray once counted `activestandby` as on; [docs/bugs/power-switch-active-standby.md](../bugs/power-switch-active-standby.md) moved them onto the same rule. A CEC TV stays connected in standby, so the rule holds there too.
 
 An unassigned profile prints the reserved default's UUID (`DEFAULT_SYSTEM_PROFILE_UUID` / `DEFAULT_USER_PROFILE_UUID`), since that's the profile the TV follows, and it round-trips into the setter. `primary-input` has no default, so unset prints nothing; an unquoted `$(…)` of an empty result turns the setter into a getter, which the guide notes.
 

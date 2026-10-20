@@ -4,10 +4,10 @@
 
 - [Session event handler `last_action` cache survives daemon reconnects](last-action-cache-survives-reconnect.md)
 - [`run_pairing_handshake` has no timeout on `wait_for_completion`](pair-tv-no-timeout.md)
-- [GUI and tray show a remote-off LG TV as powered on](power-switch-active-standby.md)
 
 ## Closed
 
+- [GUI and tray show a remote-off LG TV as powered on](power-switch-active-standby.md) — all three clients key on the shared `PowerState::is_awake`
 - [GUI power-state gate misses the wire's new power-state spellings](power-state-vocabulary-drift.md) — gate now delegates to `PowerState::is_on` via `parse`
 - [Per-field config-validation error routing is dead in the GUI](edit-pane-field-error-routing-dead.md) — typed `RpcError` + daemon-side `invalid-field` validation
 - [#21 — Newly paired TV has zeroed D-Bus properties until next subscription update](https://github.com/TisVlay/TisVlay/issues/21)
