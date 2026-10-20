@@ -110,7 +110,11 @@ jobs:
     if: github.event_name == 'push'
     strategy:
       matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
     runs-on: ${{ matrix.runner }}
     environment: cachix
     permissions:
@@ -118,19 +122,37 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Nix
         uses: cachix/install-nix-action@v31
 
+      # Installs the cachix CLI only: no substituter, no automatic push.
       - name: Cachix
         uses: cachix/cachix-action@v17
         with:
           name: tisvlay
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipAddingSubstituter: true
+          skipPush: true
 
       - name: Build
         run: nix build --print-build-logs .#default
+
+      # Push the output's runtime closure, not every path the build made:
+      # the vendored crate sources are build-only and mostly missing from
+      # cache.nixos.org (docs/ideas/nix-cache-main-builds.md). Then pin it
+      # under the tag so cache churn can't evict it. Keeping one revision
+      # means a re-pushed tag moves the pin to the new build, and the old
+      # one falls to normal eviction.
+      - name: Push
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          PIN: ${{ github.ref_name }}-${{ matrix.system }}
+        run: |
+          out=$(nix build --no-link --print-out-paths .#default)
+          cachix push tisvlay "$out"
+          cachix pin tisvlay "$PIN" "$out" --keep-revisions 1
 
   # Phase 2 (release finalized): publish the crates to crates.io. Runs when
   # you promote the verified draft to a full release. release-plz publishes
