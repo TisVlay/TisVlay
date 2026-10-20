@@ -20,12 +20,12 @@ The rest of this document is about the second channel — the cross-distro `.deb
 │ NixOS dev shell             │
 │   rust-toolchain.toml       │
 │   cargo-zigbuild + zig      │   linker = zig cc
-│   nfpm (Go binary)          │   target  = x86_64-unknown-linux-gnu.<glibc_baseline>
+│   nfpm (Go binary)          │   target  = <arch>-unknown-linux-gnu.<glibc_baseline>
 └──────────────┬──────────────┘
                │  just package-build
                ▼
 ┌─────────────────────────────┐
-│ target/x86_64-unknown-linux │
+│ target/<arch>-unknown-linux │
 │        -gnu/dist/            │
 │   tisvlay (CLI + services),  │   ELF interpreter:
 │   tisvlay-gui                │     /lib64/ld-linux-x86-64.so.2
@@ -34,8 +34,8 @@ The rest of this document is about the second channel — the cross-distro `.deb
                │  cargo nfpm package -p tisvlay-cli ... -f deb|rpm|archlinux
                ▼
 ┌─────────────────────────────┐
-│ tisvlay_<ver>_amd64.deb     │
-│ tisvlay-<ver>.x86_64.rpm    │   Runs on any distro at or newer than
+│ tisvlay_<ver>_<deb arch>.deb│
+│ tisvlay-<ver>.<arch>.rpm    │   Runs on any distro at or newer than
 │ tisvlay-<ver>-...pkg.tar.zst │   `glibc_baseline` declared in justfile.
 └─────────────────────────────┘
 ```
@@ -122,13 +122,15 @@ Everything dispatches through [`justfile`](../justfile):
 
 ```bash
 just package-build   # private — invoked by the per-format recipes
-just package-deb     # produces target/x86_64-unknown-linux-gnu/dist/tisvlay_*.deb
-just package-rpm     # produces target/x86_64-unknown-linux-gnu/dist/tisvlay-*.rpm
+just package-deb     # produces target/<arch>-unknown-linux-gnu/dist/tisvlay_*.deb
+just package-rpm     # produces target/<arch>-unknown-linux-gnu/dist/tisvlay-*.rpm
 just package-archlinux
 just package-all     # all three
 ```
 
 The packages build with the `dist` Cargo profile, not `release`: thin LTO, one codegen unit, `panic = "abort"` and `opt-level = "s"`, which roughly halves the binaries. Its comment in the root [`Cargo.toml`](../Cargo.toml) has the measurements. Only CI builds packages, so it can afford the slower build that `release` avoids for people compiling locally.
+
+**Architectures.** The recipes package the host's architecture (`just`'s `arch()`), so the release workflow builds x86_64 on `ubuntu-latest` and arm64 on `ubuntu-26.04-arm`, each natively, and collects both into one draft release. `ARCH=aarch64 just package-deb` cross-builds from an x86_64 host. That needs the `aarch64-unknown-linux-gnu` Rust target, and an arm64 sysroot with fontconfig for the GUI's link, so in practice arm64 packages come from CI. `package-build` points `target/nfpm-dist` at the built triple's `dist/`: nfpm doesn't expand variables in `src` paths, and the GUI binary's path in the nfpm contents goes through that link.
 
 The dev shell ([`flake.nix`](../flake.nix) `devShells.default`) provides:
 

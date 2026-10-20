@@ -4,7 +4,7 @@ Most Linux users can install a pre-built package below. Choose the instructions 
 
 ## Distro packages (.deb / .rpm / .pkg.tar.zst / flake)
 
-Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version.
+Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version, for x86_64 and arm64 (aarch64). The commands below pick the one that matches your machine.
 
 ```sh
 {{#include ../generated/release-version.txt}}
@@ -14,22 +14,23 @@ export BASE=https://github.com/TisVlay/TisVlay/releases/download/v${VERSION}
 ### Debian / Ubuntu
 
 ```sh
-wget ${BASE}/tisvlay_${VERSION}-1_amd64.deb
-sudo apt install ./tisvlay_${VERSION}-1_amd64.deb
+ARCH=$(dpkg --print-architecture)   # amd64 or arm64
+wget ${BASE}/tisvlay_${VERSION}-1_${ARCH}.deb
+sudo apt install ./tisvlay_${VERSION}-1_${ARCH}.deb
 ```
 
 ### Arch / CachyOS
 
 ```sh
-wget ${BASE}/tisvlay-${VERSION}-1-x86_64.pkg.tar.zst
-sudo pacman -U ./tisvlay-${VERSION}-1-x86_64.pkg.tar.zst
+wget ${BASE}/tisvlay-${VERSION}-1-$(uname -m).pkg.tar.zst
+sudo pacman -U ./tisvlay-${VERSION}-1-$(uname -m).pkg.tar.zst
 ```
 
 ### Fedora / RHEL
 
 ```sh
-wget ${BASE}/tisvlay-${VERSION}-1.x86_64.rpm
-sudo dnf install ./tisvlay-${VERSION}-1.x86_64.rpm
+wget ${BASE}/tisvlay-${VERSION}-1.$(uname -m).rpm
+sudo dnf install ./tisvlay-${VERSION}-1.$(uname -m).rpm
 ```
 
 #### Bazzite / Silverblue
@@ -37,7 +38,7 @@ sudo dnf install ./tisvlay-${VERSION}-1.x86_64.rpm
 These immutable systems apply package changes after a reboot.
 
 ```sh
-sudo rpm-ostree install ./tisvlay-${VERSION}-1.x86_64.rpm
+sudo rpm-ostree install ./tisvlay-${VERSION}-1.$(uname -m).rpm
 ```
 
 ### NixOS / Source Install

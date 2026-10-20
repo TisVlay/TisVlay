@@ -1,8 +1,8 @@
 # Release lifecycle. Two phases, both keyed off the GitHub release you cut:
 #
 #   1. Push a `vX.Y.Z` tag      -> build the distro packages (.deb/.rpm/.pkg)
-#      and attach them to a DRAFT GitHub release, and push the Nix package
-#      to tisvlay.cachix.org. Download + test them.
+#      for x86_64 and arm64, attach them to a DRAFT GitHub release, and
+#      push the Nix package to tisvlay.cachix.org. Download + test them.
 #   2. Promote that release to a full (non-prerelease) release
 #      -> publish the crates to crates.io. crates.io is irreversible
 #      (yank-only), so it intentionally comes LAST, after you've verified
@@ -36,10 +36,19 @@ permissions:
 # run reads only main's caches and its own, and nothing on main writes
 # these jobs' keys. Builds start cold, which only release time pays.
 jobs:
-  # Phase 1 (tag push): build the distro packages + attach to a draft release.
+  # Phase 1 (tag push): build the distro packages, one leg per architecture,
+  # each natively on its own runner (`just package-*` targets the host's
+  # architecture). Zig still pins the glibc baseline; building natively
+  # avoids cross sysroots for the GUI's fontconfig link. The `release` job
+  # below collects both legs into one draft release.
   build:
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -80,9 +89,35 @@ jobs:
       - name: Package
         run: just package-all
 
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ runner.arch }}
+          if-no-files-found: error
+          path: |
+            target/nfpm-dist/tisvlay_*.deb
+            target/nfpm-dist/tisvlay-*.rpm
+            target/nfpm-dist/tisvlay-*.pkg.tar.zst
+
+  # Phase 1, continued: one draft release with both architectures' packages
+  # and a single checksum file. One job creates it, so the build legs can't
+  # race to.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: packages
+
       - name: Checksums
         run: |
-          cd target/x86_64-unknown-linux-gnu/dist
+          cd packages
           sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst > checksums-sha256.txt
           cat checksums-sha256.txt
 
@@ -93,10 +128,10 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            target/x86_64-unknown-linux-gnu/dist/tisvlay_*.deb
-            target/x86_64-unknown-linux-gnu/dist/tisvlay-*.rpm
-            target/x86_64-unknown-linux-gnu/dist/tisvlay-*.pkg.tar.zst
-            target/x86_64-unknown-linux-gnu/dist/checksums-sha256.txt
+            packages/tisvlay_*.deb
+            packages/tisvlay-*.rpm
+            packages/tisvlay-*.pkg.tar.zst
+            packages/checksums-sha256.txt
 
   # Phase 1 (tag push): build the flake's package and push it to the public
   # tisvlay.cachix.org cache (packaging/nix/README.md "Binary cache").

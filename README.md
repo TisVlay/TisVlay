@@ -87,11 +87,13 @@ Daemon -.->|WebSocket / WoL| TV2
 | `tisvlay-gui` | Device management, profile editor, settings panel |
 | `tisvlay-greeter` |  Login greeter idle detection absent of active session |
 
-The CLI and the four services ship as one `tisvlay` binary (the services run as `tisvlay service daemon` and so on, each from its own systemd unit); the GUI is `tisvlay-gui`.
+Services ship as `tisvlay` CLI subcommands; `tisvlay-gui` as separate binary.
 
 <!-- ANCHOR_END: overview -->
 
 ## 📖 Documentation
+
+Rendered docs available at [tisvlay.readthedocs.io](https://tisvlay.readthedocs.io/). Relative source links below:  
 
 - 🧭 New here? Start with [Installation](docs/book/src/getting-started/installation.md), then [Quick Start](docs/book/src/getting-started/quick-start.md).
 - 🎛️ Setting things up? See [GUI & Tray](docs/book/src/guide/gui-tray.md) and [Automation](docs/book/src/guide/automation.md).
