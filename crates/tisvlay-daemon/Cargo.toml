@@ -14,11 +14,11 @@ priority = "optional"
 
 contents = [
     # Binaries (tisvlay-daemon is auto-added by cargo-nfpm from the -p target)
-    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay", dst = "/usr/bin/tisvlay" },
-    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
-    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-greeter", dst = "/usr/bin/tisvlay-greeter" },
-    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
-    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
+    { src = "target/x86_64-unknown-linux-gnu/dist/tisvlay", dst = "/usr/bin/tisvlay" },
+    { src = "target/x86_64-unknown-linux-gnu/dist/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
+    { src = "target/x86_64-unknown-linux-gnu/dist/tisvlay-greeter", dst = "/usr/bin/tisvlay-greeter" },
+    { src = "target/x86_64-unknown-linux-gnu/dist/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
+    { src = "target/x86_64-unknown-linux-gnu/dist/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
     # Systemd system service. The activated tisvlay-daemon runs as the
     # dedicated `tisvlay` system user (postinstall.sh creates it), owning
     # the zenoh socket in /run/tisvlay/. Clients join the tisvlay group.

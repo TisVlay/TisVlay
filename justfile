@@ -519,13 +519,15 @@ cli *args:
 glibc_baseline := "2.34"
 
 # Cross-distro release build — see packaging/README.md for the full
-# pipeline rationale. Output lands in target/x86_64-unknown-linux-gnu
-# /release/; zigbuild strips the `.<glibc>` suffix when invoking cargo.
+# pipeline rationale. Builds with the `dist` profile (Cargo.toml: size
+# over build time, since only CI builds the packages). Output lands in
+# target/x86_64-unknown-linux-gnu/dist/; zigbuild strips the `.<glibc>`
+# suffix when invoking cargo.
 # Crate scoping comes from `workspace.default-members` (the shipping
 # binaries) in the root Cargo.toml — no `-p` flags repeated here.
 [private]
 package-build:
-    cargo zigbuild --release \
+    cargo zigbuild --profile dist \
         --target x86_64-unknown-linux-gnu.{{ glibc_baseline }}
 
 # Generate the CLI's shell-completion bootstraps (one per shell) into
@@ -545,17 +547,17 @@ completions:
 # Build .deb package
 [group('package')]
 package-deb: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f deb
+    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f deb
 
 # Build .rpm package
 [group('package')]
 package-rpm: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f rpm
+    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f rpm
 
 # Build Arch Linux package
 [group('package')]
 package-archlinux: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-daemon --no-build --target x86_64-unknown-linux-gnu -f archlinux
+    cargo nfpm package -p tisvlay-daemon --no-build --profile dist --target x86_64-unknown-linux-gnu -f archlinux
 
 # Build all package formats
 [group('package')]
