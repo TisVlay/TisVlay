@@ -17,8 +17,9 @@ priority = "optional"
 
 contents = [
     # Binaries: `tisvlay` (the CLI and every headless service) is auto-added
-    # by cargo-nfpm from the -p target; the GUI is its own.
-    { src = "target/x86_64-unknown-linux-gnu/dist/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
+    # by cargo-nfpm from the -p target; the GUI is its own. target/nfpm-dist
+    # links to the packaged triple's dist/ (`just package-build` sets it).
+    { src = "target/nfpm-dist/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
     # Systemd system service. The activated tisvlay-daemon runs as the
     # dedicated `tisvlay` system user (postinstall.sh creates it), owning
     # the zenoh socket in /run/tisvlay/. Clients join the tisvlay group.

@@ -516,17 +516,24 @@ cli *args:
 # rationale: packaging/README.md.
 glibc_baseline := "2.34"
 
+# Architecture the distro packages target: the host's by default, so each
+# CI runner builds its own natively. ARCH=aarch64 on an x86_64 host
+# cross-builds, which needs the aarch64-unknown-linux-gnu Rust target.
+package_arch := env("ARCH", arch())
+_package_triple := package_arch + "-unknown-linux-gnu"
+
 # Cross-distro release build — see packaging/README.md for the full
 # pipeline rationale. Builds with the `dist` profile (Cargo.toml: size
 # over build time, since only CI builds the packages). Output lands in
-# target/x86_64-unknown-linux-gnu/dist/; zigbuild strips the `.<glibc>`
+# target/<arch>-unknown-linux-gnu/dist/; zigbuild strips the `.<glibc>`
 # suffix when invoking cargo.
 # Crate scoping comes from `workspace.default-members` (the shipping
 # binaries) in the root Cargo.toml — no `-p` flags repeated here.
 [private]
 package-build:
     cargo zigbuild --profile dist \
-        --target x86_64-unknown-linux-gnu.{{ glibc_baseline }}
+        --target {{ _package_triple }}.{{ glibc_baseline }}
+    ln -sfn {{ _package_triple }}/dist target/nfpm-dist
 
 # Generate the CLI's shell-completion bootstraps (one per shell) into
 # packaging/completions/ for nfpm to ship. Built host-native on purpose:
@@ -545,17 +552,17 @@ completions:
 # Build .deb package
 [group('package')]
 package-deb: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target x86_64-unknown-linux-gnu -f deb
+    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target {{ _package_triple }} -f deb
 
 # Build .rpm package
 [group('package')]
 package-rpm: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target x86_64-unknown-linux-gnu -f rpm
+    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target {{ _package_triple }} -f rpm
 
 # Build Arch Linux package
 [group('package')]
 package-archlinux: licenses-html completions package-build
-    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target x86_64-unknown-linux-gnu -f archlinux
+    cargo nfpm package -p tisvlay-cli --no-build --profile dist --target {{ _package_triple }} -f archlinux
 
 # Build all package formats
 [group('package')]
