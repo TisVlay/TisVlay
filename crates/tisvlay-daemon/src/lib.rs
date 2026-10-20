@@ -11,6 +11,7 @@ mod netlink;
 mod probe;
 mod seat;
 mod seed;
+pub mod service;
 mod store;
 
 use std::collections::{HashMap, HashSet};

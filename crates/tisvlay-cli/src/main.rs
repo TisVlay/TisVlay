@@ -6,6 +6,10 @@
     clippy::print_stderr,
     reason = "the CLI prints its output"
 )]
+#![expect(
+    unsafe_code,
+    reason = "`service session` must start before any thread exists"
+)]
 
 mod attributes;
 mod pairing;
@@ -21,7 +25,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow, bail};
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
-use tisvlay_cli::{Cli, Command, ProfileScope};
+use tisvlay_cli::{Cli, Command, ProfileScope, Service};
 use tisvlay_protocol::caller::{Caller, RpcError};
 use tisvlay_protocol::endpoint::{Unary, manager, tv, user_profile};
 use tisvlay_protocol::rpc;
@@ -43,10 +47,29 @@ fn main() -> Result<()> {
     CompleteEnv::with_factory(Cli::command)
         .completer("tisvlay")
         .complete();
+    let cli = Cli::parse();
+    if let Command::Service(service) = cli.command {
+        return run_service(service);
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run())
+        .block_on(run(cli))
+}
+
+/// `service <name>`: the process becomes that service, which builds its
+/// own runtime. It runs before the CLI builds one, so no other thread
+/// exists yet.
+fn run_service(service: Service) -> Result<()> {
+    match service {
+        Service::Daemon(args) => tisvlay_daemon::service::main(args),
+        // SAFETY: called from `main` before any runtime is built, and
+        // neither completion nor argument parsing spawns a thread, so this
+        // is the process's only thread.
+        Service::Session(args) => unsafe { tisvlay_session::service::main(args) },
+        Service::Tray(args) => tisvlay_tray::service::main(args),
+        Service::Greeter(args) => tisvlay_greeter::service::main(args),
+    }
 }
 
 /// `enable-access`: enroll the current user in the daemon's socket group via
@@ -77,8 +100,7 @@ fn enable_access(socket: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> Result<()> {
     let socket = cli
         .socket
         .unwrap_or_else(tisvlay_protocol::bootstrap::default_connect_socket_path);
@@ -108,6 +130,8 @@ async fn run() -> Result<()> {
     match cli.command {
         // Handled above, before the client opens (needs no connection).
         Command::EnableAccess => unreachable!(),
+        // Dispatched by `main`, before any runtime exists.
+        Command::Service(_) => unreachable!(),
         Command::Status => status(&session, &caller, site, &socket, json_out).await,
         Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,

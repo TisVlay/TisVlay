@@ -14,6 +14,8 @@
 //! a live greeter re-hydrates the current idle state instead of needing
 //! the D-Bus stack's notify-with-retry loop.
 
+pub mod service;
+
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

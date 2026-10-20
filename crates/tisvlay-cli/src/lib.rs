@@ -240,6 +240,24 @@ pub enum Command {
     /// integration (do = start, undo = stop).
     #[command(subcommand)]
     RemoteSession(RemoteSessionCmd),
+    /// Run one of TisVlay's services in the foreground. Their systemd
+    /// units start them; run one by hand to debug it or try its flags.
+    #[command(subcommand)]
+    Service(Service),
+}
+
+/// The services the `tisvlay` binary runs, one per process.
+#[derive(Subcommand, Debug)]
+pub enum Service {
+    /// The system daemon: owns the TVs and the system socket.
+    Daemon(tisvlay_daemon::service::Args),
+    /// The per-user session service: user profiles, lock, idle and
+    /// remote-session handling, on the user socket.
+    Session(tisvlay_session::service::Args),
+    /// The system tray.
+    Tray(tisvlay_tray::service::Args),
+    /// The login-screen idle client, run inside the greeter session.
+    Greeter(tisvlay_greeter::service::Args),
 }
 
 /// An on/off attribute's value: set it, flip it, or (with neither) print

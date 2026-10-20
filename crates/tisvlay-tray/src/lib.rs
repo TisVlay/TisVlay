@@ -3,6 +3,7 @@
 //! service's user keys when its socket exists); every click is an rpc.
 
 pub mod notify;
+pub mod service;
 pub mod state;
 pub mod tray;
 
