@@ -244,7 +244,7 @@ tisvlay-cli = { path = "crates/tisvlay-cli" }
 
 # Testing
 proptest = "1"
-rstest = "0.27"
+rstest = "0.28"
 tempfile = "3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tracing-mock = "0.1.0-beta.3"

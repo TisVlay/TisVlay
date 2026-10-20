@@ -99,6 +99,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
     dbus
   ];
 
+  # The test binaries dlopen the same libraries as the shipped ones (the
+  # wayland tests load libwayland-client.so), but postFixup's rpath splice
+  # only reaches $out/bin, so put the set on the loader path for the tests.
+  preCheck = ''
+    export LD_LIBRARY_PATH="${lib.makeLibraryPath finalAttrs.rpathLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  '';
+
   # Disable cargo-about's clearlydefined.io fallback — the Nix sandbox
   # has no network. Sed targets the build copy only; the checked-in
   # about.toml keeps clearlydefined enabled for dev / CI runs.

@@ -159,6 +159,14 @@ async fn seat_changes_reconcile_real_socket_acls_and_failed_reads_hold_grants() 
     let directory = tisvlay_test::socket_tempdir();
     let socket = directory.path().join("seat.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // The environment refuses xattrs outright, so there are no ACLs to
+    // reconcile: the Nix build sandbox answers ENOTSUP, a container
+    // seccomp policy may answer EPERM (as in `acl`'s round-trip test).
+    if let Err(e) = acl::getxattr(&socket)
+        && matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::EPERM))
+    {
+        return;
+    }
     let bus = tisvlay_test::dbus::PrivateBus::isolated();
     let service = bus.connect().await.unwrap();
     service

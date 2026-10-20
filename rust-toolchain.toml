@@ -5,6 +5,6 @@
 # workspace `rust-version` in Cargo.toml, the oldest compiler the workspace
 # supports (see the note there). Dependabot is not configured for either.
 [toolchain]
-channel = "1.99.0"
+channel = "1.99.1"
 components = ["rust-analyzer", "rust-src"]
 profile = "default"
