@@ -87,7 +87,7 @@ Daemon -.->|WebSocket / WoL| TV2
 | `tisvlay-gui` | Device management, profile editor, settings panel |
 | `tisvlay-greeter` |  Login greeter idle detection absent of active session |
 
-Service ship as `tisvlay` CLI subcommands, plus separate `tisvlay-gui` binary.
+Services ship as `tisvlay` CLI subcommands; `tisvlay-gui` as separate binary.
 
 <!-- ANCHOR_END: overview -->
 
