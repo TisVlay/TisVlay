@@ -15,6 +15,7 @@
   lib,
   stdenv,
   kernel,
+  kernelModuleMakeFlags,
 }:
 
 stdenv.mkDerivation {
@@ -38,11 +39,11 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = kernel.moduleBuildDependencies;
 
-  # `commonMakeFlags`, not `makeFlags`: the latter adds kernel-build-only
+  # `kernelModuleMakeFlags` (the toolchain, plus the kmodigest `cmd_sign`
+  # override), not `kernel.makeFlags`: the latter adds kernel-build-only
   # flags (`O=$(buildRoot)`, `--eval=undefine modules`) that break an
-  # external `M=` module build. This matches what `kernelModuleMakeFlags`
-  # (used by v4l2loopback et al.) is built from.
-  makeFlags = kernel.commonMakeFlags ++ [
+  # external `M=` module build.
+  makeFlags = kernelModuleMakeFlags ++ [
     "-C"
     "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
     "M=$(PWD)"
@@ -54,12 +55,20 @@ stdenv.mkDerivation {
 
   buildFlags = [ "modules" ];
 
-  installPhase = ''
-    runHook preInstall
-    install -Dm444 pulse8-cec.ko \
-      "$out/lib/modules/${kernel.modDirVersion}/extra/pulse8-cec.ko"
-    runHook postInstall
-  '';
+  # Kbuild's `modules_install`, not a plain copy: its `cmd_sign` step is
+  # where nixpkgs' kmodigest (wired in via `kernelModuleMakeFlags`) signs the
+  # module and writes the `.ko.cer` that the module aggregator merges into
+  # `modules.cer`. On kernels without kmodigest it's just an install.
+  # DEPMOD=true skips depmod; the aggregator regenerates the maps itself.
+  # INSTALL_MOD_STRIP=1 strips before signing: the module is compressed
+  # here, so stdenv's strip phase can't reach its debug info afterwards.
+  installTargets = [ "modules_install" ];
+  installFlags = [
+    "INSTALL_MOD_PATH=${placeholder "out"}"
+    "INSTALL_MOD_DIR=extra"
+    "INSTALL_MOD_STRIP=1"
+    "DEPMOD=true"
+  ];
 
   meta = {
     description = "Out-of-tree build of the in-tree pulse8-cec HDMI-CEC driver (USB CEC adapters without a full kernel rebuild)";

@@ -21,3 +21,9 @@ An optional package is easy to discover through the package manager but adds dis
 Validate on Debian and Fedora package installs with both DP-AUX CEC and a Pulse-Eight adapter: check that the expected `/dev/cecN` appears, the daemon can open it after opt-in, unplug/replug reattaches the USB adapter, and disabling the integration restores the original sandbox. Check Arch/CachyOS and Bazzite behavior separately rather than assuming their kernel module or inputattach service is enabled by default.
 
 Deferred until the distro CEC setup is implemented or repeated user reports show the current manual steps are a meaningful blocker.
+
+## NixOS: retiring `pulse8-cec.nix`
+
+nixpkgs ships no Pulse-Eight driver because its kernel config never sets `MEDIA_CEC_SUPPORT`. That bool menu (`drivers/media/cec/Kconfig`) defaults on only when `!MEDIA_SUPPORT_FILTER`, and the filter is on, so the USB and platform CEC drivers behind it are never offered to `autoModules`, which answers "m" only to tristate questions. As of 2026-10-21, no nixpkgs issue or PR asks for it.
+
+A one-line nixpkgs change, `MEDIA_CEC_SUPPORT = yes;` in `pkgs/os-specific/linux/kernel/common-config.nix`, would build `pulse8-cec` and `rainshadow-cec` as stock modules. Once every nixpkgs release we support carries it, `cec.pulse8.enable` would need only `boot.kernelModules` and the inputattach unit, and `packaging/nix/pulse8-cec.nix` could go.
