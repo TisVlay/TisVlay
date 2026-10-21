@@ -54,12 +54,17 @@ stdenv.mkDerivation {
 
   buildFlags = [ "modules" ];
 
-  installPhase = ''
-    runHook preInstall
-    install -Dm444 pulse8-cec.ko \
-      "$out/lib/modules/${kernel.modDirVersion}/extra/pulse8-cec.ko"
-    runHook postInstall
-  '';
+  # Kbuild's `modules_install`, not a plain copy: its `cmd_sign` step is
+  # where nixpkgs' kmodigest (wired in via `commonMakeFlags`) signs the
+  # module and writes the `.ko.cer` that the module aggregator merges into
+  # `modules.cer`. On kernels without kmodigest it's just an install.
+  # DEPMOD=true skips depmod; the aggregator regenerates the maps itself.
+  installTargets = [ "modules_install" ];
+  installFlags = [
+    "INSTALL_MOD_PATH=$(out)"
+    "INSTALL_MOD_DIR=extra"
+    "DEPMOD=true"
+  ];
 
   meta = {
     description = "Out-of-tree build of the in-tree pulse8-cec HDMI-CEC driver (USB CEC adapters without a full kernel rebuild)";
