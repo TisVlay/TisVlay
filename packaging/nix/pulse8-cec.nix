@@ -15,6 +15,7 @@
   lib,
   stdenv,
   kernel,
+  kernelModuleMakeFlags,
 }:
 
 stdenv.mkDerivation {
@@ -38,11 +39,11 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = kernel.moduleBuildDependencies;
 
-  # `commonMakeFlags`, not `makeFlags`: the latter adds kernel-build-only
+  # `kernelModuleMakeFlags` (the toolchain, plus the kmodigest `cmd_sign`
+  # override), not `kernel.makeFlags`: the latter adds kernel-build-only
   # flags (`O=$(buildRoot)`, `--eval=undefine modules`) that break an
-  # external `M=` module build. This matches what `kernelModuleMakeFlags`
-  # (used by v4l2loopback et al.) is built from.
-  makeFlags = kernel.commonMakeFlags ++ [
+  # external `M=` module build.
+  makeFlags = kernelModuleMakeFlags ++ [
     "-C"
     "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
     "M=$(PWD)"
@@ -55,7 +56,7 @@ stdenv.mkDerivation {
   buildFlags = [ "modules" ];
 
   # Kbuild's `modules_install`, not a plain copy: its `cmd_sign` step is
-  # where nixpkgs' kmodigest (wired in via `commonMakeFlags`) signs the
+  # where nixpkgs' kmodigest (wired in via `kernelModuleMakeFlags`) signs the
   # module and writes the `.ko.cer` that the module aggregator merges into
   # `modules.cer`. On kernels without kmodigest it's just an install.
   # DEPMOD=true skips depmod; the aggregator regenerates the maps itself.
@@ -63,7 +64,7 @@ stdenv.mkDerivation {
   # here, so stdenv's strip phase can't reach its debug info afterwards.
   installTargets = [ "modules_install" ];
   installFlags = [
-    "INSTALL_MOD_PATH=$(out)"
+    "INSTALL_MOD_PATH=${placeholder "out"}"
     "INSTALL_MOD_DIR=extra"
     "INSTALL_MOD_STRIP=1"
     "DEPMOD=true"
