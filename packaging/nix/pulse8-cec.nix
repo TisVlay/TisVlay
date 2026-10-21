@@ -59,10 +59,13 @@ stdenv.mkDerivation {
   # module and writes the `.ko.cer` that the module aggregator merges into
   # `modules.cer`. On kernels without kmodigest it's just an install.
   # DEPMOD=true skips depmod; the aggregator regenerates the maps itself.
+  # INSTALL_MOD_STRIP=1 strips before signing: the module is compressed
+  # here, so stdenv's strip phase can't reach its debug info afterwards.
   installTargets = [ "modules_install" ];
   installFlags = [
     "INSTALL_MOD_PATH=$(out)"
     "INSTALL_MOD_DIR=extra"
+    "INSTALL_MOD_STRIP=1"
     "DEPMOD=true"
   ];
 
