@@ -207,12 +207,13 @@ All project commands live in the `justfile` at the repo root — it is the singl
 
 ```bash
 just              # list all recipes, grouped by purpose
-just check        # deny + shear + typos + licenses + fmt + build + clippy + doc + test
+just check        # deny + shear + typos + actionlint + zizmor + licenses + fmt + build + clippy + doc + test
 just build        # cargo build --profile test --workspace --all-targets --all-features
 just clippy       # cargo clippy (warnings denied via build.warnings)
 just doc          # cargo doc --workspace --no-deps (warnings denied)
 just shear        # unused / misplaced dependencies (cargo-shear)
 just typos        # spell check, American English (.config/typos.toml)
+just actionlint / zizmor  # workflow lint (.config/actionlint.yaml); workflow + Dependabot security audit
 just test         # cargo nextest run + cargo test --doc
 just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
 just cov          # coverage summary
@@ -242,7 +243,7 @@ prek run -a                                          # all checks
 prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt only
 ```
 
-CI (`.github/workflows/ci.yml`) gates its jobs on what a change touches: a `changes` job classifies the diff, so docs-only changes run only the fast `checks` job (prek file checks + typos), plus `docs` when the book is touched, and draft PRs run only `checks` (`docs/build.md` § What runs when). Code changes also run a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-links`) jobs. Design notes: `docs/build.md`.
+CI (`.github/workflows/ci.yml`) gates its jobs on what a change touches: a `changes` job classifies the diff, so docs-only changes run only the fast `checks` job (prek file checks, typos, actionlint + zizmor), plus `docs` when the book is touched, and draft PRs run only `checks` (`docs/build.md` § What runs when). Code changes also run a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-links`) jobs. Design notes: `docs/build.md`.
 
 ### Code conventions
 

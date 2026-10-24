@@ -58,8 +58,9 @@ jobs:
           has_book=false; grep -qE "$book" <<< "$files" && has_book=true
           printf 'code=%s\nbook=%s\n' "$code" "$has_book" >> "$GITHUB_OUTPUT"
 
-  # File checks and typos on every run, drafts and docs-only PRs included.
-  # On code changes the ci job's lint step repeats them with the Rust hooks.
+  # File checks, typos and the workflow linters on every run, drafts and
+  # docs-only PRs included. On code changes the ci job's lint step repeats
+  # the file checks and typos with the Rust hooks.
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -69,20 +70,45 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pinned to the flake's versions, like the ci job's tools.
       - name: Setup
         uses: taiki-e/install-action@v2
         with:
           tool: |
             just
+            shellcheck@0.11.0
             typos@1.50.2
+            zizmor@1.31.0
+
+      # actionlint isn't in install-action's manifest, and it's a Go program,
+      # not a crate, so the cargo-binstall fallback can't install it. Fetch
+      # the release pinned to the flake's version, and check it against the
+      # digest from that release's checksums file.
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: File checks
         uses: j178/prek-action@v2
+        env:
+          # zizmor's online audits (such as a pinned SHA that doesn't match
+          # its version comment) read the GitHub API.
+          GH_TOKEN: ${{ github.token }}
         with:
           extra-args: >-
             --all-files
             check-added-large-files check-merge-conflict check-toml
             check-yaml end-of-file-fixer trailing-whitespace typos
+            actionlint zizmor
 
   ci:
     needs: changes
@@ -134,6 +160,8 @@ jobs:
           # target/ tarball and the next run pays the full cold cost.
           cache-on-failure: true
 
+      # The workflow linters are skipped here: the checks job runs them on
+      # every change, and this job doesn't install them.
       - name: Lint
         uses: j178/prek-action@v2
         with:
@@ -142,6 +170,8 @@ jobs:
             --skip build
             --skip clippy
             --skip test
+            --skip actionlint
+            --skip zizmor
 
       # Single instrumented build for clippy + tests + doc tests +
       # coverage report — see `just test-ci` and `docs/build.md`

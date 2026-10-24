@@ -62,6 +62,21 @@ shear:
 typos:
     typos --config .config/typos.toml
 
+# Lint the GitHub workflows (config: `.config/actionlint.yaml`): syntax,
+# expressions, runner labels and, through shellcheck, the `run:` scripts.
+[group('check')]
+actionlint:
+    actionlint -config-file .config/actionlint.yaml
+
+# Audit the workflows and the Dependabot config for security problems:
+# unpinned actions, persisted credentials, broad permissions, injection.
+# With a GitHub token in GH_TOKEN (CI sets one), zizmor adds its online
+# audits, such as a pinned SHA that doesn't match its version comment;
+# without one it runs offline and says so.
+[group('check')]
+zizmor:
+    zizmor .github/
+
 # Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
 test:
@@ -118,7 +133,7 @@ test-ci:
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
-check: deny shear typos licenses-html fmt build clippy doc test
+check: deny shear typos actionlint zizmor licenses-html fmt build clippy doc test
 
 # --- Slow / networked checks (CI jobs) ---------------------------------
 #

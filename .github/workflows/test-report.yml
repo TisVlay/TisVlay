@@ -7,8 +7,9 @@
 name: Test report
 
 on:
-  # zizmor: ignore[dangerous-triggers] the job reads one artifact and runs no PR code.
-  workflow_run:
+  # zizmor flags every workflow_run trigger. This job reads one artifact
+  # and runs no pull-request code, which is the use it accepts.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [CI]
     types: [completed]
 

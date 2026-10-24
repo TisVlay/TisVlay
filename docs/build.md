@@ -41,7 +41,7 @@ Three checks take minutes cold or need the network, so they run as CI jobs rathe
 
 | Change | Jobs |
 |---|---|
-| Docs-only | `checks` (file checks and typos) |
+| Docs-only | `checks` (file checks, typos and the workflow linters) |
 | Docs-only, touching the book | `checks`, `docs` |
 | Anything else | `checks`, `ci`, `msrv`, `features`, `docs` |
 | Draft PR | `checks` only; marking it ready starts the full run |
@@ -71,6 +71,15 @@ Every gate recipe denies warnings: `just clippy`, `just doc` and `just test-ci` 
 7. **`unsafe` is confined.** `unsafe_code` is `deny`, not `forbid`, so the few files that need FFI can opt out with a reasoned file-level `#![expect(unsafe_code)]`. Every block gets a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and does one unsafe operation (`multiple_unsafe_ops_per_block`).
 8. **Test code may unwrap, panic, index and print.** `.config/clippy.toml` sets the matching `allow-*-in-tests` keys. They cover `#[test]` fns and `#[cfg(test)]` modules, but not helper fns under `tests/`.
 9. **A tool that joins `just check`** comes from the flake devShell (built there from source when nixpkgs lags, as tombi is) and gets a prek hook whose id matches its recipe name, with a file filter where one is cheap.
+
+### Workflows
+
+`just actionlint` and `just zizmor` lint `.github/`. They run as prek hooks, and in CI's `checks` job on every change.
+
+- **actionlint** checks syntax, expressions and runner labels, and runs shellcheck over the `run:` scripts. Its config, `.config/actionlint.yaml`, lists the GitHub-hosted runner labels it doesn't know yet.
+- **zizmor** audits the workflows and the Dependabot config for security problems at its default (`regular`) persona: unpinned actions, persisted checkout credentials, broad permissions, template injection, and Dependabot updates without a cooldown. CI gives it a token, which adds the online audits, such as a pinned SHA that no longer matches its version comment. Locally it runs offline unless `GH_TOKEN` is set (`GH_TOKEN=$(gh auth token) just zizmor`).
+- **Actions are pinned to a commit SHA**, with the release in a comment (`uses: actions/checkout@<sha> # v7.0.1`). Dependabot updates both, after its one-week cooldown. To pin a newly added action, run `GITHUB_TOKEN=$(gh auth token) pinact run`.
+- **A zizmor ignore states its reason** in a comment on the line above `# zizmor: ignore[<audit>]`, as `test-report.yml`'s `workflow_run` trigger does.
 
 ### Parsers of outside input
 

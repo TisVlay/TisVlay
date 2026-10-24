@@ -205,6 +205,12 @@
                 # Spell checker for code, docs and identifiers (`just typos`;
                 # config in .config/typos.toml).
                 typos
+                # Workflow linters (`just actionlint`, `just zizmor`).
+                # actionlint runs shellcheck over the `run:` scripts when it's
+                # on PATH. ci.yml's `checks` job installs the same versions.
+                actionlint
+                shellcheck
+                zizmor
                 wakeonlan
                 rust
                 # i18n tooling. `gettext` provides xgettext / msgfmt /
