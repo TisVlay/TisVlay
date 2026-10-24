@@ -211,6 +211,9 @@
                 actionlint
                 shellcheck
                 zizmor
+                # Pins a newly added action to its commit SHA, with the
+                # release in a comment (docs/build.md § Workflows).
+                pinact
                 wakeonlan
                 rust
                 # i18n tooling. `gettext` provides xgettext / msgfmt /

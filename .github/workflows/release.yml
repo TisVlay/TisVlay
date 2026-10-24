@@ -51,7 +51,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -65,7 +65,7 @@ jobs:
         run: rustup show
 
       - name: Setup
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: |
             cargo-about
@@ -82,7 +82,7 @@ jobs:
       # binstall fallback builds it from source fine once zig is out of the
       # batch.)
       - name: Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
           # No caches in this workflow; see the note above `jobs`.
@@ -92,7 +92,7 @@ jobs:
         run: just package-all
 
       - name: Upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-${{ runner.arch }}
           if-no-files-found: error
@@ -111,7 +111,7 @@ jobs:
       contents: write
     steps:
       - name: Download
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packages-*
           merge-multiple: true
@@ -173,16 +173,16 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
 
       # Installs the cachix CLI only: no substituter, no automatic push.
       - name: Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: tisvlay
           skipAddingSubstituter: true
@@ -229,7 +229,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -246,7 +246,7 @@ jobs:
         run: rustup show
 
       - name: Release-plz release
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@7ef5e4d4b0420630cfcaeb182c01e13651d4c577 # v0.5.145
         with:
           command: release
         env:
