@@ -151,6 +151,38 @@ If `cargo nfpm` ever fails with `No such file or directory (os error 2)` on a Ni
 cargo install --force cargo-nfpm
 ```
 
+## Release signing and verification
+
+A `v*` tag push runs [`release.yml`](../.github/workflows/release.yml), which builds and signs through the reusable [`build-packages.yml`](../.github/workflows/build-packages.yml):
+
+```
+build-packages.yml
+  build    x86_64 and arm64, no signing token   just package-all, just sbom-check
+  attest   per architecture, signing token      provenance, one SBOM attestation per binary, Sigstore bundles
+release.yml
+  verify                                        just verify-assets, before any draft exists
+  release                                       the draft: packages, SBOMs, bundles, checksums
+you                                             just verify-release vX.Y.Z, test, publish (now immutable)
+release.yml
+  publish-crates   after your approval
+```
+
+- **Signer:** the attestations name `TisVlay/TisVlay/.github/workflows/build-packages.yml` at the tag as the signer, not `release.yml`; that separation is what SLSA Build Level 3 asks for. Every check pins it with `--signer-workflow` plus `--source-ref refs/tags/vX.Y.Z`: `just verify-assets` and the book's [Security & Supply Chain](../docs/book/src/reference/security-supply-chain.md) page. Without the pin, any workflow in the repository would pass, including `ci.yml`, which holds a signing-capable token for Codecov while it runs PR code.
+- **No signing token where dependency code runs:** the build jobs compile every dependency's build scripts and proc macros, so they get no `id-token`. Only the attest jobs, which download the build output and run `actions/attest`, hold one.
+- **Release assets, per architecture:**
+  - the three packages;
+  - `tisvlay-<version>-<arch>.cdx.json` and `tisvlay-gui-<version>-<arch>.cdx.json`, one CycloneDX SBOM per binary;
+  - `tisvlay-<version>-<arch>.provenance.sigstore.json`, the provenance bundle for the packages and binaries;
+  - `<binary>-<version>-<arch>.cdx.sigstore.json`, each SBOM's bundle.
+
+  `checksums-sha256.txt` covers all of them.
+- **Installed binaries verify too:** nfpm copies the binaries into the packages unchanged, so the provenance and SBOM attestations name the binaries themselves as well as the packages, and `just verify-assets` unpacks every package to check. Built with cargo-auditable, the binaries also embed their dependency list for `cargo audit bin`, Trivy and grype.
+- **Repository settings this relies on:**
+  - immutable releases (publishing locks the tag and the assets);
+  - the "release tags" ruleset (only admins create, move or delete `v*` tags);
+  - a required reviewer on the `crates-io` and `cachix` environments.
+- **Rehearsal:** a throwaway `vX.Y.Z-rc.N` tag runs the whole pipeline against a draft that's deleted, unpublished, along with its tag.
+
 ## Shell completions
 
 The `tisvlay` CLI ships tab-completion for bash, zsh, and fish, present after install with no user setup. We use clap_complete's *dynamic* engine rather than static generators: the file dropped into each shell's autoload dir is a small bootstrap that calls back into the `tisvlay` binary at `<TAB>`, so completion covers subcommands, flags, and **live values** — TV UUIDs, profile UUIDs, and vendor ids, queried from the daemon and described by name — the same model Docker uses for container-name completion.

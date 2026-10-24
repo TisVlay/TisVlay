@@ -625,6 +625,114 @@ sbom-check: sbom
     done
     exit "$status"
 
+# Verify a release's assets in <dir> the way a user would (the book's Security &
+# Supply Chain page), for the tag ref that built them (refs/tags/vX.Y.Z):
+#   - the checksums, when checksums-sha256.txt is there;
+#   - provenance for every package and for the binaries unpacked from them
+#     (what an installed system has), and each binary's SBOM attestation,
+#     both looked up on GitHub and checked from the release's Sigstore
+#     bundles alone;
+#   - that each SBOM asset is the SBOM that was signed.
+# release.yml runs it before it creates the draft, and `just verify-release`
+# runs it on the draft. The signer path is also in build-packages.yml's
+# header and the book; keep the three in step.
+[group('package')]
+verify-assets dir ref:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s failglob
+    signer=TisVlay/TisVlay/.github/workflows/build-packages.yml
+    identity=(--repo TisVlay/TisVlay --signer-workflow "$signer" --source-ref "{{ ref }}" --deny-self-hosted-runners)
+    sbom_type=https://cyclonedx.org/bom
+    cd "{{ dir }}"
+    if [ -f checksums-sha256.txt ]; then
+        sha256sum --quiet -c checksums-sha256.txt
+        echo "checksums-sha256.txt: OK"
+    fi
+    version=$(jq -r .metadata.component.version tisvlay-gui-*-x86_64.cdx.json)
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    # An architecture's three packages must carry identical binaries: unpack
+    # them all, and keep one copy per architecture to verify.
+    for pkg in tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst; do
+        case $pkg in
+            *_amd64.deb | *.x86_64.rpm | *-x86_64.pkg.tar.zst) arch=x86_64 ;;
+            *_arm64.deb | *.aarch64.rpm | *-aarch64.pkg.tar.zst) arch=aarch64 ;;
+            *) echo "$pkg: unknown architecture" >&2; exit 1 ;;
+        esac
+        root=$work/unpacked/$pkg
+        mkdir -p "$root" "$work/$arch"
+        # rpm members are absolute; bsdtar strips the leading `/` and says so.
+        case $pkg in
+            *.deb) bsdtar -xOf "$pkg" 'data.tar*' | bsdtar -xf - -C "$root" ;;
+            *) if ! err=$(bsdtar -xf "$pkg" -C "$root" 2>&1); then echo "$err" >&2; exit 1; fi ;;
+        esac
+        for bin in tisvlay tisvlay-gui; do
+            if [ ! -f "$work/$arch/$bin" ]; then
+                cp "$root/usr/bin/$bin" "$work/$arch/$bin"
+            elif ! cmp -s "$root/usr/bin/$bin" "$work/$arch/$bin"; then
+                echo "$pkg: its $bin differs from the other $arch packages'" >&2
+                exit 1
+            fi
+        done
+    done
+    for arch in x86_64 aarch64; do
+        deb_arch=$([ "$arch" = x86_64 ] && echo amd64 || echo arm64)
+        packages=(tisvlay_*_"$deb_arch".deb tisvlay-*."$arch".rpm tisvlay-*-"$arch".pkg.tar.zst)
+        provenance=tisvlay-$version-$arch.provenance.sigstore.json
+        for subject in "${packages[@]}" "$work/$arch/tisvlay" "$work/$arch/tisvlay-gui"; do
+            gh attestation verify "$subject" "${identity[@]}" > /dev/null
+            gh attestation verify "$subject" "${identity[@]}" --bundle "$provenance" > /dev/null
+            echo "${subject#"$work"/}: provenance OK"
+        done
+        for bin in tisvlay tisvlay-gui; do
+            sbom=$bin-$version-$arch.cdx.json
+            bundle=$bin-$version-$arch.cdx.sigstore.json
+            for subject in "$work/$arch/$bin" "${packages[@]}"; do
+                gh attestation verify "$subject" "${identity[@]}" --predicate-type "$sbom_type" > /dev/null
+                gh attestation verify "$subject" "${identity[@]}" --predicate-type "$sbom_type" --bundle "$bundle" > /dev/null
+            done
+            signed=$(gh attestation verify "$work/$arch/$bin" "${identity[@]}" --predicate-type "$sbom_type" \
+                --bundle "$bundle" --format json --jq '.[0].verificationResult.statement.predicate')
+            if ! diff -q <(jq -S . <<< "$signed") <(jq -S . "$sbom") > /dev/null; then
+                echo "$sbom differs from the SBOM signed in $bundle" >&2
+                exit 1
+            fi
+            echo "$arch/$bin: SBOM OK, for it and its packages; $sbom is the signed one"
+        done
+    done
+
+# Download a release's assets (a draft too, with your gh login) into
+# target/verify/<tag>/ and run `just verify-assets` on them, plus the cosign
+# check the book gives for verifying without a GitHub account. Once the
+# release is published, it also checks GitHub's release attestation, which
+# immutable releases only create on publishing.
+[group('package')]
+verify-release tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=TisVlay/TisVlay
+    dir=target/verify/{{ tag }}
+    rm -rf "$dir" && mkdir -p "$dir"
+    gh release download "{{ tag }}" --repo "$repo" --dir "$dir"
+    just verify-assets "$dir" "refs/tags/{{ tag }}"
+    version=$(jq -r .metadata.component.version "$dir"/tisvlay-gui-*-x86_64.cdx.json)
+    cosign verify-blob-attestation \
+        --bundle "$dir/tisvlay-$version-x86_64.provenance.sigstore.json" \
+        --certificate-identity "https://github.com/$repo/.github/workflows/build-packages.yml@refs/tags/{{ tag }}" \
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+        --type https://slsa.dev/provenance/v1 \
+        "$dir/tisvlay_$version-1_amd64.deb"
+    if [ "$(gh release view "{{ tag }}" --repo "$repo" --json isDraft --jq .isDraft)" = true ]; then
+        echo "{{ tag }} is a draft: rerun once it's published, to check GitHub's release attestation too."
+    else
+        gh release verify "{{ tag }}" --repo "$repo"
+        for asset in "$dir"/*; do
+            gh release verify-asset "{{ tag }}" "$asset" --repo "$repo" > /dev/null
+        done
+        echo "release attestation: OK for every asset"
+    fi
+
 # Package the crates.io crates and build each from its packaged source,
 # the way crates.io will (docs/build.md "First-publish checklist"). One
 # invocation, so cargo resolves their path dependencies on each other

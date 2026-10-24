@@ -220,6 +220,8 @@ just cov          # coverage summary
 just msrv / hack / audit  # CI-only checks, reproducible locally (docs/build.md)
 just package-check  # package the three published crates in one invocation (first-publish gate)
 just package-deb  # build the .deb package
+just sbom-check   # per-binary SBOMs, checked against what the built binaries embed
+just verify-release vX.Y.Z  # check a release's (or draft's) signatures the way users will
 just docs-serve   # mdBook user guide, live (docs-build: one-shot build)
 just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI drift gate)
 ```

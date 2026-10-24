@@ -4,7 +4,7 @@ Most Linux users can install a pre-built package below. Choose the instructions 
 
 ## Distro packages (.deb / .rpm / .pkg.tar.zst / flake)
 
-Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version, for x86_64 and arm64 (aarch64). The commands below pick the one that matches your machine.
+Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version, for x86_64 and arm64 (aarch64). The commands below pick the one that matches your machine. Each package is signed; to check one before you install it, see [Security & Supply Chain](../reference/security-supply-chain.md).
 
 ```sh
 {{#include ../generated/release-version.txt}}
