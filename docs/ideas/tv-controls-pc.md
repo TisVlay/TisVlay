@@ -1,6 +1,10 @@
-# TV-driven PC power and input over HDMI-CEC
+# TV-driven PC power and input
 
-TisVlay drives the TV from the PC: PC events (boot, sleep, lock, idle, DPMS) become TV actions. HDMI-CEC also carries the reverse direction, and a Pulse-Eight adapter, the kernel's CEC core and the daemon's follower monitor already give it three openings: the TV's power key could wake a suspended PC, the TV going to standby could sleep or lock it, and the TV's remote could drive the desktop. Grouped here because they share a trigger (a user asks for "the TV controls the PC") and a design question: what TisVlay owns, what's host configuration, and what's left to the TV and the desktop.
+TisVlay drives the TV from the PC: PC events (boot, sleep, lock, idle, DPMS) become TV actions. The reverse direction has openings on every backend and more on HDMI-CEC:
+- **Any backend:** the TV going to standby or waking can sleep or lock the PC. CEC reports it in broadcasts, LG over the network through its power-state subscription.
+- **CEC only:** the TV's power key can wake a suspended PC, through a Pulse-Eight adapter's firmware; and the TV's remote can drive the desktop, through the kernel's CEC core.
+
+They're grouped here because they share a trigger (a user asks for "the TV controls the PC") and a design question: what TisVlay owns, what's host configuration, and what's left to the TV and the desktop. The decided parts are planned in [docs/plans/tv-controls-pc.md](../plans/tv-controls-pc.md), as a transport-agnostic core plus CEC extras. Most of this doc was written from the CEC investigation; [Not yet planned](#not-yet-planned) tracks what generalizes further.
 
 Backend model: [docs/cec/protocol.md](../cec/protocol.md). Adapter lifecycle: [docs/watchers/devices.md](../watchers/devices.md). The Pulse-Eight's autonomous mode and its label trade-off: [docs/bugs/cec-pulse8-autonomous-label.md](../bugs/cec-pulse8-autonomous-label.md).
 
@@ -193,6 +197,16 @@ end
 - Key events for each press: the kernel path works, and passthrough is a linux-cec flag away. Nothing: the TV doesn't forward keys to this input (check SIMPLINK is on and the PC's input is selected), and section 3 stays "document and stay out".
 
 **Result (2026-10-24, 16:19, LG C3).** With `cec-ctl`'s passthrough claim (`Logical Addresses : 1 (Allow RC Passthrough)`), the remote drove the desktop: the arrows, OK, Exit, CH+/−, the four color keys, rewind, play, pause, fast-forward, stop, Info and Home (`KEY_ROOT_MENU`) each arrived as a key press and release on the `rc-cec` input, and the arrows also reached the focused terminal as keystrokes. The TV's own power key isn't forwarded, but SIMPLINK's device power-off is: it arrived as `KEY_POWER` (scan `0x40`) at 16:20:25, and pox entered suspend in the same second, so KDE's power-button action here is sleep. That's the hazard section 3 names, confirmed: passthrough without a `KEY_POWER` override lets anyone with the remote suspend the PC through SIMPLINK. pox resumed at 16:21:13, `inputattach` restarted after the resume (#212's fix, second time), and the daemon reclaimed without passthrough.
+
+## Not yet planned
+
+Raised while generalizing beyond CEC (2026-10-24). Not mature enough for the plan; picked up when the planned core lands or a user asks.
+
+- **Input-change events.** Both backends report which input the TV shows: CEC through `<Set Stream Path>` and `<Active Source>` (Check A saw `0f 86 10 00` at power-on), LG through its foreground-app subscription, which the world already reads for `primary_input` and `automate_when: on_primary`. That gives `on_tv_left_pc` (switched to the Chromecast: lock, pause media, blank) and `on_tv_returned_to_pc` (wake the screen), with no new data source.
+- **Screen-off events.** LG reports its own screen-off mode (`Screen Off`, the OLED screen-off from its menu or remote) apart from standby; "screen off → lock the PC" is a natural pairing. CEC has no screen-off state of its own (the backend emulates screen as power).
+- **More than one TV.** With two TVs on one PC (the C3 and the G4), one TV's standby shouldn't suspend the PC while the other is in use. Suspend needs an aggregation rule: when the last TV goes off, or only for the TV mirroring the primary display. Lock is per user and less fraught.
+- **No unlock, and remote sessions.** Host actions should never include unlocking: anyone with the TV's remote could open the PC. And while a remote session arms a TV (Sunshine and the like), its standby mustn't suspend the PC under the remote user; the events would honor the existing `while_remote` gate like every other dispatch.
+- **LG remote keys and pointer, without CEC.** Researched 2026-10-24: stock SSAP has no way to *receive* the remote's keys or pointer. The libraries ([lgtv2](https://github.com/hobbyquaker/lgtv2), [Home Assistant's webostv](https://www.home-assistant.io/actions/webostv.button/)) only send them, and the "pointer input socket" drives the TV's own pointer. The webOS homebrew docs list no key or remote service, and non-system apps reach only public Luna endpoints ([webOS Homebrew: Luna service bus](https://www.webosbrew.org/pages/luna-service-bus)). Receiving the Magic Remote takes an app running on the TV. [MagicRemoteService](https://github.com/Cathwyler/MagicRemoteService) (GPL-3.0, Windows PC side) installs a webOS app in developer mode, captures the remote through webOS DOM events, and forwards them over an unencrypted WebSocket. It maps clicks to gestures: a short OK press for a left click, a long press or the yellow key for a right click, and the scroll wheel forwarded. For TisVlay that would be a new component (a webOS app) with real costs: developer mode and its renewals, a re-install after most TV updates, and transport security to add. Low priority; CEC already carries the keys (not the pointer) where an adapter exists.
 
 ## Open questions
 
