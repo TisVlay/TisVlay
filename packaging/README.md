@@ -167,7 +167,7 @@ release.yml
   publish-crates   after your approval
 ```
 
-- **Signer:** the attestations name `TisVlay/TisVlay/.github/workflows/build-packages.yml` at the tag as the signer, not `release.yml`; that separation is what SLSA Build Level 3 asks for. Every check pins it with `--signer-workflow` plus `--source-ref refs/tags/vX.Y.Z`: `just verify-assets` and the book's "Verify your download" section. Without the pin, any workflow in the repository would pass, including `ci.yml`, which holds a signing-capable token for Codecov while it runs PR code.
+- **Signer:** the attestations name `TisVlay/TisVlay/.github/workflows/build-packages.yml` at the tag as the signer, not `release.yml`; that separation is what SLSA Build Level 3 asks for. Every check pins it with `--signer-workflow` plus `--source-ref refs/tags/vX.Y.Z`: `just verify-assets` and the book's [Security & Supply Chain](../docs/book/src/reference/security-supply-chain.md) page. Without the pin, any workflow in the repository would pass, including `ci.yml`, which holds a signing-capable token for Codecov while it runs PR code.
 - **No signing token where dependency code runs:** the build jobs compile every dependency's build scripts and proc macros, so they get no `id-token`. Only the attest jobs, which download the build output and run `actions/attest`, hold one.
 - **Release assets, per architecture:**
   - the three packages;

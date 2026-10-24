@@ -172,7 +172,7 @@ With immutability on:
   A dry run with a stand-in `gh` covered its control flow (56 verifications, 30 of them from bundles) and its rejection of an SBOM that doesn't match.
 - [x] `just verify-release <tag>`: downloads the release (drafts included) into `target/verify/<tag>/`, runs `just verify-assets`, then the book's cosign command on the x86_64 `.deb`. Once the release is published, it also runs `gh release verify` and `gh release verify-asset` on every asset.
 - [x] Where the release steps are written down: `release.yml`'s header and `packaging/README.md`'s new "Release signing and verification" section, rather than `docs/build.md`, which has no release checklist.
-- [x] Book, `getting-started/installation.md`, "Verify your download": a package; an installed binary; its SBOM; cosign with the provenance bundle for people without a GitHub account; `gh release verify-asset`; and a pointer for Nix users to the cache's signing key.
+- [x] Book: a new Reference page, [Security & Supply Chain](../book/src/reference/security-supply-chain.md), linked from the install page's opening paragraph. It covers checksums; signatures, with gh for a package or an installed binary and cosign for people without a GitHub account; the SBOMs; scanning an installed system with `cargo audit bin`, Trivy and grype; and the cache signing key for Nix users.
 - [x] The dev shell gains gh, libarchive (bsdtar) and cosign.
 - [ ] **Confirm at the rehearsal:** the cosign command (the flags of cosign 3.x against a multi-subject GitHub bundle), and whether `gh attestation verify --bundle` works without a GitHub login. If it does, the book can offer it as the offline option.
 

@@ -625,8 +625,8 @@ sbom-check: sbom
     done
     exit "$status"
 
-# Verify a release's assets in <dir> the way a user would (the book's "Verify
-# your download"), for the tag ref that built them (refs/tags/vX.Y.Z):
+# Verify a release's assets in <dir> the way a user would (the book's Security &
+# Supply Chain page), for the tag ref that built them (refs/tags/vX.Y.Z):
 #   - the checksums, when checksums-sha256.txt is there;
 #   - provenance for every package and for the binaries unpacked from them
 #     (what an installed system has), and each binary's SBOM attestation,

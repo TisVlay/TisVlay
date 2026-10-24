@@ -3,7 +3,7 @@
 # `v*` tag push. It's a reusable workflow so that its signatures name it, not
 # the caller, as the signer (SLSA Build Level 3). Verifiers pin it with
 #   --signer-workflow TisVlay/TisVlay/.github/workflows/build-packages.yml
-# as `just verify-assets` and the book's "Verify your download" section do;
+# as `just verify-assets` and the book's Security & Supply Chain page do;
 # keep the three in step if this file ever moves.
 #
 # Building and signing are separate jobs. Every process in a job with
