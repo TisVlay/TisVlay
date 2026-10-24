@@ -18,8 +18,8 @@ While the PC is **suspended**, the dongle still runs autonomously by design, so 
 
 ### 1. Driver patch: disarm on disconnect
 
-- [ ] In `pulse8_disconnect`, send `SET_ACK_MASK 0` and `SET_AUTO_ENABLED 0` (under `pulse8->lock`, while `serio` is still set), then cancel the ping work and null `serio` as `323f52e02be6` does, so the oops fix stays intact.
-- [ ] Add the patch to `pulse8-cec.nix` via `patches`, gated with `lib.versionAtLeast kernel.version "<TBD>"`: the patch's context only exists on kernels that contain `323f52e02be6`, and an older kernel (an LTS pin) would fail to build. The first release containing it is TBD; look it up before writing the gate.
+- [x] In `pulse8_disconnect`, after cancelling the ping work and under `pulse8->lock`, send `SET_ACK_MASK 0` and `SET_AUTO_ENABLED 0` while `serio` is still set (only when the dongle is armed), then null `serio` as `323f52e02be6` does, so the oops fix stays intact. A failed disarm logs at info level: [pulse8-cec-disarm-on-disconnect.patch](../../packaging/nix/pulse8-cec-disarm-on-disconnect.patch).
+- [x] Apply it in `pulse8-cec.nix`'s `postPatch`, gated on the source rather than a kernel version: only when the driver has the `-ENODEV` guard that `323f52e02be6` added. The commit first shipped in v7.1 and carries no stable Cc, so a version gate would miss an automatic stable backport. Drivers without it still disarm on their own and skip the patch. Built and checked against the 7.3 kernel: the patch applies and the module contains it.
 
 ### 2. Fallback: the daemon clears its claim on shutdown
 
@@ -59,6 +59,5 @@ Only if step 3 shows the tty can't carry writes inside `pulse8_disconnect`.
 
 ## Open questions
 
-- The first kernel release containing `323f52e02be6` (for the step 1 gate).
 - Whether the tty can carry writes inside `pulse8_disconnect` (decides between step 1 and step 2).
 - Why this morning's boot claim landed on LA 12 (step 3's reboot capture).

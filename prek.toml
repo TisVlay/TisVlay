@@ -10,8 +10,10 @@ hooks = [
     { id = "check-merge-conflict", priority = 0 },
     { id = "check-toml", priority = 0 },
     { id = "check-yaml", priority = 0 },
-    { id = "end-of-file-fixer", exclude = "^docs/artwork/", priority = 0 },
-    { id = "trailing-whitespace", exclude = "^docs/artwork/", priority = 0 },
+    # Patches are excluded: a blank context line in a unified diff is a
+    # single space, and stripping it breaks the patch.
+    { id = "end-of-file-fixer", exclude = "^docs/artwork/|\\.patch$", priority = 0 },
+    { id = "trailing-whitespace", exclude = "^docs/artwork/|\\.patch$", priority = 0 },
 ]
 
 [[repos]]
