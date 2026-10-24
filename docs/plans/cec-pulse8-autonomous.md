@@ -23,18 +23,13 @@ While the PC is **suspended**, the dongle still runs autonomously by design, so 
 
 ### 2. Fallback: the daemon clears its claim on shutdown
 
-Only if step 3 shows the tty can't carry writes inside `pulse8_disconnect`.
-
-- [ ] On SIGTERM, the daemon clears the adapter's claim. The clear goes through a live serio, so the existing unconfigure path disarms the dongle.
-- [ ] Order the daemon unit `After=` the inputattach unit, so it stops first at shutdown.
-- [ ] Suspend doesn't stop the daemon, so suspend autonomy stays. A clean claim at the next boot also lets the TV re-detect the device and pick up our name.
-- [ ] It can't cover an inputattach stop while the daemon keeps running (the reproducer), which isn't a real-world path.
+Not needed. It was the alternative if the tty couldn't carry writes inside `pulse8_disconnect`; with `pulse8_cec` debug at 2, an inputattach stop logs both disarm commands going out (bug doc, step 12). The idea stays on record: the daemon clears its claim on SIGTERM, with its unit ordered `After=` the inputattach unit so it stops first, which would disarm through a live serio on any distro without a driver patch.
 
 ### 3. Verification
 
-- [ ] Before the patch: run the detach experiment (bug doc § Diagnostics) and confirm the label flips to "LG DVD Player".
-- [ ] After the patch: rerun it; the label should stay on our name, and the TV shouldn't show the duplicate HDMI 1 entry.
-- [ ] Warm reboot with the TV on: the label holds, and the debug capture shows which address the boot claim takes, and who acknowledged the polls if it isn't Playback 1. This also answers the bug doc's LA 12 question.
+- [x] Before the patch: the detach experiment (bug doc § Diagnostics) flips the label to "LG DVD Player" after about 60 s, with a duplicate HDMI 1 entry on the TV, and only a replug restores it (bug doc, steps 5–7).
+- [x] After the patch: no duplicate entry and no LG label. The label passes through "HDMI 1" and the disarmed dongle's own "CEC Adapter", and returns to our name on the reconnect, with no replug (bug doc, steps 10–12). The label doesn't stay on our name during the detach, which the plan expected; the disarmed firmware still answers the TV with its own identity. That's acceptable, since it doesn't pin the record.
+- [ ] Warm reboot with the TV on: the label holds (or recovers on the boot claim), and the debug capture shows which address the boot claim takes, and who acknowledged the polls if it isn't Playback 1. This also answers the bug doc's LA 12 question.
 
 ### 4. Redial CEC when the adapter returns
 
@@ -49,7 +44,7 @@ Only if step 3 shows the tty can't carry writes inside `pulse8_disconnect`.
 ### 6. Doc corrections
 
 - [ ] [docs/cec/protocol.md](../cec/protocol.md) § "Advertising our own name (the reverse direction)": a rename applies on the reconnect it forces (not "on the next wake"); a TV-side record formed while the dongle was autonomous persists until the TV re-detects the device (a replug), whatever we advertise afterwards.
-- [ ] [docs/book/src/guide/configuration.md](../book/src/guide/configuration.md), at the `advertise_osd_name` paragraph: a troubleshooting note for a TV that shows a different name for the input (for a Pulse-Eight adapter with an LG TV, "LG DVD Player"), and the replug that clears it.
+- [ ] [docs/book/src/guide/configuration.md](../book/src/guide/configuration.md), at the `advertise_osd_name` paragraph: a troubleshooting note for a TV that shows a different name for the input (for a Pulse-Eight adapter with an LG TV, "LG DVD Player"). With the patched module the label recovers on the next connect; on an unpatched driver (other distros), an HDMI replug clears it.
 - [ ] Move the bug doc to Closed once step 3 passes.
 
 ### 7. Optional, later
@@ -59,5 +54,5 @@ Only if step 3 shows the tty can't carry writes inside `pulse8_disconnect`.
 
 ## Open questions
 
-- Whether the tty can carry writes inside `pulse8_disconnect` (decides between step 1 and step 2).
 - Why this morning's boot claim landed on LA 12 (step 3's reboot capture).
+- Whether the disarm also runs on the shutdown path, where the journal may not capture its log lines; the label after the warm reboot is the practical answer.
