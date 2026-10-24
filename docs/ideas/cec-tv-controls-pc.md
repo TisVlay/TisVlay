@@ -183,6 +183,8 @@ end
 
 - Key events for each press: the kernel path works, and passthrough is a linux-cec flag away. Nothing: the TV doesn't forward keys to this input (check SIMPLINK is on and the PC's input is selected), and section 3 stays "document and stay out".
 
+**Result (2026-10-24, 16:19, LG C3).** With `cec-ctl`'s passthrough claim (`Logical Addresses : 1 (Allow RC Passthrough)`), the remote drove the desktop: the arrows, OK, Exit, CH+/−, the four color keys, rewind, play, pause, fast-forward, stop, Info and Home (`KEY_ROOT_MENU`) each arrived as a key press and release on the `rc-cec` input, and the arrows also reached the focused terminal as keystrokes. The TV's own power key isn't forwarded, but SIMPLINK's device power-off is: it arrived as `KEY_POWER` (scan `0x40`) at 16:20:25, and pox entered suspend in the same second, so KDE's power-button action here is sleep. That's the hazard section 3 names, confirmed: passthrough without a `KEY_POWER` override lets anyone with the remote suspend the PC through SIMPLINK. pox resumed at 16:21:13, `inputattach` restarted after the resume (#212's fix, second time), and the daemon reclaimed without passthrough.
+
 ## Open questions
 
 - **Suspend wake against the label.** Should the TV's power key be able to wake the PC, keeping the dongle armed while suspended and accepting a possibly pinned label after each long suspend, or should a suspended PC disarm it too? This decides the module parameter's default in the NixOS option. The wake doesn't need the dongle armed (Check B′: it woke pox undriven and disarmed), so disarming on suspend may not cost the wake; what's left is whether a long suspend with the dongle armed pins the label. So far: "TisVlay" after a 105 s and a 48 s suspend.
