@@ -33,13 +33,11 @@ Not needed. It was the alternative if the tty couldn't carry writes inside `puls
 
 ### 4. Redial CEC when the adapter returns
 
-- [ ] Today the dial budget (`CONNECT_MAX_ATTEMPTS` × `CONNECT_BACKOFF` in `crates/tisvlay-world/src/systems/mod.rs`) runs out after about 9 s and nothing re-arms the dial, so a late or re-attached `/dev/cecN` leaves CEC down until a manual `reconnect` or the next wake.
-- [ ] Choose between a capped indefinite backoff for CEC dials and a `/dev/cecN` watcher that re-arms the dial when the node appears. Open; decide when this step starts.
+Moved to [cec-device-presence.md](cec-device-presence.md): a device-presence model fed by udev events, with a capped backoff as the safety net.
 
 ### 5. Logs
 
-- [ ] Info-level log on each CEC claim: the logical address claimed and the OSD name advertised (or none).
-- [ ] Info-level log for a failed CEC connect, with the error.
+Moved to [cec-device-presence.md](cec-device-presence.md), § Logs.
 
 ### 6. Doc corrections
 
