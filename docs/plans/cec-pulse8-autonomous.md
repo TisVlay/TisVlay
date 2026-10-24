@@ -43,8 +43,8 @@ Not needed. It was the alternative if the tty couldn't carry writes inside `puls
 
 ### 6. Doc corrections
 
-- [ ] [docs/cec/protocol.md](../cec/protocol.md) § "Advertising our own name (the reverse direction)": a rename applies on the reconnect it forces (not "on the next wake"); a TV-side record formed while the dongle was autonomous persists until the TV re-detects the device (a replug), whatever we advertise afterwards.
-- [ ] [docs/book/src/guide/configuration.md](../book/src/guide/configuration.md), at the `advertise_osd_name` paragraph: a troubleshooting note for a TV that shows a different name for the input (for a Pulse-Eight adapter with an LG TV, "LG DVD Player"). With the patched module the label recovers on the next connect; on an unpatched driver (other distros), an HDMI replug clears it.
+- [x] [docs/cec/protocol.md](../cec/protocol.md) § "Advertising our own name (the reverse direction)": a rename applies on the reconnect it forces (not "on the next wake"); a TV-side record formed while the dongle was autonomous persists until the TV re-detects the device (a replug), whatever we advertise afterwards.
+- [ ] [docs/book/src/guide/configuration.md](../book/src/guide/configuration.md), at the `advertise_osd_name` paragraph: a troubleshooting note for a TV that shows a different name for the input (for a Pulse-Eight adapter with an LG TV, "LG DVD Player"). With the patched module the label recovers on the next connect; on an unpatched driver (other distros), an HDMI replug clears it. Held until the CEC follow-ups near their end, so the user guide is edited once.
 - [x] Move the bug doc to Closed once step 3 passes.
 
 ### 7. Optional, later
