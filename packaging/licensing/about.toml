@@ -53,8 +53,9 @@ ignore-dev-dependencies = true
 # The `[<crate>.clarify]` blocks for the Slint family below feed each
 # vendored crate's `LICENSES/` text into the rendered bundle. This needs
 # cargo-about to honor `license_files` for `LicenseRef-*` licenses
-# (EmbarkStudios/cargo-about#303, first released in 0.9.1) — the flake pins
-# that version; an older cargo-about silently drops the text with a "no
+# (EmbarkStudios/cargo-about#303, first released in 0.9.1) —
+# packaging/nix/cargo-about.nix provides it to both the Nix package and the
+# dev shell; an older cargo-about silently drops the text with a "no
 # license file" warning.
 #
 # `i-slint-backend-testing` has no clarify block: its published
