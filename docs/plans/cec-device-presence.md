@@ -41,24 +41,24 @@ Commit sequence, each one building and testing on its own:
 
 ### 1. `feat(cec)`: claim logs
 
-- [ ] Info on each claim (device, address, name or none); warn on 12, 13 or 15. Standalone.
+- [x] Info on each claim (device, address, name or none); warn on 12, 13 or 15. Standalone.
 
 ### 2. `feat`: the availability model
 
-- [ ] Core: `TvConnector::local_device(&self, &VendorConfig) -> Option<LocalDevice>`, default `None`; `LocalDevice` holds the path, `#[non_exhaustive]` with a constructor, per [docs/build.md](../build.md) § Public API policy. `tisvlay-cec` returns its configured `device`. The mock backend gets a `local_device` config knob (like `reachable_in_standby`) for world tests.
-- [ ] Daemon `devices.rs`, shaped like `netlink.rs`: a pure state struct that reports changes only (deduplicated per TV, re-reported on every `Monitor` so a device-path change through update-config lands), a pure udev-message parser, and an injectable path check. One socket on the udev group through `rtnetlink::sys` (the re-exported `netlink-sys`; no new direct dependency). Bind before the first check, so an event between the two isn't lost. On `ENOBUFS` (a boot coldplug burst), re-check every path and keep going, as `netlink.rs` resyncs. Safety net: re-check unavailable paths every 60 s.
-- [ ] Reactor: `Monitor` from `request_route_monitor`'s call sites (enrollment and dial spawn); removal through the generalized forget effect.
-- [ ] World: `DeviceAvailable`, `AwaitingDependency(reason)` (replacing `AwaitingRoute`), the shared predicate in the gate. Availability ingest runs before `reconcile_connections`, as route ingest does, so a return redials in the same batch.
-- [ ] Startup: when a device watcher is attached, a local-device TV's first dial waits for its first availability report (a `stat`, so instant), instead of racing it and logging a spurious failure at every boot.
-- [ ] The unavailable edge parks the TV and drops its handle. The available edge redials parked TVs and, for any TV without a handle or a dial in flight, clears `RetryAt` and resets `attempts`, keeping the `wake` flag; a TV with a dial in flight is marked so that a failure retries at once.
-- [ ] `Disconnected` on a local-device TV redials after one `CONNECT_BACKOFF`, and the gate defers if the device is gone. That covers a fast remove-and-add the watcher saw as "no change".
-- [ ] A dial that fails while its dependency is absent returns the attempt and keeps the backoff, publishing no `connect-failed` (the existing routeless branch, generalized).
-- [ ] A TV in `PairVerifying` bypasses the availability gate, so a re-pair with the adapter missing fails with its typed reason instead of hanging.
-- [ ] World tests in a new `tests/it/device.rs`, modeled on the carrier suite; daemon tests for the parser and the state struct.
+- [x] Core: `TvConnector::local_device(&self, &VendorConfig) -> Option<LocalDevice>`, default `None`; `LocalDevice` holds the path, `#[non_exhaustive]` with a constructor, per [docs/build.md](../build.md) § Public API policy. `tisvlay-cec` returns its configured `device`. The mock backend gets a `local_device` config knob (like `reachable_in_standby`) for world tests.
+- [x] Daemon `devices.rs`, shaped like `netlink.rs`: a pure state struct that reports changes only (deduplicated per TV, re-reported on every `Monitor` so a device-path change through update-config lands), a pure udev-message parser, and an injectable path check. One socket on the udev group through `rtnetlink::sys` (the re-exported `netlink-sys`; no new direct dependency). Bind before the first check, so an event between the two isn't lost. On `ENOBUFS` (a boot coldplug burst), re-check every path and keep going, as `netlink.rs` resyncs. Safety net: re-check unavailable paths every 60 s.
+- [x] Reactor: `Monitor` from `request_route_monitor`'s call sites (enrollment and dial spawn); removal through the generalized forget effect.
+- [x] World: `DeviceAvailable`, `AwaitingDependency` (replacing `AwaitingRoute`; the waiting reason is read from the facts, not stored on the marker), `Parked` (replacing `CarrierParked`), the shared predicate in the gate. Availability ingest runs before `reconcile_connections`, as route ingest does, so a return redials in the same batch.
+- [x] Startup: when a device watcher is attached, a local-device TV's first dial waits for its first availability report (a `stat`, so instant), instead of racing it and logging a spurious failure at every boot. Only the daemon's `run` attaches the watcher; the public `serve` the wire tests use doesn't, so their CEC fakes dial as before.
+- [x] The unavailable edge parks the TV and drops its handle. The available edge redials parked TVs and, for any TV without a handle or a dial in flight, clears `RetryAt` and resets `attempts`, keeping the `wake` flag.
+- [x] `Disconnected` on a local-device TV redials after one `CONNECT_BACKOFF`, and the gate defers if the device is gone. That covers a fast remove-and-add the watcher saw as "no change".
+- [x] A dial that fails while its dependency is absent returns the attempt and keeps the backoff, publishing no `connect-failed` (the existing routeless branch, generalized).
+- [x] A TV in `PairVerifying` bypasses the availability gate, so a re-pair with the adapter missing fails with its typed reason instead of hanging. The bypass covers the route gate too, so an LG re-pair with no route fails the same way.
+- [x] World tests in a new `tests/it/device.rs`, modeled on the carrier suite; daemon tests for the parser and the state struct.
 
 ### 3. `feat`: the safety-net backoff and failure logs
 
-- [ ] `retry_delay(attempts, persistent) -> Duration` as one pure function next to `CONNECT_BACKOFF`, with unit tests; a saturating attempt counter.
+- [ ] `retry_delay(attempts, persistent) -> Duration` as one pure function next to `CONNECT_BACKOFF`, with unit tests; a saturating attempt counter. A TV with a dial in flight when its device returns is marked so that a failure retries at once (with a constant 3 s backoff this only matters once the gap grows).
 - [ ] Persistent retry only for device-level failures of local-device TVs (§ Retry scope), with the connect errors classified; wake dials keep the budget and fall back to a plain retry.
 - [ ] Failure streak logging and `connect-failed` once per streak; the warn when a network TV's budget runs out.
 

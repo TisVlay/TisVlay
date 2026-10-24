@@ -117,6 +117,13 @@ pub struct MockVendorConfig {
     /// `power_on`. Default `false` so existing mock-based tests are unaffected.
     #[serde(default)]
     pub emulate_screen_via_power: bool,
+
+    /// When set, the connector reports this path as its `local_device` —
+    /// modeling a backend (CEC) whose connection needs a device node, so
+    /// the daemon gates the dial on its availability. Default `None`
+    /// (network-shaped) so existing mock-based tests are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_device: Option<String>,
 }
 
 fn default_wake() -> bool {
@@ -170,6 +177,7 @@ impl Default for MockVendorConfig {
             disable_subscription: false,
             reachable_in_standby: false,
             emulate_screen_via_power: false,
+            local_device: None,
         }
     }
 }

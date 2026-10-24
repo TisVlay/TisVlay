@@ -9,6 +9,7 @@
 mod support;
 
 mod carrier;
+mod device;
 mod dispatch;
 mod pairing_profiles;
 mod reload;

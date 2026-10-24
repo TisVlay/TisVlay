@@ -4,6 +4,7 @@
 mod acl;
 mod arp;
 mod bridge;
+mod devices;
 mod discovery;
 mod dpms;
 mod logind;
@@ -125,6 +126,9 @@ pub struct Stack {
     /// Route-monitor requests from the reactor, awaiting the netlink
     /// watcher (`run` takes them for `spawn_link_monitor`).
     routes: Option<mpsc::UnboundedReceiver<tisvlay_world::RouteRequest>>,
+    /// Device-watcher requests from the reactor, when `run` booted the
+    /// stack with device watching (`run` takes them for the watcher).
+    devices: Option<mpsc::UnboundedReceiver<tisvlay_world::DeviceRequest>>,
     /// Shared boot-`Startup` readiness, written by the remote-session
     /// subscribers; `run` awaits it before the WoL dispatch.
     startup_ready: Arc<StartupReadiness>,
@@ -355,6 +359,21 @@ pub async fn serve(
     vendors: Vec<VendorReg>,
     store_path: Option<&Path>,
 ) -> Result<Stack> {
+    serve_stack(socket, site, vendors, store_path, false).await
+}
+
+/// [`serve`], optionally attaching the device watcher's outlet before the
+/// boot dials. With it attached, a local-device TV's dial waits for the
+/// watcher's first report, so only an entry point that then spawns the
+/// watcher ([`run`]) attaches it; the wire tests serve without one and dial
+/// their CEC fakes as before.
+async fn serve_stack(
+    socket: &Path,
+    site: &str,
+    vendors: Vec<VendorReg>,
+    store_path: Option<&Path>,
+    watch_devices: bool,
+) -> Result<Stack> {
     let session = open_socket(socket).await?;
     let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vendors
         .iter()
@@ -388,6 +407,11 @@ pub async fn serve(
     };
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
+    let devices_rx = watch_devices.then(|| {
+        let (devices_tx, devices_rx) = mpsc::unbounded_channel();
+        reactor.set_device_monitor(devices_tx);
+        devices_rx
+    });
     // Boot state applies before the reactor runs. The editable default
     // profile comes first, so the catalog always has the inheritance
     // baseline; the store's rows follow and upsert over it, so user edits
@@ -587,6 +611,7 @@ pub async fn serve(
         daemon,
         world,
         routes: Some(routes_rx),
+        devices: devices_rx,
         startup_ready,
         stored,
         reloads,
@@ -670,11 +695,12 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         .with_retry(tisvlay_cec::CecBackend::new().verify_retry_config())
         .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
-    let mut stack = serve(
+    let mut stack = serve_stack(
         &options.socket,
         &options.site,
         vendors,
         options.store.as_deref(),
+        true,
     )
     .await?;
     // The socket is bound and chmod'd 0660 by now; ground the socket ACL
@@ -706,6 +732,13 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
             .routes
             .take()
             .expect("serve fills the route channel and only run takes it, once"),
+    );
+    devices::spawn_device_watcher(
+        stack.world.clone(),
+        stack
+            .devices
+            .take()
+            .expect("run serves with device watching and only it takes the channel, once"),
     );
     tokio::spawn(probe::probe_task(
         stack.daemon.session().clone(),

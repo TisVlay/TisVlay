@@ -17,12 +17,12 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, DialSeq, Effect, KnownVendors, LastPersisted, Outbox, PairingIndex, ProfileIndex,
-    RemoteArmed, Site, SystemProfile, TvIndex,
+    Clock, DeviceWatch, DialSeq, Effect, KnownVendors, LastPersisted, Outbox, PairingIndex,
+    ProfileIndex, RemoteArmed, Site, SystemProfile, TvIndex,
 };
 use crate::events::{
-    AckReply, AnyReply, BackendCmd, BackendEvent, Command, InEvent, PairingUpdate, Reply,
-    RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
+    Reply, RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect, WireError,
 };
 use crate::systems::build_schedule;
 use crate::systems::commands as handle;
@@ -36,6 +36,7 @@ pub struct Reactor {
     effects_tx: mpsc::UnboundedSender<WireEffect>,
     persist_tx: Option<mpsc::UnboundedSender<StoreMsg>>,
     routes_tx: Option<mpsc::UnboundedSender<RouteRequest>>,
+    devices_tx: Option<mpsc::UnboundedSender<DeviceRequest>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
@@ -97,6 +98,7 @@ impl Reactor {
         world.init_resource::<ProfileIndex>();
         world.init_resource::<LastPersisted>();
         world.init_resource::<DialSeq>();
+        world.init_resource::<DeviceWatch>();
         world.init_resource::<Outbox>();
         world.init_resource::<Messages<InEvent>>();
         world.insert_resource(FallbackErrorHandler(log_world_error));
@@ -114,6 +116,7 @@ impl Reactor {
                 effects_tx,
                 persist_tx: None,
                 routes_tx: None,
+                devices_tx: None,
                 vendor_retry: HashMap::new(),
             },
             effects_rx,
@@ -134,6 +137,17 @@ impl Reactor {
     /// monitoring — fine for worlds with no real network (tests).
     pub fn set_route_monitor(&mut self, tx: mpsc::UnboundedSender<RouteRequest>) {
         self.routes_tx = Some(tx);
+    }
+
+    /// Attach the device-watcher outlet: `Monitor`/`Forget` requests for
+    /// TVs whose connector names a local device node flow to the daemon's
+    /// device watcher, which answers with [`InEvent::DeviceAvailability`].
+    /// With one attached, a local-device TV's first dial waits for the
+    /// watcher's first report. Without one, no device monitoring: those
+    /// TVs dial as network TVs without a route monitor do (tests).
+    pub fn set_device_monitor(&mut self, tx: mpsc::UnboundedSender<DeviceRequest>) {
+        self.devices_tx = Some(tx);
+        self.world.resource_mut::<DeviceWatch>().0 = true;
     }
 
     /// Apply the boot state before [`run`](Self::run): `stored` (the
@@ -204,9 +218,12 @@ impl Reactor {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
                 }
-                Effect::ForgetRoute { tv } => {
+                Effect::ForgetMonitors { tv } => {
                     if let Some(tx) = &self.routes_tx {
                         let _ = tx.send(RouteRequest::Forget { tv });
+                    }
+                    if let Some(tx) = &self.devices_tx {
+                        let _ = tx.send(DeviceRequest::Forget { tv });
                     }
                 }
                 Effect::SpawnConnect {
@@ -230,7 +247,7 @@ impl Reactor {
                             config_rows: connector.display_config(&config),
                             diagnostic_rows: connector.display_diagnostics(&config),
                         });
-                        self.request_route_monitor(tv, connector.as_ref(), &config);
+                        self.request_monitors(tv, connector.as_ref(), &config);
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
                         tokio::spawn(backend::connect_flow(
                             tv,
@@ -316,7 +333,7 @@ impl Reactor {
                             config_rows: connector.display_config(&config),
                             diagnostic_rows: connector.display_diagnostics(&config),
                         });
-                        self.request_route_monitor(tv, connector.as_ref(), &config);
+                        self.request_monitors(tv, connector.as_ref(), &config);
                     }
                 }
                 Effect::Persist(snapshot) => match &self.persist_tx {
@@ -562,22 +579,26 @@ impl Reactor {
         }
     }
 
-    /// Ask the netlink monitor to route-resolve and watch this TV's
-    /// address. Only network-dependent transports with a primary
-    /// descriptor participate; the monitor itself skips descriptors
-    /// that don't parse as IPs (mock addresses).
-    fn request_route_monitor(
-        &self,
-        tv: uuid::Uuid,
-        connector: &dyn TvConnector,
-        config: &VendorConfig,
-    ) {
-        let Some(tx) = &self.routes_tx else { return };
-        if !connector.transport().is_network_dependent() {
-            return;
-        }
-        if let Some(host) = connector.primary_descriptor(config) {
+    /// Ask the watchers to monitor what this TV's connection depends on.
+    /// The netlink monitor route-resolves and watches a network-dependent
+    /// TV's address (it skips descriptors that don't parse as IPs, like
+    /// mock addresses); the device watcher watches a local device node.
+    /// Sent at enrollment and on every dial spawn, so a config change
+    /// that moves the address or the node reaches both.
+    fn request_monitors(&self, tv: uuid::Uuid, connector: &dyn TvConnector, config: &VendorConfig) {
+        if let Some(tx) = &self.routes_tx
+            && connector.transport().is_network_dependent()
+            && let Some(host) = connector.primary_descriptor(config)
+        {
             let _ = tx.send(RouteRequest::Monitor { tv, host });
+        }
+        if let Some(tx) = &self.devices_tx
+            && let Some(device) = connector.local_device(config)
+        {
+            let _ = tx.send(DeviceRequest::Monitor {
+                tv,
+                path: device.path,
+            });
         }
     }
 }
@@ -592,6 +613,7 @@ fn transport_facts(
         network_dependent: connector.transport().is_network_dependent(),
         survives_ip_change: connector.survives_source_ip_change(),
         emulate_screen_via_power: connector.emulate_screen_via_power(config),
+        local_device: connector.local_device(config).is_some(),
     }
 }
 

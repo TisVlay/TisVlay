@@ -14,8 +14,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use linux_cec::operand::PowerStatus;
 use tisvlay_core::{
-    Credentials, Error, PairingSession, PairingState, Result, Transport, TvConnection, TvConnector,
-    VendorConfig,
+    Credentials, Error, LocalDevice, PairingSession, PairingState, Result, Transport, TvConnection,
+    TvConnector, VendorConfig,
 };
 use tracing::instrument;
 
@@ -104,6 +104,15 @@ impl TvConnector for CecConnector {
             .parse::<CecVendorConfig>(crate::VENDOR_ID)
             .map(|c| c.emulate_screen_via_power)
             .unwrap_or(false)
+    }
+
+    fn local_device(&self, vendor_config: &VendorConfig) -> Option<LocalDevice> {
+        // The adapter's node: a USB adapter comes and goes with its cable
+        // (and its inputattach unit), so the daemon waits for it.
+        vendor_config
+            .parse::<CecVendorConfig>(crate::VENDOR_ID)
+            .ok()
+            .map(|c| LocalDevice::new(c.device))
     }
 
     #[instrument(skip(self, vendor_config))]
@@ -327,6 +336,19 @@ mod tests {
 
     fn connector(initial: PowerStatus) -> CecConnector {
         CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new(initial)))
+    }
+
+    #[test]
+    fn the_local_device_is_the_configured_node() {
+        let config = VendorConfig::from_typed(&CecVendorConfig {
+            device: "/dev/cec-pulse8".into(),
+            ..CecVendorConfig::default()
+        })
+        .unwrap();
+        assert_eq!(
+            connector(PowerStatus::On).local_device(&config),
+            Some(LocalDevice::new("/dev/cec-pulse8"))
+        );
     }
 
     #[test]

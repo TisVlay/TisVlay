@@ -28,11 +28,12 @@ use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DialSeq, DispatchRetry,
-    DispatchVerify, Effect, KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector,
-    MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef,
-    PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed,
-    RetryAt, Site, State, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
+    AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceWatch,
+    DialSeq, DispatchRetry, DispatchVerify, Effect, KnownVendors, LastPersisted, LatestDial,
+    Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying, PairingEnroll,
+    PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, ProfileAction, ProfileBody,
+    ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, Site, State, SystemProfile,
+    TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
@@ -57,6 +58,7 @@ pub(crate) fn build_schedule() -> Schedule {
             apply_transport_facts,
             apply_pairing_updates,
             apply_route_resolutions,
+            apply_device_availability,
             handle_carrier_events,
             verify_dispatch,
             reconcile_input,
