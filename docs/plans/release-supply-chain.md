@@ -29,6 +29,10 @@ v0.4.0 is held until all of it lands, so it's the first release with the full se
   - Not inside the packages: no convention exists, and scanners read the embedded data instead ([docs/ideas/in-package-sbom.md](../ideas/in-package-sbom.md)).
 - **Two pre-publish checks.** `release.yml` verifies every package and binary before it creates the draft, so a signing mistake means no draft. `just verify-release vX.Y.Z` downloads the draft the way a user would and runs the install docs' exact commands, which keeps those commands from drifting. After the promote it also runs `gh release verify`, since the release attestation only exists then.
 - **One SBOM recipe.** `just sbom` becomes the release SBOM generator for the host architecture, and the release build runs it. Switching to Cargo's own SBOM precursor files once they're stable means changing only that recipe. `ci.yml`'s workspace-SBOM step and its artifact go.
+- **Sigstore bundles as release assets too.** `gh attestation verify` looks attestations up through the GitHub API, so the person verifying needs gh signed in. The signing job's bundles also go into the draft as `.sigstore.json` assets, so anyone can verify offline or without a GitHub account, and the bundles are locked in with the release. They're also what OpenSSF Scorecard's Signed-Releases check looks for, since it only checks release assets.
+- **Publishing needs the maintainer's approval, not just a `v*` tag.** A second account has write access, and write access can push tags and publish releases, while the `crates-io` and `cachix` environments only check the tag's name. So both environments require the maintainer's approval, and a tag ruleset limits creating, moving and deleting `v*` tags to repository admins, as the `main` ruleset does for `main`. release-plz's per-crate tags (`tisvlay-core-v…`) don't match `v*`.
+- **A security policy.** `SECURITY.md` says how to report a vulnerability, and GitHub's private vulnerability reporting is turned on, so reports don't have to be public issues.
+- **The 0.4.0 bump comes from `release-plz update`, run locally.** It picks the version from the conventional-commit history, updates the workspace version and the internal dependency requirements, and writes each crate's first `CHANGELOG.md`; the result is reviewed and merged as a normal PR. The release-PR workflow (`release-plz.yml`) stays off: a PR opened with the workflow's own token doesn't trigger CI, so it could never pass the `CI result` check `main` requires. Turning it on later means giving it a GitHub App token.
 
 ## SBOM tooling survey (2026-10-23)
 
@@ -66,7 +70,7 @@ Trends:
 
 ### 0. Before starting (maintainer)
 
-- [ ] Delete the `v0.4.0` draft and the `v0.4.0` tag. The cachix pins `v0.4.0-x86_64-linux` and `v0.4.0-aarch64-linux` point at the mislabeled build; the re-cut's push moves them (`--keep-revisions 1`).
+- [x] Delete the `v0.4.0` draft and the `v0.4.0` tag (2026-10-23). The cachix pins `v0.4.0-x86_64-linux` and `v0.4.0-aarch64-linux` still point at the mislabeled build; the re-cut's push moves them (`--keep-revisions 1`).
 
 ### 1. Workflow hardening (its own PR)
 
@@ -80,11 +84,53 @@ This goes first because steps 3 and 4 rewrite `release.yml`.
 - [x] Move `dorny/test-reporter` into a `workflow_run` workflow (`test-report.yml`): PRs from forks get a read-only token and can't create check runs.
 - [x] A one-week Dependabot cooldown for both ecosystems, which zizmor's Dependabot audit asked for.
 
-### 2. Immutable releases (maintainer, settings)
+### 2. Repository settings and security policy
 
-- [ ] Enable release immutability for the repo (Settings → General → Releases, or `gh api -X PUT repos/TisVlay/TisVlay/immutable-releases`), before the v0.4.0 promote. `GET` on that endpoint currently returns `{"enabled":false}`.
-- [ ] Fix the comments that assume a tag can move after publishing: the `nix-cache` job's Push step in `release.yml` ("a re-pushed tag moves the pin") and the "Release pins" bullet in [nix-binary-cache.md](nix-binary-cache.md). A tag can now only move before the promote.
-- No other changes. release-plz's per-package tags (`tisvlay-core-v0.4.0` and so on) aren't release tags, and `publish-crates` never modifies the GitHub release (`git_release_enable = false`).
+Settings the maintainer applies (an admin token is needed), any time before the v0.4.0 tag:
+
+- [ ] **Immutable releases**, before the v0.4.0 promote. `GET` on the endpoint currently returns `{"enabled":false}`.
+
+  ```bash
+  gh api -X PUT repos/TisVlay/TisVlay/immutable-releases
+  ```
+
+- [ ] **Required reviewers** on the `crates-io` and `cachix` environments: Settings → Environments → each one → Required reviewers → `ruffsl`, with "Prevent self-review" left off so you can approve your own release. Keep the `v*` tag rule. Afterwards, check that each still admits only `v*` tags and now lists a reviewer:
+
+  ```bash
+  for e in crates-io cachix; do
+    gh api "repos/TisVlay/TisVlay/environments/$e" --jq '{name, rules: [.protection_rules[].type]}'
+    gh api "repos/TisVlay/TisVlay/environments/$e/deployment-branch-policies" --jq '[.branch_policies[] | "\(.type):\(.name)"]'
+  done
+  ```
+
+  Each tag build's `nix-cache` job, and each `publish-crates` run after a promote, then waits for one approval.
+- [ ] **Tag ruleset:** only repository admins may create, move or delete `v*` tags, with the same bypass as the `main` ruleset.
+
+  ```bash
+  gh api -X POST repos/TisVlay/TisVlay/rulesets --input - <<'EOF'
+  {
+    "name": "release tags",
+    "target": "tag",
+    "enforcement": "active",
+    "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+    "rules": [{ "type": "creation" }, { "type": "update" }, { "type": "deletion" }],
+    "bypass_actors": [{ "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }]
+  }
+  EOF
+  ```
+
+- [ ] **Private vulnerability reporting:**
+
+  ```bash
+  gh api -X PUT repos/TisVlay/TisVlay/private-vulnerability-reporting
+  ```
+
+- [ ] **`SECURITY.md`** (a PR): which versions get fixes, how to report (the private reporting form), and what to expect after reporting.
+
+With immutability on:
+
+- [ ] Fix the comments that assume a tag can move after publishing: the `nix-cache` job's Push step in `release.yml` ("a re-pushed tag moves the pin") and the "Release pins" bullet in [nix-binary-cache.md](nix-binary-cache.md). A tag can now only move before the promote, and only by an admin.
+- Nothing else changes. release-plz's per-package tags (`tisvlay-core-v0.4.0` and so on) aren't release tags, and `publish-crates` never modifies the GitHub release (`git_release_enable = false`).
 
 ### 3. Auditable builds and SBOM generation
 
@@ -105,12 +151,14 @@ This goes first because steps 3 and 4 rewrite `release.yml`.
   - `build` (matrix: `ubuntu-latest`, `ubuntu-26.04-arm`), `contents: read` only. Today's build steps plus step 3's `sbom` and `sbom-check`. Uploads the packages, the two binaries and the two SBOMs for each architecture.
   - `attest`, which needs `build` and has `id-token: write`, `attestations: write` and `contents: read`. It downloads the build output and runs only `actions/attest`:
     - provenance for the six packages and four binaries, in one call with `subject-checksums`. The binary subjects are named by architecture (e.g. `x86_64/tisvlay`), since both architectures' files share a name;
-    - one SBOM attestation per binary per architecture (`sbom-path`), whose subjects are that binary and its architecture's three packages.
+    - one SBOM attestation per binary per architecture (`sbom-path`), whose subjects are that binary and its architecture's three packages;
+    - an upload of each attestation's Sigstore bundle (the action's `bundle-path` output), named for what it signs: `provenance.sigstore.json` and, for example, `tisvlay-x86_64.cdx.sigstore.json`.
 - [ ] `release.yml`'s tag-push `build` job becomes a call to `./.github/workflows/build-packages.yml`. The calling job grants `id-token: write`, `attestations: write` and `contents: read`; GitHub requires the caller and the reusable workflow to both have them.
 - [ ] `release.yml`'s `release` job (`contents: write`, `attestations: read`) does the following before it creates the draft:
   - runs `gh attestation verify` on each package and binary with `--signer-workflow TisVlay/TisVlay/.github/workflows/build-packages.yml --source-ref "$GITHUB_REF" --deny-self-hosted-runners`, then again with `--predicate-type https://cyclonedx.org/bom` for the SBOMs (confirm that predicate URI against `actions/attest` while implementing);
   - extracts the binaries from each `.deb`, `.rpm` and `.pkg.tar.zst` and verifies those as well, which proves the installed-binary claim for every format;
-  - writes `checksums-sha256.txt` over the packages and SBOMs, then creates the draft and uploads.
+  - verifies again from the bundles alone (`--bundle`), so a bundle that doesn't verify never ships;
+  - writes `checksums-sha256.txt` over the packages, SBOMs and bundles, then creates the draft and uploads.
 - [ ] The signer path appears in `release.yml`, the `verify-release` recipe and the book. A comment at each points to the others.
 
 ### 5. Verification tooling and docs
@@ -124,14 +172,16 @@ This goes first because steps 3 and 4 rewrite `release.yml`.
   - a downloaded package: `gh attestation verify <file> -R TisVlay/TisVlay --signer-workflow TisVlay/TisVlay/.github/workflows/build-packages.yml --source-ref refs/tags/vX.Y.Z`;
   - an installed binary: the same command on `/usr/bin/tisvlay`;
   - the SBOM: add `--predicate-type https://cyclonedx.org/bom --format json --jq '.[].verificationResult.statement.predicate'`;
+  - without a GitHub account: the release's `.sigstore.json` bundle with cosign or sigstore-python, or `gh attestation verify --bundle` offline. `just verify-release` runs the documented command so it can't drift;
   - the release itself: `gh release verify vX.Y.Z` and `gh release verify-asset vX.Y.Z <file>`;
   - Nix: the cachix signing key already covers prebuilt store paths (`packaging/nix/README.md`).
 - [ ] `packaging/README.md`: the release pipeline's new shape (build → attest → verify → draft → promote).
 
 ### 6. The v0.4.0 re-cut
 
-- [ ] Bump the workspace to 0.4.0, tag it, and watch the run: the draft should appear only after verification passes. Run `just verify-release v0.4.0` on the draft.
-- [ ] Promote it, then run `just verify-release v0.4.0` again, now including `gh release verify`. Check that the release page shows "Immutable" and that the attestations appear in the repo's Actions tab.
+- [ ] Add release-plz and cargo-semver-checks to the dev shell. On a branch, run `release-plz update`, review the version bump and the new `CHANGELOG.md` files, and merge it as a normal PR.
+- [ ] Tag the merge commit `v0.4.0` and watch the run: the draft should appear only after verification passes, and the `nix-cache` job waits for your approval. Run `just verify-release v0.4.0` on the draft.
+- [ ] Promote it and approve the `publish-crates` deployment, then run `just verify-release v0.4.0` again, now including `gh release verify`. Check that the release page shows "Immutable" and that the attestations appear in the repo's Actions tab.
 - [ ] On a machine with the `.deb` installed, run `gh attestation verify /usr/bin/tisvlay …`.
 
 ### Related fix (separate PR, not blocking)
@@ -154,6 +204,8 @@ The flake pins cargo-about 0.9.1 only for the dev shell (`cargoAbout` in `flake.
 - **Cargo's `-Z sbom` precursor files:** the long-term answer, but nightly-only. Revisit once it's stable; `just sbom` is the one place to change.
 - **dist (cargo-dist):** bundles cargo-auditable, cargo-cyclonedx and GitHub attestations, but replacing the nfpm and zigbuild pipeline to get them isn't worth it.
 - **An SBOM inside the packages:** deferred to [docs/ideas/in-package-sbom.md](../ideas/in-package-sbom.md).
+- **OpenSSF Scorecard:** deferred to [docs/ideas/openssf-scorecard.md](../ideas/openssf-scorecard.md). zizmor already gates the workflow checks it would score.
+- **The release-PR workflow with the default token:** its PRs don't trigger CI, so they can't pass `main`'s required checks; see Decisions.
 - **Attesting the Nix outputs:** cachix already signs them, Nix users verify with the cache key, and nobody would run `gh attestation verify` on a store path.
 - **Attesting the `.crate` files:** no crates.io user would check a GitHub attestation for them, and trusted publishing already ties each publish to `release.yml`.
 

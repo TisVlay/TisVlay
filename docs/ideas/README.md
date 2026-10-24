@@ -62,6 +62,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Seat-watch regression coverage over a fake logind Seat surface](seat-watch-fake-logind-coverage.md)
 - [Cache `main` builds in tisvlay.cachix.org (closure-only push, release pins)](nix-cache-main-builds.md)
 - [SBOM file inside the distro packages (no install-location convention yet; scanners read the auditable binaries)](in-package-sbom.md)
+- [OpenSSF Scorecard (zizmor already gates the workflow checks; what's left is a badge and repo settings)](openssf-scorecard.md)
 
 ## Diagnostics & telemetry
 
