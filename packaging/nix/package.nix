@@ -45,8 +45,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeBuildInputs = [
     # build.rs (tisvlay-gui-app) and preBuild both invoke cargo-about for
     # the same THIRD-PARTY-LICENSES.html — embedded in the binary and
-    # installed to share/doc/ respectively.
-    cargo-about
+    # installed to share/doc/ respectively. At least 0.9.1, or the Slint
+    # crates' license text goes missing (./cargo-about.nix).
+    (callPackage ./cargo-about.nix { inherit cargo-about; })
     pkg-config
     # Setup-hook that copies `desktopItems` into $out/share/applications/.
     # Standard nixpkgs idiom — 622 packages use this pattern.
@@ -117,11 +118,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     export LD_LIBRARY_PATH="${lib.makeLibraryPath finalAttrs.rpathLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   '';
 
-  # Disable cargo-about's clearlydefined.io fallback — the Nix sandbox
-  # has no network. Sed targets the build copy only; the checked-in
-  # about.toml keeps clearlydefined enabled for dev / CI runs.
+  # No network setup needed: cargo-about dropped its clearlydefined.io
+  # lookup (EmbarkStudios/cargo-about#287), and 0.9.1 rejects the old
+  # `no-clearly-defined` key this step used to insert.
   preBuild = ''
-    sed -i '1ino-clearly-defined = true' packaging/licensing/about.toml
     cargo about generate \
       --config packaging/licensing/about.toml \
       --workspace --all-features --locked --fail \
