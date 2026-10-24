@@ -64,14 +64,20 @@ jobs:
       - name: Toolchain
         run: rustup show
 
+      # Pinned to the flake's versions, so the release build matches the dev
+      # shell's; bump them together after a `nix flake update`. cargo-about
+      # is the same 0.9.1 as packaging/nix/cargo-about.nix and ci.yml.
       - name: Setup
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: |
-            cargo-about
-            cargo-nfpm
-            cargo-zigbuild
+            cargo-about@0.9.1
+            cargo-auditable@0.7.6
+            cargo-cyclonedx@0.5.9
+            cargo-nfpm@0.1.3
+            cargo-zigbuild@0.23.4
             just
+            rust-audit-info@0.5.4
 
       # `zig` is not in install-action's manifest, so listing it above sends
       # it to the cargo-binstall fallback — which can only resolve crates.io
@@ -91,6 +97,11 @@ jobs:
       - name: Package
         run: just package-all
 
+      # One SBOM per shipped binary; the job fails if one lists different
+      # crates than the binary embeds.
+      - name: SBOMs
+        run: just sbom-check
+
       - name: Upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -100,6 +111,7 @@ jobs:
             target/nfpm-dist/tisvlay_*.deb
             target/nfpm-dist/tisvlay-*.rpm
             target/nfpm-dist/tisvlay-*.pkg.tar.zst
+            target/sbom/tisvlay-*.cdx.json
 
   # Phase 1, continued: one draft release with both architectures' packages
   # and a single checksum file. One job creates it, so the build legs can't
@@ -120,7 +132,7 @@ jobs:
       - name: Checksums
         run: |
           cd packages
-          sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst > checksums-sha256.txt
+          sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst tisvlay-*.cdx.json > checksums-sha256.txt
           cat checksums-sha256.txt
 
       # One draft per tag. A rerun (of this job or of the tag push) refreshes
@@ -137,7 +149,7 @@ jobs:
         run: |
           shopt -s failglob
           cd packages
-          files=(tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst checksums-sha256.txt)
+          files=(tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst tisvlay-*.cdx.json checksums-sha256.txt)
           if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
             gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG" "${files[@]}"
           elif [ "$draft" = true ]; then
@@ -195,8 +207,9 @@ jobs:
       # the vendored crate sources are build-only and mostly missing from
       # cache.nixos.org (docs/ideas/nix-cache-main-builds.md). Then pin it
       # under the tag so cache churn can't evict it. Keeping one revision
-      # means a re-pushed tag moves the pin to the new build, and the old
-      # one falls to normal eviction.
+      # means a tag moved before its release is published (only admins can
+      # move `v*` tags, and a published release's tag can't move) moves the
+      # pin to the new build, and the old one falls to normal eviction.
       - name: Push
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}

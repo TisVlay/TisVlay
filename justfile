@@ -196,18 +196,6 @@ licenses-html:
         packaging/licensing/about.html.hbs \
         -o packaging/licensing/THIRD-PARTY-LICENSES.html
 
-# Whole-workspace SBOM (SPDX 2.3) from the committed Cargo.lock, written under
-# target/sbom/ (gitignored). A supply-chain artifact, not a gate — the CI job
-# uploads it and it is available on demand. cargo-sbom emits one document to
-# stdout, so a single redirect is the whole recipe.
-sbom_dir := "target/sbom"
-
-[group('check')]
-sbom:
-    mkdir -p {{ sbom_dir }}
-    cargo sbom --output-format spdx_json_2_3 > {{ sbom_dir }}/tisvlay.spdx.json
-    @echo "wrote {{ sbom_dir }}/tisvlay.spdx.json"
-
 # --- i18n / translation catalogs ---------------------------------------
 #
 # One translatable crate today: `tisvlay-gui` (Slint UI + Rust). It owns
@@ -544,9 +532,12 @@ _package_triple := package_arch + "-unknown-linux-gnu"
 # suffix when invoking cargo.
 # Crate scoping comes from `workspace.default-members` (the shipping
 # binaries) in the root Cargo.toml — no `-p` flags repeated here.
+# cargo-auditable embeds each binary's dependency list (a `.dep-v0`
+# section), which scanners such as `cargo audit bin`, Trivy and grype read,
+# and which `just sbom-check` compares with the SBOMs.
 [private]
 package-build:
-    cargo zigbuild --profile dist \
+    cargo auditable zigbuild --profile dist \
         --target {{ _package_triple }}.{{ glibc_baseline }}
     ln -sfn {{ _package_triple }}/dist target/nfpm-dist
 
@@ -582,6 +573,57 @@ package-archlinux: licenses-html completions package-build
 # Build all package formats
 [group('package')]
 package-all: package-deb package-rpm package-archlinux
+
+sbom_dir := "target/sbom"
+
+# One SBOM per shipped binary for the host architecture's release build
+# (CycloneDX 1.5 JSON, with licenses and checksums), written to target/sbom/
+# as <binary>-<version>-<arch>.cdx.json; the release attaches them. Each is
+# limited to its binary's target and default features, as the release build
+# is. cargo-cyclonedx works from cargo metadata, not the build, so
+# `just sbom-check` compares them with the built binaries. It writes one file
+# per workspace binary next to each crate's Cargo.toml, so the recipe keeps
+# the shipped two and deletes the rest. SOURCE_DATE_EPOCH (the commit time)
+# makes reruns identical.
+[group('package')]
+sbom:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf {{ sbom_dir }} && mkdir -p {{ sbom_dir }}
+    SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo cyclonedx --quiet \
+        --describe binaries --target {{ _package_triple }} \
+        --format json --spec-version 1.5
+    for shipped in tisvlay-cli/tisvlay tisvlay-gui-app/tisvlay-gui; do
+        crate=${shipped%/*} bin=${shipped#*/}
+        generated=crates/$crate/${bin}_bin.cdx.json
+        version=$(jq -r .metadata.component.version "$generated")
+        mv "$generated" "{{ sbom_dir }}/$bin-$version-{{ package_arch }}.cdx.json"
+    done
+    rm -f crates/*/*_bin.cdx.json
+    ls {{ sbom_dir }}
+
+# Fail if an SBOM lists different crates than its release binary embeds
+# (cargo-auditable). Run after `just package-all`. The root crate is the one
+# expected difference: the SBOM describes it as the binary itself, in
+# metadata.component, so it's left out of the comparison.
+[group('package')]
+sbom-check: sbom
+    #!/usr/bin/env bash
+    set -euo pipefail
+    status=0
+    for sbom in {{ sbom_dir }}/*.cdx.json; do
+        bin=$(jq -r .metadata.component.name "$sbom")
+        binary=target/nfpm-dist/$bin
+        [ -f "$binary" ] || { echo "$binary is missing: run \`just package-all\` first" >&2; exit 1; }
+        listed=$(jq -r '.components[] | "\(.name)@\(.version)"' "$sbom" | sort -u)
+        embedded=$(rust-audit-info "$binary" | jq -r '.packages[] | select(.root != true) | "\(.name)@\(.version)"' | sort -u)
+        if diff -u --label "$sbom" --label "$binary (embedded)" <(echo "$listed") <(echo "$embedded"); then
+            echo "$bin: $(wc -l <<< "$listed") crates, SBOM and binary agree"
+        else
+            status=1
+        fi
+    done
+    exit "$status"
 
 # Package the crates.io crates and build each from its packaged source,
 # the way crates.io will (docs/build.md "First-publish checklist"). One

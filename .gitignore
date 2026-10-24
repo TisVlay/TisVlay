@@ -51,3 +51,7 @@ bench-results/
 # ~2.6 MB vendored bundle; keep it out of git.
 /docs/book/mermaid.min.js
 /docs/book/mermaid-init.js
+
+# cargo-cyclonedx output (`just sbom` moves the shipped binaries' SBOMs to
+# target/sbom/ and deletes the rest).
+/crates/*/*.cdx.json

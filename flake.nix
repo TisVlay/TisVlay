@@ -138,8 +138,15 @@
                 # cargo-shear finds unused and misplaced dependencies
                 # (`just shear`) by parsing sources; no build needed.
                 cargo-shear
-                # cargo-sbom emits a whole-workspace SBOM (SPDX) for `just sbom`.
-                cargo-sbom
+                # The release build's supply-chain tools: cargo-auditable embeds
+                # each binary's dependency list (`just package-*`), and
+                # cargo-cyclonedx writes the per-binary SBOMs that `just
+                # sbom-check` compares with it through rust-audit-info (and jq).
+                # release.yml installs the same versions.
+                cargo-auditable
+                cargo-cyclonedx
+                rust-audit-info
+                jq
                 # Cargo plugin that reads package metadata and invokes nfpm
                 # for `just package-*`; source and lockfile are pinned above.
                 cargoNfpm
