@@ -44,6 +44,10 @@ Clients see it on `state/link`: `waiting_for` is `"device"` while the TV is disc
 
 The kernel frees a CEC node's minor number only when the last descriptor on it closes. If a descriptor on the old adapter is still open when the new one registers, `/dev/cec0` comes back as `/dev/cec1` and the configured path never becomes available. Parking on removal closes ours; the watcher logs at info when a node with the same name stem appears while a configured one is unavailable. A stable udev alias would remove the hazard: [docs/ideas/cec-stable-device-alias.md](../ideas/cec-stable-device-alias.md).
 
+### A suspend can take the node down
+
+A Pulse-Eight's `/dev/cecN` exists only while `inputattach` holds the adapter's serial line discipline. A resume from suspend resets the adapter's USB link and hangs up the tty under it, and `inputattach` exits cleanly; found 2026-10-24 when the node didn't come back after a suspend. The NixOS module's `pulse8-cec-inputattach@` unit therefore restarts whatever the exit (`Restart=always`) and is bound to the tty device, so a real unplug stops it and the udev rule starts it again on re-attach. The watcher sees the gap like any detach: the TV waits for its adapter and reconnects when the node is back.
+
 ### The sandbox can hide the node
 
 Under systemd `PrivateDevices=true` (the packaged unit's default) the daemon gets a private `/dev` populated once at start, without `/dev/cecN`: not a late node, and not one present at boot either. The netlink events still arrive, so when udev adds a configured node this process can't see, the watcher warns once per node, naming the sandbox. The fix is the unit change the packaged file describes (`DeviceAllow=char-cec rw` instead).
