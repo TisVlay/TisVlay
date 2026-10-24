@@ -34,7 +34,7 @@ jobs:
       book: ${{ steps.classify.outputs.book }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -58,31 +58,57 @@ jobs:
           has_book=false; grep -qE "$book" <<< "$files" && has_book=true
           printf 'code=%s\nbook=%s\n' "$code" "$has_book" >> "$GITHUB_OUTPUT"
 
-  # File checks and typos on every run, drafts and docs-only PRs included.
-  # On code changes the ci job's lint step repeats them with the Rust hooks.
+  # File checks, typos and the workflow linters on every run, drafts and
+  # docs-only PRs included. On code changes the ci job's lint step repeats
+  # the file checks and typos with the Rust hooks.
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # Pinned to the flake's versions, like the ci job's tools.
       - name: Setup
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: |
             just
-            typos@1.50.2
+            shellcheck@0.11.0
+            typos@1.51.1
+            zizmor@1.31.0
+
+      # actionlint isn't in install-action's manifest, and it's a Go program,
+      # not a crate, so the cargo-binstall fallback can't install it. Fetch
+      # the release pinned to the flake's version, and check it against the
+      # digest from that release's checksums file.
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: File checks
-        uses: j178/prek-action@v2
+        uses: j178/prek-action@5337cb91e0fa35a7ff31b9ca345126d8bbbcdf16 # v2.0.6
+        env:
+          # zizmor's online audits (such as a pinned SHA that doesn't match
+          # its version comment) read the GitHub API.
+          GH_TOKEN: ${{ github.token }}
         with:
           extra-args: >-
             --all-files
             check-added-large-files check-merge-conflict check-toml
             check-yaml end-of-file-fixer trailing-whitespace typos
+            actionlint zizmor
 
   ci:
     needs: changes
@@ -90,13 +116,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
-      checks: write
       # The OIDC token the Codecov upload authenticates with.
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Libraries
         run: |
@@ -113,7 +139,7 @@ jobs:
       # dictionaries) are pinned to the flake's versions so local and CI
       # agree; bump them together after a `nix flake update`.
       - name: Setup
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: |
             cargo-about@0.9.1
@@ -121,27 +147,31 @@ jobs:
             cargo-llvm-cov
             cargo-nextest
             cargo-sbom@0.10.0
-            cargo-shear@1.13.4
+            cargo-shear@1.14.0
             just
             tombi@1.7.1
-            typos@1.50.2
+            typos@1.51.1
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Save the cache even when subsequent steps fail. Without this,
           # a flaky test or a coverage-ratchet failure wipes the warm
           # target/ tarball and the next run pays the full cold cost.
           cache-on-failure: true
 
+      # The workflow linters are skipped here: the checks job runs them on
+      # every change, and this job doesn't install them.
       - name: Lint
-        uses: j178/prek-action@v2
+        uses: j178/prek-action@5337cb91e0fa35a7ff31b9ca345126d8bbbcdf16 # v2.0.6
         with:
           extra-args: >-
             --all-files
             --skip build
             --skip clippy
             --skip test
+            --skip actionlint
+            --skip zizmor
 
       # Single instrumented build for clippy + tests + doc tests +
       # coverage report — see `just test-ci` and `docs/build.md`
@@ -155,7 +185,7 @@ jobs:
       # Codecov accepts for forks of public repos.
       - name: Upload to Codecov
         if: ${{ !cancelled() && hashFiles('lcov.info') != '' }}
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: lcov.info
           disable_search: true
@@ -167,7 +197,7 @@ jobs:
 
       - name: Upload
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-lcov
           path: lcov.info
@@ -182,29 +212,23 @@ jobs:
 
       - name: Upload SBOM
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom-spdx
           path: target/sbom/
           retention-days: 14
 
-      # NOTE: When this repo becomes public, fork PRs cannot create check
-      # runs (read-only token). See the "Recommended setup for public
-      # repositories" section of the dorny/test-reporter README — the
-      # workflow_run pattern with two workflows is the workaround.
-      # hashFiles guard: if a step before nextest failed there is no JUnit
-      # file, and without it the reporter logs a confusing "no report files"
-      # line over the real failure (it is already fail-on-error: false).
-      - name: Report
-        uses: dorny/test-reporter@v3
+      # The JUnit results for test-report.yml, which turns them into the
+      # "Tests" check run: a fork PR's token here is read-only and can't
+      # create one. hashFiles guard: if a step before nextest failed there is
+      # no JUnit file, and test-report.yml skips a run without the artifact.
+      - name: Upload test results
         if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Tests
+          name: test-results
           path: target/nextest/ci/junit.xml
-          reporter: java-junit
-          fail-on-error: false
-          list-suites: failed
-          list-tests: failed
+          retention-days: 14
 
   # The workspace must build on its declared `rust-version` floor. The floor
   # is read from Cargo.toml, so this job never needs editing; rustup installs
@@ -219,7 +243,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Libraries
         run: |
@@ -238,7 +264,7 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: msrv
 
@@ -256,7 +282,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Libraries
         run: |
@@ -265,14 +293,14 @@ jobs:
             libfontconfig1-dev
 
       - name: Setup
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: |
             cargo-hack
             just
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: features
 
@@ -292,13 +320,15 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Toolchain
         run: rustup show
 
       - name: Setup
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: |
             lychee@0.24.2
@@ -307,7 +337,7 @@ jobs:
             just
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
 

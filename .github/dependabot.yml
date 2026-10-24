@@ -7,6 +7,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Wait a week after a release before proposing it, so a compromised
+    # release is more likely to be caught and pulled first. Security
+    # updates aren't delayed.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "ci"
       include: "scope"
@@ -19,6 +24,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Same one-week wait as above.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"

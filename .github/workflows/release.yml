@@ -27,8 +27,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write
+# Nothing by default: each job grants itself what it needs.
+permissions: {}
 
 # No caches in this workflow. Its jobs ship packages and mint crates.io
 # tokens, so they must not restore a cache that another workflow's run
@@ -51,7 +51,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Libraries
         run: |
@@ -63,7 +65,7 @@ jobs:
         run: rustup show
 
       - name: Setup
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: |
             cargo-about
@@ -80,7 +82,7 @@ jobs:
       # binstall fallback builds it from source fine once zig is out of the
       # batch.)
       - name: Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
           # No caches in this workflow; see the note above `jobs`.
@@ -90,7 +92,7 @@ jobs:
         run: just package-all
 
       - name: Upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-${{ runner.arch }}
           if-no-files-found: error
@@ -109,7 +111,7 @@ jobs:
       contents: write
     steps:
       - name: Download
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packages-*
           merge-multiple: true
@@ -121,17 +123,32 @@ jobs:
           sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst > checksums-sha256.txt
           cat checksums-sha256.txt
 
+      # One draft per tag. A rerun (of this job or of the tag push) refreshes
+      # that draft: it replaces the assets and deletes any the new build
+      # didn't produce, such as packages named for a version the tag no
+      # longer points at. CI never publishes; promoting the draft is the
+      # maintainer's step, and a published release fails here rather than
+      # have its assets replaced.
       - name: Release
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            packages/tisvlay_*.deb
-            packages/tisvlay-*.rpm
-            packages/tisvlay-*.pkg.tar.zst
-            packages/checksums-sha256.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s failglob
+          cd packages
+          files=(tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst checksums-sha256.txt)
+          if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG" "${files[@]}"
+          elif [ "$draft" = true ]; then
+            gh release upload "$TAG" --clobber "${files[@]}"
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r asset; do
+              [[ " ${files[*]} " == *" $asset "* ]] || gh release delete-asset "$TAG" "$asset" --yes
+            done
+          else
+            echo "::error::$TAG is already published; tag a new version instead."
+            exit 1
+          fi
 
   # Phase 1 (tag push): build the flake's package and push it to the public
   # tisvlay.cachix.org cache (packaging/nix/README.md "Binary cache").
@@ -156,16 +173,16 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
 
       # Installs the cachix CLI only: no substituter, no automatic push.
       - name: Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: tisvlay
           skipAddingSubstituter: true
@@ -212,7 +229,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -229,7 +246,7 @@ jobs:
         run: rustup show
 
       - name: Release-plz release
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@7ef5e4d4b0420630cfcaeb182c01e13651d4c577 # v0.5.145
         with:
           command: release
         env:
