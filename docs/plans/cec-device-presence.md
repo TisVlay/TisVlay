@@ -18,11 +18,18 @@ This plan gives local-device TVs the same event-driven model network TVs already
 - **"Waiting" is visible to clients, derived from facts.** `Link` gains `waiting_for: Option<LinkWait>` (`Network`, `Device`; a typed enum with `as_str`), and `PowerPhase` gains `AwaitingDevice` next to `AwaitingNetwork`. `waiting_for` is derived in `derive_link_state` from the facts (`MonitoredInterface(None)`, `DeviceAvailable(false)`), not from the deferral marker, which only exists while a dial is pending. Both types stay exhaustive, so this is a `feat` with a lockstep minor bump, said in the commit body. `Network` is new behavior for LG and comes with carrier tests.
 - **User guide edits held** until the CEC follow-ups near their end.
 
-## Your call
+## Held wakes (decided)
 
-1. **Should a deferred wake expire?** A wake deferred on an absent device (say the boot's `on_startup` power-on before inputattach is up) currently waits until the device returns. A few seconds later is what you want; hours later it powers the TV on out of nowhere. Proposal: a deferred wake expires after 60 s, publishes `Failed`, and the TV continues as a plain reconnect. LG's `AwaitingNetwork` deferral has the same exposure today and could take the same window; that would change LG behavior.
-2. **Which failures retry forever?** Proposal: only device-level failures (the node won't open, or the claim fails). A CEC TV that's unplugged at the wall answers no power query, and retrying that forever re-claims the adapter and talks on the bus every 60 s. It keeps the three-try budget instead, as today.
-3. **Ship a stable alias for Pulse-Eight nodes?** The NixOS module's `cec.pulse8.enable` udev rule could add a `SYMLINK+=` alias (for example `/dev/cec-pulse8`), so a config survives renumbering. It changes what the pairing wizard should prefill.
+A wake held on a missing dependency (the boot's `on_startup` power-on before inputattach or the network is up) should go out when the dependency returns a few seconds later, never hours later. Two rules, for **both** backends:
+
+- **Expiry.** A held wake gives up after 60 s, publishes `Failed`, and the TV continues as a plain reconnect, which never powers it on. LG's deferral only happens with no route at all (a PC on any network still resolves a route, so its dial runs and fails within the budget), so the window changes LG behavior only when the network was down for over 60 s: today the TV turns on when it returns, with the expiry it just reconnects.
+- **Supersession.** A newer off intent cancels a held wake: a power-off, or a screen-off on a backend that emulates the screen as power. Today the only place a pending dial is dropped is budget exhaustion (`facts.rs`), and a power-off on a disconnected TV is a no-op (`dispatch.rs`), so a boot wake held across a lock-and-idle power-off still turns the TV on when the route or adapter appears. LG's screen-off latch (`DispatchVerify`) re-asserts only after that wake, which flashes the panel. The TV still reconnects, as a plain connect.
+
+## Retry scope (decided)
+
+Only device-level failures retry forever (the node won't open, or the claim fails), which a busy adapter or udev's permission rule can fix on their own. A TV-level failure (the adapter claims, but the TV never answers its power query, e.g. unplugged at the wall) keeps today's three-try budget; the next wake or `reconnect` tries again, as now. Retrying it forever would re-claim the adapter and talk on the bus every minute while nobody listens. The connect errors need a device-level classification for this (a `DialFailure` code, or a typed error from the link's open and claim).
+
+A stable udev alias for Pulse-Eight nodes is out of scope: [docs/ideas/cec-stable-device-alias.md](../ideas/cec-stable-device-alias.md).
 
 ## Renumbering
 
@@ -52,8 +59,14 @@ Commit sequence, each one building and testing on its own:
 ### 3. `feat`: the safety-net backoff and failure logs
 
 - [ ] `retry_delay(attempts, persistent) -> Duration` as one pure function next to `CONNECT_BACKOFF`, with unit tests; a saturating attempt counter.
-- [ ] Persistent retry only for device-level failures of local-device TVs (per § Your call, 2); wake dials keep the budget and fall back to a plain retry.
+- [ ] Persistent retry only for device-level failures of local-device TVs (§ Retry scope), with the connect errors classified; wake dials keep the budget and fall back to a plain retry.
 - [ ] Failure streak logging and `connect-failed` once per streak; the warn when a network TV's budget runs out.
+
+### 3b. `feat`: held-wake expiry and supersession (both backends)
+
+- [ ] A held wake records when it was armed; after 60 s it publishes `Failed` and continues as `wake: false` (§ Held wakes).
+- [ ] A power-off, or a screen-off on an `emulate_screen_via_power` backend, downgrades a pending wake to `wake: false` and drops a stale `DispatchVerify` with `target_on`.
+- [ ] World tests for both, on a network TV and a local-device TV.
 
 ### 4. `feat` (wire-visible): the waiting state
 
@@ -78,4 +91,4 @@ Commit sequence, each one building and testing on its own:
 - [ ] Unit and world tests as above; clock-driven backoff tests.
 - [ ] Hardware, the detach experiment: CEC reconnects within about a second of `pulse8-cec-inputattach` starting again, with no manual `reconnect`, and the GUI shows the waiting state in between.
 - [ ] Hardware, the boot race: restart the daemon with inputattach stopped, wait 30 s, start inputattach; CEC connects at once, and no failure is logged at the daemon's start.
-- [ ] Hardware, the wake: with the adapter detached, trigger a power-on; it publishes `Failed` (or expires per § Your call, 1) and doesn't power the TV on when the adapter returns later.
+- [ ] Hardware, the wake: with the adapter detached, trigger a power-on; after 60 s it publishes `Failed`, and the TV doesn't power on when the adapter returns later. Again with a power-off between the two: the held wake is cancelled at once.
