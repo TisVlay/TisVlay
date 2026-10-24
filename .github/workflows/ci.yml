@@ -77,7 +77,7 @@ jobs:
           tool: |
             just
             shellcheck@0.11.0
-            typos@1.50.2
+            typos@1.51.1
             zizmor@1.31.0
 
       # actionlint isn't in install-action's manifest, and it's a Go program,
@@ -147,10 +147,10 @@ jobs:
             cargo-llvm-cov
             cargo-nextest
             cargo-sbom@0.10.0
-            cargo-shear@1.13.4
+            cargo-shear@1.14.0
             just
             tombi@1.7.1
-            typos@1.50.2
+            typos@1.51.1
 
       - name: Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
