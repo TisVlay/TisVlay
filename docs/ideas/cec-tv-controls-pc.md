@@ -117,7 +117,7 @@ end 2>&1 | tee ~/cec-dongle-wake.log
 - No resume until the PC's own key: the firmware doesn't raise a USB wake, or the host blocks it; section 1 needs another route or stays out.
 - The last line is the TV's label for the input after the suspend: "LG DVD Player" means the armed dongle pinned it while the PC slept, the trade-off in numbers.
 
-**Result (2026-10-24, 15:41, LG C3, Pulse-Eight).** Suspend entry 15:41:05 (S3), resume 15:42:50, about 105 s later, matching the TV power-key press after the 90 s wait. The kernel recorded no wake IRQ (`pm_wakeup_irq` reads "No data available" here, so it can't attribute a wake on this host). The controller the adapter sits on (`0000:00:14.0`, bus 1) resumed with `USBSTS 0x411`, whose `0x10` is Port Change Detect, the trace a device's remote wakeup leaves; the other controller resumed with `0x401`, no port change. So a device on bus 1 woke pox. But three other bus-1 devices also had wakeup enabled (two USB receivers at `1-2` and `1-7`, and the PiKVM composite device at `1-6`), and any of them leaves the same trace, so the dongle isn't proven: Check B′ isolates it. The input's label read "TisVlay" after resume; whether it changed during the suspend wasn't observed.
+**Result (2026-10-24, 15:41, LG C3, Pulse-Eight).** Suspend entry 15:41:05 (S3), resume 15:42:50, about 105 s later, matching the TV power-key press after the 90 s wait. The kernel recorded no wake IRQ (`pm_wakeup_irq` reads "No data available" here, so it can't attribute a wake on this host). The controller the adapter sits on (`0000:00:14.0`, bus 1) resumed with `USBSTS 0x411` (Port Change Detect set), which first read as a device's remote wakeup; Check B′ showed the same value on every resume here, so it marks the controller's reinit, not the waker. Three other bus-1 devices also had wakeup enabled (two USB receivers at `1-2` and `1-7`, and the PiKVM composite device at `1-6`), so this run doesn't attribute the wake: Check B′ isolates the dongle. The input's label read "TisVlay" after resume; whether it changed during the suspend wasn't observed.
 
 **B′. Does the dongle wake pox, with nothing else allowed to?** As B, but the other bus-1 devices that may wake the system have their wakeup turned off for the test and restored after. The ids are this host's (from `power/wakeup` = `enabled` on bus 1); list them again on another host. With the keyboard and mouse receivers unable to wake it, wake pox with its power button if the TV's key doesn't within a minute.
 
@@ -147,7 +147,7 @@ begin
 end 2>&1 | tee ~/cec-dongle-wake-isolated.log
 ```
 
-- Resume within seconds of the TV press, with Port Change Detect (`0x10`) on bus 1's `USBSTS`: the dongle wakes pox, and section 1 is configuration only.
+- Resume within seconds of the TV press: the dongle wakes pox, and section 1 is configuration only. (Bus 1's `USBSTS` shows Port Change Detect on every resume here, so it doesn't attribute the wake; the timing and the disabled alternatives do.)
 - No resume until the power button: one of the other devices woke pox in Check B, and the dongle's "attempt wakeup" doesn't reach the host as configured.
 
 **Result (2026-10-24, 16:01, first run).** pox resumed at 16:01:39, 33 s after suspend entry, seconds after the TV remote's power key was pressed (earlier than the block asked), with every other bus-1 USB wake source disabled. So the TV's power-on reaches pox as a USB remote wakeup through the dongle. Two caveats shape what it proves:
