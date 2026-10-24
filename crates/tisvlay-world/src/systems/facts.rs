@@ -34,6 +34,7 @@ pub(super) struct StateWrites<'w, 's> {
     monitored: Query<'w, 's, &'static MonitoredInterface>,
     device: Query<'w, 's, &'static DeviceAvailable>,
     traits: Query<'w, 's, &'static TransportTraits>,
+    promptly: Query<'w, 's, (), With<RetryPromptly>>,
 }
 
 #[expect(
@@ -87,6 +88,10 @@ pub(super) fn apply_backend_events(
             } => {
                 tracing::debug!(%tv, "connected event applying");
                 let wake_dial = writes.pending.get(entity).is_ok_and(|p| p.wake);
+                let attempts = writes.pending.get(entity).map_or(0, |p| p.attempts);
+                if attempts > 1 {
+                    tracing::info!(%tv, attempts, "connected after failed attempts");
+                }
                 commands
                     .entity(entity)
                     .insert((
@@ -95,7 +100,7 @@ pub(super) fn apply_backend_events(
                         },
                         DispatchRetry(*retry),
                     ))
-                    .remove::<(Reconnecting, PendingConnect, RetryAt)>();
+                    .remove::<(Reconnecting, PendingConnect, RetryAt, RetryPromptly)>();
                 apply_state(&mut commands, entity, state, &mut writes);
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     let mut enriched = identity.0.clone();
@@ -258,26 +263,61 @@ pub(super) fn apply_backend_events(
                     .get(entity)
                     .map(|p| (p.attempts, p.wake))
                     .unwrap_or((0, false));
+                // A local-device TV whose device can't be opened keeps
+                // retrying past its budget: a busy adapter frees up, and
+                // udev's permissions land. A TV that doesn't answer through
+                // a working device keeps the budget, as a network TV does.
+                let persistent = reason.device_level
+                    && writes.traits.get(entity).is_ok_and(|t| t.0.local_device);
+                if attempts == 1 {
+                    tracing::warn!(%tv, error = %reason.message, "dial failed");
+                } else {
+                    tracing::debug!(%tv, attempts, error = %reason.message, "dial failed again");
+                }
                 let mut e = commands.entity(entity);
                 e.remove::<Reconnecting>();
-                if attempts >= CONNECT_MAX_ATTEMPTS {
+                if writes.promptly.get(entity).is_ok() {
+                    // The device came back while this dial was in flight:
+                    // start over now rather than wait out the backoff.
+                    e.remove::<RetryPromptly>();
+                    redial(&mut e, wake_dial);
+                } else if attempts < CONNECT_MAX_ATTEMPTS {
+                    e.insert(RetryAt(clock.0 + retry_delay(attempts)));
+                } else if persistent {
+                    // A wake keeps its budget: it ends here, reported, and
+                    // the TV goes on as a plain reconnect, which never powers
+                    // it on. A screen intent riding the wake would, so it
+                    // goes too.
+                    if wake_dial {
+                        publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
+                        e.insert(PendingConnect {
+                            attempts,
+                            wake: false,
+                        })
+                        .remove::<DispatchVerify>();
+                    }
+                    e.insert(RetryAt(clock.0 + retry_delay(attempts)));
+                } else {
                     e.remove::<(PendingConnect, AwaitingDependency)>();
                     if wake_dial {
                         publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
                     }
-                } else {
-                    e.insert(RetryAt(clock.0 + CONNECT_BACKOFF));
+                    tracing::warn!(%tv, attempts, "dialing gave up; `tisvlay reconnect` retries");
                 }
-                outbox.0.push(Effect::Wire(WireEffect::Publish {
-                    key: keys::event(&site.0, "connect-failed"),
-                    payload: json!({
-                        "tv": tv,
-                        "attempt": attempts,
-                        "error": reason.message,
-                        "code": reason.code,
-                        "path": reason.path,
-                    }),
-                }));
+                // The event reports a streak's budgeted attempts; the slow
+                // retries beyond it only log at debug.
+                if attempts <= CONNECT_MAX_ATTEMPTS {
+                    outbox.0.push(Effect::Wire(WireEffect::Publish {
+                        key: keys::event(&site.0, "connect-failed"),
+                        payload: json!({
+                            "tv": tv,
+                            "attempt": attempts,
+                            "error": reason.message,
+                            "code": reason.code,
+                            "path": reason.path,
+                        }),
+                    }));
+                }
             }
             BackendEvent::PowerPhase(phase) => {
                 publish_power_phase(&mut outbox, &site, tv, *phase);
@@ -690,7 +730,9 @@ pub(super) fn apply_device_availability(
         }
         tracing::info!(tv = %id.0, "device available again, redialing");
         e.remove::<Parked>();
-        if !connected && !reconnecting {
+        if reconnecting {
+            e.insert(RetryPromptly);
+        } else if !connected {
             redial(&mut e, pending.is_some_and(|p| p.wake));
             e.remove::<RetryAt>();
         }
@@ -866,7 +908,7 @@ pub(super) fn reconcile_connections(
             }
             continue;
         }
-        pending.attempts += 1;
+        pending.attempts = pending.attempts.saturating_add(1);
         seq.0 += 1;
         let dial = seq.0;
         tracing::debug!(tv = %id.0, attempt = pending.attempts, wake = pending.wake, dial, "dialing");

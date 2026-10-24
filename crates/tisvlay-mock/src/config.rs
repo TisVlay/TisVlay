@@ -42,6 +42,12 @@ pub struct MockVendorConfig {
     #[serde(default)]
     pub refuse_connect: bool,
 
+    /// Test knob: every `connect` fails as if the local device node
+    /// couldn't be opened (`Error::DeviceUnavailable`), the failure a
+    /// local-device TV keeps retrying past its budget.
+    #[serde(default)]
+    pub device_unavailable: bool,
+
     /// Whether this mock claims wake support. Defaults on; tests flip
     /// it through update-config to exercise transport-fact refreshes.
     #[serde(default = "default_wake")]
@@ -168,6 +174,7 @@ impl Default for MockVendorConfig {
             initial_backlight: default_backlight(),
             inputs: default_inputs(),
             refuse_connect: false,
+            device_unavailable: false,
             wake: true,
             mac: None,
             link_mac: None,

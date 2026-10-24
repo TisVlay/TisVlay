@@ -453,6 +453,11 @@ pub struct DialFailure {
     pub path: Option<String>,
     /// Human-readable English message (the log/fallback text).
     pub message: String,
+    /// The local device couldn't be opened or set up (permission, missing,
+    /// busy, claim refused), as opposed to the TV not answering. A
+    /// local-device TV keeps retrying these past its budget; world-side
+    /// only, never on the wire.
+    pub device_level: bool,
 }
 
 impl DialFailure {
@@ -463,11 +468,13 @@ impl DialFailure {
                 code: Some(tisvlay_core::errors::DeviceErrorCode::PermissionDenied.into()),
                 path: Some(path.clone()),
                 message: error.to_string(),
+                device_level: true,
             },
             _ => Self {
                 code: None,
                 path: None,
                 message: error.to_string(),
+                device_level: matches!(error, tisvlay_core::Error::DeviceUnavailable { .. }),
             },
         }
     }
@@ -478,6 +485,7 @@ impl DialFailure {
             code: None,
             path: None,
             message: message.into(),
+            device_level: false,
         }
     }
 }

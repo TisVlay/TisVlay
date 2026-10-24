@@ -58,9 +58,9 @@ Commit sequence, each one building and testing on its own:
 
 ### 3. `feat`: the safety-net backoff and failure logs
 
-- [ ] `retry_delay(attempts, persistent) -> Duration` as one pure function next to `CONNECT_BACKOFF`, with unit tests; a saturating attempt counter. A TV with a dial in flight when its device returns is marked so that a failure retries at once (with a constant 3 s backoff this only matters once the gap grows).
-- [ ] Persistent retry only for device-level failures of local-device TVs (§ Retry scope), with the connect errors classified; wake dials keep the budget and fall back to a plain retry.
-- [ ] Failure streak logging and `connect-failed` once per streak; the warn when a network TV's budget runs out.
+- [x] `retry_delay(attempts) -> Duration` as one pure function (the persistent decision stays with the caller) next to `CONNECT_BACKOFF`, with unit tests; a saturating attempt counter. A TV with a dial in flight when its device returns is marked so that a failure retries at once (with a constant 3 s backoff this only matters once the gap grows).
+- [x] Persistent retry only for device-level failures of local-device TVs (§ Retry scope), with the connect errors classified; wake dials keep the budget and fall back to a plain retry.
+- [x] Failure streak logging (warn on the first failure, debug after, info on the recovery) and `connect-failed` for the budgeted attempts only, so a persistent retry publishes nothing beyond them (no client consumes the event; it's an observability tap); the warn when a budget runs out. The device-level classification is a new core `Error::DeviceUnavailable` that the CEC connector wraps its adapter setup in, carried world-side as `DialFailure.device_level`.
 
 ### 3b. `feat`: held-wake expiry and supersession (both backends)
 

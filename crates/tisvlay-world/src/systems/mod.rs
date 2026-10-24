@@ -32,8 +32,8 @@ use crate::components::{
     DialSeq, DispatchRetry, DispatchVerify, Effect, KnownVendors, LastPersisted, LatestDial,
     Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying, PairingEnroll,
     PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, ProfileAction, ProfileBody,
-    ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, Site, State, SystemProfile,
-    TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
+    ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, RetryPromptly, Site, State,
+    SystemProfile, TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
@@ -45,6 +45,21 @@ pub const CONNECT_MAX_ATTEMPTS: u8 = 3;
 
 /// Backoff between failed dial attempts.
 pub const CONNECT_BACKOFF: Duration = Duration::from_secs(3);
+
+/// The widest gap a persistent retry grows to.
+pub(crate) const CONNECT_BACKOFF_CAP: Duration = Duration::from_secs(60);
+
+/// The wait before the next dial after `attempts` failed ones. The first
+/// [`CONNECT_MAX_ATTEMPTS`] stay [`CONNECT_BACKOFF`] apart, which also
+/// absorbs udev applying a new node's permissions just after it appears;
+/// a persistent retry (a local-device TV whose device can't be opened)
+/// then doubles the gap up to [`CONNECT_BACKOFF_CAP`].
+pub(crate) fn retry_delay(attempts: u8) -> Duration {
+    let doublings = attempts.saturating_sub(CONNECT_MAX_ATTEMPTS).min(5);
+    CONNECT_BACKOFF
+        .saturating_mul(1 << doublings)
+        .min(CONNECT_BACKOFF_CAP)
+}
 
 pub(crate) fn build_schedule() -> Schedule {
     // Two chains (the all-tuples chain caps at 20 systems): ingest +
@@ -380,5 +395,13 @@ mod tests {
                 "stock presence for {event:?} disagrees with the resolved default's dispatchability"
             );
         }
+    }
+
+    #[test]
+    fn retry_delay_holds_the_budget_then_doubles_to_the_cap() {
+        let secs: Vec<u64> = (1..=10).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(secs, [3, 3, 3, 6, 12, 24, 48, 60, 60, 60]);
+        assert_eq!(retry_delay(u8::MAX), CONNECT_BACKOFF_CAP);
+        assert_eq!(retry_delay(0), CONNECT_BACKOFF);
     }
 }

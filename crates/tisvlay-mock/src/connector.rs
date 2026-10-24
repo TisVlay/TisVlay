@@ -127,6 +127,15 @@ impl TvConnector for MockConnector {
             tokio::time::sleep(delay).await;
         }
 
+        if config.device_unavailable {
+            return Err(Error::DeviceUnavailable {
+                path: config
+                    .local_device
+                    .clone()
+                    .unwrap_or(config.address.clone()),
+                message: "device unavailable by test config".into(),
+            });
+        }
         if config.refuse_connect {
             return Err(Error::backend(
                 crate::VENDOR_ID,

@@ -196,6 +196,12 @@ pub(crate) struct Parked;
 #[derive(Component, Debug, PartialEq, Eq)]
 pub(crate) struct DeviceAvailable(pub bool);
 
+/// The TV's device came back while a dial was in flight: if that dial
+/// fails, retry at once with a fresh budget instead of waiting out a grown
+/// backoff.
+#[derive(Component, Debug)]
+pub(crate) struct RetryPromptly;
+
 /// A device watcher is attached: a local-device TV's dial then waits for
 /// the watcher's first report instead of racing it.
 #[derive(Resource, Debug, Default)]

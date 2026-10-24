@@ -83,6 +83,21 @@ fn advertising_claim(config: &CecVendorConfig) -> Claim<'_> {
     )
 }
 
+/// Classify a failure to open and set up the adapter (the node, its
+/// physical address, the logical-address claim) as the device being
+/// unavailable, which can clear on its own; a TV that doesn't answer
+/// through a working adapter fails later, as itself. A permission failure
+/// keeps its own type.
+fn unavailable(device: &str, error: Error) -> Error {
+    match error {
+        error @ Error::PermissionDenied { .. } => error,
+        other => Error::DeviceUnavailable {
+            path: device.to_string(),
+            message: other.to_string(),
+        },
+    }
+}
+
 #[async_trait]
 impl TvConnector for CecConnector {
     fn transport(&self) -> Transport {
@@ -125,7 +140,8 @@ impl TvConnector for CecConnector {
                 config.physical_address.to_linux(),
                 advertising_claim(&config),
             )
-            .await?;
+            .await
+            .map_err(|e| unavailable(&config.device, e))?;
         // Probe power to confirm the TV actually answers on the bus — a
         // powered-off-at-the-wall TV (or one on a different HDMI input)
         // drops off CEC and this query fails, so `connect` fails and the TV
@@ -161,7 +177,8 @@ impl TvConnector for CecConnector {
                 config.physical_address.to_linux(),
                 Claim::Keep,
             )
-            .await?;
+            .await
+            .map_err(|e| unavailable(&config.device, e))?;
         link.power_on().await
     }
 
@@ -178,7 +195,8 @@ impl TvConnector for CecConnector {
                 config.physical_address.to_linux(),
                 advertising_claim(&config),
             )
-            .await?;
+            .await
+            .map_err(|e| unavailable(&config.device, e))?;
         // Image View On is fire-and-forget, a freshly-opened adapter is
         // still claiming its logical address, and a just-standby TV can
         // ignore the first wake — so a single send is easily lost. Re-send
@@ -336,6 +354,26 @@ mod tests {
 
     fn connector(initial: PowerStatus) -> CecConnector {
         CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new(initial)))
+    }
+
+    #[test]
+    fn an_adapter_setup_failure_reads_as_the_device_unavailable() {
+        assert!(matches!(
+            unavailable("/dev/cec0", Error::ConnectionClosed),
+            Error::DeviceUnavailable { ref path, .. } if path == "/dev/cec0"
+        ));
+        assert!(
+            matches!(
+                unavailable(
+                    "/dev/cec0",
+                    Error::PermissionDenied {
+                        path: "/dev/cec0".into()
+                    }
+                ),
+                Error::PermissionDenied { .. }
+            ),
+            "a permission failure keeps its own, actionable type"
+        );
     }
 
     #[test]
