@@ -150,14 +150,22 @@ end 2>&1 | tee ~/cec-dongle-wake-isolated.log
 - Resume within seconds of the TV press, with Port Change Detect (`0x10`) on bus 1's `USBSTS`: the dongle wakes pox, and section 1 is configuration only.
 - No resume until the power button: one of the other devices woke pox in Check B, and the dongle's "attempt wakeup" doesn't reach the host as configured.
 
-**C. Do the TV remote's keys reach the desktop with RC passthrough?** TV on and showing the PC. This replaces the daemon's claim with `cec-ctl`'s, which allows passthrough, for 30 s. Don't press the remote's power key: `KEY_POWER` would suspend this PC.
+**C. Do the TV remote's keys reach the desktop with RC passthrough?** TV on and showing the PC. This replaces the daemon's claim with `cec-ctl`'s, which allows passthrough, for 30 s. Don't press the remote's power key: `KEY_POWER` would suspend this PC. The adapter's `rc-cec` input gets a new event number each time the adapter re-attaches, so the block looks it up instead of hardcoding it, and it stops early if the adapter isn't attached.
 
 ```fish
-sudo systemctl stop tisvlay-daemon
-nix-shell -p v4l-utils --run 'cec-ctl -d /dev/cec0 --playback --osd-name TisVlay' | grep -E 'Logical Addresses  '
-echo "press arrows and OK on the TV remote for 30 s"
-nix-shell -p evtest --run 'timeout 30 evtest /dev/input/event26'
-sudo systemctl start tisvlay-daemon
+begin
+    if not test -e /dev/cec0
+        echo "no /dev/cec0: run 'sudo systemctl start pulse8-cec-inputattach@ttyACM0' first"
+    else
+        set ev (path basename /sys/class/rc/rc*/input*/event*)[1]
+        echo "rc-cec input: /dev/input/$ev"
+        sudo systemctl stop tisvlay-daemon
+        nix-shell -p v4l-utils --run 'cec-ctl -d /dev/cec0 --playback --osd-name TisVlay' | grep -E 'Logical Addresses  '
+        echo "press arrows and OK on the TV remote for 30 s"
+        nix-shell -p evtest --run "timeout 30 evtest /dev/input/$ev"
+        sudo systemctl start tisvlay-daemon
+    end
+end
 ```
 
 - Key events for each press: the kernel path works, and passthrough is a linux-cec flag away. Nothing: the TV doesn't forward keys to this input (check SIMPLINK is on and the PC's input is selected), and section 3 stays "document and stay out".
