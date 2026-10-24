@@ -79,14 +79,19 @@ pub(crate) async fn list(
     Ok(())
 }
 
-/// A TV's connection status for `list`: connected, or what a disconnected
-/// TV is known to be waiting for, from its `state/link` payload.
+/// A TV's connection status for `list`: connected, connecting while a
+/// dial is in flight (a first dial as much as a reconnect), or what a
+/// disconnected TV is known to be waiting for, from its `state/link`
+/// payload.
 fn link_status(link: Option<&Value>) -> &'static str {
     let Some(link) = link else {
         return "disconnected";
     };
     if link["connected"] == true {
         return "connected";
+    }
+    if link["reconnecting"] == true {
+        return "connecting";
     }
     match link["waiting_for"].as_str() {
         Some("device") => "waiting for its adapter",
@@ -158,5 +163,7 @@ mod tests {
         );
         assert_eq!(link_status(Some(&link(false, json!(null)))), "disconnected");
         assert_eq!(link_status(None), "disconnected");
+        let dialing = json!({ "connected": false, "reconnecting": true, "supports_wake": true, "waiting_for": null });
+        assert_eq!(link_status(Some(&dialing)), "connecting");
     }
 }
