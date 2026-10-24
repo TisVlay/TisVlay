@@ -150,6 +150,17 @@ end 2>&1 | tee ~/cec-dongle-wake-isolated.log
 - Resume within seconds of the TV press, with Port Change Detect (`0x10`) on bus 1's `USBSTS`: the dongle wakes pox, and section 1 is configuration only.
 - No resume until the power button: one of the other devices woke pox in Check B, and the dongle's "attempt wakeup" doesn't reach the host as configured.
 
+**Result (2026-10-24, 16:01, first run).** pox resumed at 16:01:39, 33 s after suspend entry, seconds after the TV remote's power key was pressed (earlier than the block asked), with every other bus-1 USB wake source disabled. So the TV's power-on reaches pox as a USB remote wakeup through the dongle. Two caveats shape what it proves:
+
+- **The dongle was undriven and disarmed.** `inputattach` had exited at Check B's resume (15:42, the bug fixed in #212's `88a3d854`) and nothing restarted it, so there was no `/dev/cec0`, and the patched driver had turned autonomous mode off on that disconnect. The dongle still woke pox, so the wake on the TV's Set Stream Path doesn't need autonomous mode armed. If that holds for a dongle driven up to the suspend, section 1's trade-off is a false choice: the TV can wake the PC with the dongle disarmed, and the label is safe.
+- **It had been unattended for 18 minutes**, so the firmware's takeover delay (it acts only after missing the driver's 15 s pings) didn't apply. The 90 s wait in the block is for a dongle driven up to the suspend.
+
+Port Change Detect (`USBSTS 0x411`) showed on bus 1 again, as it did in Check B and on every resume here, so it marks the controller's reinit after S3 rather than which device woke it; it isn't evidence on its own.
+
+The input's label read "CEC Adapter" after this run, the disarmed dongle's factory identity (the patched detach test showed the same); it doesn't pin, and the next claim restores the configured name.
+
+Still to run: the same block with the dongle driven up to the suspend (`inputattach` running and `/dev/cec0` present beforehand), which also exercises the restart fix after resume.
+
 **C. Do the TV remote's keys reach the desktop with RC passthrough?** TV on and showing the PC. This replaces the daemon's claim with `cec-ctl`'s, which allows passthrough, for 30 s. Don't press the remote's power key: `KEY_POWER` would suspend this PC. The adapter's `rc-cec` input gets a new event number each time the adapter re-attaches, so the block looks it up instead of hardcoding it, and it stops early if the adapter isn't attached.
 
 ```fish
