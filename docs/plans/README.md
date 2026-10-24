@@ -18,6 +18,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 - [`mdbook-docs-site.md`](mdbook-docs-site.md) — user-facing documentation site built with mdBook and published on Read the Docs; CLI reference auto-generated from the clap tree, prose guide covering install, pairing, profiles, session automation, and troubleshooting.
 - [`cli-reword.md`](cli-reword.md) — CLI rework: one getter/setter grammar for TV attributes (`--toggle`, `--clear`, on/off values, silent writers), profile catalogs split by scope, per-TV profile assignment verbs, `vendor`/`discover --watch` consolidation, `add` removed; one breaking release, no aliases.
 - [`nix-binary-cache.md`](nix-binary-cache.md) — public Cachix cache filled by release-tag CI, with opt-in install docs so NixOS users can skip building from source.
+- [`cec-pulse8-autonomous.md`](cec-pulse8-autonomous.md) — disarm the Pulse-Eight adapter's autonomous mode on driver disconnect (a patch in our out-of-tree module build), so an LG TV stops pinning "LG DVD Player" on the PC's input; plus CEC redial when the adapter returns, CEC claim logs and doc corrections.
 - [`release-supply-chain.md`](release-supply-chain.md) — verifiable releases: immutable GitHub releases, SLSA Build Level 3 provenance from a reusable build workflow, and per-binary CycloneDX SBOMs checked against cargo-auditable; v0.4.0 waits for it.
 
 When a plan is in flight, list it here with

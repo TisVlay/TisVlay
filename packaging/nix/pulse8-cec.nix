@@ -37,6 +37,21 @@ stdenv.mkDerivation {
     runHook postUnpack
   '';
 
+  # A claim arms the dongle's autonomous mode, and unconfiguring the
+  # adapter is what disarms it. Since upstream 323f52e02be6 ("Handle
+  # partial deinit") disconnect clears `serio` before unregistering, so
+  # that disarm never reaches the dongle: it keeps answering on the bus
+  # after a reboot or detach, and an LG TV records it as its own "LG DVD
+  # Player" (docs/bugs/cec-pulse8-autonomous-label.md). The patch disarms
+  # while `serio` is still usable. Gated on that commit's `-ENODEV` guard
+  # rather than a kernel version, so a stable backport picks it up too;
+  # older drivers still disarm on their own.
+  postPatch = ''
+    if grep -q 'if (!pulse8->serio)' pulse8-cec.c; then
+      patch -p1 < ${./pulse8-cec-disarm-on-disconnect.patch}
+    fi
+  '';
+
   nativeBuildInputs = kernel.moduleBuildDependencies;
 
   # `kernelModuleMakeFlags` (the toolchain, plus the kmodigest `cmd_sign`

@@ -1,0 +1,29 @@
+--- a/pulse8-cec.c
++++ b/pulse8-cec.c
+@@ -660,6 +660,26 @@
+ 
+ 	cancel_delayed_work_sync(&pulse8->ping_eeprom_work);
+ 	mutex_lock(&pulse8->lock);
++	/*
++	 * Unregistering the adapter unconfigures it, which normally disables
++	 * autonomous mode. With serio cleared first, those commands can no
++	 * longer reach the dongle, so disable it here while serio is still
++	 * usable. Otherwise the dongle keeps answering on the bus on its own
++	 * once the host is gone.
++	 */
++	if (pulse8->autonomous) {
++		u8 cmd[3] = { MSGCODE_SET_ACK_MASK, 0, 0 };
++
++		pulse8_send_and_wait(pulse8, cmd, 3, MSGCODE_COMMAND_ACCEPTED, 0);
++		cmd[0] = MSGCODE_SET_AUTO_ENABLED;
++		cmd[1] = 0;
++		if (!pulse8_send_and_wait(pulse8, cmd, 2,
++					  MSGCODE_COMMAND_ACCEPTED, 0))
++			pulse8->autonomous = false;
++		else
++			dev_info(pulse8->dev,
++				 "failed to disable autonomous mode\n");
++	}
+ 	pulse8->serio = NULL;
+ 	mutex_unlock(&pulse8->lock);
+ 	cec_unregister_adapter(pulse8->adap);
