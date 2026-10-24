@@ -36,7 +36,7 @@ Three checks take minutes cold or need the network, so they run as CI jobs rathe
 
 `ci.yml` gates its jobs on what a change touches, so a docs fix doesn't pay for a full Rust build. Its first job, `changes`, diffs the change (a PR's merge commit against main, or a push against the previous tip) and classifies the files:
 
-- **Docs-only:** `docs/`, `.claude/`, the root `README.md`, `LICENSE` and `.config/.readthedocs.yaml`. Crate READMEs don't count: each is its crate's rustdoc, and its examples run as doctests.
+- **Docs-only:** `docs/`, `.claude/`, the root `README.md`, `SECURITY.md`, `LICENSE` and `.config/.readthedocs.yaml`. Crate READMEs don't count: each is its crate's rustdoc, and its examples run as doctests.
 - **Book inputs:** `docs/book/`, `docs/screenshots/`, `docs/artwork/`, the root `README.md` (the book's introduction includes it) and `.config/.readthedocs.yaml`.
 
 | Change | Jobs |

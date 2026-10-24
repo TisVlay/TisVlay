@@ -51,7 +51,7 @@ jobs:
             exit 0
           fi
           # Docs-only paths. Crate READMEs are not: they're doctests.
-          docs='^(docs/|\.claude/|README\.md$|LICENSE$|\.config/\.readthedocs\.yaml$)'
+          docs='^(docs/|\.claude/|README\.md$|SECURITY\.md$|LICENSE$|\.config/\.readthedocs\.yaml$)'
           # What the book build reads.
           book='^(docs/(book|screenshots|artwork)/|README\.md$|\.config/\.readthedocs\.yaml$)'
           code=false; grep -qvE "$docs" <<< "$files" && code=true
