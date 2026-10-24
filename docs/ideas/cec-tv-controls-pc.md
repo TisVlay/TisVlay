@@ -159,7 +159,9 @@ Port Change Detect (`USBSTS 0x411`) showed on bus 1 again, as it did in Check B 
 
 The input's label read "CEC Adapter" after this run, the disarmed dongle's factory identity (the patched detach test showed the same); it doesn't pin, and the next claim restores the configured name.
 
-Still to run: the same block with the dongle driven up to the suspend (`inputattach` running and `/dev/cec0` present beforehand), which also exercises the restart fix after resume.
+**Result (16:06, second run).** Repeated by accident with the dongle still undriven (`/dev/cec0` absent before the suspend): the TV power key woke pox again, 41 s after suspend entry, with the other wake sources disabled. Same conclusion as the first run.
+
+**Result (16:11, driven).** `inputattach` started and CEC `connected` before the suspend (the block refuses to suspend otherwise). Suspend entry 16:11:10, resume 16:11:58 on the TV power key, other wake sources disabled. So **the TV's power key wakes pox through the dongle whether it's driven up to the suspend (armed) or not**, and section 1 is configuration: the adapter's USB wakeup, nothing in TisVlay. At resume `inputattach` exited cleanly and systemd restarted it 2 s later (#212's `88a3d854`), `/dev/cec0` came back, CEC reconnected on its own, and the label read "TisVlay". The suspend was 48 s, likely shorter than the firmware's takeover, so it says nothing yet about the label across a long suspend.
 
 **C. Do the TV remote's keys reach the desktop with RC passthrough?** TV on and showing the PC. This replaces the daemon's claim with `cec-ctl`'s, which allows passthrough, for 30 s. Don't press the remote's power key: `KEY_POWER` would suspend this PC. The adapter's `rc-cec` input gets a new event number each time the adapter re-attaches, so the block looks it up instead of hardcoding it, and it stops early if the adapter isn't attached.
 
@@ -183,7 +185,7 @@ end
 
 ## Open questions
 
-- **Suspend wake against the label.** Should the TV's power key be able to wake the PC, keeping the dongle armed while suspended and accepting a possibly pinned label after each long suspend, or should a suspended PC disarm it too? This decides the module parameter's default in the NixOS option. One data point so far: after Check B's 105 s suspend the label still read "TisVlay".
+- **Suspend wake against the label.** Should the TV's power key be able to wake the PC, keeping the dongle armed while suspended and accepting a possibly pinned label after each long suspend, or should a suspended PC disarm it too? This decides the module parameter's default in the NixOS option. The wake doesn't need the dongle armed (Check B′: it woke pox undriven and disarmed), so disarming on suspend may not cost the wake; what's left is whether a long suspend with the dongle armed pins the label. So far: "TisVlay" after a 105 s and a 48 s suspend.
 - **TV-to-PC sleep.** Is it wanted at all, as opt-in user-profile events? And is the world-side cause stamp on `state/power` (a wire change) acceptable as its basis?
 - **Remote passthrough.** Stay out, or pursue the linux-cec flag setter and an opt-in with a `KEY_POWER` override?
 - **Surfacing.** Should the GUI show whether the adapter can wake the PC?
