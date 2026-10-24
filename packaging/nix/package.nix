@@ -18,7 +18,9 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tisvlay";
-  version = "0.3.0";
+  # The workspace version, so a release bump (`release-plz update`) needs no
+  # edit here.
+  version = (builtins.fromTOML (builtins.readFile ../../Cargo.toml)).workspace.package.version;
 
   buildType = cargoProfile;
   # The test suite always builds under `release`: `dist`'s LTO would make
