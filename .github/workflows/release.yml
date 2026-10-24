@@ -149,8 +149,13 @@ jobs:
           shopt -s failglob
           cd out/assets
           files=(tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst tisvlay*.cdx.json tisvlay*.sigstore.json checksums-sha256.txt)
+          # Start the generated notes at the latest published release, by
+          # name: GitHub's own choice of starting point isn't reliable.
+          notes=(--generate-notes)
+          start=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -n "$start" ]; then notes+=(--notes-start-tag "$start"); fi
           if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
-            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG" "${files[@]}"
+            gh release create "$TAG" --draft --verify-tag "${notes[@]}" --title "$TAG" "${files[@]}"
           elif [ "$draft" = true ]; then
             gh release upload "$TAG" --clobber "${files[@]}"
             gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r asset; do

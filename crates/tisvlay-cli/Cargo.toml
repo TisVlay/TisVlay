@@ -114,11 +114,20 @@ recommends = ["bash-completion"]
 # the deb override above for the Suggests-not-Recommends rationale.
 suggests = ["gnome-shell-extension-appindicator"]
 
-# No archlinux override: cargo-nfpm's archlinux packager emits no weak
-# deps (a `suggests` there is silently dropped, and it produces no
-# optdepend), so Arch GNOME users get the AppIndicator pointer from the
-# tray's journal log and packaging/README instead. Arch also ships no
-# runtime `depends` for the same reason.
+# The same libraries under Arch's names: libglvnd provides libGL and
+# libEGL, and wayland both libwayland libraries. Only fontconfig shows in
+# `ldd`; Slint loads the GL, EGL and Wayland libraries at runtime. Hard deps
+# only: cargo-nfpm's archlinux packager emits no weak deps (a `suggests`
+# there is silently dropped, and it produces no optdepend), so Arch GNOME
+# users get the AppIndicator pointer from the tray's journal log and
+# packaging/README instead.
+[package.metadata.nfpm.overrides.archlinux]
+depends = [
+    "glibc",
+    "fontconfig",
+    "libglvnd",
+    "wayland",
+]
 
 [lib]
 name = "tisvlay_cli"

@@ -174,7 +174,9 @@ With immutability on:
 - [x] Where the release steps are written down: `release.yml`'s header and `packaging/README.md`'s new "Release signing and verification" section, rather than `docs/build.md`, which has no release checklist.
 - [x] Book: a new Reference page, [Security & Supply Chain](../book/src/reference/security-supply-chain.md), linked from the install page's opening paragraph. It covers checksums; signatures, with gh for a package or an installed binary and cosign for people without a GitHub account; the SBOMs; scanning an installed system with `cargo audit bin`, Trivy and grype; and the cache signing key for Nix users.
 - [x] The dev shell gains gh, libarchive (bsdtar) and cosign.
-- [ ] **Confirm at the rehearsal:** the cosign command (the flags of cosign 3.x against a multi-subject GitHub bundle), and whether `gh attestation verify --bundle` works without a GitHub login. If it does, the book can offer it as the offline option.
+- [x] **Confirm at the rehearsal:** the cosign command (the flags of cosign 3.x against a multi-subject GitHub bundle), and whether `gh attestation verify --bundle` works without a GitHub login. If it does, the book can offer it as the offline option.
+  - At rc.3, the book's cosign command verified the x86_64 `.deb` against its provenance bundle, inside `just verify-release`.
+  - `gh attestation verify --bundle` passes with no login (an empty `GH_CONFIG_DIR`, no token), and fails as it should against a wrong `--source-ref`. So the book can offer it next to cosign.
 
 ### 6. The v0.4.0 re-cut
 
@@ -188,6 +190,10 @@ With immutability on:
 - [ ] **Rehearsal:** tag the merge commit `v0.4.0-rc.1` and watch the run. The draft should appear only after verification passes, and the `nix-cache` job waits for your approval. Run `just verify-release v0.4.0-rc.1` on the draft. Fix anything that fails and repeat with `-rc.2`. Then delete the rc draft and its tag, never publishing it.
   - `rc.1` (2026-10-24): both architectures packaged, and arm64 passed `sbom-check` on its first run. Then Stage failed: the glob `tisvlay-*-<arch>.cdx.json` also matched `tisvlay-gui-…`. Fixed in #208, which also gives each architecture's attest files their own directory.
   - `rc.2`: the build and the provenance attestation passed. The first SBOM attestation failed: `actions/attest` only accepts a CycloneDX SBOM that has a `serialNumber`, which cargo-cyclonedx leaves out under `SOURCE_DATE_EPOCH`. Fixed by having `just sbom` add a name-based UUID for the commit, binary and architecture, which keeps reruns byte-identical.
+  - `rc.3`: the whole pipeline passed. CI built, signed and verified everything, and created the draft with 17 assets; then `just verify-release` passed every check on the draft. Two problems remained, both fixed in one PR:
+    - **Release notes:** GitHub's generated notes started at v0.2.0, though v0.3.0 is the latest release and an ancestor, so they listed 88 PRs instead of 33. The release job now passes the latest published release as `--notes-start-tag`.
+    - **Arch package:** a container smoke test of the x86_64 packages (Ubuntu 22.04, Debian trixie, Fedora, Arch) found it declared no dependencies, so on a minimal Arch the GUI couldn't load `libfontconfig.so.1`. It now depends on `glibc`, `fontconfig`, `libglvnd` and `wayland`, checked by reinstalling on a clean Arch. Ubuntu 22.04's missing license file was the minimal image's `path-exclude=/usr/share/doc/*`, not the package.
+  - Pushing more than three tags at once creates no push events: push a rehearsal tag on its own.
 - [ ] Tag the same commit `v0.4.0`, watch the run, and run `just verify-release v0.4.0` on the draft.
 - [ ] Promote it and approve the `publish-crates` deployment, then run `just verify-release v0.4.0` again, now including `gh release verify`. Check that the release page shows "Immutable" and that the attestations appear in the repo's Actions tab.
 - [ ] On a machine with the `.deb` installed, run `gh attestation verify /usr/bin/tisvlay …`.
