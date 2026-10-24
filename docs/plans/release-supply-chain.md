@@ -134,13 +134,15 @@ With immutability on:
 
 ### 3. Auditable builds and SBOM generation
 
-- [ ] **Spike first:** build with `cargo auditable zigbuild --profile dist --target x86_64-unknown-linux-gnu.<glibc>` and check the result with `rust-audit-info target/x86_64-unknown-linux-gnu/dist/tisvlay`. cargo-auditable's README says it "works with any Cargo command", but nobody has tried it with zigbuild here. Open questions has the fallback.
+- [x] **Spike (2026-10-23, x86_64):** `cargo auditable zigbuild --profile dist --target x86_64-unknown-linux-gnu.2.34`, with nixpkgs' cargo-auditable 0.7.6, built as fast as usual (98 s warm).
+  - Both binaries carry a `.dep-v0` section: 457 crates for `tisvlay`, 609 for `tisvlay-gui`. Their newest glibc symbol is still `GLIBC_2.34`.
+  - cargo-cyclonedx's per-binary SBOMs list exactly the same `name@version` set, apart from the root crate: the SBOM describes it in `metadata.component`, under the binary's name. So the single cargo invocation's feature unification adds nothing, and the 11 platform-specific-looking crates in the GUI's SBOM really are compiled in.
 - [ ] `package-build` builds through `cargo auditable zigbuild`.
 - [ ] Rewrite `just sbom`:
   - Run cargo-cyclonedx for the package triple: `--describe binaries --target <triple> -f json --spec-version 1.5`, with `SOURCE_DATE_EPOCH` set from the commit time so reruns produce identical files.
   - Move the two shipped binaries' SBOMs to `target/sbom/<triple>/{tisvlay,tisvlay-gui}.cdx.json` and delete the rest. In the probe, cargo-cyclonedx wrote one file per workspace binary, next to each crate's `Cargo.toml` (including `gen-docs`), whatever `--manifest-path` named.
   - Add `*.cdx.json` to `.gitignore` as a backstop.
-- [ ] Add `just sbom-check`: for each shipped binary, compare the SBOM's `name@version` set against what `rust-audit-info` reports for the built binary, and fail with the difference. The build job runs it after `package-build` and `sbom`.
+- [ ] Add `just sbom-check`: for each shipped binary, compare the SBOM's `name@version` set against what `rust-audit-info` reports for the built binary, leaving out the root crate (see the spike), and fail with the difference. The build job runs it after `package-build` and `sbom`.
 - [ ] Tools: add cargo-auditable, cargo-cyclonedx and rust-audit-info to the flake's dev shell. CI installs the same versions through `taiki-e/install-action`, pinned like the other version-sensitive tools. cargo-sbom leaves both.
 - [ ] `ci.yml`: drop the `SBOM` and `Upload SBOM` steps, and `cargo-sbom` from the Setup tool list.
 - Nix needs nothing: `buildRustPackage` already builds through `auditable-cargo`.
@@ -190,8 +192,8 @@ The flake pins cargo-about 0.9.1 only for the dev shell (`cargoAbout` in `flake.
 
 ## Open questions
 
-- **cargo-auditable with zigbuild.** If the spike fails, try composing them the other way round, through cargo-auditable's documented setup for replacing `cargo` (`REPLACING_CARGO.md`). If nothing works, `sbom-check` has nothing to compare against, and the plan falls back to cargo-cyclonedx alone, with that gap documented.
-- **Feature unification.** The release build compiles all `default-members` in one cargo invocation, so Cargo unifies features across them, while cargo-cyclonedx resolves each binary's crate on its own. If `sbom-check` finds crates that only the binary records, that's the likely cause. Options: build `tisvlay-cli` and `tisvlay-gui-app` in separate invocations (some shared crates then compile twice), or pass the unified features to cargo-cyclonedx. The same check settles whether the 11 platform-specific-looking crate names in the GUI's x86_64 SBOM are really compiled in.
+- **aarch64.** The spike covered x86_64 only; `sbom-check` covers the arm leg on its first run.
+- **Feature unification, later.** The release build compiles all `default-members` in one cargo invocation, so Cargo unifies features across them, while cargo-cyclonedx resolves each binary's crate on its own. That made no difference in the spike, but a future dependency could change that. If `sbom-check` then finds crates that only the binary records, the options are building `tisvlay-cli` and `tisvlay-gui-app` in separate invocations (some shared crates then compile twice), or passing the unified features to cargo-cyclonedx.
 - **The elected Slint license.** The SBOM records Slint's declared expression, `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`, not the royalty-free option the project elected (`docs/licensing.md`). CycloneDX 1.6 can mark a license as declared or concluded, but cargo-cyclonedx stops at 1.5. Revisit when it supports 1.6.
 
 ## Alternatives considered
