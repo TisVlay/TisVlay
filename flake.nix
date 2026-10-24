@@ -147,6 +147,13 @@
                 cargo-cyclonedx
                 rust-audit-info
                 jq
+                # Release verification (`just verify-assets`, `just
+                # verify-release`): gh checks the attestations, bsdtar (from
+                # libarchive) unpacks all three package formats, and cosign
+                # runs the book's check for people without a GitHub account.
+                gh
+                libarchive
+                cosign
                 # Cargo plugin that reads package metadata and invokes nfpm
                 # for `just package-*`; source and lockfile are pinned above.
                 cargoNfpm

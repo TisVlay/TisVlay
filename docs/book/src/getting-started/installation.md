@@ -41,6 +41,50 @@ These immutable systems apply package changes after a reboot.
 sudo rpm-ostree install ./tisvlay-${VERSION}-1.$(uname -m).rpm
 ```
 
+### Verify your download
+
+From v0.4.0 on, every package is signed when it's built, through [Sigstore](https://www.sigstore.dev/). The signature proves which repository, commit and workflow produced the file. To check one with the [GitHub CLI](https://cli.github.com/), signed in to any GitHub account:
+
+```sh
+gh attestation verify tisvlay_${VERSION}-1_${ARCH}.deb \
+  --repo TisVlay/TisVlay \
+  --signer-workflow TisVlay/TisVlay/.github/workflows/build-packages.yml \
+  --source-ref refs/tags/v${VERSION}
+```
+
+- Put the file you downloaded in place of the `.deb`.
+- Keep `--signer-workflow`. Without it, a signature from any workflow in the repository would pass, including ones that run pull-request code.
+- The packages carry the binaries unchanged, so the same command also works on an installed system: `gh attestation verify /usr/bin/tisvlay …`.
+
+Each binary also has a signed SBOM (software bill of materials): the crates it was built from, with their versions and licenses. To check it and print it, add the SBOM type:
+
+```sh
+gh attestation verify /usr/bin/tisvlay \
+  --repo TisVlay/TisVlay \
+  --signer-workflow TisVlay/TisVlay/.github/workflows/build-packages.yml \
+  --source-ref refs/tags/v${VERSION} \
+  --predicate-type https://cyclonedx.org/bom \
+  --format json --jq '.[0].verificationResult.statement.predicate'
+```
+
+The releases page has the same SBOMs as files: `tisvlay-${VERSION}-$(uname -m).cdx.json` and `tisvlay-gui-${VERSION}-$(uname -m).cdx.json`.
+
+**Without a GitHub account**, use [cosign](https://docs.sigstore.dev/cosign/) with the signature bundle from the releases page:
+
+```sh
+wget ${BASE}/tisvlay-${VERSION}-$(uname -m).provenance.sigstore.json
+cosign verify-blob-attestation \
+  --bundle tisvlay-${VERSION}-$(uname -m).provenance.sigstore.json \
+  --certificate-identity https://github.com/TisVlay/TisVlay/.github/workflows/build-packages.yml@refs/tags/v${VERSION} \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --type https://slsa.dev/provenance/v1 \
+  tisvlay_${VERSION}-1_${ARCH}.deb
+```
+
+Releases are also immutable: once published, a release's files can't be replaced. `gh release verify-asset v${VERSION} <file>` checks that a file is one the release published.
+
+On NixOS, Nix checks the cache's signing key on every prebuilt path it substitutes (see [Prebuilt binaries](#prebuilt-binaries-optional)), so there's nothing to verify by hand.
+
 ### NixOS / Source Install
 
 <details>
