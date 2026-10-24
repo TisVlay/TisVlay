@@ -188,7 +188,9 @@ With immutability on:
 
 ### Related fix (separate PR, not blocking)
 
-The flake pins cargo-about 0.9.1 only for the dev shell (`cargoAbout` in `flake.nix`). `packaging/nix/package.nix` gets nixpkgs' 0.9.0, which, according to `about.toml`'s comment, silently drops the Slint crates' royalty-free license text from `THIRD-PARTY-LICENSES.html`. Move `cargoAbout` out of the devShell's `let`, pass it to both `callPackage ./packaging/nix/package.nix` sites (the overlay and `packages`), and confirm with a `nix build` that the bundle contains the Slint text.
+- [ ] [#201](https://github.com/TisVlay/TisVlay/pull/201): the Nix package built with nixpkgs' cargo-about 0.9.0, because the flake pinned 0.9.1 for the dev shell only. So the cached build of `main` ships no Slint license text, in either the installed `THIRD-PARTY-LICENSES.html` or the bundle the GUI embeds.
+  - `packaging/nix/cargo-about.nix` now provides at least 0.9.1 inside `package.nix`, which covers the flake's package, the overlay and the module's fallback; the dev shell uses the same file.
+  - 0.9.1 rejected the `no-clearly-defined` key the Nix build used to insert, so that `sed` is gone.
 
 ## Open questions
 
