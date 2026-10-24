@@ -64,9 +64,9 @@ Commit sequence, each one building and testing on its own:
 
 ### 3b. `feat`: held-wake expiry and supersession (both backends)
 
-- [ ] A held wake records when it was armed; after 60 s it publishes `Failed` and continues as `wake: false` (§ Held wakes).
-- [ ] A power-off, or a screen-off on an `emulate_screen_via_power` backend, downgrades a pending wake to `wake: false` and drops a stale `DispatchVerify` with `target_on`.
-- [ ] World tests for both, on a network TV and a local-device TV.
+- [x] A held wake records when it was armed; after 60 s it publishes `Failed` and continues as `wake: false` (§ Held wakes).
+- [x] A power-off (a profile action, or the `power-off` rpc, which a cancelled wake now answers with success instead of "not connected"), or a screen-off on an `emulate_screen_via_power` backend, downgrades a pending wake to `wake: false`, reports it failed, and drops a stale `DispatchVerify` with `target_on`. A wake already dialing is left to finish; only a held one (between attempts or deferred) is cancelled.
+- [x] World tests for both, on a network TV and a local-device TV.
 
 ### 4. `feat` (wire-visible): the waiting state
 

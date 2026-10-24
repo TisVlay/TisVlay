@@ -461,8 +461,7 @@ impl Reactor {
             }
             Command::PowerOff { id, reply } => {
                 let ack = reply.map(AckReply::from);
-                let result =
-                    self.run_handler(handle::backend_command, (id, BackendCmd::PowerOff(ack)));
+                let result = self.run_handler(handle::power_off, (id, ack));
                 self.refuse(ack, result);
             }
             Command::GetConfig { id, reply } => {

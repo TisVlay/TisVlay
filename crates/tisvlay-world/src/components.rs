@@ -196,6 +196,14 @@ pub(crate) struct Parked;
 #[derive(Component, Debug, PartialEq, Eq)]
 pub(crate) struct DeviceAvailable(pub bool);
 
+/// A wake dial has been held on a missing dependency since this instant.
+/// Held past `WAKE_HOLD_LIMIT` it expires into a plain reconnect, so a
+/// route or adapter that returns hours later never powers the TV on.
+/// Cleared by any new connect request (`redial`) and when the dial goes
+/// out.
+#[derive(Component, Debug)]
+pub(crate) struct HeldWake(pub Instant);
+
 /// The TV's device came back while a dial was in flight: if that dial
 /// fails, retry at once with a fresh budget instead of waiting out a grown
 /// backoff.

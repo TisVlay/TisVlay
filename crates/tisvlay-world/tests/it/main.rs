@@ -11,6 +11,7 @@ mod support;
 mod carrier;
 mod device;
 mod dispatch;
+mod held_wake;
 mod pairing_profiles;
 mod reload;
 mod store;

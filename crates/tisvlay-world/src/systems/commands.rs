@@ -284,6 +284,30 @@ pub(crate) fn backend_command(
     }
 }
 
+/// A power-off: in-band on a live connection, acked once the TV completes
+/// it. A disconnected TV holding a wake has that wake cancelled, which is
+/// the whole of the job (it stays off), so the rpc is answered here.
+/// Otherwise the TV isn't connected.
+pub(crate) fn power_off(
+    In((id, reply)): In<(Uuid, Option<AckReply>)>,
+    mut commands: Commands,
+    index: Res<TvIndex>,
+    q: Query<LinkQuery>,
+    held: Query<&PendingConnect, Without<Reconnecting>>,
+    mut outbox: ResMut<Outbox>,
+) -> Result<(), WireError> {
+    let entity = tv_entity(&index, id)?;
+    match q.get(entity).ok().and_then(|(handle, ..)| handle) {
+        Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOff(reply)).is_ok() => Ok(()),
+        None if held.get(entity).is_ok_and(|p| p.wake) => {
+            cancel_held_wake(&mut commands, entity);
+            reply_ok(&mut outbox, reply);
+            Ok(())
+        }
+        _ => Err(WireError::not_connected(id)),
+    }
+}
+
 /// A manual input switch: authoritative, so it cancels any pending
 /// restore intent instead of fighting it, then rides the backend.
 pub(crate) fn switch_input(

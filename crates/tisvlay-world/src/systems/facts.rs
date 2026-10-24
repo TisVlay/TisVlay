@@ -286,15 +286,14 @@ pub(super) fn apply_backend_events(
                 } else if persistent {
                     // A wake keeps its budget: it ends here, reported, and
                     // the TV goes on as a plain reconnect, which never powers
-                    // it on. A screen intent riding the wake would, so it
-                    // goes too.
+                    // it on.
                     if wake_dial {
                         publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
                         e.insert(PendingConnect {
                             attempts,
                             wake: false,
-                        })
-                        .remove::<DispatchVerify>();
+                        });
+                        drop_screen_on_intent(&mut e);
                     }
                     e.insert(RetryAt(clock.0 + retry_delay(attempts)));
                 } else {
@@ -858,6 +857,7 @@ pub(super) fn reconcile_connections(
                 Option<&MonitoredInterface>,
                 Option<&DeviceAvailable>,
                 Option<&TransportTraits>,
+                Option<&HeldWake>,
             ),
             Has<AwaitingDependency>,
             Has<PairVerifying>,
@@ -865,8 +865,16 @@ pub(super) fn reconcile_connections(
         (Without<ConnectionHandle>, Without<Reconnecting>),
     >,
 ) {
-    for (entity, id, vendor, mut pending, retry, (monitored, device, traits), awaiting, pairing) in
-        &mut q
+    for (
+        entity,
+        id,
+        vendor,
+        mut pending,
+        retry,
+        (monitored, device, traits, held),
+        awaiting,
+        pairing,
+    ) in &mut q
     {
         // The dial gate, in one place: no live handle, no in-flight
         // dial (the query filters), backoff elapsed, and the dependency
@@ -894,6 +902,27 @@ pub(super) fn reconcile_connections(
         }
         if !pairing && dependency_absent(monitored, device) {
             pending.attempts = 0;
+            // A held wake runs on a clock: the dependency coming back at
+            // boot or resume still wakes the TV, one coming back much
+            // later only reconnects it.
+            if pending.wake {
+                match held {
+                    None => {
+                        commands.entity(entity).insert(HeldWake(clock.0));
+                    }
+                    Some(HeldWake(since))
+                        if clock.0.saturating_duration_since(*since) >= WAKE_HOLD_LIMIT =>
+                    {
+                        tracing::info!(tv = %id.0, "a held wake expired; reconnecting without it");
+                        pending.wake = false;
+                        let mut e = commands.entity(entity);
+                        e.remove::<HeldWake>();
+                        drop_screen_on_intent(&mut e);
+                        publish_power_phase(&mut outbox, &site, &id.0, payload::PowerPhase::Failed);
+                    }
+                    Some(_) => {}
+                }
+            }
             if !awaiting {
                 tracing::debug!(tv = %id.0, wake = pending.wake, "dial deferred: dependency absent");
                 commands.entity(entity).insert(AwaitingDependency);
@@ -915,7 +944,7 @@ pub(super) fn reconcile_connections(
         commands
             .entity(entity)
             .insert((Reconnecting, LatestDial(dial)))
-            .remove::<(RetryAt, AwaitingDependency)>();
+            .remove::<(RetryAt, AwaitingDependency, HeldWake)>();
         outbox.0.push(Effect::SpawnConnect {
             tv: id.0,
             dial,

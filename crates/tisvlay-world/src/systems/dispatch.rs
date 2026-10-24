@@ -107,6 +107,9 @@ pub(super) fn dispatch_screen(
         }
         if let Some(handle) = handle {
             let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
+        } else if pending {
+            // Screen off is power off here: it cancels a held wake.
+            cancel_held_wake(commands, entity);
         }
         // Otherwise a satisfied no-op: a dark, unreachable TV already is
         // screen-off. Standby-reachable backends keep their handle in
@@ -441,6 +444,8 @@ pub(super) fn dispatch_system_events(
                 ProfileAction::PowerOff => {
                     if let Some(handle) = handle {
                         let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
+                    } else if pending {
+                        cancel_held_wake(&mut commands, entity);
                     }
                     Ok(())
                 }
