@@ -52,3 +52,6 @@ jobs:
           fail-on-error: false
           list-suites: failed
           list-tests: failed
+          # Create the check run. The default (true) writes the report to
+          # this job's summary page instead, where nobody looks.
+          use-actions-summary: false
