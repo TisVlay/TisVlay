@@ -12,6 +12,15 @@ Backend model: [docs/cec/protocol.md](../cec/protocol.md). Adapter lifecycle: [d
 | TV sleeps or locks the PC | The CEC connection's monitor turns the TV's own broadcasts (`<Standby>`, `<Report Power Status>`) into `state/power`, and the session service already mirrors `state/power` | No event or action consumes a TV-side power change; TisVlay can't tell the TV's own standby from one it caused |
 | TV remote as input | The kernel's `rc-cec` device and keymap, registered when the adapter attaches | The kernel forwards keys only when the claim allows RC passthrough, which TisVlay's claim doesn't (and linux-cec can't yet set) |
 
+## Decisions (2026-10-24)
+
+Taken after Checks A to C ran. The rest of this doc keeps the reasoning; where a section lists options, these are the ones chosen.
+
+- **The TV wakes the PC: configurable at runtime, from the start.** "The TV may wake this PC" is behavior policy, so a system-profile field, editable in the GUI like the others. It's applied right before each sleep, when logind's `PrepareForSleep` fires (the daemon already watches it): the kernel reads the adapter's `power/wakeup` at suspend time. The daemon can't write sysfs itself (the packaged unit's `ProtectKernelTunables=true` makes `/sys` read-only, and the attribute is root's), so it goes through a small privileged helper, a oneshot unit or a polkit-gated action like `tisvlay enable-access`, installed by the NixOS module and the distro packages. The same hop can later carry the Pulse-Eight's disarm-on-suspend module parameter, also root-only.
+- **The TV sleeps or locks the PC: opt-in user-profile events.** `on_tv_standby` and `on_tv_wake`, run by the session service, defaulting to nothing, on the world-side cause stamp on `state/power` (a wire change) so TisVlay's own power-offs never fire them.
+- **The remote: TisVlay gates, the desktop maps.** A per-TV system-profile toggle, "send the remote's keys to the desktop", applied by the daemon at claim (it needs the linux-cec setter for the passthrough flag). The kernel keymap and the desktop's own shortcuts decide what keys mean: no per-key table in TisVlay, which would duplicate input-remapper, keyd, hwdb and the desktop's shortcuts and need input injection for navigation. If a need appears, a small set of TisVlay *intents* fits better than raw keys.
+- **The remote's power key: its own profile event.** The keymap drops scan `0x40` (static host configuration), so the kernel never turns SIMPLINK's device power-off into `KEY_POWER`. The daemon's follower monitor receives the message instead (to verify: that followers still get `<User Control Pressed>` with passthrough on), and it becomes `on_remote_power` in the user profile, with the same action set as `on_tv_standby` (nothing, lock, suspend, turn the TV off) and its own default. It's separate from TV standby because it's explicit and aimed at the PC: it never fires on its own timer and never echoes TisVlay's commands, so it needs no cause stamp.
+
 ## 1. The TV wakes the PC
 
 Only the adapter is awake while the PC is suspended: TisVlay's processes are frozen, so this is firmware plus host power plumbing, and TisVlay's part is configuration and docs.
@@ -188,8 +197,8 @@ end
 ## Open questions
 
 - **Suspend wake against the label.** Should the TV's power key be able to wake the PC, keeping the dongle armed while suspended and accepting a possibly pinned label after each long suspend, or should a suspended PC disarm it too? This decides the module parameter's default in the NixOS option. The wake doesn't need the dongle armed (Check B′: it woke pox undriven and disarmed), so disarming on suspend may not cost the wake; what's left is whether a long suspend with the dongle armed pins the label. So far: "TisVlay" after a 105 s and a 48 s suspend.
-- **TV-to-PC sleep.** Is it wanted at all, as opt-in user-profile events? And is the world-side cause stamp on `state/power` (a wire change) acceptable as its basis?
-- **Remote passthrough.** Stay out, or pursue the linux-cec flag setter and an opt-in with a `KEY_POWER` override?
+- **The privileged hop's shape.** A oneshot unit the daemon may start, or a polkit-gated action; and whether it also covers the remote's keymap override and the disarm-on-suspend parameter.
+- **Followers and passthrough.** Whether the follower monitor still receives `<User Control Pressed>` when passthrough is on (the power-key event depends on it).
 - **Surfacing.** Should the GUI show whether the adapter can wake the PC?
 
 ## Trigger

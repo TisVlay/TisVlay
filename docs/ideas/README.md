@@ -11,7 +11,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Power-on for an already-connected TV (startup `PowerOn` warning, LG capability mismatch, possible dark panel)](connected-power-on.md)
 - [Idempotent write rpcs via client-minted ids (extend caller re-issue to writes)](idempotent-write-rpcs.md)
 - [Virtual DRM connector for detached TVs](virtual-drm-connector.md)
-- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding)](cec-followups.md)
+- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding, inputattach start limit)](cec-followups.md)
 - [Stable device alias for USB CEC adapters (a udev symlink so configs survive node renumbering)](cec-stable-device-alias.md)
 - [TV-driven PC power and input over HDMI-CEC (TV wakes, sleeps or locks the PC; the TV remote as input; their install story)](cec-tv-controls-pc.md)
 - [Probe library extraction (when GUI lands)](probe-library-extraction.md)
