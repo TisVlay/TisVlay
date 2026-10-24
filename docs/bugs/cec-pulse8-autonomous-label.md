@@ -1,6 +1,6 @@
 # Pulse-Eight autonomous mode pins the TV's input label
 
-**Status:** open (2026-10-24), fix in testing: the patched module passes the detach reproducer (steps 10–12); the warm-reboot check is pending. Fix plan: [docs/plans/cec-pulse8-autonomous.md](../plans/cec-pulse8-autonomous.md).
+**Status:** closed (2026-10-24). Our out-of-tree `pulse8-cec` build disarms the dongle in `pulse8_disconnect` while `serio` is still usable ([the patch](../../packaging/nix/pulse8-cec-disarm-on-disconnect.patch)). It passes the detach reproducer and a warm reboot with the TV on (steps 10–13). The fix applies to the NixOS module's build only; other distros keep the unpatched driver until it goes upstream. Fix plan and remaining follow-ups: [docs/plans/cec-pulse8-autonomous.md](../plans/cec-pulse8-autonomous.md).
 
 For an LG C3 on a Pulse-Eight USB-CEC adapter (`pulse8-cec`, firmware `000c` built 2020-04-28, Linux 7.3.0, tisvlay 0.4.0 at `a59c4eee`), the TV labels the PC's HDMI 1 input **"LG DVD Player"** while the kernel advertises `OSD Name : 'TisVlay'`. The fix from [PR #197](https://github.com/TisVlay/TisVlay/pull/197) is in place and working: the kernel answers `<Give OSD Name>` with our name, and the TV acknowledges it. The TV keeps its own label anyway.
 
@@ -32,6 +32,7 @@ Times are local (CDT). Bus bytes are `<initiator><destination> <opcode> <operand
 10. **Patched module loaded (11:58:01, `serio4`).** After rebuilding with [the disarm patch](../../packaging/nix/pulse8-cec-disarm-on-disconnect.patch) and an HDMI replug for a clean record, the patched module had to be loaded by hand: `modprobe` loads from `/run/booted-system` until a reboot (§ Diagnostics). The old module was removed only after `cec-ctl --clear` with the daemon stopped, so its broken disconnect found the dongle already disarmed. The daemon claimed LA 4; the label read "TisVlay".
 11. **Detach with the patched module (11:58:25).** The SSAP label read "TisVlay" through 11:58:35, "HDMI 1" at 11:58:45, empty at 11:58:56, and **"CEC Adapter"** from 11:59:06 to the end of the run. The TV's input menu showed no duplicate HDMI 1 entry this time. After re-attach (12:00:30, `serio5`; the driver logged `message queue is full, dropping 09` while draining what the dongle had buffered) and `tisvlay reconnect`, the claim took LA 4 and the label returned to **"TisVlay" with no replug**.
 12. **Disarm confirmed on the wire (12:04:41).** With `pulse8_cec` debug at 2, an inputattach stop logged `transmit SET_ACK_MASK: 0a 00 00` and `transmit SET_AUTO_ENABLED: 1a 00`, and no `failed to disable autonomous mode`. The tty still carries writes inside `pulse8_disconnect`.
+13. **Warm reboot with the TV on (12:10:39 → 12:11:16), patched module.** The shutdown disconnect logged `transmit SET_ACK_MASK: 0a 00 00` and `transmit SET_AUTO_ENABLED: 1a 00` at 12:09:58, before `new physical address f.f.f.f`. At boot, inputattach started at 12:11:22.54, the firmware answered 40 ms later, and the claim took **LA 4** at 12:11:23.00: every `44` poll was NACKed (`status 0x04`). The label read "TisVlay". The LA 12 claim of step 1 didn't recur.
 
 ## Mechanism
 
@@ -70,8 +71,7 @@ So upstream's intended behavior is: armed while the host is suspended, disarmed 
 
 ## Open questions
 
-- **Why the boot claim landed on LA 12.** The polls to 4 and 11 were acknowledged (no poll-failure lines), but neither a reclaim after a long detach (step 6) nor one 0.2 s after re-registration (step 7) reproduced it. Candidates: firmware state that only a full warm reboot produces, or the TV waking at the same time (LG came online after WoL at 09:52:18). A reboot with `options cec debug=2` would show who acknowledged.
-- **Whether the reboot path disarms too.** Step 12 covers an inputattach stop. At shutdown the same disconnect runs, but whether its log lines survive to the journal, and whether the label holds through a warm reboot with the TV on, is the pending check.
+- **Why the boot claim landed on LA 12.** Not reproduced. The polls to 4 and 11 were acknowledged (no poll-failure lines). Neither armed re-attach (steps 6 and 7) reproduced it, and the patched warm reboot claimed LA 4 (step 13). The likeliest reading is that a full reboot with the dongle armed and the TV talking to it left the firmware ACKing those addresses, which the disarm now prevents, but nothing captured it. If a claim lands on 12 or 13 again, a boot with `options cec debug=2` shows who acknowledged.
 - **What the disarmed dongle advertises.** "CEC Adapter" (step 11) is presumably the firmware's own identity; its device type and address weren't captured (the host was detached, so no kernel trace exists).
 
 ## Diagnostics

@@ -29,7 +29,7 @@ Not needed. It was the alternative if the tty couldn't carry writes inside `puls
 
 - [x] Before the patch: the detach experiment (bug doc § Diagnostics) flips the label to "LG DVD Player" after about 60 s, with a duplicate HDMI 1 entry on the TV, and only a replug restores it (bug doc, steps 5–7).
 - [x] After the patch: no duplicate entry and no LG label. The label passes through "HDMI 1" and the disarmed dongle's own "CEC Adapter", and returns to our name on the reconnect, with no replug (bug doc, steps 10–12). The label doesn't stay on our name during the detach, which the plan expected; the disarmed firmware still answers the TV with its own identity. That's acceptable, since it doesn't pin the record.
-- [ ] Warm reboot with the TV on: the label holds (or recovers on the boot claim), and the debug capture shows which address the boot claim takes, and who acknowledged the polls if it isn't Playback 1. This also answers the bug doc's LA 12 question.
+- [x] Warm reboot with the TV on: the shutdown disconnect logs both disarm commands, the boot claim takes Playback 1 (every poll NACKed), and the label holds (bug doc, step 13). The LA 12 claim didn't recur, so the debug capture had nothing to explain; the bug doc keeps it as not reproduced.
 
 ### 4. Redial CEC when the adapter returns
 
@@ -45,7 +45,7 @@ Not needed. It was the alternative if the tty couldn't carry writes inside `puls
 
 - [ ] [docs/cec/protocol.md](../cec/protocol.md) § "Advertising our own name (the reverse direction)": a rename applies on the reconnect it forces (not "on the next wake"); a TV-side record formed while the dongle was autonomous persists until the TV re-detects the device (a replug), whatever we advertise afterwards.
 - [ ] [docs/book/src/guide/configuration.md](../book/src/guide/configuration.md), at the `advertise_osd_name` paragraph: a troubleshooting note for a TV that shows a different name for the input (for a Pulse-Eight adapter with an LG TV, "LG DVD Player"). With the patched module the label recovers on the next connect; on an unpatched driver (other distros), an HDMI replug clears it.
-- [ ] Move the bug doc to Closed once step 3 passes.
+- [x] Move the bug doc to Closed once step 3 passes.
 
 ### 7. Optional, later
 
@@ -54,5 +54,4 @@ Not needed. It was the alternative if the tty couldn't carry writes inside `puls
 
 ## Open questions
 
-- Why this morning's boot claim landed on LA 12 (step 3's reboot capture).
-- Whether the disarm also runs on the shutdown path, where the journal may not capture its log lines; the label after the warm reboot is the practical answer.
+- Why the first boot's claim landed on LA 12. Not reproduced after the fix (bug doc, § Open questions); reopen if a claim lands on a Backup address again.
