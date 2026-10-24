@@ -64,7 +64,7 @@ Commit sequence, each one building and testing on its own:
 
 ### 3b. `feat`: held-wake expiry and supersession (both backends)
 
-- [x] A held wake records when it was armed; after 60 s it publishes `Failed` and continues as `wake: false` (§ Held wakes).
+- [x] A held wake records when it started waiting (`HeldWake`); after 60 s it publishes `Failed` and continues as `wake: false` (§ Held wakes).
 - [x] A power-off (a profile action, or the `power-off` rpc, which a cancelled wake now answers with success instead of "not connected"), or a screen-off on an `emulate_screen_via_power` backend, downgrades a pending wake to `wake: false`, reports it failed, and drops a stale `DispatchVerify` with `target_on`. A wake already dialing is left to finish; only a held one (between attempts or deferred) is cancelled.
 - [x] World tests for both, on a network TV and a local-device TV.
 
@@ -80,15 +80,24 @@ Commit sequence, each one building and testing on its own:
 
 ### 5. `docs`
 
-- [ ] [docs/architecture.md](../architecture.md): the parking rule, the watchers list, CEC no longer "never defers".
-- [ ] [docs/watchers/network.md](../watchers/network.md) ("non-IP transports dial as always") and a `docs/watchers/devices.md` for the device watcher.
-- [ ] [docs/cec/protocol.md](../cec/protocol.md): reconnect behavior when the adapter goes and returns; renumbering.
-- [ ] Packaging: the comment in `packaging/systemd/tisvlay-daemon.service` (the sandbox hides the node at boot too, not just a late one), and the `DeviceAllow=char-cec` hazard (resolved from `/proc/devices` at unit start: with `cec.ko` not yet loaded, a hot-plugged adapter returns `EPERM` until the daemon restarts).
-- [ ] Retire this plan and the Pulse-Eight plan per [docs/plans/README.md](README.md).
+- [x] [docs/architecture.md](../architecture.md): the parking rule, the watchers list, CEC no longer "never defers".
+- [x] [docs/watchers/network.md](../watchers/network.md) ("non-IP transports dial as always") and a `docs/watchers/devices.md` for the device watcher.
+- [x] [docs/cec/protocol.md](../cec/protocol.md): reconnect behavior when the adapter goes and returns; renumbering.
+- [x] Packaging: the comment in `packaging/systemd/tisvlay-daemon.service` (the sandbox hides the node at boot too, not just a late one), and the `DeviceAllow=char-cec` hazard (resolved from `/proc/devices` at unit start: with `cec.ko` not yet loaded, a hot-plugged adapter returns `EPERM` until the daemon restarts).
+- [ ] Retire this plan and the Pulse-Eight plan per [docs/plans/README.md](README.md), after a field soak (decided 2026-10-24: keep both active until then).
 
 ## Verification
 
-- [ ] Unit and world tests as above; clock-driven backoff tests.
-- [ ] Hardware, the detach experiment: CEC reconnects within about a second of `pulse8-cec-inputattach` starting again, with no manual `reconnect`, and the GUI shows the waiting state in between.
-- [ ] Hardware, the boot race: restart the daemon with inputattach stopped, wait 30 s, start inputattach; CEC connects at once, and no failure is logged at the daemon's start.
-- [ ] Hardware, the wake: with the adapter detached, trigger a power-on; after 60 s it publishes `Failed`, and the TV doesn't power on when the adapter returns later. Again with a power-off between the two: the held wake is cancelled at once.
+- [x] Unit and world tests as above; clock-driven backoff tests.
+- [x] Hardware, the detach experiment: CEC reconnects within about a second of `pulse8-cec-inputattach` starting again, with no manual `reconnect`, and the waiting state in between (checked through `tisvlay list`; the GUI chip wasn't looked at).
+- [x] Hardware, the boot race: restart the daemon with inputattach stopped, wait 30 s, start inputattach; CEC connects at once, and no failure is logged at the daemon's start.
+- [x] Hardware, the wake: with the adapter detached, trigger a power-on; after 60 s it publishes `Failed`, and the TV doesn't power on when the adapter returns later. Again with a power-off between the two: the held wake is cancelled at once.
+
+All four hardware checks passed on 2026-10-24 (LG C3, Pulse-Eight); the results are recorded in [docs/watchers/devices.md](../watchers/devices.md) § Tested scenarios. The held-wake checks have to run unattended with the TV dark, since the TV is also the PC's display: wake it only after the script finishes, or the check reads the wake you made.
+
+## Follow-ups found during verification
+
+- [A power-on sent to a closing connection is lost behind an OK reply](../bugs/power-on-lost-to-a-closing-connection.md): the proposed fix re-arms it as a held wake.
+- [An LG C3 may ignore CEC `<Standby>` just after waking](../concerns/cec-standby-ignored-after-wake.md): unconfirmed, with a capture recipe.
+- `tisvlay list` showed a dial in flight as "disconnected"; it now says "connecting".
+- The GUI's `registered_callbacks_round_trip_gui_workflows` test failed once under full-suite load and passed in every other run; not investigated.

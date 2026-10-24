@@ -10,6 +10,7 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 - [Session event tests use real-time sleeps](session-event-tests-real-time-sleeps.md)
 - [Remote-session detectors not yet field-validated (krdp, RustDesk, PipeWire, logind)](remote-session-detector-validation.md)
+- [An LG C3 may ignore CEC `<Standby>` just after waking (unconfirmed)](cec-standby-ignored-after-wake.md)
 
 ## Build & CI
 
