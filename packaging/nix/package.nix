@@ -120,9 +120,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
     export LD_LIBRARY_PATH="${lib.makeLibraryPath finalAttrs.rpathLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   '';
 
-  # No network setup needed: cargo-about dropped its clearlydefined.io
-  # lookup (EmbarkStudios/cargo-about#287), and 0.9.1 rejects the old
-  # `no-clearly-defined` key this step used to insert.
+  # cargo-about reads only the vendored sources, so it runs as is in the
+  # sandbox, with no network.
   preBuild = ''
     cargo about generate \
       --config packaging/licensing/about.toml \
