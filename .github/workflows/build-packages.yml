@@ -90,28 +90,35 @@ jobs:
       # Everything the attest and release jobs need, in one flat artifact
       # (upload-artifact roots a multi-path upload at the paths' common
       # ancestor, so files from two directories would land in subfolders):
-      #   assets/  the packages and SBOMs, which become release assets;
-      #   attest/  what the attest job signs, as checksum files it reads
-      #            without needing the binaries themselves: the packages and
-      #            binaries for provenance, and each binary plus the packages
-      #            that ship it for that binary's SBOM. Binaries are named
-      #            <arch>/<binary>, since both architectures' share a name.
+      #   assets/         the packages and SBOMs, which become release
+      #                   assets;
+      #   attest/<arch>/  what the attest job signs, as checksum files it
+      #                   reads without needing the binaries themselves: the
+      #                   packages and binaries for provenance, and each
+      #                   binary plus the packages that ship it for that
+      #                   binary's SBOM. Binaries are named <arch>/<binary>,
+      #                   since both architectures' share a name.
+      # Every file name differs between the two legs, so the jobs that
+      # download both artifacts into one directory never see a clash.
       - name: Stage
         run: |
           arch=$(uname -m)
           out=target/release-out
-          rm -rf "$out" && mkdir -p "$out/assets" "$out/attest"
+          att=$out/attest/$arch
+          rm -rf "$out" && mkdir -p "$out/assets" "$att"
           cp target/nfpm-dist/tisvlay_*.deb target/nfpm-dist/tisvlay-*.rpm \
             target/nfpm-dist/tisvlay-*.pkg.tar.zst target/sbom/*.cdx.json "$out/assets/"
-          (cd "$out/assets" && sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst) > "$out/attest/packages.sha256"
-          for bin in tisvlay tisvlay-gui; do
-            echo "$(sha256sum < "target/nfpm-dist/$bin" | cut -d' ' -f1)  $arch/$bin" > "$out/attest/$bin.sha256"
-            cat "$out/attest/$bin.sha256" "$out/attest/packages.sha256" > "$out/attest/$bin-sbom-subjects.sha256"
-            cp target/sbom/"$bin"-*-"$arch".cdx.json "$out/attest/$bin.cdx.json"
+          (cd "$out/assets" && sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst) > "$att/packages.sha256"
+          # Each SBOM names its binary, so no filename glob can mistake
+          # `tisvlay-gui-…` for `tisvlay-…`.
+          for sbom in target/sbom/*.cdx.json; do
+            bin=$(jq -r .metadata.component.name "$sbom")
+            echo "$(sha256sum < "target/nfpm-dist/$bin" | cut -d' ' -f1)  $arch/$bin" > "$att/$bin.sha256"
+            cat "$att/$bin.sha256" "$att/packages.sha256" > "$att/$bin-sbom-subjects.sha256"
+            cp "$sbom" "$att/$bin.cdx.json"
           done
-          cat "$out/attest/packages.sha256" "$out/attest/tisvlay.sha256" "$out/attest/tisvlay-gui.sha256" \
-            > "$out/attest/provenance-subjects.sha256"
-          echo "$arch" > "$out/attest/arch"
+          cat "$att/packages.sha256" "$att/tisvlay.sha256" "$att/tisvlay-gui.sha256" \
+            > "$att/provenance-subjects.sha256"
           find "$out" -type f | sort
 
       - name: Upload
@@ -130,7 +137,11 @@ jobs:
     needs: build
     strategy:
       matrix:
-        artifact: [build-X64, build-ARM64]
+        include:
+          - artifact: build-X64
+            arch: x86_64
+          - artifact: build-ARM64
+            arch: aarch64
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -149,21 +160,21 @@ jobs:
         id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-checksums: in/attest/provenance-subjects.sha256
+          subject-checksums: in/attest/${{ matrix.arch }}/provenance-subjects.sha256
 
       - name: SBOM (tisvlay)
         id: sbom-tisvlay
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-checksums: in/attest/tisvlay-sbom-subjects.sha256
-          sbom-path: in/attest/tisvlay.cdx.json
+          subject-checksums: in/attest/${{ matrix.arch }}/tisvlay-sbom-subjects.sha256
+          sbom-path: in/attest/${{ matrix.arch }}/tisvlay.cdx.json
 
       - name: SBOM (tisvlay-gui)
         id: sbom-tisvlay-gui
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-checksums: in/attest/tisvlay-gui-sbom-subjects.sha256
-          sbom-path: in/attest/tisvlay-gui.cdx.json
+          subject-checksums: in/attest/${{ matrix.arch }}/tisvlay-gui-sbom-subjects.sha256
+          sbom-path: in/attest/${{ matrix.arch }}/tisvlay-gui.cdx.json
 
       # <binary>-<version>-<arch>.cdx.sigstore.json signs that SBOM asset;
       # tisvlay-<version>-<arch>.provenance.sigstore.json signs the build.
@@ -172,9 +183,10 @@ jobs:
           PROVENANCE: ${{ steps.provenance.outputs.bundle-path }}
           SBOM_TISVLAY: ${{ steps.sbom-tisvlay.outputs.bundle-path }}
           SBOM_TISVLAY_GUI: ${{ steps.sbom-tisvlay-gui.outputs.bundle-path }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          arch=$(cat in/attest/arch)
-          version=$(jq -r .metadata.component.version in/attest/tisvlay.cdx.json)
+          arch=$ARCH
+          version=$(jq -r .metadata.component.version "in/attest/$arch/tisvlay.cdx.json")
           mkdir -p bundles
           cp "$PROVENANCE" "bundles/tisvlay-$version-$arch.provenance.sigstore.json"
           cp "$SBOM_TISVLAY" "bundles/tisvlay-$version-$arch.cdx.sigstore.json"
