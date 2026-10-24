@@ -13,6 +13,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Virtual DRM connector for detached TVs](virtual-drm-connector.md)
 - [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding)](cec-followups.md)
 - [Stable device alias for USB CEC adapters (a udev symlink so configs survive node renumbering)](cec-stable-device-alias.md)
+- [TV-driven PC power and input over HDMI-CEC (TV wakes, sleeps or locks the PC; the TV remote as input; their install story)](cec-tv-controls-pc.md)
 - [Probe library extraction (when GUI lands)](probe-library-extraction.md)
 - [SSDP `NOTIFY` passive listener](ssdp-notify-passive-listener.md)
 - [Pair-time MAC capture (ARP snoop for vendors without a device-reported MAC)](pair-time-mac-capture.md)
