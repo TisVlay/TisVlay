@@ -151,35 +151,30 @@ With immutability on:
 
 ### 4. SLSA Level 3 build and signing (`build-packages.yml`)
 
-- [ ] A new reusable workflow, `on: workflow_call`, with two jobs:
-  - `build` (matrix: `ubuntu-latest`, `ubuntu-26.04-arm`), `contents: read` only. Today's build steps plus step 3's `sbom` and `sbom-check`. Uploads the packages, the two binaries and the two SBOMs for each architecture.
-  - `attest`, which needs `build` and has `id-token: write`, `attestations: write` and `contents: read`. It downloads the build output and runs only `actions/attest`:
-    - provenance for the six packages and four binaries, in one call with `subject-checksums`. The binary subjects are named by architecture (e.g. `x86_64/tisvlay`), since both architectures' files share a name;
-    - one SBOM attestation per binary per architecture (`sbom-path`), whose subjects are that binary and its architecture's three packages;
-    - an upload of each attestation's Sigstore bundle (the action's `bundle-path` output), named for what it signs: `provenance.sigstore.json` and, for example, `tisvlay-x86_64.cdx.sigstore.json`.
-- [ ] `release.yml`'s tag-push `build` job becomes a call to `./.github/workflows/build-packages.yml`. The calling job grants `id-token: write`, `attestations: write` and `contents: read`; GitHub requires the caller and the reusable workflow to both have them.
-- [ ] `release.yml`'s `release` job (`contents: write`, `attestations: read`) does the following before it creates the draft:
-  - runs `gh attestation verify` on each package and binary with `--signer-workflow TisVlay/TisVlay/.github/workflows/build-packages.yml --source-ref "$GITHUB_REF" --deny-self-hosted-runners`, then again with `--predicate-type https://cyclonedx.org/bom` for the SBOMs (confirm that predicate URI against `actions/attest` while implementing);
-  - extracts the binaries from each `.deb`, `.rpm` and `.pkg.tar.zst` and verifies those as well, which proves the installed-binary claim for every format;
-  - verifies again from the bundles alone (`--bundle`), so a bundle that doesn't verify never ships;
-  - writes `checksums-sha256.txt` over the packages, SBOMs and bundles, then creates the draft and uploads.
-- [ ] The signer path appears in `release.yml`, the `verify-release` recipe and the book. A comment at each points to the others.
+- [x] A new reusable workflow, `on: workflow_call`:
+  - `build` (matrix: `ubuntu-latest`, `ubuntu-26.04-arm`), `contents: read` only. Today's build steps plus `just sbom-check`. It stages one flat artifact per architecture: `assets/` (the packages and SBOMs) and `attest/` (checksum files naming what to sign, so the attest job needs no binaries). One flat directory, because `upload-artifact` roots a multi-path upload at the paths' common ancestor; step 3's upload mixed `target/nfpm-dist/` and `target/sbom/`, which would have put the release job's files in subfolders.
+  - `attest` (one leg per architecture), with `id-token: write`, `attestations: write` and `contents: read`. It downloads its architecture's artifact and runs only `actions/attest` (v4.2.2), plus a few lines of shell:
+    - one provenance attestation over the three packages and two binaries (`subject-checksums`; binaries named `<arch>/<binary>`);
+    - one SBOM attestation per binary (`sbom-path`, predicate `https://cyclonedx.org/bom`), over the binary and the three packages;
+    - the three Sigstore bundles, uploaded as `tisvlay-<version>-<arch>.provenance.sigstore.json` and `<binary>-<version>-<arch>.cdx.sigstore.json`.
+- [x] `release.yml`'s tag-push `build` job calls it, granting `id-token: write`, `attestations: write` and `contents: read`.
+- [x] A new `verify` job (`contents: read`, `attestations: read`) runs `just verify-assets` on the downloaded assets and bundles before any draft exists. So the check that gates the draft is the one the maintainer runs.
+- [x] The `release` job writes `checksums-sha256.txt` over the packages, SBOMs and bundles, and attaches them all to the draft.
+- [x] The signer path appears in `build-packages.yml`'s header, `just verify-assets` and the book, each pointing to the others.
 
 ### 5. Verification tooling and docs
 
-- [ ] Add `just verify-release <tag>`:
-  - `gh release download <tag>` into `target/verify/<tag>/` (drafts included, with the maintainer's auth), then `sha256sum -c checksums-sha256.txt`;
-  - the provenance and SBOM checks from step 4 on each package, and on the binaries extracted from the host's package format;
-  - once the release is published, `gh release verify <tag>`, plus `gh release verify-asset <tag> <file>` for each asset.
-- [ ] `docs/build.md` release checklist: run `just verify-release vX.Y.Z` on the draft before promoting, and again after.
-- [ ] Book, `getting-started/installation.md`: a "Verify your download" section covering:
-  - a downloaded package: `gh attestation verify <file> -R TisVlay/TisVlay --signer-workflow TisVlay/TisVlay/.github/workflows/build-packages.yml --source-ref refs/tags/vX.Y.Z`;
-  - an installed binary: the same command on `/usr/bin/tisvlay`;
-  - the SBOM: add `--predicate-type https://cyclonedx.org/bom --format json --jq '.[].verificationResult.statement.predicate'`;
-  - without a GitHub account: the release's `.sigstore.json` bundle with cosign or sigstore-python, or `gh attestation verify --bundle` offline. `just verify-release` runs the documented command so it can't drift;
-  - the release itself: `gh release verify vX.Y.Z` and `gh release verify-asset vX.Y.Z <file>`;
-  - Nix: the cachix signing key already covers prebuilt store paths (`packaging/nix/README.md`).
-- [ ] `packaging/README.md`: the release pipeline's new shape (build → attest → verify → draft → promote).
+- [x] `just verify-assets <dir> <ref>`:
+  - the checksums;
+  - every package and every binary unpacked from them (with bsdtar; an architecture's three packages must carry identical binaries): provenance, then the SBOM attestation, looked up on GitHub and checked from the bundles alone;
+  - that each SBOM asset is the SBOM that was signed.
+
+  A dry run with a stand-in `gh` covered its control flow (56 verifications, 30 of them from bundles) and its rejection of an SBOM that doesn't match.
+- [x] `just verify-release <tag>`: downloads the release (drafts included) into `target/verify/<tag>/`, runs `just verify-assets`, then the book's cosign command on the x86_64 `.deb`. Once the release is published, it also runs `gh release verify` and `gh release verify-asset` on every asset.
+- [x] Where the release steps are written down: `release.yml`'s header and `packaging/README.md`'s new "Release signing and verification" section, rather than `docs/build.md`, which has no release checklist.
+- [x] Book, `getting-started/installation.md`, "Verify your download": a package; an installed binary; its SBOM; cosign with the provenance bundle for people without a GitHub account; `gh release verify-asset`; and a pointer for Nix users to the cache's signing key.
+- [x] The dev shell gains gh, libarchive (bsdtar) and cosign.
+- [ ] **Confirm at the rehearsal:** the cosign command (the flags of cosign 3.x against a multi-subject GitHub bundle), and whether `gh attestation verify --bundle` works without a GitHub login. If it does, the book can offer it as the offline option.
 
 ### 6. The v0.4.0 re-cut
 
