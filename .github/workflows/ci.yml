@@ -90,8 +90,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
-      checks: write
       # The OIDC token the Codecov upload authenticates with.
       id-token: write
     steps:
@@ -188,23 +186,17 @@ jobs:
           path: target/sbom/
           retention-days: 14
 
-      # NOTE: When this repo becomes public, fork PRs cannot create check
-      # runs (read-only token). See the "Recommended setup for public
-      # repositories" section of the dorny/test-reporter README — the
-      # workflow_run pattern with two workflows is the workaround.
-      # hashFiles guard: if a step before nextest failed there is no JUnit
-      # file, and without it the reporter logs a confusing "no report files"
-      # line over the real failure (it is already fail-on-error: false).
-      - name: Report
-        uses: dorny/test-reporter@v3
+      # The JUnit results for test-report.yml, which turns them into the
+      # "Tests" check run: a fork PR's token here is read-only and can't
+      # create one. hashFiles guard: if a step before nextest failed there is
+      # no JUnit file, and test-report.yml skips a run without the artifact.
+      - name: Upload test results
         if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
+        uses: actions/upload-artifact@v7
         with:
-          name: Tests
+          name: test-results
           path: target/nextest/ci/junit.xml
-          reporter: java-junit
-          fail-on-error: false
-          list-suites: failed
-          list-tests: failed
+          retention-days: 14
 
   # The workspace must build on its declared `rust-version` floor. The floor
   # is read from Cargo.toml, so this job never needs editing; rustup installs
