@@ -43,7 +43,7 @@ The rest of this document is about the second channel — the cross-distro `.deb
 The two ingredients that make this work cleanly from a NixOS host are:
 
 - **cargo-zigbuild** invokes `cargo` with zig as the C/C++ linker. Zig's standard library bundles glibc shim libraries for many versions; passing `--target x86_64-unknown-linux-gnu.<version>` tells it to link only symbols available at-or-before that glibc version. The ELF interpreter is the standard `/lib64/ld-linux-x86-64.so.2` (no Nix-store path), and the dynamic-section `NEEDED` entries name plain SONAMEs (`libc.so.6`, `libfontconfig.so.1`, …). The result loads on any distro with glibc ≥ baseline without further tooling.
-- **nfpm** (the Go binary, invoked through the `cargo-nfpm` plugin) reads `[package.metadata.nfpm*]` from [`crates/tisvlay-daemon/Cargo.toml`](../crates/tisvlay-daemon/Cargo.toml) and produces a `.deb`/`.rpm`/`.pkg.tar.zst` from the same source-of-truth. Per-format `depends` lists declare runtime libraries the package manager must pull in.
+- **nfpm** (the Go binary, invoked through the `cargo-nfpm` plugin) reads `[package.metadata.nfpm*]` from [`crates/tisvlay-cli/Cargo.toml`](../crates/tisvlay-cli/Cargo.toml) and produces a `.deb`/`.rpm`/`.pkg.tar.zst` from the same source-of-truth. Per-format `depends` lists declare runtime libraries the package manager must pull in.
 
 ### Glibc baseline
 
@@ -66,7 +66,7 @@ Bumping the baseline is a one-line change in `glibc_baseline`. The 2.34 anchor w
 - **Link-time (`NEEDED` in the ELF)** — appears in `ldd <binary>`. Must be present on the host at exactly the soname the binary requests. Currently: `libfontconfig.so.1`.
 - **Runtime dlopen** — loaded via `libloading` from inside the binary at startup. Failure to resolve manifests as an application-level error rather than the loader refusing to start. Currently: `libGL.so.1`, `libEGL.so.1`, `libwayland-client.so.0`, `libwayland-egl.so.1` (probed by Slint's `i-slint-renderer-femtovg` + `winit`'s Wayland backend).
 
-Both categories must be reflected in the per-format `depends` lists in [`crates/tisvlay-daemon/Cargo.toml`](../crates/tisvlay-daemon/Cargo.toml). The package manager only knows about declared deps; if the user installs the `.rpm` on a minimal headless distro, missing libGL/libwayland will surface at first GUI launch.
+Both categories must be reflected in each format's `depends` list (deb, rpm and archlinux) in [`crates/tisvlay-cli/Cargo.toml`](../crates/tisvlay-cli/Cargo.toml). The package manager only knows about declared deps; if the user installs the `.rpm` on a minimal headless distro, missing libGL/libwayland will surface at first GUI launch.
 
 The `tisvlay` binary (the CLI plus the daemon, session, tray and greeter services) has no runtime deps beyond glibc. It shares a package with the GUI because shipping one bundle is simpler than two — if a future use case (servers, embedded) needs a daemon-only install, a `tisvlay-server` subpackage is straightforward to add.
 
@@ -325,5 +325,5 @@ For developer-facing details — the cargo-about + cargo-deny pipeline, per-crat
 
 - Research that grounded the cargo-zigbuild choice (worth re-reading if reconsidering): [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), [Kobzol on portable Rust binaries](https://kobzol.github.io/rust/ci/2021/05/07/building-rust-binaries-in-ci-that-work-with-older-glibc.html), [Rust blog on increasing glibc/kernel requirements](https://blog.rust-lang.org/2022/08/01/Increasing-glibc-kernel-requirements/).
 - Why musl-static doesn't work for GUI binaries: [musl FAQ on dlopen](https://musl.libc.org/faq.html), [Slint PR #956](https://github.com/slint-ui/slint/pull/956) (the upstream switch to dlopen-friendly fontconfig).
-- nfpm format reference: [`nfpm` docs](https://nfpm.goreleaser.com/configuration/). Per-format keys mirror what we declare in [`crates/tisvlay-daemon/Cargo.toml`](../crates/tisvlay-daemon/Cargo.toml).
+- nfpm format reference: [`nfpm` docs](https://nfpm.goreleaser.com/configuration/). Per-format keys mirror what we declare in [`crates/tisvlay-cli/Cargo.toml`](../crates/tisvlay-cli/Cargo.toml).
 - Nix-side packaging (separate channel, separate concerns): [`nix/README.md`](nix/README.md).
