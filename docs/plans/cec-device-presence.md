@@ -14,12 +14,12 @@ This plan gives local-device TVs the same event-driven model network TVs already
 - **"Waiting for its device" is visible to clients.** A wire-visible change, so it ships as a `feat` commit, with the GUI, tray and CLI strings alongside.
 - **User guide edits held** until the CEC follow-ups near their end.
 
-## Refinements to confirm
+## Refinements (confirmed)
 
-Two points improve on what was agreed in conversation. They need a yes before implementation.
+Two points that improved on the first design. Both are confirmed.
 
 1. **Listen to udev's events, not the kernel's, and re-check paths instead of waking every waiting TV.** The agreed design woke every waiting CEC TV on any CEC `add`, because the kernel's event arrives before udev has applied permissions or created aliases (`/dev/cec-pulse8`). udev broadcasts its own event on the same netlink family (`NETLINK_KOBJECT_UEVENT`, the udev multicast group rather than the kernel's) *after* its rules have run. On that event the watcher re-checks every monitored path in the subsystem and reports only real changes. That's precise (no wasted dials), works with aliases, and the first dial no longer races udev's permission rule. The message format is simple to parse without libudev. Only privileged senders can multicast on this family, so the events can't be forged by an unprivileged process.
-2. **Where the waiting state goes on the wire.** `PowerPhase::AwaitingDevice` (next to `AwaitingNetwork`) only appears during a wake flow, on `progress/power`. A CEC TV that lost its adapter and isn't being woken would still just read "disconnected". To say why a TV is down at any time, the steady state belongs on `state/link`: a new field such as `waiting_for: null | "network" | "device"`. Recommendation: add the `Link` field as the primary signal, and the phase too so the wake flow stays parallel to `AwaitingNetwork`. Both go in the one `feat` commit.
+2. **Where the waiting state goes on the wire.** `PowerPhase::AwaitingDevice` (next to `AwaitingNetwork`) only appears during a wake flow, on `progress/power`. A CEC TV that lost its adapter and isn't being woken would still just read "disconnected". To say why a TV is down at any time, the steady state belongs on `state/link`: a new field such as `waiting_for: null | "network" | "device"`. Decided: add the `Link` field as the primary signal, and the phase too so the wake flow stays parallel to `AwaitingNetwork`. Both go in the one `feat` commit.
 
 ## Implementation
 
