@@ -98,7 +98,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: File checks
-        uses: j178/prek-action@5337cb91e0fa35a7ff31b9ca345126d8bbbcdf16 # v2.0.6
+        uses: j178/prek-action@1382ad72dea72f9d53832f2bcb65b3e87a947204 # v3.0.1
         env:
           # zizmor's online audits (such as a pinned SHA that doesn't match
           # its version comment) read the GitHub API.
@@ -162,7 +162,7 @@ jobs:
       # The workflow linters are skipped here: the checks job runs them on
       # every change, and this job doesn't install them.
       - name: Lint
-        uses: j178/prek-action@5337cb91e0fa35a7ff31b9ca345126d8bbbcdf16 # v2.0.6
+        uses: j178/prek-action@1382ad72dea72f9d53832f2bcb65b3e87a947204 # v3.0.1
         with:
           extra-args: >-
             --all-files
