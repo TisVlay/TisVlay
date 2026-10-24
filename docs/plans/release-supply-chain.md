@@ -33,6 +33,8 @@ v0.4.0 is held until all of it lands, so it's the first release with the full se
 - **Publishing needs the maintainer's approval, not just a `v*` tag.** A second account has write access, and write access can push tags and publish releases, while the `crates-io` and `cachix` environments only check the tag's name. So both environments require the maintainer's approval, and a tag ruleset limits creating, moving and deleting `v*` tags to repository admins, as the `main` ruleset does for `main`. release-plz's per-crate tags (`tisvlay-core-v…`) don't match `v*`.
 - **A security policy.** `SECURITY.md` says how to report a vulnerability, and GitHub's private vulnerability reporting is turned on, so reports don't have to be public issues.
 - **The 0.4.0 bump comes from `release-plz update`, run locally.** It picks the version from the conventional-commit history, updates the workspace version and the internal dependency requirements, and writes each crate's first `CHANGELOG.md`; the result is reviewed and merged as a normal PR. The release-PR workflow (`release-plz.yml`) stays off: a PR opened with the workflow's own token doesn't trigger CI, so it could never pass the `CI result` check `main` requires. Turning it on later means giving it a GitHub App token.
+- **Rehearse with `v0.4.0-rc.1` before v0.4.0.** The signing and verification only run on a tag push, so a throwaway rc tag on the bump commit runs the whole pipeline against a draft that's never published, then gets deleted along with its tag. The cost is one cachix push (pinned as `v0.4.0-rc.1-<system>`), and the rc's signatures stay in the public transparency log.
+- **Two PRs for steps 3–5:** step 3 on its own, since it can be tested locally; then steps 4 and 5 together, so the signer path the release job, the recipe and the book share is reviewed once.
 
 ## SBOM tooling survey (2026-10-23)
 
@@ -88,13 +90,13 @@ This goes first because steps 3 and 4 rewrite `release.yml`.
 
 Settings the maintainer applies (an admin token is needed), any time before the v0.4.0 tag:
 
-- [ ] **Immutable releases**, before the v0.4.0 promote. `GET` on the endpoint currently returns `{"enabled":false}`.
+- [x] **Immutable releases** (enabled 2026-10-24).
 
   ```bash
   gh api -X PUT repos/TisVlay/TisVlay/immutable-releases
   ```
 
-- [ ] **Required reviewers** on the `crates-io` and `cachix` environments: Settings → Environments → each one → Required reviewers → `ruffsl`, with "Prevent self-review" left off so you can approve your own release. Keep the `v*` tag rule. Afterwards, check that each still admits only `v*` tags and now lists a reviewer:
+- [x] **Required reviewers** (2026-10-24) on the `crates-io` and `cachix` environments: Settings → Environments → each one → Required reviewers → `ruffsl`, with "Prevent self-review" left off so you can approve your own release. Keep the `v*` tag rule. Afterwards, check that each still admits only `v*` tags and now lists a reviewer:
 
   ```bash
   for e in crates-io cachix; do
@@ -104,7 +106,7 @@ Settings the maintainer applies (an admin token is needed), any time before the 
   ```
 
   Each tag build's `nix-cache` job, and each `publish-crates` run after a promote, then waits for one approval.
-- [ ] **Tag ruleset:** only repository admins may create, move or delete `v*` tags, with the same bypass as the `main` ruleset.
+- [x] **Tag ruleset** ("release tags", 2026-10-24): only repository admins may create, move or delete `v*` tags, with the same bypass as the `main` ruleset.
 
   ```bash
   gh api -X POST repos/TisVlay/TisVlay/rulesets --input - <<'EOF'
@@ -119,17 +121,17 @@ Settings the maintainer applies (an admin token is needed), any time before the 
   EOF
   ```
 
-- [ ] **Private vulnerability reporting:**
+- [x] **Private vulnerability reporting** (2026-10-24):
 
   ```bash
   gh api -X PUT repos/TisVlay/TisVlay/private-vulnerability-reporting
   ```
 
-- [ ] **`SECURITY.md`** (a PR): which versions get fixes, how to report (the private reporting form), and what to expect after reporting.
+- [x] **`SECURITY.md`** ([#200](https://github.com/TisVlay/TisVlay/pull/200)): which versions get fixes, how to report (the private reporting form), and what to expect after reporting.
 
 With immutability on:
 
-- [ ] Fix the comments that assume a tag can move after publishing: the `nix-cache` job's Push step in `release.yml` ("a re-pushed tag moves the pin") and the "Release pins" bullet in [nix-binary-cache.md](nix-binary-cache.md). A tag can now only move before the promote, and only by an admin.
+- [x] Fix the comments that assume a tag can move after publishing: the `nix-cache` job's Push step in `release.yml` ("a re-pushed tag moves the pin") and the "Release pins" bullet in [nix-binary-cache.md](nix-binary-cache.md). A tag can now only move before the promote, and only by an admin.
 - Nothing else changes. release-plz's per-package tags (`tisvlay-core-v0.4.0` and so on) aren't release tags, and `publish-crates` never modifies the GitHub release (`git_release_enable = false`).
 
 ### 3. Auditable builds and SBOM generation
@@ -137,14 +139,14 @@ With immutability on:
 - [x] **Spike (2026-10-23, x86_64):** `cargo auditable zigbuild --profile dist --target x86_64-unknown-linux-gnu.2.34`, with nixpkgs' cargo-auditable 0.7.6, built as fast as usual (98 s warm).
   - Both binaries carry a `.dep-v0` section: 457 crates for `tisvlay`, 609 for `tisvlay-gui`. Their newest glibc symbol is still `GLIBC_2.34`.
   - cargo-cyclonedx's per-binary SBOMs list exactly the same `name@version` set, apart from the root crate: the SBOM describes it in `metadata.component`, under the binary's name. So the single cargo invocation's feature unification adds nothing, and the 11 platform-specific-looking crates in the GUI's SBOM really are compiled in.
-- [ ] `package-build` builds through `cargo auditable zigbuild`.
-- [ ] Rewrite `just sbom`:
+- [x] `package-build` builds through `cargo auditable zigbuild`.
+- [x] Rewrite `just sbom`:
   - Run cargo-cyclonedx for the package triple: `--describe binaries --target <triple> -f json --spec-version 1.5`, with `SOURCE_DATE_EPOCH` set from the commit time so reruns produce identical files.
-  - Move the two shipped binaries' SBOMs to `target/sbom/<triple>/{tisvlay,tisvlay-gui}.cdx.json` and delete the rest. In the probe, cargo-cyclonedx wrote one file per workspace binary, next to each crate's `Cargo.toml` (including `gen-docs`), whatever `--manifest-path` named.
-  - Add `*.cdx.json` to `.gitignore` as a backstop.
-- [ ] Add `just sbom-check`: for each shipped binary, compare the SBOM's `name@version` set against what `rust-audit-info` reports for the built binary, leaving out the root crate (see the spike), and fail with the difference. The build job runs it after `package-build` and `sbom`.
-- [ ] Tools: add cargo-auditable, cargo-cyclonedx and rust-audit-info to the flake's dev shell. CI installs the same versions through `taiki-e/install-action`, pinned like the other version-sensitive tools. cargo-sbom leaves both.
-- [ ] `ci.yml`: drop the `SBOM` and `Upload SBOM` steps, and `cargo-sbom` from the Setup tool list.
+  - Move the two shipped binaries' SBOMs to `target/sbom/<binary>-<version>-<arch>.cdx.json` (for example `tisvlay-gui-0.4.0-x86_64.cdx.json`, the release asset names) and delete the rest. In the probe, cargo-cyclonedx wrote one file per workspace binary, next to each crate's `Cargo.toml` (including `gen-docs`), whatever `--manifest-path` named.
+  - Add `/crates/*/*.cdx.json` to `.gitignore` as a backstop.
+- [x] Add `just sbom-check`: for each shipped binary, compare the SBOM's `name@version` set against what `rust-audit-info` reports for the built binary, leaving out the root crate (see the spike), and fail with the difference. `release.yml`'s build job runs it after `just package-all` and attaches the SBOMs to the draft (listed in `checksums-sha256.txt`); step 4 signs them.
+- [x] Tools: add cargo-auditable, cargo-cyclonedx and rust-audit-info to the flake's dev shell. `release.yml` installs the same versions through `taiki-e/install-action`, and now pins its other tools (cargo-about, cargo-nfpm, cargo-zigbuild) to the flake's versions too; until now it installed whatever was newest. cargo-sbom leaves both the dev shell and CI, and jq joins the dev shell.
+- [x] `ci.yml`: drop the `SBOM` and `Upload SBOM` steps, and `cargo-sbom` from the Setup tool list.
 - Nix needs nothing: `buildRustPackage` already builds through `auditable-cargo`.
 
 ### 4. SLSA Level 3 build and signing (`build-packages.yml`)
@@ -182,13 +184,14 @@ With immutability on:
 ### 6. The v0.4.0 re-cut
 
 - [ ] Add release-plz and cargo-semver-checks to the dev shell. On a branch, run `release-plz update`, review the version bump and the new `CHANGELOG.md` files, and merge it as a normal PR.
-- [ ] Tag the merge commit `v0.4.0` and watch the run: the draft should appear only after verification passes, and the `nix-cache` job waits for your approval. Run `just verify-release v0.4.0` on the draft.
+- [ ] **Rehearsal:** tag the merge commit `v0.4.0-rc.1` and watch the run. The draft should appear only after verification passes, and the `nix-cache` job waits for your approval. Run `just verify-release v0.4.0-rc.1` on the draft. Fix anything that fails and repeat with `-rc.2`. Then delete the rc draft and its tag, never publishing it.
+- [ ] Tag the same commit `v0.4.0`, watch the run, and run `just verify-release v0.4.0` on the draft.
 - [ ] Promote it and approve the `publish-crates` deployment, then run `just verify-release v0.4.0` again, now including `gh release verify`. Check that the release page shows "Immutable" and that the attestations appear in the repo's Actions tab.
 - [ ] On a machine with the `.deb` installed, run `gh attestation verify /usr/bin/tisvlay …`.
 
 ### Related fix (separate PR, not blocking)
 
-- [ ] [#201](https://github.com/TisVlay/TisVlay/pull/201): the Nix package built with nixpkgs' cargo-about 0.9.0, because the flake pinned 0.9.1 for the dev shell only. So the cached build of `main` ships no Slint license text, in either the installed `THIRD-PARTY-LICENSES.html` or the bundle the GUI embeds.
+- [x] [#201](https://github.com/TisVlay/TisVlay/pull/201): the Nix package built with nixpkgs' cargo-about 0.9.0, because the flake pinned 0.9.1 for the dev shell only. So the cached build of `main` ships no Slint license text, in either the installed `THIRD-PARTY-LICENSES.html` or the bundle the GUI embeds.
   - `packaging/nix/cargo-about.nix` now provides at least 0.9.1 inside `package.nix`, which covers the flake's package, the overlay and the module's fallback; the dev shell uses the same file.
   - 0.9.1 rejected the `no-clearly-defined` key the Nix build used to insert, so that `sed` is gone.
 

@@ -22,4 +22,4 @@ Considered in the release supply-chain plan ([docs/plans/release-supply-chain.md
 
 ## How
 
-Add an nfpm `contents` entry in `crates/tisvlay-cli/Cargo.toml` that installs `target/sbom/<triple>/{tisvlay,tisvlay-gui}.cdx.json` at the agreed location. The release build already runs `just sbom` before nfpm, so nothing needs reordering. The file can't describe the package it ships in, since adding it changes that package's digest, so it describes the binaries, as the released SBOMs do.
+Add an nfpm `contents` entry in `crates/tisvlay-cli/Cargo.toml` that installs `target/sbom/{tisvlay,tisvlay-gui}-<version>-<arch>.cdx.json` at the agreed location. `just sbom` then has to run before nfpm, not after `just package-all` as the release build runs it now; it needs no build output, only cargo metadata. The file can't describe the package it ships in, since adding it changes that package's digest, so it describes the binaries, as the released SBOMs do.
