@@ -2,6 +2,7 @@
 
 ## Open
 
+- [Pulse-Eight autonomous mode pins the TV's input label](cec-pulse8-autonomous-label.md) — the adapter, left armed on disconnect, makes an LG TV store "LG DVD Player" for the input; fix plan in [docs/plans/cec-pulse8-autonomous.md](../plans/cec-pulse8-autonomous.md)
 - [Upstream: linux-cec re-claim drops the OSD name](upstream-linux-cec-reclaim-drops-osd-name.md) — draft for linux-cec, not filed; held until our workaround (`8f764d5`) soaks
 - [Session event handler `last_action` cache survives daemon reconnects](last-action-cache-survives-reconnect.md)
 - [`run_pairing_handshake` has no timeout on `wait_for_completion`](pair-tv-no-timeout.md)
