@@ -72,12 +72,13 @@ Trends:
 
 This goes first because steps 3 and 4 rewrite `release.yml`.
 
-- [ ] Pin every action to a commit SHA, with the tag in a comment; Dependabot's github-actions updates keep the pins current.
-- [ ] `persist-credentials: false` on the remaining checkouts (`ci.yml`'s ci, msrv, features and docs jobs; `audit.yml`; `release.yml`'s build).
-- [ ] Move `release.yml`'s top-level `contents: write` down to the jobs that need it.
-- [ ] Replace `softprops/action-gh-release` with `gh release create --draft --verify-tag --generate-notes` plus `gh release upload`. CI only ever creates and fills drafts; publishing stays the maintainer's promote.
-- [ ] actionlint and zizmor as prek hooks, so CI runs them too.
-- [ ] Move `dorny/test-reporter` into a `workflow_run` workflow: PRs from forks get a read-only token and can't create check runs.
+- [x] Pin every action to a commit SHA, with the release in a comment (pinact); Dependabot's github-actions updates keep the pins current.
+- [x] `persist-credentials: false` on the remaining checkouts (`ci.yml`'s ci, msrv, features and docs jobs; `audit.yml`; `release.yml`'s build).
+- [x] No workflow-level grants: `release.yml`'s top-level `contents: write`, and `release-plz.yml`'s default token, became `permissions: {}`, since every job declares its own.
+- [x] Replace `softprops/action-gh-release` with `gh release create --draft --verify-tag --generate-notes` plus `gh release upload`. CI only ever creates and fills drafts; publishing stays the maintainer's promote. A rerun refreshes the tag's draft and deletes assets the new build didn't produce; a published release fails the job instead.
+- [x] actionlint and zizmor as prek hooks (`just actionlint`, `just zizmor`), run by CI's `checks` job on every change, where zizmor also runs its online audits.
+- [x] Move `dorny/test-reporter` into a `workflow_run` workflow (`test-report.yml`): PRs from forks get a read-only token and can't create check runs.
+- [x] A one-week Dependabot cooldown for both ecosystems, which zizmor's Dependabot audit asked for.
 
 ### 2. Immutable releases (maintainer, settings)
 
