@@ -176,8 +176,19 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6 as its wire module); no safe upgrade; via zbus 5" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6 as its names module); no safe upgrade; via zbus 5" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6); no safe upgrade; via zbus 5" },
-    # Fix available upstream — deferred to a dependency bump:
-    { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; transitive, pending bump" },
+    # Fixed upstream, but not yet reachable:
+    { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; zenoh-transport 1.10.1, the latest zenoh, still pulls in 0.10; revisit on the next zenoh release" },
+    # Assessed, but not listed here: unsound advisories against transitive
+    # crates, which cargo-deny doesn't gate (`unsound` defaults to
+    # `workspace`), so an ignore entry would only warn that it's unused.
+    # Scanners reading the release binaries (`cargo audit bin`, Trivy,
+    # grype) still report them:
+    #   RUSTSEC-2026-0253  lru 0.16 (`LruCache::pop` panic safety), via
+    #                      zenoh-ext 1.10.1; fixed in >=0.18.2; revisit on
+    #                      the next zenoh release.
+    #   RUSTSEC-2026-0244  gettext-rs 0.7, via Slint 1.18.1's i-slint-core
+    #                      (our own code is on 0.8); fixed in >=0.8.0;
+    #                      revisit on the Slint bump.
 ]
 
 # Code provenance: crates.io only. Any git or alternate-registry
