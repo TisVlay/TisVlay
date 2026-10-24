@@ -199,7 +199,7 @@ async fn a_deviceless_wake_expires_into_a_plain_reconnect() {
     let t0 = Instant::now();
     client.tick(t0);
     power_on(&client, id, 1);
-    collect_until(&mut effects, |e| reply_to(e, 1)).await;
+    collect_until(&mut effects, |e| phase(e, "awaiting_device")).await;
     client.tick(t0 + Duration::from_secs(61));
     collect_until(&mut effects, |e| phase(e, "failed")).await;
 

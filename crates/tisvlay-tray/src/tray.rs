@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
 use tisvlay_icons::Variant;
+use tisvlay_protocol::payload;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -227,7 +228,12 @@ impl Tray for TvTray {
                     let active = |t| scroll_tv == Some(*id) && scroll_target == Some(t);
                     let marker = |t| if active(t) { "►" } else { " " };
                     if !tv.connected {
-                        return format!("{}\n  off", tv.name);
+                        let state = match tv.waiting_for {
+                            Some(payload::LinkWait::Device) => "waiting for its adapter",
+                            Some(payload::LinkWait::Network) => "waiting for the network",
+                            None => "off",
+                        };
+                        return format!("{}\n  {state}", tv.name);
                     }
                     let volume = tv.volume.map(|v| {
                         let muted = if tv.muted == Some(true) {
@@ -1041,6 +1047,19 @@ mod tests {
         assert_eq!(
             tray.tool_tip().description,
             "Office:\n  volume 42 (muted)\n► backlight 50\nBedroom\n  off"
+        );
+
+        // A TV known to be missing its adapter says so instead of "off".
+        let waiting = TvView {
+            name: "Den".into(),
+            waiting_for: Some(payload::LinkWait::Device),
+            ..Default::default()
+        };
+        let mut tray = tray_with(&[(Uuid::from_u128(3), waiting)]);
+        tray.mirror.daemon_alive = true;
+        assert_eq!(
+            tray.tool_tip().description,
+            "Den\n  waiting for its adapter"
         );
     }
 

@@ -21,7 +21,7 @@
     clippy::cast_possible_truncation
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -105,6 +105,9 @@ async fn supervise(world: WorldClient, mut requests: mpsc::UnboundedReceiver<Dev
 struct WatcherState {
     monitored: HashMap<Uuid, PathBuf>,
     reported: HashMap<Uuid, bool>,
+    /// Nodes already reported as hidden from this process, so the warning
+    /// goes out once per node rather than on every re-attach.
+    hidden: HashSet<PathBuf>,
 }
 
 impl WatcherState {
@@ -140,6 +143,11 @@ impl WatcherState {
             .filter(|(tv, _)| self.reported.get(tv) == Some(&false))
             .map(|(_, path)| path.as_path())
             .collect()
+    }
+
+    /// Note `path` as hidden from this process; true the first time.
+    fn warn_hidden(&mut self, path: &Path) -> bool {
+        self.hidden.insert(path.to_path_buf())
     }
 }
 
@@ -276,9 +284,18 @@ async fn watch_devices(
                     }
                     if event.action == "add"
                         && let Some(devname) = &event.devname
-                        && let Some(path) = renumbered_from(Path::new(devname), &state.unavailable())
                     {
-                        info!(added = %devname, configured = %path.display(), "a device node appeared under another name while a configured one is unavailable; the adapter may have been renumbered");
+                        let added = Path::new(devname);
+                        // udev made the node, so it exists on the host; a
+                        // configured one this process can't see is hidden.
+                        let hidden = state.unavailable().contains(&added) && !added.exists();
+                        if hidden {
+                            if state.warn_hidden(added) {
+                                warn!(device = %devname, "udev added a configured device node this daemon can't see; its sandbox may hide devices (systemd PrivateDevices), see the CEC setup docs");
+                            }
+                        } else if let Some(path) = renumbered_from(added, &state.unavailable()) {
+                            info!(added = %devname, configured = %path.display(), "a device node appeared under another name while a configured one is unavailable; the adapter may have been renumbered");
+                        }
                     }
                     if !recheck(world, state, udev) {
                         return Ok(());
@@ -421,6 +438,14 @@ mod tests {
             state.on_checked(tv, true, false).is_some(),
             "a forgotten TV reports afresh"
         );
+    }
+
+    #[test]
+    fn a_hidden_node_warns_once() {
+        let mut state = WatcherState::default();
+        let node = Path::new("/dev/cec0");
+        assert!(state.warn_hidden(node));
+        assert!(!state.warn_hidden(node), "the next re-attach stays quiet");
     }
 
     #[test]

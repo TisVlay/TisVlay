@@ -540,6 +540,7 @@ mod tests {
                 connected,
                 reconnecting: false,
                 supports_wake: true,
+                waiting_for: None,
             }),
             power: Some(Power {
                 state,

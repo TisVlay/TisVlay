@@ -225,6 +225,7 @@ fn spawn_tv(commands: &mut Commands, outbox: &mut Outbox, record: &TvRecord) -> 
             connected: false,
             reconnecting: false,
             supports_wake: false,
+            waiting_for: None,
         }),
         // Filled by the reactor's enrollment-time facts (Effect::Facts
         // above); present from spawn so publish_changed has a component

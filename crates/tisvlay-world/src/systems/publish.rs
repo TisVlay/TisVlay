@@ -79,21 +79,40 @@ pub(super) fn publish_greeter_timeout(
 }
 
 /// Wire link state is derived from world structure: connected ⇔ a live
-/// `ConnectionHandle` exists, reconnecting ⇔ a dial is in flight.
+/// `ConnectionHandle` exists, reconnecting ⇔ a dial is in flight, and a
+/// disconnected TV's `waiting_for` names the dependency known gone. That
+/// reads the facts themselves, not the dial gate's deferral marker, so a
+/// parked TV with no dial pending still says what it waits for.
 /// `set_if_neq` gates change detection, so publishes fire only on real
 /// transitions.
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
 pub(super) fn derive_link_state(
     mut q: Query<(
         &mut State<payload::Link>,
         Has<ConnectionHandle>,
         Has<Reconnecting>,
+        Option<&MonitoredInterface>,
+        Option<&DeviceAvailable>,
     )>,
 ) {
-    for (mut link, connected, reconnecting) in &mut q {
+    for (mut link, connected, reconnecting, monitored, device) in &mut q {
+        let waiting_for = if connected {
+            None
+        } else if matches!(device, Some(DeviceAvailable(false))) {
+            Some(payload::LinkWait::Device)
+        } else if matches!(monitored, Some(MonitoredInterface(None))) {
+            Some(payload::LinkWait::Network)
+        } else {
+            None
+        };
         let new = payload::Link {
             connected,
             reconnecting,
             supports_wake: link.supports_wake,
+            waiting_for,
         };
         link.set_if_neq(State(new));
     }

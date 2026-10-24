@@ -382,3 +382,46 @@ async fn a_return_during_a_dial_retries_its_failure_at_once() {
     // No tick: only the prompt retry can dial again.
     wait_for_dials(&handle, "mock://inflight", 2).await;
 }
+
+fn link_waiting(effect: &WireEffect, waiting: serde_json::Value) -> bool {
+    is_publish_on(effect, "/state/link").is_some_and(|p| p["waiting_for"] == waiting)
+}
+
+/// The link says what a disconnected TV waits for: its device while that's
+/// gone, nothing once it's back and connected.
+#[tokio::test]
+async fn the_link_says_when_the_tv_waits_for_its_device() {
+    let (mut effects, mut requests, client, _handle) = spawn_reactor_with_devices();
+    let id = Uuid::new_v4();
+    add(&client, id, local_config("mock://waits"));
+    expect_monitor(&mut requests, id).await;
+    report(&client, id, false);
+    collect_until(&mut effects, |e| link_waiting(e, "device".into())).await;
+    report(&client, id, true);
+    let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
+    assert!(
+        link_waiting(
+            seen.last().expect("the connected publish"),
+            serde_json::Value::Null
+        ),
+        "a connected TV waits for nothing"
+    );
+}
+
+/// A network TV whose route is known gone waits for the network, parked
+/// or not.
+#[tokio::test]
+async fn the_link_says_when_the_tv_waits_for_the_network() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://net-waits").await;
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    settle(&mut effects, &client, 20).await;
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: None,
+    });
+    collect_until(&mut effects, |e| link_waiting(e, "network".into())).await;
+}

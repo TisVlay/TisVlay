@@ -178,10 +178,11 @@ pub(crate) struct RetryAt(pub Instant);
 /// A dial request deferred on a known absence of what the connection
 /// depends on: a usable route, or the TV's local device node —
 /// `reconcile_connections` skips the entity until the netlink monitor or
-/// the device watcher reports it back. Publish gate only: its insertion
-/// edge emits the wake path's waiting phase once per deferral episode;
-/// the dial gate itself is [`dependency_absent`], so the facts and the
-/// gate cannot drift.
+/// the device watcher reports it back. Marks the deferral episode, so it
+/// logs once; a wake's waiting phase goes out when its [`HeldWake`]
+/// starts, which also covers a wake upgrading an episode already under
+/// way. The dial gate itself is [`dependency_absent`], so the facts and
+/// the gate cannot drift.
 #[derive(Component, Debug)]
 pub(crate) struct AwaitingDependency;
 

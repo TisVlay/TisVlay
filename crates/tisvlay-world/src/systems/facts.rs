@@ -907,8 +907,17 @@ pub(super) fn reconcile_connections(
             // later only reconnects it.
             if pending.wake {
                 match held {
+                    // The wake starts waiting: say what for, once per
+                    // wake, including one that upgrades a plain reconnect
+                    // already deferred.
                     None => {
                         commands.entity(entity).insert(HeldWake(clock.0));
+                        let phase = if matches!(device, Some(DeviceAvailable(false))) {
+                            payload::PowerPhase::AwaitingDevice
+                        } else {
+                            payload::PowerPhase::AwaitingNetwork
+                        };
+                        publish_power_phase(&mut outbox, &site, &id.0, phase);
                     }
                     Some(HeldWake(since))
                         if clock.0.saturating_duration_since(*since) >= WAKE_HOLD_LIMIT =>
@@ -926,14 +935,6 @@ pub(super) fn reconcile_connections(
             if !awaiting {
                 tracing::debug!(tv = %id.0, wake = pending.wake, "dial deferred: dependency absent");
                 commands.entity(entity).insert(AwaitingDependency);
-                if pending.wake && matches!(monitored, Some(MonitoredInterface(None))) {
-                    publish_power_phase(
-                        &mut outbox,
-                        &site,
-                        &id.0,
-                        payload::PowerPhase::AwaitingNetwork,
-                    );
-                }
             }
             continue;
         }

@@ -33,8 +33,8 @@ pub use error::{BoxError, Error, Result, Service};
 pub use tisvlay_protocol::bootstrap::{default_connect_socket_path, default_session_socket_path};
 pub use tisvlay_protocol::error::ErrorCode;
 pub use tisvlay_protocol::payload::{
-    FailureCode, LinkMacOutcome, LinkMacReport, PairingPhase, PairingProgress, PowerPhase,
-    RemoteSessionState, RemoteSource, RemoteSourceKind,
+    FailureCode, LinkMacOutcome, LinkMacReport, LinkWait, PairingPhase, PairingProgress,
+    PowerPhase, RemoteSessionState, RemoteSource, RemoteSourceKind,
 };
 pub use tisvlay_protocol::rpc::{
     NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, ServiceInfo,
@@ -249,6 +249,11 @@ pub struct TvInfo {
     /// that stays reachable in standby is connected while the TV is off,
     /// so read `power_state` for power.
     pub connected: bool,
+    /// What a disconnected TV is waiting for, when that's known missing:
+    /// its network route, or the local device its connection needs (a
+    /// USB CEC adapter). `None` while connected, or when nothing is known
+    /// missing.
+    pub waiting_for: Option<LinkWait>,
     /// Whether the daemon may run profile-driven actions on the TV. An
     /// unmanaged TV stays connected and still takes manual control.
     pub managed: bool,
@@ -1702,6 +1707,7 @@ mod mirror_row {
                     .unwrap_or_else(|| identity.vendor.clone()),
                 capabilities: Capabilities::from_strings(&caps),
                 connected: self.link.as_ref().is_some_and(|l| l.connected),
+                waiting_for: self.link.as_ref().and_then(|l| l.waiting_for),
                 managed: meta.managed,
                 automated: meta.automated,
                 remote_armed: meta.remote_armed,

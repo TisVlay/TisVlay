@@ -15,6 +15,8 @@ use zenoh::sample::{Sample, SampleKind};
 pub struct TvView {
     pub name: String,
     pub connected: bool,
+    /// What a disconnected TV waits for, when that's known missing.
+    pub waiting_for: Option<payload::LinkWait>,
     /// Awake, per `PowerState::is_awake` (the GUI's and CLI's rule too),
     /// not the payload's broader `is_on`: a remote-off LG in
     /// `activestandby` is dark and must offer wake, not power-off.
@@ -108,6 +110,7 @@ impl Mirror {
                     return false;
                 };
                 view.connected = link.connected;
+                view.waiting_for = link.waiting_for;
             }
             p if p == payload::Input::PATH => {
                 let Some(input) = decode::<payload::Input>(sample) else {

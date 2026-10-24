@@ -70,13 +70,13 @@ Commit sequence, each one building and testing on its own:
 
 ### 4. `feat` (wire-visible): the waiting state
 
-- [ ] Protocol: `Link.waiting_for` (`LinkWait`), `PowerPhase::AwaitingDevice`; `every_power_phase_decodes` gains the variant.
-- [ ] World: `derive_link_state` fills it from the facts; the `Link` literals in `publish.rs` and `systems/mod.rs`.
-- [ ] SDK `TvInfo` (`#[non_exhaustive]`, additive).
-- [ ] GUI: the view model, `state.rs` and `state_watch.rs`, a new property for the steady state (the existing text keys only on the power-cycle phase), wording that clearly means the adapter, not the TV; `just i18n-extract`.
-- [ ] Tray: `TvView`, and the new `PowerPhase` arm its match will demand.
-- [ ] CLI: `list` replaces its hardcoded connected/disconnected with the waiting reason; the attributes test literal.
-- [ ] Sandboxed: when udev announces a node that the path check can't see (`PrivateDevices=true`), publish one `connect-failed` with a typed reason and log why, so the failure UI says what's wrong instead of "waiting" forever.
+- [x] Protocol: `Link.waiting_for` (`LinkWait`), `PowerPhase::AwaitingDevice`; `every_power_phase_decodes` gains the variant. A wake's waiting phase now goes out when the wake starts waiting (its `HeldWake` edge), not on the deferral's first edge, so a wake that upgrades a reconnect already deferred still reports it.
+- [x] World: `derive_link_state` fills it from the facts; the `Link` literals in `publish.rs` and `systems/mod.rs`.
+- [x] SDK `TvInfo` (`#[non_exhaustive]`, additive).
+- [x] GUI: the view model, `state.rs` and `state_watch.rs`, a new property for the steady state (the existing text keys only on the power-cycle phase), wording that clearly means the adapter, not the TV; `just i18n-extract`.
+- [x] Tray: `TvView`, and the new `PowerPhase` arm its match will demand.
+- [x] CLI: `list` replaces its hardcoded connected/disconnected with the waiting reason; the attributes test literal.
+- [x] Sandboxed: when udev announces a configured node that this process can't see (`PrivateDevices=true`), the watcher warns once per node, naming the sandbox. Log-only for now: a typed `connect-failed` would need a new wire failure code, and the GUI already says the TV waits for its adapter.
 
 ### 5. `docs`
 
