@@ -23,7 +23,7 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 
 ```
 tisvlay/
-├── Cargo.toml                    # Workspace root (one workspace, version 0.3.0)
+├── Cargo.toml                    # Workspace root (one workspace, version 0.4.0)
 ├── crates/
 │   ├── tisvlay-core/              # Core library (vendor-agnostic traits & types)
 │   │   └── src/                  # traits, capabilities, pairing, config (profiles),

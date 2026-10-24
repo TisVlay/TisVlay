@@ -178,7 +178,13 @@ With immutability on:
 
 ### 6. The v0.4.0 re-cut
 
-- [ ] Add release-plz and cargo-semver-checks to the dev shell. On a branch, run `release-plz update`, review the version bump and the new `CHANGELOG.md` files, and merge it as a normal PR.
+- [x] Add release-plz and cargo-semver-checks to the dev shell. On a branch, run `release-plz update`, review the version bump and the new `CHANGELOG.md` files, and merge it as a normal PR.
+  - release-plz 0.3.172 picked up `.config/release-plz.toml` and bumped all three published crates to 0.4.0.
+  - cargo-semver-checks found `tisvlay-core` API-compatible, and one break in the SDK: `StateEvent::ReleaseChecked`, a variant added to an exhaustive enum. That's a breaking change at 0.x, which the minor bump covers.
+  - `tisvlay-protocol` has no commits since 0.3.0, so release-plz wrote it no entry. Its CHANGELOG gets one by hand, saying it moves in lockstep.
+  - The Nix package now reads its version from `Cargo.toml`, as the flake does for the MSRV, so a bump needs no edit there.
+  - `just package-check` packages and builds all three crates at 0.4.0, CHANGELOGs included.
+  - The CHANGELOGs' compare links use per-crate tags (`tisvlay-core-v0.3.0…`). v0.3.0 was published by hand, so those tags don't exist; all three crates were published from `c8809db`, the `v0.3.0` commit, which is where they'd go. release-plz creates the 0.4.0 ones when it publishes.
 - [ ] **Rehearsal:** tag the merge commit `v0.4.0-rc.1` and watch the run. The draft should appear only after verification passes, and the `nix-cache` job waits for your approval. Run `just verify-release v0.4.0-rc.1` on the draft. Fix anything that fails and repeat with `-rc.2`. Then delete the rc draft and its tag, never publishing it.
 - [ ] Tag the same commit `v0.4.0`, watch the run, and run `just verify-release v0.4.0` on the draft.
 - [ ] Promote it and approve the `publish-crates` deployment, then run `just verify-release v0.4.0` again, now including `gh release verify`. Check that the release page shows "Immutable" and that the attestations appear in the repo's Actions tab.
