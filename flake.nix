@@ -154,6 +154,12 @@
                 gh
                 libarchive
                 cosign
+                # Release prep (`release-plz update`): the version bump and
+                # the CHANGELOGs from the conventional-commit history;
+                # cargo-semver-checks lets it check the published crates for
+                # API breaks.
+                release-plz
+                cargo-semver-checks
                 # Cargo plugin that reads package metadata and invokes nfpm
                 # for `just package-*`; source and lockfile are pinned above.
                 cargoNfpm
