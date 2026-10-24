@@ -584,7 +584,10 @@ sbom_dir := "target/sbom"
 # `just sbom-check` compares them with the built binaries. It writes one file
 # per workspace binary next to each crate's Cargo.toml, so the recipe keeps
 # the shipped two and deletes the rest. SOURCE_DATE_EPOCH (the commit time)
-# makes reruns identical.
+# makes reruns identical, but it also makes cargo-cyclonedx leave out the
+# serial number, which actions/attest requires of a CycloneDX SBOM. So each
+# gets a name-based UUID (v5) for its commit, binary and architecture: the
+# same build reruns to the same serial, and any other build gets a new one.
 [group('package')]
 sbom:
     #!/usr/bin/env bash
@@ -593,11 +596,15 @@ sbom:
     SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo cyclonedx --quiet \
         --describe binaries --target {{ _package_triple }} \
         --format json --spec-version 1.5
+    commit=$(git rev-parse HEAD)
     for shipped in tisvlay-cli/tisvlay tisvlay-gui-app/tisvlay-gui; do
         crate=${shipped%/*} bin=${shipped#*/}
         generated=crates/$crate/${bin}_bin.cdx.json
         version=$(jq -r .metadata.component.version "$generated")
-        mv "$generated" "{{ sbom_dir }}/$bin-$version-{{ package_arch }}.cdx.json"
+        serial=$(uuidgen --sha1 --namespace @url \
+            --name "https://github.com/TisVlay/TisVlay/commit/$commit#$bin-{{ package_arch }}")
+        jq --arg serial "urn:uuid:$serial" '.serialNumber = $serial' "$generated" \
+            > "{{ sbom_dir }}/$bin-$version-{{ package_arch }}.cdx.json"
     done
     rm -f crates/*/*_bin.cdx.json
     ls {{ sbom_dir }}

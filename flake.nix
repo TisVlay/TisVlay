@@ -147,6 +147,8 @@
                 cargo-cyclonedx
                 rust-audit-info
                 jq
+                # uuidgen gives each SBOM its serial number (`just sbom`).
+                util-linux
                 # Release verification (`just verify-assets`, `just
                 # verify-release`): gh checks the attestations, bsdtar (from
                 # libarchive) unpacks all three package formats, and cosign
