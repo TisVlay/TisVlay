@@ -21,6 +21,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Nothing by default: the job grants itself what it needs.
+permissions: {}
+
 # One open release PR at a time; never cancel an in-flight update.
 concurrency:
   group: release-plz-pr-${{ github.ref }}

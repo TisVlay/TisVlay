@@ -27,8 +27,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write
+# Nothing by default: each job grants itself what it needs.
+permissions: {}
 
 # No caches in this workflow. Its jobs ship packages and mint crates.io
 # tokens, so they must not restore a cache that another workflow's run
@@ -52,6 +52,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Libraries
         run: |
