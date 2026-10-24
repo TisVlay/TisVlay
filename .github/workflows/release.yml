@@ -121,17 +121,32 @@ jobs:
           sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst > checksums-sha256.txt
           cat checksums-sha256.txt
 
+      # One draft per tag. A rerun (of this job or of the tag push) refreshes
+      # that draft: it replaces the assets and deletes any the new build
+      # didn't produce, such as packages named for a version the tag no
+      # longer points at. CI never publishes; promoting the draft is the
+      # maintainer's step, and a published release fails here rather than
+      # have its assets replaced.
       - name: Release
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            packages/tisvlay_*.deb
-            packages/tisvlay-*.rpm
-            packages/tisvlay-*.pkg.tar.zst
-            packages/checksums-sha256.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s failglob
+          cd packages
+          files=(tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst checksums-sha256.txt)
+          if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG" "${files[@]}"
+          elif [ "$draft" = true ]; then
+            gh release upload "$TAG" --clobber "${files[@]}"
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r asset; do
+              [[ " ${files[*]} " == *" $asset "* ]] || gh release delete-asset "$TAG" "$asset" --yes
+            done
+          else
+            echo "::error::$TAG is already published; tag a new version instead."
+            exit 1
+          fi
 
   # Phase 1 (tag push): build the flake's package and push it to the public
   # tisvlay.cachix.org cache (packaging/nix/README.md "Binary cache").
