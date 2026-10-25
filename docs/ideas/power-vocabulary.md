@@ -23,9 +23,9 @@ Platform and vendor names keep their spelling wherever they name the platform's 
 
 ## Gaps the review found (2026-10-25)
 
-Proposals until the renames settle them:
-- **The TV's "on" is two tests.** `PowerState::is_on` (on the wire as `state/power.is_on`) counts LG's Active Standby as on, since its network card is alive, while `is_awake`, which the GUI, CLI and tray show, doesn't. The vocabulary's "on" is `is_awake`'s set; `is_on` gets a name for what it tests. Open: that name.
-- **The two event directions.** Code, architecture.md and the user guide say "wake-ish" and "off-going". The plan uses "going-off" for the TV powering off and the remote's power key. Open: the pair (going-off / coming-on is a candidate).
+Decided where marked, proposals otherwise:
+- **The TV's "on" is two tests (decided).** `PowerState::is_on` (on the wire as `state/power.is_on`) counts LG's Active Standby as on, since its network card is alive, while `is_awake`, which the GUI, CLI and tray show, doesn't. Both retire for the TV-controls-the-PC plan's three classes (on, off, transient), which become the one classification: each caller picks by class, and the wire carries the class instead of `is_on`. Active Standby is off.
+- **The two event directions (decided): going-off / coming-on.** They replace "off-going" and "wake-ish" in code, architecture.md and the user guide: going-off events (sleep, shutdown, the blanks, the TV powering off) fire under a stream, coming-on events (startup, wake, DPMS on, the greeter's resume) are held back.
 - **"Blank", "dark" and "lit"** cover both the TV's screen and the PC's display. Proposal: screen off / on for the TV's screen, DPMS off / on for the display, and neither "blank" nor "dark" in identifiers ("dark intents" become off intents).
 - **"Power events"** means the PC's lifecycle in the CLI's `profile` help and the world's events. Proposal: PC events; "power" stays the TV's verb.
 - **"Active"** also names logind's active session and user, `PowerState::Active`, CEC's `<Active Source>` and the active input. Those keep their platform meaning; activity's own state word is only ever "active" next to "idle".
@@ -71,12 +71,13 @@ One breaking change (no aliases), grouped by what each one breaks:
   - LG's `wake_id` MAC alias is Wake-on-LAN's own and may stay. `on_sleep`, `on_wake` and `on_idle_resume` already follow the vocabulary.
 - **Wire:**
   - `state/link.supports_wake`;
+  - `state/power.is_on`, replaced by the power class;
   - `event/session/lock_wake`, and `event/session/resume` qualified as an idle resume;
   - the `wake-not-supported` error code and its message;
   - `progress/power`'s `wol_sent` for power-ons that aren't Wake-on-LAN;
   - `user/tray/settings.tv_wake`.
 - **Public API of the published crates:**
-  - tisvlay-core: `TvConnector::supports_wake`, `wake` and `wake_and_connect`; `PowerState::is_awake`, `is_on` and `needs_wake_preflight`; and the doc comments calling `PowerOn` and `Capabilities::POWER` Wake-on-LAN.
+  - tisvlay-core: `TvConnector::supports_wake`, `wake` and `wake_and_connect`; `PowerState::is_awake` and `is_on`, retiring for the power classes, and `needs_wake_preflight`; and the doc comments calling `PowerOn` and `Capabilities::POWER` Wake-on-LAN.
   - tisvlay-protocol: `ErrorCode::WakeNotSupported`, `NotificationSettings::tv_wake` and `PowerPhase::WolSent`.
   - The SDK: `TvInfo::supports_wake`, `NotificationCategory::TvWake` and `power_cycle_progress_stream`.
   - Whether `SessionAction`, which acts on the TV, keeps its name is open.

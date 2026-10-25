@@ -100,7 +100,7 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
   - `UserLockAction`, `SystemSleepAction` and `SystemWakeAction` beside `SessionAction`, exhaustive.
   - The new `SystemProfileConfig` / `UserProfileConfig` fields. New public fields break struct-literal construction, which a minor bump allows before 1.0; cargo-semver-checks reports them from the second release.
   - `Capabilities::REMOTE_POWER`, `REMOTE_KEYS` and `WAKES_PC`, with the hand-written `to_strings` / `from_strings` lists in `capabilities.rs` matching `iter_names`' output.
-  - The power-state classifier beside `PowerState::is_awake`.
+  - The power-state classes beside `PowerState::is_awake`. They become the one classification: the vocabulary's renames retire `is_on` and `is_awake` for them.
   - Two `TvConnection` additions with defaults, so the LG and mock backends are untouched: a path for the remote's power key alongside `subscribe_state` (which carries only `TvState`), and a setter for the passthrough flag (`TvConnector::connect` takes only the vendor config, and the flag is profile policy that can change while connected).
 - **tisvlay-protocol:** the `event/tv-power-off` and `event/remote-power` payloads and their `keys::event` names, and the daemon's published `CanSuspend` / `CanSleep` answers. `Power` (the `state/power` payload) is unchanged.
 - **The SDK:** nothing required. Capabilities already travel as strings, and the GUI reads profile bodies as wire payloads.
