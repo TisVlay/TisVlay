@@ -53,6 +53,7 @@ pub(super) fn apply_backend_events(
     mut vendors: Query<&mut VendorRef>,
     mut writes: StateWrites,
     mut edges: ResMut<PowerEdges>,
+    mut powered: ResMut<PoweredOff>,
 ) {
     // TVs this run rolled back: the index keeps them until `Commands`
     // flush, but later events of the batch must not touch them.
@@ -203,6 +204,7 @@ pub(super) fn apply_backend_events(
                 let edge = edges.0.entry(*tv).or_default();
                 if edge.report(state.power_state.class(), clock.0, WAKE_HOLD_LIMIT) {
                     tracing::info!(%tv, "TV powered off by itself");
+                    powered.0.push(*tv);
                     outbox.0.push(Effect::Wire(WireEffect::Publish {
                         key: keys::tv_power_off(&site.0),
                         payload: json!(payload::TvPowerOff { tv: *tv }),

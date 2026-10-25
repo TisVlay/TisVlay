@@ -1,0 +1,15 @@
+// Let the TisVlay daemon put the machine to sleep when a TV powers off by
+// itself and its system profile's `on_tv_power_off` asks: `suspend`, and
+// `sleep` (logind's Sleep), which may pick hibernation. The
+// multiple-sessions variants are always needed, since the daemon's user
+// has no session of its own. Not the ignore-inhibit actions: a block
+// inhibitor still wins, and the refusal reaches the daemon.
+polkit.addRule(function (action, subject) {
+    if (subject.user == "tisvlay" &&
+        (action.id == "org.freedesktop.login1.suspend" ||
+         action.id == "org.freedesktop.login1.suspend-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.hibernate" ||
+         action.id == "org.freedesktop.login1.hibernate-multiple-sessions")) {
+        return polkit.Result.YES;
+    }
+});

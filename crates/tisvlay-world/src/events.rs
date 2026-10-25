@@ -160,6 +160,14 @@ pub enum InEvent {
         event: SystemEvent,
         connector: Option<String>,
     },
+    /// The daemon's logind adapter couldn't put the machine to sleep for a
+    /// TV's power-off (polkit refused it, an inhibitor blocked it, or the
+    /// host has no such mode): published as `event/dispatch-failed`.
+    SleepRefused {
+        tv: Uuid,
+        mode: SleepMode,
+        message: String,
+    },
     /// Queue the token on every live connection behind the commands
     /// already queued there. The reactor fans it out after its step's
     /// dispatch, so it also covers a `System` event sent just before it.
@@ -572,6 +580,36 @@ pub enum BackendCmd {
     ScreenOff,
     /// Dropped once the commands queued before it have run.
     Drain(DrainToken),
+}
+
+/// The machine's sleep a system profile asked for when a TV powered off by
+/// itself, for the daemon's logind adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SleepRequest {
+    /// The TV whose power-off asked.
+    pub tv: Uuid,
+    /// How to sleep.
+    pub mode: SleepMode,
+}
+
+/// How the daemon puts the machine to sleep: logind's modes, without the
+/// profile's `none`, so a request always asks for something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepMode {
+    /// logind's `Suspend`: suspend to RAM.
+    Suspend,
+    /// logind's `Sleep`: the host's configured mode (`SleepOperation=`).
+    Sleep,
+}
+
+impl SleepMode {
+    /// The action's name on `event/dispatch-failed`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Suspend => "suspend",
+            Self::Sleep => "sleep",
+        }
+    }
 }
 
 /// A token each live connection holds behind the commands already queued

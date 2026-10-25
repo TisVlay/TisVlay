@@ -78,6 +78,29 @@ pub(super) fn resolve_action(
     stock.0.get(event).copied()
 }
 
+/// The system profile's sleep for a TV powering off by itself: its assigned
+/// profile's field, else the editable default's, else `none`.
+pub(super) fn resolve_sleep_action(
+    meta: Option<&payload::Meta>,
+    profile_index: &ProfileIndex,
+    bodies: &Query<&ProfileBody>,
+) -> tisvlay_core::SystemSleepAction {
+    if let Some(profile_id) = meta.and_then(|m| m.system_profile)
+        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+        && let Some(action) =
+            profile_body(profile_id, profile_index, bodies).and_then(|body| body.on_tv_power_off)
+    {
+        return action;
+    }
+    profile_body(
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+        profile_index,
+        bodies,
+    )
+    .and_then(|body| body.on_tv_power_off)
+    .unwrap_or_default()
+}
+
 /// Look up a system-profile body by uuid through the profile index.
 pub(super) fn profile_body<'a>(
     id: Uuid,

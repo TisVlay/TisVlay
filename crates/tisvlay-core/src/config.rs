@@ -164,6 +164,24 @@ pub enum UserLockAction {
     Lock,
 }
 
+/// What the machine does when the TV powers off by itself or from its own
+/// remote (never for TisVlay's own power-offs): the system profile's side
+/// of the event, run by the daemon. The values are logind's sleep modes.
+/// Exhaustive: every arm matters to the dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemSleepAction {
+    /// Do nothing.
+    #[default]
+    None,
+    /// Suspend to RAM (logind's `Suspend`), the state a TV that can wake
+    /// the PC wakes it from.
+    Suspend,
+    /// The host's configured sleep (logind's `Sleep`, by `SleepOperation=`),
+    /// which may hibernate. Needs systemd 256 or newer.
+    Sleep,
+}
+
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================
@@ -375,6 +393,14 @@ pub struct SystemProfileConfig {
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automate_when: Option<AutomateWhen>,
+
+    /// What the machine does when the TV powers off by itself or from its
+    /// own remote: `suspend` suspends to RAM, `sleep` uses the host's
+    /// configured sleep (which may hibernate). TisVlay's own power-offs
+    /// never count, and nothing happens while a stream arms the TV.
+    /// Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_tv_power_off: Option<SystemSleepAction>,
 }
 
 profile_plumbing! {
@@ -393,6 +419,7 @@ profile_plumbing! {
         on_idle_timeout,
         on_idle_resume,
         automate_when,
+        on_tv_power_off,
     ],
 }
 
@@ -429,6 +456,8 @@ pub struct ResolvedSystemProfile {
     pub on_idle_resume: EventAction,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
+    /// What the machine does when the TV powers off by itself.
+    pub on_tv_power_off: SystemSleepAction,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -460,6 +489,8 @@ impl Default for ResolvedSystemProfile {
             on_idle_timeout: EventAction::ungated(SessionAction::ScreenOff),
             on_idle_resume: SessionAction::ScreenOn.into(),
             automate_when: AutomateWhen::Always,
+            // Opt-in: the TV powering off sleeps the PC only when asked.
+            on_tv_power_off: SystemSleepAction::None,
         }
     }
 }

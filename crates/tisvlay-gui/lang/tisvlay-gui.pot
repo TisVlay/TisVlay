@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-25 14:37-0500\n"
+"POT-Creation-Date: 2026-10-25 15:58-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -90,107 +90,107 @@ msgstr ""
 msgid "not found"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:332
+#: crates/tisvlay-gui-app/src/profiles.rs:343
 msgctxt "profile field"
 msgid "On startup"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:333
+#: crates/tisvlay-gui-app/src/profiles.rs:344
 msgctxt "profile field"
 msgid "On shutdown"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:334
+#: crates/tisvlay-gui-app/src/profiles.rs:345
 msgctxt "profile field"
 msgid "On reboot"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:335
+#: crates/tisvlay-gui-app/src/profiles.rs:346
 msgctxt "profile field"
 msgid "On sleep"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:336
+#: crates/tisvlay-gui-app/src/profiles.rs:347
 msgctxt "profile field"
 msgid "On wake"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:337
+#: crates/tisvlay-gui-app/src/profiles.rs:348
 msgctxt "profile field"
 msgid "On DPMS off"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:338
+#: crates/tisvlay-gui-app/src/profiles.rs:349
 msgctxt "profile field"
 msgid "On DPMS on"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:339
+#: crates/tisvlay-gui-app/src/profiles.rs:350
 msgctxt "profile field"
 msgid "Automate when"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:340
+#: crates/tisvlay-gui-app/src/profiles.rs:351
 msgctxt "profile field"
 msgid "On session lock"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:341
+#: crates/tisvlay-gui-app/src/profiles.rs:352
 msgctxt "profile field"
 msgid "On session unlock"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:342
+#: crates/tisvlay-gui-app/src/profiles.rs:353
 msgctxt "profile field"
 msgid "On lock wake"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:343
+#: crates/tisvlay-gui-app/src/profiles.rs:354
 msgctxt "profile field"
 msgid "On idle timeout"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:344
+#: crates/tisvlay-gui-app/src/profiles.rs:355
 msgctxt "profile field"
 msgid "On idle resume"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:345
+#: crates/tisvlay-gui-app/src/profiles.rs:356
 msgctxt "profile field"
 msgid "Idle timeout"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:346
+#: crates/tisvlay-gui-app/src/profiles.rs:357
 msgctxt "profile field"
 msgid "Idle timeout (locked)"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:347
+#: crates/tisvlay-gui-app/src/profiles.rs:358
 msgctxt "profile field"
 msgid "Idle timeout (unlocked)"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:348
+#: crates/tisvlay-gui-app/src/profiles.rs:359
 msgctxt "profile field"
 msgid "On stream start"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:349
+#: crates/tisvlay-gui-app/src/profiles.rs:360
 msgctxt "profile field"
 msgid "On stream end"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:350
+#: crates/tisvlay-gui-app/src/profiles.rs:361
 msgctxt "profile field"
 msgid "On local return"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:351
+#: crates/tisvlay-gui-app/src/profiles.rs:362
 msgctxt "profile field"
 msgid "Screen capture arms"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/profiles.rs:352
+#: crates/tisvlay-gui-app/src/profiles.rs:363
 msgctxt "profile field"
 msgid "On TV power off"
 msgstr ""

@@ -465,3 +465,53 @@ pub(super) fn dispatch_system_events(
         }
     }
 }
+
+/// The TVs that powered off by themselves this step: run each one's
+/// system-profile sleep, gated like the system profile's other events
+/// (`managed`, `automated`) and never while a stream arms the TV. Also
+/// reports a sleep the daemon couldn't take as `event/dispatch-failed`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access"
+)]
+pub(super) fn dispatch_tv_power_off(
+    mut reader: MessageReader<InEvent>,
+    mut powered: ResMut<PoweredOff>,
+    index: Res<TvIndex>,
+    managed: Query<Option<&State<payload::Meta>>, With<Managed>>,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+    stream_armed: Res<StreamArmed>,
+    site: Res<Site>,
+    mut outbox: ResMut<Outbox>,
+) {
+    for msg in reader.read() {
+        if let InEvent::SleepRefused { tv, mode, message } = msg {
+            outbox.0.push(Effect::Wire(WireEffect::Publish {
+                key: keys::event(&site.0, "dispatch-failed"),
+                payload: json!({ "tv": tv, "action": mode.as_str(), "message": message }),
+            }));
+        }
+    }
+    for tv in powered.0.drain(..) {
+        let Some(meta) = index.get(&tv).and_then(|entity| managed.get(entity).ok()) else {
+            tracing::debug!(%tv, "tv power-off: not managed");
+            continue;
+        };
+        if meta.is_some_and(|m| !m.automated) {
+            tracing::debug!(%tv, "tv power-off: automation gated off");
+            continue;
+        }
+        let mode = match resolve_sleep_action(meta.map(|m| &m.0), &profile_index, &bodies) {
+            tisvlay_core::SystemSleepAction::None => continue,
+            tisvlay_core::SystemSleepAction::Suspend => SleepMode::Suspend,
+            tisvlay_core::SystemSleepAction::Sleep => SleepMode::Sleep,
+        };
+        if stream_armed.0.contains(&tv) {
+            tracing::debug!(%tv, "tv power-off: a stream arms the TV");
+            continue;
+        }
+        tracing::info!(%tv, ?mode, "TV powered off by itself, putting the PC to sleep");
+        outbox.0.push(Effect::Sleep(SleepRequest { tv, mode }));
+    }
+}

@@ -32,4 +32,11 @@ on_idle_resume = "screen_on"
 
 # When to apply automation relative to the TV's current input.
 automate_when = "always"
+
+# What the machine does when the TV powers off by itself or from its
+# own remote: `suspend` suspends to RAM, `sleep` uses the host's
+# configured sleep (which may hibernate). TisVlay's own power-offs
+# never count, and nothing happens while a stream arms the TV.
+# Default `none`.
+on_tv_power_off = "none"
 ```

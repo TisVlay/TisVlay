@@ -38,6 +38,10 @@ pkgs.testers.runNixOSTest {
         isNormalUser = true;
       };
 
+      # Desktops run polkit, so the module's sleep rule takes effect there;
+      # a headless VM has to ask for it.
+      security.polkit.enable = true;
+
       # Keep the VM small — tisvlay is the only service under test.
       virtualisation.memorySize = 1024;
 
@@ -94,6 +98,13 @@ pkgs.testers.runNixOSTest {
         "systemctl --global list-unit-files tisvlay-tray.service "
         "| grep -q tisvlay-tray"
     )
+
+    # The polkit rule letting the daemon's user put the machine to sleep
+    # (a system profile's on_tv_power_off) is installed, for that user.
+    machine.succeed(
+        "grep -q 'org.freedesktop.login1.suspend' /etc/polkit-1/rules.d/10-nixos.rules"
+    )
+    machine.succeed("grep -q 'subject.user == \"tisvlay\"' /etc/polkit-1/rules.d/10-nixos.rules")
 
     # StateDirectory exists with correct ownership.
     machine.succeed("test -d /var/lib/tisvlay")

@@ -7,7 +7,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tisvlay_world::{DrainToken, InEvent, SystemEvent, WorldClient};
+use tisvlay_world::{DrainToken, InEvent, SleepMode, SleepRequest, SystemEvent, WorldClient};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 use zbus::proxy;
 
@@ -35,6 +36,14 @@ trait Login1Manager {
         why: &str,
         mode: &str,
     ) -> zbus::Result<zbus::zvariant::OwnedFd>;
+
+    /// Suspend to RAM. `interactive: false`: never prompt, the polkit
+    /// rule decides.
+    fn suspend(&self, interactive: bool) -> zbus::Result<()>;
+
+    /// The host's configured sleep (`SleepOperation=`); systemd 256 or
+    /// newer. `flags: 0` behaves like the unflagged methods.
+    fn sleep(&self, flags: u64) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn prepare_for_shutdown(&self, start: bool) -> zbus::Result<()>;
@@ -187,4 +196,57 @@ async fn take_inhibitor(manager: &Login1ManagerProxy<'_>) -> Option<zbus::zvaria
             None
         }
     }
+}
+
+/// Spawn the sleeper: each of the system profile's sleep requests (a TV
+/// powered off by itself) puts the machine to sleep through logind on a
+/// fresh system-bus connection. A refusal goes back to the world, which
+/// publishes it as `event/dispatch-failed`.
+pub(crate) fn spawn_sleeper(requests: mpsc::UnboundedReceiver<SleepRequest>, world: WorldClient) {
+    tokio::spawn(async move {
+        let mut requests = requests;
+        while let Some(request) = requests.recv().await {
+            match zbus::Connection::system().await {
+                Ok(connection) => sleep_for(&connection, request, &world).await,
+                Err(e) => refused(&world, request, &e),
+            }
+        }
+    });
+}
+
+/// The sleeper over an injected `connection`, the entry integration
+/// tests drive against a private bus. Runs until the requests end.
+pub async fn run_sleeper(
+    connection: zbus::Connection,
+    mut requests: mpsc::UnboundedReceiver<SleepRequest>,
+    world: WorldClient,
+) {
+    while let Some(request) = requests.recv().await {
+        sleep_for(&connection, request, &world).await;
+    }
+}
+
+async fn sleep_for(connection: &zbus::Connection, request: SleepRequest, world: &WorldClient) {
+    let outcome = match Login1ManagerProxy::new(connection).await {
+        Ok(manager) => match request.mode {
+            SleepMode::Suspend => manager.suspend(false).await,
+            SleepMode::Sleep => manager.sleep(0).await,
+        },
+        Err(e) => Err(e),
+    };
+    match outcome {
+        Ok(()) => info!(tv = %request.tv, mode = request.mode.as_str(), "asked logind to sleep"),
+        Err(e) => refused(world, request, &e),
+    }
+}
+
+/// Report a sleep logind wouldn't take: polkit refused it, an inhibitor
+/// blocked it, or the host lacks the method (`Sleep` before systemd 256).
+fn refused(world: &WorldClient, request: SleepRequest, error: &zbus::Error) {
+    warn!(tv = %request.tv, mode = request.mode.as_str(), %error, "logind refused the sleep");
+    world.send(InEvent::SleepRefused {
+        tv: request.tv,
+        mode: request.mode,
+        message: error.to_string(),
+    });
 }

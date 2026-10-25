@@ -73,6 +73,8 @@ impl FakeLogind {
         let manager = ManagerIface {
             releases: Arc::clone(&releases),
             inhibit_delay_max_usec: DEFAULT_INHIBIT_DELAY_MAX_USEC,
+            sleeps: Vec::new(),
+            refuse_sleep: false,
         };
         conn.object_server().at(OBJECT_PATH, manager).await?;
         conn.object_server()
@@ -98,6 +100,17 @@ impl FakeLogind {
             session,
             releases,
         })
+    }
+
+    /// The sleep methods called on the manager (`Suspend`, `Sleep`), in
+    /// order.
+    pub async fn sleep_calls(&self) -> Vec<String> {
+        self.manager.get().await.sleeps.clone()
+    }
+
+    /// Refuse every sleep method, as logind does without a polkit rule.
+    pub async fn set_refuse_sleep(&self, refuse: bool) {
+        self.manager.get_mut().await.refuse_sleep = refuse;
     }
 
     /// How many times the graphical session was asked to lock.
@@ -145,6 +158,18 @@ const DEFAULT_INHIBIT_DELAY_MAX_USEC: u64 = 5_000_000;
 pub(crate) struct ManagerIface {
     releases: Arc<Mutex<Vec<Instant>>>,
     inhibit_delay_max_usec: u64,
+    sleeps: Vec<String>,
+    refuse_sleep: bool,
+}
+
+impl ManagerIface {
+    fn sleep_call(&mut self, method: &str) -> zbus::fdo::Result<()> {
+        if self.refuse_sleep {
+            return Err(zbus::fdo::Error::AccessDenied(format!("{method} refused")));
+        }
+        self.sleeps.push(method.to_string());
+        Ok(())
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.login1.Manager")]
@@ -170,6 +195,16 @@ impl ManagerIface {
         Ok(zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(
             writer,
         )))
+    }
+
+    /// Record a suspend, or refuse it like a missing polkit rule.
+    async fn suspend(&mut self, _interactive: bool) -> zbus::fdo::Result<()> {
+        self.sleep_call("Suspend")
+    }
+
+    /// Record a configured sleep, or refuse it.
+    async fn sleep(&mut self, _flags: u64) -> zbus::fdo::Result<()> {
+        self.sleep_call("Sleep")
     }
 
     #[zbus(property, name = "InhibitDelayMaxUSec")]

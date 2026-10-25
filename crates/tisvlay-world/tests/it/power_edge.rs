@@ -45,3 +45,112 @@ async fn tisvlays_own_power_off_publishes_nothing() {
     })
     .await;
 }
+
+/// Give `tv` a system profile whose `on_tv_power_off` is `action`.
+async fn assign_sleep_profile(
+    effects: &mut tokio::sync::mpsc::UnboundedReceiver<WireEffect>,
+    client: &tisvlay_world::WorldClient,
+    tv: uuid::Uuid,
+    action: tisvlay_core::SystemSleepAction,
+) {
+    let profile = uuid::Uuid::new_v4();
+    client.command(Command::AddProfile {
+        record: Box::new(tisvlay_world::ProfileRecord {
+            id: profile,
+            body: tisvlay_core::SystemProfileConfig {
+                name: "Sleep on TV off".into(),
+                on_tv_power_off: Some(action),
+                ..Default::default()
+            },
+        }),
+        reply: Some(tisvlay_world::Reply::new(90)),
+    });
+    collect_until(effects, |e| reply_to(e, 90)).await;
+    client.command(Command::SetSystemProfile {
+        id: tv,
+        profile: Some(profile),
+        reply: Some(tisvlay_world::Reply::new(91)),
+    });
+    collect_until(effects, |e| reply_to(e, 91)).await;
+}
+
+#[tokio::test]
+async fn a_system_profile_sleep_asks_the_daemon() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    let tv = add_connected_tv(&mut effects, &client, "mock://sleep").await;
+    assign_sleep_profile(
+        &mut effects,
+        &client,
+        tv,
+        tisvlay_core::SystemSleepAction::Suspend,
+    )
+    .await;
+
+    mock.inject_power_state("mock://sleep", PowerState::Standby);
+    let request = tokio::time::timeout(Duration::from_secs(5), sleeps.recv())
+        .await
+        .expect("a sleep request")
+        .expect("reactor alive");
+    assert_eq!(
+        request,
+        tisvlay_world::SleepRequest {
+            tv,
+            mode: tisvlay_world::SleepMode::Suspend
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_stream_holds_the_sleep_back() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    let tv = add_connected_tv(&mut effects, &client, "mock://sleep-stream").await;
+    assign_sleep_profile(
+        &mut effects,
+        &client,
+        tv,
+        tisvlay_core::SystemSleepAction::Sleep,
+    )
+    .await;
+    client.send(tisvlay_world::InEvent::Stream { armed: vec![tv] });
+
+    mock.inject_power_state("mock://sleep-stream", PowerState::Standby);
+    collect_until(&mut effects, |e| powered_off(e).is_some()).await;
+    assert!(
+        sleeps.try_recv().is_err(),
+        "a stream must hold the sleep back"
+    );
+}
+
+#[tokio::test]
+async fn the_stock_profile_sleeps_nothing() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    add_connected_tv(&mut effects, &client, "mock://sleep-stock").await;
+
+    mock.inject_power_state("mock://sleep-stock", PowerState::Standby);
+    collect_until(&mut effects, |e| powered_off(e).is_some()).await;
+    assert!(
+        sleeps.try_recv().is_err(),
+        "the stock profile asks no sleep"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_sleep_publishes_dispatch_failed() {
+    let (mut effects, client, _mock) = spawn_reactor();
+    let tv = uuid::Uuid::new_v4();
+    client.send(tisvlay_world::InEvent::SleepRefused {
+        tv,
+        mode: tisvlay_world::SleepMode::Suspend,
+        message: "polkit said no".into(),
+    });
+    let seen = collect_until(&mut effects, |e| {
+        is_publish_on(e, "/event/dispatch-failed").is_some()
+    })
+    .await;
+    let payload = seen
+        .iter()
+        .find_map(|e| is_publish_on(e, "/event/dispatch-failed"))
+        .expect("the failure");
+    assert_eq!(payload["tv"], tv.to_string());
+    assert_eq!(payload["action"], "suspend");
+}

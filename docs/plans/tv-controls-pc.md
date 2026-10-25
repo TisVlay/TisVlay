@@ -139,10 +139,10 @@ Every slice ships whole:
 
 #### 5. The sleep (wire)
 
-- [ ] `SystemSleepAction` and the system profile's `on_tv_power_off`. The world calls `Suspend()` or `Sleep()` on the same edge, gated on `managed`, `automate_when` and the stream gate. A refused call lands on `event/dispatch-failed`; `Sleep()`'s `UnknownMethod` on systemd before 256 marks `sleep` unavailable.
-- [ ] The daemon publishes its `CanSuspend` / `CanSleep` answers.
-- [ ] The polkit rule, from one source file, in the NixOS module and every package; the NixOS VM test (`packaging/nix/test.nix`) checks it.
-- [ ] Loops can't form: a sleep runs `on_sleep`, whose power-off the stamp marks as TisVlay's own.
+- [x] `SystemSleepAction` and the system profile's `on_tv_power_off`, with its GUI row. On the same edge, the world resolves the TV's sleep, gates it on `managed`, `automated` and the stream gate, and emits a `SleepRequest` (its `SleepMode` has no `none`). The daemon's sleeper calls logind's `Suspend(false)` or `Sleep(0)`. A refused call, `Sleep`'s `UnknownMethod` on systemd before 256 included, comes back as `InEvent::SleepRefused` and lands on `event/dispatch-failed`.
+- [x] The polkit rule, from one source file (`packaging/polkit/50-tisvlay.rules`), in the NixOS module (for its configured user) and every package; the NixOS VM test checks it. It takes effect where polkit runs: every desktop does, and the module doesn't turn polkit on for a headless host.
+- [x] Loops can't form: a sleep runs `on_sleep`, whose power-off the stamp marks as TisVlay's own.
+- [ ] The daemon puts its `CanSuspend` / `CanSleep` answers on the `manager/rpc/info` reply, which the GUI already fetches per lifetime (decided 2026-10-25; no new key), and the system pane marks the values the host can't take.
 
 ### CEC extras
 

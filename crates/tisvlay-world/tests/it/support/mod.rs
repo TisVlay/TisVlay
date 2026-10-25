@@ -38,6 +38,21 @@ pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, Mo
     (effects, client, handle)
 }
 
+/// [`spawn_reactor`] with the sleeper attached: the system profile's sleep
+/// requests arrive on the returned receiver.
+pub(crate) fn spawn_reactor_with_sleeper() -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<tisvlay_world::SleepRequest>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (sleep_tx, sleep_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_sleeper(sleep_tx);
+    tokio::spawn(reactor.run());
+    (effects, sleep_rx, client, handle)
+}
+
 /// [`spawn_reactor`] with the store outlet tapped: every `Persist`
 /// snapshot arrives on the returned receiver.
 pub(crate) fn spawn_reactor_with_store() -> (

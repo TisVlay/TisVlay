@@ -270,3 +270,62 @@ async fn wait_power(sub: &PowerSub, id: Uuid, want: &str) {
         }
     }
 }
+
+/// The sleeper turns each request into the matching logind method.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sleeper_calls_loginds_sleep_methods() {
+    use tisvlay_world::{SleepMode, SleepRequest};
+
+    let f = fixture().await;
+    let (requests, rx) = tokio::sync::mpsc::unbounded_channel();
+    let conn = f.bus.connect().await.expect("sleeper conn");
+    tokio::spawn(tisvlay_daemon::run_sleeper(conn, rx, f.stack.world.clone()));
+
+    for mode in [SleepMode::Suspend, SleepMode::Sleep] {
+        requests
+            .send(SleepRequest { tv: f.id, mode })
+            .expect("sleeper alive");
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while f.fake.sleep_calls().await.len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "logind wasn't asked to sleep"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(f.fake.sleep_calls().await, ["Suspend", "Sleep"]);
+}
+
+/// A sleep logind refuses (no polkit rule, a blocking inhibitor) comes
+/// back as `event/dispatch-failed`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_sleep_reaches_dispatch_failed() {
+    use tisvlay_world::{SleepMode, SleepRequest};
+
+    let f = fixture().await;
+    f.fake.set_refuse_sleep(true).await;
+    let failed = f
+        ._client
+        .declare_subscriber(keys::event("t", "dispatch-failed"))
+        .await
+        .unwrap();
+    let (requests, rx) = tokio::sync::mpsc::unbounded_channel();
+    let conn = f.bus.connect().await.expect("sleeper conn");
+    tokio::spawn(tisvlay_daemon::run_sleeper(conn, rx, f.stack.world.clone()));
+
+    requests
+        .send(SleepRequest {
+            tv: f.id,
+            mode: SleepMode::Suspend,
+        })
+        .expect("sleeper alive");
+    let sample = tokio::time::timeout(Duration::from_secs(10), failed.recv_async())
+        .await
+        .expect("a dispatch-failed sample")
+        .expect("subscriber alive");
+    let payload: Value = serde_json::from_slice(&sample.payload().to_bytes()).unwrap();
+    assert_eq!(payload["tv"], f.id.to_string());
+    assert_eq!(payload["action"], "suspend");
+    assert!(f.fake.sleep_calls().await.is_empty());
+}

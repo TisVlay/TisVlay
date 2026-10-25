@@ -18,11 +18,11 @@ use tokio::sync::mpsc;
 use crate::backend;
 use crate::components::{
     Clock, ConnectionHandle, DeviceWatch, DialSeq, Effect, KnownVendors, LastPersisted, Outbox,
-    PairingIndex, PowerEdges, ProfileIndex, Site, StreamArmed, SystemProfile, TvIndex,
+    PairingIndex, PowerEdges, PoweredOff, ProfileIndex, Site, StreamArmed, SystemProfile, TvIndex,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
-    Reply, RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect, WireError,
+    Reply, RouteRequest, SleepRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect, WireError,
 };
 use crate::systems::build_schedule;
 use crate::systems::commands as handle;
@@ -37,6 +37,8 @@ pub struct Reactor {
     persist_tx: Option<mpsc::UnboundedSender<StoreMsg>>,
     routes_tx: Option<mpsc::UnboundedSender<RouteRequest>>,
     devices_tx: Option<mpsc::UnboundedSender<DeviceRequest>>,
+    /// Sleep requests for the daemon's logind adapter.
+    sleep_tx: Option<mpsc::UnboundedSender<SleepRequest>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
@@ -94,6 +96,7 @@ impl Reactor {
         world.insert_resource(SystemProfile::stock());
         world.init_resource::<StreamArmed>();
         world.init_resource::<PowerEdges>();
+        world.init_resource::<PoweredOff>();
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
         world.init_resource::<ProfileIndex>();
@@ -118,6 +121,7 @@ impl Reactor {
                 persist_tx: None,
                 routes_tx: None,
                 devices_tx: None,
+                sleep_tx: None,
                 vendor_retry: HashMap::new(),
             },
             effects_rx,
@@ -149,6 +153,12 @@ impl Reactor {
     pub fn set_device_monitor(&mut self, tx: mpsc::UnboundedSender<DeviceRequest>) {
         self.devices_tx = Some(tx);
         self.world.resource_mut::<DeviceWatch>().0 = true;
+    }
+
+    /// Hand the system profile's sleep requests to `tx`: the daemon's
+    /// logind adapter, which puts the machine to sleep.
+    pub fn set_sleeper(&mut self, tx: mpsc::UnboundedSender<SleepRequest>) {
+        self.sleep_tx = Some(tx);
     }
 
     /// Apply the boot state before [`run`](Self::run): `stored` (the
@@ -223,6 +233,12 @@ impl Reactor {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
                 }
+                Effect::Sleep(request) => match &self.sleep_tx {
+                    Some(tx) => {
+                        let _ = tx.send(request);
+                    }
+                    None => tracing::warn!(?request, "no sleeper attached, sleep dropped"),
+                },
                 Effect::ForgetMonitors { tv } => {
                     if let Some(tx) = &self.routes_tx {
                         let _ = tx.send(RouteRequest::Forget { tv });

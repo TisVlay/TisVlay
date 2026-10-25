@@ -32,13 +32,13 @@ use crate::components::{
     DialSeq, DispatchRetry, DispatchVerify, Effect, HeldWake, KnownVendors, LastPersisted,
     LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
     PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, PowerEdge,
-    PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt,
-    RetryPromptly, Site, State, StreamArmed, SystemProfile, TransportTraits, TvId, TvIndex,
-    VendorRef, dependency_absent,
+    PowerEdges, PoweredOff, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
+    RetryAt, RetryPromptly, Site, State, StreamArmed, SystemProfile, TransportTraits, TvId,
+    TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
-    AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
-    StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,
+    SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.
@@ -89,6 +89,7 @@ pub(crate) fn build_schedule() -> Schedule {
             // dispatch reads this step's automation verdict.
             derive_automated,
             dispatch_system_events,
+            dispatch_tv_power_off,
             reconcile_connections,
         )
             .chain()

@@ -14,7 +14,9 @@ use tisvlay_protocol::{keys, payload};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{BackendCmd, StoreSnapshot, SystemEvent, TransportInfo, WireEffect};
+use crate::events::{
+    BackendCmd, SleepRequest, StoreSnapshot, SystemEvent, TransportInfo, WireEffect,
+};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
 ///
@@ -442,6 +444,11 @@ impl SystemProfile {
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StreamArmed(pub HashSet<Uuid>);
 
+/// TVs that powered off by themselves this step, for the system profile's
+/// sleep dispatch: the fact system pushes, the dispatch drains.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct PoweredOff(pub Vec<Uuid>);
+
 /// Per-TV power-edge tracking: what decides that a TV powered off by
 /// itself. A resource rather than components, so the reports of one batch
 /// see each other's updates at once (a component inserted through
@@ -612,6 +619,8 @@ pub(crate) struct Outbox(pub Vec<Effect>);
 pub(crate) enum Effect {
     /// Forward to the wire (the zenoh bridge).
     Wire(WireEffect),
+    /// Put the machine to sleep (the daemon's logind adapter).
+    Sleep(SleepRequest),
     /// Stop route- and device-monitoring a removed TV.
     ForgetMonitors { tv: Uuid },
     /// Spawn a dial task for this TV.

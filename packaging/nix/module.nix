@@ -337,6 +337,13 @@ in
       only those two, so tisvlay-greeter.service will not start.
     '';
 
+    # Lets the daemon's user put the machine to sleep for a system
+    # profile's on_tv_power_off (the profile field is the opt-in); the
+    # same rule the distro packages ship, for this module's user.
+    security.polkit.extraConfig =
+      lib.replaceStrings [ ''"tisvlay"'' ] [ ''"${cfg.user}"'' ]
+        (builtins.readFile ../polkit/50-tisvlay.rules);
+
     # Dedicated system user and group for tisvlay-daemon. uid/gid stay
     # unset by default — NixOS allocates from the system range and
     # pins the assignment via /var/lib/nixos/uid-map.

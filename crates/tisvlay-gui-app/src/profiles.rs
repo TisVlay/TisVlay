@@ -39,7 +39,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, UserProfileBody};
 use tisvlay_core::{
     AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, SessionAction,
-    UserLockAction,
+    SystemSleepAction, UserLockAction,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -62,6 +62,7 @@ pub(crate) enum EnumClass {
     SessionAction,
     AutomateWhen,
     UserLockAction,
+    SystemSleepAction,
 }
 
 /// Discriminator + per-variant data for one row in the profile-editor
@@ -107,6 +108,9 @@ const AUTOMATE_WHEN_OPTIONS: &[&str] = &["always", "on_primary", "off_primary"];
 
 /// Concrete option list for [`UserLockAction`], in declaration order.
 const USER_LOCK_ACTION_OPTIONS: &[&str] = &["none", "lock"];
+
+/// Concrete option list for [`SystemSleepAction`], in declaration order.
+const SYSTEM_SLEEP_ACTION_OPTIONS: &[&str] = &["none", "suspend", "sleep"];
 
 /// System-profile field table. Order is the rendering order in the
 /// editor — `on_startup` first, automation gate last.
@@ -181,6 +185,13 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
             class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_tv_power_off",
+        kind: FieldKind::Enum {
+            options: SYSTEM_SLEEP_ACTION_OPTIONS,
+            class: EnumClass::SystemSleepAction,
         },
     },
     FieldSpec {
@@ -612,6 +623,7 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
             .map(|a| session_action_token(a.action())),
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
         "automate_when" => body.automate_when.map(|when| when.to_string()),
+        "on_tv_power_off" => body.on_tv_power_off.map(system_sleep_action_token),
         _ => None,
     }
 }
@@ -660,6 +672,17 @@ fn session_action_token(action: SessionAction) -> String {
         SessionAction::ScreenOn => "screen_on",
         SessionAction::PowerOff => "power_off",
         SessionAction::PowerOn => "power_on",
+    }
+    .to_string()
+}
+
+/// Map a [`SystemSleepAction`] to its wire token, mirroring the enum's
+/// `#[serde(rename_all = "snake_case")]`.
+fn system_sleep_action_token(action: SystemSleepAction) -> String {
+    match action {
+        SystemSleepAction::None => "none",
+        SystemSleepAction::Suspend => "suspend",
+        SystemSleepAction::Sleep => "sleep",
     }
     .to_string()
 }
@@ -1522,6 +1545,7 @@ pub(crate) enum BodyPatch {
     EventAction(tisvlay_core::EventAction),
     AutomateWhen(AutomateWhen),
     UserLockAction(UserLockAction),
+    SystemSleepAction(SystemSleepAction),
     Number(u64),
     Bool(bool),
     Clear,
@@ -1546,6 +1570,19 @@ fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
     token
         .parse()
         .map_err(|_| anyhow::anyhow!("Unknown AutomateWhen variant: {token}"))
+}
+
+/// Parse a ComboBox token into a [`SystemSleepAction`]; the inverse of
+/// [`system_sleep_action_token`].
+fn parse_system_sleep_action(token: &str) -> anyhow::Result<SystemSleepAction> {
+    match token {
+        "none" => Ok(SystemSleepAction::None),
+        "suspend" => Ok(SystemSleepAction::Suspend),
+        "sleep" => Ok(SystemSleepAction::Sleep),
+        other => Err(anyhow::anyhow!(
+            "Unknown SystemSleepAction variant: {other}"
+        )),
+    }
 }
 
 /// Parse a ComboBox token into a [`UserLockAction`]; the inverse of
@@ -1584,6 +1621,9 @@ fn set_system_field(
             body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?;
         }
         "automate_when" => body.automate_when = automate_when_patch(patch, "automate_when")?,
+        "on_tv_power_off" => {
+            body.on_tv_power_off = system_sleep_action_patch(patch, "on_tv_power_off")?;
+        }
         other => anyhow::bail!("Unknown system-profile field: {other}"),
     }
     Ok(())
@@ -1651,6 +1691,17 @@ fn automate_when_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<A
     }
 }
 
+fn system_sleep_action_patch(
+    patch: BodyPatch,
+    field: &str,
+) -> anyhow::Result<Option<SystemSleepAction>> {
+    match patch {
+        BodyPatch::SystemSleepAction(action) => Ok(Some(action)),
+        BodyPatch::Clear => Ok(None),
+        other => anyhow::bail!("Field '{field}' expects SystemSleepAction, got {other:?}"),
+    }
+}
+
 fn user_lock_action_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<UserLockAction>> {
     match patch {
         BodyPatch::UserLockAction(action) => Ok(Some(action)),
@@ -1698,6 +1749,12 @@ fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
             class: EnumClass::UserLockAction,
             ..
         } => Ok(BodyPatch::UserLockAction(parse_user_lock_action(token)?)),
+        FieldKind::Enum {
+            class: EnumClass::SystemSleepAction,
+            ..
+        } => Ok(BodyPatch::SystemSleepAction(parse_system_sleep_action(
+            token,
+        )?)),
         FieldKind::Number { .. } => {
             anyhow::bail!("Cannot parse an enum token for a number field")
         }
@@ -2165,6 +2222,7 @@ mod tests {
             on_idle_timeout: Some(SessionAction::ScreenOff.into()),
             on_idle_resume: Some(SessionAction::ScreenOn.into()),
             automate_when: Some(AutomateWhen::Always),
+            on_tv_power_off: Some(SystemSleepAction::None),
         }
     }
 
@@ -3104,6 +3162,30 @@ mod tests {
         assert!(parse_enum_token(spec.kind, "screen_off").is_err());
         set_user_field(&mut body, "on_tv_power_off", BodyPatch::Clear).expect("known wire");
         assert_eq!(body.on_tv_power_off, None);
+    }
+
+    /// The system side's row carries the sleep modes and refuses a lock.
+    #[test]
+    fn system_on_tv_power_off_round_trips_its_tokens() {
+        let spec = SYSTEM_FIELDS
+            .iter()
+            .find(|f| f.wire == "on_tv_power_off")
+            .expect("the row exists");
+        let mut body = SystemProfileBody::default();
+        for (token, action) in [
+            ("suspend", SystemSleepAction::Suspend),
+            ("sleep", SystemSleepAction::Sleep),
+            ("none", SystemSleepAction::None),
+        ] {
+            let patch = parse_enum_token(spec.kind, token).expect("a SystemSleepAction token");
+            set_system_field(&mut body, "on_tv_power_off", patch).expect("known wire");
+            assert_eq!(body.on_tv_power_off, Some(action));
+            assert_eq!(
+                read_system_field(&body, "on_tv_power_off").as_deref(),
+                Some(token)
+            );
+        }
+        assert!(parse_enum_token(spec.kind, "lock").is_err());
     }
 
     #[test]
