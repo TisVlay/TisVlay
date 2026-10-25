@@ -1,4 +1,4 @@
-//! logind Remote-session detector: the `Logind` remote source.
+//! logind stream detector: the `Logind` stream source.
 //!
 //! xrdp-class stacks mint a real logind session with `Remote=yes` (krdp,
 //! RustDesk and Sunshine are logind-invisible, so this covers the RDP
@@ -22,11 +22,11 @@
 use std::collections::HashMap;
 
 use futures_util::StreamExt;
-use tisvlay_protocol::payload::RemoteSourceKind;
+use tisvlay_protocol::payload::StreamSourceKind;
 use tracing::debug;
 
 use crate::detector::{Backoff, Fault};
-use crate::{RemoteClient, RemoteReport};
+use crate::{StreamClient, StreamReport};
 
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
@@ -125,9 +125,9 @@ pub(crate) fn detail_for(info: &SessionInfo) -> String {
 /// The `Logind` report for a qualifying session, or `None` when it does
 /// not arm. `active` reports the connect (`SessionNew`/bootstrap) edge;
 /// the removal edge clears by the same detail.
-pub(crate) fn report_for(info: &SessionInfo, own_uid: u32, active: bool) -> Option<RemoteReport> {
-    is_own_remote(info, own_uid).then(|| RemoteReport {
-        kind: RemoteSourceKind::Logind,
+pub(crate) fn report_for(info: &SessionInfo, own_uid: u32, active: bool) -> Option<StreamReport> {
+    is_own_remote(info, own_uid).then(|| StreamReport {
+        kind: StreamSourceKind::Logind,
         detail: detail_for(info),
         active,
         provisional: false,
@@ -137,7 +137,7 @@ pub(crate) fn report_for(info: &SessionInfo, own_uid: u32, active: bool) -> Opti
 /// Spawn the logind detector. Reports flow through `client` into the
 /// session core; the task supervises its own system-bus connection and
 /// never blocks the caller.
-pub fn spawn(client: RemoteClient) {
+pub fn spawn(client: StreamClient) {
     tokio::spawn(run(client));
 }
 
@@ -148,7 +148,7 @@ pub fn spawn(client: RemoteClient) {
 /// defense, a panic in `watch` — the latter strands this detector's
 /// sources until a service restart re-hydrates, a design-pending residual
 /// with no cross-process TTL to cover it.
-async fn run(client: RemoteClient) {
+async fn run(client: StreamClient) {
     let mut backoff = Backoff::default();
     loop {
         match watch(&client).await {
@@ -165,7 +165,7 @@ async fn run(client: RemoteClient) {
 
 /// One watch session: hydrate the live sessions, then follow
 /// `SessionNew`/`SessionRemoved` until either stream ends.
-async fn watch(client: &RemoteClient) -> Result<(), Fault> {
+async fn watch(client: &StreamClient) -> Result<(), Fault> {
     let own_uid = own_uid();
     let connection = zbus::Connection::system().await?;
     let manager = Login1ManagerProxy::new(&connection).await?;
@@ -219,12 +219,12 @@ async fn watch(client: &RemoteClient) -> Result<(), Fault> {
 /// detail the arm edge cached (the gone object's properties are
 /// unreadable). Consumes the cache entry. An id that was never armed
 /// clears by a bare `session <id>` detail — a no-op in the aggregator.
-fn clear_for(armed_detail: &mut HashMap<String, String>, id: &str) -> RemoteReport {
+fn clear_for(armed_detail: &mut HashMap<String, String>, id: &str) -> StreamReport {
     let detail = armed_detail
         .remove(id)
         .unwrap_or_else(|| format!("session {id}"));
-    RemoteReport {
-        kind: RemoteSourceKind::Logind,
+    StreamReport {
+        kind: StreamSourceKind::Logind,
         detail,
         active: false,
         provisional: false,
@@ -275,7 +275,7 @@ async fn read_session(
 }
 
 /// Forward a report to the core; a dead core loop stops the supervisor.
-fn emit(client: &RemoteClient, report: RemoteReport) -> Result<(), Fault> {
+fn emit(client: &StreamClient, report: StreamReport) -> Result<(), Fault> {
     if client.report(report) {
         Ok(())
     } else {
@@ -347,7 +347,7 @@ mod tests {
     fn report_arms_only_qualifying_sessions() {
         // A qualifying session yields an attributed active report.
         let report = report_for(&info(1000, true, "host.lan"), 1000, true).unwrap();
-        assert_eq!(report.kind, RemoteSourceKind::Logind);
+        assert_eq!(report.kind, StreamSourceKind::Logind);
         assert_eq!(report.detail, "host.lan");
         assert!(report.active);
         assert!(!report.provisional, "logind sources always arm");
@@ -381,7 +381,7 @@ mod tests {
         // aggregator key the arm inserted, and consumes the cache entry.
         let clear = clear_for(&mut armed_detail, &info.id);
         assert!(!clear.active);
-        assert_eq!(clear.kind, RemoteSourceKind::Logind);
+        assert_eq!(clear.kind, StreamSourceKind::Logind);
         assert_eq!(clear.detail, report.detail, "removal clears the armed key");
         assert!(armed_detail.is_empty(), "the cache entry is consumed");
 

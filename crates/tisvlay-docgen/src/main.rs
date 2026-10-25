@@ -231,14 +231,14 @@ mod tests {
     #[test]
     fn action_tables_render_only_their_set_modifiers() {
         let bare: toml::Value = toml::from_str::<toml::Table>(
-            "v = { action = \"screen_on\", restore_input = false, while_remote = false }",
+            "v = { action = \"screen_on\", restore_input = false, while_streaming = false }",
         )
         .unwrap()["v"]
             .clone();
         assert_eq!(render_value(&bare), "\"screen_on\"");
 
         let modified: toml::Value = toml::from_str::<toml::Table>(
-            "v = { action = \"power_on\", restore_input = true, while_remote = false }",
+            "v = { action = \"power_on\", restore_input = true, while_streaming = false }",
         )
         .unwrap()["v"]
             .clone();

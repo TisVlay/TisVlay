@@ -119,7 +119,7 @@ Later switches pick the cache up from `nix.settings` alone.
 | `cec.enable`, `cec.pulse8.enable` | Device access for the [HDMI-CEC backend](#hdmi-cec-backend-optional); the second also builds the in-tree Pulse-Eight USB-CEC driver. |
 | `greeter.enable` | The login-screen idle client (see [Automation](../guide/automation.md#login-screen-idle)). On automatically when plasma-login-manager or GDM is the display manager. |
 | `openFirewall`, `bindPort` | Open the pinned discovery port in the host firewall (see [Firewall & Discovery](../operations/firewall-discovery.md)). |
-| `sunshinePort` | Where to find Sunshine if you moved it off its default port (see [Remote-Session Awareness](../guide/remote-sessions.md#sunshine-integration)). |
+| `sunshinePort` | Where to find Sunshine if you moved it off its default port (see [Streaming](../guide/streaming.md#sunshine-integration)). |
 | `logLevel`, `extraArgs` | The services' log level, and extra `tisvlay-daemon` arguments for anything the module doesn't expose. |
 
 Types and defaults are in each option's description in [`module.nix`](https://github.com/TisVlay/TisVlay/blob/main/packaging/nix/module.nix).

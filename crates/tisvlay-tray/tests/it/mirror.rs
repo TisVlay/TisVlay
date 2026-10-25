@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tisvlay_mock::new_test_parts;
 use tisvlay_protocol::caller::Caller;
-use tisvlay_protocol::endpoint::{Unary, manager, profile, tv, user_profile, user_remote};
+use tisvlay_protocol::endpoint::{Unary, manager, profile, tv, user_profile, user_stream};
 use tisvlay_protocol::{bootstrap, keys, rpc};
 use tisvlay_tray::state::Mirror;
 use zenoh::handlers::FifoChannelHandler;
@@ -167,21 +167,21 @@ async fn mirror_converges_from_live_and_hydrated_samples() {
     })
     .await;
 
-    // A manual remote source arms the TV; the flag rides the meta
+    // A manual stream source arms the TV; the flag rides the meta
     // projection round-trip (session mirror -> world -> daemon cache) and
-    // drives the tray's read-only "Remote session active" indicator.
-    let remote = |active| rpc::RemoteSet {
+    // drives the tray's read-only "Stream active" indicator.
+    let stream = |active| rpc::StreamSet {
         source: Some("laptop".into()),
         active,
     };
-    call::<user_remote::Set>(&user_caller, &(), &remote(true)).await;
+    call::<user_stream::Set>(&user_caller, &(), &stream(true)).await;
     converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
-        m.tvs.get(&tv).is_some_and(|view| view.remote_armed)
+        m.tvs.get(&tv).is_some_and(|view| view.stream_armed)
     })
     .await;
-    call::<user_remote::Set>(&user_caller, &(), &remote(false)).await;
+    call::<user_stream::Set>(&user_caller, &(), &stream(false)).await;
     converge(&mut mirror, "t", &system_sub, &user_sub, |m| {
-        m.tvs.get(&tv).is_some_and(|view| !view.remote_armed)
+        m.tvs.get(&tv).is_some_and(|view| !view.stream_armed)
     })
     .await;
 

@@ -80,11 +80,11 @@ Any field may be omitted from a profile, in which case it inherits (see [How pro
 Every event is one of five actions: `none`, `screen_off`, `screen_on`, `power_off`, and `power_on`; the [Automation page](./automation.md#changing-what-happens) says what each does. In a file, an event value is either the bare action token, or a **table** that adds modifiers:
 
 ```toml
-on_session_unlock = { action = "screen_on", restore_input = true, while_remote = false }
+on_session_unlock = { action = "screen_on", restore_input = true, while_streaming = false }
 ```
 
 - `restore_input` (default `false`): after an on-ish action completes, switch the TV to its `primary_input`. Needs a backend that can switch inputs (LG; not CEC).
-- `while_remote` (default `false`): `true` lets the action fire even while a remote session has the TV armed; see [Remote-Session Awareness](./remote-sessions.md#what-it-does-when-armed). The stock defaults below set it on the blanks and power-offs, so overriding one of those with a bare action drops it; write the table form to keep it.
+- `while_streaming` (default `false`): `true` lets the action fire even while a stream has the TV armed; see [Streaming](./streaming.md#what-it-does-when-armed). The stock defaults below set it on the blanks and power-offs, so overriding one of those with a bare action drops it; write the table form to keep it.
 
 ### System profile
 

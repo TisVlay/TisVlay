@@ -81,7 +81,7 @@ Controls a TV doesn't support are left out. A TV that is off or unreachable, inc
 
 **Scroll** over the icon to change volume or backlight; each notch moves it by 1, where the menu's **Up** and **Down** move it by 10. The wheel adjusts whichever control you last used from the menu. Before you've used either, it adjusts backlight if any powered-on TV offers it, and volume otherwise. It acts on the TV you last used from the menu, or else the first powered-on TV that supports that control. A ► in the tooltip marks the current target. **Middle-click** cycles through the powered-on TVs that support it. If no TV can be adjusted, scrolling does nothing.
 
-While a remote session has any TV armed, the menu shows a read-only **Remote session active** line, so you can tell at a glance that TV wakes are being suppressed. See [Remote-Session Awareness](./remote-sessions.md).
+While a stream has any TV armed, the menu shows a read-only **Stream active** line, so you can tell at a glance that TV wakes are being suppressed. See [Streaming](./streaming.md).
 
 ## Notifications
 

@@ -290,11 +290,11 @@ impl std::fmt::Debug for UpdateConfig {
     }
 }
 
-/// Body for `user/remote/rpc/set`: toggle a manual remote-session
+/// Body for `user/stream/rpc/set`: toggle a manual stream
 /// source (`manual` when omitted).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct RemoteSet {
-    /// Label for the manual source, its `detail` in the remote-session
+pub struct StreamSet {
+    /// Label for the manual source, its `detail` in the stream
     /// state. Each label is its own source, so separate callers toggle
     /// independently.
     #[serde(default, skip_serializing_if = "Option::is_none")]

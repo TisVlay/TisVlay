@@ -232,12 +232,12 @@ pub struct Meta {
     /// `automate_when` holds against the current input. Consumers
     /// (session service, tray) act only on automated TVs.
     pub automated: bool,
-    /// Whether a remote session currently arms this TV (mirrored
+    /// Whether a stream currently arms this TV (mirrored
     /// from the session service). While set, the world honors the
-    /// system profile's while-remote overrides on DPMS-on/resume; a
+    /// system profile's while-streaming overrides on DPMS-on/resume; a
     /// read-only projection for clients to surface the state.
     #[serde(default)]
-    pub remote_armed: bool,
+    pub stream_armed: bool,
 }
 
 impl Meta {
@@ -252,8 +252,8 @@ impl Meta {
             // `should_automate` gives unknown inputs the benefit of
             // the doubt, so a fresh managed TV starts automated.
             automated: managed,
-            // No remote session until the mirror says so.
-            remote_armed: false,
+            // No stream until the mirror says so.
+            stream_armed: false,
         }
     }
 }
@@ -529,34 +529,34 @@ impl PairingProgress {
     }
 }
 
-/// A remote-session fact: every live source tagged by kind, plus the
+/// A stream fact: every live source tagged by kind, plus the
 /// per-TV `armed` projection the session computes from the sources
 /// crossed with each TV's resolved user profile. The world (via the
 /// system mirror) consumes `armed` booleans only, staying
 /// arming-policy-free.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
-pub struct RemoteSessionState {
-    /// Every live source; empty when no remote session is detected.
-    pub sources: Vec<RemoteSource>,
+pub struct StreamState {
+    /// Every live source; empty when no stream is detected.
+    pub sources: Vec<StreamSource>,
     /// The TVs a live source currently arms, sorted by id.
     pub armed: Vec<uuid::Uuid>,
 }
 
-/// One live remote source. `detail` names the specific origin (the
+/// One live stream source. `detail` names the specific origin (the
 /// resolved exe for `Portal`, the source label for `Manual`); it's
 /// carried for display and attribution, not routing.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct RemoteSource {
+pub struct StreamSource {
     /// How the source was detected.
-    pub kind: RemoteSourceKind,
+    pub kind: StreamSourceKind,
     /// The specific origin; a source is unique per `(kind, detail)`.
-    /// Each [`RemoteSourceKind`] says what it puts here.
+    /// Each [`StreamSourceKind`] says what it puts here.
     pub detail: String,
 }
 
-/// How a remote source was detected. Attributed kinds always arm;
+/// How a stream source was detected. Attributed kinds always arm;
 /// the unattributed `Screencast` signal arms only when the resolved
-/// profile opts in (`remote_screencast_arms`). `Ord` so the source
+/// profile opts in (`screencast_arms`). `Ord` so the source
 /// set keys deterministically.
 ///
 /// `Sunshine` is the continuous `/serverinfo` level poll's own key,
@@ -565,8 +565,8 @@ pub struct RemoteSource {
 /// arm.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum RemoteSourceKind {
-    /// Toggled through `user/remote/rpc/set`; `detail` is the
+pub enum StreamSourceKind {
+    /// Toggled through `user/stream/rpc/set`; `detail` is the
     /// caller's source label.
     Manual,
     /// A remote graphical logind session of this user; `detail` is

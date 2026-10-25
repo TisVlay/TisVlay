@@ -150,8 +150,8 @@ async fn each_stored_change_persists_once_and_derived_changes_never() {
         assert_eq!(h.persists(command).await, 1, "{name}");
     }
 
-    // Derived-only: an input switch re-evaluates `automated`, and a remote
-    // session arms and disarms the TV; none of it is stored.
+    // Derived-only: an input switch re-evaluates `automated`, and a stream
+    // arms and disarms the TV; none of it is stored.
     let switched = h
         .persists(|r| Command::SwitchInput {
             id: tv,
@@ -160,9 +160,9 @@ async fn each_stored_change_persists_once_and_derived_changes_never() {
         })
         .await;
     assert_eq!(switched, 0, "input switch");
-    h.client.send(InEvent::RemoteSession { armed: vec![tv] });
-    h.client.send(InEvent::RemoteSession { armed: Vec::new() });
-    assert_eq!(h.settled().await, 0, "remote arm and disarm");
+    h.client.send(InEvent::Stream { armed: vec![tv] });
+    h.client.send(InEvent::Stream { armed: Vec::new() });
+    assert_eq!(h.settled().await, 0, "stream arm and disarm");
 
     let removed = h
         .persists(|r| Command::RemoveTv {

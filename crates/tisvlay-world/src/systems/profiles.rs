@@ -45,7 +45,7 @@ pub(super) fn is_automated(
 
 /// The TV's assigned profile decides the action; unset fields (and TVs
 /// without a profile) fall back to the stock mapping. The trailing bool
-/// is the resolved `while_remote` gate — the stock floor carries the
+/// is the resolved `while_streaming` gate — the stock floor carries the
 /// per-event gate honestly (its off-going actions fire while armed, its
 /// wake-ish actions suppress), matching the core resolved defaults.
 pub(super) fn resolve_action(
@@ -118,5 +118,5 @@ pub(super) fn session_action(
         S::PowerOn => ProfileAction::PowerOn,
         _ => return None,
     };
-    Some((action, spec.restore_input(), spec.while_remote()))
+    Some((action, spec.restore_input(), spec.while_streaming()))
 }

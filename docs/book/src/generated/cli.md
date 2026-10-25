@@ -39,10 +39,10 @@
 * [`tisvlay profile user duplicate`↴](#tisvlay-profile-user-duplicate)
 * [`tisvlay profile user delete`↴](#tisvlay-profile-user-delete)
 * [`tisvlay profile user defaults`↴](#tisvlay-profile-user-defaults)
-* [`tisvlay remote-session`↴](#tisvlay-remote-session)
-* [`tisvlay remote-session start`↴](#tisvlay-remote-session-start)
-* [`tisvlay remote-session stop`↴](#tisvlay-remote-session-stop)
-* [`tisvlay remote-session status`↴](#tisvlay-remote-session-status)
+* [`tisvlay stream`↴](#tisvlay-stream)
+* [`tisvlay stream start`↴](#tisvlay-stream-start)
+* [`tisvlay stream stop`↴](#tisvlay-stream-stop)
+* [`tisvlay stream status`↴](#tisvlay-stream-status)
 * [`tisvlay service`↴](#tisvlay-service)
 * [`tisvlay service daemon`↴](#tisvlay-service-daemon)
 * [`tisvlay service session`↴](#tisvlay-service-session)
@@ -82,14 +82,14 @@ A TV setting or state reads when its value is left out and sets when it's given:
 * `config` — Patch a TV's config, or print it (vendor secrets redacted)
 * `system-profile` — Assign a TV's system profile, or print the assigned one
 * `user-profile` — Assign a TV's user profile (via --user-socket), or print the assigned one
-* `profile` — The profile catalogs: system profiles hold what TVs do on power events, user profiles what they do on lock, idle and remote sessions
-* `remote-session` — Arm or query a remote-session source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
+* `profile` — The profile catalogs: system profiles hold what TVs do on power events, user profiles what they do on lock, idle and streams
+* `stream` — Arm or query a stream source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
 * `service` — Run one of TisVlay's services in the foreground. Their systemd units start them; run one by hand to debug it or try its flags
 
 ###### **Options:**
 
 * `--socket <SOCKET>` — Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
-* `--user-socket <USER_SOCKET>` — Session-service user socket for the `profile user`, `user-profile` and `remote-session` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
+* `--user-socket <USER_SOCKET>` — Session-service user socket for the `profile user`, `user-profile` and `stream` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
 * `--site <SITE>` — Site chunk used in all key expressions; leave it unless you run more than one daemon
 
   Default value: `main`
@@ -419,7 +419,7 @@ Assign a TV's user profile (via --user-socket), or print the assigned one
 
 ## `tisvlay profile`
 
-The profile catalogs: system profiles hold what TVs do on power events, user profiles what they do on lock, idle and remote sessions
+The profile catalogs: system profiles hold what TVs do on power events, user profiles what they do on lock, idle and streams
 
 **Usage:** `tisvlay profile <COMMAND>`
 
@@ -604,25 +604,25 @@ The stock mapping unset fields inherit
 
 
 
-## `tisvlay remote-session`
+## `tisvlay stream`
 
-Arm or query a remote-session source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
+Arm or query a stream source (session-service side, via --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd` integration (do = start, undo = stop)
 
-**Usage:** `tisvlay remote-session <COMMAND>`
+**Usage:** `tisvlay stream <COMMAND>`
 
 ###### **Subcommands:**
 
 * `start` — Arm the named source
 * `stop` — Disarm the named source
-* `status` — Show the current remote-session fact (live sources + armed TVs)
+* `status` — Show the current stream fact (live sources + armed TVs)
 
 
 
-## `tisvlay remote-session start`
+## `tisvlay stream start`
 
 Arm the named source
 
-**Usage:** `tisvlay remote-session start [OPTIONS]`
+**Usage:** `tisvlay stream start [OPTIONS]`
 
 ###### **Options:**
 
@@ -632,11 +632,11 @@ Arm the named source
 
 
 
-## `tisvlay remote-session stop`
+## `tisvlay stream stop`
 
 Disarm the named source
 
-**Usage:** `tisvlay remote-session stop [OPTIONS]`
+**Usage:** `tisvlay stream stop [OPTIONS]`
 
 ###### **Options:**
 
@@ -646,11 +646,11 @@ Disarm the named source
 
 
 
-## `tisvlay remote-session status`
+## `tisvlay stream status`
 
-Show the current remote-session fact (live sources + armed TVs)
+Show the current stream fact (live sources + armed TVs)
 
-**Usage:** `tisvlay remote-session status`
+**Usage:** `tisvlay stream status`
 
 
 
@@ -663,7 +663,7 @@ Run one of TisVlay's services in the foreground. Their systemd units start them;
 ###### **Subcommands:**
 
 * `daemon` — The system daemon: owns the TVs and the system socket
-* `session` — The per-user session service: user profiles, lock, idle and remote-session handling, on the user socket
+* `session` — The per-user session service: user profiles, lock, idle and stream handling, on the user socket
 * `tray` — The system tray
 * `greeter` — The login-screen idle client, run inside the greeter session
 
@@ -701,7 +701,7 @@ The system daemon: owns the TVs and the system socket
 
 ## `tisvlay service session`
 
-The per-user session service: user profiles, lock, idle and remote-session handling, on the user socket
+The per-user session service: user profiles, lock, idle and stream handling, on the user socket
 
 **Usage:** `tisvlay service session [OPTIONS]`
 

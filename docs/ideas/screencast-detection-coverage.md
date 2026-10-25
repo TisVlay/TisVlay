@@ -1,6 +1,6 @@
 # Screencast detection beyond KWin
 
-The PipeWire screencast detector matches one producer: KWin, by its capture stream's `media.name` prefix `kwin-screencast-` (see [remote/detection.md](../remote/detection.md)). Research in October 2026 found no blessed, desktop-agnostic way for a user daemon to learn that the screen is being shared. This collects what exists, so the detector can grow when a non-KDE user or an upstream change makes it worth it.
+The PipeWire screencast detector matches one producer: KWin, by its capture stream's `media.name` prefix `kwin-screencast-` (see [streams/detection.md](../streams/detection.md)). Research in October 2026 found no blessed, desktop-agnostic way for a user daemon to learn that the screen is being shared. This collects what exists, so the detector can grow when a non-KDE user or an upstream change makes it worth it.
 
 ## What exists today
 

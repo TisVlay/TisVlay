@@ -1,5 +1,5 @@
 //! Sunshine level poll: a continuous `/serverinfo` level detector owning
-//! its own `Sunshine` remote source.
+//! its own `Sunshine` stream source.
 //!
 //! Sunshine's default NvFBC capture on Nvidia is invisible to every
 //! scanning detector (portal, PipeWire, logind), so nothing rediscovers a
@@ -46,12 +46,12 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tisvlay_protocol::payload::RemoteSourceKind;
+use tisvlay_protocol::payload::StreamSourceKind;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::debug;
 
-use crate::{RemoteClient, RemoteReport};
+use crate::{StreamClient, StreamReport};
 
 /// Sunshine's default base port, which serves the unauthenticated HTTP
 /// `/serverinfo` in the clear (the HTTPS port needs a paired client cert).
@@ -209,7 +209,7 @@ pub(crate) fn parse_serverinfo(body: &str) -> ServerState {
 /// present-but-`Unknown` endpoint keeps the last state so a transient blip
 /// does not flap the source. Emitting only on change keeps needless traffic
 /// off the aggregator channel (its `apply` is idempotent regardless).
-pub(crate) fn decide(armed: bool, observation: Observation) -> (bool, Option<RemoteReport>) {
+pub(crate) fn decide(armed: bool, observation: Observation) -> (bool, Option<StreamReport>) {
     let target = match observation {
         Observation::Busy => Some(true),
         Observation::Free | Observation::Absent => Some(false),
@@ -224,9 +224,9 @@ pub(crate) fn decide(armed: bool, observation: Observation) -> (bool, Option<Rem
 
 /// The `Sunshine` source report for a given arm state — always the single
 /// fixed-detail key this poll owns.
-fn report(active: bool) -> RemoteReport {
-    RemoteReport {
-        kind: RemoteSourceKind::Sunshine,
+fn report(active: bool) -> StreamReport {
+    StreamReport {
+        kind: StreamSourceKind::Sunshine,
         detail: SOURCE_DETAIL.to_string(),
         active,
         provisional: false,
@@ -249,7 +249,7 @@ pub(crate) fn is_sunshine_comm(comm: &str) -> bool {
 /// arms and disarms a `Sunshine` source on its own key. Runs for the
 /// session lifetime; the only exit is a dead core (nothing left to report
 /// to).
-pub fn spawn(client: RemoteClient, probe: Arc<dyn SunshineProbe>) {
+pub fn spawn(client: StreamClient, probe: Arc<dyn SunshineProbe>) {
     tokio::spawn(run(client, probe));
 }
 
@@ -257,7 +257,7 @@ pub fn spawn(client: RemoteClient, probe: Arc<dyn SunshineProbe>) {
 /// A short interval while the process is present keeps arm latency low in
 /// the hook-less case; a longer interval while it is absent keeps an idle
 /// box cheap.
-async fn run(client: RemoteClient, probe: Arc<dyn SunshineProbe>) {
+async fn run(client: StreamClient, probe: Arc<dyn SunshineProbe>) {
     let mut armed = false;
     loop {
         let observation = probe.observe(POLL_TIMEOUT).await;
@@ -385,7 +385,7 @@ mod tests {
         let (armed, change) = decide(false, Observation::Busy);
         assert!(armed);
         let report = change.expect("busy arms");
-        assert_eq!(report.kind, RemoteSourceKind::Sunshine);
+        assert_eq!(report.kind, StreamSourceKind::Sunshine);
         assert_eq!(report.detail, SOURCE_DETAIL);
         assert!(report.active);
         assert!(!report.provisional);
@@ -396,7 +396,7 @@ mod tests {
         let (armed, change) = decide(true, Observation::Free);
         assert!(!armed);
         let report = change.expect("free disarms");
-        assert_eq!(report.kind, RemoteSourceKind::Sunshine);
+        assert_eq!(report.kind, StreamSourceKind::Sunshine);
         assert_eq!(report.detail, SOURCE_DETAIL);
         assert!(!report.active);
     }

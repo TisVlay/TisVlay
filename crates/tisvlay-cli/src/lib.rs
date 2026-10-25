@@ -39,7 +39,7 @@ pub struct Cli {
     pub socket: Option<PathBuf>,
 
     /// Session-service user socket for the `profile user`, `user-profile`
-    /// and `remote-session` verbs (default:
+    /// and `stream` verbs (default:
     /// $XDG_RUNTIME_DIR/tisvlay/session.sock).
     #[arg(long)]
     pub user_socket: Option<PathBuf>,
@@ -231,15 +231,15 @@ pub enum Command {
         effective: bool,
     },
     /// The profile catalogs: system profiles hold what TVs do on power
-    /// events, user profiles what they do on lock, idle and remote
-    /// sessions.
+    /// events, user profiles what they do on lock, idle and
+    /// streams.
     #[command(subcommand)]
     Profile(ProfileScope),
-    /// Arm or query a remote-session source (session-service side, via
+    /// Arm or query a stream source (session-service side, via
     /// --user-socket). `start`/`stop` are the Sunshine `global_prep_cmd`
     /// integration (do = start, undo = stop).
     #[command(subcommand)]
-    RemoteSession(RemoteSessionCmd),
+    Stream(StreamCmd),
     /// Run one of TisVlay's services in the foreground. Their systemd
     /// units start them; run one by hand to debug it or try its flags.
     #[command(subcommand)]
@@ -252,7 +252,7 @@ pub enum Service {
     /// The system daemon: owns the TVs and the system socket.
     Daemon(tisvlay_daemon::service::Args),
     /// The per-user session service: user profiles, lock, idle and
-    /// remote-session handling, on the user socket.
+    /// stream handling, on the user socket.
     Session(tisvlay_session::service::Args),
     /// The system tray.
     Tray(tisvlay_tray::service::Args),
@@ -304,7 +304,7 @@ impl fmt::Display for OnOff {
 
 /// System and user profiles are different schemas, not one schema at two
 /// scopes: a system profile maps power events (the daemon's), a user
-/// profile maps lock, idle and remote-session events (the session
+/// profile maps lock, idle and stream events (the session
 /// service's). So each scope is its own command family rather than a
 /// `--user` flag that would silently change what `--body` means.
 #[derive(Subcommand, Debug)]
@@ -318,7 +318,7 @@ pub enum ProfileScope {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum RemoteSessionCmd {
+pub enum StreamCmd {
     /// Arm the named source.
     Start {
         #[arg(long, default_value = "manual")]
@@ -329,7 +329,7 @@ pub enum RemoteSessionCmd {
         #[arg(long, default_value = "manual")]
         source: String,
     },
-    /// Show the current remote-session fact (live sources + armed TVs).
+    /// Show the current stream fact (live sources + armed TVs).
     Status,
 }
 

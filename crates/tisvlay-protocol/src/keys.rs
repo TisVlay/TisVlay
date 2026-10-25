@@ -111,40 +111,40 @@ pub fn user_alive_tray(site: &str) -> String {
     format!("tisvlay/{site}/user/alive/tray")
 }
 
-/// The per-user remote-session fact (user socket, cached pub owned
+/// The per-user stream fact (user socket, cached pub owned
 /// by the session's router).
-pub fn user_remote_session(site: &str) -> String {
-    format!("tisvlay/{site}/user/remote/session")
+pub fn user_stream_state(site: &str) -> String {
+    format!("tisvlay/{site}/user/stream/state")
 }
 
-/// The system-socket mirror of the remote-session fact — a cache-1
+/// The system-socket mirror of the stream fact — a cache-1
 /// AdvancedPublisher the session serves on its connect-only-peer system
 /// link. A connect-only peer cannot fan a served entity out to *other*
 /// leaves, but the directly-dialed daemon does hydrate its `@adv` cache,
 /// so a daemon (re)start relearns the armed set without any re-put. The
 /// counter-sequenced cache shape constructs without an HLC, so this
 /// needs no daemon-side timestamping.
-pub fn remote_session(site: &str) -> String {
-    format!("tisvlay/{site}/remote/session")
+pub fn stream_state(site: &str) -> String {
+    format!("tisvlay/{site}/stream/state")
 }
 
-/// Remote-session rpcs + the wildcard their queryable declares (own
+/// Stream rpcs + the wildcard their queryable declares (own
 /// family, not folded into the profile rpc queryable).
-pub fn user_remote_rpc(site: &str, verb: &str) -> String {
-    format!("tisvlay/{site}/user/remote/rpc/{verb}")
+pub fn user_stream_rpc(site: &str, verb: &str) -> String {
+    format!("tisvlay/{site}/user/stream/rpc/{verb}")
 }
 
-/// Wildcard the session's remote-session rpc queryable is declared on.
-pub fn user_remote_rpc_wild(site: &str) -> String {
-    format!("tisvlay/{site}/user/remote/rpc/*")
+/// Wildcard the session's stream rpc queryable is declared on.
+pub fn user_stream_rpc_wild(site: &str) -> String {
+    format!("tisvlay/{site}/user/stream/rpc/*")
 }
 
-/// Parse a [`user_remote_rpc`] key into its verb (the rest of `key` after
+/// Parse a [`user_stream_rpc`] key into its verb (the rest of `key` after
 /// the family's prefix); `None` when `key` lacks that prefix.
-pub fn parse_user_remote_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+pub fn parse_user_stream_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
-        .strip_prefix("/user/remote/rpc/")
+        .strip_prefix("/user/stream/rpc/")
 }
 
 /// Everything under the user subtree — must never be visible through
@@ -438,27 +438,24 @@ mod tests {
     }
 
     #[test]
-    fn remote_session_key_shapes() {
+    fn stream_state_key_shapes() {
+        assert_eq!(user_stream_state("main"), "tisvlay/main/user/stream/state");
+        assert_eq!(stream_state("main"), "tisvlay/main/stream/state");
         assert_eq!(
-            user_remote_session("main"),
-            "tisvlay/main/user/remote/session"
-        );
-        assert_eq!(remote_session("main"), "tisvlay/main/remote/session");
-        assert_eq!(
-            parse_user_remote_rpc("main", &user_remote_rpc("main", "set")),
+            parse_user_stream_rpc("main", &user_stream_rpc("main", "set")),
             Some("set")
         );
         // The wildcard the queryable declares matches its own keys.
-        let wild = zenoh::key_expr::KeyExpr::try_from(user_remote_rpc_wild("main")).unwrap();
-        let verb = zenoh::key_expr::KeyExpr::try_from(user_remote_rpc("main", "status")).unwrap();
+        let wild = zenoh::key_expr::KeyExpr::try_from(user_stream_rpc_wild("main")).unwrap();
+        let verb = zenoh::key_expr::KeyExpr::try_from(user_stream_rpc("main", "status")).unwrap();
         assert!(wild.intersects(&verb));
         // Wrong site is rejected; the tray family is not confused for it.
         assert_eq!(
-            parse_user_remote_rpc("other", &user_remote_rpc("main", "set")),
+            parse_user_stream_rpc("other", &user_stream_rpc("main", "set")),
             None
         );
         assert_eq!(
-            parse_user_remote_rpc("main", &user_tray_rpc("main", "get")),
+            parse_user_stream_rpc("main", &user_tray_rpc("main", "get")),
             None
         );
     }

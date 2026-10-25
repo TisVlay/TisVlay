@@ -14,7 +14,7 @@
   - Easily adjust backlight, volume, active input, and more
 - 🤖 Automation via system/user events
   - System boot, reboot, shutdown, suspend, wake, DPMS
-  - User lock/unlock, idle, remote session connect/disconnect
+  - User lock/unlock, idle, stream connect/disconnect
 - 🧰 Flexible profile customization
   - System-wide and per-user profiles for per-device behavior
   - Unified API and CLI for further scripting and integrations
@@ -97,7 +97,7 @@ Rendered docs available at [tisvlay.readthedocs.io](https://tisvlay.readthedocs.
 
 - 🧭 New here? Start with [Installation](docs/book/src/getting-started/installation.md), then [Quick Start](docs/book/src/getting-started/quick-start.md).
 - 🎛️ Setting things up? See [GUI & Tray](docs/book/src/guide/gui-tray.md) and [Automation](docs/book/src/guide/automation.md).
-- 🛰️ Streaming in remotely? See [Remote-Session Awareness](docs/book/src/guide/remote-sessions.md).
+- 🛰️ Streaming in remotely? See [Streaming](docs/book/src/guide/streaming.md).
 - 🔎 Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
 - 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/operations/isolated-networks.md).
 - ⌨️ Scripting? See the [Command Line](docs/book/src/guide/cli.md) and [Configuration Files](docs/book/src/guide/configuration.md).

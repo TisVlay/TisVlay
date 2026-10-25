@@ -205,7 +205,7 @@ async fn apply(
         | StateEvent::TrayAppeared
         | StateEvent::TrayDisappeared
         | StateEvent::TvUserProfileChanged
-        | StateEvent::RemoteSessionChanged
+        | StateEvent::StreamChanged
         | StateEvent::TrayNotificationSettingsChanged
         | StateEvent::ReleaseChecked(_)
         | StateEvent::VersionMismatch { .. }

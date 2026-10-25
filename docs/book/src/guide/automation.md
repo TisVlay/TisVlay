@@ -20,14 +20,14 @@ Out of the box, a [managed](#which-tvs-react) TV follows your desktop:
 
 The TV blanking or waking along with your monitor (DPMS) is on too. Inactivity timers (blank the TV after N minutes idle) are **off** until you set them.
 
-Wake events never fire for a TV while a remote session has it [armed](#remote-sessions), so streaming in from elsewhere doesn't light an empty room.
+Wake events never fire for a TV while a stream has it [armed](#streams), so streaming in from elsewhere doesn't light an empty room.
 
 ## Changing what happens
 
 Open the **Profiles** page. There are two lists on the left:
 
 - **System profiles** control what the machine does: boot, shutdown, reboot, sleep, wake, and your display blanking (DPMS). They also cover the login screen.
-- **User profiles** control what *you* do in your desktop session: lock, unlock, idle, and remote sessions. Each user account has its own.
+- **User profiles** control what *you* do in your desktop session: lock, unlock, idle, and streams. Each user account has its own.
 
 Every list starts with a **default** profile (marked ✓), which every TV uses until you assign something else. It can't be renamed or deleted.
 
@@ -48,7 +48,7 @@ The actions are:
 Next to each dropdown are two small icon toggles:
 
 - **Land on primary input** (the remote icon): after this action, switch the TV to your PC's input. This needs the TV's *Primary* input set on its page, and a TV that can switch inputs (not HDMI-CEC).
-- **Suppressed / fires during remote session** (the network icon): whether this event still happens while a remote session has the TV armed. See [Remote-Session Awareness](./remote-sessions.md).
+- **Suppressed / fires while streaming** (the network icon): whether this event still happens while a stream has the TV armed. See [Streaming](./streaming.md).
 
 The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (unlocked)**, each in seconds, where `0` turns the timer off. The first applies at the lock screen, the second while you're logged in and active. The **On idle timeout** and **On idle resume** actions say what happens when either timer fires and when activity returns.
 
@@ -76,8 +76,8 @@ The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (u
 | On session unlock | you unlock |
 | On idle timeout | either idle timer runs out |
 | On idle resume | activity returns after an unlocked idle |
-| Remote connect / disconnect | a remote session starts or ends |
-| On local return | you first touch the PC after a remote session ended |
+| Stream start / end | a stream starts or ends |
+| On local return | you first touch the PC after a stream ended |
 
 - **Lock wake** is there so the TV is lit *before* you type your password; the later unlock then has nothing left to do. (Wayland sessions only.)
 - **Idle** is independent of your desktop's own screen-locking and blanking timers.
@@ -97,7 +97,7 @@ For an event to do anything to a TV, three things must agree:
 
 1. The TV's **Managed** switch (on its page, under STATUS) is on. An unmanaged TV is never automated.
 2. The system profile's **Automate when** setting allows it: `always`, `on_primary` (only while the TV is showing your PC's input), or `off_primary` (only while it's showing something else).
-3. No remote session is suppressing the event (see below).
+3. No stream is suppressing the event (see below).
 
 Manual actions from the app, the tray, or the command line always run, regardless.
 
@@ -111,9 +111,9 @@ Manual actions from the app, the tray, or the command line always run, regardles
 | yes | `off_primary` | yes | no |
 | yes | `off_primary` | no | **yes** |
 
-### Remote sessions
+### Streams
 
-A separate gate applies on top: while a remote session has a TV armed, wake actions are suppressed unless the event's remote-session toggle is set to fire. It's independent of **Automate when**. The rules are in [Remote-Session Awareness](./remote-sessions.md#what-it-does-when-armed).
+A separate gate applies on top: while a stream has a TV armed, wake actions are suppressed unless the event's stream toggle is set to fire. It's independent of **Automate when**. The rules are in [Streaming](./streaming.md#what-it-does-when-armed).
 
 ## How profiles resolve
 

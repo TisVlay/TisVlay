@@ -32,8 +32,8 @@ use crate::components::{
     DialSeq, DispatchRetry, DispatchVerify, Effect, HeldWake, KnownVendors, LastPersisted,
     LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
     PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, ProfileAction,
-    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, RetryPromptly, Site,
-    State, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
+    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt, RetryPromptly, Site, State,
+    StreamArmed, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
@@ -83,7 +83,7 @@ pub(crate) fn build_schedule() -> Schedule {
             handle_carrier_events,
             verify_dispatch,
             reconcile_input,
-            apply_remote_session,
+            apply_stream,
             // After every input fact and profile edit of the step, so
             // dispatch reads this step's automation verdict.
             derive_automated,
@@ -96,7 +96,7 @@ pub(crate) fn build_schedule() -> Schedule {
     schedule.add_systems(
         (
             derive_link_state,
-            derive_remote_armed,
+            derive_stream_armed,
             publish_greeter_timeout,
             publish_changed::<payload::Power>,
             publish_changed::<payload::Volume>,
@@ -218,8 +218,8 @@ fn spawn_tv(commands: &mut Commands, outbox: &mut Outbox, record: &TvRecord) -> 
             automate_when: tisvlay_core::AutomateWhen::Always,
             // derive_automated refines this once input state exists.
             automated: record.managed,
-            // derive_remote_armed sets this once a mirror update lands.
-            remote_armed: false,
+            // derive_stream_armed sets this once a mirror update lands.
+            stream_armed: false,
         }),
         State(payload::Link {
             connected: false,
@@ -381,24 +381,24 @@ mod tests {
         assert_eq!(mac_of(&blank_alias), None);
     }
 
-    /// `session_action` threads the resolved action's `while_remote`
+    /// `session_action` threads the resolved action's `while_streaming`
     /// gate (and `restore_input`) alongside the mapped `ProfileAction`.
     /// The bare form fires while armed; a gated table suppresses.
     #[test]
-    fn session_action_carries_the_while_remote_gate() {
+    fn session_action_carries_the_while_streaming_gate() {
         // A bare action: gated (gate implicitly false, suppress-by-
         // default), no restore.
         assert_eq!(
             session_action(EventAction::from(SessionAction::ScreenOn)),
             Some((ProfileAction::ScreenOn, false, false))
         );
-        // A table with `while_remote = true` carries the fire-while-armed
+        // A table with `while_streaming = true` carries the fire-while-armed
         // gate through, alongside the restore modifier.
         assert_eq!(
             session_action(EventAction::With {
                 action: SessionAction::PowerOn,
                 restore_input: true,
-                while_remote: true,
+                while_streaming: true,
             }),
             Some((ProfileAction::PowerOn, true, true))
         );
@@ -408,7 +408,7 @@ mod tests {
 
     /// The world's stock floor and the root stack's resolved defaults are
     /// two hand-written tables that must agree event-for-event, including
-    /// the `while_remote` gate — a drift here silently diverges the
+    /// the `while_streaming` gate — a drift here silently diverges the
     /// daemon's DPMS gate from what the session and GUI resolve. Derive
     /// the expected tuple from `ResolvedSystemProfile::default` through the
     /// same event-to-field map the dispatch path uses, and assert parity.

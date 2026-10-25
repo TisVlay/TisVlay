@@ -80,7 +80,7 @@ tisvlay/
 │   ├── book/                     # mdBook user guide (Read the Docs); src/generated/ is docgen output
 │   ├── plans/                    # in-flight plan docs (README convention; git holds retired ones)
 │   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
-│   │   remote/                   # remote-session detectors
+│   │   streams/                  # stream detectors
 │   ├── ideas/, bugs/, concerns/  # one doc per item; each folder's README.md is its index
 │   └── firewall.md, testing.md
 └── .claude/CLAUDE.md             # This file
@@ -122,13 +122,13 @@ Vendor/protocol quirks (unchanged by the rewrite):
 - SSDP discovery pins source port 1901 to match the firewall rule (docs/firewall.md)
 - KWin on Wayland writes DPMS-off through to the legacy sysfs `dpms` connector attribute, so the daemon polls it without a per-DE compositor protocol; the watcher gates on `status == connected`
 
-Remote-session detection quirks (session-side detectors — see docs/remote/detection.md):
+Stream detection quirks (session-side detectors — see docs/streams/detection.md):
 
-- No first-class "remote session active" API on the Linux desktop — detection is side-effect observation (PipeWire capture node, portal `BecomeMonitor`, logind) plus app hooks. Sunshine's default NvFBC/KMS capture on Nvidia is invisible to the portal monitor *and* PipeWire; its only machine-readable signal is the unauthenticated `GET 127.0.0.1:<base port>/serverinfo` (`SUNSHINE_SERVER_BUSY|FREE`; base port 47989 by default, `--sunshine-port` otherwise — a Sunshine moved aside for Moonshine leaves Moonshine answering on 47989), polled as a level detector
+- No first-class "stream active" API on the Linux desktop — detection is side-effect observation (PipeWire capture node, portal `BecomeMonitor`, logind) plus app hooks. Sunshine's default NvFBC/KMS capture on Nvidia is invisible to the portal monitor *and* PipeWire; its only machine-readable signal is the unauthenticated `GET 127.0.0.1:<base port>/serverinfo` (`SUNSHINE_SERVER_BUSY|FREE`; base port 47989 by default, `--sunshine-port` otherwise — a Sunshine moved aside for Moonshine leaves Moonshine answering on 47989), polled as a level detector
 - Portal `BecomeMonitor` connections are receive-only — resolve a caller's bus name → PID → exe on the *main* session-bus connection, not the monitor connection
 - InputCapture portal sessions must never arm (lan-mouse holds a standing one while the user is present); it shares the portal object path + `CreateSession` member with the capture interfaces, so exclude it by interface, not heuristic
 - logind mints `Remote=yes` for plain SSH shells too (`Type=tty`); the remote-*desktop* detector must require a graphical `Type` (`x11`/`wayland`)
-- `pipewire-native` (the screencast detector's client) loads PipeWire's C support plugin from an SPA plugin dir baked at build time, so Nix builds need pipewire as a build input; the session checks the plugin exists before starting the detector and skips `client.conf` (`config.name = "null"`, avoiding the `spa-json-dump` tool). KWin capture nodes are matched by `media.name` prefix `kwin-screencast-`, never `node.name` (the process binary, renamed by wrappers), and `media.name` isn't in the registry's global props, so candidates are bound and judged on their full info — see docs/remote/detection.md
+- `pipewire-native` (the screencast detector's client) loads PipeWire's C support plugin from an SPA plugin dir baked at build time, so Nix builds need pipewire as a build input; the session checks the plugin exists before starting the detector and skips `client.conf` (`config.name = "null"`, avoiding the `spa-json-dump` tool). KWin capture nodes are matched by `media.name` prefix `kwin-screencast-`, never `node.name` (the process binary, renamed by wrappers), and `media.name` isn't in the registry's global props, so candidates are bound and judged on their full info — see docs/streams/detection.md
 - NixOS `makeWrapper` truncates process comm to the kernel's 15-byte limit, so Sunshine's comm is `.sunshine-wrapp` (from `.sunshine-wrapped`) — procfs presence gates match `comm.trim_start_matches('.').starts_with("sunshine")`, not `== "sunshine"`
 
 Zenoh stack findings (load-bearing, learned empirically):
@@ -282,9 +282,9 @@ just cov / cov-html / cov-ratchet
 ## Reference Documentation
 
 - [docs/architecture.md](../docs/architecture.md) - **Current architecture**: topology, key space, world/reactor model, compatibility (release handshake), deployment, empirical zenoh laws
-- [docs/book/](../docs/book/) - User guide (mdBook, published on Read the Docs): install, pairing, profiles, automation, remote sessions, operations
+- [docs/book/](../docs/book/) - User guide (mdBook, published on Read the Docs): install, pairing, profiles, automation, streams, operations
 - [docs/build.md](../docs/build.md) - Build and lint policy, public API policy, first-publish checklist, review triggers
-- [docs/remote/detection.md](../docs/remote/detection.md) - Remote-session detectors (PipeWire, portal, logind, Sunshine) and their quirks
+- [docs/streams/detection.md](../docs/streams/detection.md) - Stream detectors (PipeWire, portal, logind, Sunshine) and their quirks
 - [docs/design.md](../docs/design.md) - The retired served-D-Bus architecture (≤ v0.2.0); kept for history
 - [docs/discovery.md](../docs/discovery.md) - SSDP transport, streaming discovery, manual-entry MAC enrichment
 - [docs/i18n.md](../docs/i18n.md) - Translation architecture and workflow

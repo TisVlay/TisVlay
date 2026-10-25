@@ -1,6 +1,6 @@
 # Eager remote-state refresh on gated events
 
-The remote-session detectors publish state on their own cadence — the Sunshine `/serverinfo` level poll ticks every ~2 s while a stream is present. So the *disarm* latency after a stream ends is bounded by that cadence: up to ~2 s before the armed source clears and a wake stops being suppressed. In the common case that is invisible (a returning user is far more than 2 s behind the stream ending, so the source has long since cleared), but a user who walks up within the poll window can hit a suppressed wake for a couple of seconds.
+The stream detectors publish state on their own cadence — the Sunshine `/serverinfo` level poll ticks every ~2 s while a stream is present. So the *disarm* latency after a stream ends is bounded by that cadence: up to ~2 s before the armed source clears and a wake stops being suppressed. In the common case that is invisible (a returning user is far more than 2 s behind the stream ending, so the source has long since cleared), but a user who walks up within the poll window can hit a suppressed wake for a couple of seconds.
 
 The idea: keep the background poll rate low, and additionally do an on-demand `/serverinfo` pull *at the moment a gated wake event fires* — the exact instant the armed state's freshness decides whether to suppress or wake. Poll lazily, refresh eagerly. This decouples responsiveness from the background rate.
 

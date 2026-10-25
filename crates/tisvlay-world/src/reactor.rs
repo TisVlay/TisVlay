@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use crate::backend;
 use crate::components::{
     Clock, ConnectionHandle, DeviceWatch, DialSeq, Effect, KnownVendors, LastPersisted, Outbox,
-    PairingIndex, ProfileIndex, RemoteArmed, Site, SystemProfile, TvIndex,
+    PairingIndex, ProfileIndex, Site, StreamArmed, SystemProfile, TvIndex,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
@@ -92,7 +92,7 @@ impl Reactor {
             connectors.keys().cloned().collect::<HashSet<_>>(),
         ));
         world.insert_resource(SystemProfile::stock());
-        world.init_resource::<RemoteArmed>();
+        world.init_resource::<StreamArmed>();
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
         world.init_resource::<ProfileIndex>();

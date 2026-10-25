@@ -1,4 +1,4 @@
-//! Portal D-Bus monitor detector: the attributed `Portal` remote source.
+//! Portal D-Bus monitor detector: the attributed `Portal` stream source.
 //!
 //! krdp and RustDesk drive their capture through the desktop portal
 //! (`org.freedesktop.portal.ScreenCast` / `.RemoteDesktop`). A second
@@ -6,7 +6,7 @@
 //! (`org.freedesktop.DBus.Monitoring.BecomeMonitor`) sees those calls on
 //! the wire and resolves the caller to an executable for attribution —
 //! the generic screencast signal (the PipeWire detector) carries no app
-//! identity, so this is what lets a known remote app arm unconditionally.
+//! identity, so this is what lets a known streaming app arm unconditionally.
 //!
 //! Arming edge: a `CreateSession` call is the earliest observable portal
 //! signal (it precedes `Start` and any injected input), so the source
@@ -19,11 +19,11 @@
 //! - Only `ScreenCast` / `RemoteDesktop` count. `org.freedesktop.portal
 //!   .InputCapture` shares the same object path and also has a
 //!   `CreateSession`, but an InputCapture session (lan-mouse holds a
-//!   standing one while the user is physically present) is never a remote
-//!   session — it is ignored unconditionally.
+//!   standing one while the user is physically present) is never a
+//!   stream — it is ignored unconditionally.
 //! - Only an allow-listed caller exe reports a `Portal` source. A portal
 //!   user outside the list still trips the unattributed screencast signal
-//!   (covered by the PipeWire detector under `remote_screencast_arms`), so
+//!   (covered by the PipeWire detector under `screencast_arms`), so
 //!   nothing is lost by declining to attribute it here.
 //!
 //! Attribution rides the caller's unique bus name: the monitor connection
@@ -46,13 +46,13 @@
 //! remains the fallback.
 
 use futures_util::StreamExt;
-use tisvlay_protocol::payload::RemoteSourceKind;
+use tisvlay_protocol::payload::StreamSourceKind;
 use tracing::debug;
 use zbus::MatchRule;
 use zbus::message::Type as MessageType;
 
 use crate::detector::{Backoff, Fault};
-use crate::{RemoteClient, RemoteReport};
+use crate::{StreamClient, StreamReport};
 
 /// The portal object namespace the monitor scopes its match rules to —
 /// everything the desktop portal serves hangs under here, including the
@@ -231,7 +231,7 @@ fn reduce(msg: &zbus::Message) -> PortalMessage {
 /// connection and never blocks the caller; `main_bus` is the service's
 /// normal session-bus connection, used for the receive-only monitor's
 /// out-of-band name→PID lookups and the bootstrap tree-walk.
-pub fn spawn(main_bus: zbus::Connection, client: RemoteClient) {
+pub fn spawn(main_bus: zbus::Connection, client: StreamClient) {
     tokio::spawn(run(main_bus, client));
 }
 
@@ -239,7 +239,7 @@ pub fn spawn(main_bus: zbus::Connection, client: RemoteClient) {
 /// sessions, then pump portal messages until the connection ends; back
 /// off and retry. Quiet after the first warning so a box without a portal
 /// does not spam the log.
-async fn run(main_bus: zbus::Connection, client: RemoteClient) {
+async fn run(main_bus: zbus::Connection, client: StreamClient) {
     let mut tracker = PortalTracker::default();
     let mut backoff = Backoff::default();
     loop {
@@ -277,7 +277,7 @@ impl From<zbus::fdo::Error> for Fault {
 /// classified; the tracker owns the live-session bookkeeping.
 async fn session(
     main_bus: &zbus::Connection,
-    client: &RemoteClient,
+    client: &StreamClient,
     tracker: &mut PortalTracker,
 ) -> Result<(), Fault> {
     // A dedicated connection becomes the monitor; the main connection
@@ -331,7 +331,7 @@ async fn session(
 }
 
 /// Forward reports to the core; a dead core loop stops the supervisor.
-fn emit(client: &RemoteClient, reports: Vec<RemoteReport>) -> Result<(), Fault> {
+fn emit(client: &StreamClient, reports: Vec<StreamReport>) -> Result<(), Fault> {
     for report in reports {
         if !client.report(report) {
             return Err(Fault::CoreGone);
@@ -432,18 +432,18 @@ impl PortalTracker {
     /// A confirmed `CreateSession` from `owner` running `exe`: report the
     /// exe's source as confirmed (non-provisional, always arms) and
     /// remember the owner so its `Closed` clears it.
-    pub(crate) fn opened(&mut self, owner: &str, exe: String) -> Vec<RemoteReport> {
+    pub(crate) fn opened(&mut self, owner: &str, exe: String) -> Vec<StreamReport> {
         self.record(owner, exe, true)
     }
 
     /// A bootstrapped `owner` running `exe`, attributed only
     /// provisionally (the aggregator admits it only under a corroborating
     /// screencast signal).
-    pub(crate) fn provisional(&mut self, owner: &str, exe: String) -> Vec<RemoteReport> {
+    pub(crate) fn provisional(&mut self, owner: &str, exe: String) -> Vec<StreamReport> {
         self.record(owner, exe, false)
     }
 
-    fn record(&mut self, owner: &str, exe: String, confirmed: bool) -> Vec<RemoteReport> {
+    fn record(&mut self, owner: &str, exe: String, confirmed: bool) -> Vec<StreamReport> {
         match self.owners.get_mut(owner) {
             // Already tracked with the same exe: count the new session and
             // re-report only on a provisional→confirmed promotion (it drops
@@ -485,7 +485,7 @@ impl PortalTracker {
 
     /// One of `owner`'s sessions closed: decrement its count and clear the
     /// source only when the last one closes.
-    pub(crate) fn closed(&mut self, owner: &str) -> Vec<RemoteReport> {
+    pub(crate) fn closed(&mut self, owner: &str) -> Vec<StreamReport> {
         let Some(state) = self.owners.get_mut(owner) else {
             return Vec::new();
         };
@@ -499,7 +499,7 @@ impl PortalTracker {
 
     /// Tear down every tracked session (a monitor reconnect): clear each
     /// live source so nothing lingers armed across the gap.
-    pub(crate) fn clear(&mut self) -> Vec<RemoteReport> {
+    pub(crate) fn clear(&mut self) -> Vec<StreamReport> {
         let reports = self
             .owners
             .values()
@@ -513,9 +513,9 @@ impl PortalTracker {
 /// A `Portal` source report attributed to `exe`. `provisional` marks a
 /// bootstrapped guess the aggregator admits only under a corroborating
 /// screencast signal; a confirmed report always arms.
-fn portal_report(exe: String, active: bool, provisional: bool) -> RemoteReport {
-    RemoteReport {
-        kind: RemoteSourceKind::Portal,
+fn portal_report(exe: String, active: bool, provisional: bool) -> StreamReport {
+    StreamReport {
+        kind: StreamSourceKind::Portal,
         detail: exe,
         active,
         provisional,
@@ -603,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_list_matches_only_the_known_remote_apps() {
+    fn allow_list_matches_only_the_known_stream_apps() {
         assert!(is_allow_listed("krdpserver"));
         assert!(is_allow_listed("rustdesk"));
         assert!(is_allow_listed("sunshine"));

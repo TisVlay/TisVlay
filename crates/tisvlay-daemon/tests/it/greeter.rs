@@ -140,18 +140,18 @@ async fn put_greeter_idle(w: &Wire, idle: bool) {
         .unwrap();
 }
 
-/// Publish a live remote-session mirror sample carrying the computed armed
+/// Publish a live stream mirror sample carrying the computed armed
 /// set. A plain put (the daemon's history advanced subscriber still
 /// delivers live plain samples); the dedicated hydration test drives the
 /// real cache-1 advanced-pub path.
-async fn put_remote_session(w: &Wire, armed: &[Uuid]) {
-    let state = tisvlay_protocol::payload::RemoteSessionState {
+async fn put_stream(w: &Wire, armed: &[Uuid]) {
+    let state = tisvlay_protocol::payload::StreamState {
         sources: Vec::new(),
         armed: armed.to_vec(),
     };
     w.client
         .put(
-            keys::remote_session(&w.site),
+            keys::stream_state(&w.site),
             serde_json::to_vec(&state).unwrap(),
         )
         .encoding(Encoding::APPLICATION_JSON)
@@ -279,17 +279,17 @@ async fn automate_when_gates_dispatch_and_meta_flag() {
     .await;
 }
 
-/// The remote-session mirror seam: a live armed set on the system socket
+/// The stream mirror seam: a live armed set on the system socket
 /// flows through the daemon's history subscriber into the world, flipping
-/// the published `remote_armed` projection — and disarming clears it.
+/// the published `stream_armed` projection — and disarming clears it.
 /// (The gate's effect on DPMS-on/resume dispatch is covered by the
 /// world's dispatch tests, which can inject those events directly.)
 #[tokio::test(flavor = "multi_thread")]
-async fn remote_session_mirror_flips_the_armed_projection() {
+async fn stream_mirror_flips_the_armed_projection() {
     let w = wire().await;
     let tv = add_tv(&w, "Remote", "mock://remote").await;
     let sub = history_sub(&w.client, keys::tv_all(&w.site)).await;
-    // Combined drain: link up and remote_armed starts false (the meta's
+    // Combined drain: link up and stream_armed starts false (the meta's
     // initial publish), so a sequential wait could miss the sample.
     let (mut connected, mut unarmed) = (false, false);
     recv_until(&sub, |s| {
@@ -298,23 +298,23 @@ async fn remote_session_mirror_flips_the_armed_projection() {
         {
             let value = payload_json(s);
             connected |= path == "state/link" && value["connected"] == true;
-            unarmed |= path == "meta/config" && value["remote_armed"] == false;
+            unarmed |= path == "meta/config" && value["stream_armed"] == false;
         }
         connected && unarmed
     })
     .await;
 
     // Arm via the mirror → the projection flips true.
-    put_remote_session(&w, &[tv]).await;
+    put_stream(&w, &[tv]).await;
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
-        v["remote_armed"] == true
+        v["stream_armed"] == true
     })
     .await;
 
     // An empty set disarms.
-    put_remote_session(&w, &[]).await;
+    put_stream(&w, &[]).await;
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
-        v["remote_armed"] == false
+        v["stream_armed"] == false
     })
     .await;
 }
@@ -354,13 +354,13 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
         .declare_token(keys::session_alive(&w.site))
         .await
         .unwrap();
-    let state = tisvlay_protocol::payload::RemoteSessionState {
+    let state = tisvlay_protocol::payload::StreamState {
         sources: Vec::new(),
         armed: vec![tv],
     };
     session
         .put(
-            keys::remote_session(&w.site),
+            keys::stream_state(&w.site),
             serde_json::to_vec(&state).unwrap(),
         )
         .encoding(Encoding::APPLICATION_JSON)
@@ -369,7 +369,7 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
     // The arm flips the projection true — a live republish, so it does not
     // depend on catching the world-derived keys in the history replay.
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
-        v["remote_armed"] == true
+        v["stream_armed"] == true
     })
     .await;
 
@@ -378,7 +378,7 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
     // arrives, so the disarm is attributable purely to the liveliness signal.
     token.undeclare().await.unwrap();
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
-        v["remote_armed"] == false
+        v["stream_armed"] == false
     })
     .await;
     drop(session);
@@ -412,14 +412,14 @@ async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
         .await
         .unwrap();
     let mirror = session
-        .declare_publisher(keys::remote_session(&site))
+        .declare_publisher(keys::stream_state(&site))
         .encoding(Encoding::APPLICATION_JSON)
         .cache(CacheConfig::default().max_samples(1))
         .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
         .publisher_detection()
         .await
         .unwrap();
-    let state = tisvlay_protocol::payload::RemoteSessionState {
+    let state = tisvlay_protocol::payload::StreamState {
         sources: Vec::new(),
         armed: vec![tv],
     };
@@ -465,7 +465,7 @@ async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
 
     let sub = history_sub(&client, keys::tv_all(&site)).await;
     wait_tv_state(&sub, &site, tv, "meta/config", |v| {
-        v["remote_armed"] == true
+        v["stream_armed"] == true
     })
     .await;
 

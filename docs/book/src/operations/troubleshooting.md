@@ -101,7 +101,7 @@ Work through these in the app:
 1. **The TV must be managed.** On its page, the **Managed** switch under **STATUS** must be on. (The TV list shows **Unmanaged** in amber if it isn't.)
 2. **The Session dot must be green.** Lock and idle events come from the per-user session service.
 3. **Check what the TV's profiles say.** The **PROFILES** group on its page shows which system and user profile it uses; use the pencil to see what each event does. A system profile's **Automate when** setting can limit automation to when the TV is on your PC's input; see [Which TVs react](../guide/automation.md#which-tvs-react).
-4. **Did you stream in remotely?** Wake actions are held back on purpose while a remote session has the TV armed. The tray shows **Remote session active**; see [Remote-Session Awareness](../guide/remote-sessions.md).
+4. **Did you stream in remotely?** Wake actions are held back on purpose while a stream has the TV armed. The tray shows **Stream active**; see [Streaming](../guide/streaming.md).
 5. **Is another account the active session?** With fast user switching, a backgrounded session's automation is suppressed until you're in the foreground again.
 
 <details>

@@ -1,4 +1,4 @@
-//! PipeWire screencast detector: the `Screencast` remote source.
+//! PipeWire screencast detector: the `Screencast` stream source.
 //!
 //! Any KWin-serviced display capture appears in the PipeWire graph as a
 //! node with `media.class = "Stream/Output/Video"` and a `media.name`
@@ -17,7 +17,7 @@
 //! The PipeWire client is `!Send` and drives its own event loop, so the
 //! glue lives on a dedicated OS thread; a `pipewire_native::ThreadLoop`
 //! owns the connection and pumps registry/node events into the pure
-//! [`Tracker`], whose emitted [`RemoteReport`] deltas cross into the
+//! [`Tracker`], whose emitted [`StreamReport`] deltas cross into the
 //! session core over the detector-report channel. Everything with any
 //! logic is a pure function here; the thread body is the thin,
 //! CI-untestable strip.
@@ -35,11 +35,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use tisvlay_protocol::payload::RemoteSourceKind;
+use tisvlay_protocol::payload::StreamSourceKind;
 use tracing::debug;
 
 use crate::detector::Backoff;
-use crate::{RemoteClient, RemoteReport};
+use crate::{StreamClient, StreamReport};
 
 /// PipeWire property keys and the values the predicate matches. Plain
 /// strings (the crate exposes no typed constants for these), named once.
@@ -163,7 +163,7 @@ impl Tracker {
     /// announcement leaves out), later ones its run state. Starts
     /// tracking a node whose properties match and refreshes the detail of
     /// one already tracked; returns any resulting source reports.
-    pub(crate) fn on_info(&mut self, id: u32, props: &NodeProps) -> Vec<RemoteReport> {
+    pub(crate) fn on_info(&mut self, id: u32, props: &NodeProps) -> Vec<StreamReport> {
         if self.nodes.contains_key(&id) {
             return match props.state.as_deref() {
                 Some(state) => self.on_state(id, state),
@@ -175,7 +175,7 @@ impl Tracker {
 
     /// A node's full properties are known. Records it if it matches the
     /// predicate; returns any resulting source reports.
-    pub(crate) fn on_global(&mut self, id: u32, props: &NodeProps) -> Vec<RemoteReport> {
+    pub(crate) fn on_global(&mut self, id: u32, props: &NodeProps) -> Vec<StreamReport> {
         if !is_screencast(props) {
             return Vec::new();
         }
@@ -187,7 +187,7 @@ impl Tracker {
 
     /// A node-info event updated a node's run state. No-op for nodes we
     /// aren't tracking; otherwise refreshes the detail.
-    pub(crate) fn on_state(&mut self, id: u32, state: &str) -> Vec<RemoteReport> {
+    pub(crate) fn on_state(&mut self, id: u32, state: &str) -> Vec<StreamReport> {
         let Some(slot) = self.nodes.get_mut(&id) else {
             return Vec::new();
         };
@@ -199,7 +199,7 @@ impl Tracker {
     }
 
     /// A global was removed. Drops it if tracked; returns any reports.
-    pub(crate) fn on_removed(&mut self, id: u32) -> Vec<RemoteReport> {
+    pub(crate) fn on_removed(&mut self, id: u32) -> Vec<StreamReport> {
         if self.nodes.remove(&id).is_none() {
             return Vec::new();
         }
@@ -210,7 +210,7 @@ impl Tracker {
     /// crash): forget every node and return the report that clears the
     /// currently-published source, keyed on its real detail, so nothing
     /// lingers armed across a reconnect.
-    pub(crate) fn clear(&mut self) -> Vec<RemoteReport> {
+    pub(crate) fn clear(&mut self) -> Vec<StreamReport> {
         self.nodes.clear();
         self.reconcile()
     }
@@ -218,7 +218,7 @@ impl Tracker {
     /// Bring the published source in line with the tracked nodes.
     /// Add-new-before-clear-old ordering keeps the source continuously
     /// present across a detail change.
-    fn reconcile(&mut self) -> Vec<RemoteReport> {
+    fn reconcile(&mut self) -> Vec<StreamReport> {
         let next = self.detail();
         if next == self.current {
             return Vec::new();
@@ -260,9 +260,9 @@ fn summarize<'a>(states: impl Iterator<Item = &'a str>) -> String {
 }
 
 /// A `Screencast` source report with the given detail and active state.
-fn report(detail: String, active: bool) -> RemoteReport {
-    RemoteReport {
-        kind: RemoteSourceKind::Screencast,
+fn report(detail: String, active: bool) -> StreamReport {
+    StreamReport {
+        kind: StreamSourceKind::Screencast,
         detail,
         active,
         provisional: false,
@@ -272,7 +272,7 @@ fn report(detail: String, active: bool) -> RemoteReport {
 /// Spawn the detector on its own OS thread. Returns immediately; the
 /// thread supervises its own PipeWire connection and never blocks the
 /// caller. Reports flow through `client` into the session core.
-pub fn spawn(client: RemoteClient) {
+pub fn spawn(client: StreamClient) {
     std::thread::Builder::new()
         .name("tisvlay-screencast".into())
         .spawn(move || run(client))
@@ -285,7 +285,7 @@ pub fn spawn(client: RemoteClient) {
 /// leaving a stale source live. Quiet after the first warning so a
 /// headless box doesn't spam the log. Returns only if the core loop is
 /// gone (nothing left to report to).
-fn run(client: RemoteClient) {
+fn run(client: StreamClient) {
     ffi::init();
     let mut backoff = Backoff::default();
     loop {
@@ -441,7 +441,7 @@ mod ffi {
     use super::{
         FfiError, NodeProps, SpaPlan, SpaPluginsMissing, Tracker, plan_spa_dirs, spa_candidates,
     };
-    use crate::RemoteClient;
+    use crate::StreamClient;
 
     /// One-time global init of the PipeWire support libraries.
     pub(super) fn init() {
@@ -529,7 +529,7 @@ mod ffi {
     ///
     /// The enumeration (registry `global` for already-present nodes)
     /// provides startup hydration for free.
-    pub(super) fn run_session(client: &RemoteClient) -> Result<(), FfiError> {
+    pub(super) fn run_session(client: &StreamClient) -> Result<(), FfiError> {
         let tracker = Arc::new(Mutex::new(Tracker::default()));
         let flags = Flags::default();
 
@@ -621,7 +621,7 @@ mod ffi {
         id: u32,
         version: u32,
         tracker: &Arc<Mutex<Tracker>>,
-        client: &RemoteClient,
+        client: &StreamClient,
         flags: &Flags,
     ) {
         let Ok(object) = registry.bind(id, types::interface::NODE, version) else {
@@ -654,7 +654,7 @@ mod ffi {
 
     /// Forward reports to the core; a dead core loop flips `core_gone` so
     /// the session unwinds and the supervisor stops.
-    fn emit(client: &RemoteClient, flags: &Flags, reports: Vec<super::RemoteReport>) {
+    fn emit(client: &StreamClient, flags: &Flags, reports: Vec<super::StreamReport>) {
         for report in reports {
             if !client.report(report) {
                 flags.core_gone.store(true, Ordering::Relaxed);
@@ -811,7 +811,7 @@ mod tests {
         let r = t.on_global(2, &kwin());
         assert_eq!(r.len(), 1);
         assert!(r[0].active);
-        assert_eq!(r[0].kind, RemoteSourceKind::Screencast);
+        assert_eq!(r[0].kind, StreamSourceKind::Screencast);
         assert_eq!(r[0].detail, "1 node (unknown)");
         // Removing it disarms with a matching clear on the live detail.
         let r = t.on_removed(2);

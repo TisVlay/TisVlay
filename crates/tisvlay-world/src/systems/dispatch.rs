@@ -391,7 +391,7 @@ pub(super) fn dispatch_system_events(
     >,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
-    remote_armed: Res<RemoteArmed>,
+    stream_armed: Res<StreamArmed>,
 ) {
     for msg in reader.read() {
         let InEvent::System { event, connector } = msg else {
@@ -407,7 +407,7 @@ pub(super) fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
-            let Some((action, restore, while_remote)) = resolve_action(
+            let Some((action, restore, while_streaming)) = resolve_action(
                 event,
                 meta.map(|meta| &meta.0),
                 &profile_index,
@@ -417,14 +417,14 @@ pub(super) fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
             };
-            // While a remote session arms this TV, an action whose
-            // `while_remote` gate is `false` is suppressed — a pure gate,
+            // While a stream arms this TV, an action whose
+            // `while_streaming` gate is `false` is suppressed — a pure gate,
             // uniform across every event (the docs recommend leaving
             // sleep/shutdown ungated, but the schema honors an explicit
             // gate wherever it's set). Unarmed TVs and gate-`true` actions
             // pass straight through.
-            if remote_armed.0.contains(&id.0) && !while_remote {
-                tracing::debug!(tv = %id.0, ?event, "while-remote gate suppressed dispatch");
+            if stream_armed.0.contains(&id.0) && !while_streaming {
+                tracing::debug!(tv = %id.0, ?event, "while-streaming gate suppressed dispatch");
                 continue;
             }
             tracing::debug!(tv = %id.0, ?event, ?action, restore, "profile action dispatched");

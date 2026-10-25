@@ -319,13 +319,13 @@ impl Tray for TvTray {
                 items.push(self.tv_submenu(*id, tv));
             }
         }
-        // A read-only banner while a remote session arms any TV — the
-        // while-remote overrides are suppressing the usual wake actions.
+        // A read-only banner while a stream arms any TV — the
+        // while-streaming overrides are suppressing the usual wake actions.
         // No quick-toggle; the indicator only reflects the fact.
-        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.remote_armed) {
+        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.stream_armed) {
             items.push(MenuItem::Separator);
             items.push(status_line(
-                "Remote session active",
+                "Stream active",
                 &["network-connect", "network-wired"],
             ));
         }
@@ -958,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn root_menu_handles_empty_catalog_and_live_remote_session_status() {
+    fn root_menu_handles_empty_catalog_and_live_stream_status() {
         let mut tray = tray_with(&[]);
         tray.mirror.daemon_alive = true;
         let menu = tray.menu();
@@ -968,18 +968,18 @@ mod tests {
         ));
 
         let tv_id = Uuid::from_u128(1);
-        let mut remote_tv = tv("Office", true, false, false);
-        remote_tv.remote_armed = true;
-        tray.mirror.tvs.insert(tv_id, remote_tv);
+        let mut stream_tv = tv("Office", true, false, false);
+        stream_tv.stream_armed = true;
+        tray.mirror.tvs.insert(tv_id, stream_tv);
         let menu = tray.menu();
         assert!(menu.iter().any(|item| {
-            matches!(item, MenuItem::Standard(item) if item.label == "Remote session active" && !item.enabled)
+            matches!(item, MenuItem::Standard(item) if item.label == "Stream active" && !item.enabled)
         }));
 
         tray.mirror.daemon_alive = false;
         let menu = tray.menu();
         assert!(!menu.iter().any(|item| {
-            matches!(item, MenuItem::Standard(item) if item.label == "Remote session active")
+            matches!(item, MenuItem::Standard(item) if item.label == "Stream active")
         }));
     }
 

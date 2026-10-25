@@ -51,14 +51,13 @@ Decided where marked, proposals otherwise:
 
 ## Streams
 
-Lands before the plan's remote-control steps, as one breaking change (no aliases). What it covers:
-- **Config keys:** `on_remote_connect` and `on_remote_disconnect` (to something like `on_stream_start` / `on_stream_end`), the `while_remote` modifier (to something like `while_streaming`), `remote_screencast_arms` (whether a bare screencast arms a stream). `on_local_return` stays: it names the local person's return.
-- **Wire:** `remote/session`, `user/remote/session` and `user/remote/rpc/<verb>`.
-- **Code:** `RemoteArmed`, `remote_armed` and the detector names.
-- **CLI and GUI:** the `remote-session` verb, the "REMOTE SESSION" card and "Fires during remote session".
-- **Docs:** docs/remote/ and the user guide's remote-sessions chapter.
-
-Rough size (2026-10-25): `while_remote` about 150 references, `remote-session` about 90, `remote_armed` about 55, `remote_screencast_arms` about 40, the two event keys about 30 each. Exact names settle in that step.
+Done (2026-10-25), before the plan's remote-control steps, as one breaking change (no aliases):
+- **Config keys:** `on_remote_connect` / `on_remote_disconnect` became `on_stream_start` / `on_stream_end`, the `while_remote` modifier `while_streaming`, and `remote_screencast_arms` `screencast_arms` (whether a bare screencast arms a stream). `on_local_return` stays: it names the local person's return.
+- **Wire:** `remote/session` became `stream/state`, `user/remote/session` `user/stream/state`, and `user/remote/rpc/<verb>` `user/stream/rpc/<verb>`. The TV meta's `remote_armed` became `stream_armed`.
+- **Types:** `RemoteSessionState`, `RemoteSource`, `RemoteSourceKind`, `RemoteSet`, `RemoteReport`, `RemoteClient` and `RemoteArmed` became `StreamState`, `StreamSource`, `StreamSourceKind`, `StreamSet`, `StreamReport`, `StreamClient` and `StreamArmed`. The SDK's `SessionClient::remote_session` became `stream_state`, and `TvInfo::remote_armed` `stream_armed`.
+- **CLI and GUI:** the `remote-session` verb became `stream`, the editor's card "STREAMING", its toggle "Fires while streaming", and the tray's line "Stream active".
+- **Docs:** docs/remote/ became docs/streams/, and the user guide's remote-sessions chapter `streaming.md` ("Streaming").
+- **Kept:** logind's own remote sessions (`Remote=yes`, `RemoteHost`) and the portal's `RemoteDesktop` interface keep their platform names, the TV's remote control keeps "remote", and test fixtures keep their labels.
 
 ## Renames after the campaign
 

@@ -164,12 +164,12 @@ pub enum InEvent {
     /// already queued there. The reactor fans it out after its step's
     /// dispatch, so it also covers a `System` event sent just before it.
     Drain(DrainToken),
-    /// The mirrored remote-session fact: the set of TVs the session
-    /// service computed as armed (a remote session is active and the
-    /// resolved user profile arms it). Consumed into the `RemoteArmed`
+    /// The mirrored stream fact: the set of TVs the session
+    /// service computed as armed (a stream is active and the
+    /// resolved user profile arms it). Consumed into the `StreamArmed`
     /// resource; an empty set disarms every TV. The world sees only the
     /// armed projection — arming policy stays session-side.
-    RemoteSession { armed: Vec<Uuid> },
+    Stream { armed: Vec<Uuid> },
     /// NIC carrier transition — parks/unparks connections whose
     /// monitored interface (route-resolved NIC) matches `interface`.
     Carrier { interface: String, up: bool },
