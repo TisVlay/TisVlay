@@ -33,6 +33,11 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
+    fixture_with(json!({ "address": "mock://logind" })).await
+}
+
+/// [`fixture`] with the mock TV's vendor config given.
+async fn fixture_with(config: Value) -> Fixture {
     let bus = PrivateBus::isolated();
     let service_conn = bus.connect().await.expect("private bus service conn");
     let fake = FakeLogind::register(&service_conn)
@@ -83,7 +88,7 @@ async fn fixture() -> Fixture {
         name: "Den".into(),
         vendor: "mock".into(),
         managed: true,
-        config: serde_json::from_value(json!({ "address": "mock://logind" })).unwrap(),
+        config: serde_json::from_value(config).unwrap(),
     };
     let id = Caller::new(client.clone(), "t")
         .call::<manager::AddTv>(&(), &request)
@@ -127,6 +132,69 @@ async fn logind_sleep_resume_drive_profile_actions() {
 
     f.fake.emit_prepare_for_sleep(false).await.unwrap();
     wait_power(&f.sub, f.id, "active").await;
+}
+
+/// The delay inhibitor holds the sleep until the TV's power-off has run
+/// at the TV, not just until the event is queued: released only after
+/// the mock's slow power-off returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn sleep_inhibitor_holds_until_the_power_off_ran() {
+    let f = fixture_with(json!({ "address": "mock://logind", "power_off_delay_ms": 600 })).await;
+    let watcher_conn = f.bus.connect().await.expect("watcher conn");
+    let world = f.stack.world.clone();
+    tokio::spawn(async move {
+        let _ = tisvlay_daemon::watch_logind(watcher_conn, world).await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let start = std::time::Instant::now();
+    f.fake.emit_prepare_for_sleep(true).await.unwrap();
+    let held = first_release(&f.fake).await.duration_since(start);
+    assert!(
+        held >= Duration::from_millis(500),
+        "inhibitor released after {held:?}, before the 600 ms power-off ran"
+    );
+    wait_power(&f.sub, f.id, "standby").await;
+}
+
+/// A power-off that outlasts logind's `InhibitDelayMaxUSec` doesn't hold
+/// the inhibitor past it: logind would proceed anyway.
+#[tokio::test(flavor = "multi_thread")]
+async fn sleep_inhibitor_releases_at_loginds_bound() {
+    let f = fixture_with(json!({ "address": "mock://logind", "power_off_delay_ms": 10_000 })).await;
+    f.fake
+        .set_inhibit_delay_max(Duration::from_millis(300))
+        .await;
+    let watcher_conn = f.bus.connect().await.expect("watcher conn");
+    let world = f.stack.world.clone();
+    tokio::spawn(async move {
+        let _ = tisvlay_daemon::watch_logind(watcher_conn, world).await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let start = std::time::Instant::now();
+    f.fake.emit_prepare_for_sleep(true).await.unwrap();
+    let held = first_release(&f.fake).await.duration_since(start);
+    assert!(
+        held >= Duration::from_millis(250) && held < Duration::from_secs(5),
+        "inhibitor held {held:?} against a 300 ms bound"
+    );
+}
+
+/// When the first inhibitor the fake handed out was released, polled to
+/// a deadline.
+async fn first_release(fake: &FakeLogind) -> std::time::Instant {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(&at) = fake.inhibitor_releases().first() {
+            return at;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the inhibitor was never released"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// The bus dropping the watcher's connection (as dbus-broker does to a

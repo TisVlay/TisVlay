@@ -17,8 +17,8 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, DeviceWatch, DialSeq, Effect, KnownVendors, LastPersisted, Outbox, PairingIndex,
-    ProfileIndex, RemoteArmed, Site, SystemProfile, TvIndex,
+    Clock, ConnectionHandle, DeviceWatch, DialSeq, Effect, KnownVendors, LastPersisted, Outbox,
+    PairingIndex, ProfileIndex, RemoteArmed, Site, SystemProfile, TvIndex,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
@@ -185,6 +185,7 @@ impl Reactor {
     fn step(&mut self, batch: Vec<InEvent>) {
         tracing::trace!(batch = batch.len(), "step");
         let mut commands = Vec::new();
+        let mut drains = Vec::new();
         for event in batch {
             match event {
                 // Ticks apply first, so the batch's commands and facts all
@@ -196,6 +197,9 @@ impl Reactor {
                     clock.0 = clock.0.max(now);
                 }
                 InEvent::Command(command) => commands.push(command),
+                // Held by value, not as a message: a message outlives the
+                // step, and the token's drop is the signal.
+                InEvent::Drain(token) => drains.push(token),
                 fact => {
                     self.world.write_message(fact);
                 }
@@ -346,6 +350,16 @@ impl Reactor {
                     if let Some(tx) = &self.persist_tx {
                         let _ = tx.send(StoreMsg::Reloaded(applied));
                     }
+                }
+            }
+        }
+        // Behind everything this step sent: a connection reaches the
+        // token only after running the commands queued before it.
+        if !drains.is_empty() {
+            let mut handles = self.world.query::<&ConnectionHandle>();
+            for handle in handles.iter(&self.world) {
+                for token in &drains {
+                    let _ = handle.cmd_tx.send(BackendCmd::Drain(token.clone()));
                 }
             }
         }

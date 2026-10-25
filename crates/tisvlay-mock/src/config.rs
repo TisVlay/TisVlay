@@ -96,6 +96,12 @@ pub struct MockVendorConfig {
     #[serde(default)]
     pub backlight_ramp_step_delay_ms: u64,
 
+    /// How long `power_off` takes at the TV, in milliseconds, before the
+    /// standby push and the return. Default 0 (instant). For tests of
+    /// what waits on a power-off landing, such as the sleep inhibitor.
+    #[serde(default)]
+    pub power_off_delay_ms: u64,
+
     /// Make this mock TV behave like a poll-only backend.
     ///
     /// When `true`, the mock connection's `subscribe_state` returns
@@ -181,6 +187,7 @@ impl Default for MockVendorConfig {
             pairing: PairingShorthand::default(),
             backlight_ramp_intermediates: Vec::new(),
             backlight_ramp_step_delay_ms: 0,
+            power_off_delay_ms: 0,
             disable_subscription: false,
             reachable_in_standby: false,
             emulate_screen_via_power: false,

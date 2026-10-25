@@ -28,6 +28,11 @@
     reason = "the fake reads the test process's own uid (libc::getuid)"
 )]
 
+use std::io::Read;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 use tracing::{debug, instrument};
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
@@ -47,6 +52,7 @@ const SESSION_PATH: &str = "/org/freedesktop/login1/session/test";
 pub struct FakeLogind {
     manager: InterfaceRef<ManagerIface>,
     session: InterfaceRef<SessionIface>,
+    releases: Arc<Mutex<Vec<Instant>>>,
 }
 
 impl std::fmt::Debug for FakeLogind {
@@ -63,7 +69,12 @@ impl FakeLogind {
     /// fails because name ownership is bus-global.
     #[instrument(skip_all)]
     pub async fn register(conn: &zbus::Connection) -> zbus::Result<Self> {
-        conn.object_server().at(OBJECT_PATH, ManagerIface).await?;
+        let releases = Arc::new(Mutex::new(Vec::new()));
+        let manager = ManagerIface {
+            releases: Arc::clone(&releases),
+            inhibit_delay_max_usec: DEFAULT_INHIBIT_DELAY_MAX_USEC,
+        };
+        conn.object_server().at(OBJECT_PATH, manager).await?;
         conn.object_server()
             .at(SESSION_PATH, SessionIface { locked: false })
             .await?;
@@ -76,7 +87,24 @@ impl FakeLogind {
             .object_server()
             .interface::<_, SessionIface>(SESSION_PATH)
             .await?;
-        Ok(Self { manager, session })
+        Ok(Self {
+            manager,
+            session,
+            releases,
+        })
+    }
+
+    /// When each inhibitor the fake handed out was released (its fd closed
+    /// by every holder), in release order.
+    pub fn inhibitor_releases(&self) -> Vec<Instant> {
+        self.releases.lock().clone()
+    }
+
+    /// Set `InhibitDelayMaxUSec`, how long a delay inhibitor may hold a
+    /// sleep (default 5 s, logind's own).
+    pub async fn set_inhibit_delay_max(&self, delay: Duration) {
+        self.manager.get_mut().await.inhibit_delay_max_usec =
+            u64::try_from(delay.as_micros()).expect("a test's inhibit delay fits in u64 µs");
     }
 
     /// Emit `PrepareForSleep(start)` on the bus.
@@ -100,12 +128,19 @@ impl FakeLogind {
     }
 }
 
-pub(crate) struct ManagerIface;
+/// logind's default `InhibitDelayMaxSec=`, 5 s, in microseconds.
+const DEFAULT_INHIBIT_DELAY_MAX_USEC: u64 = 5_000_000;
+
+pub(crate) struct ManagerIface {
+    releases: Arc<Mutex<Vec<Instant>>>,
+    inhibit_delay_max_usec: u64,
+}
 
 #[zbus::interface(name = "org.freedesktop.login1.Manager")]
 impl ManagerIface {
-    /// Accept inhibitor locks but do nothing with them — the daemon
-    /// just needs the method call to succeed.
+    /// Hand out the write end of a pipe, as the real logind does, and
+    /// record when it's released: the read end sees EOF once every
+    /// holder has closed it.
     async fn inhibit(
         &self,
         _what: &str,
@@ -113,14 +148,22 @@ impl ManagerIface {
         _why: &str,
         _mode: &str,
     ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
-        // Return a dup of /dev/null so the caller sees a valid fd it
-        // can hold onto. The real logind returns an anonymous pipe
-        // whose closure signals release; for tests we don't exercise
-        // that lifecycle and the fd is just a placeholder.
-        let file = std::fs::File::open("/dev/null")
-            .map_err(|e| zbus::fdo::Error::Failed(format!("open /dev/null: {e}")))?;
-        let fd = std::os::fd::OwnedFd::from(file);
-        Ok(zbus::zvariant::OwnedFd::from(fd))
+        let (mut reader, writer) = std::io::pipe()
+            .map_err(|e| zbus::fdo::Error::Failed(format!("inhibitor pipe: {e}")))?;
+        let releases = Arc::clone(&self.releases);
+        std::thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            while matches!(reader.read(&mut byte), Ok(n) if n > 0) {}
+            releases.lock().push(Instant::now());
+        });
+        Ok(zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(
+            writer,
+        )))
+    }
+
+    #[zbus(property, name = "InhibitDelayMaxUSec")]
+    fn inhibit_delay_max_usec(&self) -> u64 {
+        self.inhibit_delay_max_usec
     }
 
     /// The lock watcher's hydration source: one graphical session owned by

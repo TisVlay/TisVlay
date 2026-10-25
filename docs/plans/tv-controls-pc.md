@@ -122,7 +122,7 @@ Every slice ships whole:
 
 #### 2. The sleep handoff
 
-- [ ] The daemon holds logind's delay inhibitor until the sleep dispatch's sends complete, bounded by `InhibitDelayMaxSec`, instead of releasing it right after queuing the event. The world reports completion back to the logind watcher. A `FakeLogind` test pins the order.
+- [x] The daemon holds logind's delay inhibitor until the sleep (or shutdown) dispatch's sends complete, bounded by `InhibitDelayMaxSec`, instead of releasing it right after queuing the event. The logind watcher sends the world a drain token after the event. The reactor queues it on every live connection behind that step's commands, and each connection drops it once it has run them, so the watcher releases when the last copy is gone. `FakeLogind` hands out real pipes and records each release; the tests pin the hold behind a slow power-off and the release at logind's bound.
 
 #### 3. Remote sessions become streams (breaking)
 
