@@ -55,14 +55,7 @@ pub(crate) async fn list(
         let identity = fields.get("meta/identity").cloned().unwrap_or(Value::Null);
         let name = identity["name"].as_str().unwrap_or("?");
         let vendor = identity["vendor"].as_str().unwrap_or("?");
-        let status = if fields
-            .get("state/link")
-            .is_some_and(|v| v["connected"] == true)
-        {
-            "connected"
-        } else {
-            "disconnected"
-        };
+        let status = link_status(fields.get("state/link"));
         let managed = if fields
             .get("meta/config")
             .is_none_or(|v| v["managed"] != false)
@@ -84,6 +77,27 @@ pub(crate) async fn list(
         println!("  {id} - {name} ({descriptor}) [{status}] <{vendor}>{managed}");
     }
     Ok(())
+}
+
+/// A TV's connection status for `list`: connected, connecting while a
+/// dial is in flight (a first dial as much as a reconnect), or what a
+/// disconnected TV is known to be waiting for, from its `state/link`
+/// payload.
+fn link_status(link: Option<&Value>) -> &'static str {
+    let Some(link) = link else {
+        return "disconnected";
+    };
+    if link["connected"] == true {
+        return "connected";
+    }
+    if link["reconnecting"] == true {
+        return "connecting";
+    }
+    match link["waiting_for"].as_str() {
+        Some("device") => "waiting for its adapter",
+        Some("network") => "waiting for the network",
+        _ => "disconnected",
+    }
 }
 
 /// The vendor schema's first field name — the backend's primary
@@ -126,5 +140,30 @@ pub(crate) async fn watch(session: &Session, site: &str) -> Result<()> {
             },
             _ = tokio::signal::ctrl_c() => return Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::link_status;
+
+    #[test]
+    fn a_disconnected_tv_says_what_it_waits_for() {
+        let link = |connected, waiting_for| json!({ "connected": connected, "reconnecting": false, "supports_wake": true, "waiting_for": waiting_for });
+        assert_eq!(link_status(Some(&link(true, json!(null)))), "connected");
+        assert_eq!(
+            link_status(Some(&link(false, json!("device")))),
+            "waiting for its adapter"
+        );
+        assert_eq!(
+            link_status(Some(&link(false, json!("network")))),
+            "waiting for the network"
+        );
+        assert_eq!(link_status(Some(&link(false, json!(null)))), "disconnected");
+        assert_eq!(link_status(None), "disconnected");
+        let dialing = json!({ "connected": false, "reconnecting": true, "supports_wake": true, "waiting_for": null });
+        assert_eq!(link_status(Some(&dialing)), "connecting");
     }
 }

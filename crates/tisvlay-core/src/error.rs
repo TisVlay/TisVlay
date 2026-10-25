@@ -71,6 +71,20 @@ pub enum Error {
         path: String,
     },
 
+    /// The backend could not open or set up a required device node: it's
+    /// missing, busy, or refused the setup (for HDMI-CEC, the logical
+    /// address claim). Unlike a failure to reach the TV through a working
+    /// device, this can clear on its own (the adapter comes back, another
+    /// process lets go), so the daemon keeps retrying it.
+    /// Transport-agnostic, like [`PermissionDenied`](Self::PermissionDenied).
+    #[error("Device {path} unavailable: {message}")]
+    DeviceUnavailable {
+        /// Path of the device node.
+        path: String,
+        /// What went wrong, for logs.
+        message: String,
+    },
+
     /// Invalid TV response format.
     #[error("Invalid response from TV: {0}")]
     InvalidResponse(String),

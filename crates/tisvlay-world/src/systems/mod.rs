@@ -28,11 +28,12 @@ use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    AwaitingRoute, CarrierParked, Clock, ConnectionHandle, DesiredInput, DialSeq, DispatchRetry,
-    DispatchVerify, Effect, KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector,
-    MonitoredInterface, Outbox, PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef,
-    PendingConnect, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed,
-    RetryAt, Site, State, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef,
+    AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceWatch,
+    DialSeq, DispatchRetry, DispatchVerify, Effect, HeldWake, KnownVendors, LastPersisted,
+    LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
+    PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, ProfileAction,
+    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteArmed, RetryAt, RetryPromptly, Site,
+    State, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
@@ -44,6 +45,27 @@ pub const CONNECT_MAX_ATTEMPTS: u8 = 3;
 
 /// Backoff between failed dial attempts.
 pub const CONNECT_BACKOFF: Duration = Duration::from_secs(3);
+
+/// The widest gap a persistent retry grows to.
+pub(crate) const CONNECT_BACKOFF_CAP: Duration = Duration::from_secs(60);
+
+/// How long a wake may wait on a missing route or device before it
+/// expires into a plain reconnect: long enough for a network or an
+/// adapter coming up at boot or resume, short enough that a return hours
+/// later doesn't power the TV on out of nowhere.
+pub(crate) const WAKE_HOLD_LIMIT: Duration = Duration::from_secs(60);
+
+/// The wait before the next dial after `attempts` failed ones. The first
+/// [`CONNECT_MAX_ATTEMPTS`] stay [`CONNECT_BACKOFF`] apart, which also
+/// absorbs udev applying a new node's permissions just after it appears;
+/// a persistent retry (a local-device TV whose device can't be opened)
+/// then doubles the gap up to [`CONNECT_BACKOFF_CAP`].
+pub(crate) fn retry_delay(attempts: u8) -> Duration {
+    let doublings = attempts.saturating_sub(CONNECT_MAX_ATTEMPTS).min(5);
+    CONNECT_BACKOFF
+        .saturating_mul(1 << doublings)
+        .min(CONNECT_BACKOFF_CAP)
+}
 
 pub(crate) fn build_schedule() -> Schedule {
     // Two chains (the all-tuples chain caps at 20 systems): ingest +
@@ -57,6 +79,7 @@ pub(crate) fn build_schedule() -> Schedule {
             apply_transport_facts,
             apply_pairing_updates,
             apply_route_resolutions,
+            apply_device_availability,
             handle_carrier_events,
             verify_dispatch,
             reconcile_input,
@@ -107,8 +130,59 @@ fn reply_err(outbox: &mut Outbox, reply: Option<impl Into<AnyReply>>, error: Wir
 /// Queue a dial with a fresh attempt budget. `PendingConnect` is the
 /// single dial gate — every recovery path (enrollment, reconnect,
 /// wake, carrier/route restore, config change) funnels through here.
+/// A fresh request also restarts a held wake's clock.
 fn redial(e: &mut EntityCommands, wake: bool) {
-    e.insert(PendingConnect { attempts: 0, wake });
+    e.insert(PendingConnect { attempts: 0, wake })
+        .remove::<HeldWake>();
+}
+
+/// Drop a screen-on intent riding a wake that won't happen: re-asserted
+/// over the reconnect, it would turn on the TV the wake no longer will
+/// (outright, where the screen is emulated as power). A screen-off latch
+/// stays: it agrees with what's left.
+fn drop_screen_on_intent(e: &mut EntityCommands) {
+    e.queue(|mut e: EntityWorldMut| {
+        if e.get::<DispatchVerify>().is_some_and(|v| v.target_on) {
+            e.remove::<DispatchVerify>();
+        }
+    });
+}
+
+/// A newer off intent cancels a held wake: a pending wake dial that isn't
+/// in flight. The TV still reconnects, as a plain connect, which never
+/// powers it on, and the wake reports failed so a client following it
+/// stops waiting. A wake already dialing is left to finish: its outcome
+/// is already on its way.
+fn cancel_held_wake(commands: &mut Commands, entity: Entity) {
+    commands.entity(entity).queue(|mut e: EntityWorldMut| {
+        if e.contains::<Reconnecting>() {
+            return;
+        }
+        let Some(mut pending) = e.get_mut::<PendingConnect>() else {
+            return;
+        };
+        if !pending.wake {
+            return;
+        }
+        pending.wake = false;
+        e.remove::<HeldWake>();
+        if e.get::<DispatchVerify>().is_some_and(|v| v.target_on) {
+            e.remove::<DispatchVerify>();
+        }
+        let Some(tv) = e.get::<TvId>().map(|id| id.0) else {
+            return;
+        };
+        tracing::info!(%tv, "an off intent cancelled a held wake");
+        e.world_scope(|world| {
+            let site = Site(world.resource::<Site>().0.clone());
+            publish_power_phase(
+                &mut world.resource_mut::<Outbox>(),
+                &site,
+                &tv,
+                payload::PowerPhase::Failed,
+            );
+        });
+    });
 }
 
 /// Spawn a TV entity from its store row. Every TV dials — managed
@@ -151,6 +225,7 @@ fn spawn_tv(commands: &mut Commands, outbox: &mut Outbox, record: &TvRecord) -> 
             connected: false,
             reconnecting: false,
             supports_wake: false,
+            waiting_for: None,
         }),
         // Filled by the reactor's enrollment-time facts (Effect::Facts
         // above); present from spawn so publish_changed has a component
@@ -378,5 +453,13 @@ mod tests {
                 "stock presence for {event:?} disagrees with the resolved default's dispatchability"
             );
         }
+    }
+
+    #[test]
+    fn retry_delay_holds_the_budget_then_doubles_to_the_cap() {
+        let secs: Vec<u64> = (1..=10).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(secs, [3, 3, 3, 6, 12, 24, 48, 60, 60, 60]);
+        assert_eq!(retry_delay(u8::MAX), CONNECT_BACKOFF_CAP);
+        assert_eq!(retry_delay(0), CONNECT_BACKOFF);
     }
 }

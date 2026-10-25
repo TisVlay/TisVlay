@@ -391,12 +391,20 @@ in
 
     # inputattach holds the serio line discipline that binds pulse8-cec; it
     # must stay in the foreground (no --daemon) or /dev/cecN disappears.
+    # A resume from suspend resets the adapter's USB link and hangs up the
+    # tty under it, and inputattach then exits *cleanly*, so on-failure
+    # would leave /dev/cecN gone until someone restarts the unit: restart
+    # it whatever the exit. Bound to the tty, so a real unplug stops it
+    # instead of restart-looping on a missing node; the udev rule above
+    # starts it again when the adapter returns.
     systemd.services."pulse8-cec-inputattach@" = lib.mkIf cfg.cec.pulse8.enable {
       description = "inputattach for pulse8-cec device on %I";
+      bindsTo = [ "dev-%i.device" ];
+      after = [ "dev-%i.device" ];
       serviceConfig = {
         Type = "simple";
         ExecStart = "${pkgs.linuxConsoleTools}/bin/inputattach --pulse8-cec /dev/%I";
-        Restart = "on-failure";
+        Restart = "always";
         RestartSec = 2;
       };
     };

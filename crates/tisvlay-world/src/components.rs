@@ -64,7 +64,7 @@ fn retire_tv(mut world: DeferredWorld, ctx: HookContext) {
             key: keys::tv_path(&site, &id, path),
         }));
     }
-    outbox.0.push(Effect::ForgetRoute { tv: id });
+    outbox.0.push(Effect::ForgetMonitors { tv: id });
 }
 
 /// A uuid → entity map kept by component hooks. Readable anywhere; only
@@ -175,19 +175,57 @@ pub(crate) struct PendingConnect {
 #[derive(Component, Debug)]
 pub(crate) struct RetryAt(pub Instant);
 
-/// A dial request deferred on a known absence of a usable route —
-/// `reconcile_connections` skips the entity until the netlink monitor
-/// delivers one. Publish gate only: its insertion edge emits the wake
-/// path's `awaiting_network` phase once per deferral episode; the dial
-/// gate itself is the `MonitoredInterface` check, so the two facts
-/// cannot drift.
+/// A dial request deferred on a known absence of what the connection
+/// depends on: a usable route, or the TV's local device node —
+/// `reconcile_connections` skips the entity until the netlink monitor or
+/// the device watcher reports it back. Marks the deferral episode, so it
+/// logs once; a wake's waiting phase goes out when its [`HeldWake`]
+/// starts, which also covers a wake upgrading an episode already under
+/// way. The dial gate itself is [`dependency_absent`], so the facts and
+/// the gate cannot drift.
 #[derive(Component, Debug)]
-pub(crate) struct AwaitingRoute;
+pub(crate) struct AwaitingDependency;
 
-/// Connection parked by a carrier-down or route-lost event; the next
-/// carrier-up or route-restored on the monitored interface redials.
+/// Connection parked because what it depends on went away (carrier down,
+/// route lost, device node removed); that dependency's return redials.
 #[derive(Component, Debug)]
-pub(crate) struct CarrierParked;
+pub(crate) struct Parked;
+
+/// Whether the TV's local device node is usable, as the daemon's device
+/// watcher last reported. Present only on TVs whose connector names a
+/// local device, and only once a report has arrived.
+#[derive(Component, Debug, PartialEq, Eq)]
+pub(crate) struct DeviceAvailable(pub bool);
+
+/// A wake dial has been held on a missing dependency since this instant.
+/// Held past `WAKE_HOLD_LIMIT` it expires into a plain reconnect, so a
+/// route or adapter that returns hours later never powers the TV on.
+/// Cleared by any new connect request (`redial`) and when the dial goes
+/// out.
+#[derive(Component, Debug)]
+pub(crate) struct HeldWake(pub Instant);
+
+/// The TV's device came back while a dial was in flight: if that dial
+/// fails, retry at once with a fresh budget instead of waiting out a grown
+/// backoff.
+#[derive(Component, Debug)]
+pub(crate) struct RetryPromptly;
+
+/// A device watcher is attached: a local-device TV's dial then waits for
+/// the watcher's first report instead of racing it.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct DeviceWatch(pub bool);
+
+/// The dial gate's shared absence test: the route is known gone, or the
+/// device node is known gone. Component absence is never absence: a TV
+/// nobody has reported on yet dials.
+pub(crate) fn dependency_absent(
+    monitored: Option<&MonitoredInterface>,
+    device: Option<&DeviceAvailable>,
+) -> bool {
+    matches!(monitored, Some(MonitoredInterface(None)))
+        || matches!(device, Some(DeviceAvailable(false)))
+}
 
 /// The NIC carrying traffic to this TV, resolved from the kernel routing
 /// table by the daemon's netlink monitor (`ip route get <address>`).
@@ -502,8 +540,8 @@ pub(crate) struct Outbox(pub Vec<Effect>);
 pub(crate) enum Effect {
     /// Forward to the wire (the zenoh bridge).
     Wire(WireEffect),
-    /// Stop route-monitoring a removed TV's address.
-    ForgetRoute { tv: Uuid },
+    /// Stop route- and device-monitoring a removed TV.
+    ForgetMonitors { tv: Uuid },
     /// Spawn a dial task for this TV.
     SpawnConnect {
         tv: Uuid,

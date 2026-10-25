@@ -32,6 +32,9 @@ pub(super) struct StateWrites<'w, 's> {
     pending: Query<'w, 's, &'static PendingConnect>,
     verify: Query<'w, 's, &'static mut DispatchVerify>,
     monitored: Query<'w, 's, &'static MonitoredInterface>,
+    device: Query<'w, 's, &'static DeviceAvailable>,
+    traits: Query<'w, 's, &'static TransportTraits>,
+    promptly: Query<'w, 's, (), With<RetryPromptly>>,
 }
 
 #[expect(
@@ -85,6 +88,10 @@ pub(super) fn apply_backend_events(
             } => {
                 tracing::debug!(%tv, "connected event applying");
                 let wake_dial = writes.pending.get(entity).is_ok_and(|p| p.wake);
+                let attempts = writes.pending.get(entity).map_or(0, |p| p.attempts);
+                if attempts > 1 {
+                    tracing::info!(%tv, attempts, "connected after failed attempts");
+                }
                 commands
                     .entity(entity)
                     .insert((
@@ -93,7 +100,7 @@ pub(super) fn apply_backend_events(
                         },
                         DispatchRetry(*retry),
                     ))
-                    .remove::<(Reconnecting, PendingConnect, RetryAt)>();
+                    .remove::<(Reconnecting, PendingConnect, RetryAt, RetryPromptly)>();
                 apply_state(&mut commands, entity, state, &mut writes);
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     let mut enriched = identity.0.clone();
@@ -177,13 +184,25 @@ pub(super) fn apply_backend_events(
             }
             BackendEvent::State(state) => apply_state(&mut commands, entity, state, &mut writes),
             BackendEvent::Disconnected => {
+                let pending = writes.pending.get(entity).is_ok();
                 let mut e = commands.entity(entity);
                 e.remove::<ConnectionHandle>();
                 // The wake escalation tears the handle down itself; the
                 // task's parting Disconnected must not kill the intent
                 // riding the pending dial.
-                if writes.pending.get(entity).is_err() {
+                if !pending {
                     e.remove::<DispatchVerify>();
+                }
+                // A local-device connection doesn't go down because the TV
+                // slept (the bus survives standby), so a drop means the
+                // device went or blinked: redial after one backoff, and
+                // let the dial gate wait if the watcher reports it gone.
+                // This also covers a remove-and-add too quick for the
+                // watcher to see as a change.
+                if !pending && writes.traits.get(entity).is_ok_and(|t| t.0.local_device) {
+                    tracing::info!(%tv, "local-device connection dropped, redialing");
+                    redial(&mut e, false);
+                    e.insert(RetryAt(clock.0 + CONNECT_BACKOFF));
                 }
             }
             BackendEvent::ConnectFailed { reason } => {
@@ -219,20 +238,20 @@ pub(super) fn apply_backend_events(
                     }
                     commands.entity(entity).remove::<PairVerifying>();
                 }
-                // Attempts count only route-carried dials: a failure
-                // whose route is gone was never an attempt — return it
-                // (the deferral in reconcile resets the budget), but
-                // keep the backoff so a flapping route settles to one
-                // dial per period instead of a spawn loop. No
-                // connect-failed event either: the network, not the
-                // TV, refused this one.
+                // Attempts count only dials whose dependency was there: a
+                // failure whose route or device node is gone was never an
+                // attempt — return it (the deferral in reconcile resets
+                // the budget), but keep the backoff so a flapping
+                // dependency settles to one dial per period instead of a
+                // spawn loop. No connect-failed event either: the network
+                // or the host, not the TV, refused this one.
                 if writes.pending.get(entity).is_ok()
-                    && matches!(
+                    && dependency_absent(
                         writes.monitored.get(entity).ok(),
-                        Some(MonitoredInterface(None))
+                        writes.device.get(entity).ok(),
                     )
                 {
-                    tracing::debug!(%tv, "dial failed routeless; attempt returned");
+                    tracing::debug!(%tv, "dial failed with its dependency absent; attempt returned");
                     commands
                         .entity(entity)
                         .remove::<Reconnecting>()
@@ -244,26 +263,60 @@ pub(super) fn apply_backend_events(
                     .get(entity)
                     .map(|p| (p.attempts, p.wake))
                     .unwrap_or((0, false));
+                // A local-device TV whose device can't be opened keeps
+                // retrying past its budget: a busy adapter frees up, and
+                // udev's permissions land. A TV that doesn't answer through
+                // a working device keeps the budget, as a network TV does.
+                let persistent = reason.device_level
+                    && writes.traits.get(entity).is_ok_and(|t| t.0.local_device);
+                if attempts == 1 {
+                    tracing::warn!(%tv, error = %reason.message, "dial failed");
+                } else {
+                    tracing::debug!(%tv, attempts, error = %reason.message, "dial failed again");
+                }
                 let mut e = commands.entity(entity);
                 e.remove::<Reconnecting>();
-                if attempts >= CONNECT_MAX_ATTEMPTS {
-                    e.remove::<(PendingConnect, AwaitingRoute)>();
+                if writes.promptly.get(entity).is_ok() {
+                    // The device came back while this dial was in flight:
+                    // start over now rather than wait out the backoff.
+                    e.remove::<RetryPromptly>();
+                    redial(&mut e, wake_dial);
+                } else if attempts < CONNECT_MAX_ATTEMPTS {
+                    e.insert(RetryAt(clock.0 + retry_delay(attempts)));
+                } else if persistent {
+                    // A wake keeps its budget: it ends here, reported, and
+                    // the TV goes on as a plain reconnect, which never powers
+                    // it on.
+                    if wake_dial {
+                        publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
+                        e.insert(PendingConnect {
+                            attempts,
+                            wake: false,
+                        });
+                        drop_screen_on_intent(&mut e);
+                    }
+                    e.insert(RetryAt(clock.0 + retry_delay(attempts)));
+                } else {
+                    e.remove::<(PendingConnect, AwaitingDependency)>();
                     if wake_dial {
                         publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
                     }
-                } else {
-                    e.insert(RetryAt(clock.0 + CONNECT_BACKOFF));
+                    tracing::warn!(%tv, attempts, "dialing gave up; `tisvlay reconnect` retries");
                 }
-                outbox.0.push(Effect::Wire(WireEffect::Publish {
-                    key: keys::event(&site.0, "connect-failed"),
-                    payload: json!({
-                        "tv": tv,
-                        "attempt": attempts,
-                        "error": reason.message,
-                        "code": reason.code,
-                        "path": reason.path,
-                    }),
-                }));
+                // The event reports a streak's budgeted attempts; the slow
+                // retries beyond it only log at debug.
+                if attempts <= CONNECT_MAX_ATTEMPTS {
+                    outbox.0.push(Effect::Wire(WireEffect::Publish {
+                        key: keys::event(&site.0, "connect-failed"),
+                        payload: json!({
+                            "tv": tv,
+                            "attempt": attempts,
+                            "error": reason.message,
+                            "code": reason.code,
+                            "path": reason.path,
+                        }),
+                    }));
+                }
             }
             BackendEvent::PowerPhase(phase) => {
                 publish_power_phase(&mut outbox, &site, tv, *phase);
@@ -506,7 +559,7 @@ pub(super) fn handle_carrier_events(
         Option<&TransportTraits>,
         Option<&MonitoredInterface>,
         Option<&ConnectionHandle>,
-        Has<CarrierParked>,
+        Has<Parked>,
         Has<PendingConnect>,
     )>,
 ) {
@@ -529,7 +582,7 @@ pub(super) fn handle_carrier_events(
                 if parked {
                     tracing::info!(tv = %id.0, interface, "carrier restored, redialing");
                     let mut e = commands.entity(entity);
-                    e.remove::<CarrierParked>();
+                    e.remove::<Parked>();
                     if !pending {
                         redial(&mut e, false);
                     }
@@ -539,7 +592,7 @@ pub(super) fn handle_carrier_events(
                 commands
                     .entity(entity)
                     .remove::<(ConnectionHandle, DispatchVerify)>()
-                    .insert(CarrierParked);
+                    .insert(Parked);
             }
         }
     }
@@ -565,7 +618,7 @@ pub(super) fn apply_route_resolutions(
         Option<&TransportTraits>,
         Option<&MonitoredInterface>,
         Has<ConnectionHandle>,
-        Has<CarrierParked>,
+        Has<Parked>,
         Has<PendingConnect>,
     )>,
 ) {
@@ -596,7 +649,7 @@ pub(super) fn apply_route_resolutions(
             (Some(_), None) if connected => {
                 tracing::info!(tv = %id.0, "route lost, parking connection");
                 e.remove::<(ConnectionHandle, DispatchVerify)>()
-                    .insert(CarrierParked);
+                    .insert(Parked);
             }
             (Some(_), Some(_)) if connected && !traits.is_some_and(|t| t.0.survives_ip_change) => {
                 tracing::info!(tv = %id.0, "route moved to a different interface, redialing");
@@ -607,12 +660,80 @@ pub(super) fn apply_route_resolutions(
             }
             (_, Some(_)) if parked => {
                 tracing::info!(tv = %id.0, "route restored, redialing");
-                e.remove::<CarrierParked>();
+                e.remove::<Parked>();
                 if !pending {
                     redial(&mut e, false);
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Apply device-availability reports from the daemon's device watcher,
+/// the local-device counterpart of route resolutions. Gone → park the
+/// live connection (closing its descriptors also lets the kernel reuse
+/// the node's number). Back → unpark and redial at once: a TV waiting on
+/// a backed-off retry starts over with a fresh budget, and a TV that gave
+/// up (or was never asked to reconnect) dials too, since the device's
+/// return is exactly the event it was missing.
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
+pub(super) fn apply_device_availability(
+    mut reader: MessageReader<InEvent>,
+    mut commands: Commands,
+    index: Res<TvIndex>,
+    q: Query<(
+        &TvId,
+        Option<&DeviceAvailable>,
+        Option<&PendingConnect>,
+        Has<ConnectionHandle>,
+        Has<Reconnecting>,
+    )>,
+) {
+    // The watcher's latest word per TV is the truth; one entity must not
+    // be transitioned twice against the same pre-flush state.
+    let mut latest: HashMap<Uuid, bool> = HashMap::new();
+    for msg in reader.read() {
+        if let InEvent::DeviceAvailability { tv, available } = msg {
+            latest.insert(*tv, *available);
+        }
+    }
+    for (tv, available) in latest {
+        let Some(entity) = index.get(&tv) else {
+            continue;
+        };
+        let Ok((id, current, pending, connected, reconnecting)) = q.get(entity) else {
+            continue;
+        };
+        if current.is_some_and(|c| c.0 == available) {
+            continue;
+        }
+        let first_report = current.is_none();
+        let mut e = commands.entity(entity);
+        e.insert(DeviceAvailable(available));
+        if !available {
+            tracing::info!(tv = %id.0, "device unavailable, waiting for it");
+            if connected {
+                e.remove::<(ConnectionHandle, DispatchVerify)>()
+                    .insert(Parked);
+            }
+            continue;
+        }
+        if first_report {
+            // The gate was only waiting to hear; a pending dial proceeds
+            // on its own.
+            continue;
+        }
+        tracing::info!(tv = %id.0, "device available again, redialing");
+        e.remove::<Parked>();
+        if reconnecting {
+            e.insert(RetryPromptly);
+        } else if !connected {
+            redial(&mut e, pending.is_some_and(|p| p.wake));
+            e.remove::<RetryAt>();
         }
     }
 }
@@ -724,6 +845,7 @@ pub(super) fn reconcile_connections(
     site: Res<Site>,
     mut outbox: ResMut<Outbox>,
     mut seq: ResMut<DialSeq>,
+    watch: Res<DeviceWatch>,
     mut q: Query<
         (
             Entity,
@@ -731,52 +853,99 @@ pub(super) fn reconcile_connections(
             &VendorRef,
             &mut PendingConnect,
             Option<&RetryAt>,
-            Option<&MonitoredInterface>,
-            Has<AwaitingRoute>,
+            (
+                Option<&MonitoredInterface>,
+                Option<&DeviceAvailable>,
+                Option<&TransportTraits>,
+                Option<&HeldWake>,
+            ),
+            Has<AwaitingDependency>,
             Has<PairVerifying>,
         ),
         (Without<ConnectionHandle>, Without<Reconnecting>),
     >,
 ) {
-    for (entity, id, vendor, mut pending, retry, monitored, awaiting, pairing) in &mut q {
+    for (
+        entity,
+        id,
+        vendor,
+        mut pending,
+        retry,
+        (monitored, device, traits, held),
+        awaiting,
+        pairing,
+    ) in &mut q
+    {
         // The dial gate, in one place: no live handle, no in-flight
-        // dial (the query filters), backoff elapsed, and a route
-        // present — or route monitoring absent entirely (CEC, and any
-        // first dial: monitoring is requested by the dial spawn itself,
-        // so no resolution can precede it). A known route absence —
-        // `Some(None)` exactly, never component absence — defers the
-        // dial with the budget reset: attempts count only route-carried
-        // dials, and the route's return re-runs this system in the same
-        // batch that delivers it.
+        // dial (the query filters), backoff elapsed, and the dependency
+        // present: the route for a network TV, the device node for a
+        // local-device one. Route monitoring is requested by the dial
+        // spawn itself, so a network TV's first dial precedes any
+        // resolution. A known absence — `Some(None)` / `Some(false)`
+        // exactly, never component absence — defers the dial with the
+        // budget reset: attempts count only dials whose dependency was
+        // there, and its return re-runs this system in the same batch
+        // that delivers it. A pairing verification dials regardless, so
+        // a re-pair with its dependency gone fails with a reason instead
+        // of waiting forever.
         if let Some(RetryAt(at)) = retry
             && *at > clock.0
         {
             continue;
         }
-        if matches!(monitored, Some(MonitoredInterface(None))) {
+        // With a device watcher attached, a first dial waits for the TV's
+        // transport facts (one step) and, for a local-device TV, the
+        // watcher's first report (a `stat`), instead of racing them into a
+        // spurious failure when the adapter isn't there yet.
+        if watch.0 && !pairing && traits.is_none_or(|t| t.0.local_device && device.is_none()) {
+            continue;
+        }
+        if !pairing && dependency_absent(monitored, device) {
             pending.attempts = 0;
-            if !awaiting {
-                tracing::debug!(tv = %id.0, wake = pending.wake, "dial deferred: no route");
-                commands.entity(entity).insert(AwaitingRoute);
-                if pending.wake {
-                    publish_power_phase(
-                        &mut outbox,
-                        &site,
-                        &id.0,
-                        payload::PowerPhase::AwaitingNetwork,
-                    );
+            // A held wake runs on a clock: the dependency coming back at
+            // boot or resume still wakes the TV, one coming back much
+            // later only reconnects it.
+            if pending.wake {
+                match held {
+                    // The wake starts waiting: say what for, once per
+                    // wake, including one that upgrades a plain reconnect
+                    // already deferred.
+                    None => {
+                        commands.entity(entity).insert(HeldWake(clock.0));
+                        let phase = if matches!(device, Some(DeviceAvailable(false))) {
+                            payload::PowerPhase::AwaitingDevice
+                        } else {
+                            payload::PowerPhase::AwaitingNetwork
+                        };
+                        publish_power_phase(&mut outbox, &site, &id.0, phase);
+                    }
+                    Some(HeldWake(since))
+                        if clock.0.saturating_duration_since(*since) >= WAKE_HOLD_LIMIT =>
+                    {
+                        tracing::info!(tv = %id.0, "a held wake expired; reconnecting without it");
+                        pending.wake = false;
+                        let mut e = commands.entity(entity);
+                        e.remove::<HeldWake>();
+                        drop_screen_on_intent(&mut e);
+                        publish_power_phase(&mut outbox, &site, &id.0, payload::PowerPhase::Failed);
+                    }
+                    Some(_) => {}
                 }
+            }
+            if !awaiting {
+                tracing::debug!(tv = %id.0, wake = pending.wake, "dial deferred: dependency absent");
+                commands.entity(entity).insert(AwaitingDependency);
             }
             continue;
         }
-        pending.attempts += 1;
+        pending.attempts = pending.attempts.saturating_add(1);
         seq.0 += 1;
         let dial = seq.0;
         tracing::debug!(tv = %id.0, attempt = pending.attempts, wake = pending.wake, dial, "dialing");
         commands
             .entity(entity)
             .insert((Reconnecting, LatestDial(dial)))
-            .remove::<(RetryAt, AwaitingRoute)>();
+            .remove::<(RetryAt, AwaitingDependency, HeldWake)>();
         outbox.0.push(Effect::SpawnConnect {
             tv: id.0,
             dial,

@@ -287,15 +287,16 @@ impl LinuxCecLink {
         // bus. Best-effort by design: the name is cosmetic, so a failure
         // here logs and continues rather than costing the caller the whole
         // connection (and with it all power/screen control).
+        let mut advertised = None;
         if let Some(name) = name {
-            tracing::debug!(device, osd_name = %name, "advertising CEC OSD name");
-            if let Err(error) = dev.set_osd_name(&name).await {
-                tracing::warn!(
+            match dev.set_osd_name(&name).await {
+                Ok(()) => advertised = Some(name),
+                Err(error) => tracing::warn!(
                     device,
                     osd_name = %name,
                     %error,
                     "failed to advertise CEC OSD name; continuing without it"
-                );
+                ),
             }
         }
         // Claim a Playback logical address so the adapter is allowed to
@@ -303,7 +304,44 @@ impl LinuxCecLink {
         dev.set_logical_address(LogicalAddressType::Playback)
             .await
             .map_err(map_cec_err)?;
+        match dev.get_logical_addresses().await {
+            Ok(addresses) => log_claim(device, addresses.first().copied(), advertised.as_deref()),
+            Err(error) => tracing::debug!(device, %error, "couldn't read back the CEC claim"),
+        }
         Ok(Self { device: dev })
+    }
+}
+
+/// Log a claim's outcome: the address the kernel picked and the name it
+/// now serves. A Backup or Unregistered address warns: a CEC 1.4 TV has
+/// no Backup addresses and doesn't name an unregistered device, so the
+/// input label may not follow.
+fn log_claim(device: &str, address: Option<LogicalAddress>, osd_name: Option<&str>) {
+    let osd_name = osd_name.unwrap_or("none");
+    match address {
+        Some(
+            address @ (LogicalAddress::Backup1
+            | LogicalAddress::Backup2
+            | LogicalAddress::UnregisteredOrBroadcast),
+        ) => tracing::warn!(
+            device,
+            logical_address = u8::from(address),
+            %address,
+            osd_name,
+            "claimed a CEC logical address the TV may not name"
+        ),
+        Some(address) => tracing::info!(
+            device,
+            logical_address = u8::from(address),
+            %address,
+            osd_name,
+            "claimed CEC logical address"
+        ),
+        None => tracing::warn!(
+            device,
+            osd_name,
+            "CEC claim ended without a logical address"
+        ),
     }
 }
 

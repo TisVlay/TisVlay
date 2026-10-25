@@ -174,6 +174,26 @@ impl RetryConfig {
     }
 }
 
+/// A local device node a connection depends on, such as an HDMI-CEC
+/// adapter's `/dev/cecN`.
+///
+/// Returned by [`TvConnector::local_device`]. The daemon watches the
+/// path, so a TV whose node is absent waits for it to appear instead of
+/// dialing into it, and redials once it's back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LocalDevice {
+    /// The node's path as configured; a udev alias (a symlink) works.
+    pub path: std::path::PathBuf,
+}
+
+impl LocalDevice {
+    /// A local device at `path`.
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
 /// Connection to a specific TV instance.
 ///
 /// This trait provides connection lifecycle management and all TV control methods.
@@ -457,6 +477,18 @@ pub trait TvConnector: Send + Sync {
     /// actions, leaves it off. Config-driven so it's opt-out per device.
     fn emulate_screen_via_power(&self, _vendor_config: &VendorConfig) -> bool {
         false
+    }
+
+    /// The local device node this TV's connection needs, if any.
+    ///
+    /// A backend that talks through a node on this host (HDMI-CEC's
+    /// `/dev/cecN`) returns it, and the daemon then treats the node like
+    /// a network TV's route: while it's absent the dial waits instead of
+    /// failing, and its return redials. Default `None`: network backends
+    /// depend on a route, which the daemon resolves from
+    /// [`primary_descriptor`](Self::primary_descriptor).
+    fn local_device(&self, _vendor_config: &VendorConfig) -> Option<LocalDevice> {
+        None
     }
 
     /// Connect to a TV using vendor-specific config.

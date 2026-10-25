@@ -8,8 +8,8 @@ use tisvlay_core::VendorConfig;
 use tisvlay_mock::{MockHandle, new_test_parts};
 use tisvlay_protocol::error::ErrorCode;
 use tisvlay_world::{
-    Command, Reactor, Reply, RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect,
-    WorldClient,
+    Command, DeviceRequest, Reactor, Reply, RouteRequest, StoreMsg, StoreSnapshot, TvRecord,
+    WireEffect, WorldClient,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
@@ -102,6 +102,21 @@ pub(crate) fn spawn_reactor_with_routes() -> (
     reactor.set_route_monitor(routes_tx);
     tokio::spawn(reactor.run());
     (effects, routes_rx, client, handle)
+}
+
+/// [`spawn_reactor`] with the device-watcher outlet tapped, so
+/// local-device TVs wait for availability reports the test sends.
+pub(crate) fn spawn_reactor_with_devices() -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<DeviceRequest>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (devices_tx, devices_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_device_monitor(devices_tx);
+    tokio::spawn(reactor.run());
+    (effects, devices_rx, client, handle)
 }
 
 /// [`spawn_reactor`] with `queue` run before the reactor starts: what it

@@ -42,6 +42,12 @@ pub struct MockVendorConfig {
     #[serde(default)]
     pub refuse_connect: bool,
 
+    /// Test knob: every `connect` fails as if the local device node
+    /// couldn't be opened (`Error::DeviceUnavailable`), the failure a
+    /// local-device TV keeps retrying past its budget.
+    #[serde(default)]
+    pub device_unavailable: bool,
+
     /// Whether this mock claims wake support. Defaults on; tests flip
     /// it through update-config to exercise transport-fact refreshes.
     #[serde(default = "default_wake")]
@@ -117,6 +123,13 @@ pub struct MockVendorConfig {
     /// `power_on`. Default `false` so existing mock-based tests are unaffected.
     #[serde(default)]
     pub emulate_screen_via_power: bool,
+
+    /// When set, the connector reports this path as its `local_device` —
+    /// modeling a backend (CEC) whose connection needs a device node, so
+    /// the daemon gates the dial on its availability. Default `None`
+    /// (network-shaped) so existing mock-based tests are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_device: Option<String>,
 }
 
 fn default_wake() -> bool {
@@ -161,6 +174,7 @@ impl Default for MockVendorConfig {
             initial_backlight: default_backlight(),
             inputs: default_inputs(),
             refuse_connect: false,
+            device_unavailable: false,
             wake: true,
             mac: None,
             link_mac: None,
@@ -170,6 +184,7 @@ impl Default for MockVendorConfig {
             disable_subscription: false,
             reachable_in_standby: false,
             emulate_screen_via_power: false,
+            local_device: None,
         }
     }
 }

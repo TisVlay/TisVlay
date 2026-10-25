@@ -174,6 +174,11 @@ pub enum InEvent {
     /// exists. Sent by the daemon's netlink monitor at monitor-request
     /// time and whenever the kernel routing table changes.
     RouteResolved { tv: Uuid, interface: Option<String> },
+    /// Whether a TV's local device node (its `TvConnector::local_device`)
+    /// is usable: present, and initialized by udev where udev runs. Sent
+    /// by the daemon's device watcher at monitor-request time and
+    /// whenever udev reports a device coming or going.
+    DeviceAvailability { tv: Uuid, available: bool },
     /// The desktop probe matched a TV's hardware identity to a DRM
     /// connector.
     ConnectorMatched { tv: Uuid, connector: String },
@@ -206,6 +211,17 @@ pub enum InEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteRequest {
     Monitor { tv: Uuid, host: String },
+    Forget { tv: Uuid },
+}
+
+/// Requests from the reactor to the daemon's device watcher: which TVs'
+/// local device nodes to watch. The reactor emits `Monitor` for every TV
+/// whose connector names a local device, at enrollment and on each dial
+/// spawn, and `Forget` on removal; the watcher answers (and keeps
+/// answering, on udev events) with [`InEvent::DeviceAvailability`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceRequest {
+    Monitor { tv: Uuid, path: std::path::PathBuf },
     Forget { tv: Uuid },
 }
 
@@ -437,6 +453,11 @@ pub struct DialFailure {
     pub path: Option<String>,
     /// Human-readable English message (the log/fallback text).
     pub message: String,
+    /// The local device couldn't be opened or set up (permission, missing,
+    /// busy, claim refused), as opposed to the TV not answering. A
+    /// local-device TV keeps retrying these past its budget; world-side
+    /// only, never on the wire.
+    pub device_level: bool,
 }
 
 impl DialFailure {
@@ -447,11 +468,13 @@ impl DialFailure {
                 code: Some(tisvlay_core::errors::DeviceErrorCode::PermissionDenied.into()),
                 path: Some(path.clone()),
                 message: error.to_string(),
+                device_level: true,
             },
             _ => Self {
                 code: None,
                 path: None,
                 message: error.to_string(),
+                device_level: matches!(error, tisvlay_core::Error::DeviceUnavailable { .. }),
             },
         }
     }
@@ -462,6 +485,7 @@ impl DialFailure {
             code: None,
             path: None,
             message: message.into(),
+            device_level: false,
         }
     }
 }
@@ -479,6 +503,9 @@ pub struct TransportInfo {
     pub network_dependent: bool,
     /// Survives a source-IP change (NIC failover keeps the connection).
     pub survives_ip_change: bool,
+    /// Needs a local device node (CEC's `/dev/cecN`): device availability
+    /// gates its dials, and a disconnect redials.
+    pub local_device: bool,
     /// No discrete screen-blank: dispatch screen actions as power.
     pub emulate_screen_via_power: bool,
 }

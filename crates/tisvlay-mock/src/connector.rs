@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tisvlay_core::{
-    Credentials, Error, PairingCommand, PairingError, PairingSession, PairingState, Result,
-    Transport, TvConnection, TvConnector, VendorConfig,
+    Credentials, Error, LocalDevice, PairingCommand, PairingError, PairingSession, PairingState,
+    Result, Transport, TvConnection, TvConnector, VendorConfig,
 };
 use tracing::instrument;
 
@@ -89,6 +89,17 @@ impl TvConnector for MockConnector {
             .unwrap_or(false)
     }
 
+    fn local_device(&self, vendor_config: &VendorConfig) -> Option<LocalDevice> {
+        // Test-configurable: models a backend (CEC) whose connection needs
+        // a local device node, so the world gates its dial on availability.
+        // Default `None` so existing mock tests stay network-shaped.
+        vendor_config
+            .parse::<MockVendorConfig>(crate::VENDOR_ID)
+            .ok()
+            .and_then(|c| c.local_device)
+            .map(LocalDevice::new)
+    }
+
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
         let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
@@ -116,6 +127,15 @@ impl TvConnector for MockConnector {
             tokio::time::sleep(delay).await;
         }
 
+        if config.device_unavailable {
+            return Err(Error::DeviceUnavailable {
+                path: config
+                    .local_device
+                    .clone()
+                    .unwrap_or(config.address.clone()),
+                message: "device unavailable by test config".into(),
+            });
+        }
         if config.refuse_connect {
             return Err(Error::backend(
                 crate::VENDOR_ID,

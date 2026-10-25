@@ -14,8 +14,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use linux_cec::operand::PowerStatus;
 use tisvlay_core::{
-    Credentials, Error, PairingSession, PairingState, Result, Transport, TvConnection, TvConnector,
-    VendorConfig,
+    Credentials, Error, LocalDevice, PairingSession, PairingState, Result, Transport, TvConnection,
+    TvConnector, VendorConfig,
 };
 use tracing::instrument;
 
@@ -83,6 +83,21 @@ fn advertising_claim(config: &CecVendorConfig) -> Claim<'_> {
     )
 }
 
+/// Classify a failure to open and set up the adapter (the node, its
+/// physical address, the logical-address claim) as the device being
+/// unavailable, which can clear on its own; a TV that doesn't answer
+/// through a working adapter fails later, as itself. A permission failure
+/// keeps its own type.
+fn unavailable(device: &str, error: Error) -> Error {
+    match error {
+        error @ Error::PermissionDenied { .. } => error,
+        other => Error::DeviceUnavailable {
+            path: device.to_string(),
+            message: other.to_string(),
+        },
+    }
+}
+
 #[async_trait]
 impl TvConnector for CecConnector {
     fn transport(&self) -> Transport {
@@ -106,6 +121,15 @@ impl TvConnector for CecConnector {
             .unwrap_or(false)
     }
 
+    fn local_device(&self, vendor_config: &VendorConfig) -> Option<LocalDevice> {
+        // The adapter's node: a USB adapter comes and goes with its cable
+        // (and its inputattach unit), so the daemon waits for it.
+        vendor_config
+            .parse::<CecVendorConfig>(crate::VENDOR_ID)
+            .ok()
+            .map(|c| LocalDevice::new(c.device))
+    }
+
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
         let config = vendor_config.parse::<CecVendorConfig>(crate::VENDOR_ID)?;
@@ -116,7 +140,8 @@ impl TvConnector for CecConnector {
                 config.physical_address.to_linux(),
                 advertising_claim(&config),
             )
-            .await?;
+            .await
+            .map_err(|e| unavailable(&config.device, e))?;
         // Probe power to confirm the TV actually answers on the bus — a
         // powered-off-at-the-wall TV (or one on a different HDMI input)
         // drops off CEC and this query fails, so `connect` fails and the TV
@@ -152,7 +177,8 @@ impl TvConnector for CecConnector {
                 config.physical_address.to_linux(),
                 Claim::Keep,
             )
-            .await?;
+            .await
+            .map_err(|e| unavailable(&config.device, e))?;
         link.power_on().await
     }
 
@@ -169,7 +195,8 @@ impl TvConnector for CecConnector {
                 config.physical_address.to_linux(),
                 advertising_claim(&config),
             )
-            .await?;
+            .await
+            .map_err(|e| unavailable(&config.device, e))?;
         // Image View On is fire-and-forget, a freshly-opened adapter is
         // still claiming its logical address, and a just-standby TV can
         // ignore the first wake — so a single send is easily lost. Re-send
@@ -327,6 +354,39 @@ mod tests {
 
     fn connector(initial: PowerStatus) -> CecConnector {
         CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new(initial)))
+    }
+
+    #[test]
+    fn an_adapter_setup_failure_reads_as_the_device_unavailable() {
+        assert!(matches!(
+            unavailable("/dev/cec0", Error::ConnectionClosed),
+            Error::DeviceUnavailable { ref path, .. } if path == "/dev/cec0"
+        ));
+        assert!(
+            matches!(
+                unavailable(
+                    "/dev/cec0",
+                    Error::PermissionDenied {
+                        path: "/dev/cec0".into()
+                    }
+                ),
+                Error::PermissionDenied { .. }
+            ),
+            "a permission failure keeps its own, actionable type"
+        );
+    }
+
+    #[test]
+    fn the_local_device_is_the_configured_node() {
+        let config = VendorConfig::from_typed(&CecVendorConfig {
+            device: "/dev/cec-pulse8".into(),
+            ..CecVendorConfig::default()
+        })
+        .unwrap();
+        assert_eq!(
+            connector(PowerStatus::On).local_device(&config),
+            Some(LocalDevice::new("/dev/cec-pulse8"))
+        );
     }
 
     #[test]

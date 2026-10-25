@@ -65,6 +65,30 @@ pub struct Link {
     /// config (for LG, a configured MAC for Wake-on-LAN). Known before
     /// the first dial.
     pub supports_wake: bool,
+    /// What a disconnected TV is waiting for, when it's known gone: its
+    /// network route, or the local device its connection runs through
+    /// (a USB CEC adapter). `None` while nothing is known missing.
+    pub waiting_for: Option<LinkWait>,
+}
+
+/// What a TV's connection is waiting for, on [`Link::waiting_for`].
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkWait {
+    /// No usable route to the TV's address.
+    Network,
+    /// The local device the connection needs isn't there or isn't usable.
+    Device,
+}
+
+impl LinkWait {
+    /// The wire token, for display and the GUI's string properties.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Device => "device",
+        }
+    }
 }
 
 impl StatePayload for Link {
@@ -332,6 +356,9 @@ pub enum PowerPhase {
     Connecting,
     /// The dial is deferred until the TV's network route returns.
     AwaitingNetwork,
+    /// The dial is deferred until the local device the connection needs
+    /// (a USB CEC adapter) returns.
+    AwaitingDevice,
     /// The wake dial connected: the TV is up and serving commands.
     Connected,
     /// The wake dial ran out of attempts.
@@ -345,6 +372,7 @@ impl PowerPhase {
             Self::WolSent => "wol_sent",
             Self::Connecting => "connecting",
             Self::AwaitingNetwork => "awaiting_network",
+            Self::AwaitingDevice => "awaiting_device",
             Self::Connected => "connected",
             Self::Failed => "failed",
         }
@@ -588,7 +616,7 @@ mod tests {
         }
     }
 
-    /// Every phase the world publishes decodes, `awaiting_network`
+    /// Every phase the world publishes decodes, the waiting ones
     /// included.
     #[test]
     fn every_power_phase_decodes() {
@@ -596,6 +624,7 @@ mod tests {
             PowerPhase::WolSent,
             PowerPhase::Connecting,
             PowerPhase::AwaitingNetwork,
+            PowerPhase::AwaitingDevice,
             PowerPhase::Connected,
             PowerPhase::Failed,
         ] {
@@ -603,6 +632,24 @@ mod tests {
             let progress: PowerProgress = serde_json::from_value(sample).unwrap();
             assert_eq!(progress.phase, phase);
         }
+    }
+
+    #[test]
+    fn link_waits_round_trip_their_tokens() {
+        for wait in [LinkWait::Network, LinkWait::Device] {
+            let json = serde_json::to_value(wait).unwrap();
+            assert_eq!(json, wait.as_str());
+            assert_eq!(serde_json::from_value::<LinkWait>(json).unwrap(), wait);
+        }
+        let link = Link {
+            connected: false,
+            reconnecting: false,
+            supports_wake: true,
+            waiting_for: Some(LinkWait::Device),
+        };
+        let json = serde_json::to_value(&link).unwrap();
+        assert_eq!(json["waiting_for"], "device");
+        assert_eq!(serde_json::from_value::<Link>(json).unwrap(), link);
     }
 
     #[test]

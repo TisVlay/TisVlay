@@ -39,6 +39,9 @@ pub(crate) struct TvViewRaw {
     /// monospace hint beside the TV name in the master list.
     pub primary_descriptor: SharedString,
     pub connected: bool,
+    /// What a disconnected TV waits for (`TvInfo::waiting_for`): `"network"`,
+    /// `"device"`, or empty when nothing is known missing.
+    pub waiting_for: SharedString,
     pub power_state: SharedString,
     /// Connected *and* awake (via `PowerState::is_awake`, the CLI's and
     /// tray's rule too). The power button keys on this rather than
@@ -275,6 +278,7 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             brand: SharedString::from(tv.brand.as_str()),
             primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
+            waiting_for: SharedString::from(tv.waiting_for.map_or("", |w| w.as_str())),
             power_state: SharedString::from(power_state_token(tv.power_state)),
             is_on: tv.connected && tv.power_state.is_awake(),
             supports_wake: tv.supports_wake,

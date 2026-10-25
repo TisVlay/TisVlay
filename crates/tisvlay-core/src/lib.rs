@@ -22,7 +22,9 @@ pub mod wol;
 // =============================================================================
 
 // Traits
-pub use traits::{RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
+pub use traits::{
+    LocalDevice, RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery,
+};
 
 // Capabilities
 pub use capabilities::Capabilities;

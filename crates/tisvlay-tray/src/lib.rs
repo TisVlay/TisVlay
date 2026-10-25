@@ -647,7 +647,9 @@ async fn spawn_power_cycle_toasts(
                     "",
                     "dialog-error",
                 ),
-                payload::PowerPhase::Connecting | payload::PowerPhase::AwaitingNetwork => {}
+                payload::PowerPhase::Connecting
+                | payload::PowerPhase::AwaitingNetwork
+                | payload::PowerPhase::AwaitingDevice => {}
             }
         }
     });
