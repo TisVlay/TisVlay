@@ -741,8 +741,8 @@ component TvDetail inherits Rectangle {
                                     : root.tv.power-cycle-phase == "connected" ? @tr("Connected")
                                     : root.tv.power-cycle-phase == "failed" ? @tr("Wake failed")
                                     : root.tv.connected
-                                        ? (root.tv.power-state == "warming_up" ? @tr("Warming up…")
-                                            : root.tv.power-state == "cooling_down" ? @tr("Cooling down…")
+                                        ? (root.tv.power-state == "warmingup" ? @tr("Warming up…")
+                                            : root.tv.power-state == "coolingdown" ? @tr("Cooling down…")
                                             : @tr("Power state: {}", root.tv.power-state))
                                         : root.tv.waiting-for == "device"
                                             ? @tr("The adapter this TV connects through is missing. It reconnects on its own when the adapter is back.")

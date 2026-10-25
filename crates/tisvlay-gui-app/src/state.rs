@@ -1061,4 +1061,67 @@ mod tests {
             ..Default::default()
         };
     }
+
+    /// The TVs pane keys its status labels on string comparisons against
+    /// the row's `power-state`, `power-cycle-phase` and `waiting-for`: a
+    /// stringly-typed contract with the wire tokens written into the row.
+    /// A literal no token matches never fires, and its label silently
+    /// never shows. Parse the literals out of the Slint source and
+    /// require each to round-trip through its enum's token.
+    const TVS_PANE: &str = include_str!("../../tisvlay-gui/ui/components/tvs_pane.slint");
+
+    fn tvs_pane_literals(property: &str) -> Vec<&'static str> {
+        let marker = format!("{property} == \"");
+        let literals: Vec<_> = TVS_PANE
+            .match_indices(&marker)
+            .map(|(idx, _)| {
+                TVS_PANE[idx + marker.len()..]
+                    .split('"')
+                    .next()
+                    .expect("opening quote has a close")
+            })
+            .collect();
+        assert!(
+            !literals.is_empty(),
+            "no `{property} ==` comparisons in the TVs pane"
+        );
+        literals
+    }
+
+    #[test]
+    fn tvs_pane_power_state_literals_are_wire_tokens() {
+        for literal in tvs_pane_literals("power-state") {
+            assert_eq!(
+                power_state_token(PowerState::parse(literal)),
+                literal,
+                "the TVs pane compares power-state against {literal:?}, which no PowerState serializes to"
+            );
+        }
+    }
+
+    #[test]
+    fn tvs_pane_power_cycle_phase_literals_are_wire_tokens() {
+        for literal in tvs_pane_literals("power-cycle-phase") {
+            let phase: tisvlay::PowerPhase = serde_json::from_value(literal.into())
+                .unwrap_or_else(|_| panic!("the TVs pane compares power-cycle-phase against {literal:?}, which isn't a PowerPhase"));
+            assert_eq!(
+                phase.as_str(),
+                literal,
+                "PowerPhase's as_str drifted from its serde token"
+            );
+        }
+    }
+
+    #[test]
+    fn tvs_pane_waiting_for_literals_are_wire_tokens() {
+        for literal in tvs_pane_literals("waiting-for") {
+            let wait: tisvlay::LinkWait = serde_json::from_value(literal.into())
+                .unwrap_or_else(|_| panic!("the TVs pane compares waiting-for against {literal:?}, which isn't a LinkWait"));
+            assert_eq!(
+                wait.as_str(),
+                literal,
+                "LinkWait's as_str drifted from its serde token"
+            );
+        }
+    }
 }

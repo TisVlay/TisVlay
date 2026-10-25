@@ -118,7 +118,7 @@ Every slice ships whole:
 
 #### 1. The GUI's power-state labels
 
-- [ ] `tvs_pane.slint` compares `power-state` against `"warming_up"` and `"cooling_down"`, but the wire tokens are serde's lowercase `"warmingup"` and `"coolingdown"`, so "Warming up…" and "Cooling down…" never show and the pane prints "Power state: warmingup". Key the labels on the wire tokens, with a test pinning every token the GUI matches against `PowerState`'s serialization (the drift [docs/bugs/power-state-vocabulary-drift.md](../bugs/power-state-vocabulary-drift.md) closed for `is_on`).
+- [x] `tvs_pane.slint` compares `power-state` against `"warming_up"` and `"cooling_down"`, but the wire tokens are serde's lowercase `"warmingup"` and `"coolingdown"`, so "Warming up…" and "Cooling down…" never show and the pane prints "Power state: warmingup". Key the labels on the wire tokens, with a test pinning every token the GUI matches against `PowerState`'s serialization (the drift [docs/bugs/power-state-vocabulary-drift.md](../bugs/power-state-vocabulary-drift.md) closed for `is_on`).
 
 #### 2. The sleep handoff
 
