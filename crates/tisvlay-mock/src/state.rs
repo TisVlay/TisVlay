@@ -89,6 +89,11 @@ pub(crate) struct MockState {
     /// [`MockHandle::press_remote_power`](crate::handle::MockHandle::press_remote_power).
     pub(crate) event_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvEvent>>>,
 
+    /// The last `set_remote_keys` per mock TV address, for
+    /// [`MockHandle::remote_keys`](crate::handle::MockHandle::remote_keys).
+    /// Kept across reconnects.
+    pub(crate) remote_keys: HashMap<String, bool>,
+
     /// Addresses where `MockConnection::screen_on` should return `Ok`
     /// without mutating state. Set via
     /// [`MockHandle::set_screen_on_noop`](crate::handle::MockHandle::set_screen_on_noop)

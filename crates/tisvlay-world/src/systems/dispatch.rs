@@ -512,7 +512,7 @@ pub(super) fn dispatch_going_off(
             GoingOffEvent::TvPowerOff => |body| body.on_tv_power_off,
             GoingOffEvent::RemotePower => |body| body.on_remote_power,
         };
-        let mode = match resolve_sleep_action(meta.map(|m| &m.0), &profile_index, &bodies, field) {
+        let mode = match resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, field) {
             tisvlay_core::SystemSleepAction::None => continue,
             tisvlay_core::SystemSleepAction::Suspend => SleepMode::Suspend,
             tisvlay_core::SystemSleepAction::Sleep => SleepMode::Sleep,
@@ -523,5 +523,39 @@ pub(super) fn dispatch_going_off(
         }
         tracing::info!(%tv, ?event, ?mode, "putting the PC to sleep");
         outbox.0.push(Effect::Sleep(SleepRequest { tv, mode }));
+    }
+}
+
+/// Tell each live connection whose backend can pass the TV remote's keys
+/// whether to, from its system profile's `remote_keys`: on connect (a new
+/// claim starts without) and whenever the resolved value changes.
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
+pub(super) fn reconcile_remote_keys(
+    mut commands: Commands,
+    tvs: Query<(
+        Entity,
+        &TvId,
+        &ConnectionHandle,
+        &RemoteKeysSent,
+        Option<&State<payload::Identity>>,
+        Option<&State<payload::Meta>>,
+    )>,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+) {
+    for (entity, id, handle, sent, identity, meta) in &tvs {
+        if !identity.is_some_and(|i| i.capabilities.iter().any(|c| c == "remote_keys")) {
+            continue;
+        }
+        let want = resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
+            body.remote_keys
+        });
+        if want != sent.0 && handle.cmd_tx.send(BackendCmd::SetRemoteKeys(want)).is_ok() {
+            tracing::info!(tv = %id.0, remote_keys = want, "the remote's keys");
+            commands.entity(entity).insert(RemoteKeysSent(want));
+        }
     }
 }

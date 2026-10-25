@@ -253,3 +253,24 @@ pub(crate) async fn add_connected_tv(
     collect_until(effects, |e| link_connected(e, true)).await;
     id
 }
+
+/// Give `tv` a new system profile with `body`.
+pub(crate) async fn assign_system_profile(
+    effects: &mut UnboundedReceiver<WireEffect>,
+    client: &WorldClient,
+    tv: Uuid,
+    body: tisvlay_core::SystemProfileConfig,
+) {
+    let profile = Uuid::new_v4();
+    client.command(Command::AddProfile {
+        record: Box::new(tisvlay_world::ProfileRecord { id: profile, body }),
+        reply: Some(Reply::new(90)),
+    });
+    collect_until(effects, |e| reply_to(e, 90)).await;
+    client.command(Command::SetSystemProfile {
+        id: tv,
+        profile: Some(profile),
+        reply: Some(Reply::new(91)),
+    });
+    collect_until(effects, |e| reply_to(e, 91)).await;
+}

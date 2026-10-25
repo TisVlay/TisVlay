@@ -342,11 +342,24 @@ impl TvConnection for CecConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Power, and the remote's power key through `subscribe_events`.
-        // INPUT is not advertised — see `CecBackend::capabilities` for why
-        // (CEC can't reliably route to an arbitrary input; the
-        // `switch_input` impl is kept dormant).
-        Capabilities::POWER | Capabilities::REMOTE_POWER
+        // Power, the remote's power key through `subscribe_events`, and its
+        // other keys where the adapter has an RC device. INPUT is not
+        // advertised — see `CecBackend::capabilities` for why (CEC can't
+        // reliably route to an arbitrary input; the `switch_input` impl is
+        // kept dormant).
+        let mut capabilities = Capabilities::POWER | Capabilities::REMOTE_POWER;
+        capabilities.set(Capabilities::REMOTE_KEYS, self.link.has_rc());
+        capabilities
+    }
+
+    async fn set_remote_keys(&mut self, on: bool) -> Result<()> {
+        if !self.link.has_rc() {
+            return Err(Error::not_supported(
+                "set_remote_keys",
+                Capabilities::REMOTE_KEYS,
+            ));
+        }
+        self.link.set_rc_passthrough(on).await
     }
 
     async fn subscribe_events(&mut self) -> Result<mpsc::UnboundedReceiver<TvEvent>> {
@@ -702,13 +715,33 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_power_and_the_remote_power_key() {
+    fn capabilities_are_power_and_the_remote() {
         // INPUT is not advertised (see `CecBackend::capabilities`).
         let conn = connection(PowerStatus::On);
         assert_eq!(
             conn.capabilities(),
-            Capabilities::POWER | Capabilities::REMOTE_POWER
+            Capabilities::POWER | Capabilities::REMOTE_POWER | Capabilities::REMOTE_KEYS
         );
+    }
+
+    /// The remote's keys need the adapter's RC device: without one, the
+    /// capability is off and the setter refuses.
+    #[tokio::test]
+    async fn remote_keys_need_the_adapters_rc_device() {
+        let mut conn = connection(PowerStatus::On);
+        conn.set_remote_keys(true).await.expect("an RC adapter");
+
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::On).without_rc()),
+            Arc::new(FakeCecLinkOpener::new(PowerStatus::On)),
+            "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
+        );
+        assert!(!conn.capabilities().contains(Capabilities::REMOTE_KEYS));
+        assert!(matches!(
+            conn.set_remote_keys(true).await,
+            Err(Error::NotSupported { .. })
+        ));
     }
 
     #[test]

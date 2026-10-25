@@ -344,6 +344,11 @@ in
       lib.replaceStrings [ ''"tisvlay"'' ] [ ''"${cfg.user}"'' ]
         (builtins.readFile ../polkit/50-tisvlay.rules);
 
+    # Keeps the TV remote's power keys away from the desktop when a system
+    # profile's remote_keys lets the remote through; the same keymap the
+    # distro packages ship.
+    services.udev.extraHwdb = builtins.readFile ../udev/70-tisvlay-rc-cec.hwdb;
+
     # Dedicated system user and group for tisvlay-daemon. uid/gid stay
     # unset by default — NixOS allocates from the system range and
     # pins the assignment via /var/lib/nixos/uid-map.

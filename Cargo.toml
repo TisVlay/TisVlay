@@ -158,8 +158,8 @@ pipewire-native = "0.2"
 # pipewire-native bakes in, so the session can check before connecting.
 pkg-config = "0.3"
 
-# HDMI-CEC (Linux CEC subsystem). Valve's linux-cec from crates.io.
-# `async` enables the tokio `AsyncDevice` wrapper. Default features
+# HDMI-CEC (Linux CEC subsystem). Valve's linux-cec, patched below to our
+# fork until a release carries its log-address flags setter. `async` enables the tokio `AsyncDevice` wrapper. Default features
 # (`cectool`, `tracing`) are dropped to avoid the clap pull and the bundled
 # CLI binary. LGPL-2.1 — carried via a per-crate exception in
 # packaging/licensing.
@@ -330,6 +330,13 @@ debug = "line-tables-only"
 [profile.release]
 strip = "symbols"
 
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+opt-level = "s"
+
 # Binaries built once in CI and downloaded: the distro packages
 # (`just package-*`) and the flake's own package, which the release
 # workflow pushes to tisvlay.cachix.org. Size over build time, since only
@@ -344,9 +351,11 @@ strip = "symbols"
 #   - `opt-level = "s"`: about −20% more. CLI round trips and GUI render
 #     cost (120 fps, CPU per frame) were within noise of opt-level 3;
 #     "z" was only 4% smaller and turns off loop vectorization.
-[profile.dist]
-inherits = "release"
-lto = "thin"
-codegen-units = 1
-panic = "abort"
-opt-level = "s"
+# linux-cec 0.2.1 plus a setter for the log-address flags (RC passthrough),
+# from our fork's `rc-passthru` branch off the `linux-cec-0.2.1` tag. Its
+# workspace siblings linux-cec-sys and linux-cec-macros come along by path,
+# unchanged from their crates.io releases. Drop this once a linux-cec
+# release has the setter (docs/build.md, Review triggers). A new `rev`
+# needs packaging/nix/package.nix's `outputHashes` entry moved with it.
+[patch.crates-io]
+linux-cec = { git = "https://github.com/TisVlay/linux-cec", rev = "334a097e1ee358c8edba42d0df6be070eac70661" }

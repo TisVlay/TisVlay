@@ -106,6 +106,14 @@ pkgs.testers.runNixOSTest {
     )
     machine.succeed("grep -q 'subject.user == \"tisvlay\"' /etc/polkit-1/rules.d/10-nixos.rules")
 
+    # The keymap dropping the TV remote's power keys is in the compiled
+    # hwdb, for a CEC remote-control input (bus 0x1e).
+    keys = machine.succeed(
+        "systemd-hwdb query 'evdev:input:b001Ev0000p0000e0001-e0,1,4,14'"
+    )
+    for scancode in ["40", "6b", "6c", "6d"]:
+        assert f"KEYBOARD_KEY_{scancode}=reserved" in keys, f"no {scancode} in {keys!r}"
+
     # StateDirectory exists with correct ownership.
     machine.succeed("test -d /var/lib/tisvlay")
     owner = machine.succeed("stat -c '%U:%G' /var/lib/tisvlay").strip()

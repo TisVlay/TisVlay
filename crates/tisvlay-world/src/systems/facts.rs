@@ -111,6 +111,7 @@ pub(super) fn apply_backend_events(
                             cmd_tx: cmd_tx.clone(),
                         },
                         DispatchRetry(*retry),
+                        RemoteKeysSent(false),
                     ))
                     .remove::<(Reconnecting, PendingConnect, RetryAt, RetryPromptly)>();
                 apply_state(&mut commands, entity, state, &mut writes);

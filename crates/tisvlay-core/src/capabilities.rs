@@ -128,6 +128,12 @@ bitflags! {
         /// the profiles' `on_remote_power` acts on.
         const REMOTE_POWER = 0b0100_0000_0000;
 
+        /// The remote's keys can reach the desktop, through the kernel's
+        /// remote-control input device, when the system profile's
+        /// `remote_keys` asks
+        /// ([`TvConnection::set_remote_keys`](crate::TvConnection::set_remote_keys)).
+        const REMOTE_KEYS = 0b1000_0000_0000;
+
         /// The stock feature set — the conventional baseline a typical
         /// TV backend is expected to expose. Transport-family bits
         /// (IPV4, IPV6) are deliberately excluded — see their doc
@@ -198,6 +204,9 @@ impl Capabilities {
         if self.contains(Self::REMOTE_POWER) {
             caps.push("remote_power");
         }
+        if self.contains(Self::REMOTE_KEYS) {
+            caps.push("remote_keys");
+        }
         caps
     }
 
@@ -222,6 +231,7 @@ impl Capabilities {
                 "ipv4" => caps |= Self::IPV4,
                 "ipv6" => caps |= Self::IPV6,
                 "remote_power" => caps |= Self::REMOTE_POWER,
+                "remote_keys" => caps |= Self::REMOTE_KEYS,
                 _ => {} // Ignore unknown capabilities
             }
         }

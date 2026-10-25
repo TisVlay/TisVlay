@@ -15,5 +15,6 @@ mod held_wake;
 mod pairing_profiles;
 mod power_edge;
 mod reload;
+mod remote_keys;
 mod store;
 mod world;

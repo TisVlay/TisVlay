@@ -46,4 +46,11 @@ on_tv_power_off = "none"
 # automation settings, since the press is explicit, but nothing
 # happens while a stream arms the TV. Default `none`.
 on_remote_power = "none"
+
+# Whether the TV remote's keys reach this PC's desktop (on HDMI-CEC,
+# as the kernel's remote-control input device). What each key does is
+# the desktop's to decide. The packages' keymap keeps the remote's
+# power keys away from the desktop; without it (a source build), the
+# power key can put the PC to sleep. Default `false`.
+remote_keys = false
 ```

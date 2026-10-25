@@ -199,7 +199,7 @@ impl TvConnection for MockConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::STOCK | Capabilities::REMOTE_POWER
+        Capabilities::STOCK | Capabilities::REMOTE_POWER | Capabilities::REMOTE_KEYS
     }
 
     fn hardware_id(&self) -> Option<HardwareId> {
@@ -441,6 +441,14 @@ impl TvConnection for MockConnection {
             .push(tx.clone());
         self.subscription_tx = Some(tx);
         Ok(rx)
+    }
+
+    async fn set_remote_keys(&mut self, on: bool) -> Result<()> {
+        self.shared
+            .lock()
+            .remote_keys
+            .insert(self.address.clone(), on);
+        Ok(())
     }
 
     async fn subscribe_events(&mut self) -> Result<mpsc::UnboundedReceiver<TvEvent>> {

@@ -411,6 +411,14 @@ pub struct SystemProfileConfig {
     /// happens while a stream arms the TV. Default `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_remote_power: Option<SystemSleepAction>,
+
+    /// Whether the TV remote's keys reach this PC's desktop (on HDMI-CEC,
+    /// as the kernel's remote-control input device). What each key does is
+    /// the desktop's to decide. The packages' keymap keeps the remote's
+    /// power keys away from the desktop; without it (a source build), the
+    /// power key can put the PC to sleep. Default `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_keys: Option<bool>,
 }
 
 profile_plumbing! {
@@ -431,6 +439,7 @@ profile_plumbing! {
         automate_when,
         on_tv_power_off,
         on_remote_power,
+        remote_keys,
     ],
 }
 
@@ -471,6 +480,8 @@ pub struct ResolvedSystemProfile {
     pub on_tv_power_off: SystemSleepAction,
     /// What the machine does when the TV's remote powers this PC off.
     pub on_remote_power: SystemSleepAction,
+    /// Whether the TV remote's keys reach this PC's desktop.
+    pub remote_keys: bool,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -505,6 +516,8 @@ impl Default for ResolvedSystemProfile {
             // Opt-in: the TV powering off sleeps the PC only when asked.
             on_tv_power_off: SystemSleepAction::None,
             on_remote_power: SystemSleepAction::None,
+            // Opt-in: the remote drives the desktop only when asked.
+            remote_keys: false,
         }
     }
 }

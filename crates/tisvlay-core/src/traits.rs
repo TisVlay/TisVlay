@@ -433,6 +433,19 @@ pub trait TvConnection: Send + Sync {
             Capabilities::REMOTE_POWER,
         ))
     }
+
+    /// Let the TV remote's keys reach the desktop, or stop them: the system
+    /// profile's `remote_keys`, applied to a live connection whenever it
+    /// changes. The keys go through the host's input stack, which decides
+    /// what each one does.
+    ///
+    /// Backends without [`Capabilities::REMOTE_KEYS`] return `NotSupported`.
+    async fn set_remote_keys(&mut self, _on: bool) -> Result<()> {
+        Err(Error::not_supported(
+            "set_remote_keys",
+            Capabilities::REMOTE_KEYS,
+        ))
+    }
 }
 
 /// Factory for creating connections to TVs.

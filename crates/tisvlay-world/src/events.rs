@@ -580,6 +580,8 @@ pub enum BackendCmd {
     PowerOn,
     ScreenOn,
     ScreenOff,
+    /// Let the TV remote's keys reach the desktop, or stop them.
+    SetRemoteKeys(bool),
     /// Dropped once the commands queued before it have run.
     Drain(DrainToken),
 }

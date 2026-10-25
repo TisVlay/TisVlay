@@ -33,8 +33,8 @@ use crate::components::{
     KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox,
     PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
     PowerEdge, PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
-    RetryAt, RetryPromptly, Site, State, StreamArmed, SystemProfile, TransportTraits, TvId,
-    TvIndex, VendorRef, dependency_absent,
+    RemoteKeysSent, RetryAt, RetryPromptly, Site, State, StreamArmed, SystemProfile,
+    TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,
@@ -90,6 +90,7 @@ pub(crate) fn build_schedule() -> Schedule {
             derive_automated,
             dispatch_system_events,
             dispatch_going_off,
+            reconcile_remote_keys,
             reconcile_connections,
         )
             .chain()

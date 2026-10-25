@@ -73,6 +73,9 @@ export struct TvViewModel {
     /// Whether the TV's remote can power this PC off (the profiles'
     /// `on_remote_power`), from the same capabilities.
     has-remote-power: bool,
+    /// Whether the TV remote's keys can reach the desktop (the system
+    /// profile's `remote_keys`).
+    has-remote-keys: bool,
     is-screen-on: bool,
     volume: int,
     muted: bool,
@@ -867,6 +870,17 @@ component TvDetail inherits Rectangle {
                         Text {
                             text: root.tv.has-remote-power ? @tr("Reaches this PC") : @tr("Not on this connection");
                             color: root.tv.has-remote-power ? Theme.text : Theme.text-dim;
+                            font-size: Design.font-body;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    FormRow {
+                        label: @tr("Remote keys");
+                        help: @tr("Whether the TV remote's other keys can reach this PC's desktop (on HDMI-CEC, through an adapter with a remote-control device), for the system profile's \"Remote keys reach the desktop\".");
+                        Text {
+                            text: root.tv.has-remote-keys ? @tr("Can reach the desktop") : @tr("Not on this connection");
+                            color: root.tv.has-remote-keys ? Theme.text : Theme.text-dim;
                             font-size: Design.font-body;
                             vertical-alignment: center;
                         }

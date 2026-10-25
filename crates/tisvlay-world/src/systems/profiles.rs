@@ -78,14 +78,15 @@ pub(super) fn resolve_action(
     stock.0.get(event).copied()
 }
 
-/// The system profile's sleep for a going-off event, read by `field`: the
-/// TV's assigned profile's, else the editable default's, else `none`.
-pub(super) fn resolve_sleep_action(
+/// A system-profile field the stock table doesn't carry (the PC actions,
+/// `remote_keys`), read by `field`: the TV's assigned profile's, else the
+/// editable default's, else the type's default.
+pub(super) fn resolve_system_field<T: Default>(
     meta: Option<&payload::Meta>,
     profile_index: &ProfileIndex,
     bodies: &Query<&ProfileBody>,
-    field: fn(&tisvlay_core::SystemProfileConfig) -> Option<tisvlay_core::SystemSleepAction>,
-) -> tisvlay_core::SystemSleepAction {
+    field: fn(&tisvlay_core::SystemProfileConfig) -> Option<T>,
+) -> T {
     if let Some(profile_id) = meta.and_then(|m| m.system_profile)
         && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
         && let Some(action) = profile_body(profile_id, profile_index, bodies).and_then(field)

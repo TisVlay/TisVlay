@@ -152,6 +152,9 @@ pub(crate) async fn connect_flow(
                         BackendCmd::PowerOn => (connection.power_on().await, None),
                         BackendCmd::ScreenOn => (connection.screen_on().await, None),
                         BackendCmd::ScreenOff => (connection.screen_off().await, None),
+                        BackendCmd::SetRemoteKeys(on) => {
+                            (connection.set_remote_keys(*on).await, None)
+                        }
                         // Everything queued before it has run: dropping the
                         // token (with `cmd`) is the signal.
                         BackendCmd::Drain(_) => continue,

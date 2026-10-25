@@ -3453,8 +3453,7 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 [[package]]
 name = "linux-cec"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18b4893039f3ff37823ed39eb476d66fa79fa438afe6446f6deac7bace67213a"
+source = "git+https://github.com/TisVlay/linux-cec?rev=334a097e1ee358c8edba42d0df6be070eac70661#334a097e1ee358c8edba42d0df6be070eac70661"
 dependencies = [
  "bitfield-struct",
  "bitflags 2.13.2",
@@ -3471,8 +3470,7 @@ dependencies = [
 [[package]]
 name = "linux-cec-macros"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2df3320838cecc47f255ecc9cc970ecb16946af139c0e8ab22b69e9491d30418"
+source = "git+https://github.com/TisVlay/linux-cec?rev=334a097e1ee358c8edba42d0df6be070eac70661#334a097e1ee358c8edba42d0df6be070eac70661"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -3483,8 +3481,7 @@ dependencies = [
 [[package]]
 name = "linux-cec-sys"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72938508725e7cc6a2ab2f9569d8e9d750045a471e42e36db7437521724f53b8"
+source = "git+https://github.com/TisVlay/linux-cec?rev=334a097e1ee358c8edba42d0df6be070eac70661#334a097e1ee358c8edba42d0df6be070eac70661"
 dependencies = [
  "bitflags 2.13.2",
  "nix 0.31.3",

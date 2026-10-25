@@ -45,6 +45,10 @@ contents = [
     # Lets the daemon's user put the machine to sleep for a system
     # profile's on_tv_power_off (the profile field is the opt-in).
     { src = "packaging/polkit/50-tisvlay.rules", dst = "/usr/share/polkit-1/rules.d/50-tisvlay.rules" },
+    # Keeps the TV remote's power keys away from the desktop when a system
+    # profile's remote_keys lets the remote through. udev's own package
+    # hooks recompile the hwdb on install.
+    { src = "packaging/udev/70-tisvlay-rc-cec.hwdb", dst = "/usr/lib/udev/hwdb.d/70-tisvlay-rc-cec.hwdb" },
     # Third-party FOSS attribution. Regenerated at the repo root by
     # `just licenses-html` (a prerequisite of every `package-*`
     # recipe), gitignored so it doesn't churn between dep bumps. Lives

@@ -63,27 +63,6 @@ async fn assign_sleep_profile(
     assign_system_profile(effects, client, tv, body).await;
 }
 
-/// Give `tv` a new system profile with `body`.
-async fn assign_system_profile(
-    effects: &mut tokio::sync::mpsc::UnboundedReceiver<WireEffect>,
-    client: &tisvlay_world::WorldClient,
-    tv: uuid::Uuid,
-    body: tisvlay_core::SystemProfileConfig,
-) {
-    let profile = uuid::Uuid::new_v4();
-    client.command(Command::AddProfile {
-        record: Box::new(tisvlay_world::ProfileRecord { id: profile, body }),
-        reply: Some(tisvlay_world::Reply::new(90)),
-    });
-    collect_until(effects, |e| reply_to(e, 90)).await;
-    client.command(Command::SetSystemProfile {
-        id: tv,
-        profile: Some(profile),
-        reply: Some(tisvlay_world::Reply::new(91)),
-    });
-    collect_until(effects, |e| reply_to(e, 91)).await;
-}
-
 #[tokio::test]
 async fn a_system_profile_sleep_asks_the_daemon() {
     let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();

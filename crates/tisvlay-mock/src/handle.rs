@@ -269,6 +269,12 @@ impl MockHandle {
         }
     }
 
+    /// What the last `set_remote_keys` on `address` asked, if any: whether
+    /// the TV remote's keys reach the desktop.
+    pub fn remote_keys(&self, address: &str) -> Option<bool> {
+        self.state.lock().remote_keys.get(address).copied()
+    }
+
     /// Make `MockConnection::screen_on` return `Ok` without mutating
     /// state for `address` while `enabled` is true. Use this to
     /// drive the daemon's verify-retry-escalate path without the

@@ -61,6 +61,7 @@ pub(crate) struct TvViewRaw {
     pub has_input: bool,
     pub has_backlight: bool,
     pub has_remote_power: bool,
+    pub has_remote_keys: bool,
     pub is_screen_on: bool,
     pub volume: i32,
     pub muted: bool,
@@ -289,6 +290,7 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             has_input: tv.capabilities.contains(Capabilities::INPUT),
             has_backlight: tv.capabilities.contains(Capabilities::BACKLIGHT),
             has_remote_power: tv.capabilities.contains(Capabilities::REMOTE_POWER),
+            has_remote_keys: tv.capabilities.contains(Capabilities::REMOTE_KEYS),
             is_screen_on: tv.is_screen_on,
             volume: i32::from(tv.volume),
             muted: tv.muted,
@@ -705,7 +707,10 @@ mod tests {
         // the per-control flags the TVs-pane uses to hide the PICTURE /
         // AUDIO controls it can't drive.
         let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "CEC TV");
-        tv.capabilities = Capabilities::POWER | Capabilities::INPUT | Capabilities::REMOTE_POWER;
+        tv.capabilities = Capabilities::POWER
+            | Capabilities::INPUT
+            | Capabilities::REMOTE_POWER
+            | Capabilities::REMOTE_KEYS;
         let snap = convert_snapshot(SnapshotInputs {
             tvs: vec![tv],
             ..empty_inputs()
@@ -713,6 +718,7 @@ mod tests {
         let row = &snap.tvs[0];
         assert!(row.has_input);
         assert!(row.has_remote_power);
+        assert!(row.has_remote_keys);
         assert!(!row.has_volume);
         assert!(!row.has_mute);
         assert!(!row.has_backlight);
@@ -732,6 +738,7 @@ mod tests {
         assert!(row.has_backlight);
         assert!(row.has_screen);
         assert!(!row.has_remote_power, "not in STOCK");
+        assert!(!row.has_remote_keys, "not in STOCK");
     }
 
     #[test]

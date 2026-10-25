@@ -252,6 +252,12 @@ pub(crate) struct ConnectionHandle {
     pub cmd_tx: mpsc::UnboundedSender<BackendCmd>,
 }
 
+/// Whether this connection was last told to let the TV remote's keys
+/// reach the desktop. A new connection starts at `false`: its claim is
+/// fresh, without passthrough.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteKeysSent(pub bool);
+
 /// Transport characteristics of this TV's backend. Config-derived
 /// statics, evaluated by the reactor at enrollment and on every dial
 /// spawn — present before any connection exists, so dispatch decisions

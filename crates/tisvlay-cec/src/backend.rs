@@ -47,7 +47,12 @@ impl TvBackend for CecBackend {
         // transport": it stops the daemon's manual-entry enrichment from
         // ARP-probing a `/dev/cecN` path as if it were an IP address.
         // REMOTE_POWER: the TV's "power off this device" reaches every
-        // connection's monitor.
-        Capabilities::POWER | Capabilities::DISCOVERY | Capabilities::REMOTE_POWER
+        // connection's monitor. REMOTE_KEYS: an adapter with an RC device
+        // can pass the remote's keys to it (each connection says whether
+        // its adapter does).
+        Capabilities::POWER
+            | Capabilities::DISCOVERY
+            | Capabilities::REMOTE_POWER
+            | Capabilities::REMOTE_KEYS
     }
 }

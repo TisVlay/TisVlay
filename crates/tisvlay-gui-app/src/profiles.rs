@@ -278,7 +278,8 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
 ];
 
 /// System-profile FROM THE TV fields: the going-off events, which put the
-/// PC to sleep. Rendered below the main FIELDS card.
+/// PC to sleep, and the switch letting the remote's keys reach the desktop.
+/// Rendered below the main FIELDS card.
 pub(crate) const SYSTEM_FROM_TV_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "on_tv_power_off",
@@ -293,6 +294,10 @@ pub(crate) const SYSTEM_FROM_TV_FIELDS: &[FieldSpec] = &[
             options: SYSTEM_SLEEP_ACTION_OPTIONS,
             class: EnumClass::SystemSleepAction,
         },
+    },
+    FieldSpec {
+        wire: "remote_keys",
+        kind: FieldKind::Bool,
     },
 ];
 
@@ -397,6 +402,7 @@ fn field_label(wire: &str) -> String {
         "screencast_arms" => pgettext("profile field", "Screen capture arms"),
         "on_tv_power_off" => pgettext("profile field", "On TV power off"),
         "on_remote_power" => pgettext("profile field", "On remote power key"),
+        "remote_keys" => pgettext("profile field", "Remote keys reach the desktop"),
         // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -661,6 +667,7 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
         "automate_when" => body.automate_when.map(|when| when.to_string()),
         "on_tv_power_off" => body.on_tv_power_off.map(system_sleep_action_token),
         "on_remote_power" => body.on_remote_power.map(system_sleep_action_token),
+        "remote_keys" => body.remote_keys.map(|v| v.to_string()),
         _ => None,
     }
 }
@@ -1720,6 +1727,7 @@ fn set_system_field(
         "on_remote_power" => {
             body.on_remote_power = system_sleep_action_patch(patch, "on_remote_power")?;
         }
+        "remote_keys" => body.remote_keys = bool_patch(patch, "remote_keys")?,
         other => anyhow::bail!("Unknown system-profile field: {other}"),
     }
     Ok(())
@@ -2323,6 +2331,7 @@ mod tests {
             automate_when: Some(AutomateWhen::Always),
             on_tv_power_off: Some(SystemSleepAction::None),
             on_remote_power: Some(SystemSleepAction::None),
+            remote_keys: Some(false),
         }
     }
 
@@ -3283,7 +3292,10 @@ mod tests {
     /// lock.
     #[test]
     fn system_going_off_rows_round_trip_their_tokens() {
-        for spec in SYSTEM_FROM_TV_FIELDS {
+        for spec in SYSTEM_FROM_TV_FIELDS
+            .iter()
+            .filter(|f| matches!(f.kind, FieldKind::Enum { .. }))
+        {
             let wire = spec.wire;
             let mut body = SystemProfileBody::default();
             for token in ["suspend", "sleep", "none"] {
@@ -3306,6 +3318,20 @@ mod tests {
         .expect("known wire");
         assert_eq!(body.on_remote_power, Some(SystemSleepAction::Suspend));
         assert_eq!(body.on_tv_power_off, None, "each row writes its own field");
+    }
+
+    /// The remote-keys switch round-trips through the body.
+    #[test]
+    fn remote_keys_row_round_trips() {
+        let mut body = SystemProfileBody::default();
+        set_system_field(&mut body, "remote_keys", BodyPatch::Bool(true)).expect("known wire");
+        assert_eq!(body.remote_keys, Some(true));
+        assert_eq!(
+            read_system_field(&body, "remote_keys").as_deref(),
+            Some("true")
+        );
+        set_system_field(&mut body, "remote_keys", BodyPatch::Clear).expect("known wire");
+        assert_eq!(body.remote_keys, None);
     }
 
     /// The sleep row offers what logind grants the daemon, keeps a saved
