@@ -156,6 +156,30 @@ impl PowerState {
     pub fn needs_wake_preflight(self) -> bool {
         !self.is_awake()
     }
+
+    /// The state's [`PowerClass`]: whether the TV is on, off, or between
+    /// the two. Exhaustive here, so a new state can't ship unclassified.
+    pub fn class(self) -> PowerClass {
+        match self {
+            Self::Active | Self::ScreenSaver | Self::ScreenOff => PowerClass::On,
+            Self::Standby | Self::ActiveStandby | Self::Suspend => PowerClass::Off,
+            Self::WarmingUp | Self::CoolingDown | Self::Unknown => PowerClass::Transient,
+        }
+    }
+}
+
+/// The coarse classes the TV's power states fall in, for deciding when
+/// the TV powered off or on. LG's Active Standby is off (the panel is
+/// dark, though its network card answers); a transition or an unknown
+/// reading is transient, and never ends an edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerClass {
+    /// Usable: on, including a blanked screen or a screen saver.
+    On,
+    /// In standby, in any vendor's form of it.
+    Off,
+    /// Warming up, cooling down, or not known.
+    Transient,
 }
 
 impl TvState {
@@ -271,6 +295,27 @@ impl DiscoveredTv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every state's class, pinned: Active Standby is off though LG's
+    /// network card answers, a blanked screen is on, and transitions
+    /// and unknown readings are transient.
+    #[test]
+    fn power_states_classify() {
+        let cases = [
+            (PowerState::Active, PowerClass::On),
+            (PowerState::ScreenSaver, PowerClass::On),
+            (PowerState::ScreenOff, PowerClass::On),
+            (PowerState::Standby, PowerClass::Off),
+            (PowerState::ActiveStandby, PowerClass::Off),
+            (PowerState::Suspend, PowerClass::Off),
+            (PowerState::WarmingUp, PowerClass::Transient),
+            (PowerState::CoolingDown, PowerClass::Transient),
+            (PowerState::Unknown, PowerClass::Transient),
+        ];
+        for (state, class) in cases {
+            assert_eq!(state.class(), class, "{state:?}");
+        }
+    }
 
     /// Regression test for the Action-QoS field-test failure: when an LG
     /// TV transitions from `ScreenOff` to `ActiveStandby` (user presses

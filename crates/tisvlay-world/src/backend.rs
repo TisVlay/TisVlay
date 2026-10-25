@@ -126,6 +126,13 @@ pub(crate) async fn connect_flow(
                     return;
                 }
                 Some(cmd) => {
+                    if matches!(cmd, BackendCmd::PowerOff(_) | BackendCmd::ScreenOff) {
+                        let _ = inbox.send(InEvent::Backend {
+                            tv,
+                            dial,
+                            event: BackendEvent::SendingOff,
+                        });
+                    }
                     let (result, reply) = match &cmd {
                         BackendCmd::SetVolume(level, reply) => {
                             (connection.set_volume(*level).await, *reply)

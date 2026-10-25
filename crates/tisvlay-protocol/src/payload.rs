@@ -345,6 +345,17 @@ pub struct PowerProgress {
     pub phase: PowerPhase,
 }
 
+/// The TV powered off by itself or from its own remote, at
+/// [`keys::tv_power_off`](crate::keys::tv_power_off): a live edge from on
+/// to off between two reports on one connection, which TisVlay's own
+/// power-offs and blanks don't produce. A connection's first reading or a
+/// dropped link never sends it. Live only: subscribe without history.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TvPowerOff {
+    /// The TV that powered off.
+    pub tv: uuid::Uuid,
+}
+
 /// The phases a wake-and-connect flow walks through, ending in
 /// `connected` or `failed`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]

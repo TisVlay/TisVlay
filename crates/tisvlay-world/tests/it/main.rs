@@ -13,6 +13,7 @@ mod device;
 mod dispatch;
 mod held_wake;
 mod pairing_profiles;
+mod power_edge;
 mod reload;
 mod store;
 mod world;

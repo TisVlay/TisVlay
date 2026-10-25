@@ -39,6 +39,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, UserProfileBody};
 use tisvlay_core::{
     AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, SessionAction,
+    UserLockAction,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -60,6 +61,7 @@ use crate::{AppWindow, ProfileFieldEntry, ProfileKind, Profiles, on_ui};
 pub(crate) enum EnumClass {
     SessionAction,
     AutomateWhen,
+    UserLockAction,
 }
 
 /// Discriminator + per-variant data for one row in the profile-editor
@@ -102,6 +104,9 @@ const SESSION_ACTION_OPTIONS: &[&str] =
 
 /// Concrete option list for [`AutomateWhen`].
 const AUTOMATE_WHEN_OPTIONS: &[&str] = &["always", "on_primary", "off_primary"];
+
+/// Concrete option list for [`UserLockAction`], in declaration order.
+const USER_LOCK_ACTION_OPTIONS: &[&str] = &["none", "lock"];
 
 /// System-profile field table. Order is the rendering order in the
 /// editor — `on_startup` first, automation gate last.
@@ -266,6 +271,13 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
             class: EnumClass::SessionAction,
         },
     },
+    FieldSpec {
+        wire: "on_tv_power_off",
+        kind: FieldKind::Enum {
+            options: USER_LOCK_ACTION_OPTIONS,
+            class: EnumClass::UserLockAction,
+        },
+    },
 ];
 
 /// User-profile stream-card fields — the STREAMING card, rendered
@@ -337,6 +349,7 @@ fn field_label(wire: &str) -> String {
         "on_stream_end" => pgettext("profile field", "On stream end"),
         "on_local_return" => pgettext("profile field", "On local return"),
         "screencast_arms" => pgettext("profile field", "Screen capture arms"),
+        "on_tv_power_off" => pgettext("profile field", "On TV power off"),
         // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -631,6 +644,7 @@ fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
             .on_local_return
             .map(|a| session_action_token(a.action())),
         "screencast_arms" => body.screencast_arms.map(|v| v.to_string()),
+        "on_tv_power_off" => body.on_tv_power_off.map(user_lock_action_token),
         _ => None,
     }
 }
@@ -646,6 +660,16 @@ fn session_action_token(action: SessionAction) -> String {
         SessionAction::ScreenOn => "screen_on",
         SessionAction::PowerOff => "power_off",
         SessionAction::PowerOn => "power_on",
+    }
+    .to_string()
+}
+
+/// Map a [`UserLockAction`] to its wire token, mirroring the enum's
+/// `#[serde(rename_all = "snake_case")]`.
+fn user_lock_action_token(action: UserLockAction) -> String {
+    match action {
+        UserLockAction::None => "none",
+        UserLockAction::Lock => "lock",
     }
     .to_string()
 }
@@ -1497,6 +1521,7 @@ pub(crate) enum BodyPatch {
     /// path, which must set the verb and its modifiers atomically.
     EventAction(tisvlay_core::EventAction),
     AutomateWhen(AutomateWhen),
+    UserLockAction(UserLockAction),
     Number(u64),
     Bool(bool),
     Clear,
@@ -1521,6 +1546,16 @@ fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
     token
         .parse()
         .map_err(|_| anyhow::anyhow!("Unknown AutomateWhen variant: {token}"))
+}
+
+/// Parse a ComboBox token into a [`UserLockAction`]; the inverse of
+/// [`user_lock_action_token`].
+fn parse_user_lock_action(token: &str) -> anyhow::Result<UserLockAction> {
+    match token {
+        "none" => Ok(UserLockAction::None),
+        "lock" => Ok(UserLockAction::Lock),
+        other => Err(anyhow::anyhow!("Unknown UserLockAction variant: {other}")),
+    }
 }
 
 /// Mutate one field on a `SystemProfileBody`. The patch's variant
@@ -1581,6 +1616,9 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
         "screencast_arms" => {
             body.screencast_arms = bool_patch(patch, "screencast_arms")?;
         }
+        "on_tv_power_off" => {
+            body.on_tv_power_off = user_lock_action_patch(patch, "on_tv_power_off")?;
+        }
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
     Ok(())
@@ -1610,6 +1648,14 @@ fn automate_when_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<A
         BodyPatch::AutomateWhen(w) => Ok(Some(w)),
         BodyPatch::Clear => Ok(None),
         other => anyhow::bail!("Field '{field}' expects AutomateWhen, got {other:?}"),
+    }
+}
+
+fn user_lock_action_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<UserLockAction>> {
+    match patch {
+        BodyPatch::UserLockAction(action) => Ok(Some(action)),
+        BodyPatch::Clear => Ok(None),
+        other => anyhow::bail!("Field '{field}' expects UserLockAction, got {other:?}"),
     }
 }
 
@@ -1648,6 +1694,10 @@ fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
             class: EnumClass::AutomateWhen,
             ..
         } => Ok(BodyPatch::AutomateWhen(parse_automate_when(token)?)),
+        FieldKind::Enum {
+            class: EnumClass::UserLockAction,
+            ..
+        } => Ok(BodyPatch::UserLockAction(parse_user_lock_action(token)?)),
         FieldKind::Number { .. } => {
             anyhow::bail!("Cannot parse an enum token for a number field")
         }
@@ -2132,6 +2182,7 @@ mod tests {
             on_stream_end: Some(SessionAction::ScreenOff.into()),
             on_local_return: Some(SessionAction::ScreenOn.into()),
             screencast_arms: Some(false),
+            on_tv_power_off: Some(UserLockAction::None),
         }
     }
 
@@ -3032,6 +3083,27 @@ mod tests {
         assert_eq!(body.screencast_arms, Some(true));
         set_user_field(&mut body, "screencast_arms", BodyPatch::Clear).expect("known wire");
         assert_eq!(body.screencast_arms, None);
+    }
+
+    /// The TV power-off row round-trips its ComboBox tokens into the body
+    /// and back, and refuses a TV-side action.
+    #[test]
+    fn on_tv_power_off_round_trips_its_tokens() {
+        let spec = USER_FIELDS
+            .iter()
+            .find(|f| f.wire == "on_tv_power_off")
+            .expect("the row exists");
+        let mut body = UserProfileBody::default();
+        let patch = parse_enum_token(spec.kind, "lock").expect("a UserLockAction token");
+        set_user_field(&mut body, "on_tv_power_off", patch).expect("known wire");
+        assert_eq!(body.on_tv_power_off, Some(UserLockAction::Lock));
+        assert_eq!(
+            read_user_field(&body, "on_tv_power_off").as_deref(),
+            Some("lock")
+        );
+        assert!(parse_enum_token(spec.kind, "screen_off").is_err());
+        set_user_field(&mut body, "on_tv_power_off", BodyPatch::Clear).expect("known wire");
+        assert_eq!(body.on_tv_power_off, None);
     }
 
     #[test]

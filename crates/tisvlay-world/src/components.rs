@@ -7,8 +7,8 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::world::DeferredWorld;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
-use std::time::Instant;
-use tisvlay_core::VendorConfig;
+use std::time::{Duration, Instant};
+use tisvlay_core::{PowerClass, VendorConfig};
 use tisvlay_protocol::payload::StatePayload;
 use tisvlay_protocol::{keys, payload};
 use tokio::sync::mpsc;
@@ -54,6 +54,7 @@ fn retire_tv(mut world: DeferredWorld, ctx: HookContext) {
     if world.resource::<TvIndex>().get(&id).is_some() {
         return;
     }
+    world.resource_mut::<PowerEdges>().0.remove(&id);
     let site = world.resource::<Site>().0.clone();
     let mut outbox = world.resource_mut::<Outbox>();
     for path in payload::TV_PATHS
@@ -441,6 +442,77 @@ impl SystemProfile {
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StreamArmed(pub HashSet<Uuid>);
 
+/// Per-TV power-edge tracking: what decides that a TV powered off by
+/// itself. A resource rather than components, so the reports of one batch
+/// see each other's updates at once (a component inserted through
+/// `Commands` lands only after the system).
+#[derive(Resource, Debug, Default)]
+pub(crate) struct PowerEdges(pub HashMap<Uuid, PowerEdge>);
+
+/// One TV's power-edge state across its connections.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct PowerEdge {
+    /// Whether this connection's first state report arrived. Until it
+    /// does, a report only sets the baseline: the subscription opens with
+    /// the current state (LG's replay, CEC's seed reading or its `Active`
+    /// fallback), which is no transition.
+    seeded: bool,
+    /// The last on or off reading; transient readings don't move it.
+    settled: Option<PowerClass>,
+    /// When TisVlay last sent the TV a power-off or a blank: the off edge
+    /// that follows is its own.
+    expect_off: Option<Instant>,
+}
+
+impl PowerEdge {
+    /// A connection's first reading (the `Connected` snapshot): the
+    /// baseline, and the next report is one too.
+    pub(crate) fn connected(&mut self, class: PowerClass) {
+        self.seeded = false;
+        self.settle(class);
+    }
+
+    /// A live report: whether it ends an on-to-off edge TisVlay didn't
+    /// cause. An expectation within `limit` of `now` consumes the edge.
+    pub(crate) fn report(&mut self, class: PowerClass, now: Instant, limit: Duration) -> bool {
+        if !self.seeded {
+            self.seeded = true;
+            self.settle(class);
+            return false;
+        }
+        let edge = class == PowerClass::Off && self.settled == Some(PowerClass::On);
+        self.settle(class);
+        if !edge {
+            return false;
+        }
+        !self
+            .expect_off
+            .take()
+            .is_some_and(|at| now.saturating_duration_since(at) < limit)
+    }
+
+    /// TisVlay is sending the TV a power-off or a blank. Nothing is
+    /// recorded for a TV already off: no edge will follow to consume it,
+    /// and a stale expectation would swallow the next real one.
+    pub(crate) fn sending_off(&mut self, now: Instant) {
+        if self.settled != Some(PowerClass::Off) {
+            self.expect_off = Some(now);
+        }
+    }
+
+    /// Forget the expectation: the PC woke, and the world's clock, a
+    /// monotonic `Instant`, didn't move while it slept.
+    pub(crate) fn forget_expectation(&mut self) {
+        self.expect_off = None;
+    }
+
+    fn settle(&mut self, class: PowerClass) {
+        if class != PowerClass::Transient {
+            self.settled = Some(class);
+        }
+    }
+}
+
 /// The `<site>` chunk used in every key this world publishes.
 #[derive(Resource, Debug)]
 pub(crate) struct Site(pub String);
@@ -601,5 +673,93 @@ impl<T: StatePayload> Deref for State<T> {
 impl<T: StatePayload> DerefMut for State<T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut self.0
+    }
+}
+
+#[cfg(test)]
+mod power_edge_tests {
+    use super::*;
+
+    const LIMIT: Duration = Duration::from_secs(60);
+
+    /// A connected TV whose subscription opened with an on reading.
+    fn live_on(now: Instant) -> PowerEdge {
+        let mut edge = PowerEdge::default();
+        edge.connected(PowerClass::On);
+        assert!(
+            !edge.report(PowerClass::On, now, LIMIT),
+            "the seed is no edge"
+        );
+        edge
+    }
+
+    #[test]
+    fn a_live_power_off_is_an_edge() {
+        let now = Instant::now();
+        let mut edge = live_on(now);
+        assert!(edge.report(PowerClass::Off, now, LIMIT));
+        assert!(!edge.report(PowerClass::Off, now, LIMIT), "only once");
+    }
+
+    /// The reconnect after a keyboard wake reads standby against the
+    /// cached on: a baseline, not the TV powering off.
+    #[test]
+    fn first_readings_set_the_baseline() {
+        let now = Instant::now();
+        let mut edge = live_on(now);
+        edge.connected(PowerClass::Off);
+        assert!(!edge.report(PowerClass::Off, now, LIMIT));
+
+        // CEC's seed (or its `Active` fallback) disagreeing with the
+        // snapshot is a baseline too.
+        let mut edge = live_on(now);
+        edge.connected(PowerClass::On);
+        assert!(!edge.report(PowerClass::Off, now, LIMIT));
+    }
+
+    #[test]
+    fn transient_readings_never_end_an_edge() {
+        let now = Instant::now();
+        let mut edge = live_on(now);
+        assert!(!edge.report(PowerClass::Transient, now, LIMIT));
+        assert!(edge.report(PowerClass::Off, now, LIMIT), "on, cooling, off");
+        assert!(!edge.report(PowerClass::Transient, now, LIMIT));
+        assert!(
+            !edge.report(PowerClass::Off, now, LIMIT),
+            "off, unknown, off"
+        );
+    }
+
+    #[test]
+    fn tisvlays_own_power_off_is_consumed_until_it_expires() {
+        let now = Instant::now();
+        let mut edge = live_on(now);
+        edge.sending_off(now);
+        assert!(!edge.report(PowerClass::Off, now + Duration::from_secs(1), LIMIT));
+
+        let mut edge = live_on(now);
+        edge.sending_off(now);
+        assert!(edge.report(PowerClass::Off, now + LIMIT, LIMIT), "expired");
+    }
+
+    /// A power-off sent to a TV already off records nothing, so the next
+    /// real power-off still counts.
+    #[test]
+    fn nothing_is_expected_of_a_tv_already_off() {
+        let now = Instant::now();
+        let mut edge = live_on(now);
+        assert!(edge.report(PowerClass::Off, now, LIMIT));
+        edge.sending_off(now);
+        assert!(!edge.report(PowerClass::On, now, LIMIT));
+        assert!(edge.report(PowerClass::Off, now, LIMIT));
+    }
+
+    #[test]
+    fn waking_forgets_the_expectation() {
+        let now = Instant::now();
+        let mut edge = live_on(now);
+        edge.sending_off(now);
+        edge.forget_expectation();
+        assert!(edge.report(PowerClass::Off, now, LIMIT));
     }
 }

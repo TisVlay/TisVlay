@@ -150,6 +150,20 @@ impl Default for EventAction {
     }
 }
 
+/// What the user's session does when the TV powers off by itself or
+/// from its own remote (never for TisVlay's own power-offs): the PC side
+/// of the event, beside [`SessionAction`], which acts on the TV.
+/// Exhaustive: every arm matters to the session's dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UserLockAction {
+    /// Do nothing.
+    #[default]
+    None,
+    /// Lock the user's desktop session.
+    Lock,
+}
+
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================
@@ -522,6 +536,13 @@ pub struct UserProfileConfig {
     /// tab-share). Default off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screencast_arms: Option<bool>,
+
+    /// What the desktop does when the TV powers off by itself or from its
+    /// own remote: `lock` locks this session. TisVlay's own power-offs
+    /// never count, and nothing happens while a stream arms the TV.
+    /// Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_tv_power_off: Option<UserLockAction>,
 }
 
 profile_plumbing! {
@@ -540,6 +561,7 @@ profile_plumbing! {
         on_stream_end,
         on_local_return,
         screencast_arms,
+        on_tv_power_off,
     ],
 }
 
@@ -576,6 +598,8 @@ pub struct ResolvedUserProfile {
     pub on_local_return: EventAction,
     /// Whether an unattributed screen-capture signal arms.
     pub screencast_arms: bool,
+    /// What the desktop does when the TV powers off by itself.
+    pub on_tv_power_off: UserLockAction,
 }
 
 impl Default for ResolvedUserProfile {
@@ -613,6 +637,8 @@ impl Default for ResolvedUserProfile {
             on_stream_end: SessionAction::ScreenOff.into(),
             on_local_return: EventAction::restoring(SessionAction::ScreenOn),
             screencast_arms: false,
+            // Opt-in: the TV powering off acts on the PC only when asked.
+            on_tv_power_off: UserLockAction::None,
         }
     }
 }

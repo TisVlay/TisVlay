@@ -52,11 +52,22 @@ pub(super) fn apply_backend_events(
     latest: Query<&LatestDial>,
     mut vendors: Query<&mut VendorRef>,
     mut writes: StateWrites,
+    mut edges: ResMut<PowerEdges>,
 ) {
     // TVs this run rolled back: the index keeps them until `Commands`
     // flush, but later events of the batch must not touch them.
     let mut rolled_back = HashSet::new();
     for msg in reader.read() {
+        // The PC woke: forget every power-off expectation, since the
+        // world's clock stood still while it slept.
+        if let InEvent::System {
+            event: SystemEvent::Resume,
+            ..
+        } = msg
+        {
+            edges.0.values_mut().for_each(PowerEdge::forget_expectation);
+            continue;
+        }
         let InEvent::Backend { tv, dial, event } = msg else {
             continue;
         };
@@ -102,6 +113,11 @@ pub(super) fn apply_backend_events(
                     ))
                     .remove::<(Reconnecting, PendingConnect, RetryAt, RetryPromptly)>();
                 apply_state(&mut commands, entity, state, &mut writes);
+                edges
+                    .0
+                    .entry(*tv)
+                    .or_default()
+                    .connected(state.power_state.class());
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     let mut enriched = identity.0.clone();
                     enriched.brand = brand.clone().or(enriched.brand);
@@ -182,7 +198,18 @@ pub(super) fn apply_backend_events(
                     }
                 }
             }
-            BackendEvent::State(state) => apply_state(&mut commands, entity, state, &mut writes),
+            BackendEvent::State(state) => {
+                apply_state(&mut commands, entity, state, &mut writes);
+                let edge = edges.0.entry(*tv).or_default();
+                if edge.report(state.power_state.class(), clock.0, WAKE_HOLD_LIMIT) {
+                    tracing::info!(%tv, "TV powered off by itself");
+                    outbox.0.push(Effect::Wire(WireEffect::Publish {
+                        key: keys::tv_power_off(&site.0),
+                        payload: json!(payload::TvPowerOff { tv: *tv }),
+                    }));
+                }
+            }
+            BackendEvent::SendingOff => edges.0.entry(*tv).or_default().sending_off(clock.0),
             BackendEvent::Disconnected => {
                 let pending = writes.pending.get(entity).is_ok();
                 let mut e = commands.entity(entity);

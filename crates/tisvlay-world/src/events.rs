@@ -542,6 +542,10 @@ pub enum BackendEvent {
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
     PowerPhase(tisvlay_protocol::payload::PowerPhase),
+    /// The bridge is about to send the TV a power-off or a blank, so the
+    /// off edge that follows is TisVlay's own. Sent ahead of the command
+    /// from the same task as the TV's reports, so it lands before them.
+    SendingOff,
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
         reply: AckReply,

@@ -76,7 +76,13 @@ impl FakeLogind {
         };
         conn.object_server().at(OBJECT_PATH, manager).await?;
         conn.object_server()
-            .at(SESSION_PATH, SessionIface { locked: false })
+            .at(
+                SESSION_PATH,
+                SessionIface {
+                    locked: false,
+                    lock_requests: 0,
+                },
+            )
             .await?;
         conn.request_name(SERVICE_NAME).await?;
         let manager = conn
@@ -92,6 +98,11 @@ impl FakeLogind {
             session,
             releases,
         })
+    }
+
+    /// How many times the graphical session was asked to lock.
+    pub async fn lock_requests(&self) -> u32 {
+        self.session.get().await.lock_requests
     }
 
     /// When each inhibitor the fake handed out was released (its fd closed
@@ -184,10 +195,17 @@ impl ManagerIface {
 /// One graphical `login1.Session` with a toggleable `LockedHint`.
 pub(crate) struct SessionIface {
     locked: bool,
+    lock_requests: u32,
 }
 
 #[zbus::interface(name = "org.freedesktop.login1.Session")]
 impl SessionIface {
+    /// Count the request; the real logind tells the desktop's locker,
+    /// which sets `LockedHint` once the screen is locked.
+    async fn lock(&mut self) {
+        self.lock_requests += 1;
+    }
+
     /// `true` while the fake reports the screen locked.
     #[zbus(property)]
     async fn locked_hint(&self) -> bool {

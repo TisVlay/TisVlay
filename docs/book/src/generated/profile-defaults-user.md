@@ -41,4 +41,10 @@ on_local_return = { action = "screen_on", restore_input = true }
 # arm; this decides only the bare screencast case (OBS, browser
 # tab-share). Default off.
 screencast_arms = false
+
+# What the desktop does when the TV powers off by itself or from its
+# own remote: `lock` locks this session. TisVlay's own power-offs
+# never count, and nothing happens while a stream arms the TV.
+# Default `none`.
+on_tv_power_off = "none"
 ```

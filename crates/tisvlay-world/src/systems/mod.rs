@@ -31,9 +31,10 @@ use crate::components::{
     AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceWatch,
     DialSeq, DispatchRetry, DispatchVerify, Effect, HeldWake, KnownVendors, LastPersisted,
     LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
-    PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, ProfileAction,
-    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt, RetryPromptly, Site, State,
-    StreamArmed, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
+    PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, PowerEdge,
+    PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt,
+    RetryPromptly, Site, State, StreamArmed, SystemProfile, TransportTraits, TvId, TvIndex,
+    VendorRef, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
