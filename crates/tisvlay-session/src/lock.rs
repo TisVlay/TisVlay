@@ -57,7 +57,7 @@ trait Login1Session {
     fn lock(&self) -> zbus::Result<()>;
 }
 
-/// Spawn the locker: each request (naming the TV whose power-off asked)
+/// Spawn the locker: each request (naming the TV whose going-off event asked)
 /// locks this user's seat session through logind on the system bus. A
 /// request that finds no bus or no seat session warns and is dropped.
 pub fn spawn_locker(requests: mpsc::UnboundedReceiver<Uuid>) {

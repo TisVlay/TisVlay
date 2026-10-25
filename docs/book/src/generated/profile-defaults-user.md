@@ -47,4 +47,11 @@ screencast_arms = false
 # never count, and nothing happens while a stream arms the TV.
 # Default `none`.
 on_tv_power_off = "none"
+
+# What the desktop does when the TV's remote powers this PC off (on
+# HDMI-CEC, the TV's "power off this device"): `lock` locks this
+# session. It acts whatever the automation settings, since the press
+# is explicit, but nothing happens while a stream arms the TV.
+# Default `none`.
+on_remote_power = "none"
 ```

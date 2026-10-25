@@ -554,6 +554,8 @@ pub enum BackendEvent {
     /// off edge that follows is TisVlay's own. Sent ahead of the command
     /// from the same task as the TV's reports, so it lands before them.
     SendingOff,
+    /// The TV's remote powered this PC off ([`tisvlay_core::TvEvent::RemotePower`]).
+    RemotePower,
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
         reply: AckReply,
@@ -582,11 +584,12 @@ pub enum BackendCmd {
     Drain(DrainToken),
 }
 
-/// The machine's sleep a system profile asked for when a TV powered off by
-/// itself, for the daemon's logind adapter.
+/// The machine's sleep a system profile asked for on a going-off event (the
+/// TV powering off by itself, its remote powering the PC off), for the
+/// daemon's logind adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SleepRequest {
-    /// The TV whose power-off asked.
+    /// The TV whose event asked.
     pub tv: Uuid,
     /// How to sleep.
     pub mode: SleepMode,

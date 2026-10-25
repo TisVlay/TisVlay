@@ -39,4 +39,11 @@ automate_when = "always"
 # never count, and nothing happens while a stream arms the TV.
 # Default `none`.
 on_tv_power_off = "none"
+
+# What the machine does when the TV's remote powers this PC off (on
+# HDMI-CEC, the TV's "power off this device"): `suspend` suspends to
+# RAM, `sleep` uses the host's configured sleep. It acts whatever the
+# automation settings, since the press is explicit, but nothing
+# happens while a stream arms the TV. Default `none`.
+on_remote_power = "none"
 ```

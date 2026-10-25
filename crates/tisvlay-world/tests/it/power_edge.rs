@@ -1,5 +1,7 @@
-//! The TV powering off by itself: a live edge from on to off publishes
-//! `event/tv-power-off`, while TisVlay's own power-off doesn't.
+//! The going-off events: the TV powering off by itself (a live edge from on
+//! to off publishes `event/tv-power-off`, while TisVlay's own power-off
+//! doesn't) and its remote powering the PC off (`event/remote-power`), and
+//! the system profile's sleep for each.
 
 use crate::support;
 
@@ -53,16 +55,24 @@ async fn assign_sleep_profile(
     tv: uuid::Uuid,
     action: tisvlay_core::SystemSleepAction,
 ) {
+    let body = tisvlay_core::SystemProfileConfig {
+        name: "Sleep on TV off".into(),
+        on_tv_power_off: Some(action),
+        ..Default::default()
+    };
+    assign_system_profile(effects, client, tv, body).await;
+}
+
+/// Give `tv` a new system profile with `body`.
+async fn assign_system_profile(
+    effects: &mut tokio::sync::mpsc::UnboundedReceiver<WireEffect>,
+    client: &tisvlay_world::WorldClient,
+    tv: uuid::Uuid,
+    body: tisvlay_core::SystemProfileConfig,
+) {
     let profile = uuid::Uuid::new_v4();
     client.command(Command::AddProfile {
-        record: Box::new(tisvlay_world::ProfileRecord {
-            id: profile,
-            body: tisvlay_core::SystemProfileConfig {
-                name: "Sleep on TV off".into(),
-                on_tv_power_off: Some(action),
-                ..Default::default()
-            },
-        }),
+        record: Box::new(tisvlay_world::ProfileRecord { id: profile, body }),
         reply: Some(tisvlay_world::Reply::new(90)),
     });
     collect_until(effects, |e| reply_to(e, 90)).await;
@@ -153,4 +163,114 @@ async fn a_refused_sleep_publishes_dispatch_failed() {
         .expect("the failure");
     assert_eq!(payload["tv"], tv.to_string());
     assert_eq!(payload["action"], "suspend");
+}
+
+fn remote_powered(effect: &WireEffect) -> Option<&serde_json::Value> {
+    is_publish_on(effect, "/event/remote-power")
+}
+
+/// Wait for the next sleep request.
+async fn next_sleep(
+    sleeps: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::SleepRequest>,
+) -> tisvlay_world::SleepRequest {
+    tokio::time::timeout(Duration::from_secs(5), sleeps.recv())
+        .await
+        .expect("a sleep request")
+        .expect("reactor alive")
+}
+
+#[tokio::test]
+async fn the_remote_power_key_publishes_the_event() {
+    let (mut effects, client, mock) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://remote").await;
+
+    mock.press_remote_power("mock://remote");
+    let seen = collect_until(&mut effects, |e| remote_powered(e).is_some()).await;
+    let payload = seen.iter().find_map(remote_powered).expect("the event");
+    assert_eq!(payload["tv"], id.to_string());
+}
+
+/// The remote's power key runs the system profile's `on_remote_power`, and
+/// only it: the TV's own power-off field stays out of it.
+#[tokio::test]
+async fn a_remote_power_profile_sleeps_the_pc() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    let tv = add_connected_tv(&mut effects, &client, "mock://remote-sleep").await;
+    let body = tisvlay_core::SystemProfileConfig {
+        name: "Sleep on the remote".into(),
+        on_remote_power: Some(tisvlay_core::SystemSleepAction::Sleep),
+        ..Default::default()
+    };
+    assign_system_profile(&mut effects, &client, tv, body).await;
+
+    mock.press_remote_power("mock://remote-sleep");
+    assert_eq!(
+        next_sleep(&mut sleeps).await,
+        tisvlay_world::SleepRequest {
+            tv,
+            mode: tisvlay_world::SleepMode::Sleep
+        }
+    );
+    mock.inject_power_state("mock://remote-sleep", PowerState::Standby);
+    collect_until(&mut effects, |e| powered_off(e).is_some()).await;
+    assert!(
+        sleeps.try_recv().is_err(),
+        "on_tv_power_off is unset, so the TV powering off sleeps nothing"
+    );
+}
+
+/// The press is explicit, so it acts with automation gated off, where the
+/// TV powering off by itself doesn't.
+#[tokio::test]
+async fn the_remote_power_key_ignores_the_automation_gate() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    let tv = add_connected_tv(&mut effects, &client, "mock://remote-gated").await;
+    // The mock sits on HDMI_1; automating only on the primary, HDMI_2,
+    // gates automation off.
+    client.command(Command::SetPrimaryInput {
+        id: tv,
+        input: Some("HDMI_2".into()),
+        reply: Some(tisvlay_world::Reply::new(80)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 80)).await;
+    let body = tisvlay_core::SystemProfileConfig {
+        name: "Gated".into(),
+        automate_when: Some(tisvlay_core::AutomateWhen::OnPrimary),
+        on_tv_power_off: Some(tisvlay_core::SystemSleepAction::Suspend),
+        on_remote_power: Some(tisvlay_core::SystemSleepAction::Suspend),
+        ..Default::default()
+    };
+    assign_system_profile(&mut effects, &client, tv, body).await;
+
+    mock.inject_power_state("mock://remote-gated", PowerState::Standby);
+    collect_until(&mut effects, |e| powered_off(e).is_some()).await;
+    assert!(
+        sleeps.try_recv().is_err(),
+        "automation gates the TV powering off"
+    );
+    mock.press_remote_power("mock://remote-gated");
+    assert_eq!(
+        next_sleep(&mut sleeps).await.mode,
+        tisvlay_world::SleepMode::Suspend
+    );
+}
+
+#[tokio::test]
+async fn a_stream_holds_the_remote_power_sleep_back() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    let tv = add_connected_tv(&mut effects, &client, "mock://remote-stream").await;
+    let body = tisvlay_core::SystemProfileConfig {
+        name: "Sleep on the remote".into(),
+        on_remote_power: Some(tisvlay_core::SystemSleepAction::Suspend),
+        ..Default::default()
+    };
+    assign_system_profile(&mut effects, &client, tv, body).await;
+    client.send(tisvlay_world::InEvent::Stream { armed: vec![tv] });
+
+    mock.press_remote_power("mock://remote-stream");
+    collect_until(&mut effects, |e| remote_powered(e).is_some()).await;
+    assert!(
+        sleeps.try_recv().is_err(),
+        "a stream must hold the sleep back"
+    );
 }

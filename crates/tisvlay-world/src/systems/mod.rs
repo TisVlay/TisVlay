@@ -29,10 +29,10 @@ use uuid::Uuid;
 
 use crate::components::{
     AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceWatch,
-    DialSeq, DispatchRetry, DispatchVerify, Effect, HeldWake, KnownVendors, LastPersisted,
-    LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
-    PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, PowerEdge,
-    PowerEdges, PoweredOff, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
+    DialSeq, DispatchRetry, DispatchVerify, Effect, GoingOff, GoingOffEvent, HeldWake,
+    KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox,
+    PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
+    PowerEdge, PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
     RetryAt, RetryPromptly, Site, State, StreamArmed, SystemProfile, TransportTraits, TvId,
     TvIndex, VendorRef, dependency_absent,
 };
@@ -89,7 +89,7 @@ pub(crate) fn build_schedule() -> Schedule {
             // dispatch reads this step's automation verdict.
             derive_automated,
             dispatch_system_events,
-            dispatch_tv_power_off,
+            dispatch_going_off,
             reconcile_connections,
         )
             .chain()

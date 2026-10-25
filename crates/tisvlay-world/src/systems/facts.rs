@@ -53,7 +53,7 @@ pub(super) fn apply_backend_events(
     mut vendors: Query<&mut VendorRef>,
     mut writes: StateWrites,
     mut edges: ResMut<PowerEdges>,
-    mut powered: ResMut<PoweredOff>,
+    mut going_off: ResMut<GoingOff>,
 ) {
     // TVs this run rolled back: the index keeps them until `Commands`
     // flush, but later events of the batch must not touch them.
@@ -204,7 +204,7 @@ pub(super) fn apply_backend_events(
                 let edge = edges.0.entry(*tv).or_default();
                 if edge.report(state.power_state.class(), clock.0, WAKE_HOLD_LIMIT) {
                     tracing::info!(%tv, "TV powered off by itself");
-                    powered.0.push(*tv);
+                    going_off.0.push((*tv, GoingOffEvent::TvPowerOff));
                     outbox.0.push(Effect::Wire(WireEffect::Publish {
                         key: keys::tv_power_off(&site.0),
                         payload: json!(payload::TvPowerOff { tv: *tv }),
@@ -212,6 +212,14 @@ pub(super) fn apply_backend_events(
                 }
             }
             BackendEvent::SendingOff => edges.0.entry(*tv).or_default().sending_off(clock.0),
+            BackendEvent::RemotePower => {
+                tracing::info!(%tv, "the TV's remote powered the PC off");
+                going_off.0.push((*tv, GoingOffEvent::RemotePower));
+                outbox.0.push(Effect::Wire(WireEffect::Publish {
+                    key: keys::remote_power(&site.0),
+                    payload: json!(payload::RemotePower { tv: *tv }),
+                }));
+            }
             BackendEvent::Disconnected => {
                 let pending = writes.pending.get(entity).is_ok();
                 let mut e = commands.entity(entity);

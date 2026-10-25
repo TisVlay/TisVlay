@@ -70,6 +70,9 @@ export struct TvViewModel {
     has-mute: bool,
     has-input: bool,
     has-backlight: bool,
+    /// Whether the TV's remote can power this PC off (the profiles'
+    /// `on_remote_power`), from the same capabilities.
+    has-remote-power: bool,
     is-screen-on: bool,
     volume: int,
     muted: bool,
@@ -846,6 +849,26 @@ component TvDetail inherits Rectangle {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // -- From the TV --
+                //
+                // What this TV's connection can tell the PC, for the
+                // profiles' FROM THE TV rows: a row the connection can't
+                // honor does nothing for this TV, and this says so.
+                Group {
+                    title: @tr("FROM THE TV");
+
+                    FormRow {
+                        label: @tr("Remote power key");
+                        help: @tr("Whether the TV's remote can power this PC off (on HDMI-CEC, the TV's \"power off this device\"), for the profiles' \"On remote power key\".");
+                        Text {
+                            text: root.tv.has-remote-power ? @tr("Reaches this PC") : @tr("Not on this connection");
+                            color: root.tv.has-remote-power ? Theme.text : Theme.text-dim;
+                            font-size: Design.font-body;
+                            vertical-alignment: center;
                         }
                     }
                 }

@@ -47,7 +47,7 @@ pub use config::{
 };
 
 // State
-pub use state::{DiscoveredTv, InputInfo, PowerClass, PowerState, TvState};
+pub use state::{DiscoveredTv, InputInfo, PowerClass, PowerState, TvEvent, TvState};
 
 // Errors
 pub use error::{Error, Result};

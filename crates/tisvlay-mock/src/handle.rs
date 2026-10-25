@@ -44,7 +44,7 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tisvlay_core::{DiscoveredTv, HardwareId, PowerState};
+use tisvlay_core::{DiscoveredTv, HardwareId, PowerState, TvEvent};
 use tracing::instrument;
 
 use crate::pairing::PairingOutcome;
@@ -245,6 +245,28 @@ impl MockHandle {
             ?target,
             "mutated mock state without pushing update"
         );
+    }
+
+    /// Press the TV remote's power key, aimed at this PC: push
+    /// [`TvEvent::RemotePower`] through every live event subscription for
+    /// `address`, as a CEC TV's "power off this device" would.
+    ///
+    /// No-op if no connection has subscribed for that address.
+    #[instrument(skip(self))]
+    pub fn press_remote_power(&self, address: &str) {
+        let txs = self
+            .state
+            .lock()
+            .event_txs
+            .get(address)
+            .cloned()
+            .unwrap_or_default();
+        if txs.is_empty() {
+            tracing::debug!(address, "no live mock event subscription to press into");
+        }
+        for tx in txs {
+            let _ = tx.send(TvEvent::RemotePower);
+        }
     }
 
     /// Make `MockConnection::screen_on` return `Ok` without mutating

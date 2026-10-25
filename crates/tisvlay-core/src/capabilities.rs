@@ -114,6 +114,20 @@ bitflags! {
         /// shape: WebSocket yes, SSDP no).
         const IPV6 = 0b0010_0000_0000;
 
+        // ----- The TV acting on the PC -----
+        //
+        // What a connection can tell the PC, for the profiles' PC
+        // actions. Out of STOCK like the transport bits: a backend
+        // declares one only when its connection delivers it.
+
+        /// The remote's power key, aimed at this PC, reaches it.
+        ///
+        /// Connections with this capability report the press through
+        /// [`TvConnection::subscribe_events`](crate::TvConnection::subscribe_events)
+        /// as [`TvEvent::RemotePower`](crate::TvEvent::RemotePower), which
+        /// the profiles' `on_remote_power` acts on.
+        const REMOTE_POWER = 0b0100_0000_0000;
+
         /// The stock feature set — the conventional baseline a typical
         /// TV backend is expected to expose. Transport-family bits
         /// (IPV4, IPV6) are deliberately excluded — see their doc
@@ -181,6 +195,9 @@ impl Capabilities {
         if self.contains(Self::IPV6) {
             caps.push("ipv6");
         }
+        if self.contains(Self::REMOTE_POWER) {
+            caps.push("remote_power");
+        }
         caps
     }
 
@@ -204,6 +221,7 @@ impl Capabilities {
                 "discovery" => caps |= Self::DISCOVERY,
                 "ipv4" => caps |= Self::IPV4,
                 "ipv6" => caps |= Self::IPV6,
+                "remote_power" => caps |= Self::REMOTE_POWER,
                 _ => {} // Ignore unknown capabilities
             }
         }
@@ -306,6 +324,23 @@ mod tests {
         assert!(strings.contains(&"ipv6"));
         let restored = Capabilities::from_strings(&strings);
         assert_eq!(caps, restored);
+    }
+
+    /// The hand-written names match the lowercased flag names, which is
+    /// what a connection's capabilities go out on the wire as.
+    #[test]
+    fn names_match_the_flag_names() {
+        let all = Capabilities::all();
+        let flags: Vec<String> = all
+            .iter_names()
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
+        assert_eq!(all.to_strings(), flags);
+        assert_eq!(
+            Capabilities::from_strings(&all.to_strings()),
+            all,
+            "every name parses back"
+        );
     }
 
     #[test]

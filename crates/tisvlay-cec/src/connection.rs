@@ -15,15 +15,17 @@
     clippy::cast_possible_truncation
 )]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use linux_cec::message::Message;
-use linux_cec::operand::PowerStatus;
+use linux_cec::operand::{PowerStatus, UiCommand};
 use linux_cec::{LogicalAddress, PhysicalAddress};
-use tisvlay_core::{Capabilities, Error, InputInfo, PowerState, Result, TvConnection, TvState};
+use tisvlay_core::{
+    Capabilities, Error, InputInfo, PowerState, Result, TvConnection, TvEvent, TvState,
+};
 use tokio::sync::mpsc;
 
 use crate::link::{CecLink, CecLinkOpener};
@@ -33,6 +35,15 @@ use crate::link::{CecLink, CecLinkOpener};
 /// momentary bus glitch (recover) from a wedged adapter (stop).
 const MONITOR_MAX_ERRORS: u32 = 5;
 const MONITOR_ERROR_BACKOFF: Duration = Duration::from_millis(500);
+
+/// A held key repeats `<User Control Pressed>`; a power-key press this soon
+/// after the last one, with no `<User Control Released>` between, is the
+/// same press. CEC's repeat interval is well under it.
+const POWER_KEY_REPEAT: Duration = Duration::from_secs(1);
+
+/// Where the monitor task sends [`TvEvent`]s: the latest
+/// `subscribe_events` channel, or nowhere before the first.
+type EventSlot = Arc<Mutex<Option<mpsc::UnboundedSender<TvEvent>>>>;
 
 /// A live CEC control handle for one TV.
 #[derive(Debug)]
@@ -62,6 +73,10 @@ pub(crate) struct CecConnection {
     /// (e.g. on power-off). Without this the detached task would keep the
     /// channel open and the TV would read `Connected` forever.
     monitor_task: Option<tokio::task::JoinHandle<()>>,
+    /// Shared with the monitor task, which sees the remote's keys as well
+    /// as the TV's power: `subscribe_events` fills it, in either order
+    /// with `subscribe_state`.
+    events: EventSlot,
 }
 
 impl CecConnection {
@@ -79,6 +94,7 @@ impl CecConnection {
             hardware_id: identity.hardware_id,
             brand: identity.brand,
             monitor_task: None,
+            events: EventSlot::default(),
         }
     }
 }
@@ -103,6 +119,44 @@ fn power_from_message(message: &Message) -> Option<PowerState> {
             Some(PowerState::Active)
         }
         _ => None,
+    }
+}
+
+/// Whether a key is the remote's power key, in the forms a TV sends for
+/// "power off this device": LG's SIMPLINK sends `Power`, and Power Off is
+/// unambiguous. Not Power Toggle: a TV may send it to wake the PC, and a
+/// copy that reached the woken PC would put it straight back to sleep.
+fn is_power_key(command: UiCommand) -> bool {
+    matches!(command, UiCommand::Power | UiCommand::PowerOffFunction)
+}
+
+/// The remote's power key, debounced: one press however long the key is
+/// held, since a held key repeats `<User Control Pressed>`.
+#[derive(Debug, Default)]
+struct PowerKey {
+    /// When the power key was last seen pressed, while it may still be held.
+    held_at: Option<Instant>,
+}
+
+impl PowerKey {
+    /// Whether the TV's `message` is a fresh press of the power key. Another
+    /// key or `<User Control Released>` ends the hold; so does a repeat
+    /// later than [`POWER_KEY_REPEAT`].
+    fn press(&mut self, message: &Message, now: Instant) -> bool {
+        match message {
+            Message::UserControlPressed { ui_command } if is_power_key(*ui_command) => {
+                let repeat = self
+                    .held_at
+                    .is_some_and(|at| now.saturating_duration_since(at) < POWER_KEY_REPEAT);
+                self.held_at = Some(now);
+                !repeat
+            }
+            Message::UserControlPressed { .. } | Message::UserControlReleased => {
+                self.held_at = None;
+                false
+            }
+            _ => false,
+        }
     }
 }
 
@@ -197,7 +251,9 @@ impl TvConnection for CecConnection {
         // `is_connected()`; otherwise the daemon's subscription-end gate
         // (which reads `is_connected()`) suppresses `ConnectionChanged`.
         let connected = Arc::clone(&self.connected);
+        let events = Arc::clone(&self.events);
         let task = tokio::spawn(async move {
+            let mut power_key = PowerKey::default();
             // Running snapshot re-pushed on every power-relevant change. The
             // best-effort input set rides along; the daemon merges partial
             // fields, but a full snapshot keeps the contract identical to a
@@ -225,13 +281,23 @@ impl TvConnection for CecConnection {
                         // Only the TV's own broadcasts define its power —
                         // ignore the adapter's looped-back wake / Active
                         // Source frames and unrelated sources on the bus.
-                        if initiator == LogicalAddress::Tv
-                            && let Some(power) = power_from_message(&message)
-                        {
+                        // Its key presses reach this follower only when
+                        // addressed to us, so the power key is aimed here.
+                        if initiator != LogicalAddress::Tv {
+                            continue;
+                        }
+                        if let Some(power) = power_from_message(&message) {
                             state.update_power(power);
                             if tx.send(state.clone()).is_err() {
                                 break; // daemon dropped the subscription
                             }
+                        } else if power_key.press(&message, Instant::now())
+                            && let Some(events) = events
+                                .lock()
+                                .expect("nothing panics while the event slot's lock is held")
+                                .as_ref()
+                        {
+                            let _ = events.send(TvEvent::RemotePower);
                         }
                     }
                     // Idle beat: stop once the consumer is gone. Does NOT
@@ -276,13 +342,22 @@ impl TvConnection for CecConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Power only. INPUT is not advertised — see `CecBackend::capabilities`
-        // for why (CEC can't reliably route to an arbitrary input; the
-        // `switch_input` impl is kept dormant). `SCREEN` for a screen-via-power
-        // CEC TV is added by the daemon (config-aware `get_capabilities`), not
-        // here: the emulation — dispatching screen actions as power — lives at
-        // the daemon so it reuses the correct `power_off`/`power_on` path.
-        Capabilities::POWER
+        // Power, and the remote's power key through `subscribe_events`.
+        // INPUT is not advertised — see `CecBackend::capabilities` for why
+        // (CEC can't reliably route to an arbitrary input; the
+        // `switch_input` impl is kept dormant).
+        Capabilities::POWER | Capabilities::REMOTE_POWER
+    }
+
+    async fn subscribe_events(&mut self) -> Result<mpsc::UnboundedReceiver<TvEvent>> {
+        // The `subscribe_state` monitor sees the keys too, so this only
+        // points it at a new channel: no second follower handle.
+        let (tx, rx) = mpsc::unbounded_channel();
+        *self
+            .events
+            .lock()
+            .expect("nothing panics while the event slot's lock is held") = Some(tx);
+        Ok(rx)
     }
 
     async fn power_off(&mut self) -> Result<()> {
@@ -460,6 +535,78 @@ mod tests {
         );
     }
 
+    fn pressed(ui_command: UiCommand) -> Message {
+        Message::UserControlPressed { ui_command }
+    }
+
+    /// A held power key is one press: its repeats count only after a
+    /// release, another key, or a pause past the repeat window.
+    #[test]
+    fn the_power_key_is_debounced() {
+        let start = Instant::now();
+        let mut key = PowerKey::default();
+        assert!(key.press(&pressed(UiCommand::Power), start));
+        assert!(!key.press(&pressed(UiCommand::Power), start), "a repeat");
+        assert!(!key.press(&Message::UserControlReleased, start));
+        assert!(
+            key.press(&pressed(UiCommand::Power), start),
+            "after release"
+        );
+        assert!(!key.press(&pressed(UiCommand::Up), start));
+        assert!(key.press(&pressed(UiCommand::Power), start), "after a key");
+        assert!(
+            key.press(
+                &pressed(UiCommand::Power),
+                start.checked_add(POWER_KEY_REPEAT).unwrap()
+            ),
+            "after a pause"
+        );
+        assert!(
+            !key.press(&pressed(UiCommand::Up), start),
+            "not the power key"
+        );
+        assert!(key.press(&pressed(UiCommand::PowerOffFunction), start));
+        assert!(
+            !key.press(&pressed(UiCommand::PowerToggleFunction), start),
+            "a toggle may be a wake"
+        );
+    }
+
+    /// The monitor reports the TV's power-key presses as events, one per
+    /// press, and ignores another device's.
+    #[tokio::test]
+    async fn subscribe_events_reports_the_remote_power_key() {
+        let opener = Arc::new(FakeCecLinkOpener::with_monitor_script_from(vec![
+            (LogicalAddress::Tv, pressed(UiCommand::Power)),
+            (LogicalAddress::Tv, pressed(UiCommand::Power)),
+            (LogicalAddress::Tv, Message::UserControlReleased),
+            (LogicalAddress::PlaybackDevice1, pressed(UiCommand::Power)),
+            (LogicalAddress::Tv, pressed(UiCommand::Power)),
+        ]));
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::On)),
+            opener,
+            "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
+        );
+        assert!(conn.capabilities().contains(Capabilities::REMOTE_POWER));
+        // Events first: the fake monitor runs its script at once.
+        let mut events = conn.subscribe_events().await.expect("subscribe events");
+        let _state = conn.subscribe_state().await.expect("subscribe state");
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .expect("a press within 1s")
+                .expect("event channel open");
+            assert_eq!(event, TvEvent::RemotePower);
+        }
+        let more = tokio::time::timeout(Duration::from_millis(100), events.recv()).await;
+        assert!(
+            more.is_err(),
+            "a repeat or another device's press: {more:?}"
+        );
+    }
+
     #[tokio::test]
     async fn monitor_disconnect_flips_is_connected() {
         // A monitor `recv` that returns `ConnectionClosed` (adapter unplugged
@@ -555,13 +702,13 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_power_only() {
-        // The connection is a pure power backend; INPUT is not advertised
-        // (see `CecBackend::capabilities`) and SCREEN for a screen-via-power
-        // CEC TV is added by the daemon's config-aware `get_capabilities`,
-        // not here.
+    fn capabilities_are_power_and_the_remote_power_key() {
+        // INPUT is not advertised (see `CecBackend::capabilities`).
         let conn = connection(PowerStatus::On);
-        assert_eq!(conn.capabilities(), Capabilities::POWER);
+        assert_eq!(
+            conn.capabilities(),
+            Capabilities::POWER | Capabilities::REMOTE_POWER
+        );
     }
 
     #[test]

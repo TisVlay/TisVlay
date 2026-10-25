@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
-use tisvlay_core::{DiscoveredTv, HardwareId, PowerState, TvState};
+use tisvlay_core::{DiscoveredTv, HardwareId, PowerState, TvEvent, TvState};
 use tokio::sync::mpsc;
 
 use crate::pairing::PairingOutcome;
@@ -83,6 +83,11 @@ pub(crate) struct MockState {
     /// `send` and are left in place (the maps are bounded by test
     /// lifetime).
     pub(crate) subscription_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvState>>>,
+
+    /// Live event senders per mock TV address, registered by
+    /// `MockConnection::subscribe_events` for
+    /// [`MockHandle::press_remote_power`](crate::handle::MockHandle::press_remote_power).
+    pub(crate) event_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvEvent>>>,
 
     /// Addresses where `MockConnection::screen_on` should return `Ok`
     /// without mutating state. Set via

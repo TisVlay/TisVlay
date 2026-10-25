@@ -37,6 +37,6 @@ impl TvBackend for MockBackend {
         // IP families — so tests exercise both the v4 and v6
         // gating/dispatch paths the daemon and GUI implement on
         // top of the transport-family bits.
-        Capabilities::STOCK | Capabilities::IPV4 | Capabilities::IPV6
+        Capabilities::STOCK | Capabilities::IPV4 | Capabilities::IPV6 | Capabilities::REMOTE_POWER
     }
 }

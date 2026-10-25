@@ -46,6 +46,8 @@ impl TvBackend for CecBackend {
         // Declaring neither IPV4 nor IPV6 is load-bearing beyond "not a network
         // transport": it stops the daemon's manual-entry enrichment from
         // ARP-probing a `/dev/cecN` path as if it were an IP address.
-        Capabilities::POWER | Capabilities::DISCOVERY
+        // REMOTE_POWER: the TV's "power off this device" reaches every
+        // connection's monitor.
+        Capabilities::POWER | Capabilities::DISCOVERY | Capabilities::REMOTE_POWER
     }
 }

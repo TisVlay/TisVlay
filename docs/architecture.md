@@ -46,6 +46,7 @@ manager/rpc/<verb>                                    add-tv, pair, discover[-st
 discovery/<session>/found/<id>                        streaming findings + alive/discovery/<session> token
 event/session/<name>, event/connect-failed            observability taps
 event/tv-power-off                                    the TV powered off by itself (live edge; the session reads it without history)
+event/remote-power                                    the TV's remote powered this PC off (a remote_power connection's; the session reads it without history)
 greeter/{idle,timeout}                                greeter idle events + published timeout
 stream/state                                          stream fact mirror (cached pub; daemon hydrates → world gate)
 alive/{daemon,session,…}                              liveliness tokens (session = presence on its system link)

@@ -417,8 +417,9 @@ async fn user_profile_overrides_and_guards() {
             "on_stream_end": "screen_off",
             "on_local_return": { "action": "screen_on", "restore_input": true, "while_streaming": false },
             "screencast_arms": false,
-            // The TV powering off acts on the PC only when asked.
+            // The going-off events act on the PC only when asked.
             "on_tv_power_off": "none",
+            "on_remote_power": "none",
         })
     );
 
@@ -1868,4 +1869,106 @@ async fn the_locker_locks_the_seat_session() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(fake.lock_requests().await, 1);
+}
+
+/// Press the mock TV's remote power key until the core asks to lock,
+/// absorbing fleet-mirror lag (the core resolves the TV's user profile
+/// from the meta it holds).
+async fn lock_requested_after_remote_power(rig: &mut Rig, address: &str, tv: Uuid) {
+    for _ in 0..20 {
+        rig.mock.press_remote_power(address);
+        if let Ok(asked) =
+            tokio::time::timeout(Duration::from_millis(500), rig.stack.lock_requests.recv()).await
+        {
+            assert_eq!(asked, Some(tv), "the request names the TV");
+            return;
+        }
+    }
+    panic!("the remote's power key never asked for a lock");
+}
+
+/// The remote's power key locks the session when the user profile asks,
+/// even with automation gated off: the press is explicit.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remote_power_key_requests_a_lock_without_automation() {
+    use tisvlay_protocol::endpoint::{profile, tv as tv_rpc};
+
+    let mut rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-lock").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    // The mock sits on HDMI_1; automating only on the primary, HDMI_2,
+    // gates automation off.
+    let system = call::<profile::Create>(
+        &rig.caller,
+        &(),
+        &body(json!({ "body": { "name": "Gated", "automate_when": "on_primary" } })),
+    )
+    .await
+    .expect("create ok")
+    .id;
+    call::<tv_rpc::SetSystemProfile>(&rig.caller, &tv, &body(json!({ "profile": system })))
+        .await
+        .expect("assign ok");
+    call::<tv_rpc::SetPrimaryInput>(&rig.caller, &tv, &body(json!({ "input": "HDMI_2" })))
+        .await
+        .expect("primary ok");
+    wait_tv_state(&sub, &rig.site, tv, "meta/config", |v| {
+        v["automated"] == false
+    })
+    .await;
+    create_and_assign(
+        &rig,
+        tv,
+        json!({ "name": "Lock on the remote", "on_remote_power": "lock" }),
+    )
+    .await;
+
+    lock_requested_after_remote_power(&mut rig, "mock://remote-lock", tv).await;
+}
+
+/// While a stream arms the TV, its remote's power key locks nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_holds_the_remote_power_lock_back() {
+    let mut rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-stream").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    create_and_assign(
+        &rig,
+        tv,
+        json!({ "name": "Lock on the remote", "on_remote_power": "lock" }),
+    )
+    .await;
+    // Unarmed, it locks (so the core holds the TV's meta from here on).
+    lock_requested_after_remote_power(&mut rig, "mock://remote-stream", tv).await;
+
+    let fact = history_sub(&rig.user, keys::user_stream_state(&rig.site)).await;
+    assert!(
+        rig.stack
+            .stream
+            .report(StreamReport::manual("manual", true)),
+        "core gone"
+    );
+    recv_until(&fact, |s| {
+        s.kind() == zenoh::sample::SampleKind::Put
+            && payload_json(s)["armed"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|id| id == &json!(tv.to_string())))
+    })
+    .await;
+
+    rig.mock.press_remote_power("mock://remote-stream");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(600), rig.stack.lock_requests.recv())
+            .await
+            .is_err(),
+        "a stream must hold the lock back"
+    );
 }

@@ -37,6 +37,13 @@ pub fn tv_power_off(site: &str) -> String {
     event(site, "tv-power-off")
 }
 
+/// The TV's remote powering this PC off, published by the daemon:
+/// `tisvlay/<site>/event/remote-power` with a
+/// [`RemotePower`](crate::payload::RemotePower).
+pub fn remote_power(site: &str) -> String {
+    event(site, "remote-power")
+}
+
 /// Session-event tap published by the session service on the system
 /// socket: `tisvlay/<site>/event/session/<name>`.
 pub fn session_event(site: &str, name: &str) -> String {
@@ -447,6 +454,7 @@ mod tests {
     #[test]
     fn stream_state_key_shapes() {
         assert_eq!(tv_power_off("main"), "tisvlay/main/event/tv-power-off");
+        assert_eq!(remote_power("main"), "tisvlay/main/event/remote-power");
         assert_eq!(user_stream_state("main"), "tisvlay/main/user/stream/state");
         assert_eq!(stream_state("main"), "tisvlay/main/stream/state");
         assert_eq!(

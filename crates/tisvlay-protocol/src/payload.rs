@@ -356,6 +356,16 @@ pub struct TvPowerOff {
     pub tv: uuid::Uuid,
 }
 
+/// The TV's remote powered this PC off, at
+/// [`keys::remote_power`](crate::keys::remote_power): on HDMI-CEC, the TV's
+/// "power off this device" aimed at the PC, once per press. Live only:
+/// subscribe without history.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemotePower {
+    /// The TV whose remote it was.
+    pub tv: uuid::Uuid,
+}
+
 /// The phases a wake-and-connect flow walks through, ending in
 /// `connected` or `failed`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]

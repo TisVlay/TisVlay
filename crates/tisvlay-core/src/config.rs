@@ -150,10 +150,11 @@ impl Default for EventAction {
     }
 }
 
-/// What the user's session does when the TV powers off by itself or
-/// from its own remote (never for TisVlay's own power-offs): the PC side
-/// of the event, beside [`SessionAction`], which acts on the TV.
-/// Exhaustive: every arm matters to the session's dispatch.
+/// What the user's session does on a going-off event: the TV powering off
+/// by itself or from its own remote (never for TisVlay's own power-offs),
+/// or the TV's remote powering this PC off. The PC side of these events,
+/// beside [`SessionAction`], which acts on the TV. Exhaustive: every arm
+/// matters to the session's dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UserLockAction {
@@ -164,9 +165,10 @@ pub enum UserLockAction {
     Lock,
 }
 
-/// What the machine does when the TV powers off by itself or from its own
-/// remote (never for TisVlay's own power-offs): the system profile's side
-/// of the event, run by the daemon. The values are logind's sleep modes.
+/// What the machine does on a going-off event: the TV powering off by
+/// itself or from its own remote (never for TisVlay's own power-offs), or
+/// the TV's remote powering this PC off. The system profile's side of
+/// these events, run by the daemon. The values are logind's sleep modes.
 /// Exhaustive: every arm matters to the dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -401,6 +403,14 @@ pub struct SystemProfileConfig {
     /// Default `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_tv_power_off: Option<SystemSleepAction>,
+
+    /// What the machine does when the TV's remote powers this PC off (on
+    /// HDMI-CEC, the TV's "power off this device"): `suspend` suspends to
+    /// RAM, `sleep` uses the host's configured sleep. It acts whatever the
+    /// automation settings, since the press is explicit, but nothing
+    /// happens while a stream arms the TV. Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_remote_power: Option<SystemSleepAction>,
 }
 
 profile_plumbing! {
@@ -420,6 +430,7 @@ profile_plumbing! {
         on_idle_resume,
         automate_when,
         on_tv_power_off,
+        on_remote_power,
     ],
 }
 
@@ -458,6 +469,8 @@ pub struct ResolvedSystemProfile {
     pub automate_when: AutomateWhen,
     /// What the machine does when the TV powers off by itself.
     pub on_tv_power_off: SystemSleepAction,
+    /// What the machine does when the TV's remote powers this PC off.
+    pub on_remote_power: SystemSleepAction,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -491,6 +504,7 @@ impl Default for ResolvedSystemProfile {
             automate_when: AutomateWhen::Always,
             // Opt-in: the TV powering off sleeps the PC only when asked.
             on_tv_power_off: SystemSleepAction::None,
+            on_remote_power: SystemSleepAction::None,
         }
     }
 }
@@ -574,6 +588,14 @@ pub struct UserProfileConfig {
     /// Default `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_tv_power_off: Option<UserLockAction>,
+
+    /// What the desktop does when the TV's remote powers this PC off (on
+    /// HDMI-CEC, the TV's "power off this device"): `lock` locks this
+    /// session. It acts whatever the automation settings, since the press
+    /// is explicit, but nothing happens while a stream arms the TV.
+    /// Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_remote_power: Option<UserLockAction>,
 }
 
 profile_plumbing! {
@@ -593,6 +615,7 @@ profile_plumbing! {
         on_local_return,
         screencast_arms,
         on_tv_power_off,
+        on_remote_power,
     ],
 }
 
@@ -631,6 +654,8 @@ pub struct ResolvedUserProfile {
     pub screencast_arms: bool,
     /// What the desktop does when the TV powers off by itself.
     pub on_tv_power_off: UserLockAction,
+    /// What the desktop does when the TV's remote powers this PC off.
+    pub on_remote_power: UserLockAction,
 }
 
 impl Default for ResolvedUserProfile {
@@ -670,6 +695,7 @@ impl Default for ResolvedUserProfile {
             screencast_arms: false,
             // Opt-in: the TV powering off acts on the PC only when asked.
             on_tv_power_off: UserLockAction::None,
+            on_remote_power: UserLockAction::None,
         }
     }
 }

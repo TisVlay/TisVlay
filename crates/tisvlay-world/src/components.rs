@@ -444,10 +444,19 @@ impl SystemProfile {
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StreamArmed(pub HashSet<Uuid>);
 
-/// TVs that powered off by themselves this step, for the system profile's
-/// sleep dispatch: the fact system pushes, the dispatch drains.
+/// This step's going-off events, for the system profile's sleep dispatch:
+/// the fact system pushes, the dispatch drains.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct PoweredOff(pub Vec<Uuid>);
+pub(crate) struct GoingOff(pub Vec<(Uuid, GoingOffEvent)>);
+
+/// A going-off event: what the system profile's sleep answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GoingOffEvent {
+    /// The TV powered off by itself (`on_tv_power_off`).
+    TvPowerOff,
+    /// The TV's remote powered this PC off (`on_remote_power`).
+    RemotePower,
+}
 
 /// Per-TV power-edge tracking: what decides that a TV powered off by
 /// itself. A resource rather than components, so the reports of one batch

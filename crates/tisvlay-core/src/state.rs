@@ -182,6 +182,17 @@ pub enum PowerClass {
     Transient,
 }
 
+/// Something the TV did that isn't state: an occurrence a snapshot can't
+/// carry, from [`TvConnection::subscribe_events`](crate::TvConnection::subscribe_events).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TvEvent {
+    /// The remote's power key, aimed at this PC: on HDMI-CEC, the TV's
+    /// "power off this device" (SIMPLINK on LG) as `<User Control Pressed>`
+    /// Power. One per press, however long the key is held.
+    RemotePower,
+}
+
 impl TvState {
     /// Create a new empty state.
     pub fn new() -> Self {

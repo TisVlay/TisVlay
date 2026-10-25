@@ -188,13 +188,6 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "on_tv_power_off",
-        kind: FieldKind::Enum {
-            options: SYSTEM_SLEEP_ACTION_OPTIONS,
-            class: EnumClass::SystemSleepAction,
-        },
-    },
-    FieldSpec {
         wire: "automate_when",
         kind: FieldKind::Enum {
             options: AUTOMATE_WHEN_OPTIONS,
@@ -282,8 +275,39 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
             class: EnumClass::SessionAction,
         },
     },
+];
+
+/// System-profile FROM THE TV fields: the going-off events, which put the
+/// PC to sleep. Rendered below the main FIELDS card.
+pub(crate) const SYSTEM_FROM_TV_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "on_tv_power_off",
+        kind: FieldKind::Enum {
+            options: SYSTEM_SLEEP_ACTION_OPTIONS,
+            class: EnumClass::SystemSleepAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_remote_power",
+        kind: FieldKind::Enum {
+            options: SYSTEM_SLEEP_ACTION_OPTIONS,
+            class: EnumClass::SystemSleepAction,
+        },
+    },
+];
+
+/// User-profile FROM THE TV fields: the going-off events, which lock the
+/// session.
+pub(crate) const USER_FROM_TV_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        wire: "on_tv_power_off",
+        kind: FieldKind::Enum {
+            options: USER_LOCK_ACTION_OPTIONS,
+            class: EnumClass::UserLockAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_remote_power",
         kind: FieldKind::Enum {
             options: USER_LOCK_ACTION_OPTIONS,
             class: EnumClass::UserLockAction,
@@ -317,6 +341,14 @@ fn main_fields(kind: EditorKind) -> &'static [FieldSpec] {
     }
 }
 
+/// The FROM THE TV card's field table for an editor kind.
+fn from_tv_fields(kind: EditorKind) -> &'static [FieldSpec] {
+    match kind {
+        EditorKind::System => SYSTEM_FROM_TV_FIELDS,
+        EditorKind::User => USER_FROM_TV_FIELDS,
+    }
+}
+
 /// The STREAMING card's field table for an editor kind.
 fn while_streaming_fields(kind: EditorKind) -> &'static [FieldSpec] {
     match kind {
@@ -325,11 +357,14 @@ fn while_streaming_fields(kind: EditorKind) -> &'static [FieldSpec] {
     }
 }
 
-/// Every field an editor kind renders, across both cards — the lookup
+/// Every field an editor kind renders, across its cards — the lookup
 /// surface for kind/resolve queries that don't care which card a field
 /// lives in.
 fn all_fields(kind: EditorKind) -> impl Iterator<Item = &'static FieldSpec> {
-    main_fields(kind).iter().chain(while_streaming_fields(kind))
+    main_fields(kind)
+        .iter()
+        .chain(from_tv_fields(kind))
+        .chain(while_streaming_fields(kind))
 }
 
 /// Translated label for `spec.wire`. Wrapped in `pgettext` with a
@@ -361,6 +396,7 @@ fn field_label(wire: &str) -> String {
         "on_local_return" => pgettext("profile field", "On local return"),
         "screencast_arms" => pgettext("profile field", "Screen capture arms"),
         "on_tv_power_off" => pgettext("profile field", "On TV power off"),
+        "on_remote_power" => pgettext("profile field", "On remote power key"),
         // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -624,6 +660,7 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
         "automate_when" => body.automate_when.map(|when| when.to_string()),
         "on_tv_power_off" => body.on_tv_power_off.map(system_sleep_action_token),
+        "on_remote_power" => body.on_remote_power.map(system_sleep_action_token),
         _ => None,
     }
 }
@@ -657,6 +694,7 @@ fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
             .map(|a| session_action_token(a.action())),
         "screencast_arms" => body.screencast_arms.map(|v| v.to_string()),
         "on_tv_power_off" => body.on_tv_power_off.map(user_lock_action_token),
+        "on_remote_power" => body.on_remote_power.map(user_lock_action_token),
         _ => None,
     }
 }
@@ -970,6 +1008,7 @@ enum SystemOrUser {
 
 struct PreparedEditorRows {
     main: Vec<ProfileFieldRaw>,
+    from_tv: Vec<ProfileFieldRaw>,
     stream: Vec<ProfileFieldRaw>,
     can_reset_all: bool,
     same_profile: bool,
@@ -980,15 +1019,17 @@ fn prepare_editor_rows(
     kind: EditorKind,
     uuid: Uuid,
 ) -> PreparedEditorRows {
-    // Both cards resolve off the same layer state; `can-reset-all`
-    // spans them. The system editor has no STREAMING card.
-    let ((main, main_reset), (stream, stream_reset)) = match kind {
+    // The cards resolve off the same layer state; `can-reset-all` spans
+    // them. The system editor has no STREAMING card.
+    let ((main, main_reset), (from_tv, from_tv_reset), (stream, stream_reset)) = match kind {
         EditorKind::System => (
             build_system_rows(&state.system, uuid, SYSTEM_FIELDS, state.sleep),
+            build_system_rows(&state.system, uuid, SYSTEM_FROM_TV_FIELDS, state.sleep),
             (Vec::new(), false),
         ),
         EditorKind::User => (
             build_user_rows(&state.user, uuid, USER_FIELDS),
+            build_user_rows(&state.user, uuid, USER_FROM_TV_FIELDS),
             build_user_rows(&state.user, uuid, USER_WHILE_STREAMING_FIELDS),
         ),
     };
@@ -996,8 +1037,9 @@ fn prepare_editor_rows(
     state.displayed = Some((kind, uuid));
     PreparedEditorRows {
         main,
+        from_tv,
         stream,
-        can_reset_all: main_reset || stream_reset,
+        can_reset_all: main_reset || from_tv_reset || stream_reset,
         same_profile,
     }
 }
@@ -1030,6 +1072,12 @@ fn push_editor_rows(
             |m| {
                 profiles.set_editor_fields(m);
             },
+        );
+        push_card_model(
+            profiles.get_editor_from_tv_fields(),
+            prepared.from_tv,
+            prepared.same_profile,
+            |m| profiles.set_editor_from_tv_fields(m),
         );
         push_card_model(
             profiles.get_editor_stream_fields(),
@@ -1153,7 +1201,7 @@ fn build_system_rows(
             can_reset = true;
         }
         let mut raw = build_field_raw(field, &resolved);
-        if field.wire == "on_tv_power_off" {
+        if matches!(field.wire, "on_tv_power_off" | "on_remote_power") {
             raw.options = sleep_options(sleep, &raw.current_value);
         }
         if row_is_action(field) {
@@ -1568,6 +1616,7 @@ pub(crate) fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
             active: false,
         });
         profiles.set_editor_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
+        profiles.set_editor_from_tv_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
         profiles.set_editor_stream_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
         profiles.set_editor_can_reset_all(false);
     });
@@ -1668,6 +1717,9 @@ fn set_system_field(
         "on_tv_power_off" => {
             body.on_tv_power_off = system_sleep_action_patch(patch, "on_tv_power_off")?;
         }
+        "on_remote_power" => {
+            body.on_remote_power = system_sleep_action_patch(patch, "on_remote_power")?;
+        }
         other => anyhow::bail!("Unknown system-profile field: {other}"),
     }
     Ok(())
@@ -1702,6 +1754,9 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
         }
         "on_tv_power_off" => {
             body.on_tv_power_off = user_lock_action_patch(patch, "on_tv_power_off")?;
+        }
+        "on_remote_power" => {
+            body.on_remote_power = user_lock_action_patch(patch, "on_remote_power")?;
         }
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
@@ -2267,6 +2322,7 @@ mod tests {
             on_idle_resume: Some(SessionAction::ScreenOn.into()),
             automate_when: Some(AutomateWhen::Always),
             on_tv_power_off: Some(SystemSleepAction::None),
+            on_remote_power: Some(SystemSleepAction::None),
         }
     }
 
@@ -2285,6 +2341,7 @@ mod tests {
             on_local_return: Some(SessionAction::ScreenOn.into()),
             screencast_arms: Some(false),
             on_tv_power_off: Some(UserLockAction::None),
+            on_remote_power: Some(UserLockAction::None),
         }
     }
 
@@ -2649,20 +2706,26 @@ mod tests {
 
     #[test]
     fn system_field_table_matches_core_schema() {
-        // The system pane has one card — the per-event stream gate rides
-        // the action rows as a toggle, not a card row, and there is no
-        // system-side arming switch (the stream card is empty). So the
-        // single FIELDS table must equal `SYSTEM_PROFILE_FIELDS` exactly;
-        // a field added to the core profile but not to the table would
-        // silently vanish from the editor.
+        // The system pane has the FIELDS and FROM THE TV cards — the
+        // per-event stream gate rides the action rows as a toggle, not a
+        // card row, and there is no system-side arming switch (the stream
+        // card is empty). So the cards' union must equal
+        // `SYSTEM_PROFILE_FIELDS` exactly; a field added to the core
+        // profile but not to a table would silently vanish from the editor.
         let core: std::collections::BTreeSet<&str> = tisvlay_core::SYSTEM_PROFILE_FIELDS
             .iter()
             .copied()
             .collect();
-        let gui: std::collections::BTreeSet<&str> = SYSTEM_FIELDS.iter().map(|f| f.wire).collect();
+        let gui: std::collections::BTreeSet<&str> =
+            all_fields(EditorKind::System).map(|f| f.wire).collect();
         assert_eq!(
             gui, core,
-            "GUI SYSTEM_FIELDS diverged from core SYSTEM_PROFILE_FIELDS"
+            "GUI system cards diverged from core SYSTEM_PROFILE_FIELDS"
+        );
+        assert_eq!(
+            SYSTEM_FIELDS.len() + SYSTEM_FROM_TV_FIELDS.len(),
+            gui.len(),
+            "a system field appears in two cards"
         );
         assert!(
             SYSTEM_WHILE_STREAMING_FIELDS.is_empty(),
@@ -2672,21 +2735,21 @@ mod tests {
 
     #[test]
     fn user_field_table_matches_core_schema() {
-        // The user pane keeps the small STREAMING card for the
-        // screencast-arms switch; the union of the two tables must equal
-        // the core schema, and no field appears in both.
+        // The user pane has the FIELDS, FROM THE TV and STREAMING cards;
+        // the union of their tables must equal the core schema, and no
+        // field appears in two.
         let core: std::collections::BTreeSet<&str> =
             tisvlay_core::USER_PROFILE_FIELDS.iter().copied().collect();
         let gui: std::collections::BTreeSet<&str> =
             all_fields(EditorKind::User).map(|f| f.wire).collect();
         assert_eq!(
             gui, core,
-            "GUI USER_FIELDS ∪ USER_WHILE_STREAMING_FIELDS diverged from core USER_PROFILE_FIELDS"
+            "GUI user cards diverged from core USER_PROFILE_FIELDS"
         );
         assert_eq!(
-            USER_FIELDS.len() + USER_WHILE_STREAMING_FIELDS.len(),
+            USER_FIELDS.len() + USER_FROM_TV_FIELDS.len() + USER_WHILE_STREAMING_FIELDS.len(),
             gui.len(),
-            "a user field appears in both cards"
+            "a user field appears in two cards"
         );
     }
 
@@ -3187,49 +3250,62 @@ mod tests {
         assert_eq!(body.screencast_arms, None);
     }
 
-    /// The TV power-off row round-trips its ComboBox tokens into the body
-    /// and back, and refuses a TV-side action.
+    /// The user side's going-off rows round-trip their ComboBox tokens into
+    /// the body and back, and refuse a TV-side action.
     #[test]
-    fn on_tv_power_off_round_trips_its_tokens() {
-        let spec = USER_FIELDS
-            .iter()
-            .find(|f| f.wire == "on_tv_power_off")
-            .expect("the row exists");
+    fn user_going_off_rows_round_trip_their_tokens() {
+        for spec in USER_FROM_TV_FIELDS {
+            let wire = spec.wire;
+            let mut body = UserProfileBody::default();
+            let patch = parse_enum_token(spec.kind, "lock").expect("a UserLockAction token");
+            set_user_field(&mut body, wire, patch).expect("known wire");
+            assert_eq!(
+                read_user_field(&body, wire).as_deref(),
+                Some("lock"),
+                "{wire}"
+            );
+            assert!(parse_enum_token(spec.kind, "screen_off").is_err());
+            set_user_field(&mut body, wire, BodyPatch::Clear).expect("known wire");
+            assert_eq!(read_user_field(&body, wire), None, "{wire}");
+        }
         let mut body = UserProfileBody::default();
-        let patch = parse_enum_token(spec.kind, "lock").expect("a UserLockAction token");
-        set_user_field(&mut body, "on_tv_power_off", patch).expect("known wire");
-        assert_eq!(body.on_tv_power_off, Some(UserLockAction::Lock));
-        assert_eq!(
-            read_user_field(&body, "on_tv_power_off").as_deref(),
-            Some("lock")
-        );
-        assert!(parse_enum_token(spec.kind, "screen_off").is_err());
-        set_user_field(&mut body, "on_tv_power_off", BodyPatch::Clear).expect("known wire");
-        assert_eq!(body.on_tv_power_off, None);
+        set_user_field(
+            &mut body,
+            "on_remote_power",
+            BodyPatch::UserLockAction(UserLockAction::Lock),
+        )
+        .expect("known wire");
+        assert_eq!(body.on_remote_power, Some(UserLockAction::Lock));
+        assert_eq!(body.on_tv_power_off, None, "each row writes its own field");
     }
 
-    /// The system side's row carries the sleep modes and refuses a lock.
+    /// The system side's going-off rows carry the sleep modes and refuse a
+    /// lock.
     #[test]
-    fn system_on_tv_power_off_round_trips_its_tokens() {
-        let spec = SYSTEM_FIELDS
-            .iter()
-            .find(|f| f.wire == "on_tv_power_off")
-            .expect("the row exists");
-        let mut body = SystemProfileBody::default();
-        for (token, action) in [
-            ("suspend", SystemSleepAction::Suspend),
-            ("sleep", SystemSleepAction::Sleep),
-            ("none", SystemSleepAction::None),
-        ] {
-            let patch = parse_enum_token(spec.kind, token).expect("a SystemSleepAction token");
-            set_system_field(&mut body, "on_tv_power_off", patch).expect("known wire");
-            assert_eq!(body.on_tv_power_off, Some(action));
-            assert_eq!(
-                read_system_field(&body, "on_tv_power_off").as_deref(),
-                Some(token)
-            );
+    fn system_going_off_rows_round_trip_their_tokens() {
+        for spec in SYSTEM_FROM_TV_FIELDS {
+            let wire = spec.wire;
+            let mut body = SystemProfileBody::default();
+            for token in ["suspend", "sleep", "none"] {
+                let patch = parse_enum_token(spec.kind, token).expect("a SystemSleepAction token");
+                set_system_field(&mut body, wire, patch).expect("known wire");
+                assert_eq!(
+                    read_system_field(&body, wire).as_deref(),
+                    Some(token),
+                    "{wire}"
+                );
+            }
+            assert!(parse_enum_token(spec.kind, "lock").is_err());
         }
-        assert!(parse_enum_token(spec.kind, "lock").is_err());
+        let mut body = SystemProfileBody::default();
+        set_system_field(
+            &mut body,
+            "on_remote_power",
+            BodyPatch::SystemSleepAction(SystemSleepAction::Suspend),
+        )
+        .expect("known wire");
+        assert_eq!(body.on_remote_power, Some(SystemSleepAction::Suspend));
+        assert_eq!(body.on_tv_power_off, None, "each row writes its own field");
     }
 
     /// The sleep row offers what logind grants the daemon, keeps a saved

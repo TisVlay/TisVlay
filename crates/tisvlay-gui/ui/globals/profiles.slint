@@ -258,6 +258,11 @@ export global Profiles {
     /// `UserProfileChanged` signal echo. Empty when no profile is
     /// selected.
     in property <[ProfileFieldEntry]> editor-fields;
+    /// The FROM THE TV card's rows for the selected profile — what the
+    /// PC does on the going-off events (the TV powering off by itself,
+    /// its remote's power key). Primed and refreshed alongside
+    /// `editor-fields`; empty when no profile is selected.
+    in property <[ProfileFieldEntry]> editor-from-tv-fields;
     /// The STREAMING card's rows for the selected profile —
     /// the while-streaming overrides (plus the screencast-arms switch on
     /// user profiles). Primed and refreshed alongside `editor-fields`;
