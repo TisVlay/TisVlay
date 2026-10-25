@@ -68,7 +68,7 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
   The world skips a field for a TV without its capability, and the GUI shows them on the TV pane, so a user can see why a setting does nothing there. Adding flags is a wire change.
 - **The remote's power key is its own event.** SIMPLINK's device power-off reaches the daemon as `<User Control Pressed>` Power (`0x40`) addressed to the PC. The kernel queues it to followers whether or not passthrough is on. It becomes `on_remote_power` in both profiles, each with its scope's standby type. It's explicit and never an echo, so it needs no cause stamp. The earlier `tv_power_off` choice is dropped: the host actions already reach the TV through the PC's own events. A suspend runs the system profile's `on_sleep`, which powers the TV off by default, and a lock runs the user profile's `on_session_lock`.
 - **TisVlay gates the remote's keys; the desktop maps them.** A system-profile toggle, `remote_keys_to_desktop`, sets the passthrough flag on the claim. The kernel keymap and the desktop's shortcuts decide what keys mean. The keymap drops `0x40`, so the power key can't become `KEY_POWER` (which suspended pox in Check C). No per-key table in TisVlay.
-- **The TV waking the PC is the system profile's `on_tv_wake = "wake"`, armed at each sleep.** Default `none`. Nothing in TisVlay runs while the PC sleeps, so it's armed ahead of time instead of run when the TV comes on: the adapter's firmware does the waking. The daemon can't write `/sys` (`ProtectKernelTunables=true`). At logind's `PrepareForSleep` it starts a root oneshot unit, through a narrow polkit rule allowing only that unit, and the unit enables the adapter's USB `power/wakeup` for `wake` and disables it otherwise. No prompt, so it works at sleep time. Among the Pulse-Eight's documented wake triggers is Set Stream Path to its own address, the TV coming up on the PC's input, so a TV that comes up on another input doesn't wake the PC that way.
+- **The TV waking the PC is the system profile's `on_tv_wake = "wake"`, armed at each sleep.** Default `none`. Nothing in TisVlay runs while the PC sleeps, so it's armed ahead of time instead of run when the TV comes on: the adapter's firmware does the waking. The daemon can't write `/sys` (`ProtectKernelTunables=true`). At logind's `PrepareForSleep` it starts a root oneshot unit, through a narrow polkit rule allowing only that unit, and the unit enables the adapter's USB `power/wakeup` for `wake` and disables it otherwise. No prompt, so it works at sleep time. Among the Pulse-Eight's documented wake triggers is Set Stream Path to its own address, the TV coming up on the PC's input, so a TV that comes up on another input doesn't wake the PC that way. The helper doesn't disarm the Pulse-Eight on suspend: no long suspend has pinned the "LG DVD Player" label so far (2026-10-25), and the same helper can carry the module parameter if one does.
 
 ## Implementation
 
@@ -109,7 +109,11 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
 
 #### 6. The remote-keys gate
 
-- [ ] A linux-cec setter for the log-address flags (`CEC_LOG_ADDRS_FL_ALLOW_RC_PASSTHRU`). Upstream first (holo/linux-cec on gitlab.steamos.cloud), alongside the pending OSD-name issue ([docs/bugs/upstream-linux-cec-reclaim-drops-osd-name.md](../bugs/upstream-linux-cec-reclaim-drops-osd-name.md)); until it lands, a vendored patch or a narrow ioctl (open question).
+- [ ] A linux-cec setter for the log-address flags (`CEC_LOG_ADDRS_FL_ALLOW_RC_PASSTHRU`), on a branch of our fork ([TisVlay/linux-cec](https://github.com/TisVlay/linux-cec)) based on the `linux-cec-0.2.1` tag, so the swap changes nothing else.
+  - The workspace's `[patch.crates-io]` points `linux-cec` at that branch by `git` and `rev`, with no submodule.
+  - `deny.toml` gains an `allow-git` entry for the fork, and the Nix package a `cargoLock.outputHashes` entry.
+  - The same change goes upstream as a merge request (holo/linux-cec on gitlab.steamos.cloud), beside the drafted OSD-name issue ([docs/bugs/upstream-linux-cec-reclaim-drops-osd-name.md](../bugs/upstream-linux-cec-reclaim-drops-osd-name.md)). The `[patch]` comes out once a release carries it.
+  - Not a direct ioctl: linux-cec keeps its file handle private, and a claim made beside it would leave linux-cec's own record of the claim stale. linux-cec uses that record to pick the sender address for every message it sends.
 - [ ] System profile: `remote_keys_to_desktop` (`Option<bool>`, resolved default `false`). The CEC link sets the flag on the claim when it's on and the TV has `REMOTE_KEYS`; a change re-claims.
 - [ ] The keymap override dropping `0x40`: shipped by the NixOS module (a hwdb or `rc_keymaps` entry for the `rc-cec` map) and documented for other distros.
 
@@ -139,8 +143,3 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
   - a system-profile `on_tv_standby` suspend at the login screen, with nobody logged in;
   - Check B′ with `on_tv_wake` set to `wake` and to `none`, applied by the helper;
   - Check C with the gate on and the power key dropped.
-
-## Open questions
-
-- **The linux-cec flag setter:** upstream only, or a vendored patch until it lands?
-- **The label across long armed suspends:** this decides whether the helper should also disarm the Pulse-Eight on suspend (the module parameter).

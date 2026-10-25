@@ -217,7 +217,7 @@ Raised while generalizing beyond CEC (2026-10-24). Not mature enough for the pla
 
 ## Open questions
 
-- **Suspend wake against the label.** Should the TV's power key be able to wake the PC, keeping the dongle armed while suspended and accepting a possibly pinned label after each long suspend, or should a suspended PC disarm it too? This decides the module parameter's default in the NixOS option. The wake doesn't need the dongle armed (Check B′: it woke pox undriven and disarmed), so disarming on suspend may not cost the wake; what's left is whether a long suspend with the dongle armed pins the label. So far: "TisVlay" after a 105 s and a 48 s suspend.
+- **Suspend wake against the label.** Should the TV's power key be able to wake the PC, keeping the dongle armed while suspended and accepting a possibly pinned label after each long suspend, or should a suspended PC disarm it too? This decides the module parameter's default in the NixOS option. The wake doesn't need the dongle armed (Check B′: it woke pox undriven and disarmed), so disarming on suspend may not cost the wake; what's left is whether a long suspend with the dongle armed pins the label. So far: "TisVlay" after a 105 s and a 48 s suspend, and no pinned label noticed across longer everyday suspends (2026-10-25). No check is planned; it's watched in daily use, and the plan doesn't disarm on suspend unless it shows.
 
 ## Trigger
 
