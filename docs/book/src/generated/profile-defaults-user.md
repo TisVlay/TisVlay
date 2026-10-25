@@ -36,8 +36,8 @@ on_stream_end = "screen_off"
 # returning person.
 on_local_return = { action = "screen_on", restore_input = true }
 
-# Whether an unattributed screen-capture signal arms the remote
-# session. Attributed sources (streaming apps, hooks, logind) always
+# Whether an unattributed screen-capture signal arms a stream.
+# Attributed sources (streaming apps, hooks, logind) always
 # arm; this decides only the bare screencast case (OBS, browser
 # tab-share). Default off.
 screencast_arms = false

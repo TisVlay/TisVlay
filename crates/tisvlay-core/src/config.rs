@@ -516,8 +516,8 @@ pub struct UserProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_local_return: Option<EventAction>,
 
-    /// Whether an unattributed screen-capture signal arms the remote
-    /// session. Attributed sources (streaming apps, hooks, logind) always
+    /// Whether an unattributed screen-capture signal arms a stream.
+    /// Attributed sources (streaming apps, hooks, logind) always
     /// arm; this decides only the bare screencast case (OBS, browser
     /// tab-share). Default off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
