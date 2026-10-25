@@ -50,7 +50,7 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
 - **Each scope runs its own.** The session service runs the user profile's host actions: it runs in the user's session, can lock it, and already mirrors every TV's `state/power`. It applies the same gates as the session's other actions: the active user only, and `automate_when`. The daemon's world runs the system profile's, alongside its other machine events and with the same gates (`managed`, `automate_when`). It suspends through logind, which needs a polkit rule for the daemon's user, since the daemon runs outside any session. That way a suspend works at the login screen and with nobody logged in.
 - **Lock and suspend compose.** Setting both runs both, each from its own service. Their order isn't guaranteed, so a lock that must land before the sleep comes from the desktop's own lock-on-sleep setting.
 - **They fire on a reported power transition, never on link loss.** A network TV's dropped connection (a Wi-Fi blip) says nothing about its power. Only a backend-reported transition counts: CEC's broadcasts, or LG's power-state subscription.
-- **A cause stamp keeps TisVlay's own power changes out.** The TV reports the same transition whether its remote or TisVlay caused it (on CEC, identical broadcasts, Check A). So the world stamps each `state/power` transition with its cause, from the power commands it sent that TV. This is a wire change.
+- **A cause stamp keeps TisVlay's own power changes out.** The TV reports the same transition whether its remote or TisVlay caused it (on CEC, identical broadcasts, Check A). So the world stamps each `state/power` transition with its cause, from the power commands it sent that TV. A command records the transition it expects, and the first matching report consumes it as `requested`. The expectation expires after a bound, so a command the TV ignored can't mislabel a later press of its remote. This is a wire change.
 
 ### CEC extras
 
@@ -77,6 +77,7 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
 #### 2. World: the cause stamp (wire)
 
 - [ ] `state/power` gains `cause`: `requested` when the transition follows a power command TisVlay sent the TV, `external` otherwise. It covers profile dispatches, rpcs, wake dials and screen actions emulated as power, for every backend.
+- [ ] A power command records the transition it expects when it's sent to the TV (a held wake records it when it's finally sent), one expectation per direction. The first reported transition in that direction is stamped `requested` and consumes it; any other is `external`. An expectation expires after 60 s, the held wake's bound, and a newer command in the same direction renews it. Per direction, so a power-off quickly followed by a power-on still stamps the late standby report `requested`.
 - [ ] One `feat` commit with the SDK surface.
 
 #### 3. Run the host actions
@@ -84,7 +85,7 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
 - [ ] A `state/power` transition to standby with `cause: external` runs `on_tv_standby`; to on with `cause: external` runs `on_tv_wake`. A connection drop without a reported transition runs nothing.
 - [ ] Session service: the user profile's `lock` locks the user's graphical session through logind, gated like the session's other actions (active user, `automate_when`).
 - [ ] World: the system profile's `suspend` calls logind's `Suspend` from the daemon, gated like the system profile's other events (`managed`, `automate_when`).
-- [ ] A polkit rule lets the daemon's user suspend without a prompt; the NixOS module and the `.deb`/`.rpm`/Arch packages ship it.
+- [ ] A polkit rule lets the daemon's user suspend without a prompt; the NixOS module and the `.deb`/`.rpm`/Arch packages always ship it. The profile field, default `none`, is the opt-in: a second switch at install time would be one a GUI user can't see, so the setting would silently do nothing. The cost is that whoever may edit system profiles (the `tisvlay` group) can have the machine suspend.
 - [ ] Loops can't form: an `on_tv_standby` suspend leads to a system sleep whose own profile action may power the TV off, which the stamp marks `requested`.
 
 ### CEC extras
@@ -136,6 +137,4 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
 ## Open questions
 
 - **The linux-cec flag setter:** upstream only, or a vendored patch until it lands?
-- **The cause stamp's window:** a fixed window after a TisVlay power command, or a stamp held until the TV's next reported state?
-- **The suspend grant:** the polkit rule lets the daemon's user suspend the machine whether or not a profile asks it to. Ship it always, or only behind a NixOS option and a package-time choice?
 - **The label across long armed suspends:** this decides whether the helper should also disarm the Pulse-Eight on suspend (the module parameter).
