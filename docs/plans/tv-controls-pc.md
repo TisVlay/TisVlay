@@ -43,6 +43,8 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
 
 ## Decisions
 
+The field, action and type names below are provisional until [docs/ideas/power-vocabulary.md](../ideas/power-vocabulary.md) settles. Its proposal renames `on_tv_standby` and `on_tv_wake` to `on_tv_power_off` and `on_tv_power_on`, and the `suspend` action to `sleep`.
+
 ### Core (every backend)
 
 - **Host actions are typed by scope and direction.** Profiles' existing action, `SessionAction`, acts on the TV (screen off, power off, …). The reverse direction acts on the PC, with one type per scope and direction:
