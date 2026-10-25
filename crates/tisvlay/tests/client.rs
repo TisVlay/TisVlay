@@ -537,6 +537,7 @@ macro_rules! stub_service {
                         let info = tisvlay_protocol::rpc::ServiceInfo {
                             version: release.clone(),
                             state_path: String::new(),
+                            sleep: None,
                         };
                         responder.ok(&info).await;
                     }
@@ -698,6 +699,7 @@ async fn a_failed_release_check_is_retried() {
                 let info = tisvlay::ServiceInfo {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: "/var/lib/tisvlay/state.toml".into(),
+                    sleep: None,
                 };
                 responder.ok(&info).await;
             }

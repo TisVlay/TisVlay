@@ -38,7 +38,7 @@ pub use tisvlay_protocol::payload::{
 };
 pub use tisvlay_protocol::rpc::{
     NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, ServiceInfo,
-    TvConfigView, VendorEntry,
+    SleepSupport, TvConfigView, VendorEntry,
 };
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};

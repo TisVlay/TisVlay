@@ -45,6 +45,13 @@ trait Login1Manager {
     /// newer. `flags: 0` behaves like the unflagged methods.
     fn sleep(&self, flags: u64) -> zbus::Result<()>;
 
+    /// Whether this caller may suspend: `yes`, `no`, `challenge` (it
+    /// would prompt), `na`, or an inhibitor answer.
+    fn can_suspend(&self) -> zbus::Result<String>;
+
+    /// [`Self::can_suspend`] for [`Self::sleep`]; systemd 256 or newer.
+    fn can_sleep(&self) -> zbus::Result<String>;
+
     #[zbus(signal)]
     fn prepare_for_shutdown(&self, start: bool) -> zbus::Result<()>;
 
@@ -249,4 +256,17 @@ fn refused(world: &WorldClient, request: SleepRequest, error: &zbus::Error) {
         mode: request.mode,
         message: error.to_string(),
     });
+}
+
+/// Which sleep methods logind grants this daemon without a prompt, for
+/// the info reply: only `yes` counts, since the daemon has no agent to
+/// answer a `challenge`. `None` without a system bus or logind.
+pub(crate) async fn sleep_support() -> Option<tisvlay_protocol::rpc::SleepSupport> {
+    let connection = zbus::Connection::system().await.ok()?;
+    let manager = Login1ManagerProxy::new(&connection).await.ok()?;
+    let granted = |answer: zbus::Result<String>| answer.is_ok_and(|a| a == "yes");
+    Some(tisvlay_protocol::rpc::SleepSupport {
+        suspend: granted(manager.can_suspend().await),
+        sleep: granted(manager.can_sleep().await),
+    })
 }

@@ -423,6 +423,21 @@ pub struct ServiceInfo {
     /// Path of the service's state file (the daemon's store, the
     /// session's profiles, the tray's settings); empty without one.
     pub state_path: String,
+    /// The sleep modes logind grants the daemon, for the system profile's
+    /// `on_tv_power_off`: asked once at startup. Only the daemon sets it;
+    /// `None` from the other services, or when logind couldn't be asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sleep: Option<SleepSupport>,
+}
+
+/// Which of logind's sleep methods the daemon may call without a prompt
+/// (`CanSuspend` / `CanSleep` answered `yes`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SleepSupport {
+    /// `Suspend`: suspend to RAM.
+    pub suspend: bool,
+    /// `Sleep`: the host's configured mode (systemd 256 or newer).
+    pub sleep: bool,
 }
 
 /// One entry of the `manager/vendors` catalog.

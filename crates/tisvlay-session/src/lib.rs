@@ -1311,6 +1311,7 @@ impl Core {
                 let info = rpc::ServiceInfo {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: self.state_path.clone(),
+                    sleep: None,
                 };
                 responder.ok(&info).await;
             }

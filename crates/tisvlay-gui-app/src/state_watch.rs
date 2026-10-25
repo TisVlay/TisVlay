@@ -199,6 +199,10 @@ async fn apply(
         StateEvent::UserProfileRemoved(uuid) => {
             profiles::handle_user_removed(editor, app_weak.clone(), uuid);
         }
+        StateEvent::ReleaseChecked(Service::Daemon) => {
+            let sleep = daemon.service_info().await.and_then(|info| info.sleep);
+            profiles::set_sleep_support(editor, app_weak.clone(), sleep);
+        }
         StateEvent::DaemonStateChanged(_)
         | StateEvent::DaemonDisappeared
         | StateEvent::SessionDisappeared

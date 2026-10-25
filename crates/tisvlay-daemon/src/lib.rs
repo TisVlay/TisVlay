@@ -371,7 +371,7 @@ pub async fn serve(
     vendors: Vec<VendorReg>,
     store_path: Option<&Path>,
 ) -> Result<Stack> {
-    serve_stack(socket, site, vendors, store_path, false).await
+    serve_stack(socket, site, vendors, store_path, false, None).await
 }
 
 /// [`serve`], optionally attaching the device watcher's outlet before the
@@ -385,6 +385,7 @@ async fn serve_stack(
     vendors: Vec<VendorReg>,
     store_path: Option<&Path>,
     watch_devices: bool,
+    sleep: Option<tisvlay_protocol::rpc::SleepSupport>,
 ) -> Result<Stack> {
     let session = open_socket(socket).await?;
     let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vendors
@@ -498,6 +499,7 @@ async fn serve_stack(
         state_path: store_path
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
+        sleep,
     };
     let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
     let bridge = tokio::spawn(bridge::run(
@@ -710,12 +712,19 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         .with_retry(tisvlay_cec::CecBackend::new().verify_retry_config())
         .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
+    // The sleep modes logind grants this daemon, for the info reply the GUI
+    // reads: bounded, so a slow bus can't hold the boot.
+    let sleep = tokio::time::timeout(Duration::from_secs(2), logind::sleep_support())
+        .await
+        .ok()
+        .flatten();
     let mut stack = serve_stack(
         &options.socket,
         &options.site,
         vendors,
         options.store.as_deref(),
         true,
+        sleep,
     )
     .await?;
     // The socket is bound and chmod'd 0660 by now; ground the socket ACL

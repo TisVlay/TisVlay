@@ -754,6 +754,10 @@ pub(crate) struct ProfileEditorState {
     /// switch to a different profile forces a fresh model so an in-flight
     /// edit in a reused row can't commit against the new profile.
     pub displayed: Option<(EditorKind, Uuid)>,
+    /// The sleep modes logind grants the daemon (its info reply), which
+    /// the system sleep row offers. `None` until the daemon answers, or
+    /// when it couldn't ask logind: then every mode shows.
+    pub sleep: Option<tisvlay::SleepSupport>,
 }
 
 impl std::fmt::Debug for ProfileEditorState {
@@ -980,7 +984,7 @@ fn prepare_editor_rows(
     // spans them. The system editor has no STREAMING card.
     let ((main, main_reset), (stream, stream_reset)) = match kind {
         EditorKind::System => (
-            build_system_rows(&state.system, uuid, SYSTEM_FIELDS),
+            build_system_rows(&state.system, uuid, SYSTEM_FIELDS, state.sleep),
             (Vec::new(), false),
         ),
         EditorKind::User => (
@@ -1139,6 +1143,7 @@ fn build_system_rows(
     layers: &ProfileLayers,
     uuid: Uuid,
     table: &[FieldSpec],
+    sleep: Option<tisvlay::SleepSupport>,
 ) -> (Vec<ProfileFieldRaw>, bool) {
     let mut rows = Vec::with_capacity(table.len());
     let mut can_reset = false;
@@ -1148,6 +1153,9 @@ fn build_system_rows(
             can_reset = true;
         }
         let mut raw = build_field_raw(field, &resolved);
+        if field.wire == "on_tv_power_off" {
+            raw.options = sleep_options(sleep, &raw.current_value);
+        }
         if row_is_action(field) {
             // One inherit-chain walk plus one baseline read back both
             // toggles' value and floor — no per-modifier re-walk.
@@ -1311,6 +1319,42 @@ fn field_kind_tag(field: &FieldSpec) -> &'static str {
 /// re-running the catalog-priming part of [`select`]. Used by the
 /// signal handler when a `*ProfileChanged` arrives — the cache has
 /// already been updated, we just need to rebuild the model.
+/// The system sleep row's options: `none` and the modes logind grants the
+/// daemon, plus the row's current value even if it isn't granted, so a saved
+/// choice still shows. Without an answer (`None`), every mode.
+fn sleep_options(sleep: Option<tisvlay::SleepSupport>, current: &str) -> Vec<String> {
+    SYSTEM_SLEEP_ACTION_OPTIONS
+        .iter()
+        .filter(|option| {
+            let granted = match (**option, sleep) {
+                (_, None) | ("none", _) => true,
+                ("suspend", Some(support)) => support.suspend,
+                ("sleep", Some(support)) => support.sleep,
+                _ => false,
+            };
+            granted || **option == current
+        })
+        .map(|option| (*option).to_string())
+        .collect()
+}
+
+/// Learn the sleep modes logind grants the daemon (its info reply) and
+/// rebuild the rows if they changed.
+pub(crate) fn set_sleep_support(
+    editor: &ProfileEditor,
+    app_weak: slint::Weak<AppWindow>,
+    sleep: Option<tisvlay::SleepSupport>,
+) {
+    {
+        let mut state = editor.lock();
+        if state.sleep == sleep {
+            return;
+        }
+        state.sleep = sleep;
+    }
+    refresh_editor_if_selected(editor, app_weak);
+}
+
 fn refresh_editor_if_selected(editor: &ProfileEditor, app_weak: slint::Weak<AppWindow>) {
     let (kind, uuid) = {
         let state = editor.lock();
@@ -2715,7 +2759,7 @@ mod tests {
             default_body: SystemProfileBody::default(),
             bodies,
         };
-        let (rows, can_reset) = build_system_rows(&layers, uuid, SYSTEM_FIELDS);
+        let (rows, can_reset) = build_system_rows(&layers, uuid, SYSTEM_FIELDS, None);
         assert!(can_reset);
         assert_eq!(rows.len(), SYSTEM_FIELDS.len());
     }
@@ -2736,7 +2780,7 @@ mod tests {
             default_body: SystemProfileBody::default(),
             bodies,
         };
-        let (_rows, can_reset) = build_system_rows(&layers, uuid, SYSTEM_FIELDS);
+        let (_rows, can_reset) = build_system_rows(&layers, uuid, SYSTEM_FIELDS, None);
         assert!(!can_reset);
     }
 
@@ -3026,7 +3070,7 @@ mod tests {
             default_body: SystemProfileBody::default(),
             bodies,
         };
-        let (rows, _) = build_system_rows(&layers, uuid, SYSTEM_FIELDS);
+        let (rows, _) = build_system_rows(&layers, uuid, SYSTEM_FIELDS, None);
         let dpms_on = rows.iter().find(|r| r.field_name == "on_dpms_on").unwrap();
         assert!(dpms_on.has_toggles);
         assert!(
@@ -3186,6 +3230,22 @@ mod tests {
             );
         }
         assert!(parse_enum_token(spec.kind, "lock").is_err());
+    }
+
+    /// The sleep row offers what logind grants the daemon, keeps a saved
+    /// choice it no longer grants, and offers everything without an answer.
+    #[test]
+    fn sleep_options_follow_what_logind_grants() {
+        let suspend_only = Some(tisvlay::SleepSupport {
+            suspend: true,
+            sleep: false,
+        });
+        assert_eq!(sleep_options(suspend_only, "none"), ["none", "suspend"]);
+        assert_eq!(
+            sleep_options(suspend_only, "sleep"),
+            ["none", "suspend", "sleep"]
+        );
+        assert_eq!(sleep_options(None, "none"), ["none", "suspend", "sleep"]);
     }
 
     #[test]
