@@ -178,7 +178,7 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     spawn_power_cycle_toasts(&system, &options.site, handle.clone(), notifier.clone()).await?;
 
     let reconcilers = Reconcilers::new();
-    spawn_system_pump(
+    spawn_liveliness_pump(
         &system,
         &options.site,
         handle.clone(),
@@ -186,7 +186,6 @@ pub async fn run(options: TrayOptions) -> Result<()> {
         notifier.clone(),
     )
     .await?;
-    spawn_liveliness_pump(&system, &options.site, handle.clone(), notifier.clone()).await?;
     if let Some(user_session) = &user {
         spawn_user_pump(user_session, &options.site, handle.clone()).await?;
     }
@@ -227,14 +226,16 @@ pub async fn run(options: TrayOptions) -> Result<()> {
 }
 
 /// Everything the menu shows from the system socket: TV state keys and
-/// the system-profile catalog. One history subscriber, hydrated caches.
-async fn spawn_system_pump(
+/// the system-profile catalog, from their history on. One task per
+/// subscription, which ends (undeclaring it) when aborted.
+async fn mirror_daemon(
     system: &Session,
     site: &str,
-    handle: TrayHandle,
-    reconcilers: Reconcilers,
-    notifier: notify::Notifier,
-) -> Result<()> {
+    handle: &TrayHandle,
+    reconcilers: &Reconcilers,
+    notifier: &notify::Notifier,
+) -> Result<Vec<tokio::task::JoinHandle<()>>> {
+    let mut tasks = Vec::new();
     for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
         let sub = system
             .declare_subscriber(key.as_str())
@@ -245,7 +246,7 @@ async fn spawn_system_pump(
         let site = site.to_string();
         let reconcilers = reconcilers.clone();
         let notifier = notifier.clone();
-        tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
                 // Echoed levels release the scroll-intent gates.
                 if sample.kind() == SampleKind::Put
@@ -291,9 +292,9 @@ async fn spawn_system_pump(
                     notifier.notify(notify::Category::TvConnection, &summary, "", icon);
                 }
             }
-        });
+        }));
     }
-    Ok(())
+    Ok(tasks)
 }
 
 async fn spawn_user_pump(user: &Session, site: &str, handle: TrayHandle) -> Result<()> {
@@ -314,11 +315,17 @@ async fn spawn_user_pump(user: &Session, site: &str, handle: TrayHandle) -> Resu
     Ok(())
 }
 
-/// The daemon's liveliness token drives the offline presentation.
+/// The daemon's liveliness token drives the offline presentation, and the
+/// mirror: the daemon's keys are subscribed only while the token is
+/// present. A token that goes takes its subscriptions (and any sample still
+/// in them) along, and one that comes back, whether a restarted daemon's
+/// or the same daemon's after its links dropped (a resume that froze this
+/// process past the link lease), hydrates afresh from the caches.
 async fn spawn_liveliness_pump(
     system: &Session,
     site: &str,
     handle: TrayHandle,
+    reconcilers: Reconcilers,
     notifier: notify::Notifier,
 ) -> Result<()> {
     let sub = system
@@ -327,10 +334,19 @@ async fn spawn_liveliness_pump(
         .history(true)
         .await
         .map_err(|e| anyhow!("subscribe daemon liveliness: {e}"))?;
+    let system = system.clone();
+    let site = site.to_string();
     tokio::spawn(async move {
         let mut last: Option<bool> = None;
+        let mut mirroring: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         while let Ok(sample) = sub.recv_async().await {
             let alive = sample.kind() == SampleKind::Put;
+            if !alive {
+                for task in mirroring.drain(..) {
+                    task.abort();
+                    let _ = task.await;
+                }
+            }
             handle
                 .update(move |tray| {
                     if !alive {
@@ -340,6 +356,12 @@ async fn spawn_liveliness_pump(
                     tray.mirror.daemon_alive = alive;
                 })
                 .await;
+            if alive && mirroring.is_empty() {
+                match mirror_daemon(&system, &site, &handle, &reconcilers, &notifier).await {
+                    Ok(tasks) => mirroring = tasks,
+                    Err(e) => warn!(error = %e, "couldn't subscribe to the daemon's keys"),
+                }
+            }
             // Toast transitions only; the initial hydrated state is not
             // news (and an offline toast at every tray start would be).
             if let Some(was) = last
@@ -674,6 +696,73 @@ mod orchestration_tests {
         .expect("tray mirror did not converge");
     }
 
+    /// A daemon whose links drop and come back is still the same session:
+    /// a resume that keeps user processes frozen past the 10 s link lease
+    /// takes the daemon's token away and brings it back. Its TVs come back
+    /// with the token, named, from the caches it still holds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_daemon_whose_token_returns_is_mirrored_again() {
+        use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
+
+        let dir = tisvlay_test::socket_tempdir();
+        let socket = dir.path().join("sys.sock");
+        let daemon = zenoh::open(bootstrap::peer_config(&socket).unwrap())
+            .await
+            .unwrap();
+        let tv = Uuid::from_u128(5);
+        let identity = daemon
+            .declare_publisher(keys::tv_path("test", &tv, payload::Identity::PATH))
+            .cache(CacheConfig::default().max_samples(1))
+            .sample_miss_detection(
+                MissDetectionConfig::default().heartbeat(Duration::from_millis(500)),
+            )
+            .publisher_detection()
+            .await
+            .unwrap();
+        identity
+            .put(
+                serde_json::to_vec(&serde_json::json!({
+                    "name": "Den", "vendor": "mock", "capabilities": []
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let alive = keys::daemon_alive("test");
+        let token = daemon.liveliness().declare_token(&alive).await.unwrap();
+
+        let system = zenoh::open(bootstrap::client_config(&socket).unwrap())
+            .await
+            .unwrap();
+        let (commands, _receiver) = mpsc::unbounded_channel();
+        let handle = TrayHandle::Headless(Arc::new(tokio::sync::Mutex::new(TvTray::new(
+            commands,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ))));
+        let (notifier, _notifications) = notify::Notifier::capturing(Default::default());
+        spawn_liveliness_pump(
+            &system,
+            "test",
+            handle.clone(),
+            Reconcilers::new(),
+            notifier,
+        )
+        .await
+        .unwrap();
+        let named = |tray: &TvTray| {
+            tray.mirror
+                .tvs
+                .get(&tv)
+                .is_some_and(|view| view.name == "Den")
+        };
+        wait_for_tray(&handle, named).await;
+
+        token.undeclare().await.unwrap();
+        wait_for_tray(&handle, |tray| tray.mirror.tvs.is_empty()).await;
+        let _token = daemon.liveliness().declare_token(&alive).await.unwrap();
+        wait_for_tray(&handle, named).await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn system_pump_and_commands_round_trip_without_a_desktop() {
         let directory = tisvlay_test::socket_tempdir();
@@ -712,7 +801,7 @@ mod orchestration_tests {
         ))));
         let (notifier, mut notifications) = notify::Notifier::capturing(Default::default());
         let reconcilers = Reconcilers::new();
-        spawn_system_pump(
+        spawn_liveliness_pump(
             &system,
             "test",
             handle.clone(),
@@ -721,9 +810,6 @@ mod orchestration_tests {
         )
         .await
         .unwrap();
-        spawn_liveliness_pump(&system, "test", handle.clone(), notifier.clone())
-            .await
-            .unwrap();
         spawn_pairing_toasts(&system, "test", handle.clone(), notifier.clone())
             .await
             .unwrap();
