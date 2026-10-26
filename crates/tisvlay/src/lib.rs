@@ -331,6 +331,36 @@ pub struct DaemonClient {
     handshake: Arc<Handshake>,
 }
 
+/// Subscribe the daemon mirror to the daemon's keys, from their history
+/// on: one task per subscription, which ends (undeclaring it) when aborted.
+async fn mirror_daemon(
+    session: &Session,
+    site: &str,
+    mirror: &Arc<Mutex<SystemMirror>>,
+    events: &broadcast::Sender<StateEvent>,
+) -> Result<Vec<tokio::task::JoinHandle<()>>> {
+    let mut tasks = Vec::new();
+    for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
+        let sub = session
+            .declare_subscriber(key.as_str())
+            .history(HistoryConfig::default().detect_late_publishers())
+            .await
+            .map_err(|e| Error::transport("subscribe to the daemon's keys", e))?;
+        let mirror = Arc::clone(mirror);
+        let events = events.clone();
+        let site = site.to_string();
+        tasks.push(tokio::spawn(async move {
+            while let Ok(sample) = sub.recv_async().await {
+                let event = mirror.lock().expect("mirror lock").apply(&site, &sample);
+                if let Some(event) = event {
+                    let _ = events.send(event);
+                }
+            }
+        }));
+    }
+    Ok(tasks)
+}
+
 impl DaemonClient {
     /// Connect to the daemon socket and start mirroring.
     ///
@@ -347,25 +377,6 @@ impl DaemonClient {
         .map_err(|e| Error::transport("connect to the daemon socket", e))?;
         let mirror = Arc::new(Mutex::new(SystemMirror::default()));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
-
-        for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
-            let sub = session
-                .declare_subscriber(key.as_str())
-                .history(HistoryConfig::default().detect_late_publishers())
-                .await
-                .map_err(|e| Error::transport("subscribe to the daemon's keys", e))?;
-            let mirror = Arc::clone(&mirror);
-            let events = events.clone();
-            let site = site.to_string();
-            tokio::spawn(async move {
-                while let Ok(sample) = sub.recv_async().await {
-                    let event = mirror.lock().expect("mirror lock").apply(&site, &sample);
-                    if let Some(event) = event {
-                        let _ = events.send(event);
-                    }
-                }
-            });
-        }
         let liveliness = session
             .liveliness()
             .declare_subscriber(keys::daemon_alive(site))
@@ -379,15 +390,36 @@ impl DaemonClient {
             let events = events.clone();
             let caller = Arc::clone(&caller);
             let handshake = Arc::clone(&handshake);
+            let session = session.clone();
+            let site = site.to_string();
             tokio::spawn(async move {
+                // The mirror subscribes only while the daemon's token is
+                // present: a token that goes takes its subscriptions (and
+                // any sample still in them) along, and one that comes back,
+                // whether a restarted daemon's or the same daemon's after
+                // its links dropped (a resume that froze this process past
+                // the link lease), hydrates afresh from the caches.
+                let mut mirroring: Vec<tokio::task::JoinHandle<()>> = Vec::new();
                 while let Ok(sample) = liveliness.recv_async().await {
                     let alive = sample.kind() == SampleKind::Put;
+                    if !alive {
+                        for task in mirroring.drain(..) {
+                            task.abort();
+                            let _ = task.await;
+                        }
+                    }
                     {
                         let mut state = mirror.lock().expect("mirror lock");
                         if !alive {
                             state.end_lifetime();
                         }
                         state.daemon_alive = alive;
+                    }
+                    if alive && mirroring.is_empty() {
+                        match mirror_daemon(&session, &site, &mirror, &events).await {
+                            Ok(tasks) => mirroring = tasks,
+                            Err(e) => warn!(error = %e, "couldn't subscribe to the daemon's keys"),
+                        }
                     }
                     on_liveliness(
                         alive,
