@@ -15,6 +15,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Stable device alias for USB CEC adapters (a udev symlink so configs survive node renumbering)](cec-stable-device-alias.md)
 - [TV-driven PC power and input (the TV powering off sleeps or locks the PC on any backend; over CEC the TV wakes the PC and the remote drives the desktop; LG remote keys and pointer researched)](tv-controls-pc.md)
 - [Power and activity vocabulary (one pair of words per subject: PC sleep/wake, TV power off/on with standby as its state, idle/resume, desktop streaming as streams; the streams rename lands inside the TV-controls-PC campaign, the other renames after it)](power-vocabulary.md)
+- [Strict decoding of unknown fields (requests, stores and configs skip unknown fields today, so typos and renamed fields vanish silently; open questions on which surfaces, store failure, renames)](strict-decoding.md)
 - [Probe library extraction (when GUI lands)](probe-library-extraction.md)
 - [SSDP `NOTIFY` passive listener](ssdp-notify-passive-listener.md)
 - [Pair-time MAC capture (ARP snoop for vendors without a device-reported MAC)](pair-time-mac-capture.md)
