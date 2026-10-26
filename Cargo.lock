@@ -235,7 +235,7 @@ dependencies = [
  "getrandom 0.4.3",
  "serde",
  "tokio",
- "zbus",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -1881,6 +1881,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontique"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbf1df16263783918b7da396077521f92b729ef7c429444dfcf03581f1448b77"
+dependencies = [
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "memmap2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "parlance",
+ "read-fonts",
+ "roxmltree",
+ "smallvec",
+ "windows",
+ "windows-core",
+ "yeslogic-fontconfig-sys",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2556,7 +2578,7 @@ dependencies = [
  "webbrowser",
  "windows",
  "winit",
- "zbus",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -2566,7 +2588,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68a578f3e4b681b2b9cbd326d3be19716e2fac51d00a8a5b00c0ef4ae923b5e6"
 dependencies = [
  "derive_more",
- "fontique",
+ "fontique 0.11.1",
  "htmlparser",
  "icu_decimal",
  "icu_locale_core",
@@ -3343,7 +3365,7 @@ dependencies = [
  "pastey",
  "serde",
  "tokio",
- "zbus",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -3953,7 +3975,7 @@ dependencies = [
  "mac-notification-sys",
  "serde",
  "tauri-winrt-notification",
- "zbus",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -4615,7 +4637,7 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22d2ff88bd3f7d68d1d9b09c7e6209f9a8e8c05088295140a2bcf2e9b17038c5"
 dependencies = [
- "fontique",
+ "fontique 0.11.1",
  "harfrust",
  "hashbrown 0.17.1",
  "icu_normalizer",
@@ -5982,7 +6004,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ea28d4e1ad47d829b91e227f17037fac07a8001668a93fee47ac04f88718ebc"
 dependencies = [
  "derive_more",
- "fontique",
+ "fontique 0.11.1",
  "i-slint-compiler",
  "spin_on",
  "toml_edit",
@@ -6678,7 +6700,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "uuid",
- "zbus",
+ "zbus 6.1.0",
  "zenoh",
  "zenoh-ext",
 ]
@@ -6726,7 +6748,7 @@ dependencies = [
  "anyhow",
  "ashpd",
  "clap",
- "fontique",
+ "fontique 0.12.0",
  "futures-util",
  "gettext-rs 0.8.0",
  "i-slint-backend-testing",
@@ -6753,7 +6775,7 @@ dependencies = [
  "uuid",
  "webbrowser",
  "wl-clipboard-rs",
- "zbus",
+ "zbus 6.1.0",
  "zenoh",
 ]
 
@@ -6838,7 +6860,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-server",
- "zbus",
+ "zbus 6.1.0",
 ]
 
 [[package]]
@@ -6865,7 +6887,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "uuid",
- "zbus",
+ "zbus 6.1.0",
  "zenoh",
  "zenoh-ext",
 ]
@@ -6897,7 +6919,7 @@ dependencies = [
  "tracing",
  "tracing-mock",
  "tracing-test",
- "zbus",
+ "zbus 6.1.0",
 ]
 
 [[package]]
@@ -6924,7 +6946,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "uuid",
- "zbus",
+ "zbus 6.1.0",
  "zenoh",
  "zenoh-ext",
 ]
@@ -8604,9 +8626,37 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "winnow 1.0.4",
- "zbus_macros",
+ "zbus_macros 5.19.0",
  "zbus_names",
  "zvariant",
+]
+
+[[package]]
+name = "zbus"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcff5faa63a63d5b81051740f7382017f10b3440b3f401d97f0cf0b3b39c62d9"
+dependencies = [
+ "async-trait",
+ "bitflags 2.13.2",
+ "endi",
+ "futures-core",
+ "hex",
+ "libc",
+ "ordered-stream",
+ "rustix 1.1.5",
+ "serde",
+ "serde_repr",
+ "socket2 0.6.5",
+ "tokio",
+ "uds_windows",
+ "uuid",
+ "windows-sys 0.61.2",
+ "winnow 1.0.4",
+ "zbus_macros 6.1.0",
+ "zbus_utils",
+ "zcheapstr",
+ "zruntime",
 ]
 
 [[package]]
@@ -8625,6 +8675,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbus_macros"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bba6e2bfe19571dc81b3e0be9f8daec6e5422db3e2eea2e766a859553e7bd37"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "zbus_utils",
+]
+
+[[package]]
 name = "zbus_names"
 version = "4.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8633,6 +8695,19 @@ dependencies = [
  "serde",
  "winnow 1.0.4",
  "zvariant",
+]
+
+[[package]]
+name = "zbus_utils"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c27a055b114bd9fc3686e90f62bd1fe612d523fc5f620bac3b1d2f42d3f6cab8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 3.0.9",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -9130,6 +9205,16 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zruntime"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfc035df602243402949ddf3dcc5bcfad7edeb732dd49ec6e605431c4eca54ce"
+dependencies = [
+ "futures-core",
+ "futures-io",
+]
 
 [[package]]
 name = "zune-core"
