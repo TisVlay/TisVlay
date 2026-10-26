@@ -69,6 +69,7 @@ fn run_service(service: Service) -> Result<()> {
         Service::Session(args) => unsafe { tisvlay_session::service::main(args) },
         Service::Tray(args) => tisvlay_tray::service::main(args),
         Service::Greeter(args) => tisvlay_greeter::service::main(args),
+        Service::Wakeup(args) => tisvlay_daemon::wakeup::main(args),
     }
 }
 

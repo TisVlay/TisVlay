@@ -199,7 +199,10 @@ impl TvConnection for MockConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::STOCK | Capabilities::REMOTE_POWER | Capabilities::REMOTE_KEYS
+        Capabilities::STOCK
+            | Capabilities::REMOTE_POWER
+            | Capabilities::REMOTE_KEYS
+            | Capabilities::WAKES_PC
     }
 
     fn hardware_id(&self) -> Option<HardwareId> {

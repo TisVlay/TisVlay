@@ -14,6 +14,7 @@ mod seat;
 mod seed;
 pub mod service;
 mod store;
+pub mod wakeup;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -422,6 +423,9 @@ async fn serve_stack(
     reactor.set_route_monitor(routes_tx);
     let (sleep_tx, sleep_rx) = mpsc::unbounded_channel();
     reactor.set_sleeper(sleep_tx);
+    let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+    reactor.set_wake_list(wake_tx);
+    tokio::spawn(wakeup::write_lists(wakeup::list_path(socket), wake_rx));
     let devices_rx = watch_devices.then(|| {
         let (devices_tx, devices_rx) = mpsc::unbounded_channel();
         reactor.set_device_monitor(devices_tx);

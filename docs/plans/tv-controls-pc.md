@@ -164,9 +164,9 @@ Every slice ships whole:
 
 #### 8. The TV wakes the PC (wire)
 
-- [ ] `WAKES_PC`, from one Rust resolver walking from `/sys/bus/cec/devices/cecN` to the first USB-device ancestor, behind a sysfs-root seam (the DPMS watchers already take `/sys/class/drm` as a parameter). It gets the outside-input parser lint profile and a never-panic proptest (docs/build.md lists sysfs data).
-- [ ] `SystemWakeAction` and the system profile's `on_tv_power_on` (`Option<SystemWakeAction>`, resolved default `none`).
-- [ ] The world's `/run/tisvlay/wakeup` effect, the hidden subcommand, and `tisvlay-wakeup.service`, in the NixOS module and every package.
+- [x] `WAKES_PC`, from one Rust resolver walking from `/sys/bus/cec/devices/cecN` to the first USB-device ancestor, behind a sysfs-root seam (the DPMS watchers already take `/sys/class/drm` as a parameter). It gets the outside-input parser lint profile and a never-panic proptest (docs/build.md lists sysfs data). As built: `tisvlay_cec::wakeup` (`cec_node` follows a udev alias to `cecN` and accepts nothing else, `usb_wakeup_device` takes the first ancestor whose `uevent` says `DEVTYPE=usb_device`), with fixtures for pox's Pulse-Eight (whose xHCI controller's own `power/wakeup` must not be found) and a DP-AUX adapter under a GPU; the connector reads it at connect.
+- [x] `SystemWakeAction` and the system profile's `on_tv_power_on` (`Option<SystemWakeAction>`, resolved default `none`).
+- [x] The world's `/run/tisvlay/wakeup` effect, the hidden subcommand, and `tisvlay-wakeup.service`, in the NixOS module and every package. As built: `TransportFacts` carries the connector's local device node, and `publish_wake_list` sends the sorted nodes of TVs resolving to `wake` whenever the set changes (the first step sends the empty list, replacing a previous daemon's). It doesn't wait for `WAKES_PC`: the unit runs the same resolver and skips what it can't arm, so a list made before a TV's first connect after a restart still holds. The daemon writes it beside its socket (`/run/tisvlay/wakeup` when packaged); `tisvlay service wakeup` (hidden) arms, records in `/run/tisvlay-wakeup/enabled` (`RuntimeDirectoryPreserve=yes`, so until reboot, when the kernel forgets the setting too) and disarms only what it armed. The GUI's FROM THE TV card gets the row and the TV pane a "Wakes this PC" row; the VM test checks the unit is wanted by `sleep.target` and runs.
 
 ### 9. Docs at merge
 

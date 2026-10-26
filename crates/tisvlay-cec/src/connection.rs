@@ -77,6 +77,9 @@ pub(crate) struct CecConnection {
     /// as the TV's power: `subscribe_events` fills it, in either order
     /// with `subscribe_state`.
     events: EventSlot,
+    /// The adapter is a USB device that can let the TV wake the PC
+    /// (`WAKES_PC`), as the connector read it from sysfs.
+    wakes_pc: bool,
 }
 
 impl CecConnection {
@@ -95,7 +98,15 @@ impl CecConnection {
             brand: identity.brand,
             monitor_task: None,
             events: EventSlot::default(),
+            wakes_pc: false,
         }
+    }
+
+    /// Mark the adapter as one that can let the TV wake the PC.
+    #[must_use]
+    pub(crate) fn with_wakes_pc(mut self, wakes_pc: bool) -> Self {
+        self.wakes_pc = wakes_pc;
+        self
     }
 }
 
@@ -342,13 +353,15 @@ impl TvConnection for CecConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Power, the remote's power key through `subscribe_events`, and its
-        // other keys where the adapter has an RC device. INPUT is not
+        // Power, the remote's power key through `subscribe_events`, its
+        // other keys where the adapter has an RC device, and the wake where
+        // it's a USB device that may wake the system. INPUT is not
         // advertised — see `CecBackend::capabilities` for why (CEC can't
         // reliably route to an arbitrary input; the `switch_input` impl is
         // kept dormant).
         let mut capabilities = Capabilities::POWER | Capabilities::REMOTE_POWER;
         capabilities.set(Capabilities::REMOTE_KEYS, self.link.has_rc());
+        capabilities.set(Capabilities::WAKES_PC, self.wakes_pc);
         capabilities
     }
 

@@ -184,6 +184,19 @@ pub enum SystemSleepAction {
     Sleep,
 }
 
+/// What the machine lets the TV do while it sleeps: the system profile's
+/// side of the TV powering on, applied before every sleep. Exhaustive:
+/// every arm matters to the wake list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemWakeAction {
+    /// Leave the PC asleep.
+    #[default]
+    None,
+    /// Let the TV powering on wake the PC.
+    Wake,
+}
+
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================
@@ -419,6 +432,13 @@ pub struct SystemProfileConfig {
     /// power key can put the PC to sleep. Default `false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_keys: Option<bool>,
+
+    /// What the TV powering on does while this PC sleeps: `wake` lets it
+    /// wake the PC (on HDMI-CEC, through a USB adapter allowed to wake the
+    /// system, armed before every sleep). Where the TV comes up on another
+    /// input, it may still wake the PC. Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_tv_power_on: Option<SystemWakeAction>,
 }
 
 profile_plumbing! {
@@ -440,6 +460,7 @@ profile_plumbing! {
         on_tv_power_off,
         on_remote_power,
         remote_keys,
+        on_tv_power_on,
     ],
 }
 
@@ -482,6 +503,8 @@ pub struct ResolvedSystemProfile {
     pub on_remote_power: SystemSleepAction,
     /// Whether the TV remote's keys reach this PC's desktop.
     pub remote_keys: bool,
+    /// What the TV powering on does while this PC sleeps.
+    pub on_tv_power_on: SystemWakeAction,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -518,6 +541,8 @@ impl Default for ResolvedSystemProfile {
             on_remote_power: SystemSleepAction::None,
             // Opt-in: the remote drives the desktop only when asked.
             remote_keys: false,
+            // Opt-in: the TV wakes the PC only when asked.
+            on_tv_power_on: SystemWakeAction::None,
         }
     }
 }

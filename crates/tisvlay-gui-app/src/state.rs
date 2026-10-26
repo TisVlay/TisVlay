@@ -62,6 +62,7 @@ pub(crate) struct TvViewRaw {
     pub has_backlight: bool,
     pub has_remote_power: bool,
     pub has_remote_keys: bool,
+    pub wakes_pc: bool,
     pub is_screen_on: bool,
     pub volume: i32,
     pub muted: bool,
@@ -291,6 +292,7 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             has_backlight: tv.capabilities.contains(Capabilities::BACKLIGHT),
             has_remote_power: tv.capabilities.contains(Capabilities::REMOTE_POWER),
             has_remote_keys: tv.capabilities.contains(Capabilities::REMOTE_KEYS),
+            wakes_pc: tv.capabilities.contains(Capabilities::WAKES_PC),
             is_screen_on: tv.is_screen_on,
             volume: i32::from(tv.volume),
             muted: tv.muted,
@@ -710,7 +712,8 @@ mod tests {
         tv.capabilities = Capabilities::POWER
             | Capabilities::INPUT
             | Capabilities::REMOTE_POWER
-            | Capabilities::REMOTE_KEYS;
+            | Capabilities::REMOTE_KEYS
+            | Capabilities::WAKES_PC;
         let snap = convert_snapshot(SnapshotInputs {
             tvs: vec![tv],
             ..empty_inputs()
@@ -719,6 +722,7 @@ mod tests {
         assert!(row.has_input);
         assert!(row.has_remote_power);
         assert!(row.has_remote_keys);
+        assert!(row.wakes_pc);
         assert!(!row.has_volume);
         assert!(!row.has_mute);
         assert!(!row.has_backlight);
@@ -739,6 +743,7 @@ mod tests {
         assert!(row.has_screen);
         assert!(!row.has_remote_power, "not in STOCK");
         assert!(!row.has_remote_keys, "not in STOCK");
+        assert!(!row.wakes_pc, "not in STOCK");
     }
 
     #[test]

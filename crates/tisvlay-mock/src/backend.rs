@@ -42,5 +42,6 @@ impl TvBackend for MockBackend {
             | Capabilities::IPV6
             | Capabilities::REMOTE_POWER
             | Capabilities::REMOTE_KEYS
+            | Capabilities::WAKES_PC
     }
 }

@@ -39,7 +39,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, UserProfileBody};
 use tisvlay_core::{
     AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, SessionAction,
-    SystemSleepAction, UserLockAction,
+    SystemSleepAction, SystemWakeAction, UserLockAction,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -63,6 +63,7 @@ pub(crate) enum EnumClass {
     AutomateWhen,
     UserLockAction,
     SystemSleepAction,
+    SystemWakeAction,
 }
 
 /// Discriminator + per-variant data for one row in the profile-editor
@@ -111,6 +112,9 @@ const USER_LOCK_ACTION_OPTIONS: &[&str] = &["none", "lock"];
 
 /// Concrete option list for [`SystemSleepAction`], in declaration order.
 const SYSTEM_SLEEP_ACTION_OPTIONS: &[&str] = &["none", "suspend", "sleep"];
+
+/// Concrete option list for [`SystemWakeAction`], in declaration order.
+const SYSTEM_WAKE_ACTION_OPTIONS: &[&str] = &["none", "wake"];
 
 /// System-profile field table. Order is the rendering order in the
 /// editor — `on_startup` first, automation gate last.
@@ -278,8 +282,9 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
 ];
 
 /// System-profile FROM THE TV fields: the going-off events, which put the
-/// PC to sleep, and the switch letting the remote's keys reach the desktop.
-/// Rendered below the main FIELDS card.
+/// PC to sleep, the TV powering on, which may wake it, and the switch
+/// letting the remote's keys reach the desktop. Rendered below the main
+/// FIELDS card.
 pub(crate) const SYSTEM_FROM_TV_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         wire: "on_tv_power_off",
@@ -293,6 +298,13 @@ pub(crate) const SYSTEM_FROM_TV_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Enum {
             options: SYSTEM_SLEEP_ACTION_OPTIONS,
             class: EnumClass::SystemSleepAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_tv_power_on",
+        kind: FieldKind::Enum {
+            options: SYSTEM_WAKE_ACTION_OPTIONS,
+            class: EnumClass::SystemWakeAction,
         },
     },
     FieldSpec {
@@ -403,6 +415,7 @@ fn field_label(wire: &str) -> String {
         "on_tv_power_off" => pgettext("profile field", "On TV power off"),
         "on_remote_power" => pgettext("profile field", "On remote power key"),
         "remote_keys" => pgettext("profile field", "Remote keys reach the desktop"),
+        "on_tv_power_on" => pgettext("profile field", "On TV power on"),
         // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -668,6 +681,7 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
         "on_tv_power_off" => body.on_tv_power_off.map(system_sleep_action_token),
         "on_remote_power" => body.on_remote_power.map(system_sleep_action_token),
         "remote_keys" => body.remote_keys.map(|v| v.to_string()),
+        "on_tv_power_on" => body.on_tv_power_on.map(system_wake_action_token),
         _ => None,
     }
 }
@@ -728,6 +742,16 @@ fn system_sleep_action_token(action: SystemSleepAction) -> String {
         SystemSleepAction::None => "none",
         SystemSleepAction::Suspend => "suspend",
         SystemSleepAction::Sleep => "sleep",
+    }
+    .to_string()
+}
+
+/// Map a [`SystemWakeAction`] to its wire token, mirroring the enum's
+/// `#[serde(rename_all = "snake_case")]`.
+fn system_wake_action_token(action: SystemWakeAction) -> String {
+    match action {
+        SystemWakeAction::None => "none",
+        SystemWakeAction::Wake => "wake",
     }
     .to_string()
 }
@@ -1646,6 +1670,7 @@ pub(crate) enum BodyPatch {
     AutomateWhen(AutomateWhen),
     UserLockAction(UserLockAction),
     SystemSleepAction(SystemSleepAction),
+    SystemWakeAction(SystemWakeAction),
     Number(u64),
     Bool(bool),
     Clear,
@@ -1682,6 +1707,16 @@ fn parse_system_sleep_action(token: &str) -> anyhow::Result<SystemSleepAction> {
         other => Err(anyhow::anyhow!(
             "Unknown SystemSleepAction variant: {other}"
         )),
+    }
+}
+
+/// Parse a ComboBox token into a [`SystemWakeAction`]; the inverse of
+/// [`system_wake_action_token`].
+fn parse_system_wake_action(token: &str) -> anyhow::Result<SystemWakeAction> {
+    match token {
+        "none" => Ok(SystemWakeAction::None),
+        "wake" => Ok(SystemWakeAction::Wake),
+        other => Err(anyhow::anyhow!("Unknown SystemWakeAction variant: {other}")),
     }
 }
 
@@ -1728,6 +1763,9 @@ fn set_system_field(
             body.on_remote_power = system_sleep_action_patch(patch, "on_remote_power")?;
         }
         "remote_keys" => body.remote_keys = bool_patch(patch, "remote_keys")?,
+        "on_tv_power_on" => {
+            body.on_tv_power_on = system_wake_action_patch(patch, "on_tv_power_on")?;
+        }
         other => anyhow::bail!("Unknown system-profile field: {other}"),
     }
     Ok(())
@@ -1809,6 +1847,17 @@ fn system_sleep_action_patch(
     }
 }
 
+fn system_wake_action_patch(
+    patch: BodyPatch,
+    field: &str,
+) -> anyhow::Result<Option<SystemWakeAction>> {
+    match patch {
+        BodyPatch::SystemWakeAction(action) => Ok(Some(action)),
+        BodyPatch::Clear => Ok(None),
+        other => anyhow::bail!("Field '{field}' expects SystemWakeAction, got {other:?}"),
+    }
+}
+
 fn user_lock_action_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<UserLockAction>> {
     match patch {
         BodyPatch::UserLockAction(action) => Ok(Some(action)),
@@ -1860,6 +1909,12 @@ fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
             class: EnumClass::SystemSleepAction,
             ..
         } => Ok(BodyPatch::SystemSleepAction(parse_system_sleep_action(
+            token,
+        )?)),
+        FieldKind::Enum {
+            class: EnumClass::SystemWakeAction,
+            ..
+        } => Ok(BodyPatch::SystemWakeAction(parse_system_wake_action(
             token,
         )?)),
         FieldKind::Number { .. } => {
@@ -2332,6 +2387,7 @@ mod tests {
             on_tv_power_off: Some(SystemSleepAction::None),
             on_remote_power: Some(SystemSleepAction::None),
             remote_keys: Some(false),
+            on_tv_power_on: Some(SystemWakeAction::None),
         }
     }
 
@@ -3292,10 +3348,15 @@ mod tests {
     /// lock.
     #[test]
     fn system_going_off_rows_round_trip_their_tokens() {
-        for spec in SYSTEM_FROM_TV_FIELDS
-            .iter()
-            .filter(|f| matches!(f.kind, FieldKind::Enum { .. }))
-        {
+        for spec in SYSTEM_FROM_TV_FIELDS.iter().filter(|f| {
+            matches!(
+                f.kind,
+                FieldKind::Enum {
+                    class: EnumClass::SystemSleepAction,
+                    ..
+                }
+            )
+        }) {
             let wire = spec.wire;
             let mut body = SystemProfileBody::default();
             for token in ["suspend", "sleep", "none"] {
@@ -3318,6 +3379,24 @@ mod tests {
         .expect("known wire");
         assert_eq!(body.on_remote_power, Some(SystemSleepAction::Suspend));
         assert_eq!(body.on_tv_power_off, None, "each row writes its own field");
+    }
+
+    /// The wake row round-trips its tokens and refuses a sleep mode.
+    #[test]
+    fn on_tv_power_on_round_trips_its_tokens() {
+        let spec = SYSTEM_FROM_TV_FIELDS
+            .iter()
+            .find(|f| f.wire == "on_tv_power_on")
+            .expect("the row exists");
+        let mut body = SystemProfileBody::default();
+        let patch = parse_enum_token(spec.kind, "wake").expect("a SystemWakeAction token");
+        set_system_field(&mut body, "on_tv_power_on", patch).expect("known wire");
+        assert_eq!(body.on_tv_power_on, Some(SystemWakeAction::Wake));
+        assert_eq!(
+            read_system_field(&body, "on_tv_power_on").as_deref(),
+            Some("wake")
+        );
+        assert!(parse_enum_token(spec.kind, "suspend").is_err());
     }
 
     /// The remote-keys switch round-trips through the body.

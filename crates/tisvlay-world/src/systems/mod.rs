@@ -28,8 +28,8 @@ use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceWatch,
-    DialSeq, DispatchRetry, DispatchVerify, Effect, GoingOff, GoingOffEvent, HeldWake,
+    AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceNode,
+    DeviceWatch, DialSeq, DispatchRetry, DispatchVerify, Effect, GoingOff, GoingOffEvent, HeldWake,
     KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox,
     PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
     PowerEdge, PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
@@ -101,6 +101,7 @@ pub(crate) fn build_schedule() -> Schedule {
             derive_link_state,
             derive_stream_armed,
             publish_greeter_timeout,
+            publish_wake_list,
             publish_changed::<payload::Power>,
             publish_changed::<payload::Volume>,
             publish_changed::<payload::Link>,

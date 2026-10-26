@@ -279,6 +279,7 @@ async fn defaults_and_effective_expose_field_resolution() {
         "on_tv_power_off": "none",
         "on_remote_power": "none",
         "remote_keys": false,
+        "on_tv_power_on": "none",
     });
 
     let defaults = call::<profile::Defaults>(&w.caller, &(), &())
@@ -335,6 +336,7 @@ async fn defaults_and_effective_expose_field_resolution() {
             "on_tv_power_off": "none",
             "on_remote_power": "none",
             "remote_keys": false,
+            "on_tv_power_on": "none",
         })
     );
 

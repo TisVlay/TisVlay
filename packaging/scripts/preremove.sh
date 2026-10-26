@@ -25,6 +25,7 @@ case "$1" in
     # Stop and disable system daemon
     systemctl stop tisvlay-daemon.service 2>/dev/null || true
     systemctl disable tisvlay-daemon.service 2>/dev/null || true
+    systemctl disable tisvlay-wakeup.service 2>/dev/null || true
 
     # Remove the global enablement of the per-user units (installed by
     # postinstall). Live user managers still running them are left alone —

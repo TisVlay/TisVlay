@@ -443,6 +443,45 @@ in
     # credentials. Mode 0750 — only tisvlay user/group can read.
     # Clients talk to the daemon over the socket instead of reading
     # the file.
+    # Arms the CEC adapters on the daemon's wake list (a system profile's
+    # on_tv_power_on = "wake") before every sleep, and disarms the ones it
+    # armed that are no longer listed; the same unit the distro packages
+    # ship. A no-op with an empty list.
+    systemd.services.tisvlay-wakeup = {
+      description = "TisVlay: let the TV wake this PC";
+      documentation = [ "https://github.com/TisVlay/TisVlay" ];
+      wantedBy = [ "sleep.target" ];
+      before = [ "sleep.target" ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig = {
+        Type = "oneshot";
+        SyslogIdentifier = "tisvlay-wakeup";
+        ExecStart = lib.escapeShellArgs [
+          (lib.getExe' cfg.package "tisvlay")
+          "service"
+          "wakeup"
+          "--list"
+          "/run/tisvlay/wakeup"
+          "--record"
+          "/run/tisvlay-wakeup/enabled"
+        ];
+        RuntimeDirectory = "tisvlay-wakeup";
+        RuntimeDirectoryMode = "0700";
+        RuntimeDirectoryPreserve = "yes";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateNetwork = true;
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        RestrictRealtime = true;
+        RestrictNamespaces = true;
+        SystemCallArchitectures = "native";
+      };
+    };
+
     systemd.services.tisvlay-daemon = {
       description = "tisvlay TV control daemon";
       wantedBy = [ "multi-user.target" ];

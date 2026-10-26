@@ -39,6 +39,8 @@ pub struct Reactor {
     devices_tx: Option<mpsc::UnboundedSender<DeviceRequest>>,
     /// Sleep requests for the daemon's logind adapter.
     sleep_tx: Option<mpsc::UnboundedSender<SleepRequest>>,
+    /// The wake list, for the daemon to write where the wakeup unit reads it.
+    wake_list_tx: Option<mpsc::UnboundedSender<Vec<std::path::PathBuf>>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
@@ -122,6 +124,7 @@ impl Reactor {
                 routes_tx: None,
                 devices_tx: None,
                 sleep_tx: None,
+                wake_list_tx: None,
                 vendor_retry: HashMap::new(),
             },
             effects_rx,
@@ -159,6 +162,14 @@ impl Reactor {
     /// logind adapter, which puts the machine to sleep.
     pub fn set_sleeper(&mut self, tx: mpsc::UnboundedSender<SleepRequest>) {
         self.sleep_tx = Some(tx);
+    }
+
+    /// Hand the wake list to `tx`: the device nodes of the TVs whose system
+    /// profile lets them wake the PC, sent whenever the set changes (and
+    /// once at the first step). The daemon writes it for the wakeup unit,
+    /// which arms those adapters before each sleep.
+    pub fn set_wake_list(&mut self, tx: mpsc::UnboundedSender<Vec<std::path::PathBuf>>) {
+        self.wake_list_tx = Some(tx);
     }
 
     /// Apply the boot state before [`run`](Self::run): `stored` (the
@@ -233,6 +244,11 @@ impl Reactor {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
                 }
+                Effect::WakeList(nodes) => {
+                    if let Some(tx) = &self.wake_list_tx {
+                        let _ = tx.send(nodes);
+                    }
+                }
                 Effect::Sleep(request) => match &self.sleep_tx {
                     Some(tx) => {
                         let _ = tx.send(request);
@@ -267,6 +283,7 @@ impl Reactor {
                             primary: connector.primary_descriptor(&config),
                             config_rows: connector.display_config(&config),
                             diagnostic_rows: connector.display_diagnostics(&config),
+                            device: connector.local_device(&config).map(|device| device.path),
                         });
                         self.request_monitors(tv, connector.as_ref(), &config);
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
@@ -353,6 +370,7 @@ impl Reactor {
                             primary: connector.primary_descriptor(&config),
                             config_rows: connector.display_config(&config),
                             diagnostic_rows: connector.display_diagnostics(&config),
+                            device: connector.local_device(&config).map(|device| device.path),
                         });
                         self.request_monitors(tv, connector.as_ref(), &config);
                     }

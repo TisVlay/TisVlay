@@ -53,6 +53,21 @@ pub(crate) fn spawn_reactor_with_sleeper() -> (
     (effects, sleep_rx, client, handle)
 }
 
+/// [`spawn_reactor`] with the wake list tapped: each new list arrives on
+/// the returned receiver.
+pub(crate) fn spawn_reactor_with_wake_list() -> (
+    UnboundedReceiver<WireEffect>,
+    UnboundedReceiver<Vec<std::path::PathBuf>>,
+    WorldClient,
+    MockHandle,
+) {
+    let (mut reactor, effects, client, handle) = new_reactor();
+    let (wake_tx, wake_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.set_wake_list(wake_tx);
+    tokio::spawn(reactor.run());
+    (effects, wake_rx, client, handle)
+}
+
 /// [`spawn_reactor`] with the store outlet tapped: every `Persist`
 /// snapshot arrives on the returned receiver.
 pub(crate) fn spawn_reactor_with_store() -> (

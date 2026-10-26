@@ -823,6 +823,7 @@ pub(super) fn apply_transport_facts(
             primary,
             config_rows,
             diagnostic_rows,
+            device,
         } = msg
         else {
             continue;
@@ -849,7 +850,12 @@ pub(super) fn apply_transport_facts(
             rows.config = config_rows.clone();
             rows.diagnostics = diagnostic_rows.clone();
         }
-        commands.entity(entity).insert(TransportTraits(*traits));
+        let mut e = commands.entity(entity);
+        e.insert(TransportTraits(*traits));
+        match device {
+            Some(path) => e.insert(DeviceNode(path.clone())),
+            None => e.remove::<DeviceNode>(),
+        };
     }
 }
 

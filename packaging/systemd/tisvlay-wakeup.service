@@ -1,0 +1,35 @@
+[Unit]
+Description=TisVlay: let the TV wake this PC
+Documentation=https://github.com/TisVlay/TisVlay
+# Runs before every sleep (suspend, hibernate and their hybrids): nothing in
+# TisVlay runs while the PC sleeps, and the daemon can't write sysfs, so
+# this arms the CEC adapters on the daemon's wake list (the system
+# profile's on_tv_power_on = "wake") and disarms the ones it armed that
+# are no longer listed. Adapters it never armed stay as the host has them.
+DefaultDependencies=no
+Before=sleep.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/tisvlay service wakeup --list /run/tisvlay/wakeup --record /run/tisvlay-wakeup/enabled
+SyslogIdentifier=tisvlay-wakeup
+# What it armed, kept until reboot (when the kernel forgets the setting too).
+RuntimeDirectory=tisvlay-wakeup
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+
+# Root, to write power/wakeup under /sys; nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=sleep.target

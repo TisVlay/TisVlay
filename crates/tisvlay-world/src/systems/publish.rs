@@ -1,4 +1,4 @@
-//! The derive/publish tail: derived projections, change-driven state publishes, the greeter timeout, and the store snapshot.
+//! The derive/publish tail: derived projections, change-driven state publishes, the greeter timeout, the wake list, and the store snapshot.
 
 use super::*;
 
@@ -34,6 +34,37 @@ pub(super) fn derive_automated(
         if meta.automated != automated {
             meta.automated = automated;
         }
+    }
+}
+
+/// Send the wake list when it changes: the device nodes of the TVs whose
+/// system profile's `on_tv_power_on` is `wake`, sorted. The wakeup unit
+/// resolves each to its USB device before every sleep and skips what it
+/// can't (an adapter with no USB device, one unplugged), which is the
+/// `wakes_pc` capability's own test, so the list doesn't wait for a
+/// connection to report it. The first run always sends, replacing a list
+/// a previous daemon left.
+pub(super) fn publish_wake_list(
+    mut outbox: ResMut<Outbox>,
+    q: Query<(Option<&State<payload::Meta>>, &DeviceNode)>,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+    mut last: Local<Option<Vec<std::path::PathBuf>>>,
+) {
+    let mut nodes: Vec<_> = q
+        .iter()
+        .filter(|(meta, _)| {
+            resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
+                body.on_tv_power_on
+            }) == tisvlay_core::SystemWakeAction::Wake
+        })
+        .map(|(_, node)| node.0.clone())
+        .collect();
+    nodes.sort();
+    nodes.dedup();
+    if last.as_ref() != Some(&nodes) {
+        *last = Some(nodes.clone());
+        outbox.0.push(Effect::WakeList(nodes));
     }
 }
 

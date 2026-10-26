@@ -24,6 +24,9 @@ contents = [
     # dedicated `tisvlay` system user (postinstall.sh creates it), owning
     # the zenoh socket in /run/tisvlay/. Clients join the tisvlay group.
     { src = "packaging/systemd/tisvlay-daemon.service", dst = "/usr/lib/systemd/system/tisvlay-daemon.service" },
+    # Arms the adapters on the daemon's wake list before each sleep (the
+    # system profile's on_tv_power_on); a no-op with an empty list.
+    { src = "packaging/systemd/tisvlay-wakeup.service", dst = "/usr/lib/systemd/system/tisvlay-wakeup.service" },
     # Systemd user services
     { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
     # Greeter idle client, one unit per display manager (each hangs off that

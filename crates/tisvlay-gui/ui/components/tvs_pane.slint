@@ -76,6 +76,9 @@ export struct TvViewModel {
     /// Whether the TV remote's keys can reach the desktop (the system
     /// profile's `remote_keys`).
     has-remote-keys: bool,
+    /// Whether the TV can wake this PC from sleep (the system profile's
+    /// `on_tv_power_on`).
+    wakes-pc: bool,
     is-screen-on: bool,
     volume: int,
     muted: bool,
@@ -881,6 +884,17 @@ component TvDetail inherits Rectangle {
                         Text {
                             text: root.tv.has-remote-keys ? @tr("Can reach the desktop") : @tr("Not on this connection");
                             color: root.tv.has-remote-keys ? Theme.text : Theme.text-dim;
+                            font-size: Design.font-body;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    FormRow {
+                        label: @tr("Wakes this PC");
+                        help: @tr("Whether the TV powering on can wake this PC from sleep (on HDMI-CEC, through a USB adapter allowed to wake the system), for the system profile's \"On TV power on\".");
+                        Text {
+                            text: root.tv.wakes-pc ? @tr("Can wake it") : @tr("Not on this connection");
+                            color: root.tv.wakes-pc ? Theme.text : Theme.text-dim;
                             font-size: Design.font-body;
                             vertical-alignment: center;
                         }

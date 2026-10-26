@@ -43,6 +43,9 @@ update-desktop-database /usr/share/applications 2>/dev/null || true
 # across upgrades. Guarded so image builds without a live systemd stay
 # quiet.
 systemctl enable tisvlay-daemon.service 2>/dev/null || true
+# The wakeup unit runs before each sleep (WantedBy=sleep.target); with no
+# profile asking for the wake, its list is empty and it changes nothing.
+systemctl enable tisvlay-wakeup.service 2>/dev/null || true
 systemctl try-restart tisvlay-daemon.service 2>/dev/null || true
 
 # Start only on FIRST install — an upgrade must never override an

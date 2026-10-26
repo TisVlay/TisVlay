@@ -252,6 +252,11 @@ pub(crate) struct ConnectionHandle {
     pub cmd_tx: mpsc::UnboundedSender<BackendCmd>,
 }
 
+/// The local device node a TV's connection needs, as configured (CEC's
+/// `/dev/cecN` or a udev alias of it): what the wake list names.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeviceNode(pub std::path::PathBuf);
+
 /// Whether this connection was last told to let the TV remote's keys
 /// reach the desktop. A new connection starts at `false`: its claim is
 /// fresh, without passthrough.
@@ -636,6 +641,9 @@ pub(crate) enum Effect {
     Wire(WireEffect),
     /// Put the machine to sleep (the daemon's logind adapter).
     Sleep(SleepRequest),
+    /// The device nodes allowed to wake the PC changed (the daemon's
+    /// wake-list writer).
+    WakeList(Vec<std::path::PathBuf>),
     /// Stop route- and device-monitoring a removed TV.
     ForgetMonitors { tv: Uuid },
     /// Spawn a dial task for this TV.

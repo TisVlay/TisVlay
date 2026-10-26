@@ -209,6 +209,9 @@ pub enum InEvent {
         /// `VendorRows` for the clients' INFO surface.
         config_rows: Vec<(String, String)>,
         diagnostic_rows: Vec<(String, String)>,
+        /// The local device node the connection needs (CEC's `/dev/cecN`,
+        /// as configured), for the wake list.
+        device: Option<std::path::PathBuf>,
     },
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.

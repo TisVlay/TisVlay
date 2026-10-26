@@ -53,4 +53,10 @@ on_remote_power = "none"
 # power keys away from the desktop; without it (a source build), the
 # power key can put the PC to sleep. Default `false`.
 remote_keys = false
+
+# What the TV powering on does while this PC sleeps: `wake` lets it
+# wake the PC (on HDMI-CEC, through a USB adapter allowed to wake the
+# system, armed before every sleep). Where the TV comes up on another
+# input, it may still wake the PC. Default `none`.
+on_tv_power_on = "none"
 ```

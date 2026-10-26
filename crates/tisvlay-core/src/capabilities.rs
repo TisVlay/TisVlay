@@ -134,6 +134,11 @@ bitflags! {
         /// ([`TvConnection::set_remote_keys`](crate::TvConnection::set_remote_keys)).
         const REMOTE_KEYS = 0b1000_0000_0000;
 
+        /// The TV can wake this PC from sleep, when the system profile's
+        /// `on_tv_power_on` asks: on HDMI-CEC, the adapter is a USB
+        /// device the kernel can let wake the system.
+        const WAKES_PC = 0b0001_0000_0000_0000;
+
         /// The stock feature set — the conventional baseline a typical
         /// TV backend is expected to expose. Transport-family bits
         /// (IPV4, IPV6) are deliberately excluded — see their doc
@@ -207,6 +212,9 @@ impl Capabilities {
         if self.contains(Self::REMOTE_KEYS) {
             caps.push("remote_keys");
         }
+        if self.contains(Self::WAKES_PC) {
+            caps.push("wakes_pc");
+        }
         caps
     }
 
@@ -232,6 +240,7 @@ impl Capabilities {
                 "ipv6" => caps |= Self::IPV6,
                 "remote_power" => caps |= Self::REMOTE_POWER,
                 "remote_keys" => caps |= Self::REMOTE_KEYS,
+                "wakes_pc" => caps |= Self::WAKES_PC,
                 _ => {} // Ignore unknown capabilities
             }
         }

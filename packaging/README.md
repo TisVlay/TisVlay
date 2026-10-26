@@ -195,10 +195,12 @@ The `tisvlay` CLI ships tab-completion for bash, zsh, and fish, present after in
 
 ## The TV acting on the PC
 
-Two files let profiles act on the PC, and every channel ships them (the `.deb`/`.rpm`/Arch packages from `crates/tisvlay-cli/Cargo.toml`'s nfpm assets, the NixOS module from the same sources). Both do nothing until a profile asks.
+Three files let profiles act on the PC, and every channel ships them (the `.deb`/`.rpm`/Arch packages from `crates/tisvlay-cli/Cargo.toml`'s nfpm assets, the NixOS module from the same sources). Both do nothing until a profile asks.
 
 - **The polkit rule** (`packaging/polkit/50-tisvlay.rules`, at `/usr/share/polkit-1/rules.d/`; the module puts it in `security.polkit.extraConfig` for its configured user) lets the daemon's user suspend and hibernate, for a system profile's sleep. It takes effect where polkit runs; every desktop runs it.
 - **The keymap** (`packaging/udev/70-tisvlay-rc-cec.hwdb`, at `/usr/lib/udev/hwdb.d/`; the module puts it in `services.udev.extraHwdb`) drops the TV remote's power keys (CEC scancodes `0x40` and `0x6b` to `0x6d`) from every CEC remote-control input, so with a system profile's `remote_keys` on they never reach the desktop as `KEY_POWER`, `KEY_SLEEP` or `KEY_WAKEUP`. TisVlay answers the power key itself (`on_remote_power`). Each distro's udev package recompiles the hwdb on install. An adapter attached before the install picks the keymap up on its next attach, or at once with `udevadm trigger --subsystem-match=input --action=change`.
+
+- **The wakeup unit** (`packaging/systemd/tisvlay-wakeup.service`, a root oneshot `WantedBy=` and `Before=sleep.target`; postinstall enables it, the module declares it) runs `tisvlay service wakeup` before every sleep. It reads the daemon's wake list (`/run/tisvlay/wakeup`: the device nodes of the TVs whose system profile's `on_tv_power_on` is `wake`), enables each adapter's USB `power/wakeup`, records what it enabled in `/run/tisvlay-wakeup/enabled`, and disables those once they're off the list. It never touches an adapter it didn't enable, so a host's own udev rule stands, and with the daemon stopped (no list) it only undoes its own. The daemon can't do this itself: its unit has `ProtectKernelTunables=true`.
 
 **Without a package** (a source build, `just daemon-start`), there's no keymap: turning `remote_keys` on lets the remote's power key reach the desktop as `KEY_POWER`, which on most desktops puts the PC to sleep. Install the hwdb file by hand (copy it to `/etc/udev/hwdb.d/`, then `systemd-hwdb update` and the `udevadm trigger` above) before turning it on. The daemon doesn't check for it: whether a compiled hwdb carries an entry can't be read back reliably.
 

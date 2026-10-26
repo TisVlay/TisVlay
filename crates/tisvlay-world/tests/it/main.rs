@@ -17,4 +17,5 @@ mod power_edge;
 mod reload;
 mod remote_keys;
 mod store;
+mod wake_list;
 mod world;
