@@ -151,6 +151,30 @@ Every slice ships whole:
 - [x] `REMOTE_POWER`, `TvEvent` and `subscribe_events`, the CEC monitor keeping `<User Control Pressed>` Power addressed to us (debounced), and a `BackendEvent` variant with its arm in the bridge. The mock implements the stream and advertises the capability, with `MockHandle::press_remote_power` driving the world and session tests. The monitor also reads the Power Off function (`0x6C`) as the power key, since a TV of another make may send it for the same menu item, but not Power Toggle (`0x6B`), which a TV may send to wake the PC.
 - [x] `event/remote-power` and `on_remote_power` in both profiles, run like `on_tv_power_off` but behind the stream gate only. Both going-off fields move to a "From the TV" card in each profile editor, and the TV pane's "From the TV" group says whether the TV's connection has `REMOTE_POWER`.
 
+#### 6b. The TV's wake press (proposed, for review)
+
+- [ ] **Found on hardware (2026-10-25, pox, LG C3).** The TV also sends the PC `<User Control Pressed>` Power when it switches to the PC's input to wake it, and step 6 reads that as the remote's power key. With `on_remote_power = "suspend"`, that would put an awake PC to sleep at the moment the TV selects it. Seen once, at 22:10:39 in check 2: the TV reported itself on (`0f 90 00`) after TisVlay's Wake-on-LAN power-on, sent `08 44 40` / `08 45` 1.07 s later, then Set Stream Path to the PC (`0f 86 10 00`) 0.19 s after the press. A manual run then mapped the TV's behavior from the kernel's CEC log (`cec` `debug=2`), with every PC action set to `none`:
+
+  | Action | Frames | A press at the PC? |
+  |---|---|---|
+  | The TV's own remote, off then on, showing the PC | `0f 36`, `0f 90 01`; then `0f 90 00`, `0f 86 10 00` | no |
+  | Wake-on-LAN from Active Standby, and TisVlay's power-off then its power-on (5 s and 20 s off) | `0f 90 00`, `0f 86 10 00` | no (3 tries) |
+  | TisVlay's CEC power-on (Image View On, Active Source from the PC) | `80 04`, `8f 82 10 00`; `0f 90 00` | no |
+  | SIMPLINK's "power off this device", TV showing the PC | `08 44 40`, `08 45`, nothing after; the TV stays on | the real press |
+  | Input switch to the Chromecast over the network (step 2b) | Routing Change 1.0→4.0, then `04 44 40` / `04 45` to the Chromecast, then Set Stream Path 4.0 | yes, to the device switched to |
+  | Input switch with the TV's input button or the SIMPLINK device list | Routing Change only (to the Chromecast, or back to the PC); no press with both devices awake | no |
+  | TV on the Chromecast, off, on (comes up there), then to the PC | `0f 86 40 00` at power-on; then Routing Change 4.0→1.0 and Set Stream Path 1.0 | no |
+  | Daemon restart with the TV showing the PC, then a SIMPLINK power-off 8 s later | our claim and identity exchange; no routing frame from the TV before the press | the real press |
+
+  Earlier readings corrected by this run: the TV's `<Standby>` broadcast 0.4 s after some presses was its reply to TisVlay's own `<Standby>` (`80 36`, the stock `on_session_lock` screen-off emulated as power, sent within the millisecond of the session's lock), not part of SIMPLINK's power-off; and the press isn't caused by a network power-on as such.
+- [ ] **Prior art.** libcec fixed the same bug on 2026-09-02 (`efe7d98c`, "fixed: a power toggle switched the device off as the TV selected it", #744). In `CCECCommandHandler::HandleUserControlPressed`, Power and Power Toggle are toggles, and a toggle reads as "off" only while the device is the active source and on: "a TV that is switching to this input sends one to wake the source it is switching to, and switching off at the moment the user asked to watch it is never what was meant." Power Off Function has no power branch there. The HDMI CEC specification isn't public, so libcec is the reference.
+- [ ] **Proposed rule.** The CEC monitor reads a power-key press as "power off this device" only while the TV has been showing the PC for at least 2 s:
+  - **Shown, from now:** a Routing Change or Routing Information to the PC's physical address, a Set Stream Path to it, or an Active Source for it (the PC's own on a CEC power-on included). Each one restarts the 2 s, since a switch can send a Routing Change and then a Set Stream Path.
+  - **Not shown:** a route or Active Source for any other address, or the TV's standby.
+  - **At connect:** shown and settled if the TV is on (a restart gets no routing frame, row 8), not shown if it's in standby.
+  - Against the evidence: the 22:10:39 press came after the TV's standby (not shown: ignored); every SIMPLINK press came minutes after a route to the PC or the PC's own Active Source (acted on); a wake press 0.2 s after a Routing Change to the PC, the step-2b shape aimed at the PC, falls inside the 2 s (ignored). The cost: a SIMPLINK power-off within 2 s of switching to the PC is ignored.
+- [ ] **Open questions.** Whether Power Toggle (`0x6B`) comes back as a power key under this rule (libcec treats it as Power; step 6 left it out for this very wake risk), and whether Power Off Function (`0x6C`) stays an unconditional power-off. What makes the TV press an *awake* PC remains unknown: it reproduced once in four tries.
+
 #### 7. The remote's keys (wire)
 
 - [x] A linux-cec setter for the log-address flags (`CEC_LOG_ADDRS_FL_ALLOW_RC_PASSTHRU`), on the `rc-passthru` branch of our fork ([TisVlay/linux-cec](https://github.com/TisVlay/linux-cec)) based on the `linux-cec-0.2.1` tag, so the swap changes nothing else. It follows linux-cec's own precedent (decided 2026-10-25): `LogicalAddressFlags` re-exports linux-cec-sys's `CEC_LOG_ADDRS_FL` as `Capabilities` re-exports `CEC_CAP`, and `set_logical_address_flags` / `get_logical_address_flags` pair like `set_vendor_id` / `get_vendor_id`, the setter storing the flags for the next `set_logical_addresses`. Pushed as `334a097e`; its sources at the tag match crates.io's 0.2.1, 0.1.0 and 0.2.1 releases of the three crates.
@@ -197,3 +221,10 @@ Every slice ships whole:
   - Check B′ with `on_tv_power_on` set to `wake` and to `none`, through the unit; a PC-action sleep with the wake armed staying asleep until the TV comes on; the TV powering on to another input with the wake armed;
   - the TV waking a hibernated PC (the check in progress);
   - an LG turned on with its own remote and then off, which the table above says goes unseen.
+- **Results so far (2026-10-25, pox, from the kernel's CEC log and the journals; the scripted runs' first phases slept on the maintainer's default profile, which had `on_tv_power_off = "suspend"`):**
+  - over CEC, the TV powering off by itself locked the session and, with the sleep set, suspended the PC; TisVlay's own power-off made no edge on that TV; after a keyboard wake with the TV in standby the PC didn't sleep again (twice);
+  - over SSAP, the TV powering off by itself locked the session; a screen off and on made no power-off edge (LG's intermediate reports weren't captured); TisVlay's own power-off made no edge; an LG turned on with its own remote went unseen, as expected;
+  - with passthrough off, SIMPLINK's power-off reached the follower, locked the session and suspended the PC: the kernel question is settled;
+  - with `remote_keys` on, the re-claim showed `Allow RC Passthrough` with the OSD name kept; the arrows, OK, Exit, CH±, the media keys, Home and Info arrived on the `rc-cec` input; `0x40` arrived as a scan code with no key (the keymap); the follower still got it; turning it off re-claimed without passthrough, name kept;
+  - the TV woke the PC through the wakeup unit, which armed the adapter (`1-5`) before the sleep;
+  - open: the TV's wake press (step 6b), the GUI's and tray's behavior across a resume (fixed on the train, to recheck), and check 5's remaining phases (the wake unset, a PC-action sleep with the wake armed, another input).
