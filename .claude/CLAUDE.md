@@ -37,7 +37,7 @@ tisvlay/
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)
 │   ├── tisvlay-mock/              # In-memory mock backend (always registered, unpublished)
 │   ├── tisvlay-test/              # OS-environment fakes (private dbus-daemon,
-│   │                             # fake logind/ScreenSaver) — dev-only
+│   │                             # fake logind/ScreenSaver, link-breaking relay) — dev-only
 │   │
 │   ├── tisvlay-protocol/          # Key-space vocabulary, payload structs (serde wire
 │   │                             # payloads; the world stores them as State<T>), typed
@@ -271,9 +271,9 @@ Public items are invisible to Rust's `dead_code` lint. Use `cargo workspace-unus
 
 See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
 
-- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters.
+- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters, and a `Relay` that cuts, stalls or drops a batch on a zenoh link while the service keeps running.
 - `tisvlay-mock` — fake vendor backend (implements `tisvlay-core` traits), always registered in the daemon.
-- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; tray: mirror + settings), single-suite crates as one `tests/<name>.rs` (session, SDK client) — they boot real daemon/session stacks on temp sockets, no fixture crate needed.
+- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; tray: mirror + settings; SDK: client + conformance), single-suite crates as one `tests/<name>.rs` (session) — they boot real daemon/session stacks on temp sockets, no fixture crate needed. The SDK's conformance suite runs every mirror through the same link-breaking cases, against a fake service or the real stacks.
 
 ```bash
 just test                   # cargo nextest run + doc tests

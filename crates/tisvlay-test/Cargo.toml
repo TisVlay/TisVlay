@@ -1,6 +1,6 @@
 [package]
 name = "tisvlay-test"
-description = "Shared test utilities for the tisvlay workspace (private dbus-daemon, fake logind, fake screensaver)"
+description = "Shared test utilities for the tisvlay workspace (private dbus-daemon, fake logind, fake screensaver, a link-breaking socket relay)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,8 @@ tracing-test = { workspace = true }
 tracing-mock = { workspace = true }
 tempfile = { workspace = true }
 libc = "0.2"
+# The socket relay: batches forwarded with read_exact/write_all.
+tokio = { workspace = true, features = ["io-util"] }
 
 # Sync mutex without poisoning for the cached dbus-daemon Child handle.
 parking_lot = { workspace = true }

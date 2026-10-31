@@ -12,6 +12,9 @@
 //! - [`fake_logind::FakeLogind`] — a hand-rolled stub of
 //!   `org.freedesktop.login1.Manager` that emits `PrepareForSleep`
 //!   signals. Register it on a [`PrivateBus`] and drive it from tests.
+//! - [`Relay`] — a Unix-socket relay between a zenoh client and the
+//!   service it dials, which a test can cut, stall, or have drop one
+//!   batch, while the service keeps running.
 //!
 //! # Why a private bus instead of `dbusmock`?
 //!
@@ -34,9 +37,11 @@
 
 pub mod dbus;
 pub mod fake_logind;
+pub mod relay;
 pub mod tmp;
 
 pub use dbus::PrivateBus;
+pub use relay::Relay;
 pub use tmp::socket_tempdir;
 
 // Re-export tracing test utilities so consumers don't need to track
