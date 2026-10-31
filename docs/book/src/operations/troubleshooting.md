@@ -116,6 +116,17 @@ systemctl --user status tisvlay-session
 
 </details>
 
+## The PC sleeps or locks when the TV turns off
+
+That's **On TV power off** in the TV's system profile (sleep) or your user profile (lock); **On remote power key** does the same for the TV's "power off this device". Set them to `none`, or turn the TV's **Managed** switch off. The TV turning off on its own timer (an energy-saving or no-signal auto-off) counts as it turning off. See [The TV Controls the PC](../guide/tv-controls-pc.md#when-they-act).
+
+## The TV wakes the PC, or doesn't
+
+- **It wakes the PC when it shouldn't:** check **On TV power on** is `none` in the TV's system profile and the TV is managed: an unmanaged TV's adapter is left as it is.
+- **It doesn't wake the PC:** check **On TV power on** is `wake`, the TV's page shows **Wakes this PC**, and the TV comes on to your PC's input. For a Pulse-Eight, its autonomous mode must be on.
+
+Both are covered in [The TV waking your PC](../guide/tv-controls-pc.md#the-tv-waking-your-pc).
+
 ## Isolating tisvlay from the TV (mock backend)
 
 When you can't tell whether a problem is in TisVlay or in the TV or network, take the TV out of the equation. TisVlay includes a **Mock (testing)** vendor: an in-memory fake TV that pairs, connects, and answers every command with no hardware or network traffic.

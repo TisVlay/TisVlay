@@ -199,6 +199,8 @@ The daemon's sandbox hides `/dev` by default, so it needs device access granted 
 
 For a Pulse-Eight adapter, this grants the daemon access to `/dev/cecN` once it exists; the host still needs the `pulse8-cec` driver and `inputattach` setup described above.
 
+For [the TV acting on your PC](../guide/tv-controls-pc.md), the packages and the NixOS module also install a polkit rule letting the daemon put the PC to sleep, a service that applies the TV-wakes-the-PC setting around each sleep, and a keymap keeping the TV remote's power keys off the desktop. A source build installs none of them: sleeping the PC and the wake setting don't work there, and turning on **Remote keys reach the desktop** lets the remote's power key reach the desktop, which usually sleeps the PC. The files and where they go are in [packaging/README.md](https://github.com/TisVlay/TisVlay/blob/main/packaging/README.md#the-tv-acting-on-the-pc).
+
 The backend depends on the LGPL-licensed [`linux-cec`](https://crates.io/crates/linux-cec) crate.
 
 No pairing prompt or credentials are involved — a CEC TV is added by picking its adapter; see [Adding a TV](./pairing.md#hdmi-cec-no-pairing-needed).
