@@ -6,6 +6,7 @@
 mod desktop;
 mod error;
 mod handshake;
+mod lifetime;
 mod mirror;
 
 use std::collections::HashMap;
@@ -48,6 +49,7 @@ use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use handshake::Handshake;
+use lifetime::LifetimeMirror;
 use mirror::{SystemMirror, TrayMirror, UserMirror};
 
 /// Profile bodies: the wire carries the config structs verbatim (name
@@ -94,15 +96,17 @@ pub struct TvStateChange {
 #[derive(Debug, Clone)]
 pub enum StateEvent {
     /// A TV's published state changed in the daemon mirror: a TV
-    /// appeared, one of its state keys updated, or it was removed.
-    /// Re-read [`DaemonClient::list_tvs`].
+    /// appeared, one of its state keys updated, or it was removed (also
+    /// one per TV when the daemon goes away). Re-read
+    /// [`DaemonClient::list_tvs`].
     DaemonStateChanged(TvStateChange),
     /// The daemon's liveliness token appeared: it's running and serving
     /// rpcs. Can repeat for one lifetime, so treat it idempotently.
     DaemonAppeared,
     /// The daemon's liveliness token went away (stopped, crashed, or the
     /// link dropped). Its TVs and system profiles have already left the
-    /// mirror, and [`DaemonClient::service_info`] has cleared.
+    /// mirror, each announced before this event, and
+    /// [`DaemonClient::service_info`] has cleared.
     DaemonDisappeared,
     /// The session service's liveliness token appeared. Can repeat for
     /// one lifetime.
@@ -118,7 +122,8 @@ pub enum StateEvent {
     /// A system profile appeared in the mirror, including each one
     /// replayed when the client first connects.
     SystemProfileAdded(Uuid),
-    /// A system profile was deleted.
+    /// A system profile was deleted, or left the mirror because the
+    /// daemon went away.
     SystemProfileRemoved(Uuid),
     /// An existing user profile's body changed.
     UserProfileChanged(Uuid),
@@ -326,50 +331,9 @@ pub struct DaemonClient {
     session: Session,
     caller: Arc<Caller>,
     site: String,
-    mirror: Arc<Mutex<SystemMirror>>,
+    mirror: LifetimeMirror<SystemMirror>,
     events: broadcast::Sender<StateEvent>,
     handshake: Arc<Handshake>,
-}
-
-/// Subscribe the daemon mirror to the daemon's keys, from their history
-/// on: one task per subscription, which ends (undeclaring it) when aborted.
-/// A failed subscription aborts the ones already started, so none outlives
-/// the lifetime unowned.
-async fn mirror_daemon(
-    session: &Session,
-    site: &str,
-    mirror: &Arc<Mutex<SystemMirror>>,
-    events: &broadcast::Sender<StateEvent>,
-) -> Result<Vec<tokio::task::JoinHandle<()>>> {
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
-        let declared = session
-            .declare_subscriber(key.as_str())
-            .history(HistoryConfig::default().detect_late_publishers())
-            .await;
-        let sub = match declared {
-            Ok(sub) => sub,
-            Err(e) => {
-                tasks.iter().for_each(tokio::task::JoinHandle::abort);
-                return Err(Error::transport("subscribe to the daemon's keys", e));
-            }
-        };
-        let mirror = Arc::clone(mirror);
-        let events = events.clone();
-        let site = site.to_string();
-        tasks.push(tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                let event = mirror
-                    .lock()
-                    .expect("nothing panics while the mirror lock is held")
-                    .apply(&site, &sample);
-                if let Some(event) = event {
-                    let _ = events.send(event);
-                }
-            }
-        }));
-    }
-    Ok(tasks)
 }
 
 impl DaemonClient {
@@ -386,80 +350,15 @@ impl DaemonClient {
         )
         .await
         .map_err(|e| Error::transport("connect to the daemon socket", e))?;
-        let mirror = Arc::new(Mutex::new(SystemMirror::default()));
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let liveliness = session
-            .liveliness()
-            .declare_subscriber(keys::daemon_alive(site))
-            .history(true)
-            .await
-            .map_err(|e| Error::transport("subscribe to the daemon's liveliness", e))?;
         let caller = Arc::new(Caller::new(session.clone(), site));
-        let handshake = Arc::new(Handshake::new(Service::Daemon));
-        {
-            let mirror = Arc::clone(&mirror);
-            let events = events.clone();
-            let caller = Arc::clone(&caller);
-            let handshake = Arc::clone(&handshake);
-            let session = session.clone();
-            let site = site.to_string();
-            tokio::spawn(async move {
-                // The mirror subscribes only while the daemon's token is
-                // present: a token that goes takes its subscriptions (and
-                // any sample still in them) along, and one that comes back,
-                // whether a restarted daemon's or the same daemon's after
-                // its links dropped (a resume that froze this process past
-                // the link lease), hydrates afresh from the caches.
-                let mut mirroring: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-                while let Ok(sample) = liveliness.recv_async().await {
-                    let alive = sample.kind() == SampleKind::Put;
-                    if !alive {
-                        for task in mirroring.drain(..) {
-                            task.abort();
-                            let _ = task.await;
-                        }
-                    }
-                    // Subscribe before the daemon reads as available, so a
-                    // client that waits for it finds the subscriptions in
-                    // place (their history still replays as it arrives).
-                    if alive && mirroring.is_empty() {
-                        match mirror_daemon(&session, &site, &mirror, &events).await {
-                            Ok(tasks) => mirroring = tasks,
-                            Err(e) => warn!(error = %e, "couldn't subscribe to the daemon's keys"),
-                        }
-                    }
-                    {
-                        let mut state = mirror
-                            .lock()
-                            .expect("nothing panics while the mirror lock is held");
-                        if !alive {
-                            state.end_lifetime();
-                        }
-                        state.daemon_alive = alive;
-                    }
-                    on_liveliness(
-                        alive,
-                        if alive {
-                            StateEvent::DaemonAppeared
-                        } else {
-                            StateEvent::DaemonDisappeared
-                        },
-                        &handshake,
-                        &events,
-                        &caller,
-                        Service::Daemon,
-                        |caller| async move { caller.call::<manager::Info>(&(), &()).await },
-                    );
-                }
-            });
-        }
+        let mirror = LifetimeMirror::<SystemMirror>::start(&session, site, &caller).await?;
         Ok(Self {
             caller,
             session,
             site: site.to_string(),
+            events: mirror.events().clone(),
+            handshake: Arc::clone(mirror.handshake()),
             mirror,
-            events,
-            handshake,
         })
     }
 
@@ -467,10 +366,7 @@ impl DaemonClient {
     /// `true` doesn't promise the next rpc succeeds (the daemon may be
     /// stopping, or run another release).
     pub async fn is_available(&self) -> bool {
-        self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .daemon_alive
+        self.mirror.is_available()
     }
 
     /// What this lifetime's release check learned: the daemon's release
@@ -488,17 +384,12 @@ impl DaemonClient {
     /// `meta/identity`) like everything else.
     pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
         self.refuse_known_mismatch()?;
-        let rows: Vec<(Uuid, mirror_row::Row)> = {
-            let mirror = self
-                .mirror
-                .lock()
-                .expect("nothing panics while the mirror lock is held");
+        let rows: Vec<(Uuid, mirror_row::Row)> = self.mirror.read(|mirror| {
             mirror
-                .tvs
-                .iter()
+                .tvs()
                 .map(|(id, row)| (*id, mirror_row::Row::from(row)))
                 .collect()
-        };
+        });
         Ok(rows
             .into_iter()
             .map(|(id, row)| row.into_tv_info(id, &self.site))
@@ -948,11 +839,7 @@ impl DaemonClient {
             return None;
         }
         self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .profiles
-            .get(&profile)
-            .cloned()
+            .read(|mirror| mirror.profiles.get(&profile).cloned())
     }
 
     /// Every system profile by id, the reserved default included: a
@@ -962,13 +849,13 @@ impl DaemonClient {
         if self.handshake.known_mismatch().is_some() {
             return HashMap::new();
         }
-        self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .profiles
-            .iter()
-            .map(|(id, body)| (*id, body.clone()))
-            .collect()
+        self.mirror.read(|mirror| {
+            mirror
+                .profiles
+                .iter()
+                .map(|(id, body)| (*id, body.clone()))
+                .collect()
+        })
     }
 
     /// Create a system profile named `name` with every field unset, so

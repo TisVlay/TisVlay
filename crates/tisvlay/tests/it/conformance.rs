@@ -240,7 +240,6 @@ async fn daemon_mirror_follows_a_profile_recreated_under_its_key() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the daemon mirror doesn't recover a lost sample yet"]
 async fn daemon_mirror_recovers_a_put_lost_within_a_lifetime() {
     let mut rig = daemon_rig().await;
     let profile = Uuid::from_u128(1);
@@ -265,7 +264,6 @@ async fn daemon_mirror_recovers_a_put_lost_within_a_lifetime() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the daemon mirror makes a row from any TV key, identity or not"]
 async fn daemon_mirror_shows_a_tv_only_with_its_identity() {
     let mut rig = daemon_rig().await;
     let (partial, whole) = (Uuid::from_u128(1), Uuid::from_u128(2));

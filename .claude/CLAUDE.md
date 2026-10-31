@@ -143,7 +143,7 @@ Zenoh stack findings (load-bearing, learned empirically):
 - A zenoh `get` matching zero queryables completes instantly with no reply — first-rpc-after-serve paths retry the no-reply case.
 - Zenoh rejects tokio's current-thread scheduler — zenoh-touching tests need `#[tokio::test(flavor = "multi_thread")]`.
 - Stale Unix socket files are fine: zenoh's `.lock` protocol takes over an unclean listener path on the next bind.
-- A suspend can drop every link: systemd freezes `user.slice` around the sleep, and the monotonic 10 s lease keeps counting through the kernel's device suspend/resume (12+ s where the NVIDIA driver saves video memory), so user-side links expire on thaw and the daemon's token returns under the same session. The daemon mirrors (the SDK's and the tray's) subscribe per token lifetime and re-hydrate on its return.
+- A suspend can drop every link: systemd freezes `user.slice` around the sleep, and the monotonic 10 s lease keeps counting through the kernel's device suspend/resume (12+ s where the NVIDIA driver saves video memory), so user-side links expire on thaw and the daemon's token returns under the same session. The daemon's mirrors subscribe per token lifetime and re-hydrate on its return ([docs/architecture.md](../docs/architecture.md) § Clients).
 - Reply-side backpressure is load-bearing: backend commands ack on TV completion (`BackendEvent::CommandDone`), not on enqueue — this is what makes the tray's Coalescer "latest wins" actually bound queue depth (the C3 volume-storm fix).
 
 Deployment model:
