@@ -150,6 +150,55 @@ impl Default for EventAction {
     }
 }
 
+/// What the user's session does on a going-off event: the TV powering off
+/// by itself or from its own remote (never for TisVlay's own power-offs),
+/// or the TV's remote powering this PC off. The PC side of these events,
+/// beside [`SessionAction`], which acts on the TV. Exhaustive: every arm
+/// matters to the session's dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UserLockAction {
+    /// Do nothing.
+    #[default]
+    None,
+    /// Lock the user's desktop session.
+    Lock,
+}
+
+/// What the machine does on a going-off event: the TV powering off by
+/// itself or from its own remote (never for TisVlay's own power-offs), or
+/// the TV's remote powering this PC off. The system profile's side of
+/// these events, run by the daemon. The values are logind's sleep modes.
+/// Exhaustive: every arm matters to the dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemSleepAction {
+    /// Do nothing.
+    #[default]
+    None,
+    /// Suspend to RAM (logind's `Suspend`), the state a TV that can wake
+    /// the PC wakes it from.
+    Suspend,
+    /// The host's configured sleep (logind's `Sleep`, by `SleepOperation=`),
+    /// which may hibernate. Needs systemd 256 or newer.
+    Sleep,
+}
+
+/// What the machine lets the TV do while it sleeps: the system profile's
+/// side of the TV powering on, applied for every sleep. Exhaustive: every
+/// arm matters to the wake list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemWakeAction {
+    /// Keep the PC asleep. On HDMI-CEC, a USB adapter is cut off its port
+    /// for the sleep, since some wake the PC whatever their wakeup setting
+    /// says.
+    #[default]
+    None,
+    /// Let the TV powering on wake the PC.
+    Wake,
+}
+
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================
@@ -361,6 +410,42 @@ pub struct SystemProfileConfig {
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automate_when: Option<AutomateWhen>,
+
+    /// What the machine does when the TV powers off by itself or from its
+    /// own remote: `suspend` suspends to RAM, `sleep` uses the host's
+    /// configured sleep (which may hibernate). TisVlay's own power-offs
+    /// never count, and nothing happens while a stream arms the TV.
+    /// Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_tv_power_off: Option<SystemSleepAction>,
+
+    /// What the machine does when the TV's remote powers this PC off (on
+    /// HDMI-CEC, the TV's "power off this device"): `suspend` suspends to
+    /// RAM, `sleep` uses the host's configured sleep. For a managed TV,
+    /// whatever its input: the press is addressed to this PC. A toggling
+    /// key counts only while the TV is showing this PC, since a TV
+    /// switching to it may send one to wake it. Nothing happens while a
+    /// stream arms the TV. Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_remote_power: Option<SystemSleepAction>,
+
+    /// Whether the TV remote's keys reach this PC's desktop (on HDMI-CEC,
+    /// as the kernel's remote-control input device). What each key does is
+    /// the desktop's to decide. The packages' keymap keeps the remote's
+    /// power keys away from the desktop; without it (a source build), the
+    /// power key can put the PC to sleep. Default `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_keys: Option<bool>,
+
+    /// What the TV powering on does while this PC sleeps: `wake` lets it
+    /// wake the PC (on HDMI-CEC, through a USB adapter allowed to wake the
+    /// system, armed for every sleep), and `none` keeps the PC asleep (on
+    /// HDMI-CEC, the adapter's USB port is disabled for the sleep, so the
+    /// TV has no CEC device to show for this PC until it resumes). Where
+    /// the TV comes up on another input, `wake` may still wake the PC. An
+    /// unmanaged TV's adapter is left as the host has it. Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_tv_power_on: Option<SystemWakeAction>,
 }
 
 profile_plumbing! {
@@ -379,6 +464,10 @@ profile_plumbing! {
         on_idle_timeout,
         on_idle_resume,
         automate_when,
+        on_tv_power_off,
+        on_remote_power,
+        remote_keys,
+        on_tv_power_on,
     ],
 }
 
@@ -415,6 +504,14 @@ pub struct ResolvedSystemProfile {
     pub on_idle_resume: EventAction,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
+    /// What the machine does when the TV powers off by itself.
+    pub on_tv_power_off: SystemSleepAction,
+    /// What the machine does when the TV's remote powers this PC off.
+    pub on_remote_power: SystemSleepAction,
+    /// Whether the TV remote's keys reach this PC's desktop.
+    pub remote_keys: bool,
+    /// What the TV powering on does while this PC sleeps.
+    pub on_tv_power_on: SystemWakeAction,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -446,6 +543,13 @@ impl Default for ResolvedSystemProfile {
             on_idle_timeout: EventAction::ungated(SessionAction::ScreenOff),
             on_idle_resume: SessionAction::ScreenOn.into(),
             automate_when: AutomateWhen::Always,
+            // Opt-in: the TV powering off sleeps the PC only when asked.
+            on_tv_power_off: SystemSleepAction::None,
+            on_remote_power: SystemSleepAction::None,
+            // Opt-in: the remote drives the desktop only when asked.
+            remote_keys: false,
+            // Opt-in: the TV wakes the PC only when asked.
+            on_tv_power_on: SystemWakeAction::None,
         }
     }
 }
@@ -522,6 +626,22 @@ pub struct UserProfileConfig {
     /// tab-share). Default off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screencast_arms: Option<bool>,
+
+    /// What the desktop does when the TV powers off by itself or from its
+    /// own remote: `lock` locks this session. TisVlay's own power-offs
+    /// never count, and nothing happens while a stream arms the TV.
+    /// Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_tv_power_off: Option<UserLockAction>,
+
+    /// What the desktop does when the TV's remote powers this PC off (on
+    /// HDMI-CEC, the TV's "power off this device"): `lock` locks this
+    /// session. For a managed TV, whatever its input: the press is
+    /// addressed to this PC. A toggling key counts only while the TV is
+    /// showing this PC, since a TV switching to it may send one to wake it.
+    /// Nothing happens while a stream arms the TV. Default `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_remote_power: Option<UserLockAction>,
 }
 
 profile_plumbing! {
@@ -540,6 +660,8 @@ profile_plumbing! {
         on_stream_end,
         on_local_return,
         screencast_arms,
+        on_tv_power_off,
+        on_remote_power,
     ],
 }
 
@@ -576,6 +698,10 @@ pub struct ResolvedUserProfile {
     pub on_local_return: EventAction,
     /// Whether an unattributed screen-capture signal arms.
     pub screencast_arms: bool,
+    /// What the desktop does when the TV powers off by itself.
+    pub on_tv_power_off: UserLockAction,
+    /// What the desktop does when the TV's remote powers this PC off.
+    pub on_remote_power: UserLockAction,
 }
 
 impl Default for ResolvedUserProfile {
@@ -613,6 +739,9 @@ impl Default for ResolvedUserProfile {
             on_stream_end: SessionAction::ScreenOff.into(),
             on_local_return: EventAction::restoring(SessionAction::ScreenOn),
             screencast_arms: false,
+            // Opt-in: the TV powering off acts on the PC only when asked.
+            on_tv_power_off: UserLockAction::None,
+            on_remote_power: UserLockAction::None,
         }
     }
 }

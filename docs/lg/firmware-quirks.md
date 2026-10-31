@@ -53,7 +53,7 @@ self.is_screen_on = !matches!(
 
 [`scripts/probe_power_state_timing.py`](../../scripts/probe_power_state_timing.py) captures the wire payloads — see the "Reference probe data" section below. Before this fix, the daemon read only the `state` field, so it saw the lie.
 
-**Fix.** New `parse_power_state_payload(&Value) -> Option<PowerState>` helper in [`tisvlay-lg/src/connection.rs`](../../crates/tisvlay-lg/src/connection.rs) projects to `ActiveStandby` whenever `onOff == "off"` OR `processing` is present and not `"None"`. Both call sites route through it:
+**Fix.** New `parse_power_state_payload(&Value) -> Option<PowerState>` helper in [`tisvlay-lg/src/connection.rs`](../../crates/tisvlay-lg/src/connection.rs) projects to `ActiveStandby` whenever `onOff == "off"` OR `processing` is one of the three power-off names above (`POWERING_OFF`). Any other `processing` value is not a power-off: the screen saver reports `"Request Screen Saver"` then `"Screen On"` with the panel on and no `onOff` (captured on a C3 at a static lock screen, 2026-10-31). Before that was excluded, every screen-saver cycle read as the TV powering off by itself, an edge every 3 minutes overnight. Both call sites route through it:
 
 - `update_state_from_subscription` (the subscription push path).
 - `WebOsClient::get_power_state` (the synchronous query path used by `tv_manager::refresh_power_state`).
@@ -62,7 +62,7 @@ self.is_screen_on = !matches!(
 
 **Regression coverage.**
 
-- `tisvlay-lg/src/connection.rs` — `subscription_power_transition_to_off_projects_active_standby` (all three captured `processing` values), `subscription_power_on_off_field_alone_projects_active_standby`, `subscription_power_processing_none_falls_through_to_state_field`, and the direct-helper tests `parse_payload_*` pin the contract for both subscription and synchronous-query callers.
+- `tisvlay-lg/src/connection.rs` — `subscription_power_transition_to_off_projects_active_standby` (all three captured `processing` values), `subscription_power_on_off_field_alone_projects_active_standby`, `subscription_power_processing_none_falls_through_to_state_field`, and the direct-helper tests `parse_payload_*` (including `parse_payload_screen_saver_is_not_a_power_off` and `parse_payload_remote_power_off_capture`, from the captured reports) pin the contract for both subscription and synchronous-query callers.
 
 ## Recent remote-off latches LG firmware against `turnOn` for ~1 s
 

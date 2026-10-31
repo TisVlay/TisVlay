@@ -1,0 +1,41 @@
+[Unit]
+Description=TisVlay: let the TV wake this PC, or keep it from
+Documentation=https://github.com/TisVlay/TisVlay
+# Starts with every sleep (suspend, hibernate and their hybrids) and stops
+# when it ends: nothing in TisVlay runs while the PC sleeps, and the daemon
+# can't write sysfs. Going to sleep, it arms the CEC adapters on the
+# daemon's wake list whose system profile's on_tv_power_on is "wake", and
+# disables the USB port of those set to "none", since some adapters wake
+# the PC whatever their wakeup setting says. Stopping after the resume, it
+# enables those ports again. It only ever undoes what it did itself.
+DefaultDependencies=no
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/tisvlay service wakeup --list /run/tisvlay/wakeup --record /run/tisvlay-wakeup/applied
+ExecStop=/usr/bin/tisvlay service wakeup --resume --record /run/tisvlay-wakeup/applied
+SyslogIdentifier=tisvlay-wakeup
+# What it changed, kept until reboot (when the kernel forgets it too).
+RuntimeDirectory=tisvlay-wakeup
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+
+# Root, to write power/wakeup and the ports' disable under /sys; nothing
+# else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=sleep.target

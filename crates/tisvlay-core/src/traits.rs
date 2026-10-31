@@ -41,7 +41,7 @@
 
 use crate::{
     Capabilities, DiscoveredTv, Error, HardwareId, InputInfo, MacAddress, PairingSession,
-    PowerState, Result, TvState, VendorConfig,
+    PowerState, Result, TvEvent, TvState, VendorConfig,
 };
 use async_trait::async_trait;
 use std::net::IpAddr;
@@ -415,6 +415,35 @@ pub trait TvConnection: Send + Sync {
         Err(Error::not_supported(
             "subscribe_state",
             Capabilities::empty(),
+        ))
+    }
+
+    /// Subscribe to the TV's [`TvEvent`]s: what it did, rather than what
+    /// state it's in (that's [`subscribe_state`](Self::subscribe_state)).
+    ///
+    /// The channel ending means only that no more events come; the
+    /// connection's liveness is the state subscription's. A backend
+    /// reporting an event declares its capability (for
+    /// [`TvEvent::RemotePower`], [`Capabilities::REMOTE_POWER`]).
+    ///
+    /// Backends with no events return `NotSupported`.
+    async fn subscribe_events(&mut self) -> Result<tokio::sync::mpsc::UnboundedReceiver<TvEvent>> {
+        Err(Error::not_supported(
+            "subscribe_events",
+            Capabilities::REMOTE_POWER,
+        ))
+    }
+
+    /// Let the TV remote's keys reach the desktop, or stop them: the system
+    /// profile's `remote_keys`, applied to a live connection whenever it
+    /// changes. The keys go through the host's input stack, which decides
+    /// what each one does.
+    ///
+    /// Backends without [`Capabilities::REMOTE_KEYS`] return `NotSupported`.
+    async fn set_remote_keys(&mut self, _on: bool) -> Result<()> {
+        Err(Error::not_supported(
+            "set_remote_keys",
+            Capabilities::REMOTE_KEYS,
         ))
     }
 }

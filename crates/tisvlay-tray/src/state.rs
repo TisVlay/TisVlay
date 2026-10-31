@@ -53,6 +53,11 @@ pub struct Mirror {
     /// User-profile catalog: uuid → display name (empty without a
     /// session service).
     pub user_profiles: BTreeMap<Uuid, String>,
+    /// Per-TV user-profile assignments from the session service, kept
+    /// apart from `tvs`: the session's store can name a TV this daemon
+    /// doesn't have (one another daemon, such as a dev one, owns), and that
+    /// mustn't become a row. A row picks its assignment up from here.
+    pub user_assignments: BTreeMap<Uuid, Uuid>,
     pub daemon_alive: bool,
 }
 
@@ -89,7 +94,11 @@ impl Mirror {
             }
             return false;
         }
-        let view = self.tvs.entry(tv).or_default();
+        let assigned = self.user_assignments.get(&tv).copied();
+        let view = self.tvs.entry(tv).or_insert_with(|| TvView {
+            user_profile: assigned,
+            ..TvView::default()
+        });
         match path {
             p if p == payload::Power::PATH => {
                 let Some(power) = decode::<payload::Power>(sample) else {
@@ -177,7 +186,15 @@ impl Mirror {
                     .and_then(|body| body["profile"].as_str().and_then(|s| s.parse().ok())),
                 SampleKind::Delete => None,
             };
-            let view = self.tvs.entry(tv).or_default();
+            match assigned {
+                Some(profile) => self.user_assignments.insert(tv, profile),
+                None => self.user_assignments.remove(&tv),
+            };
+            // Only the daemon's TVs are rows; an assignment for another
+            // waits here until (unless) its TV appears.
+            let Some(view) = self.tvs.get_mut(&tv) else {
+                return false;
+            };
             let changed = view.user_profile != assigned;
             view.user_profile = assigned;
             return changed;
@@ -188,4 +205,47 @@ impl Mirror {
 
 fn decode<T: serde::de::DeserializeOwned>(sample: &Sample) -> Option<T> {
     serde_json::from_slice(&sample.payload().to_bytes()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use zenoh::key_expr::KeyExpr;
+    use zenoh::sample::SampleBuilder;
+
+    use super::*;
+
+    fn put(key: String, body: Value) -> Sample {
+        let key = KeyExpr::try_from(key).expect("a valid key expression");
+        SampleBuilder::put(key, serde_json::to_vec(&body).expect("JSON serializes")).into()
+    }
+
+    fn assignment(tv: Uuid, profile: Uuid) -> Sample {
+        put(
+            keys::user_tv_profile("t", &tv),
+            serde_json::json!({ "profile": profile }),
+        )
+    }
+
+    fn identity(tv: Uuid, name: &str) -> Sample {
+        put(
+            keys::tv_path("t", &tv, payload::Identity::PATH),
+            serde_json::json!({ "name": name, "vendor": "mock", "capabilities": [] }),
+        )
+    }
+
+    /// An assignment for a TV the daemon doesn't have adds no row, and
+    /// one that arrives before its TV's keys still lands on the row.
+    #[test]
+    fn assignments_never_make_rows() {
+        let (known, unknown, profile) =
+            (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(9));
+        let mut mirror = Mirror::default();
+        assert!(!mirror.apply_user_sample("t", &assignment(unknown, profile)));
+        assert!(!mirror.apply_user_sample("t", &assignment(known, profile)));
+        assert!(mirror.tvs.is_empty(), "no row from the user socket alone");
+
+        assert!(mirror.apply_system_sample("t", &identity(known, "Den")));
+        assert_eq!(mirror.tvs.keys().collect::<Vec<_>>(), [&known]);
+        assert_eq!(mirror.tvs[&known].user_profile, Some(profile));
+    }
 }

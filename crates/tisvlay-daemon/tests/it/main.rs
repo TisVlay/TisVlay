@@ -15,4 +15,5 @@ mod logind;
 mod profiles;
 mod supervisor;
 mod support;
+mod wakeup;
 mod wire;

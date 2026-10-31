@@ -11,6 +11,7 @@ mod connector;
 mod discovery;
 mod identity;
 mod link;
+pub mod wakeup;
 
 pub use address::{ParsePhysicalAddressError, PhysicalAddress};
 pub use backend::CecBackend;

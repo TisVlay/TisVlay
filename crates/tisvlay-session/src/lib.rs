@@ -23,11 +23,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
-use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
+use tisvlay_core::{ResolvedUserProfile, SessionAction, UserLockAction, UserProfileConfig};
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{tv, user_profile, user_stream};
 use tisvlay_protocol::error::WireError;
@@ -44,7 +44,10 @@ use zenoh_ext::{
     HistoryConfig, MissDetectionConfig,
 };
 
-pub use lock::{seed_lock_state, seed_lock_state_on, spawn as spawn_lock_watcher, watch_lock};
+pub use lock::{
+    run_locker, seed_lock_state, seed_lock_state_on, spawn as spawn_lock_watcher, spawn_locker,
+    watch_lock,
+};
 pub use logind::spawn as spawn_logind_detector;
 pub use monitor::spawn as spawn_portal_monitor;
 pub use screencast::{
@@ -56,6 +59,18 @@ pub use sunshine::spawn as spawn_sunshine_detector;
 
 /// Heartbeat period for sample-miss recovery on cached publishers.
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
+
+/// How old a going-off event (`tv-power-off`, `remote-power`) may be on
+/// arrival before it's dropped: one delivered late across a link gap no
+/// longer describes the room.
+const TV_EVENT_MAX_AGE: Duration = Duration::from_secs(5);
+
+/// Whether an event stamped `at` is still current at `now`. A stamp ahead
+/// of `now` (clock skew between the daemon and here) counts as current.
+fn fresh(at: SystemTime, now: SystemTime) -> bool {
+    !now.duration_since(at)
+        .is_ok_and(|age| age > TV_EVENT_MAX_AGE)
+}
 
 /// A session-scoped desktop event, from whichever adapter saw it
 /// (logind `LockedHint`, wayland/Mutter idle, or a test driver).
@@ -181,6 +196,10 @@ pub struct SessionStack {
     /// handed to the idle adapter so the first local input after a stream
     /// wakes the panel the disconnect left dark.
     pub local_return_armed: Arc<AtomicBool>,
+    /// Lock requests from the core, each naming the TV whose going-off event
+    /// asked: the service hands them to [`spawn_locker`], which locks this
+    /// user's seat session through logind.
+    pub lock_requests: mpsc::UnboundedReceiver<Uuid>,
 }
 
 /// Boot the session service: open both sessions, replay the store, and
@@ -301,6 +320,19 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
 
+    // The TV powering off by itself, decided and published by the world.
+    // Live only: no history, so a login or a restart can't replay an old
+    // power-off into a lock.
+    let tv_off_sub = system
+        .declare_subscriber(keys::tv_power_off(&options.site))
+        .await
+        .map_err(|e| anyhow!("subscribe tv power-off: {e}"))?;
+    // The TV's remote powering this PC off, live only for the same reason.
+    let remote_power_sub = system
+        .declare_subscriber(keys::remote_power(&options.site))
+        .await
+        .map_err(|e| anyhow!("subscribe remote power: {e}"))?;
+
     // The stream mirror the daemon hydrates on restart: a cache-1
     // AdvancedPublisher on the system link. Declared before the presence
     // token so the daemon reaches its `@adv` cache the moment it observes
@@ -332,6 +364,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
 
     let (event_tx, events) = mpsc::unbounded_channel();
     let (stream_tx, reports) = mpsc::unbounded_channel();
+    let (lock_tx, lock_requests) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
     let is_locked = Arc::new(AtomicBool::new(false));
     // Default true: assume the user is active until the lock watcher seeds
@@ -378,6 +411,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         stream_armed: HashSet::new(),
         stream_mirror,
         caller,
+        lock_tx,
         _alive: alive,
         _alive_system: alive_system,
     };
@@ -387,8 +421,12 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             reports,
             queries,
             stream_queries,
-            meta_sub,
-            power_sub,
+            FleetSubs {
+                meta: meta_sub,
+                power: power_sub,
+                tv_off: tv_off_sub,
+                remote_power: remote_power_sub,
+            },
         )
         .await;
         drop(queryable);
@@ -398,6 +436,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     Ok(SessionStack {
         client: SessionClient { tx: event_tx },
         stream: StreamClient { tx: stream_tx },
+        lock_requests,
         idle_timeouts: idle_rx,
         is_locked,
         is_active,
@@ -453,11 +492,33 @@ struct Core {
     stream_mirror: AdvancedPublisher<'static>,
     /// Matching-gated caller for TV rpcs on the system socket.
     caller: Arc<Caller>,
+    /// Lock requests for the locker, which owns the D-Bus side.
+    lock_tx: mpsc::UnboundedSender<Uuid>,
     _alive: zenoh::liveliness::LivelinessToken,
     /// System-socket presence token. Dropping it (Core drop, on crash or
     /// clean exit) sends the daemon its departure signal, a liveliness
     /// DELETE; held here so it lives exactly as long as the running service.
     _alive_system: zenoh::liveliness::LivelinessToken,
+}
+
+/// The core's subscriptions on the system socket: the fleet's meta and
+/// power mirrors, hydrated from history, and the live going-off events.
+struct FleetSubs {
+    meta: zenoh_ext::AdvancedSubscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
+    power:
+        zenoh_ext::AdvancedSubscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
+    tv_off: zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
+    remote_power:
+        zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
+}
+
+/// A going-off event the user profile's PC action answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoingOff {
+    /// The TV powered off by itself (`on_tv_power_off`).
+    TvPowerOff,
+    /// The TV's remote powered this PC off (`on_remote_power`).
+    RemotePower,
 }
 
 impl Core {
@@ -467,13 +528,14 @@ impl Core {
         mut reports: mpsc::UnboundedReceiver<StreamReport>,
         mut queries: mpsc::UnboundedReceiver<Query>,
         mut stream_queries: mpsc::UnboundedReceiver<Query>,
-        meta_sub: zenoh_ext::AdvancedSubscriber<
-            zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
-        >,
-        power_sub: zenoh_ext::AdvancedSubscriber<
-            zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
-        >,
+        fleet: FleetSubs,
     ) {
+        let FleetSubs {
+            meta: meta_sub,
+            power: power_sub,
+            tv_off: tv_off_sub,
+            remote_power: remote_power_sub,
+        } = fleet;
         // Late joiners hydrate the catalog from these caches.
         for (id, body) in self.profiles.clone() {
             self.publish_profile(&id, &body).await;
@@ -519,6 +581,14 @@ impl Core {
                 sample = power_sub.recv_async() => match sample {
                     Err(_) => break 'run,
                     Ok(sample) => self.apply_power(&sample),
+                },
+                sample = tv_off_sub.recv_async() => match sample {
+                    Err(_) => break 'run,
+                    Ok(sample) => self.apply_going_off(&sample, GoingOff::TvPowerOff).await,
+                },
+                sample = remote_power_sub.recv_async() => match sample {
+                    Err(_) => break 'run,
+                    Ok(sample) => self.apply_going_off(&sample, GoingOff::RemotePower).await,
                 },
                 () = drift_deadline(next_drift) => self.reassert_due(),
             }
@@ -783,8 +853,14 @@ impl Core {
             return;
         }
         // The poll owns the single (Sunshine, "serverinfo") key and it is
-        // live here (checked above), so fold the observation against
-        // armed = true: Free/Absent clears the source, Busy/Unknown leaves it.
+        // live here (checked above).
+        self.refresh_sunshine().await;
+    }
+
+    /// Refresh the live Sunshine source on a tight budget, folding the
+    /// observation against armed = true: Free/Absent clears the source,
+    /// Busy/Unknown leaves it.
+    async fn refresh_sunshine(&mut self) {
         let observation = self.sunshine.observe(sunshine::EAGER_TIMEOUT).await;
         if let (_, Some(report)) = sunshine::decide(true, observation)
             && self.stream_sources.apply(&report)
@@ -792,6 +868,82 @@ impl Core {
             self.recompute_stream_armed();
             self.publish_stream().await;
         }
+    }
+
+    /// A going-off event from the world (`event/tv-power-off`,
+    /// `event/remote-power`): decode it, drop one older than
+    /// [`TV_EVENT_MAX_AGE`] (delivered late across a link gap), and act.
+    async fn apply_going_off(&mut self, sample: &zenoh::sample::Sample, event: GoingOff) {
+        let bytes = sample.payload().to_bytes();
+        let tv = match event {
+            GoingOff::TvPowerOff => {
+                serde_json::from_slice::<payload::TvPowerOff>(&bytes).map(|event| event.tv)
+            }
+            GoingOff::RemotePower => {
+                serde_json::from_slice::<payload::RemotePower>(&bytes).map(|event| event.tv)
+            }
+        };
+        let tv = match tv {
+            Ok(tv) => tv,
+            Err(e) => {
+                warn!(%e, ?event, "undecodable going-off event");
+                return;
+            }
+        };
+        if let Some(at) = sample.timestamp().map(|t| t.get_time().to_system_time())
+            && !fresh(at, SystemTime::now())
+        {
+            debug!(%tv, ?event, "stale going-off event dropped");
+            return;
+        }
+        self.going_off(tv, event).await;
+    }
+
+    /// Run the user profile's PC action for a going-off event, for a
+    /// managed TV and the seat's active user only, and never while a stream
+    /// arms the TV. The TV powering off by itself is also gated on the TV's
+    /// input (`automated`), like the seat-local events; the remote's power
+    /// key is addressed to the PC, so it isn't.
+    async fn going_off(&mut self, tv: Uuid, event: GoingOff) {
+        let profile = self.resolve_for(&tv);
+        let action = match event {
+            GoingOff::TvPowerOff => profile.on_tv_power_off,
+            GoingOff::RemotePower => profile.on_remote_power,
+        };
+        match action {
+            UserLockAction::None => return,
+            UserLockAction::Lock => {}
+        }
+        if !self.is_active.load(Ordering::SeqCst) {
+            debug!(%tv, ?event, "not the seat's active user");
+            return;
+        }
+        let Some(meta) = self.tvs.get(&tv) else {
+            debug!(%tv, ?event, "unknown TV");
+            return;
+        };
+        if !meta.managed {
+            debug!(%tv, ?event, "not managed");
+            return;
+        }
+        if event == GoingOff::TvPowerOff && !meta.automated {
+            debug!(%tv, ?event, "automation gated off");
+            return;
+        }
+        // A live Sunshine source reads fresh first: a stream that just
+        // started must still hold the lock back.
+        if self
+            .stream_sources
+            .has_kind(payload::StreamSourceKind::Sunshine)
+        {
+            self.refresh_sunshine().await;
+        }
+        if self.stream_armed.contains(&tv) {
+            debug!(%tv, ?event, "a stream arms the TV");
+            return;
+        }
+        info!(%tv, ?event, "locking the session");
+        let _ = self.lock_tx.send(tv);
     }
 
     /// Session event → per-TV user-profile action, called through the
@@ -1206,6 +1358,7 @@ impl Core {
                 let info = rpc::ServiceInfo {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: self.state_path.clone(),
+                    sleep: None,
                 };
                 responder.ok(&info).await;
             }
@@ -1624,11 +1777,26 @@ fn lock_wake_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, UNLOCKED_IDLE_TAG, eager_refresh_applies, idle_dispatch,
-        lock_wake_policy,
+        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, TV_EVENT_MAX_AGE, UNLOCKED_IDLE_TAG, eager_refresh_applies,
+        fresh, idle_dispatch, lock_wake_policy,
     };
     use crate::SessionEvent;
+    use std::time::{Duration, SystemTime};
     use tisvlay_runtime::wayland::IdleTransition;
+
+    /// A late `tv-power-off` is dropped; a just-sent one, or one stamped
+    /// slightly ahead of this clock, acts.
+    #[test]
+    fn tv_power_off_freshness() {
+        let now = SystemTime::now();
+        assert!(fresh(now, now));
+        assert!(fresh(now - TV_EVENT_MAX_AGE, now));
+        assert!(!fresh(
+            now - TV_EVENT_MAX_AGE - Duration::from_millis(1),
+            now
+        ));
+        assert!(fresh(now + Duration::from_secs(1), now), "clock skew");
+    }
 
     #[test]
     fn eager_refresh_fires_on_a_gated_suppressible_dispatch_not_an_event_list() {

@@ -42,12 +42,12 @@ Moved to [cec-device-presence.md](cec-device-presence.md), § Logs.
 ### 6. Doc corrections
 
 - [x] [docs/cec/protocol.md](../cec/protocol.md) § "Advertising our own name (the reverse direction)": a rename applies on the reconnect it forces (not "on the next wake"); a TV-side record formed while the dongle was autonomous persists until the TV re-detects the device (a replug), whatever we advertise afterwards.
-- [ ] [docs/book/src/guide/configuration.md](../book/src/guide/configuration.md), at the `advertise_osd_name` paragraph: a troubleshooting note for a TV that shows a different name for the input (for a Pulse-Eight adapter with an LG TV, "LG DVD Player"). With the patched module the label recovers on the next connect; on an unpatched driver (other distros), an HDMI replug clears it. Held until the CEC follow-ups near their end, so the user guide is edited once.
+- [x] [docs/book/src/guide/configuration.md](../book/src/guide/configuration.md), at the `advertise_osd_name` paragraph (done 2026-10-31, as one generic sentence: an HDMI replug clears it): a troubleshooting note for a TV that shows a different name for the input (for a Pulse-Eight adapter with an LG TV, "LG DVD Player"). With the patched module the label recovers on the next connect; on an unpatched driver (other distros), an HDMI replug clears it. Held until the CEC follow-ups near their end, so the user guide is edited once.
 - [x] Move the bug doc to Closed once step 3 passes.
 
 ### 7. Optional, later
 
-- [ ] A `cec.pulse8.autonomous` NixOS option backed by a new module parameter, for users who'd rather give up suspend autonomy than risk the label after a suspend.
+- [ ] A `cec.pulse8.autonomous` NixOS option backed by a new module parameter, for users who'd rather give up suspend autonomy than risk the label after a suspend. Note (2026-10-31): the driver's flag is the adapter's working state, and a sleeping adapter follows the autonomous flag in its EEPROM instead, so a parameter that only skips arming on claim wouldn't change the wake; libcec 8 writes the EEPROM flag (`am 0`), and the driver's `persistent_config=1` makes its EEPROM follow the claim ([tv-controls-pc.md](tv-controls-pc.md) step 8b).
 - [ ] An upstream note for linux-cec: `all_device_types` is never filled, so CEC 2.0 `<Report Features>` advertises no device types, and there's no way to set `cec_version`. It can go with the pending [OSD-name issue draft](../bugs/upstream-linux-cec-reclaim-drops-osd-name.md).
 
 ## Open questions

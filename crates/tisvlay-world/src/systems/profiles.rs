@@ -78,6 +78,57 @@ pub(super) fn resolve_action(
     stock.0.get(event).copied()
 }
 
+/// What [`resolve_system_field`] reads for a managed TV, watched for
+/// change, so a system that resolves a field per TV every step can skip
+/// the steps where nothing it reads moved: a TV's meta (its assignment), a
+/// profile body, the profile index, and `managed`.
+#[derive(SystemParam)]
+pub(crate) struct SystemFieldInputs<'w, 's> {
+    metas: Query<'w, 's, (), Changed<State<payload::Meta>>>,
+    bodies: Query<'w, 's, (), Changed<ProfileBody>>,
+    managed: Query<'w, 's, (), Added<Managed>>,
+    removed_bodies: RemovedComponents<'w, 's, ProfileBody>,
+    removed_managed: RemovedComponents<'w, 's, Managed>,
+    profile_index: Res<'w, ProfileIndex>,
+}
+
+impl SystemFieldInputs<'_, '_> {
+    /// Whether any input changed since the system last ran. Drains the
+    /// removal readers, so call it once per run.
+    pub(crate) fn changed(&mut self) -> bool {
+        let removed = self.removed_bodies.read().count() + self.removed_managed.read().count();
+        removed > 0
+            || self.profile_index.is_changed()
+            || !self.metas.is_empty()
+            || !self.bodies.is_empty()
+            || !self.managed.is_empty()
+    }
+}
+
+/// A system-profile field the stock table doesn't carry (the PC actions,
+/// `remote_keys`), read by `field`: the TV's assigned profile's, else the
+/// editable default's, else the type's default.
+pub(super) fn resolve_system_field<T: Default>(
+    meta: Option<&payload::Meta>,
+    profile_index: &ProfileIndex,
+    bodies: &Query<&ProfileBody>,
+    field: fn(&tisvlay_core::SystemProfileConfig) -> Option<T>,
+) -> T {
+    if let Some(profile_id) = meta.and_then(|m| m.system_profile)
+        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+        && let Some(action) = profile_body(profile_id, profile_index, bodies).and_then(field)
+    {
+        return action;
+    }
+    profile_body(
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+        profile_index,
+        bodies,
+    )
+    .and_then(field)
+    .unwrap_or_default()
+}
+
 /// Look up a system-profile body by uuid through the profile index.
 pub(super) fn profile_body<'a>(
     id: Uuid,

@@ -74,7 +74,10 @@ impl Handshake {
         }
         let _checking = self.checking.lock().await;
         let lifetime = {
-            let known = self.known.lock().expect("handshake lock");
+            let known = self
+                .known
+                .lock()
+                .expect("nothing panics while the handshake lock is held");
             if let Some(settled) = known.settled.clone() {
                 return self.outcome(&settled);
             }
@@ -87,7 +90,10 @@ impl Handshake {
         };
         // Settle it only if the service hasn't gone away meanwhile; the
         // answer still stands for this call either way.
-        let mut known = self.known.lock().expect("handshake lock");
+        let mut known = self
+            .known
+            .lock()
+            .expect("nothing panics while the handshake lock is held");
         if known.lifetime == lifetime {
             known.settled = Some(settled.clone());
             for event in self.events(&settled) {
@@ -106,7 +112,10 @@ impl Handshake {
     /// The current lifetime, which changes each time the service goes
     /// away.
     pub(crate) fn lifetime(&self) -> u64 {
-        self.known.lock().expect("handshake lock").lifetime
+        self.known
+            .lock()
+            .expect("nothing panics while the handshake lock is held")
+            .lifetime
     }
 
     /// A mismatch already known, without asking: what the mirror reads
@@ -127,13 +136,20 @@ impl Handshake {
     /// The service went away: its next lifetime gets a fresh check. Doesn't
     /// wait for a check in flight; that check's answer is dropped.
     pub(crate) fn reset(&self) {
-        let mut known = self.known.lock().expect("handshake lock");
+        let mut known = self
+            .known
+            .lock()
+            .expect("nothing panics while the handshake lock is held");
         known.lifetime += 1;
         known.settled = None;
     }
 
     fn settled(&self) -> Option<Settled> {
-        self.known.lock().expect("handshake lock").settled.clone()
+        self.known
+            .lock()
+            .expect("nothing panics while the handshake lock is held")
+            .settled
+            .clone()
     }
 
     fn outcome(&self, settled: &Settled) -> Result<()> {

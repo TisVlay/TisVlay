@@ -191,10 +191,12 @@ ignore = [
     #                      revisit on the Slint bump.
 ]
 
-# Code provenance: crates.io only. Any git or alternate-registry
-# dependency fails the gate — a tripwire against an unvetted source
-# sneaking in. Gated by `just deny`.
+# Code provenance: crates.io, plus our linux-cec fork (the workspace's
+# `[patch.crates-io]`, until a release carries its setter). Any other git
+# or alternate-registry dependency fails the gate — a tripwire against an
+# unvetted source sneaking in. Gated by `just deny`.
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/TisVlay/linux-cec"]

@@ -8,6 +8,7 @@
 //! then routes to the wake path by the reported power state, not by whether
 //! connect succeeds.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +35,9 @@ const WAKE_VERIFY_ATTEMPTS: usize = 4;
 #[derive(Debug)]
 pub struct CecConnector {
     opener: Arc<dyn CecLinkOpener>,
+    /// Where sysfs is mounted, for whether an adapter can wake the PC
+    /// (`/sys`; tests point it at a fixture, or at nothing).
+    sysfs: PathBuf,
 }
 
 impl CecConnector {
@@ -41,22 +45,41 @@ impl CecConnector {
     pub fn new() -> Self {
         Self {
             opener: Arc::new(LinuxCecLinkOpener),
+            sysfs: PathBuf::from("/sys"),
         }
     }
 
     /// Construct with a custom link opener (tests inject a fake).
     #[cfg(test)]
     pub(crate) fn with_opener(opener: Arc<dyn CecLinkOpener>) -> Self {
-        Self { opener }
+        Self {
+            opener,
+            sysfs: PathBuf::from("/nonexistent"),
+        }
     }
 
     /// Construct with an injected fake link opener — the out-of-crate
-    /// test seam (`test-link` feature).
+    /// test seam (`test-link` feature). No adapter it opens can wake the
+    /// PC.
     #[cfg(any(test, feature = "test-link"))]
     pub fn with_fake_opener(opener: crate::link::FakeCecLinkOpener) -> Self {
         Self {
             opener: Arc::new(opener),
+            sysfs: PathBuf::from("/nonexistent"),
         }
+    }
+
+    /// Read sysfs from `sysfs` instead of `/sys`.
+    #[cfg(test)]
+    pub(crate) fn with_sysfs(mut self, sysfs: &Path) -> Self {
+        self.sysfs = sysfs.to_path_buf();
+        self
+    }
+
+    /// Whether the adapter at `device` can let the TV wake this PC.
+    fn wakes_pc(&self, device: &str) -> bool {
+        crate::wakeup::cec_node(Path::new(device))
+            .is_some_and(|node| crate::wakeup::usb_wakeup_device(&self.sysfs, &node).is_some())
     }
 }
 
@@ -152,12 +175,12 @@ impl TvConnector for CecConnector {
         // Query the TV's identity once here (bounded, best-effort) so the
         // connection can return it synchronously via `hardware_id`/`brand`.
         let identity = crate::identity::query(link.as_ref()).await;
-        Ok(Box::new(CecConnection::new(
-            link,
-            self.opener.clone(),
-            config.device,
-            identity,
-        )))
+        let wakes_pc = self.wakes_pc(&config.device);
+        Ok(Box::new(
+            CecConnection::new(link, self.opener.clone(), config.device, identity)
+                .with_wakes_pc(wakes_pc)
+                .with_physical_address(config.physical_address.to_linux()),
+        ))
     }
 
     fn supports_wake(&self, _vendor_config: &VendorConfig) -> bool {
@@ -234,12 +257,11 @@ impl TvConnector for CecConnector {
                 && reachable(status)
             {
                 let identity = crate::identity::query(link.as_ref()).await;
-                return Ok(Box::new(CecConnection::new(
-                    link,
-                    self.opener.clone(),
-                    config.device.clone(),
-                    identity,
-                )));
+                return Ok(Box::new(
+                    CecConnection::new(link, self.opener.clone(), config.device.clone(), identity)
+                        .with_wakes_pc(self.wakes_pc(&config.device))
+                        .with_physical_address(config.physical_address.to_linux()),
+                ));
             }
         }
         Err(Error::backend(
@@ -414,6 +436,41 @@ mod tests {
         let conn = connector(PowerStatus::Standby).connect(&cfg()).await;
         assert!(conn.is_ok(), "connect succeeds for a standby (on-bus) TV");
         assert!(conn.unwrap().is_connected());
+    }
+
+    /// A connection says the TV can wake the PC when its adapter's node
+    /// (through a udev alias) sits under a USB device with `power/wakeup`.
+    #[tokio::test]
+    async fn connect_reads_whether_the_adapter_wakes_the_pc() {
+        let sysfs = tempfile::tempdir().unwrap();
+        crate::wakeup::fixture::pulse_eight(sysfs.path());
+        let dev = tempfile::tempdir().unwrap();
+        std::fs::write(dev.path().join("cec0"), "").unwrap();
+        std::os::unix::fs::symlink(dev.path().join("cec0"), dev.path().join("tv")).unwrap();
+        let config = |device: &Path| {
+            VendorConfig::from_typed(&CecVendorConfig {
+                device: device.to_str().unwrap().into(),
+                ..CecVendorConfig::default()
+            })
+            .unwrap()
+        };
+
+        let conn = connector(PowerStatus::On)
+            .with_sysfs(sysfs.path())
+            .connect(&config(&dev.path().join("tv")))
+            .await
+            .unwrap();
+        assert!(
+            conn.capabilities()
+                .contains(tisvlay_core::Capabilities::WAKES_PC)
+        );
+
+        let conn = connector(PowerStatus::On).connect(&cfg()).await.unwrap();
+        assert!(
+            !conn
+                .capabilities()
+                .contains(tisvlay_core::Capabilities::WAKES_PC)
+        );
     }
 
     #[tokio::test]

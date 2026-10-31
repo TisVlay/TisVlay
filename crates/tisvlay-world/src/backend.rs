@@ -98,6 +98,8 @@ pub(crate) async fn connect_flow(
     // refused) still work — the connection serves commands, state refreshes
     // only on reconnect.
     let subscription = connection.subscribe_state().await.ok();
+    // Events are optional too, and their stream ending only stops them.
+    let mut events = connection.subscribe_events().await.ok();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
     let _ = inbox.send(InEvent::Backend {
         tv,
@@ -126,6 +128,15 @@ pub(crate) async fn connect_flow(
                     return;
                 }
                 Some(cmd) => {
+                    if matches!(cmd, BackendCmd::PowerOff(_) | BackendCmd::ScreenOff) {
+                        let _ = inbox.send(InEvent::Backend {
+                            tv,
+                            dial,
+                            event: BackendEvent::SendingOff {
+                                blank: matches!(cmd, BackendCmd::ScreenOff),
+                            },
+                        });
+                    }
                     let (result, reply) = match &cmd {
                         BackendCmd::SetVolume(level, reply) => {
                             (connection.set_volume(*level).await, *reply)
@@ -143,6 +154,9 @@ pub(crate) async fn connect_flow(
                         BackendCmd::PowerOn => (connection.power_on().await, None),
                         BackendCmd::ScreenOn => (connection.screen_on().await, None),
                         BackendCmd::ScreenOff => (connection.screen_off().await, None),
+                        BackendCmd::SetRemoteKeys(on) => {
+                            (connection.set_remote_keys(*on).await, None)
+                        }
                         // Everything queued before it has run: dropping the
                         // token (with `cmd`) is the signal.
                         BackendCmd::Drain(_) => continue,
@@ -201,7 +215,14 @@ pub(crate) async fn connect_flow(
                     }
                 }
             },
-            update = recv_update(&mut subscription) => match update {
+            event = recv(&mut events) => match event {
+                Some(tisvlay_core::TvEvent::RemotePower) => {
+                    let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::RemotePower });
+                }
+                Some(event) => debug!(%tv, ?event, "TV event with no handler"),
+                None => events = None,
+            },
+            update = recv(&mut subscription) => match update {
                 Some(state) => {
                     let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::State(Box::new(state)) });
                 }
@@ -214,12 +235,11 @@ pub(crate) async fn connect_flow(
     }
 }
 
-/// Receive the next push update, or pend forever for poll-only backends so
-/// the select stays command-driven.
-async fn recv_update(
-    subscription: &mut Option<mpsc::UnboundedReceiver<tisvlay_core::TvState>>,
-) -> Option<tisvlay_core::TvState> {
-    match subscription {
+/// Receive the next pushed item, or pend forever for a backend without the
+/// stream (a poll-only backend's state, one with no events) so the select
+/// stays command-driven.
+async fn recv<T>(stream: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match stream {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
     }

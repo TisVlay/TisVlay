@@ -160,6 +160,14 @@ pub enum InEvent {
         event: SystemEvent,
         connector: Option<String>,
     },
+    /// The daemon's logind adapter couldn't put the machine to sleep for a
+    /// TV's power-off (polkit refused it, an inhibitor blocked it, or the
+    /// host has no such mode): published as `event/dispatch-failed`.
+    SleepRefused {
+        tv: Uuid,
+        mode: SleepMode,
+        message: String,
+    },
     /// Queue the token on every live connection behind the commands
     /// already queued there. The reactor fans it out after its step's
     /// dispatch, so it also covers a `System` event sent just before it.
@@ -201,6 +209,9 @@ pub enum InEvent {
         /// `VendorRows` for the clients' INFO surface.
         config_rows: Vec<(String, String)>,
         diagnostic_rows: Vec<(String, String)>,
+        /// The local device node the connection needs (CEC's `/dev/cecN`,
+        /// as configured), for the wake list.
+        device: Option<std::path::PathBuf>,
     },
     /// Time advance. Consumed by the reactor itself (updates the world
     /// clock); never dispatched as a bevy message.
@@ -542,6 +553,15 @@ pub enum BackendEvent {
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
     PowerPhase(tisvlay_protocol::payload::PowerPhase),
+    /// The bridge is about to send the TV a power-off or a blank, so the
+    /// off edge that follows is TisVlay's own. Sent ahead of the command
+    /// from the same task as the TV's reports, so it lands before them.
+    SendingOff {
+        /// A blank (`ScreenOff`) rather than a power-off.
+        blank: bool,
+    },
+    /// The TV's remote powered this PC off ([`tisvlay_core::TvEvent::RemotePower`]).
+    RemotePower,
     /// A reply-carrying command finished at the TV — answer the rpc.
     CommandDone {
         reply: AckReply,
@@ -566,8 +586,45 @@ pub enum BackendCmd {
     PowerOn,
     ScreenOn,
     ScreenOff,
+    /// Let the TV remote's keys reach the desktop, or stop them.
+    SetRemoteKeys(bool),
     /// Dropped once the commands queued before it have run.
     Drain(DrainToken),
+}
+
+/// The wake list: every TV's local device node with its system profile's
+/// `on_tv_power_on`, for the daemon to write where the wakeup unit reads it.
+pub type WakeList = std::collections::BTreeMap<std::path::PathBuf, tisvlay_core::SystemWakeAction>;
+
+/// The machine's sleep a system profile asked for on a going-off event (the
+/// TV powering off by itself, its remote powering the PC off), for the
+/// daemon's logind adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SleepRequest {
+    /// The TV whose event asked.
+    pub tv: Uuid,
+    /// How to sleep.
+    pub mode: SleepMode,
+}
+
+/// How the daemon puts the machine to sleep: logind's modes, without the
+/// profile's `none`, so a request always asks for something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepMode {
+    /// logind's `Suspend`: suspend to RAM.
+    Suspend,
+    /// logind's `Sleep`: the host's configured mode (`SleepOperation=`).
+    Sleep,
+}
+
+impl SleepMode {
+    /// The action's name on `event/dispatch-failed`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Suspend => "suspend",
+            Self::Sleep => "sleep",
+        }
+    }
 }
 
 /// A token each live connection holds behind the commands already queued

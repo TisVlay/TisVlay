@@ -24,6 +24,9 @@ contents = [
     # dedicated `tisvlay` system user (postinstall.sh creates it), owning
     # the zenoh socket in /run/tisvlay/. Clients join the tisvlay group.
     { src = "packaging/systemd/tisvlay-daemon.service", dst = "/usr/lib/systemd/system/tisvlay-daemon.service" },
+    # Arms the adapters on the daemon's wake list before each sleep (the
+    # system profile's on_tv_power_on); a no-op with an empty list.
+    { src = "packaging/systemd/tisvlay-wakeup.service", dst = "/usr/lib/systemd/system/tisvlay-wakeup.service" },
     # Systemd user services
     { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
     # Greeter idle client, one unit per display manager (each hangs off that
@@ -42,6 +45,13 @@ contents = [
     # Desktop entry — the basename must match the bus name when
     # DBusActivatable=true (freedesktop Desktop Entry spec).
     { src = "packaging/freedesktop/org.tisvlay.Gui.desktop", dst = "/usr/share/applications/org.tisvlay.Gui.desktop" },
+    # Lets the daemon's user put the machine to sleep for a system
+    # profile's on_tv_power_off (the profile field is the opt-in).
+    { src = "packaging/polkit/50-tisvlay.rules", dst = "/usr/share/polkit-1/rules.d/50-tisvlay.rules" },
+    # Keeps the TV remote's power keys away from the desktop when a system
+    # profile's remote_keys lets the remote through. udev's own package
+    # hooks recompile the hwdb on install.
+    { src = "packaging/udev/70-tisvlay-rc-cec.hwdb", dst = "/usr/lib/udev/hwdb.d/70-tisvlay-rc-cec.hwdb" },
     # Third-party FOSS attribution. Regenerated at the repo root by
     # `just licenses-html` (a prerequisite of every `package-*`
     # recipe), gitignored so it doesn't churn between dep bumps. Lives

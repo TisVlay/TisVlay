@@ -213,8 +213,9 @@ impl StatePayload for VendorRows {
 /// The TV's settings and the automation state derived from them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
-    /// Whether profiles automate the TV. An unmanaged TV stays
-    /// connected for manual control.
+    /// Whether the TV's profiles act, on the TV and on this PC for the
+    /// TV's own events. An unmanaged TV stays connected for manual
+    /// control.
     pub managed: bool,
     /// The assigned system profile; absent follows the default
     /// profile.
@@ -343,6 +344,27 @@ pub enum LinkMacOutcome {
 pub struct PowerProgress {
     /// The step the flow just reached.
     pub phase: PowerPhase,
+}
+
+/// The TV powered off by itself or from its own remote, at
+/// [`keys::tv_power_off`](crate::keys::tv_power_off): a live edge from on
+/// to off between two reports on one connection, which TisVlay's own
+/// power-offs and blanks don't produce. A connection's first reading or a
+/// dropped link never sends it. Live only: subscribe without history.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TvPowerOff {
+    /// The TV that powered off.
+    pub tv: uuid::Uuid,
+}
+
+/// The TV's remote powered this PC off, at
+/// [`keys::remote_power`](crate::keys::remote_power): on HDMI-CEC, the TV's
+/// "power off this device" aimed at the PC, once per press. Live only:
+/// subscribe without history.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemotePower {
+    /// The TV whose remote it was.
+    pub tv: uuid::Uuid,
 }
 
 /// The phases a wake-and-connect flow walks through, ending in

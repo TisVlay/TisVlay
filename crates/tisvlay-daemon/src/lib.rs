@@ -14,6 +14,7 @@ mod seat;
 mod seed;
 pub mod service;
 mod store;
+pub mod wakeup;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -38,7 +39,7 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
-pub use logind::{supervise_logind, watch_logind};
+pub use logind::{run_sleeper, supervise_logind, watch_logind};
 pub use seed::{SeedConfig, SeedTv, load_seed_config};
 pub use store::load_store;
 
@@ -129,6 +130,10 @@ pub struct Stack {
     /// Device-watcher requests from the reactor, when `run` booted the
     /// stack with device watching (`run` takes them for the watcher).
     devices: Option<mpsc::UnboundedReceiver<tisvlay_world::DeviceRequest>>,
+    /// The system profile's sleep requests from the reactor (`run` takes
+    /// them for the logind sleeper; tests take them with
+    /// [`Stack::take_sleep_requests`]).
+    sleeps: Option<mpsc::UnboundedReceiver<tisvlay_world::SleepRequest>>,
     /// Shared boot-`Startup` readiness, written by the stream
     /// subscribers; `run` awaits it before the WoL dispatch.
     startup_ready: Arc<StartupReadiness>,
@@ -164,6 +169,14 @@ impl Stack {
     /// store can't be restarted in place, so the process exits and the
     /// service manager restarts it from the store, instead of leaving a
     /// daemon that looks alive but refuses every rpc.
+    /// The system profile's sleep requests, once: `run` hands them to the
+    /// logind sleeper, and a test can drive [`run_sleeper`] with them.
+    pub fn take_sleep_requests(
+        &mut self,
+    ) -> Option<mpsc::UnboundedReceiver<tisvlay_world::SleepRequest>> {
+        self.sleeps.take()
+    }
+
     pub async fn run_until(self, shutdown: impl Future<Output = ()>) -> Result<()> {
         let Self {
             daemon, mut tasks, ..
@@ -359,7 +372,7 @@ pub async fn serve(
     vendors: Vec<VendorReg>,
     store_path: Option<&Path>,
 ) -> Result<Stack> {
-    serve_stack(socket, site, vendors, store_path, false).await
+    serve_stack(socket, site, vendors, store_path, false, None).await
 }
 
 /// [`serve`], optionally attaching the device watcher's outlet before the
@@ -373,6 +386,7 @@ async fn serve_stack(
     vendors: Vec<VendorReg>,
     store_path: Option<&Path>,
     watch_devices: bool,
+    sleep: Option<tisvlay_protocol::rpc::SleepSupport>,
 ) -> Result<Stack> {
     let session = open_socket(socket).await?;
     let connectors: Vec<(&str, Arc<dyn TvConnector>)> = vendors
@@ -407,6 +421,11 @@ async fn serve_stack(
     };
     let (routes_tx, routes_rx) = mpsc::unbounded_channel();
     reactor.set_route_monitor(routes_tx);
+    let (sleep_tx, sleep_rx) = mpsc::unbounded_channel();
+    reactor.set_sleeper(sleep_tx);
+    let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+    reactor.set_wake_list(wake_tx);
+    tokio::spawn(wakeup::write_lists(wakeup::list_path(socket), wake_rx));
     let devices_rx = watch_devices.then(|| {
         let (devices_tx, devices_rx) = mpsc::unbounded_channel();
         reactor.set_device_monitor(devices_tx);
@@ -484,6 +503,7 @@ async fn serve_stack(
         state_path: store_path
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
+        sleep,
     };
     let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
     let bridge = tokio::spawn(bridge::run(
@@ -612,6 +632,7 @@ async fn serve_stack(
         world,
         routes: Some(routes_rx),
         devices: devices_rx,
+        sleeps: Some(sleep_rx),
         startup_ready,
         stored,
         reloads,
@@ -695,12 +716,19 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         .with_retry(tisvlay_cec::CecBackend::new().verify_retry_config())
         .with_discovery(Arc::new(tisvlay_cec::CecDiscovery::new())),
     ];
+    // The sleep modes logind grants this daemon, for the info reply the GUI
+    // reads: bounded, so a slow bus can't hold the boot.
+    let sleep = tokio::time::timeout(Duration::from_secs(2), logind::sleep_support())
+        .await
+        .ok()
+        .flatten();
     let mut stack = serve_stack(
         &options.socket,
         &options.site,
         vendors,
         options.store.as_deref(),
         true,
+        sleep,
     )
     .await?;
     // The socket is bound and chmod'd 0660 by now; ground the socket ACL
@@ -749,6 +777,9 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         DPMS_PERIOD,
     ));
     logind::spawn(stack.world.clone());
+    if let Some(requests) = stack.take_sleep_requests() {
+        logind::spawn_sleeper(requests, stack.world.clone());
+    }
 
     // The store applied in `serve`; the seed config only adds TVs it
     // didn't hold, so they persist as the real change they are.

@@ -38,6 +38,10 @@ pkgs.testers.runNixOSTest {
         isNormalUser = true;
       };
 
+      # Desktops run polkit, so the module's sleep rule takes effect there;
+      # a headless VM has to ask for it.
+      security.polkit.enable = true;
+
       # Keep the VM small — tisvlay is the only service under test.
       virtualisation.memorySize = 1024;
 
@@ -93,6 +97,33 @@ pkgs.testers.runNixOSTest {
     machine.succeed(
         "systemctl --global list-unit-files tisvlay-tray.service "
         "| grep -q tisvlay-tray"
+    )
+
+    # The polkit rule letting the daemon's user put the machine to sleep
+    # (a system profile's on_tv_power_off) is installed, for that user.
+    machine.succeed(
+        "grep -q 'org.freedesktop.login1.suspend' /etc/polkit-1/rules.d/10-nixos.rules"
+    )
+    machine.succeed("grep -q 'subject.user == \"tisvlay\"' /etc/polkit-1/rules.d/10-nixos.rules")
+
+    # The keymap dropping the TV remote's power keys is in the compiled
+    # hwdb, for a CEC remote-control input (bus 0x1e).
+    keys = machine.succeed(
+        "systemd-hwdb query 'evdev:input:b001Ev0000p0000e0001-e0,1,4,14'"
+    )
+    for scancode in ["40", "6b", "6c", "6d"]:
+        assert f"KEYBOARD_KEY_{scancode}=reserved" in keys, f"no {scancode} in {keys!r}"
+
+    # The wakeup unit is wanted by every sleep, and runs both ways: the
+    # daemon wrote its empty wake list beside the socket, so it changes
+    # nothing. Started by hand, it's unneeded at once, so systemd stops it
+    # again, which runs the resume half.
+    machine.succeed("systemctl list-dependencies --plain sleep.target | grep -q tisvlay-wakeup")
+    machine.wait_until_succeeds("test -f /run/tisvlay/wakeup", timeout=30)
+    machine.succeed("systemctl start tisvlay-wakeup.service")
+    machine.succeed("test -f /run/tisvlay-wakeup/applied")
+    machine.wait_until_succeeds(
+        "journalctl -u tisvlay-wakeup.service | grep -q 'enabled after the resume'", timeout=30
     )
 
     # StateDirectory exists with correct ownership.

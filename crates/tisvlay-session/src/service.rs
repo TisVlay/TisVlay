@@ -122,6 +122,10 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
     // for arbitration. Absent/unreachable bus is handled inside (supervised
     // retry, quiet).
     crate::spawn_lock_watcher(stack.client.clone(), is_locked.clone(), is_active);
+    // The core's lock requests (a going-off event: the TV powering off by
+    // itself, or its remote powering the PC off) lock this user's seat
+    // session through logind.
+    crate::spawn_locker(stack.lock_requests);
     // Portal monitor on the session bus (out-of-band name→PID lookups for
     // the remote screencast attribution). Absent bus = monitor disabled.
     match zbus::Connection::session().await {

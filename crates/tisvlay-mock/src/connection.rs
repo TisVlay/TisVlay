@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tisvlay_core::{
     Capabilities, Error, HardwareId, InputInfo, MacAddress, PowerState, Result, TvConnection,
-    TvState,
+    TvEvent, TvState,
 };
 use tokio::sync::mpsc;
 
@@ -156,6 +156,7 @@ impl Drop for MockConnection {
         let mut shared = self.shared.lock();
         shared.live_states.remove(&self.address);
         shared.subscription_txs.remove(&self.address);
+        shared.event_txs.remove(&self.address);
     }
 }
 
@@ -199,6 +200,9 @@ impl TvConnection for MockConnection {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities::STOCK
+            | Capabilities::REMOTE_POWER
+            | Capabilities::REMOTE_KEYS
+            | Capabilities::WAKES_PC
     }
 
     fn hardware_id(&self) -> Option<HardwareId> {
@@ -439,6 +443,25 @@ impl TvConnection for MockConnection {
             .or_default()
             .push(tx.clone());
         self.subscription_tx = Some(tx);
+        Ok(rx)
+    }
+
+    async fn set_remote_keys(&mut self, on: bool) -> Result<()> {
+        self.shared
+            .lock()
+            .remote_keys
+            .insert(self.address.clone(), on);
+        Ok(())
+    }
+
+    async fn subscribe_events(&mut self) -> Result<mpsc::UnboundedReceiver<TvEvent>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.shared
+            .lock()
+            .event_txs
+            .entry(self.address.clone())
+            .or_default()
+            .push(tx);
         Ok(rx)
     }
 }

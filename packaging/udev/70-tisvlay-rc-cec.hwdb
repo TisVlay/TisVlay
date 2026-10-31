@@ -1,0 +1,15 @@
+# Keep the TV remote's power keys away from the desktop.
+#
+# When a system profile's remote_keys lets the TV remote's keys through, the
+# kernel's rc-cec keymap turns its power keys into KEY_POWER, KEY_SLEEP and
+# KEY_WAKEUP, and the desktop acts on those: one press can put the PC to
+# sleep. TisVlay answers the remote's power key itself (on_remote_power), so
+# the keymap drops them: Power (0x40), Power Toggle (0x6b), Power Off (0x6c)
+# and Power On (0x6d). Harmless while no profile lets the keys through.
+#
+# Matches every CEC remote-control input: bus 0x1e is BUS_CEC.
+evdev:input:b001E*
+ KEYBOARD_KEY_40=reserved
+ KEYBOARD_KEY_6b=reserved
+ KEYBOARD_KEY_6c=reserved
+ KEYBOARD_KEY_6d=reserved

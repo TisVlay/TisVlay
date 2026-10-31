@@ -465,3 +465,134 @@ pub(super) fn dispatch_system_events(
         }
     }
 }
+
+/// This step's going-off events: run each one's system-profile sleep for a
+/// managed TV, never while a stream arms the TV. The TV powering off by
+/// itself is also gated on the TV's input (`automated`), since it says
+/// nothing about the PC unless the TV was showing it; the remote's power
+/// key is addressed to the PC, so it isn't. Also reports a sleep the daemon
+/// couldn't take as `event/dispatch-failed`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access"
+)]
+pub(super) fn dispatch_going_off(
+    mut reader: MessageReader<InEvent>,
+    mut going_off: ResMut<GoingOff>,
+    index: Res<TvIndex>,
+    tvs: Query<(Option<&State<payload::Meta>>, Has<Managed>)>,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+    stream_armed: Res<StreamArmed>,
+    site: Res<Site>,
+    clock: Res<Clock>,
+    mut pending: ResMut<SleepPending>,
+    mut outbox: ResMut<Outbox>,
+) {
+    for msg in reader.read() {
+        match msg {
+            InEvent::SleepRefused { tv, mode, message } => {
+                pending.0 = None;
+                outbox.0.push(Effect::Wire(WireEffect::Publish {
+                    key: keys::event(&site.0, "dispatch-failed"),
+                    payload: json!({ "tv": tv, "action": mode.as_str(), "message": message }),
+                }));
+            }
+            InEvent::System {
+                event: SystemEvent::Resume,
+                ..
+            } => pending.0 = None,
+            _ => {}
+        }
+    }
+    // A request logind accepted without sleeping (a delay that outlived
+    // it) mustn't hold every later sleep back.
+    if pending
+        .0
+        .is_some_and(|at| clock.0.saturating_duration_since(at) >= SLEEP_PENDING_LIMIT)
+    {
+        pending.0 = None;
+    }
+    for (tv, event) in going_off.0.drain(..) {
+        let Some((meta, managed)) = index.get(&tv).and_then(|entity| tvs.get(entity).ok()) else {
+            continue;
+        };
+        if !managed {
+            tracing::debug!(%tv, ?event, "not managed");
+            continue;
+        }
+        if event == GoingOffEvent::TvPowerOff && meta.is_some_and(|m| !m.automated) {
+            tracing::debug!(%tv, ?event, "automation gated off");
+            continue;
+        }
+        let field: fn(&tisvlay_core::SystemProfileConfig) -> _ = match event {
+            GoingOffEvent::TvPowerOff => |body| body.on_tv_power_off,
+            GoingOffEvent::RemotePower => |body| body.on_remote_power,
+        };
+        let mode = match resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, field) {
+            tisvlay_core::SystemSleepAction::None => continue,
+            tisvlay_core::SystemSleepAction::Suspend => SleepMode::Suspend,
+            tisvlay_core::SystemSleepAction::Sleep => SleepMode::Sleep,
+        };
+        if stream_armed.0.contains(&tv) {
+            tracing::debug!(%tv, ?event, "a stream arms the TV");
+            continue;
+        }
+        if pending.0.is_some() {
+            tracing::debug!(%tv, ?event, "a sleep is already under way");
+            continue;
+        }
+        tracing::info!(%tv, ?event, ?mode, "putting the PC to sleep");
+        pending.0 = Some(clock.0);
+        outbox.0.push(Effect::Sleep(SleepRequest { tv, mode }));
+    }
+}
+
+/// Tell each live connection whose backend can pass the TV remote's keys
+/// whether to, from its system profile's `remote_keys` (never for an
+/// unmanaged TV): on connect (a new claim starts without) and whenever the
+/// resolved value changes.
+#[expect(
+    clippy::type_complexity,
+    reason = "bevy system: its Query types spell out the components it reads"
+)]
+pub(super) fn reconcile_remote_keys(
+    mut commands: Commands,
+    tvs: Query<(
+        Entity,
+        &TvId,
+        &ConnectionHandle,
+        &RemoteKeysSent,
+        Option<&State<payload::Identity>>,
+        Option<&State<payload::Meta>>,
+        Has<Managed>,
+    )>,
+    connections: Query<
+        (),
+        Or<(
+            Added<ConnectionHandle>,
+            Changed<RemoteKeysSent>,
+            Changed<State<payload::Identity>>,
+        )>,
+    >,
+    mut inputs: SystemFieldInputs,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+) {
+    if !inputs.changed() && connections.is_empty() {
+        return;
+    }
+    for (entity, id, handle, sent, identity, meta, managed) in &tvs {
+        if !identity.is_some_and(|i| i.capabilities.iter().any(|c| c == "remote_keys")) {
+            continue;
+        }
+        let want = managed
+            && resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
+                body.remote_keys
+            });
+        if want != sent.0 && handle.cmd_tx.send(BackendCmd::SetRemoteKeys(want)).is_ok() {
+            tracing::info!(tv = %id.0, remote_keys = want, "the remote's keys");
+            commands.entity(entity).insert(RemoteKeysSent(want));
+        }
+    }
+}

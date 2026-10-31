@@ -17,12 +17,14 @@ use tokio::sync::mpsc;
 
 use crate::backend;
 use crate::components::{
-    Clock, ConnectionHandle, DeviceWatch, DialSeq, Effect, KnownVendors, LastPersisted, Outbox,
-    PairingIndex, ProfileIndex, Site, StreamArmed, SystemProfile, TvIndex,
+    Clock, ConnectionHandle, DeviceWatch, DialSeq, Effect, GoingOff, KnownVendors, LastPersisted,
+    Outbox, PairingIndex, PowerEdges, ProfileIndex, Site, SleepPending, StreamArmed, SystemProfile,
+    TvIndex,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
-    Reply, RouteRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect, WireError,
+    Reply, RouteRequest, SleepRequest, StoreMsg, StoreSnapshot, TvRecord, WakeList, WireEffect,
+    WireError,
 };
 use crate::systems::build_schedule;
 use crate::systems::commands as handle;
@@ -37,6 +39,10 @@ pub struct Reactor {
     persist_tx: Option<mpsc::UnboundedSender<StoreMsg>>,
     routes_tx: Option<mpsc::UnboundedSender<RouteRequest>>,
     devices_tx: Option<mpsc::UnboundedSender<DeviceRequest>>,
+    /// Sleep requests for the daemon's logind adapter.
+    sleep_tx: Option<mpsc::UnboundedSender<SleepRequest>>,
+    /// The wake list, for the daemon to write where the wakeup unit reads it.
+    wake_list_tx: Option<mpsc::UnboundedSender<WakeList>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
@@ -93,6 +99,9 @@ impl Reactor {
         ));
         world.insert_resource(SystemProfile::stock());
         world.init_resource::<StreamArmed>();
+        world.init_resource::<PowerEdges>();
+        world.init_resource::<GoingOff>();
+        world.init_resource::<SleepPending>();
         world.init_resource::<TvIndex>();
         world.init_resource::<PairingIndex>();
         world.init_resource::<ProfileIndex>();
@@ -117,6 +126,8 @@ impl Reactor {
                 persist_tx: None,
                 routes_tx: None,
                 devices_tx: None,
+                sleep_tx: None,
+                wake_list_tx: None,
                 vendor_retry: HashMap::new(),
             },
             effects_rx,
@@ -148,6 +159,20 @@ impl Reactor {
     pub fn set_device_monitor(&mut self, tx: mpsc::UnboundedSender<DeviceRequest>) {
         self.devices_tx = Some(tx);
         self.world.resource_mut::<DeviceWatch>().0 = true;
+    }
+
+    /// Hand the system profile's sleep requests to `tx`: the daemon's
+    /// logind adapter, which puts the machine to sleep.
+    pub fn set_sleeper(&mut self, tx: mpsc::UnboundedSender<SleepRequest>) {
+        self.sleep_tx = Some(tx);
+    }
+
+    /// Hand the wake list to `tx`: every TV's device node with whether its
+    /// system profile lets it wake the PC, sent whenever it changes (and
+    /// once at the first step). The daemon writes it for the wakeup unit,
+    /// which arms or blocks those adapters for each sleep.
+    pub fn set_wake_list(&mut self, tx: mpsc::UnboundedSender<WakeList>) {
+        self.wake_list_tx = Some(tx);
     }
 
     /// Apply the boot state before [`run`](Self::run): `stored` (the
@@ -222,6 +247,17 @@ impl Reactor {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
                 }
+                Effect::WakeList(list) => {
+                    if let Some(tx) = &self.wake_list_tx {
+                        let _ = tx.send(list);
+                    }
+                }
+                Effect::Sleep(request) => match &self.sleep_tx {
+                    Some(tx) => {
+                        let _ = tx.send(request);
+                    }
+                    None => tracing::warn!(?request, "no sleeper attached, sleep dropped"),
+                },
                 Effect::ForgetMonitors { tv } => {
                     if let Some(tx) = &self.routes_tx {
                         let _ = tx.send(RouteRequest::Forget { tv });
@@ -250,6 +286,7 @@ impl Reactor {
                             primary: connector.primary_descriptor(&config),
                             config_rows: connector.display_config(&config),
                             diagnostic_rows: connector.display_diagnostics(&config),
+                            device: connector.local_device(&config).map(|device| device.path),
                         });
                         self.request_monitors(tv, connector.as_ref(), &config);
                         let retry = self.vendor_retry.get(&vendor).copied().unwrap_or_default();
@@ -336,6 +373,7 @@ impl Reactor {
                             primary: connector.primary_descriptor(&config),
                             config_rows: connector.display_config(&config),
                             diagnostic_rows: connector.display_diagnostics(&config),
+                            device: connector.local_device(&config).map(|device| device.path),
                         });
                         self.request_monitors(tv, connector.as_ref(), &config);
                     }

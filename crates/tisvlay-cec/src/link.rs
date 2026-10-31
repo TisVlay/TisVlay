@@ -18,10 +18,13 @@
     clippy::cast_possible_truncation
 )]
 
+use std::os::unix::ffi::OsStrExt;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use linux_cec::device::{AsyncDevice, Capabilities as CecCapabilities, MessageData};
+use linux_cec::device::{
+    AsyncDevice, Capabilities as CecCapabilities, LogicalAddressFlags, MessageData,
+};
 use linux_cec::message::{Message, Opcode};
 use linux_cec::operand::PowerStatus;
 use linux_cec::{
@@ -82,6 +85,16 @@ pub(crate) trait CecLink: Send + Sync + std::fmt::Debug {
     /// `None` when the TV reports no vendor. Resolved to the manufacturer +
     /// tile brand via [`crate::identity`].
     async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>>;
+
+    /// Whether the adapter can hand the remote's keys to the kernel's RC
+    /// device (`CEC_CAP_RC`), which [`set_rc_passthrough`](Self::set_rc_passthrough)
+    /// needs.
+    fn has_rc(&self) -> bool;
+    /// Allow or stop RC passthrough, so the kernel forwards the TV remote's
+    /// keys to the adapter's RC device. A change re-claims the held logical
+    /// address with the flag, keeping its OSD name; a claim that already
+    /// matches is left alone.
+    async fn set_rc_passthrough(&self, allow: bool) -> Result<()>;
 }
 
 /// A follower-mode handle for receiving unsolicited CEC traffic — the
@@ -238,9 +251,26 @@ fn identity_query_timeout() -> Timeout {
 #[derive(Debug)]
 struct LinuxCecLink {
     device: AsyncDevice,
+    /// The `/dev/cecN` path, for logging a re-claim.
+    path: String,
+    /// The adapter has `CEC_CAP_RC`.
+    rc: bool,
 }
 
 impl LinuxCecLink {
+    /// Claim a Playback address with `flags`, on an adapter whose claim was
+    /// just cleared.
+    async fn claim_with(&self, flags: LogicalAddressFlags) -> Result<()> {
+        self.device
+            .set_logical_address_flags(flags)
+            .await
+            .map_err(map_cec_err)?;
+        self.device
+            .set_logical_address(LogicalAddressType::Playback)
+            .await
+            .map_err(map_cec_err)
+    }
+
     async fn open(
         device: &str,
         physical_address: PhysicalAddress,
@@ -254,8 +284,14 @@ impl LinuxCecLink {
             .await
             .map_err(map_cec_err)?
             .is_empty();
+        let capabilities = dev.get_capabilities().await.map_err(map_cec_err)?;
+        let link = |handle| Self {
+            device: handle,
+            path: device.to_owned(),
+            rc: capabilities.contains(CecCapabilities::RC),
+        };
         let ClaimPlan::Claim { clear, name } = ClaimPlan::new(claim, claimed) else {
-            return Ok(Self { device: dev });
+            return Ok(link(dev));
         };
         // Enable transmit before configuring any addresses.
         dev.set_initiator_mode(InitiatorMode::Enabled)
@@ -267,12 +303,7 @@ impl LinuxCecLink {
         // below never takes effect on the bus. GPU DisplayPort-CEC lacks
         // the cap (the kernel already assigned an address from the
         // connector), so we leave that path untouched.
-        if dev
-            .get_capabilities()
-            .await
-            .map_err(map_cec_err)?
-            .contains(CecCapabilities::PHYS_ADDR)
-        {
+        if capabilities.contains(CecCapabilities::PHYS_ADDR) {
             dev.set_physical_address(physical_address)
                 .await
                 .map_err(map_cec_err)?;
@@ -308,7 +339,7 @@ impl LinuxCecLink {
             Ok(addresses) => log_claim(device, addresses.first().copied(), advertised.as_deref()),
             Err(error) => tracing::debug!(device, %error, "couldn't read back the CEC claim"),
         }
-        Ok(Self { device: dev })
+        Ok(link(dev))
     }
 }
 
@@ -417,6 +448,64 @@ impl CecLink for LinuxCecLink {
                 format!("expected Set OSD Name, got {other:?}"),
             )),
         }
+    }
+
+    fn has_rc(&self) -> bool {
+        self.rc
+    }
+
+    async fn set_rc_passthrough(&self, allow: bool) -> Result<()> {
+        let mut flags = self
+            .device
+            .get_logical_address_flags()
+            .await
+            .map_err(map_cec_err)?;
+        if flags.contains(LogicalAddressFlags::ALLOW_RC_PASSTHRU) == allow {
+            return Ok(());
+        }
+        let held = flags;
+        flags.set(LogicalAddressFlags::ALLOW_RC_PASSTHRU, allow);
+        // Our own name, as the claim holds it: a 14-byte NUL-padded buffer.
+        let name = self.device.get_osd_name().await.map_err(map_cec_err)?;
+        let name = name
+            .as_bytes()
+            .split(|byte| *byte == 0)
+            .next()
+            .unwrap_or_default();
+        let name = crate::identity::clamp_osd_name(&String::from_utf8_lossy(name));
+        // The order `ClaimPlan` documents: clearing blanks the stored name
+        // and flags, so both go back on after it, then the claim.
+        self.device
+            .clear_logical_addresses()
+            .await
+            .map_err(map_cec_err)?;
+        if let Some(name) = &name
+            && let Err(error) = self.device.set_osd_name(name).await
+        {
+            tracing::warn!(device = self.path, osd_name = %name, %error, "failed to keep the CEC OSD name across a re-claim");
+        }
+        if let Err(error) = self.claim_with(flags).await {
+            // The clear already took the PC off the bus: claim again with
+            // the flags it held, so a failed change costs the passthrough
+            // change only. The next connect's claim applies it again.
+            if let Err(fallback) = self.claim_with(held).await {
+                tracing::warn!(device = self.path, error = %fallback, "couldn't restore the CEC claim after a failed re-claim");
+            }
+            return Err(error);
+        }
+        let address = self
+            .device
+            .get_logical_addresses()
+            .await
+            .ok()
+            .and_then(|addresses| addresses.first().copied());
+        tracing::info!(
+            device = self.path,
+            rc_passthrough = allow,
+            "re-claimed for RC passthrough"
+        );
+        log_claim(&self.path, address, name.as_deref());
+        Ok(())
     }
 
     async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>> {
@@ -535,6 +624,8 @@ mod fake {
         /// don't assert identity, see an all-absent result.
         osd_name: String,
         vendor_id: Option<linux_cec::VendorId>,
+        /// The adapter has `CEC_CAP_RC` (default: it does).
+        rc: bool,
     }
 
     impl FakeCecLink {
@@ -546,7 +637,15 @@ mod fake {
                 ignore_wakes: Mutex::new(0),
                 osd_name: String::new(),
                 vendor_id: None,
+                rc: true,
             }
+        }
+
+        /// An adapter without `CEC_CAP_RC`.
+        #[must_use]
+        pub fn without_rc(mut self) -> Self {
+            self.rc = false;
+            self
         }
 
         /// Seed the scripted TV identity the connection/discovery queries.
@@ -595,6 +694,14 @@ mod fake {
 
         async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>> {
             Ok(self.vendor_id)
+        }
+
+        fn has_rc(&self) -> bool {
+            self.rc
+        }
+
+        async fn set_rc_passthrough(&self, _allow: bool) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -781,6 +888,7 @@ mod fake {
                 ignore_wakes: Mutex::new(self.ignore_wakes),
                 osd_name,
                 vendor_id,
+                rc: true,
             }))
         }
 

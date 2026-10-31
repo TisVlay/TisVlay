@@ -281,6 +281,7 @@ pub async fn serve_settings(
                 let info = rpc::ServiceInfo {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: config_path.display().to_string(),
+                    sleep: None,
                 };
                 responder.ok(&info).await;
             }

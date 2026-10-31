@@ -43,11 +43,12 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 pub use config::{
     AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
     EventAction, ResolvedSystemProfile, ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction,
-    SystemProfileConfig, USER_PROFILE_FIELDS, UserProfileConfig,
+    SystemProfileConfig, SystemSleepAction, SystemWakeAction, USER_PROFILE_FIELDS, UserLockAction,
+    UserProfileConfig,
 };
 
 // State
-pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
+pub use state::{DiscoveredTv, InputInfo, PowerClass, PowerState, TvEvent, TvState};
 
 // Errors
 pub use error::{Error, Result};

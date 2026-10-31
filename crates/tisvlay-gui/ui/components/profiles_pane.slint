@@ -1162,6 +1162,58 @@ component ProfileDetail inherits Rectangle {
                     }
                 }
 
+                // FROM THE TV section — what the PC does when the TV
+                // powers off by itself or its remote's power key is
+                // aimed at the PC. A sibling of the FIELDS section, with
+                // the same surface + full-bleed row treatment.
+                if Profiles.editor-from-tv-fields.length > 0: VerticalLayout {
+                    spacing: 0;
+                    HorizontalLayout {
+                        padding-left: 2px;
+                        padding-bottom: Design.gap-stack;
+                        spacing: Design.gap-form;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: @tr("FROM THE TV");
+                                color: Theme.text-dim;
+                                font-size: Design.font-mini;
+                                font-weight: 600;
+                                letter-spacing: 0.6px;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            ContextualHelpButton {
+                                text: @tr("What this PC does when the TV powers off by itself, or when the TV's remote powers this PC off, whether the TV powering on wakes this PC, and whether the remote's keys reach the desktop. TisVlay's own power-offs never count, and neither event acts while a stream arms the TV. The TV's pane shows what its connection supports.");
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    Rectangle {
+                        background: Theme.surface;
+                        border-color: Theme.border;
+                        border-width: Design.border-thin;
+                        border-radius: Design.radius-card;
+
+                        VerticalLayout {
+                            width: 100%;
+                            padding-top: Design.pad-card - Design.gap-stack;
+                            padding-bottom: Design.pad-card - Design.gap-stack;
+                            spacing: 0;
+                            alignment: start;
+                            for entry[i] in Profiles.editor-from-tv-fields: VerticalLayout {
+                                if entry.kind == "enum": ProfileFieldRowEnum {
+                                    entry: entry;
+                                }
+                                if entry.kind == "bool": ProfileFieldRowBool {
+                                    entry: entry;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // STREAMING section — the screencast-arming switch
                 // (user profiles only). The per-event suppression gate
                 // rides each action row in the FIELDS card as a toggle,

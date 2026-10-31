@@ -537,6 +537,7 @@ macro_rules! stub_service {
                         let info = tisvlay_protocol::rpc::ServiceInfo {
                             version: release.clone(),
                             state_path: String::new(),
+                            sleep: None,
                         };
                         responder.ok(&info).await;
                     }
@@ -698,6 +699,7 @@ async fn a_failed_release_check_is_retried() {
                 let info = tisvlay::ServiceInfo {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: "/var/lib/tisvlay/state.toml".into(),
+                    sleep: None,
                 };
                 responder.ok(&info).await;
             }
@@ -820,4 +822,56 @@ async fn the_session_and_tray_clients_refuse_another_release() {
         tray.notification_settings().await.is_none(),
         "the settings mirror is gated like the others"
     );
+}
+
+/// A daemon whose links drop and come back is still the same session: a
+/// resume that keeps user processes frozen past the 10 s link lease takes
+/// the daemon's liveliness token away and brings it back. Its state
+/// comes back with the token, from the caches it still holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_whose_token_returns_is_mirrored_again() {
+    use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
+
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("sys.sock");
+    let session = zenoh::open(tisvlay_protocol::bootstrap::peer_config(&socket).unwrap())
+        .await
+        .unwrap();
+    let profile = uuid::Uuid::from_u128(7);
+    let publisher = session
+        .declare_publisher(tisvlay_protocol::keys::profile_system("t", &profile))
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
+        .publisher_detection()
+        .await
+        .unwrap();
+    publisher
+        .put(serde_json::to_vec(&json!({ "name": "Kept" })).unwrap())
+        .await
+        .unwrap();
+    let alive = tisvlay_protocol::keys::daemon_alive("t");
+    let token = session.liveliness().declare_token(&alive).await.unwrap();
+
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    let named = |body: Option<tisvlay::SystemProfileBody>| body.map(|b| b.name);
+    let wait_profile = async |want: Option<&str>| {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let got = named(daemon.get_system_profile(profile).await);
+            if got.as_deref() == want {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the profile read {got:?}, not {want:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    wait_profile(Some("Kept")).await;
+
+    token.undeclare().await.unwrap();
+    wait_profile(None).await;
+    let _token = session.liveliness().declare_token(&alive).await.unwrap();
+    wait_profile(Some("Kept")).await;
 }

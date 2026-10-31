@@ -2,24 +2,11 @@
 
 TisVlay's names for power and activity grew one feature at a time, so its words cross subjects. "Wake" means the PC resuming, the TV powering on and activity on the lock screen. The PC's sleep is also called "suspend", and its wake also "resume". "Remote" means both a remote session and the TV's remote control. Decided (2026-10-25, after the research below): **one pair of words per subject, each word owned by one subject**, so a word names one concept and a search finds it.
 
-The vocabulary applies now: the names the [TV-controls-the-PC plan](../plans/tv-controls-pc.md) introduces follow it from the start. Two renames land inside that campaign, as its prerequisites: remote sessions become [streams](#streams), before the plan's remote-control steps take the word "remote", and the GUI's power-state labels get keyed on the wire's tokens. The other existing names are renamed after the campaign, as one breaking change. This doc holds the glossary until then; it then moves to a durable home (architecture.md for code, a reference page in the user guide).
+The vocabulary applies now: the names the [TV-controls-the-PC plan](../plans/tv-controls-pc.md) introduces follow it from the start. Two renames land inside that campaign, as its prerequisites: remote sessions become [streams](#streams), before the plan's remote-control steps take the word "remote", and the GUI's power-state labels get keyed on the wire's tokens. The other existing names are renamed after the campaign, as one breaking change. The glossary now lives in [architecture.md § Vocabulary](../architecture.md#vocabulary).
 
 ## Vocabulary
 
-| Subject | Verbs | States | Notes |
-|---|---|---|---|
-| The PC | **sleep / wake**; also startup, shutdown, reboot | asleep / awake | "Sleep" is the generic word. Specific sleep modes keep logind's names (suspend, hibernate), as values where the mode matters, such as the system profile's `suspend` and `sleep` actions. "Resume" never names the PC, though it's the kernel's word. In identifiers the PC is **`pc`** (`WAKES_PC`, "PC actions"), never "host", "machine" or "desktop". |
-| The TV | **power off / power on** | **standby / on** | Events and actions use the verbs (`power_off`, `on_tv_power_off`). "Standby" names the state, which is every vendor's name for it (`PowerState::Standby`, CEC power status, Sony, Samsung, LG's Active Standby, the GUI's status text). Wake-on-LAN keeps its name: it names a mechanism, not the concept. |
-| The TV's remote control | **the remote** (its keys, its power key) | | Free once streams have their own word: `on_remote_power`, `REMOTE_KEYS`. |
-| The TV's screen | **screen off / screen on** | | Unchanged. The panel blank, emulated as power where a backend has none. |
-| The PC's display | **DPMS off / DPMS on** | | Unchanged: the mechanism's name is already the user-visible one. DPMS's own Standby and Suspend modes stay inside the mechanism; TisVlay uses only off and on. |
-| The session | **lock / unlock** | locked / unlocked | Unchanged. |
-| Activity | **idle / resume** | idle / active | "Resume" means only activity after idle, always qualified (`on_idle_resume`, greeter resume), as in `ext-idle-notify-v1`, swayidle, hypridle and KIdleTime. |
-| Desktop streaming | **a stream starts / ends** | a stream arms a TV | Today's "remote session": Sunshine and Moonshine, screen capture, remote desktop. "Connect" stays the TV link's word. See [Streams](#streams). |
-
-The rule: a word never crosses subjects. A name that needs another subject's word names that subject too, as `on_tv_power_off` does.
-
-Platform and vendor names keep their spelling wherever they name the platform's own thing: logind's methods and `PrepareForSleep`, polkit's `login1.suspend`, the kernel's `power/wakeup` and "PM: suspend entry", `ext-idle-notify`'s `resumed`, PipeWire's `Suspended` / `Idle` node states, linux-cec's `AsyncDevice::wake`, CEC's messages, LG's and other vendors' power states, DPMS's modes.
+The table, its rule and the note on platform names moved to [architecture.md § Vocabulary](../architecture.md#vocabulary) at the TV-controls-the-PC plan's merge. What follows is what's still owed: the gaps the review found, the existing names that cross subjects, and the research behind the decision.
 
 ## Gaps the review found (2026-10-25)
 
@@ -120,4 +107,4 @@ One breaking change (no aliases), grouped by what each one breaks:
 
 ## Trigger
 
-The streams rename and the GUI's power-state labels are prerequisites of the TV-controls-the-PC plan. The glossary moves to its durable home at that plan's merge; the other renames follow the campaign.
+The streams rename and the GUI's power-state labels are prerequisites of the TV-controls-the-PC plan. The glossary moved to architecture.md at that plan's merge; the other renames follow the campaign.

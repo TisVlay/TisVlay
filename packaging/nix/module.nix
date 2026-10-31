@@ -337,6 +337,18 @@ in
       only those two, so tisvlay-greeter.service will not start.
     '';
 
+    # Lets the daemon's user put the machine to sleep for a system
+    # profile's on_tv_power_off (the profile field is the opt-in); the
+    # same rule the distro packages ship, for this module's user.
+    security.polkit.extraConfig =
+      lib.replaceStrings [ ''"tisvlay"'' ] [ ''"${cfg.user}"'' ]
+        (builtins.readFile ../polkit/50-tisvlay.rules);
+
+    # Keeps the TV remote's power keys away from the desktop when a system
+    # profile's remote_keys lets the remote through; the same keymap the
+    # distro packages ship.
+    services.udev.extraHwdb = builtins.readFile ../udev/70-tisvlay-rc-cec.hwdb;
+
     # Dedicated system user and group for tisvlay-daemon. uid/gid stay
     # unset by default — NixOS allocates from the system range and
     # pins the assignment via /var/lib/nixos/uid-map.
@@ -424,6 +436,60 @@ in
     networking.firewall.allowedUDPPorts = lib.optionals (cfg.openFirewall && cfg.bindPort != null) [
       cfg.bindPort
     ];
+
+    # Starts with every sleep and stops when it ends: going to sleep, it
+    # arms the CEC adapters on the daemon's wake list whose system
+    # profile's on_tv_power_on is "wake" and disables the USB port of those
+    # set to "none" (some adapters wake the PC whatever their wakeup
+    # setting says); stopping after the resume, it enables those ports
+    # again. It only ever undoes what it did itself; the same unit the
+    # distro packages ship.
+    systemd.services.tisvlay-wakeup = {
+      description = "TisVlay: let the TV wake this PC, or keep it from";
+      documentation = [ "https://github.com/TisVlay/TisVlay" ];
+      wantedBy = [ "sleep.target" ];
+      before = [ "sleep.target" ];
+      unitConfig = {
+        DefaultDependencies = false;
+        StopWhenUnneeded = true;
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        SyslogIdentifier = "tisvlay-wakeup";
+        ExecStart = lib.escapeShellArgs [
+          (lib.getExe' cfg.package "tisvlay")
+          "service"
+          "wakeup"
+          "--list"
+          "/run/tisvlay/wakeup"
+          "--record"
+          "/run/tisvlay-wakeup/applied"
+        ];
+        ExecStop = lib.escapeShellArgs [
+          (lib.getExe' cfg.package "tisvlay")
+          "service"
+          "wakeup"
+          "--resume"
+          "--record"
+          "/run/tisvlay-wakeup/applied"
+        ];
+        RuntimeDirectory = "tisvlay-wakeup";
+        RuntimeDirectoryMode = "0700";
+        RuntimeDirectoryPreserve = "yes";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateNetwork = true;
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        RestrictRealtime = true;
+        RestrictNamespaces = true;
+        SystemCallArchitectures = "native";
+      };
+    };
 
     # System daemon: owns the TV fleet and the zenoh socket clients
     # connect to. State lives in /var/lib/tisvlay/daemon.toml

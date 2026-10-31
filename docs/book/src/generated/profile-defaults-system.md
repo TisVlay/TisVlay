@@ -32,4 +32,36 @@ on_idle_resume = "screen_on"
 
 # When to apply automation relative to the TV's current input.
 automate_when = "always"
+
+# What the machine does when the TV powers off by itself or from its
+# own remote: `suspend` suspends to RAM, `sleep` uses the host's
+# configured sleep (which may hibernate). TisVlay's own power-offs
+# never count, and nothing happens while a stream arms the TV.
+# Default `none`.
+on_tv_power_off = "none"
+
+# What the machine does when the TV's remote powers this PC off (on
+# HDMI-CEC, the TV's "power off this device"): `suspend` suspends to
+# RAM, `sleep` uses the host's configured sleep. For a managed TV,
+# whatever its input: the press is addressed to this PC. A toggling
+# key counts only while the TV is showing this PC, since a TV
+# switching to it may send one to wake it. Nothing happens while a
+# stream arms the TV. Default `none`.
+on_remote_power = "none"
+
+# Whether the TV remote's keys reach this PC's desktop (on HDMI-CEC,
+# as the kernel's remote-control input device). What each key does is
+# the desktop's to decide. The packages' keymap keeps the remote's
+# power keys away from the desktop; without it (a source build), the
+# power key can put the PC to sleep. Default `false`.
+remote_keys = false
+
+# What the TV powering on does while this PC sleeps: `wake` lets it
+# wake the PC (on HDMI-CEC, through a USB adapter allowed to wake the
+# system, armed for every sleep), and `none` keeps the PC asleep (on
+# HDMI-CEC, the adapter's USB port is disabled for the sleep, so the
+# TV has no CEC device to show for this PC until it resumes). Where
+# the TV comes up on another input, `wake` may still wake the PC. An
+# unmanaged TV's adapter is left as the host has it. Default `none`.
+on_tv_power_on = "none"
 ```

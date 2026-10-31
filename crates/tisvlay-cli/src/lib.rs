@@ -140,7 +140,7 @@ pub enum Command {
         #[command(flatten)]
         switch: Switch,
     },
-    /// Set whether the daemon automates a TV, or print it.
+    /// Set whether a TV's profiles act (on the TV, and on this PC for its events), or print it.
     Managed {
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
@@ -258,6 +258,11 @@ pub enum Service {
     Tray(tisvlay_tray::service::Args),
     /// The login-screen idle client, run inside the greeter session.
     Greeter(tisvlay_greeter::service::Args),
+    /// Arm or block the TV adapters on the daemon's wake list for a sleep,
+    /// and enable the blocked ones after: what tisvlay-wakeup.service runs,
+    /// as root.
+    #[command(hide = true)]
+    Wakeup(tisvlay_daemon::wakeup::Args),
 }
 
 /// An on/off attribute's value: set it, flip it, or (with neither) print

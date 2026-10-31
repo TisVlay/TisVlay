@@ -1,4 +1,4 @@
-//! The derive/publish tail: derived projections, change-driven state publishes, the greeter timeout, and the store snapshot.
+//! The derive/publish tail: derived projections, change-driven state publishes, the greeter timeout, the wake list, and the store snapshot.
 
 use super::*;
 
@@ -34,6 +34,51 @@ pub(super) fn derive_automated(
         if meta.automated != automated {
             meta.automated = automated;
         }
+    }
+}
+
+/// Send the wake list when it changes: every managed TV's device node with
+/// its system profile's `on_tv_power_on`, so the wakeup unit arms the nodes
+/// that may wake the PC and blocks the rest for each sleep. An unmanaged
+/// TV's adapter isn't listed, so the unit leaves it as the host has it. The
+/// unit resolves each node to its USB device and skips what it can't (an
+/// adapter with no USB device, one unplugged), which is the `wakes_pc`
+/// capability's own test, so the list doesn't wait for a connection to
+/// report it. Two TVs on one node wake the PC if either asks to. The first
+/// run always sends, replacing a list a previous daemon left.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access"
+)]
+pub(super) fn publish_wake_list(
+    mut outbox: ResMut<Outbox>,
+    q: Query<(Option<&State<payload::Meta>>, &DeviceNode), With<Managed>>,
+    nodes: Query<(), Changed<DeviceNode>>,
+    mut removed_nodes: RemovedComponents<DeviceNode>,
+    mut inputs: SystemFieldInputs,
+    profile_index: Res<ProfileIndex>,
+    bodies: Query<&ProfileBody>,
+    mut last: Local<Option<WakeList>>,
+) {
+    let nodes_changed = !nodes.is_empty() || removed_nodes.read().count() > 0;
+    if !inputs.changed() && !nodes_changed && last.is_some() {
+        return;
+    }
+    let mut list = WakeList::new();
+    for (meta, node) in &q {
+        let action = resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
+            body.on_tv_power_on
+        });
+        let entry = list
+            .entry(node.0.clone())
+            .or_insert(tisvlay_core::SystemWakeAction::None);
+        if action == tisvlay_core::SystemWakeAction::Wake {
+            *entry = action;
+        }
+    }
+    if last.as_ref() != Some(&list) {
+        *last = Some(list.clone());
+        outbox.0.push(Effect::WakeList(list));
     }
 }
 

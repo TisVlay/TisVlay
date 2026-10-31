@@ -199,6 +199,10 @@ async fn apply(
         StateEvent::UserProfileRemoved(uuid) => {
             profiles::handle_user_removed(editor, app_weak.clone(), uuid);
         }
+        StateEvent::ReleaseChecked(Service::Daemon) => {
+            let sleep = daemon.service_info().await.and_then(|info| info.sleep);
+            profiles::set_sleep_support(editor, app_weak.clone(), sleep);
+        }
         StateEvent::DaemonStateChanged(_)
         | StateEvent::DaemonDisappeared
         | StateEvent::SessionDisappeared
@@ -480,6 +484,9 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             has_mute: raw.has_mute,
             has_input: raw.has_input,
             has_backlight: raw.has_backlight,
+            has_remote_power: raw.has_remote_power,
+            has_remote_keys: raw.has_remote_keys,
+            wakes_pc: raw.wakes_pc,
             is_screen_on: raw.is_screen_on,
             volume: raw.volume,
             muted: raw.muted,
@@ -684,6 +691,9 @@ mod version_banner_tests {
             has_mute: true,
             has_input: true,
             has_backlight: true,
+            has_remote_power: true,
+            has_remote_keys: true,
+            wakes_pc: true,
             is_screen_on: connected,
             volume: 42,
             muted: false,

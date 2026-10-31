@@ -57,7 +57,7 @@ In a **seed file** the vendor block can also be written inline: `config = { ip =
 
 With `emulate_screen_via_power` (default `true`), the daemon fulfills `screen_off`/`screen_on` on a CEC TV by powering it off/on, since CEC can't blank a panel that stays on; set it `false` to have the TV ignore screen actions instead.
 
-With `advertise_osd_name` (default `true`), tisvlay answers the TV's name poll on the CEC bus, so the TV labels the PC's HDMI input `osd_name` in its input picker, the way a Chromecast names its own input. Set it `false` to stay silent and keep the TV's generic input label.
+With `advertise_osd_name` (default `true`), tisvlay answers the TV's name poll on the CEC bus, so the TV labels the PC's HDMI input `osd_name` in its input picker, the way a Chromecast names its own input. Set it `false` to stay silent and keep the TV's generic input label. If the input reads something else, such as "LG DVD Player", the TV recorded another identity while TisVlay wasn't driving the adapter (a Pulse-Eight can answer the TV on its own), and keeps it until it re-detects the device: unplugging and replugging the HDMI cable clears it.
 
 ## Discovery
 

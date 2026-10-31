@@ -22,7 +22,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::StreamExt;
-use tracing::debug;
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::detector::{Backoff, Fault};
 use crate::logind::{Login1ManagerProxy, own_uid};
@@ -49,6 +51,53 @@ trait Login1Session {
     /// Whether this is the seat's foreground session.
     #[zbus(property)]
     fn active(&self) -> zbus::Result<bool>;
+
+    /// Ask the session to lock. logind lets the session's own user, with
+    /// no polkit rule; the desktop's locker does the locking.
+    fn lock(&self) -> zbus::Result<()>;
+}
+
+/// Spawn the locker: each request (naming the TV whose going-off event asked)
+/// locks this user's seat session through logind on the system bus. A
+/// request that finds no bus or no seat session warns and is dropped.
+pub fn spawn_locker(requests: mpsc::UnboundedReceiver<Uuid>) {
+    tokio::spawn(async move {
+        let mut requests = requests;
+        while let Some(tv) = requests.recv().await {
+            match zbus::Connection::system().await {
+                Ok(connection) => lock_for(&connection, tv).await,
+                Err(e) => warn!(%tv, %e, "no system bus to lock the session"),
+            }
+        }
+    });
+}
+
+/// The locker over an injected `connection`, the entry integration tests
+/// drive against a private bus. Runs until the requests end.
+pub async fn run_locker(connection: zbus::Connection, mut requests: mpsc::UnboundedReceiver<Uuid>) {
+    while let Some(tv) = requests.recv().await {
+        lock_for(&connection, tv).await;
+    }
+}
+
+async fn lock_for(connection: &zbus::Connection, tv: Uuid) {
+    match lock_own_seat_session(connection).await {
+        Ok(true) => info!(%tv, "session locked"),
+        Ok(false) => warn!(%tv, "no seat session to lock"),
+        Err(e) => warn!(%tv, %e, "could not lock the session"),
+    }
+}
+
+/// Lock this user's seat session; `false` when it has none.
+async fn lock_own_seat_session(connection: &zbus::Connection) -> zbus::Result<bool> {
+    let manager = Login1ManagerProxy::new(connection).await?;
+    let sessions = manager.list_sessions().await?;
+    let Some((_id, session)) = scan_sessions_for_own_seat(connection, sessions, own_uid()).await
+    else {
+        return Ok(false);
+    };
+    session.lock().await?;
+    Ok(true)
 }
 
 /// Spawn the lock watcher. Reports `Lock`/`Unlock` into the session core;

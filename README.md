@@ -1,7 +1,7 @@
 <!-- ANCHOR: overview -->
 ![Banner](docs/artwork/banner.png)
 
-**TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), while supporting various vendor interface protocols for heterogeneous multi-display setups, mitigating energy usage and OLED panel burn-in or projector bulb burn-out.
+**TisVlay** brings TV Display control for Linux, including: power, volume, backlight, AV mute, input switching plus more, with per-device profile automation via desktop session integration (idle/lock, boot/suspend, remote login/streaming, etc), and in reverse, letting the TV lock, sleep or wake the PC and its remote drive the desktop, while supporting various vendor interface protocols for multi-display setups, mitigating energy usage and OLED panel burn-in or projector bulb burn-out.
 
 [![CI Pipeline](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml/badge.svg)](https://github.com/TisVlay/TisVlay/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/TisVlay/TisVlay/branch/main/graph/badge.svg)](https://codecov.io/gh/TisVlay/TisVlay)
@@ -9,12 +9,15 @@
 [![License](https://img.shields.io/github/license/TisVlay/TisVlay)](https://github.com/TisVlay/TisVlay/blob/main/LICENSE)
 
 ## ✨ Features
-- 📺 Conventional multi-monitor control
-  - Power on/off with PC, Screen on/off with lock screen
+- 📺 PC desktop monitor control
+  - TV power on/off with PC, Screen on/off with lock screen
   - Easily adjust backlight, volume, active input, and more
 - 🤖 Automation via system/user events
   - System boot, reboot, shutdown, suspend, wake, DPMS
   - User lock/unlock, idle, stream connect/disconnect
+- 🎮 TV console remote control
+  - PC sleep/wake/lock with TV power state or TV's remote
+  - Navigate PC via TV remote keypress (via HDMI CEC)
 - 🧰 Flexible profile customization
   - System-wide and per-user profiles for per-device behavior
   - Unified API and CLI for further scripting and integrations

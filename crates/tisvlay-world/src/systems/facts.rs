@@ -52,11 +52,24 @@ pub(super) fn apply_backend_events(
     latest: Query<&LatestDial>,
     mut vendors: Query<&mut VendorRef>,
     mut writes: StateWrites,
+    mut edges: ResMut<PowerEdges>,
+    mut going_off: ResMut<GoingOff>,
 ) {
     // TVs this run rolled back: the index keeps them until `Commands`
     // flush, but later events of the batch must not touch them.
     let mut rolled_back = HashSet::new();
     for msg in reader.read() {
+        // The PC woke: restart every power-off expectation's window, since
+        // the world's clock stood still while it slept and a report the TV
+        // sent before the sleep may only be read now.
+        if let InEvent::System {
+            event: SystemEvent::Resume,
+            ..
+        } = msg
+        {
+            edges.0.values_mut().for_each(|edge| edge.rearm(clock.0));
+            continue;
+        }
         let InEvent::Backend { tv, dial, event } = msg else {
             continue;
         };
@@ -99,9 +112,11 @@ pub(super) fn apply_backend_events(
                             cmd_tx: cmd_tx.clone(),
                         },
                         DispatchRetry(*retry),
+                        RemoteKeysSent(false),
                     ))
                     .remove::<(Reconnecting, PendingConnect, RetryAt, RetryPromptly)>();
                 apply_state(&mut commands, entity, state, &mut writes);
+                edges.0.entry(*tv).or_default().connected(state.power_state);
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     let mut enriched = identity.0.clone();
                     enriched.brand = brand.clone().or(enriched.brand);
@@ -182,7 +197,29 @@ pub(super) fn apply_backend_events(
                     }
                 }
             }
-            BackendEvent::State(state) => apply_state(&mut commands, entity, state, &mut writes),
+            BackendEvent::State(state) => {
+                apply_state(&mut commands, entity, state, &mut writes);
+                let edge = edges.0.entry(*tv).or_default();
+                if edge.report(state.power_state, clock.0, WAKE_HOLD_LIMIT) {
+                    tracing::info!(%tv, "TV powered off by itself");
+                    going_off.0.push((*tv, GoingOffEvent::TvPowerOff));
+                    outbox.0.push(Effect::Wire(WireEffect::Publish {
+                        key: keys::tv_power_off(&site.0),
+                        payload: json!(payload::TvPowerOff { tv: *tv }),
+                    }));
+                }
+            }
+            BackendEvent::SendingOff { blank } => {
+                edges.0.entry(*tv).or_default().sending_off(clock.0, *blank);
+            }
+            BackendEvent::RemotePower => {
+                tracing::info!(%tv, "the TV's remote powered the PC off");
+                going_off.0.push((*tv, GoingOffEvent::RemotePower));
+                outbox.0.push(Effect::Wire(WireEffect::Publish {
+                    key: keys::remote_power(&site.0),
+                    payload: json!(payload::RemotePower { tv: *tv }),
+                }));
+            }
             BackendEvent::Disconnected => {
                 let pending = writes.pending.get(entity).is_ok();
                 let mut e = commands.entity(entity);
@@ -785,6 +822,7 @@ pub(super) fn apply_transport_facts(
             primary,
             config_rows,
             diagnostic_rows,
+            device,
         } = msg
         else {
             continue;
@@ -811,7 +849,12 @@ pub(super) fn apply_transport_facts(
             rows.config = config_rows.clone();
             rows.diagnostics = diagnostic_rows.clone();
         }
-        commands.entity(entity).insert(TransportTraits(*traits));
+        let mut e = commands.entity(entity);
+        e.insert(TransportTraits(*traits));
+        match device {
+            Some(path) => e.insert(DeviceNode(path.clone())),
+            None => e.remove::<DeviceNode>(),
+        };
     }
 }
 

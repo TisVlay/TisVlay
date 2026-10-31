@@ -28,16 +28,17 @@ use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 
 use crate::components::{
-    AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceWatch,
-    DialSeq, DispatchRetry, DispatchVerify, Effect, HeldWake, KnownVendors, LastPersisted,
-    LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox, PairVerifying,
-    PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect, ProfileAction,
-    ProfileBody, ProfileId, ProfileIndex, Reconnecting, RetryAt, RetryPromptly, Site, State,
-    StreamArmed, SystemProfile, TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
+    AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceNode,
+    DeviceWatch, DialSeq, DispatchRetry, DispatchVerify, Effect, GoingOff, GoingOffEvent, HeldWake,
+    KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox,
+    PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
+    PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteKeysSent,
+    RetryAt, RetryPromptly, Site, SleepPending, State, StreamArmed, SystemProfile, TransportTraits,
+    TvId, TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
-    AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord,
-    StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,
+    SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WakeList, WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.
@@ -54,6 +55,10 @@ pub(crate) const CONNECT_BACKOFF_CAP: Duration = Duration::from_secs(60);
 /// adapter coming up at boot or resume, short enough that a return hours
 /// later doesn't power the TV on out of nowhere.
 pub(crate) const WAKE_HOLD_LIMIT: Duration = Duration::from_secs(60);
+
+/// How long a sleep the world asked for holds later ones back, should
+/// logind accept it without the PC ever sleeping.
+pub(crate) const SLEEP_PENDING_LIMIT: Duration = Duration::from_secs(60);
 
 /// The wait before the next dial after `attempts` failed ones. The first
 /// [`CONNECT_MAX_ATTEMPTS`] stay [`CONNECT_BACKOFF`] apart, which also
@@ -88,6 +93,8 @@ pub(crate) fn build_schedule() -> Schedule {
             // dispatch reads this step's automation verdict.
             derive_automated,
             dispatch_system_events,
+            dispatch_going_off,
+            reconcile_remote_keys,
             reconcile_connections,
         )
             .chain()
@@ -98,6 +105,7 @@ pub(crate) fn build_schedule() -> Schedule {
             derive_link_state,
             derive_stream_armed,
             publish_greeter_timeout,
+            publish_wake_list,
             publish_changed::<payload::Power>,
             publish_changed::<payload::Volume>,
             publish_changed::<payload::Link>,

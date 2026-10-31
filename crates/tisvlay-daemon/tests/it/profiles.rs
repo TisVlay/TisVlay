@@ -275,6 +275,11 @@ async fn defaults_and_effective_expose_field_resolution() {
         "on_idle_resume": "screen_on",
         "idle_timeout_seconds": 0,
         "automate_when": "always",
+        // The going-off events sleep the PC only when asked.
+        "on_tv_power_off": "none",
+        "on_remote_power": "none",
+        "remote_keys": false,
+        "on_tv_power_on": "none",
     });
 
     let defaults = call::<profile::Defaults>(&w.caller, &(), &())
@@ -328,6 +333,10 @@ async fn defaults_and_effective_expose_field_resolution() {
             "on_idle_resume": "screen_on",
             "idle_timeout_seconds": 300,
             "automate_when": "always",
+            "on_tv_power_off": "none",
+            "on_remote_power": "none",
+            "remote_keys": false,
+            "on_tv_power_on": "none",
         })
     );
 

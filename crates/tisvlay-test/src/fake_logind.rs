@@ -73,10 +73,18 @@ impl FakeLogind {
         let manager = ManagerIface {
             releases: Arc::clone(&releases),
             inhibit_delay_max_usec: DEFAULT_INHIBIT_DELAY_MAX_USEC,
+            sleeps: Vec::new(),
+            refuse_sleep: false,
         };
         conn.object_server().at(OBJECT_PATH, manager).await?;
         conn.object_server()
-            .at(SESSION_PATH, SessionIface { locked: false })
+            .at(
+                SESSION_PATH,
+                SessionIface {
+                    locked: false,
+                    lock_requests: 0,
+                },
+            )
             .await?;
         conn.request_name(SERVICE_NAME).await?;
         let manager = conn
@@ -92,6 +100,22 @@ impl FakeLogind {
             session,
             releases,
         })
+    }
+
+    /// The sleep methods called on the manager (`Suspend`, `Sleep`), in
+    /// order.
+    pub async fn sleep_calls(&self) -> Vec<String> {
+        self.manager.get().await.sleeps.clone()
+    }
+
+    /// Refuse every sleep method, as logind does without a polkit rule.
+    pub async fn set_refuse_sleep(&self, refuse: bool) {
+        self.manager.get_mut().await.refuse_sleep = refuse;
+    }
+
+    /// How many times the graphical session was asked to lock.
+    pub async fn lock_requests(&self) -> u32 {
+        self.session.get().await.lock_requests
     }
 
     /// When each inhibitor the fake handed out was released (its fd closed
@@ -134,6 +158,18 @@ const DEFAULT_INHIBIT_DELAY_MAX_USEC: u64 = 5_000_000;
 pub(crate) struct ManagerIface {
     releases: Arc<Mutex<Vec<Instant>>>,
     inhibit_delay_max_usec: u64,
+    sleeps: Vec<String>,
+    refuse_sleep: bool,
+}
+
+impl ManagerIface {
+    fn sleep_call(&mut self, method: &str) -> zbus::fdo::Result<()> {
+        if self.refuse_sleep {
+            return Err(zbus::fdo::Error::AccessDenied(format!("{method} refused")));
+        }
+        self.sleeps.push(method.to_string());
+        Ok(())
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.login1.Manager")]
@@ -161,6 +197,16 @@ impl ManagerIface {
         )))
     }
 
+    /// Record a suspend, or refuse it like a missing polkit rule.
+    async fn suspend(&mut self, _interactive: bool) -> zbus::fdo::Result<()> {
+        self.sleep_call("Suspend")
+    }
+
+    /// Record a configured sleep, or refuse it.
+    async fn sleep(&mut self, _flags: u64) -> zbus::fdo::Result<()> {
+        self.sleep_call("Sleep")
+    }
+
     #[zbus(property, name = "InhibitDelayMaxUSec")]
     fn inhibit_delay_max_usec(&self) -> u64 {
         self.inhibit_delay_max_usec
@@ -184,10 +230,17 @@ impl ManagerIface {
 /// One graphical `login1.Session` with a toggleable `LockedHint`.
 pub(crate) struct SessionIface {
     locked: bool,
+    lock_requests: u32,
 }
 
 #[zbus::interface(name = "org.freedesktop.login1.Session")]
 impl SessionIface {
+    /// Count the request; the real logind tells the desktop's locker,
+    /// which sets `LockedHint` once the screen is locked.
+    async fn lock(&mut self) {
+        self.lock_requests += 1;
+    }
+
     /// `true` while the fake reports the screen locked.
     #[zbus(property)]
     async fn locked_hint(&self) -> bool {

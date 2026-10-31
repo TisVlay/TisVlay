@@ -339,14 +339,24 @@ impl TvConnection for LgConnection {
     }
 }
 
+/// The `processing` names LG reports on its way to standby. Other values
+/// pass with the panel on (the screen saver's "Request Screen Saver",
+/// then "Screen On"), so they aren't a power-off.
+const POWERING_OFF: [&str; 3] = [
+    "Request Power Off",
+    "Request Active Standby",
+    "Prepare Active Standby",
+];
+
 /// Parse an LG `getPowerState` payload to a [`PowerState`].
 ///
 /// LG's payload carries three signals:
 ///
 /// - `state`: settled label ("Active", "Active Standby", ...)
 /// - `processing`: in-flight transition name ("Request Power Off",
-///   "Request Active Standby", "Prepare Active Standby", and the
-///   literal "None" when idle).
+///   "Request Active Standby", "Prepare Active Standby", the screen
+///   saver's "Request Screen Saver" and "Screen On", and the literal
+///   "None" when idle). Only [`POWERING_OFF`]'s names are a power-off.
 /// - `onOff`: authoritative "on" / "off" hint.
 ///
 /// During a remote-press power-off, LG keeps `state="Active"` for
@@ -362,14 +372,13 @@ pub(crate) fn parse_power_state_payload(payload: &Value) -> Option<PowerState> {
     let on_off = payload.get("onOff").and_then(|v| v.as_str());
     let processing = payload.get("processing").and_then(|v| v.as_str());
     let in_transition =
-        on_off == Some("off") || matches!(processing, Some(p) if !p.eq_ignore_ascii_case("None"));
+        on_off == Some("off") || processing.is_some_and(|p| POWERING_OFF.contains(&p));
 
     if in_transition {
         // Landing on `ActiveStandby` is sufficient for the daemon's
-        // wake pre-flight to fire on the off-direction; we don't
-        // enumerate every `processing` string. The on-direction
-        // (waking up) updates `state` fast enough for the
-        // state-field fall-through below to handle.
+        // wake pre-flight to fire on the off-direction. The on-direction
+        // (waking up) updates `state` fast enough for the state-field
+        // fall-through below to handle.
         return Some(PowerState::ActiveStandby);
     }
     payload
@@ -383,7 +392,11 @@ pub(crate) fn parse_power_state_payload(payload: &Value) -> Option<PowerState> {
 /// Returns `true` if the state was actually modified.
 fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
     if uri.contains("getPowerState") {
-        if let Some(power) = parse_power_state_payload(payload) {
+        let parsed = parse_power_state_payload(payload);
+        // The raw report alongside its reading: which fields flip when LG
+        // reports a power change the panel doesn't show.
+        tracing::debug!(%payload, power = ?parsed, "LG power report");
+        if let Some(power) = parsed {
             state.update_power(power);
             return true;
         }
@@ -632,6 +645,40 @@ mod tests {
                 "state": "Active",
                 "processing": "Request Power Off",
                 "onOff": "off",
+            })),
+            Some(PowerState::ActiveStandby),
+        );
+    }
+
+    /// The screen saver's reports, captured from an LG C3 at a static
+    /// lock screen (2026-10-31): the panel stays on, so they read as
+    /// their settled `state`, not a power-off.
+    #[test]
+    fn parse_payload_screen_saver_is_not_a_power_off() {
+        for processing in ["Request Screen Saver", "Screen On"] {
+            assert_eq!(
+                parse_power_state_payload(&json!({
+                    "processing": processing,
+                    "returnValue": true,
+                    "state": "Active",
+                })),
+                Some(PowerState::Active),
+                "processing={processing}"
+            );
+        }
+    }
+
+    /// The remote's power-off as captured from the same TV: `onOff` and
+    /// the power-off `processing` both say so.
+    #[test]
+    fn parse_payload_remote_power_off_capture() {
+        assert_eq!(
+            parse_power_state_payload(&json!({
+                "onOff": "off",
+                "processing": "Request Power Off",
+                "reason": "remoteKey",
+                "returnValue": true,
+                "state": "Active",
             })),
             Some(PowerState::ActiveStandby),
         );
