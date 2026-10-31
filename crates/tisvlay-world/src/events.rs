@@ -589,6 +589,10 @@ pub enum BackendCmd {
     Drain(DrainToken),
 }
 
+/// The wake list: every TV's local device node with its system profile's
+/// `on_tv_power_on`, for the daemon to write where the wakeup unit reads it.
+pub type WakeList = std::collections::BTreeMap<std::path::PathBuf, tisvlay_core::SystemWakeAction>;
+
 /// The machine's sleep a system profile asked for on a going-off event (the
 /// TV powering off by itself, its remote powering the PC off), for the
 /// daemon's logind adapter.

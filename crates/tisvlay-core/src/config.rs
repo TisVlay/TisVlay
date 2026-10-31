@@ -185,12 +185,14 @@ pub enum SystemSleepAction {
 }
 
 /// What the machine lets the TV do while it sleeps: the system profile's
-/// side of the TV powering on, applied before every sleep. Exhaustive:
-/// every arm matters to the wake list.
+/// side of the TV powering on, applied for every sleep. Exhaustive: every
+/// arm matters to the wake list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemWakeAction {
-    /// Leave the PC asleep.
+    /// Keep the PC asleep. On HDMI-CEC, a USB adapter is cut off its port
+    /// for the sleep, since some wake the PC whatever their wakeup setting
+    /// says.
     #[default]
     None,
     /// Let the TV powering on wake the PC.
@@ -435,8 +437,11 @@ pub struct SystemProfileConfig {
 
     /// What the TV powering on does while this PC sleeps: `wake` lets it
     /// wake the PC (on HDMI-CEC, through a USB adapter allowed to wake the
-    /// system, armed before every sleep). Where the TV comes up on another
-    /// input, it may still wake the PC. Default `none`.
+    /// system, armed for every sleep), and `none` keeps the PC asleep (on
+    /// HDMI-CEC, the adapter's USB port is disabled for the sleep, so the
+    /// TV has no CEC device to show for this PC until it resumes). Where
+    /// the TV comes up on another input, `wake` may still wake the PC.
+    /// Default `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_tv_power_on: Option<SystemWakeAction>,
 }

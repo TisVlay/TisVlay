@@ -437,24 +437,25 @@ in
       cfg.bindPort
     ];
 
-    # System daemon: owns the TV fleet and the zenoh socket clients
-    # connect to. State lives in /var/lib/tisvlay/daemon.toml
-    # (StateDirectory), writable by the daemon so pairing can persist
-    # credentials. Mode 0750 — only tisvlay user/group can read.
-    # Clients talk to the daemon over the socket instead of reading
-    # the file.
-    # Arms the CEC adapters on the daemon's wake list (a system profile's
-    # on_tv_power_on = "wake") before every sleep, and disarms the ones it
-    # armed that are no longer listed; the same unit the distro packages
-    # ship. A no-op with an empty list.
+    # Starts with every sleep and stops when it ends: going to sleep, it
+    # arms the CEC adapters on the daemon's wake list whose system
+    # profile's on_tv_power_on is "wake" and disables the USB port of those
+    # set to "none" (some adapters wake the PC whatever their wakeup
+    # setting says); stopping after the resume, it enables those ports
+    # again. It only ever undoes what it did itself; the same unit the
+    # distro packages ship.
     systemd.services.tisvlay-wakeup = {
-      description = "TisVlay: let the TV wake this PC";
+      description = "TisVlay: let the TV wake this PC, or keep it from";
       documentation = [ "https://github.com/TisVlay/TisVlay" ];
       wantedBy = [ "sleep.target" ];
       before = [ "sleep.target" ];
-      unitConfig.DefaultDependencies = false;
+      unitConfig = {
+        DefaultDependencies = false;
+        StopWhenUnneeded = true;
+      };
       serviceConfig = {
         Type = "oneshot";
+        RemainAfterExit = true;
         SyslogIdentifier = "tisvlay-wakeup";
         ExecStart = lib.escapeShellArgs [
           (lib.getExe' cfg.package "tisvlay")
@@ -463,7 +464,15 @@ in
           "--list"
           "/run/tisvlay/wakeup"
           "--record"
-          "/run/tisvlay-wakeup/enabled"
+          "/run/tisvlay-wakeup/applied"
+        ];
+        ExecStop = lib.escapeShellArgs [
+          (lib.getExe' cfg.package "tisvlay")
+          "service"
+          "wakeup"
+          "--resume"
+          "--record"
+          "/run/tisvlay-wakeup/applied"
         ];
         RuntimeDirectory = "tisvlay-wakeup";
         RuntimeDirectoryMode = "0700";
@@ -482,6 +491,12 @@ in
       };
     };
 
+    # System daemon: owns the TV fleet and the zenoh socket clients
+    # connect to. State lives in /var/lib/tisvlay/daemon.toml
+    # (StateDirectory), writable by the daemon so pairing can persist
+    # credentials. Mode 0750 — only tisvlay user/group can read.
+    # Clients talk to the daemon over the socket instead of reading
+    # the file.
     systemd.services.tisvlay-daemon = {
       description = "tisvlay TV control daemon";
       wantedBy = [ "multi-user.target" ];

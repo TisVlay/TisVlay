@@ -56,7 +56,10 @@ remote_keys = false
 
 # What the TV powering on does while this PC sleeps: `wake` lets it
 # wake the PC (on HDMI-CEC, through a USB adapter allowed to wake the
-# system, armed before every sleep). Where the TV comes up on another
-# input, it may still wake the PC. Default `none`.
+# system, armed for every sleep), and `none` keeps the PC asleep (on
+# HDMI-CEC, the adapter's USB port is disabled for the sleep, so the
+# TV has no CEC device to show for this PC until it resumes). Where
+# the TV comes up on another input, `wake` may still wake the PC.
+# Default `none`.
 on_tv_power_on = "none"
 ```

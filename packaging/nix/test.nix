@@ -114,12 +114,17 @@ pkgs.testers.runNixOSTest {
     for scancode in ["40", "6b", "6c", "6d"]:
         assert f"KEYBOARD_KEY_{scancode}=reserved" in keys, f"no {scancode} in {keys!r}"
 
-    # The wakeup unit is wanted before every sleep, and runs: the daemon
-    # wrote its empty wake list beside the socket, so it arms nothing.
+    # The wakeup unit is wanted by every sleep, and runs both ways: the
+    # daemon wrote its empty wake list beside the socket, so it changes
+    # nothing. Started by hand, it's unneeded at once, so systemd stops it
+    # again, which runs the resume half.
     machine.succeed("systemctl list-dependencies --plain sleep.target | grep -q tisvlay-wakeup")
     machine.wait_until_succeeds("test -f /run/tisvlay/wakeup", timeout=30)
     machine.succeed("systemctl start tisvlay-wakeup.service")
-    machine.succeed("test -f /run/tisvlay-wakeup/enabled")
+    machine.succeed("test -f /run/tisvlay-wakeup/applied")
+    machine.wait_until_succeeds(
+        "journalctl -u tisvlay-wakeup.service | grep -q 'enabled after the resume'", timeout=30
+    )
 
     # StateDirectory exists with correct ownership.
     machine.succeed("test -d /var/lib/tisvlay")

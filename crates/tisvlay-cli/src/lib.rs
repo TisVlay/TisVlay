@@ -258,8 +258,9 @@ pub enum Service {
     Tray(tisvlay_tray::service::Args),
     /// The login-screen idle client, run inside the greeter session.
     Greeter(tisvlay_greeter::service::Args),
-    /// Arm the TV adapters the daemon's wake list names, before a sleep:
-    /// what tisvlay-wakeup.service runs, as root.
+    /// Arm or block the TV adapters on the daemon's wake list for a sleep,
+    /// and enable the blocked ones after: what tisvlay-wakeup.service runs,
+    /// as root.
     #[command(hide = true)]
     Wakeup(tisvlay_daemon::wakeup::Args),
 }

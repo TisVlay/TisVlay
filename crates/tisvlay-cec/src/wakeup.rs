@@ -1,10 +1,13 @@
 //! Which device lets the TV wake this PC: a CEC adapter's first USB-device
-//! ancestor in sysfs, when the kernel can let that device wake the system.
+//! ancestor in sysfs, when the kernel can let that device wake the system,
+//! and the hub port that device hangs off.
 //!
 //! Its `power/wakeup` file's presence is what counts, not its value, which
 //! the wakeup unit toggles. A DisplayPort-AUX adapter has no USB ancestor,
 //! and walking on to any ancestor with `power/wakeup` would find the GPU's
 //! or the USB controller's, so the walk stops at the first USB device.
+//! Some adapters wake the PC whatever their `power/wakeup` says, so keeping
+//! one from waking it takes its port.
 
 // External-input profile: this module reads sysfs data, so indexing,
 // arithmetic, string slicing and narrowing casts must be checked here
@@ -52,6 +55,15 @@ pub fn usb_wakeup_device(sysfs: &Path, node: &str) -> Option<PathBuf> {
         .join("power/wakeup")
         .exists()
         .then(|| device.to_path_buf())
+}
+
+/// The hub port USB device `device` hangs off, when the port can be
+/// disabled: its `port` link's target, with a `disable` file. Disabling it
+/// cuts the device off the bus, which is what keeps an adapter that wakes
+/// the PC whatever its `power/wakeup` says from waking it.
+pub fn usb_port(device: &Path) -> Option<PathBuf> {
+    let port = std::fs::canonicalize(device.join("port")).ok()?;
+    port.join("disable").exists().then_some(port)
 }
 
 /// Whether sysfs directory `dir` is a USB device (not an interface): its
@@ -119,7 +131,8 @@ pub mod fixture {
 
     /// A Pulse-Eight USB adapter: a USB device under the xHCI controller (whose
     /// own `power/wakeup` must not be found), then its interface, the tty
-    /// and the serio port the CEC node hangs off.
+    /// and the serio port the CEC node hangs off. The device links to its
+    /// root-hub port (`usb1-port5`, enabled). Returns the USB device's dir.
     pub fn pulse_eight(root: &Path) -> PathBuf {
         build(
             root,
@@ -167,7 +180,13 @@ pub mod fixture {
             ],
             "cec0",
         );
-        root.join("devices/pci0000:00/0000:00:14.0/usb1/1-5")
+        let usb1 = root.join("devices/pci0000:00/0000:00:14.0/usb1");
+        let port = usb1.join("1-0:1.0/usb1-port5");
+        create(&port);
+        write(&port.join("disable"), "0\n");
+        std::os::unix::fs::symlink(&port, usb1.join("1-5/port"))
+            .expect("a test's temporary directory takes a symlink");
+        usb1.join("1-5")
     }
 }
 
@@ -185,6 +204,16 @@ mod tests {
             usb_wakeup_device(sysfs.path(), "cec0"),
             Some(std::fs::canonicalize(device).unwrap())
         );
+    }
+
+    #[test]
+    fn a_usb_device_resolves_to_its_port() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let device = pulse_eight(sysfs.path());
+        let port = usb_port(&device).expect("the adapter's port");
+        assert!(port.ends_with("usb1/1-0:1.0/usb1-port5"), "{port:?}");
+        let usb1 = device.parent().unwrap();
+        assert_eq!(usb_port(usb1), None, "a root hub has no port");
     }
 
     /// A DisplayPort-AUX adapter hangs off the GPU, which may have

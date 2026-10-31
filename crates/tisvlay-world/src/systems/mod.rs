@@ -38,7 +38,7 @@ use crate::components::{
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,
-    SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WireEffect, WireError,
+    SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WakeList, WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.

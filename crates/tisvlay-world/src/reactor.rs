@@ -22,7 +22,8 @@ use crate::components::{
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
-    Reply, RouteRequest, SleepRequest, StoreMsg, StoreSnapshot, TvRecord, WireEffect, WireError,
+    Reply, RouteRequest, SleepRequest, StoreMsg, StoreSnapshot, TvRecord, WakeList, WireEffect,
+    WireError,
 };
 use crate::systems::build_schedule;
 use crate::systems::commands as handle;
@@ -40,7 +41,7 @@ pub struct Reactor {
     /// Sleep requests for the daemon's logind adapter.
     sleep_tx: Option<mpsc::UnboundedSender<SleepRequest>>,
     /// The wake list, for the daemon to write where the wakeup unit reads it.
-    wake_list_tx: Option<mpsc::UnboundedSender<Vec<std::path::PathBuf>>>,
+    wake_list_tx: Option<mpsc::UnboundedSender<WakeList>>,
     vendor_retry: HashMap<String, tisvlay_core::RetryConfig>,
 }
 
@@ -164,11 +165,11 @@ impl Reactor {
         self.sleep_tx = Some(tx);
     }
 
-    /// Hand the wake list to `tx`: the device nodes of the TVs whose system
-    /// profile lets them wake the PC, sent whenever the set changes (and
+    /// Hand the wake list to `tx`: every TV's device node with whether its
+    /// system profile lets it wake the PC, sent whenever it changes (and
     /// once at the first step). The daemon writes it for the wakeup unit,
-    /// which arms those adapters before each sleep.
-    pub fn set_wake_list(&mut self, tx: mpsc::UnboundedSender<Vec<std::path::PathBuf>>) {
+    /// which arms or blocks those adapters for each sleep.
+    pub fn set_wake_list(&mut self, tx: mpsc::UnboundedSender<WakeList>) {
         self.wake_list_tx = Some(tx);
     }
 
@@ -244,9 +245,9 @@ impl Reactor {
                 Effect::Wire(wire) => {
                     let _ = self.effects_tx.send(wire);
                 }
-                Effect::WakeList(nodes) => {
+                Effect::WakeList(list) => {
                     if let Some(tx) = &self.wake_list_tx {
-                        let _ = tx.send(nodes);
+                        let _ = tx.send(list);
                     }
                 }
                 Effect::Sleep(request) => match &self.sleep_tx {

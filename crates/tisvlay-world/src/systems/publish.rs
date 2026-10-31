@@ -37,34 +37,36 @@ pub(super) fn derive_automated(
     }
 }
 
-/// Send the wake list when it changes: the device nodes of the TVs whose
-/// system profile's `on_tv_power_on` is `wake`, sorted. The wakeup unit
-/// resolves each to its USB device before every sleep and skips what it
-/// can't (an adapter with no USB device, one unplugged), which is the
-/// `wakes_pc` capability's own test, so the list doesn't wait for a
-/// connection to report it. The first run always sends, replacing a list
-/// a previous daemon left.
+/// Send the wake list when it changes: every TV's device node with its
+/// system profile's `on_tv_power_on`, so the wakeup unit arms the nodes
+/// that may wake the PC and blocks the rest for each sleep. The unit
+/// resolves each node to its USB device and skips what it can't (an
+/// adapter with no USB device, one unplugged), which is the `wakes_pc`
+/// capability's own test, so the list doesn't wait for a connection to
+/// report it. Two TVs on one node wake the PC if either asks to. The first
+/// run always sends, replacing a list a previous daemon left.
 pub(super) fn publish_wake_list(
     mut outbox: ResMut<Outbox>,
     q: Query<(Option<&State<payload::Meta>>, &DeviceNode)>,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
-    mut last: Local<Option<Vec<std::path::PathBuf>>>,
+    mut last: Local<Option<WakeList>>,
 ) {
-    let mut nodes: Vec<_> = q
-        .iter()
-        .filter(|(meta, _)| {
-            resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
-                body.on_tv_power_on
-            }) == tisvlay_core::SystemWakeAction::Wake
-        })
-        .map(|(_, node)| node.0.clone())
-        .collect();
-    nodes.sort();
-    nodes.dedup();
-    if last.as_ref() != Some(&nodes) {
-        *last = Some(nodes.clone());
-        outbox.0.push(Effect::WakeList(nodes));
+    let mut list = WakeList::new();
+    for (meta, node) in &q {
+        let action = resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
+            body.on_tv_power_on
+        });
+        let entry = list
+            .entry(node.0.clone())
+            .or_insert(tisvlay_core::SystemWakeAction::None);
+        if action == tisvlay_core::SystemWakeAction::Wake {
+            *entry = action;
+        }
+    }
+    if last.as_ref() != Some(&list) {
+        *last = Some(list.clone());
+        outbox.0.push(Effect::WakeList(list));
     }
 }
 

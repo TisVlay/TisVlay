@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::events::{
-    BackendCmd, SleepRequest, StoreSnapshot, SystemEvent, TransportInfo, WireEffect,
+    BackendCmd, SleepRequest, StoreSnapshot, SystemEvent, TransportInfo, WakeList, WireEffect,
 };
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
@@ -641,9 +641,8 @@ pub(crate) enum Effect {
     Wire(WireEffect),
     /// Put the machine to sleep (the daemon's logind adapter).
     Sleep(SleepRequest),
-    /// The device nodes allowed to wake the PC changed (the daemon's
-    /// wake-list writer).
-    WakeList(Vec<std::path::PathBuf>),
+    /// The wake list changed (the daemon's wake-list writer).
+    WakeList(WakeList),
     /// Stop route- and device-monitoring a removed TV.
     ForgetMonitors { tv: Uuid },
     /// Spawn a dial task for this TV.

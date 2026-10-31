@@ -57,7 +57,7 @@ pub(crate) fn spawn_reactor_with_sleeper() -> (
 /// the returned receiver.
 pub(crate) fn spawn_reactor_with_wake_list() -> (
     UnboundedReceiver<WireEffect>,
-    UnboundedReceiver<Vec<std::path::PathBuf>>,
+    UnboundedReceiver<tisvlay_world::WakeList>,
     WorldClient,
     MockHandle,
 ) {

@@ -1,6 +1,6 @@
-//! The wake list: the daemon writes the device nodes of the TVs whose
-//! system profile lets them wake the PC beside its socket, where the
-//! wakeup unit reads them before each sleep.
+//! The wake list: the daemon writes every TV's device node with its
+//! system profile's `on_tv_power_on` beside its socket, where the wakeup
+//! unit reads them for each sleep.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -84,6 +84,8 @@ async fn the_wake_list_lands_beside_the_socket() {
         .await
         .unwrap()
         .id;
+    // A TV with a node lands on the list with the default, `none`.
+    wait_contents(&list, "none /dev/cec-wake\n").await;
     let created: rpc::ProfileCreate =
         serde_json::from_value(json!({ "body": { "name": "Wake", "on_tv_power_on": "wake" } }))
             .unwrap();
@@ -102,5 +104,5 @@ async fn the_wake_list_lands_beside_the_socket() {
         .await
         .unwrap();
 
-    wait_contents(&list, "/dev/cec-wake\n").await;
+    wait_contents(&list, "wake /dev/cec-wake\n").await;
 }
