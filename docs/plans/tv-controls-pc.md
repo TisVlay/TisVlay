@@ -275,4 +275,5 @@ Every slice ships whole:
   - with `remote_keys` on, the re-claim showed `Allow RC Passthrough` with the OSD name kept; the arrows, OK, Exit, CH±, the media keys, Home and Info arrived on the `rc-cec` input; `0x40` arrived as a scan code with no key (the keymap); the follower still got it; turning it off re-claimed without passthrough, name kept;
   - the TV woke the PC through the wakeup unit, which armed the adapter (`1-5`) before the sleep;
   - the TV's wake press: settled by step 6b's rule; check 5's remaining phases: the wake unset (step 8b's port cut), a PC-action sleep with the wake armed (Q2) and another input (Q3), all passed (2026-10-31);
+  - LG's screen saver no longer reads as a power-off (`a4fd122e`): at a static lock screen its `Request Screen Saver` / `Screen On` reports read `Active` three times, with no edge (2026-10-31, 11:35 to 11:48);
   - open: the GUI's and tray's behavior across a resume (fixed on the train, to recheck).
