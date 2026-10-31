@@ -433,7 +433,7 @@ component ProfileRowTrailing inherits HorizontalLayout {
             }
         }
 
-        // Remote-session gate slot — action rows only. The glyph swaps by
+        // Stream gate slot — action rows only. The glyph swaps by
         // value (gated = network-off); the accent tracks differs-from-floor.
         if root.entry.has-toggles: Rectangle {
             width: 24px;
@@ -441,19 +441,19 @@ component ProfileRowTrailing inherits HorizontalLayout {
             IconBtn {
                 width: 100%;
                 height: 100%;
-                source: root.entry.remote-gate-value
-                    ? Icons.remote-gate-on
-                    : Icons.remote-gate-off;
-                enabled: root.entry.remote-gate-enabled;
-                active: root.entry.remote-gate-differs;
-                accessible-label: root.entry.remote-gate-value
-                    ? @tr("Fires during remote session")
-                    : @tr("Suppressed during remote session");
-                tip: root.entry.remote-gate-value
-                    ? @tr("Fires during remote session")
-                    : @tr("Suppressed during remote session");
+                source: root.entry.stream-gate-value
+                    ? Icons.stream-gate-on
+                    : Icons.stream-gate-off;
+                enabled: root.entry.stream-gate-enabled;
+                active: root.entry.stream-gate-differs;
+                accessible-label: root.entry.stream-gate-value
+                    ? @tr("Fires while streaming")
+                    : @tr("Suppressed while streaming");
+                tip: root.entry.stream-gate-value
+                    ? @tr("Fires while streaming")
+                    : @tr("Suppressed while streaming");
                 clicked => {
-                    Profiles.remote-gated(root.entry.field-name, !root.entry.remote-gate-value);
+                    Profiles.stream-gated(root.entry.field-name, !root.entry.stream-gate-value);
                 }
             }
         }
@@ -1061,7 +1061,7 @@ component ProfileDetail inherits Rectangle {
                 alignment: start;
 
                 // FIELDS section — title row + card. A sibling of the
-                // REMOTE SESSION section below; the body's `gap-pane`
+                // STREAMING section below; the body's `gap-pane`
                 // sets the section-to-section rhythm, matching the TVs
                 // pane's stacked `Group`s. Each section keeps its own
                 // `spacing: 0` so the title's `padding-bottom` (gap-stack)
@@ -1162,14 +1162,14 @@ component ProfileDetail inherits Rectangle {
                     }
                 }
 
-                // REMOTE SESSION section — the screencast-arming switch
+                // STREAMING section — the screencast-arming switch
                 // (user profiles only). The per-event suppression gate
                 // rides each action row in the FIELDS card as a toggle,
                 // not a card row, so the system pane pushes no rows here
                 // and the section hides. A sibling of the FIELDS section:
                 // the body's `gap-pane` sets the gap between them. Same
                 // surface + full-bleed row treatment as the FIELDS card.
-                if Profiles.editor-remote-fields.length > 0: VerticalLayout {
+                if Profiles.editor-stream-fields.length > 0: VerticalLayout {
                     spacing: 0;
                     HorizontalLayout {
                         padding-left: 2px;
@@ -1178,7 +1178,7 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             Text {
-                                text: @tr("REMOTE SESSION");
+                                text: @tr("STREAMING");
                                 color: Theme.text-dim;
                                 font-size: Design.font-mini;
                                 font-weight: 600;
@@ -1188,7 +1188,7 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
-                                text: @tr("What counts as a remote session, so events can be suppressed for an empty room. Suppress an individual event with the network toggle on its row in FIELDS above.");
+                                text: @tr("What counts as a stream, so events can be suppressed for an empty room. Suppress an individual event with the network toggle on its row in FIELDS above.");
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
@@ -1205,7 +1205,7 @@ component ProfileDetail inherits Rectangle {
                             padding-bottom: Design.pad-card - Design.gap-stack;
                             spacing: 0;
                             alignment: start;
-                            for entry[i] in Profiles.editor-remote-fields: VerticalLayout {
+                            for entry[i] in Profiles.editor-stream-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
                                     entry: entry;
                                 }
@@ -1218,13 +1218,13 @@ component ProfileDetail inherits Rectangle {
                                 // Helper copy under the screencast-arms
                                 // switch: what always arms vs. what the
                                 // switch adds.
-                                if entry.field-name == "remote_screencast_arms": VerticalLayout {
+                                if entry.field-name == "screencast_arms": VerticalLayout {
                                     padding-left: Design.gap-row;
                                     padding-right: Design.gap-row;
                                     padding-bottom: Design.gap-stack;
                                     spacing: 2px;
                                     Text {
-                                        text: @tr("Remote apps, hooks and remote logins always arm.");
+                                        text: @tr("Streaming apps, hooks and remote logins always arm.");
                                         color: Theme.text-dim;
                                         font-size: Design.font-meta;
                                         wrap: word-wrap;

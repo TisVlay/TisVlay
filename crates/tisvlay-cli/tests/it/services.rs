@@ -105,7 +105,7 @@ async fn daemon_and_session_run_answer_and_stop_cleanly() {
     until_ok(&["--socket", socket, "--site", "svc", "status"]).await;
 
     // Port 1 refuses at once, so a Sunshine running on this machine can't
-    // arm the session's remote-session detector.
+    // arm the session's stream detector.
     let session = Service::spawn(&[
         "session",
         "--system-socket",

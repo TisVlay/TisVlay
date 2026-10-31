@@ -13,10 +13,10 @@ mod detector;
 mod lock;
 mod logind;
 mod monitor;
-mod remote;
 mod screencast;
 pub mod service;
 mod store;
+mod stream;
 pub mod sunshine;
 
 use std::collections::{HashMap, HashSet};
@@ -29,7 +29,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserProfileConfig};
 use tisvlay_protocol::caller::Caller;
-use tisvlay_protocol::endpoint::{tv, user_profile, user_remote};
+use tisvlay_protocol::endpoint::{tv, user_profile, user_stream};
 use tisvlay_protocol::error::WireError;
 use tisvlay_protocol::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
@@ -47,11 +47,11 @@ use zenoh_ext::{
 pub use lock::{seed_lock_state, seed_lock_state_on, spawn as spawn_lock_watcher, watch_lock};
 pub use logind::spawn as spawn_logind_detector;
 pub use monitor::spawn as spawn_portal_monitor;
-pub use remote::RemoteReport;
 pub use screencast::{
     SpaPluginsMissing, point_at_host_spa_plugins, spawn as spawn_screencast_detector,
 };
 pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_store};
+pub use stream::StreamReport;
 pub use sunshine::spawn as spawn_sunshine_detector;
 
 /// Heartbeat period for sample-miss recovery on cached publishers.
@@ -68,15 +68,15 @@ pub enum SessionEvent {
     LockWake,
     IdleTimeout,
     IdleResume,
-    /// A remote session began (the first source armed).
-    RemoteConnect,
-    /// The last remote session ended (all sources cleared).
-    RemoteDisconnect,
-    /// First genuine local input after a remote session ended — the panel
+    /// A stream started (the first source armed).
+    StreamStart,
+    /// The last stream ended (all sources cleared).
+    StreamEnd,
+    /// First genuine local input after a stream ended — the panel
     /// the disconnect blank left dark comes back for the returning person.
-    /// Deliberately not an arming edge: it flows through the while-remote
+    /// Deliberately not an arming edge: it flows through the while-streaming
     /// gate, which stays load-bearing because a TV can re-arm via a
-    /// profile/meta recompute (no `RemoteConnect` edge) while the return
+    /// profile/meta recompute (no `StreamStart` edge) while the return
     /// watch is still set.
     LocalReturn,
 }
@@ -90,23 +90,23 @@ impl SessionEvent {
             Self::LockWake => "lock_wake",
             Self::IdleTimeout => "idle",
             Self::IdleResume => "resume",
-            Self::RemoteConnect => "remote_connect",
-            Self::RemoteDisconnect => "remote_disconnect",
+            Self::StreamStart => "stream_start",
+            Self::StreamEnd => "stream_end",
             Self::LocalReturn => "local_return",
         }
     }
 
     /// The connect/disconnect edges. They dispatch at the arming boundary
-    /// itself, so they bypass the while-remote gate (honoring it would
+    /// itself, so they bypass the while-streaming gate (honoring it would
     /// swallow the very action the edge exists to fire) and stay orthogonal
     /// to the idle-drift window.
-    fn is_remote_edge(self) -> bool {
-        matches!(self, Self::RemoteConnect | Self::RemoteDisconnect)
+    fn is_stream_edge(self) -> bool {
+        matches!(self, Self::StreamStart | Self::StreamEnd)
     }
 
     /// Seat-local presence events (lock + idle) — the ones subject to
-    /// active-session arbitration, as opposed to the seatless remote
-    /// edges, which are governed by the while-remote gate instead.
+    /// active-session arbitration, as opposed to the seatless stream
+    /// edges, which are governed by the while-streaming gate instead.
     fn is_seat_local(self) -> bool {
         matches!(
             self,
@@ -128,18 +128,18 @@ impl SessionClient {
     }
 }
 
-/// Handle for injecting remote-source reports — the detector-report
+/// Handle for injecting stream-source reports — the detector-report
 /// seam. Real detectors (spawned in `main.rs`) and the test Rig both
 /// report through it; the verb rpc served on the user socket feeds the
 /// same channel from inside the core.
 #[derive(Debug, Clone)]
-pub struct RemoteClient {
-    tx: mpsc::UnboundedSender<RemoteReport>,
+pub struct StreamClient {
+    tx: mpsc::UnboundedSender<StreamReport>,
 }
 
-impl RemoteClient {
+impl StreamClient {
     /// Returns false if the core loop is gone.
-    pub fn report(&self, report: RemoteReport) -> bool {
+    pub fn report(&self, report: StreamReport) -> bool {
         self.tx.send(report).is_ok()
     }
 }
@@ -161,9 +161,9 @@ pub struct SessionOptions {
 #[derive(Debug)]
 pub struct SessionStack {
     pub client: SessionClient,
-    /// Detector-report seam for remote-session sources — `main.rs`'s
+    /// Detector-report seam for stream sources — `main.rs`'s
     /// (future) real detectors and the test Rig both report through it.
-    pub remote: RemoteClient,
+    pub stream: StreamClient,
     /// Resolved user idle timeouts as `(locked, unlocked)` seconds —
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
@@ -177,9 +177,9 @@ pub struct SessionStack {
     /// reads it. Defaults `true` (assume active until logind says
     /// otherwise), so a non-logind host never suppresses automation.
     pub is_active: Arc<AtomicBool>,
-    /// Set on a remote disconnect, cleared by the next dispatched event —
-    /// handed to the idle adapter so the first local input after a remote
-    /// session wakes the panel the disconnect left dark.
+    /// Set on a stream end, cleared by the next dispatched event —
+    /// handed to the idle adapter so the first local input after a stream
+    /// wakes the panel the disconnect left dark.
     pub local_return_armed: Arc<AtomicBool>,
 }
 
@@ -266,17 +266,17 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("declare user rpc queryable: {e}"))?;
 
-    // Remote-session rpcs on their own queryable family (verb rpc for
+    // Stream rpcs on their own queryable family (verb rpc for
     // manual/hook sources); routed into the same core loop.
-    let (remote_query_tx, remote_queries) = mpsc::unbounded_channel::<Query>();
-    let remote_queryable = user
-        .declare_queryable(user_remote::Incoming::wild(&options.site))
+    let (stream_query_tx, stream_queries) = mpsc::unbounded_channel::<Query>();
+    let stream_queryable = user
+        .declare_queryable(user_stream::Incoming::wild(&options.site))
         .complete(true)
         .callback(move |query| {
-            let _ = remote_query_tx.send(query);
+            let _ = stream_query_tx.send(query);
         })
         .await
-        .map_err(|e| anyhow!("declare remote rpc queryable: {e}"))?;
+        .map_err(|e| anyhow!("declare stream rpc queryable: {e}"))?;
 
     // Liveliness after the rpc queryables: a client that observes the
     // service alive must find every rpc surface already declared.
@@ -301,21 +301,21 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
 
-    // The remote-session mirror the daemon hydrates on restart: a cache-1
+    // The stream mirror the daemon hydrates on restart: a cache-1
     // AdvancedPublisher on the system link. Declared before the presence
     // token so the daemon reaches its `@adv` cache the moment it observes
     // the session alive. Served over a connect-only peer, but the
     // directly-dialed daemon still hydrates it — the counter-sequenced
     // cache shape constructs without an HLC, so no timestamping is needed
     // here.
-    let remote_mirror = system
-        .declare_publisher(keys::remote_session(&options.site))
+    let stream_mirror = system
+        .declare_publisher(keys::stream_state(&options.site))
         .encoding(Encoding::APPLICATION_JSON)
         .cache(CacheConfig::default().max_samples(1))
         .sample_miss_detection(MissDetectionConfig::default().heartbeat(MISS_HEARTBEAT))
         .publisher_detection()
         .await
-        .map_err(|e| anyhow!("declare remote mirror publisher: {e}"))?;
+        .map_err(|e| anyhow!("declare stream mirror publisher: {e}"))?;
 
     // Presence on the system socket: a liveliness token the daemon (the
     // directly-dialed peer) observes even though this link is a
@@ -331,7 +331,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .map_err(|e| anyhow!("declare session system liveliness: {e}"))?;
 
     let (event_tx, events) = mpsc::unbounded_channel();
-    let (remote_tx, reports) = mpsc::unbounded_channel();
+    let (stream_tx, reports) = mpsc::unbounded_channel();
     let (idle_tx, idle_rx) = watch::channel((0u64, 0u64));
     let is_locked = Arc::new(AtomicBool::new(false));
     // Default true: assume the user is active until the lock watcher seeds
@@ -374,9 +374,9 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         idle_fired: false,
         screen_on: HashMap::new(),
         drift_at: HashMap::new(),
-        remote_sources: remote::RemoteSources::default(),
-        remote_armed: HashSet::new(),
-        remote_mirror,
+        stream_sources: stream::StreamSources::default(),
+        stream_armed: HashSet::new(),
+        stream_mirror,
         caller,
         _alive: alive,
         _alive_system: alive_system,
@@ -386,18 +386,18 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             events,
             reports,
             queries,
-            remote_queries,
+            stream_queries,
             meta_sub,
             power_sub,
         )
         .await;
         drop(queryable);
-        drop(remote_queryable);
+        drop(stream_queryable);
     });
 
     Ok(SessionStack {
         client: SessionClient { tx: event_tx },
-        remote: RemoteClient { tx: remote_tx },
+        stream: StreamClient { tx: stream_tx },
         idle_timeouts: idle_rx,
         is_locked,
         is_active,
@@ -430,9 +430,9 @@ struct Core {
     /// backgrounded (fast-switched-away) user does not drive TVs the active
     /// user is using.
     is_active: Arc<AtomicBool>,
-    /// Set on a remote disconnect, cleared by the next dispatched event.
-    /// The idle adapter reads it so the first local input after a remote
-    /// session wakes the panel the disconnect left dark (`LocalReturn`).
+    /// Set on a stream end, cleared by the next dispatched event.
+    /// The idle adapter reads it so the first local input after a stream
+    /// wakes the panel the disconnect left dark (`LocalReturn`).
     local_return_armed: Arc<AtomicBool>,
     /// An idle action fired and no activity has resumed since — the
     /// window in which a self-lighting panel counts as drift.
@@ -442,15 +442,15 @@ struct Core {
     /// Armed drift re-asserts: TV → deadline (one idle-timeout of grace
     /// from the drift; a deliberate remote press gets its window).
     drift_at: HashMap<Uuid, tokio::time::Instant>,
-    /// Live remote-session sources (the detector aggregate).
-    remote_sources: remote::RemoteSources,
+    /// Live stream sources (the detector aggregate).
+    stream_sources: stream::StreamSources,
     /// TVs the current sources arm, per their resolved profile — the
-    /// while-remote gate in `action_for` keys on membership.
-    remote_armed: HashSet<Uuid>,
+    /// while-streaming gate in `action_for` keys on membership.
+    stream_armed: HashSet<Uuid>,
     /// Cache-1 mirror of the remote fact on the system link. The daemon
     /// hydrates its last sample on restart, so the fact survives a daemon
     /// bounce without any re-put from the session.
-    remote_mirror: AdvancedPublisher<'static>,
+    stream_mirror: AdvancedPublisher<'static>,
     /// Matching-gated caller for TV rpcs on the system socket.
     caller: Arc<Caller>,
     _alive: zenoh::liveliness::LivelinessToken,
@@ -464,9 +464,9 @@ impl Core {
     async fn run(
         &mut self,
         mut events: mpsc::UnboundedReceiver<SessionEvent>,
-        mut reports: mpsc::UnboundedReceiver<RemoteReport>,
+        mut reports: mpsc::UnboundedReceiver<StreamReport>,
         mut queries: mpsc::UnboundedReceiver<Query>,
-        mut remote_queries: mpsc::UnboundedReceiver<Query>,
+        mut stream_queries: mpsc::UnboundedReceiver<Query>,
         meta_sub: zenoh_ext::AdvancedSubscriber<
             zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
         >,
@@ -484,7 +484,7 @@ impl Core {
         self.recompute_idle();
         // Seed the remote fact (empty sources / empty armed) so late
         // joiners hydrate a defined state.
-        self.publish_remote().await;
+        self.publish_stream().await;
         info!(site = %self.site, "session core running");
         'run: loop {
             let next_drift = self.drift_at.values().min().copied();
@@ -502,15 +502,15 @@ impl Core {
                 },
                 report = reports.recv() => match report {
                     None => break 'run,
-                    Some(report) => self.apply_remote_report(report).await,
+                    Some(report) => self.apply_stream_report(report).await,
                 },
                 query = queries.recv() => match query {
                     None => break 'run,
                     Some(query) => self.handle_query(query).await,
                 },
-                query = remote_queries.recv() => match query {
+                query = stream_queries.recv() => match query {
                     None => break 'run,
-                    Some(query) => self.handle_remote_query(query).await,
+                    Some(query) => self.handle_stream_query(query).await,
                 },
                 sample = meta_sub.recv_async() => match sample {
                     Err(_) => break 'run,
@@ -555,8 +555,8 @@ impl Core {
         // detector report on a cold start (the system link's first connect
         // may fail and reconnect after a source is already live), so this
         // is the edge that arms a just-learned TV.
-        if self.recompute_remote_armed() {
-            self.publish_remote().await;
+        if self.recompute_stream_armed() {
+            self.publish_stream().await;
         }
     }
 
@@ -647,49 +647,49 @@ impl Core {
     /// Apply a detector report: fold it into the source set, recompute
     /// the armed projection, publish the fact once, and drive the
     /// connect/disconnect edge on the armed-set transition.
-    async fn apply_remote_report(&mut self, report: RemoteReport) {
-        if !self.remote_sources.apply(&report) {
+    async fn apply_stream_report(&mut self, report: StreamReport) {
+        if !self.stream_sources.apply(&report) {
             return;
         }
-        debug!(?report, "remote source report applied");
+        debug!(?report, "stream source report applied");
         // Edge on the ARMED-SET transition, not raw source presence: an
         // unarmed source (a screencast with capture-arming off, OBS or a
         // browser tab-share) must not fire the connect action and blank
         // every TV. Any live-set change republishes the fact, but only a
         // move of the armed set drives the connect/disconnect events.
-        let was_armed = !self.remote_armed.is_empty();
-        self.recompute_remote_armed();
-        self.publish_remote().await;
-        let now_armed = !self.remote_armed.is_empty();
+        let was_armed = !self.stream_armed.is_empty();
+        self.recompute_stream_armed();
+        self.publish_stream().await;
+        let now_armed = !self.stream_armed.is_empty();
         match (was_armed, now_armed) {
-            (false, true) => self.dispatch(SessionEvent::RemoteConnect).await,
-            (true, false) => self.dispatch(SessionEvent::RemoteDisconnect).await,
+            (false, true) => self.dispatch(SessionEvent::StreamStart).await,
+            (true, false) => self.dispatch(SessionEvent::StreamEnd).await,
             _ => {}
         }
     }
 
     /// Recompute the armed set from the live source kinds crossed with each
     /// known TV's resolved profile. A pure state update: it moves
-    /// `remote_armed` and returns whether the set changed, publishing
+    /// `stream_armed` and returns whether the set changed, publishing
     /// nothing — every caller publishes exactly once on a change. With no
     /// live source nothing can arm, so the empty-source case clears the set
     /// and skips resolving any profile (hydration replays this per meta
     /// sample).
-    fn recompute_remote_armed(&mut self) -> bool {
-        if !self.remote_sources.any() {
-            if self.remote_armed.is_empty() {
+    fn recompute_stream_armed(&mut self) -> bool {
+        if !self.stream_sources.any() {
+            if self.stream_armed.is_empty() {
                 return false;
             }
-            self.remote_armed.clear();
+            self.stream_armed.clear();
             return true;
         }
-        let kinds = self.remote_sources.kinds();
+        let kinds = self.stream_sources.kinds();
         let armed: HashSet<Uuid> =
-            remote::compute_armed(self.tvs.keys(), &kinds, |tv| self.resolve_for(tv))
+            stream::compute_armed(self.tvs.keys(), &kinds, |tv| self.resolve_for(tv))
                 .into_iter()
                 .collect();
-        if armed != self.remote_armed {
-            self.remote_armed = armed;
+        if armed != self.stream_armed {
+            self.stream_armed = armed;
             true
         } else {
             false
@@ -697,14 +697,14 @@ impl Core {
     }
 
     /// Publish the fact both ways: cached pub on the user socket, plain
-    /// mirror on the system socket. The `RemoteSessionState` is built once
+    /// mirror on the system socket. The `StreamState` is built once
     /// and reused for both puts.
-    async fn publish_remote(&mut self) {
-        let state = self.remote_state();
-        let key = keys::user_remote_session(&self.site);
+    async fn publish_stream(&mut self) {
+        let state = self.stream_state();
+        let key = keys::user_stream_state(&self.site);
         match serde_json::to_value(&state) {
             Ok(payload) => self.publish(&key, &payload).await,
-            Err(e) => warn!(%e, "remote session serialize failed"),
+            Err(e) => warn!(%e, "stream serialize failed"),
         }
         self.mirror_state(&state).await;
     }
@@ -713,44 +713,44 @@ impl Core {
     /// AdvancedPublisher. The directly-dialed daemon hydrates its last
     /// sample on restart, so the fact survives a daemon bounce without a
     /// re-put; a live daemon receives it as an ordinary sample.
-    async fn mirror_state(&self, state: &payload::RemoteSessionState) {
+    async fn mirror_state(&self, state: &payload::StreamState) {
         let bytes = match serde_json::to_vec(state) {
             Ok(bytes) => bytes,
             Err(e) => {
-                warn!(%e, "remote mirror serialize failed");
+                warn!(%e, "stream mirror serialize failed");
                 return;
             }
         };
-        if let Err(e) = self.remote_mirror.put(bytes).await {
-            warn!(%e, "remote mirror put failed");
+        if let Err(e) = self.stream_mirror.put(bytes).await {
+            warn!(%e, "stream mirror put failed");
         }
     }
 
     /// The current fact: live sources + the armed projection (sorted).
-    fn remote_state(&self) -> payload::RemoteSessionState {
-        let mut armed: Vec<Uuid> = self.remote_armed.iter().copied().collect();
+    fn stream_state(&self) -> payload::StreamState {
+        let mut armed: Vec<Uuid> = self.stream_armed.iter().copied().collect();
         armed.sort();
-        payload::RemoteSessionState {
-            sources: self.remote_sources.snapshot(),
+        payload::StreamState {
+            sources: self.stream_sources.snapshot(),
             armed,
         }
     }
 
     /// Serve the remote verb rpc: `set { source, active }` toggles a
     /// manual source; `status` returns the current fact.
-    async fn handle_remote_query(&mut self, query: Query) {
-        let Some(((), incoming)) = user_remote::Incoming::receive(&self.site, query).await else {
+    async fn handle_stream_query(&mut self, query: Query) {
+        let Some(((), incoming)) = user_stream::Incoming::receive(&self.site, query).await else {
             return;
         };
         match incoming {
-            user_remote::Incoming::Set(request, responder) => {
+            user_stream::Incoming::Set(request, responder) => {
                 let source = request.source.unwrap_or_else(|| "manual".into());
-                self.apply_remote_report(RemoteReport::manual(source, request.active))
+                self.apply_stream_report(StreamReport::manual(source, request.active))
                     .await;
-                responder.ok(&self.remote_state()).await;
+                responder.ok(&self.stream_state()).await;
             }
-            user_remote::Incoming::Status((), responder) => {
-                responder.ok(&self.remote_state()).await;
+            user_stream::Incoming::Status((), responder) => {
+                responder.ok(&self.stream_state()).await;
             }
         }
     }
@@ -772,10 +772,10 @@ impl Core {
     /// report path.
     async fn eager_refresh_sunshine(&mut self, event: SessionEvent) {
         let has_sunshine = self
-            .remote_sources
-            .has_kind(payload::RemoteSourceKind::Sunshine);
+            .stream_sources
+            .has_kind(payload::StreamSourceKind::Sunshine);
         let armed_actions: Vec<tisvlay_core::EventAction> = self
-            .remote_armed
+            .stream_armed
             .iter()
             .map(|tv| self.raw_action_for(tv, event))
             .collect();
@@ -787,10 +787,10 @@ impl Core {
         // armed = true: Free/Absent clears the source, Busy/Unknown leaves it.
         let observation = self.sunshine.observe(sunshine::EAGER_TIMEOUT).await;
         if let (_, Some(report)) = sunshine::decide(true, observation)
-            && self.remote_sources.apply(&report)
+            && self.stream_sources.apply(&report)
         {
-            self.recompute_remote_armed();
-            self.publish_remote().await;
+            self.recompute_stream_armed();
+            self.publish_stream().await;
         }
     }
 
@@ -799,16 +799,16 @@ impl Core {
     /// the cause before the effects.
     async fn dispatch(&mut self, event: SessionEvent) {
         // One observability point for every session event (lock, idle,
-        // remote) as it enters the core — the audit seam across transports.
+        // stream) as it enters the core — the audit seam across transports.
         debug!(?event, "session event");
         // Idle-drift bookkeeping: an idle action opens the drift window,
         // any activity or lock transition closes it (a fresh idle cycle
         // will re-open it through its own timer).
         match event {
             SessionEvent::IdleTimeout => self.idle_fired = true,
-            // Remote connect/disconnect are orthogonal to the idle-drift
+            // Stream start and end are orthogonal to the idle-drift
             // window — they neither open nor close it.
-            _ if event.is_remote_edge() => {}
+            _ if event.is_stream_edge() => {}
             // Any activity or lock transition closes the drift window (a
             // fresh idle cycle re-opens it through its own timer).
             _ => {
@@ -816,11 +816,11 @@ impl Core {
                 self.drift_at.clear();
             }
         }
-        // Post-remote return watch: a disconnect arms it (the next local
+        // Post-stream return watch: a disconnect arms it (the next local
         // presence pulse wakes the panel the disconnect left dark); every
         // other event supersedes and disarms it. The idle adapter reads it.
         self.local_return_armed
-            .store(event == SessionEvent::RemoteDisconnect, Ordering::SeqCst);
+            .store(event == SessionEvent::StreamEnd, Ordering::SeqCst);
         let tap = keys::session_event(&self.site, event.tap_name());
         if let Err(e) = self
             .system
@@ -834,8 +834,8 @@ impl Core {
         // seat's foreground, suppress its seat-local automation so a
         // backgrounded (fast-switched-away) user cannot drive TVs the active
         // user is using. Absolute — no off-going/on-going exception, since a
-        // backgrounded off would disrupt a shared TV's active user. Remote
-        // edges are a separate, seatless axis and keep their while-remote gate.
+        // backgrounded off would disrupt a shared TV's active user. Stream
+        // edges are a separate, seatless axis and keep their while-streaming gate.
         // The audit tap above still fires; only the automation is suppressed.
         if event.is_seat_local() && !self.is_active.load(Ordering::SeqCst) {
             debug!(?event, "automation suppressed (session not active)");
@@ -898,7 +898,7 @@ impl Core {
         });
     }
 
-    /// The resolved action for this event *before* the remote gate: the
+    /// The resolved action for this event *before* the stream gate: the
     /// root chain per field (assignment → profile → editable default
     /// profile → hard-coded floor). One field per event, no direction bias
     /// — an event carries no inherent wake/off-going meaning, only the
@@ -911,21 +911,21 @@ impl Core {
             SessionEvent::LockWake => resolved.on_lock_wake,
             SessionEvent::IdleTimeout => resolved.on_idle_timeout,
             SessionEvent::IdleResume => resolved.on_idle_resume,
-            SessionEvent::RemoteConnect => resolved.on_remote_connect,
-            SessionEvent::RemoteDisconnect => resolved.on_remote_disconnect,
+            SessionEvent::StreamStart => resolved.on_stream_start,
+            SessionEvent::StreamEnd => resolved.on_stream_end,
             SessionEvent::LocalReturn => resolved.on_local_return,
         }
     }
 
-    /// The dispatched action: the raw mapping with the remote gate applied.
-    /// While a TV is armed, an action whose `while_remote` gate is `false`
+    /// The dispatched action: the raw mapping with the stream gate applied.
+    /// While a TV is armed, an action whose `while_streaming` gate is `false`
     /// is suppressed (dispatches nothing) — a pure gate, so an unarmed TV is
     /// never affected and the gate can never originate an action. The gate
     /// is ignored on the connect/disconnect events (those fire at the arming
     /// edge itself, where honoring the gate would swallow the action).
     fn action_for(&self, tv: &Uuid, event: SessionEvent) -> tisvlay_core::EventAction {
         let action = self.raw_action_for(tv, event);
-        if !event.is_remote_edge() && self.remote_armed.contains(tv) && !action.while_remote() {
+        if !event.is_stream_edge() && self.stream_armed.contains(tv) && !action.while_streaming() {
             return SessionAction::None.into();
         }
         action
@@ -1175,8 +1175,8 @@ impl Core {
             self.delete_key(&keys::user_profile(&self.site, id)).await;
         }
         self.recompute_idle();
-        if self.recompute_remote_armed() {
-            self.publish_remote().await;
+        if self.recompute_stream_armed() {
+            self.publish_stream().await;
         }
         Ok(rpc::ReloadReport { changed: true })
     }
@@ -1245,8 +1245,8 @@ impl Core {
         self.publish_profile(&id, &body).await;
         self.persist();
         self.recompute_idle();
-        if self.recompute_remote_armed() {
-            self.publish_remote().await;
+        if self.recompute_stream_armed() {
+            self.publish_stream().await;
         }
         Ok(rpc::Created { id })
     }
@@ -1270,8 +1270,8 @@ impl Core {
         self.publish_profile(&request.id, &request.body).await;
         self.persist();
         self.recompute_idle();
-        if self.recompute_remote_armed() {
-            self.publish_remote().await;
+        if self.recompute_stream_armed() {
+            self.publish_stream().await;
         }
         Ok(rpc::Ack {})
     }
@@ -1305,8 +1305,8 @@ impl Core {
         self.delete_key(&keys::user_profile(&self.site, &id)).await;
         self.persist();
         self.recompute_idle();
-        if self.recompute_remote_armed() {
-            self.publish_remote().await;
+        if self.recompute_stream_armed() {
+            self.publish_stream().await;
         }
         Ok(rpc::Ack {})
     }
@@ -1325,8 +1325,8 @@ impl Core {
         }
         self.persist();
         self.recompute_idle();
-        if self.recompute_remote_armed() {
-            self.publish_remote().await;
+        if self.recompute_stream_armed() {
+            self.publish_stream().await;
         }
         Ok(rpc::Ack {})
     }
@@ -1400,7 +1400,7 @@ impl Core {
 /// when a live Sunshine source exists, the event is gate-eligible (not an
 /// arming edge — those fire at the arming boundary itself), and some armed
 /// TV's resolved action is a real dispatch the gate is currently holding
-/// down (non-`none`, `while_remote` false) that a freshly-cleared source
+/// down (non-`none`, `while_streaming` false) that a freshly-cleared source
 /// could release. For the stock floor that is exactly the wake-ish events
 /// (unlock, lock-wake, idle-resume) and no others, but a profile that gates
 /// any other event is served the same — the event carries no inherent
@@ -1410,10 +1410,10 @@ fn eager_refresh_applies(
     has_sunshine: bool,
     mut armed_actions: impl Iterator<Item = tisvlay_core::EventAction>,
 ) -> bool {
-    if event.is_remote_edge() || !has_sunshine {
+    if event.is_stream_edge() || !has_sunshine {
         return false;
     }
-    armed_actions.any(|a| a.action() != SessionAction::None && !a.while_remote())
+    armed_actions.any(|a| a.action() != SessionAction::None && !a.while_streaming())
 }
 
 /// Pend forever with no drift armed, so the core select stays
@@ -1454,7 +1454,7 @@ const WATCH_RETRY: Duration = Duration::from_secs(5);
 /// - **Lock-wake** (always registered, 200 ms): fires `LockWake` on the
 ///   first activity of an idle cycle while locked — the lock-screen
 ///   panel comes back to show the password prompt. While unlocked the
-///   same probe is inert, except after a remote disconnect: with
+///   same probe is inert, except after a stream end: with
 ///   `local_return_armed` set, its first `Resumed` fires `LocalReturn`
 ///   to wake the panel the disconnect blank left dark.
 /// - **Locked idle** (the resolved locked timeout): its `Idled` edge
@@ -1572,11 +1572,11 @@ fn idle_dispatch(
                 debug!("user activity while locked, sending lock wake");
                 return Some(SessionEvent::LockWake);
             }
-            // While unlocked the same 200 ms probe is the post-remote
+            // While unlocked the same 200 ms probe is the post-stream
             // return watch: the first activity after a disconnect (armed
             // by the core) wakes the panel the disconnect left dark.
             if !is_locked && return_armed && transition == IdleTransition::Resumed {
-                debug!("local activity after remote disconnect, sending local return");
+                debug!("local activity after stream end, sending local return");
                 return Some(SessionEvent::LocalReturn);
             }
             None
@@ -1678,7 +1678,7 @@ mod tests {
             std::iter::empty::<EventAction>()
         ));
         // The arming edges never trigger it, whatever the action.
-        for edge in [SessionEvent::RemoteConnect, SessionEvent::RemoteDisconnect] {
+        for edge in [SessionEvent::StreamStart, SessionEvent::StreamEnd] {
             assert!(!eager_refresh_applies(edge, true, [gated_wake].into_iter()));
         }
     }
@@ -1804,7 +1804,7 @@ mod tests {
     fn local_return_fires_on_unlocked_resume_when_armed() {
         let mut latch = false;
         // Armed + unlocked: the first resume on the always-on probe is the
-        // post-remote return pulse, waking the disconnect-blanked panel.
+        // post-stream return pulse, waking the disconnect-blanked panel.
         assert_eq!(
             idle_dispatch(
                 LOCK_WAKE_TAG,

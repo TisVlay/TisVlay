@@ -75,7 +75,7 @@ export struct ProfileFieldEntry {
     bool-value: bool,
     /// Drives the 2 px left gutter accent + reset-glyph visibility.
     is-locally-set: bool,
-    /// This row carries the restore-input + remote-gate toggle slots —
+    /// This row carries the restore-input + stream-gate toggle slots —
     /// true on every `SessionAction` action row (never on `automate_when`,
     /// number, or bool rows). Both toggles always render on such rows; the
     /// `*-enabled` flags decide whether each is interactive or inert.
@@ -90,19 +90,19 @@ export struct ProfileFieldEntry {
     /// default — drives the accent tint (locally-changed language),
     /// distinct from the toggle's on/off value.
     restore-differs: bool,
-    /// The mapping's resolved `while_remote` gate — `true` fires while
-    /// armed by a remote session, `false` suppresses. Drives the toggle's
+    /// The mapping's resolved `while_streaming` gate — `true` fires while
+    /// armed by a stream, `false` suppresses. Drives the toggle's
     /// pressed/glyph state.
-    remote-gate-value: bool,
+    stream-gate-value: bool,
     /// The gate is interactive on this row (resolved verb is not `none`
     /// and this is not a connect/disconnect event). When false the toggle
     /// renders inert + dimmed.
-    remote-gate-enabled: bool,
-    /// The resolved `while_remote` gate differs from the field's floor
+    stream-gate-enabled: bool,
+    /// The resolved `while_streaming` gate differs from the field's floor
     /// default — drives the accent tint. Neutral at the floor (`false`
     /// for wake events, `true` for the exempted system events), accented
     /// when changed either way.
-    remote-gate-differs: bool,
+    stream-gate-differs: bool,
 }
 
 /// One profile entry in either section. Read-only from Slint;
@@ -200,11 +200,11 @@ export global Profiles {
     /// The restore-input checkbox on an on-ish action row toggled.
     /// Args: field name, new checked state.
     callback restore-edited(string, bool);
-    /// The remote-session gate toggle on an action row toggled. Args:
-    /// field name, new `while_remote` value (true fires while armed).
+    /// The stream gate toggle on an action row toggled. Args:
+    /// field name, new `while_streaming` value (true fires while armed).
     /// Rust writes the whole event table (verb + modifiers) — the gate
     /// is a per-event modifier, not a separate field.
-    callback remote-gated(string, bool);
+    callback stream-gated(string, bool);
     /// Numeric counterpart to `value-edited`. Arg 2 is the picked
     /// integer; Rust clamps to the field's `[min, max]` and casts to
     /// `u32` before dispatching the field patch.
@@ -258,11 +258,11 @@ export global Profiles {
     /// `UserProfileChanged` signal echo. Empty when no profile is
     /// selected.
     in property <[ProfileFieldEntry]> editor-fields;
-    /// The WHILE REMOTE ACTIVE card's rows for the selected profile —
-    /// the while-remote overrides (plus the screencast-arms switch on
+    /// The STREAMING card's rows for the selected profile —
+    /// the while-streaming overrides (plus the screencast-arms switch on
     /// user profiles). Primed and refreshed alongside `editor-fields`;
     /// empty when no profile is selected.
-    in property <[ProfileFieldEntry]> editor-remote-fields;
+    in property <[ProfileFieldEntry]> editor-stream-fields;
     /// True when the selected profile has at least one
     /// locally-set field (across both cards) — drives the "Reset
     /// all" button's enabled state. Greys out when there's nothing

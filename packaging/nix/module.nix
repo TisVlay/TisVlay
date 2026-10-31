@@ -245,7 +245,7 @@ in
       example = 48989;
       description = ''
         Sunshine's base port on loopback, where the session service's
-        remote-session detector polls the unauthenticated `/serverinfo`
+        stream detector polls the unauthenticated `/serverinfo`
         to arm TVs while a stream is active. Set it to Sunshine's
         configured `port` when that's not the default — e.g. when
         Sunshine is moved aside so Moonshine keeps the GameStream

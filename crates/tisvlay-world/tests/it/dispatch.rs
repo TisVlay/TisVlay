@@ -10,19 +10,19 @@ use tisvlay_core::{EventAction, PowerState, SessionAction, SystemProfileConfig};
 use tisvlay_world::{Command, InEvent, ProfileRecord, Reply, SystemEvent};
 use uuid::Uuid;
 
-/// A gated version of one action: the stock verb with `while_remote =
+/// A gated version of one action: the stock verb with `while_streaming =
 /// false`, so it fires normally while unarmed and is suppressed while
 /// armed.
 fn gated(action: SessionAction) -> EventAction {
     EventAction::With {
         action,
         restore_input: false,
-        while_remote: false,
+        while_streaming: false,
     }
 }
 
 /// Add a system profile from a body, assign it to `tv`, return the id.
-async fn assign_remote_profile(
+async fn assign_stream_profile(
     effects: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::WireEffect>,
     client: &tisvlay_world::WorldClient,
     tv: Uuid,
@@ -45,7 +45,7 @@ async fn assign_remote_profile(
 
 /// Mirror the session service's armed set into the world.
 fn arm(client: &tisvlay_world::WorldClient, armed: &[Uuid]) {
-    client.send(InEvent::RemoteSession {
+    client.send(InEvent::Stream {
         armed: armed.to_vec(),
     });
 }
@@ -516,14 +516,14 @@ async fn escalation_reasserts_on_reconnect_then_gives_up() {
     );
 }
 
-/// While a remote session arms the TV, a `while_remote = false` DPMS-on
+/// While a stream arms the TV, a `while_streaming = false` DPMS-on
 /// action is suppressed: the panel, blanked by DPMS-off, stays dark
 /// across the DPMS-on. Disarming lets the next DPMS-on light it normally.
 #[tokio::test]
-async fn while_remote_gate_suppresses_dpms_on() {
+async fn while_streaming_gate_suppresses_dpms_on() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://supp").await;
-    assign_remote_profile(
+    assign_stream_profile(
         &mut effects,
         &client,
         id,
@@ -570,15 +570,15 @@ async fn while_remote_gate_suppresses_dpms_on() {
 }
 
 /// The gate reverses the review's never-gate rule for explicit events:
-/// a `while_remote = false` on `on_sleep` suppresses the off-going
+/// a `while_streaming = false` on `on_sleep` suppresses the off-going
 /// power-off while armed, even though the docs recommend leaving
 /// sleep ungated. This proves the exemption list is gone — the world
 /// honors the gate wherever it's set.
 #[tokio::test]
-async fn while_remote_gate_suppresses_a_formerly_exempt_sleep() {
+async fn while_streaming_gate_suppresses_a_formerly_exempt_sleep() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://sleep").await;
-    assign_remote_profile(
+    assign_stream_profile(
         &mut effects,
         &client,
         id,
@@ -616,12 +616,12 @@ async fn while_remote_gate_suppresses_a_formerly_exempt_sleep() {
 /// `false`) does NOT light the panel for an armed TV — the empty room
 /// stays dark. Disarming lets the next DPMS-on light it normally.
 #[tokio::test]
-async fn while_remote_default_suppresses_dpms_on_while_armed() {
+async fn while_streaming_default_suppresses_dpms_on_while_armed() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://inherit").await;
     // No profile fields set — every event resolves to its stock action;
     // the wake-ish stock floor is gated by default.
-    assign_remote_profile(
+    assign_stream_profile(
         &mut effects,
         &client,
         id,
@@ -668,7 +668,7 @@ async fn while_remote_default_suppresses_dpms_on_while_armed() {
 /// Floor exemption: the off-going stock actions fire while armed even
 /// with no profile fields set — a blank is always safe to let through,
 /// and the machine going away turns the TV off for the empty room.
-/// Contrast `while_remote_default_suppresses_dpms_on_while_armed`, where
+/// Contrast `while_streaming_default_suppresses_dpms_on_while_armed`, where
 /// the wake-ish stock floor is gated.
 #[tokio::test]
 async fn stock_sleep_and_shutdown_fire_while_armed() {
@@ -676,7 +676,7 @@ async fn stock_sleep_and_shutdown_fire_while_armed() {
     let id = add_connected_tv(&mut effects, &client, "mock://floor").await;
     // No profile fields set: the off-going events resolve to their stock
     // actions with the floor gate `true`.
-    assign_remote_profile(
+    assign_stream_profile(
         &mut effects,
         &client,
         id,
@@ -713,7 +713,7 @@ async fn stock_sleep_and_shutdown_fire_while_armed() {
 async fn empty_armed_set_gates_nothing() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://none").await;
-    assign_remote_profile(
+    assign_stream_profile(
         &mut effects,
         &client,
         id,
@@ -744,22 +744,22 @@ async fn empty_armed_set_gates_nothing() {
     .await;
 }
 
-/// The armed projection: the mirrored set flips `meta.remote_armed` on
+/// The armed projection: the mirrored set flips `meta.stream_armed` on
 /// the published `meta/config` payload, and disarming clears it.
 #[tokio::test]
-async fn remote_armed_projection_tracks_the_set() {
+async fn stream_armed_projection_tracks_the_set() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://proj").await;
 
     arm(&client, &[id]);
     collect_until(&mut effects, |e| {
-        is_publish_on(e, "/meta/config").is_some_and(|p| p["remote_armed"] == true)
+        is_publish_on(e, "/meta/config").is_some_and(|p| p["stream_armed"] == true)
     })
     .await;
 
     arm(&client, &[]);
     collect_until(&mut effects, |e| {
-        is_publish_on(e, "/meta/config").is_some_and(|p| p["remote_armed"] == false)
+        is_publish_on(e, "/meta/config").is_some_and(|p| p["stream_armed"] == false)
     })
     .await;
 }
@@ -835,7 +835,7 @@ async fn greeter_timeout_follows_an_input_flip() {
     body.name = "Greeter".into();
     body.automate_when = Some(tisvlay_core::AutomateWhen::OnPrimary);
     body.idle_timeout_seconds = Some(300);
-    assign_remote_profile(&mut effects, &client, id, body).await;
+    assign_stream_profile(&mut effects, &client, id, body).await;
     let timeout = |e: &tisvlay_world::WireEffect| {
         is_publish_on(e, "/greeter/timeout").map(|p| p["seconds"].clone())
     };

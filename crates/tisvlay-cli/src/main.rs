@@ -15,9 +15,9 @@ mod attributes;
 mod pairing;
 mod profiles;
 mod reload;
-mod remote;
 mod render;
 mod status;
+mod stream;
 mod tvs;
 
 use std::path::{Path, PathBuf};
@@ -35,8 +35,8 @@ use crate::attributes::Assignment;
 use crate::pairing::{discover, discover_session, pair, vendor, watch_pairing};
 use crate::profiles::{profile_cmd, user_profile_cmd};
 use crate::reload::reload;
-use crate::remote::remote_session_cmd;
 use crate::status::status;
+use crate::stream::stream_cmd;
 use crate::tvs::{list, watch};
 
 fn main() -> Result<()> {
@@ -122,7 +122,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Status
             | Command::Watch
             | Command::Profile(ProfileScope::User(_))
-            | Command::RemoteSession(_)
+            | Command::Stream(_)
             | Command::Reload
     ) {
         check_release::<manager::Info>(&caller, "daemon").await?;
@@ -211,9 +211,9 @@ async fn run(cli: Cli) -> Result<()> {
             let (user, user_caller) = open_user(cli.user_socket, site).await?;
             user_profile_cmd(&user, &user_caller, site, cmd, json_out).await
         }
-        Command::RemoteSession(cmd) => {
+        Command::Stream(cmd) => {
             let (_user, user_caller) = open_user(cli.user_socket, site).await?;
-            remote_session_cmd(&user_caller, cmd, json_out).await
+            stream_cmd(&user_caller, cmd, json_out).await
         }
     }
 }

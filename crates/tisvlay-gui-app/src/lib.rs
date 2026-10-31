@@ -570,12 +570,12 @@ pub fn run() -> Result<()> {
         "video-display",
     ]));
     // Network connect/disconnect glyphs for the profile editor's
-    // remote-session gate toggle: the connected glyph marks the ungated
+    // stream gate toggle: the connected glyph marks the ungated
     // (fires-while-armed) state, the disconnected glyph the gated
     // (suppressed) state. `network-connect` / `network-disconnect` are
     // the Breeze names; the `network-wired` pair covers Adwaita / Yaru.
-    icons.set_remote_gate_on(load_symbolic_icon(&["network-connect", "network-wired"]));
-    icons.set_remote_gate_off(load_symbolic_icon(&[
+    icons.set_stream_gate_on(load_symbolic_icon(&["network-connect", "network-wired"]));
+    icons.set_stream_gate_off(load_symbolic_icon(&[
         "network-disconnect",
         "network-wired-disconnected",
     ]));
@@ -1270,7 +1270,7 @@ fn register_callbacks(
         let s = session.clone();
         let ed = editor.clone();
         let app_weak = app.as_weak();
-        profiles_global.on_remote_gated(move |field, fires_while_remote| {
+        profiles_global.on_stream_gated(move |field, fires_while_streaming| {
             let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
                 return;
             };
@@ -1280,18 +1280,18 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             let field = field.to_string();
             tokio::spawn(async move {
-                if let Err(e) = profiles::dispatch_remote_gate_edit(
+                if let Err(e) = profiles::dispatch_stream_gate_edit(
                     &ed,
                     &d,
                     &s,
                     editor_kind,
                     uuid,
                     &field,
-                    fires_while_remote,
+                    fires_while_streaming,
                 )
                 .await
                 {
-                    warn!(field = %field, fires_while_remote, error = %e, "remote_gated failed");
+                    warn!(field = %field, fires_while_streaming, error = %e, "stream_gated failed");
                     show_toast(
                         app_weak,
                         &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
@@ -3467,10 +3467,10 @@ mod tests {
             body["on_startup"]["restore_input"] == true
         })
         .await;
-        profiles.invoke_remote_gated("on_startup".into(), true);
+        profiles.invoke_stream_gated("on_startup".into(), true);
         wait_for_system_profile(&daemon, &editor, &app, duplicate_id, |body| {
             body["on_startup"]["restore_input"] == true
-                && body["on_startup"]["while_remote"] == true
+                && body["on_startup"]["while_streaming"] == true
         })
         .await;
         profiles.invoke_reset_field("on_startup".into());
@@ -3590,9 +3590,9 @@ mod tests {
             body["name"] == "Personal"
         })
         .await;
-        profiles.invoke_value_edited_bool("remote_screencast_arms".into(), true);
+        profiles.invoke_value_edited_bool("screencast_arms".into(), true);
         wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
-            body["remote_screencast_arms"] == true
+            body["screencast_arms"] == true
         })
         .await;
         profiles.invoke_value_edited_number("locked_idle_timeout_seconds".into(), 120);
@@ -3619,7 +3619,7 @@ mod tests {
         wait_for_user_profile(&daemon, &session, &editor, &app, user_id, |body| {
             body["name"] == "Personal renamed"
                 && body["locked_idle_timeout_seconds"].is_null()
-                && body["remote_screencast_arms"].is_null()
+                && body["screencast_arms"].is_null()
         })
         .await;
         controls.invoke_set_user_profile(tv.to_string().into(), "Personal renamed".into());
@@ -3811,7 +3811,7 @@ mod tests {
         );
         expect_toast(
             &app,
-            || profiles.invoke_remote_gated("missing".into(), true),
+            || profiles.invoke_stream_gated("missing".into(), true),
             "Save change failed",
         );
         expect_toast(

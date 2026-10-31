@@ -12,7 +12,7 @@
 
 - [GUI & Tray](./guide/gui-tray.md)
 - [Automation](./guide/automation.md)
-- [Remote-Session Awareness](./guide/remote-sessions.md)
+- [Streaming](./guide/streaming.md)
 
 # Help
 

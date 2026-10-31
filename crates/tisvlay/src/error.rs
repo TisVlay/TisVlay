@@ -81,7 +81,7 @@ pub enum Service {
     /// [`DaemonClient`]: crate::DaemonClient
     Daemon,
     /// The per-user session service, which owns the user profiles and
-    /// the remote-session state ([`SessionClient`]).
+    /// the stream state ([`SessionClient`]).
     ///
     /// [`SessionClient`]: crate::SessionClient
     Session,

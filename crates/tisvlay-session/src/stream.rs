@@ -1,4 +1,4 @@
-//! Remote-session awareness: the source aggregator and the arming
+//! Stream awareness: the source aggregator and the arming
 //! computation.
 //!
 //! Detectors report over an mpsc; the session `Core` folds their reports
@@ -8,7 +8,7 @@
 //! router) and a plain-put mirror on the system socket (a connect-only
 //! peer link, so served entities would not propagate). While armed,
 //! `Core::action_for` suppresses any event whose action carries a
-//! `while_remote = false` gate.
+//! `while_streaming = false` gate.
 //!
 //! Arming is a pure function here so the policy is unit-tested without a
 //! live stack.
@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 
 use tisvlay_core::ResolvedUserProfile;
-use tisvlay_protocol::payload::{RemoteSource, RemoteSourceKind};
+use tisvlay_protocol::payload::{StreamSource, StreamSourceKind};
 use uuid::Uuid;
 
 /// One detector report: a source identified by `(kind, detail)` toggling
@@ -34,8 +34,8 @@ use uuid::Uuid;
 /// `--source NAME` (default `manual`), so several manual escape hatches
 /// coexist. Each detector reports its own kind through the same channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteReport {
-    pub kind: RemoteSourceKind,
+pub struct StreamReport {
+    pub kind: StreamSourceKind,
     pub detail: String,
     pub active: bool,
     /// A bootstrapped attribution the aggregator admits only while a
@@ -45,12 +45,12 @@ pub struct RemoteReport {
     pub provisional: bool,
 }
 
-impl RemoteReport {
+impl StreamReport {
     /// A manual source toggling active/inactive under `source` (the
     /// CLI's `--source NAME`).
     pub fn manual(source: impl Into<String>, active: bool) -> Self {
         Self {
-            kind: RemoteSourceKind::Manual,
+            kind: StreamSourceKind::Manual,
             detail: source.into(),
             active,
             provisional: false,
@@ -58,7 +58,7 @@ impl RemoteReport {
     }
 
     /// The set key — a source is unique per `(kind, detail)`.
-    fn key(&self) -> (RemoteSourceKind, String) {
+    fn key(&self) -> (StreamSourceKind, String) {
         (self.kind, self.detail.clone())
     }
 }
@@ -72,13 +72,13 @@ impl RemoteReport {
 /// pending, and are promoted (or evicted) on any change to the screencast
 /// signal.
 #[derive(Debug, Default)]
-pub(crate) struct RemoteSources {
-    live: BTreeMap<(RemoteSourceKind, String), RemoteSource>,
+pub(crate) struct StreamSources {
+    live: BTreeMap<(StreamSourceKind, String), StreamSource>,
     /// Provisional attributions awaiting screencast corroboration.
-    pending: BTreeMap<(RemoteSourceKind, String), RemoteSource>,
+    pending: BTreeMap<(StreamSourceKind, String), StreamSource>,
 }
 
-impl RemoteSources {
+impl StreamSources {
     /// Apply a report; returns true if the *live* set changed (a pending
     /// provisional not yet corroborated is not a live change). Callers
     /// republish on a live change. A source is keyed by `(kind, detail)`,
@@ -92,14 +92,14 @@ impl RemoteSources {
     /// change which pending sources qualify, the join is re-evaluated on
     /// every apply — so the live set is compared before and after rather
     /// than tracked through each branch.
-    pub(crate) fn apply(&mut self, report: &RemoteReport) -> bool {
+    pub(crate) fn apply(&mut self, report: &StreamReport) -> bool {
         // Membership before the apply — the return compares against it so
         // every branch (direct, pending, join) reports a live change
         // consistently without per-branch bookkeeping.
         let before: Vec<_> = self.live.keys().cloned().collect();
         let key = report.key();
         if report.active {
-            let source = RemoteSource {
+            let source = StreamSource {
                 kind: report.kind,
                 detail: report.detail.clone(),
             };
@@ -132,7 +132,7 @@ impl RemoteSources {
         let corroborated = self
             .live
             .keys()
-            .any(|(kind, _)| *kind == RemoteSourceKind::Screencast);
+            .any(|(kind, _)| *kind == StreamSourceKind::Screencast);
         for (key, source) in &self.pending {
             if corroborated {
                 self.live
@@ -145,17 +145,17 @@ impl RemoteSources {
     }
 
     /// The current live sources, in stable order (pending provisionals
-    /// excluded until corroborated). For the wire path (`remote_state`),
+    /// excluded until corroborated). For the wire path (`stream_state`),
     /// which needs each source's `detail`; the arming path reads only
     /// kinds — see [`kinds`](Self::kinds).
-    pub(crate) fn snapshot(&self) -> Vec<RemoteSource> {
+    pub(crate) fn snapshot(&self) -> Vec<StreamSource> {
         self.live.values().cloned().collect()
     }
 
     /// The live source kinds (no `detail` clone) — the arming
     /// computation reads only the kind, so this is the cheap view for
     /// [`compute_armed`].
-    pub(crate) fn kinds(&self) -> Vec<RemoteSourceKind> {
+    pub(crate) fn kinds(&self) -> Vec<StreamSourceKind> {
         self.live.values().map(|source| source.kind).collect()
     }
 
@@ -166,22 +166,22 @@ impl RemoteSources {
 
     /// Whether a live source of the given kind exists — the cheap gate the
     /// session's eager Sunshine refresh reads before deciding to probe.
-    pub(crate) fn has_kind(&self, kind: RemoteSourceKind) -> bool {
+    pub(crate) fn has_kind(&self, kind: StreamSourceKind) -> bool {
         self.live.keys().any(|(k, _)| *k == kind)
     }
 }
 
 /// Whether a source kind arms unconditionally. Attributed kinds (a named
-/// remote app, a hook, a logind remote session, the Sunshine level poll)
+/// streaming app, a hook, a logind stream, the Sunshine level poll)
 /// always arm; the unattributed `Screencast` signal defers to the per-TV
-/// `remote_screencast_arms` policy.
-fn kind_always_arms(kind: RemoteSourceKind) -> bool {
+/// `screencast_arms` policy.
+fn kind_always_arms(kind: StreamSourceKind) -> bool {
     match kind {
-        RemoteSourceKind::Manual
-        | RemoteSourceKind::Logind
-        | RemoteSourceKind::Portal
-        | RemoteSourceKind::Sunshine => true,
-        RemoteSourceKind::Screencast => false,
+        StreamSourceKind::Manual
+        | StreamSourceKind::Logind
+        | StreamSourceKind::Portal
+        | StreamSourceKind::Sunshine => true,
+        StreamSourceKind::Screencast => false,
     }
 }
 
@@ -189,9 +189,9 @@ fn kind_always_arms(kind: RemoteSourceKind) -> bool {
 ///
 /// True when any attributed kind is live, or when a screencast source is
 /// live and the TV's profile opts capture in.
-pub(crate) fn kinds_arm(kinds: &[RemoteSourceKind], screencast_arms: bool) -> bool {
+pub(crate) fn kinds_arm(kinds: &[StreamSourceKind], screencast_arms: bool) -> bool {
     kinds.iter().any(|&kind| {
-        kind_always_arms(kind) || (kind == RemoteSourceKind::Screencast && screencast_arms)
+        kind_always_arms(kind) || (kind == StreamSourceKind::Screencast && screencast_arms)
     })
 }
 
@@ -203,11 +203,11 @@ pub(crate) fn kinds_arm(kinds: &[RemoteSourceKind], screencast_arms: bool) -> bo
 /// one source is live.
 pub(crate) fn compute_armed<'a>(
     tvs: impl Iterator<Item = &'a Uuid>,
-    kinds: &[RemoteSourceKind],
+    kinds: &[StreamSourceKind],
     mut resolve: impl FnMut(&Uuid) -> ResolvedUserProfile,
 ) -> Vec<Uuid> {
     let mut armed: Vec<Uuid> = tvs
-        .filter(|tv| kinds_arm(kinds, resolve(tv).remote_screencast_arms))
+        .filter(|tv| kinds_arm(kinds, resolve(tv).screencast_arms))
         .copied()
         .collect();
     armed.sort();
@@ -221,10 +221,10 @@ mod tests {
     #[test]
     fn attributed_kinds_arm_regardless_of_capture_policy() {
         for kind in [
-            RemoteSourceKind::Manual,
-            RemoteSourceKind::Logind,
-            RemoteSourceKind::Portal,
-            RemoteSourceKind::Sunshine,
+            StreamSourceKind::Manual,
+            StreamSourceKind::Logind,
+            StreamSourceKind::Portal,
+            StreamSourceKind::Sunshine,
         ] {
             assert!(kinds_arm(&[kind], false));
             assert!(kinds_arm(&[kind], true));
@@ -233,11 +233,11 @@ mod tests {
 
     #[test]
     fn screencast_arms_only_when_the_policy_opts_in() {
-        assert!(!kinds_arm(&[RemoteSourceKind::Screencast], false));
-        assert!(kinds_arm(&[RemoteSourceKind::Screencast], true));
+        assert!(!kinds_arm(&[StreamSourceKind::Screencast], false));
+        assert!(kinds_arm(&[StreamSourceKind::Screencast], true));
         // A capture kind next to an attributed one still arms via the
         // attributed one, whatever the capture policy.
-        let mixed = [RemoteSourceKind::Screencast, RemoteSourceKind::Manual];
+        let mixed = [StreamSourceKind::Screencast, StreamSourceKind::Manual];
         assert!(kinds_arm(&mixed, false));
     }
 
@@ -252,16 +252,16 @@ mod tests {
         let a = Uuid::from_u128(1);
         let b = Uuid::from_u128(2);
         // Only `a` opts capture in; a bare screencast kind arms `a` alone.
-        let armed = compute_armed([a, b].iter(), &[RemoteSourceKind::Screencast], |tv| {
+        let armed = compute_armed([a, b].iter(), &[StreamSourceKind::Screencast], |tv| {
             ResolvedUserProfile {
-                remote_screencast_arms: *tv == a,
+                screencast_arms: *tv == a,
                 ..Default::default()
             }
         });
         assert_eq!(armed, vec![a]);
 
         // An attributed kind arms both, sorted.
-        let armed = compute_armed([b, a].iter(), &[RemoteSourceKind::Manual], |_| {
+        let armed = compute_armed([b, a].iter(), &[StreamSourceKind::Manual], |_| {
             ResolvedUserProfile::default()
         });
         assert_eq!(armed, vec![a, b]);
@@ -275,7 +275,7 @@ mod tests {
     fn compute_armed_tracks_a_tv_set_that_grows_under_static_sources() {
         let a = Uuid::from_u128(1);
         let b = Uuid::from_u128(2);
-        let kinds = [RemoteSourceKind::Manual];
+        let kinds = [StreamSourceKind::Manual];
         let resolve = |_: &Uuid| ResolvedUserProfile::default();
 
         // No TVs known yet: an attributed source arms nothing.
@@ -290,42 +290,42 @@ mod tests {
 
     #[test]
     fn has_kind_reflects_only_the_live_set() {
-        let mut sources = RemoteSources::default();
-        assert!(!sources.has_kind(RemoteSourceKind::Sunshine));
-        sources.apply(&RemoteReport {
-            kind: RemoteSourceKind::Sunshine,
+        let mut sources = StreamSources::default();
+        assert!(!sources.has_kind(StreamSourceKind::Sunshine));
+        sources.apply(&StreamReport {
+            kind: StreamSourceKind::Sunshine,
             detail: "serverinfo".into(),
             active: true,
             provisional: false,
         });
-        assert!(sources.has_kind(RemoteSourceKind::Sunshine));
-        assert!(!sources.has_kind(RemoteSourceKind::Manual));
+        assert!(sources.has_kind(StreamSourceKind::Sunshine));
+        assert!(!sources.has_kind(StreamSourceKind::Manual));
         // Clearing the source drops its kind.
-        sources.apply(&RemoteReport {
-            kind: RemoteSourceKind::Sunshine,
+        sources.apply(&StreamReport {
+            kind: StreamSourceKind::Sunshine,
             detail: "serverinfo".into(),
             active: false,
             provisional: false,
         });
-        assert!(!sources.has_kind(RemoteSourceKind::Sunshine));
+        assert!(!sources.has_kind(StreamSourceKind::Sunshine));
     }
 
     #[test]
     fn sources_set_is_idempotent_and_toggles() {
-        let mut sources = RemoteSources::default();
-        assert!(sources.apply(&RemoteReport::manual("manual", true)));
+        let mut sources = StreamSources::default();
+        assert!(sources.apply(&StreamReport::manual("manual", true)));
         // Re-report of the same live source is a no-op change.
-        assert!(!sources.apply(&RemoteReport::manual("manual", true)));
+        assert!(!sources.apply(&StreamReport::manual("manual", true)));
         assert!(sources.any());
         // A different named source coexists.
-        assert!(sources.apply(&RemoteReport::manual("sunshine-hook", true)));
+        assert!(sources.apply(&StreamReport::manual("sunshine-hook", true)));
         assert_eq!(sources.snapshot().len(), 2);
         // Clearing one leaves the other.
-        assert!(sources.apply(&RemoteReport::manual("manual", false)));
+        assert!(sources.apply(&StreamReport::manual("manual", false)));
         assert!(sources.any());
         // Clearing an absent source is a no-op.
-        assert!(!sources.apply(&RemoteReport::manual("manual", false)));
-        assert!(sources.apply(&RemoteReport::manual("sunshine-hook", false)));
+        assert!(!sources.apply(&StreamReport::manual("manual", false)));
+        assert!(sources.apply(&StreamReport::manual("sunshine-hook", false)));
         assert!(!sources.any());
     }
 
@@ -334,9 +334,9 @@ mod tests {
     /// evicted again when the screencast goes — the tree-walk join.
     #[test]
     fn provisional_source_admitted_only_while_screencast_corroborates() {
-        let mut sources = RemoteSources::default();
-        let provisional = RemoteReport {
-            kind: RemoteSourceKind::Portal,
+        let mut sources = StreamSources::default();
+        let provisional = StreamReport {
+            kind: StreamSourceKind::Portal,
             detail: "krdpserver".into(),
             active: true,
             provisional: true,
@@ -348,20 +348,20 @@ mod tests {
 
         // A screencast arrives: it goes live AND promotes the pending
         // Portal source (the join).
-        let screencast = RemoteReport {
-            kind: RemoteSourceKind::Screencast,
+        let screencast = StreamReport {
+            kind: StreamSourceKind::Screencast,
             detail: "1 node (running)".into(),
             active: true,
             provisional: false,
         };
         assert!(sources.apply(&screencast));
         let kinds: Vec<_> = sources.snapshot().into_iter().map(|s| s.kind).collect();
-        assert!(kinds.contains(&RemoteSourceKind::Portal));
-        assert!(kinds.contains(&RemoteSourceKind::Screencast));
+        assert!(kinds.contains(&StreamSourceKind::Portal));
+        assert!(kinds.contains(&StreamSourceKind::Screencast));
 
         // Screencast gone: the Portal source is demoted with it (the
         // bootstrap guess had no independent confirmation).
-        assert!(sources.apply(&RemoteReport {
+        assert!(sources.apply(&StreamReport {
             active: false,
             ..screencast
         }));
@@ -373,9 +373,9 @@ mod tests {
     /// screencast needed.
     #[test]
     fn confirmed_report_promotes_and_supersedes_provisional() {
-        let mut sources = RemoteSources::default();
-        let key = ("krdpserver", RemoteSourceKind::Portal);
-        assert!(!sources.apply(&RemoteReport {
+        let mut sources = StreamSources::default();
+        let key = ("krdpserver", StreamSourceKind::Portal);
+        assert!(!sources.apply(&StreamReport {
             kind: key.1,
             detail: key.0.into(),
             active: true,
@@ -383,7 +383,7 @@ mod tests {
         }));
         assert!(!sources.any());
         // The confirmed restatement of the same key goes live directly.
-        assert!(sources.apply(&RemoteReport {
+        assert!(sources.apply(&StreamReport {
             kind: key.1,
             detail: key.0.into(),
             active: true,
@@ -392,14 +392,14 @@ mod tests {
         assert!(sources.any());
         // A now-redundant provisional restatement is a no-op (the
         // confirmed source already covers the key).
-        assert!(!sources.apply(&RemoteReport {
+        assert!(!sources.apply(&StreamReport {
             kind: key.1,
             detail: key.0.into(),
             active: true,
             provisional: true,
         }));
         // Clearing the confirmed source disarms even without a screencast.
-        assert!(sources.apply(&RemoteReport {
+        assert!(sources.apply(&StreamReport {
             kind: key.1,
             detail: key.0.into(),
             active: false,

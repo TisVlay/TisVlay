@@ -68,7 +68,7 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
   - Nothing is recorded when the TV's cached class already matches the target: the plan's own chains send power-offs to TVs already off (a lock's screen-off emulated as power, `on_sleep`).
   - An expectation expires after 60 s, the held wake's bound, and a newer command in the same direction renews it. All expectations clear when the PC wakes, because the world's clock (a monotonic `Instant`) stops during sleep.
 - **Each scope runs its own, behind the existing gates.** The session service runs the user profile's PC actions: it runs in the user's session, can lock it, and gates on the active user and `automate_when`. The daemon's world runs the system profile's, gated on `managed` and `automate_when`, and puts the PC to sleep through logind, which needs a polkit rule for the daemon's user since the daemon runs outside any session. That way a sleep works at the login screen and with nobody logged in.
-- **PC actions never fire while a stream arms the TV.** A fixed gate, with no setting, in both scopes: while the TV is in the world's `RemoteArmed` set (mirrored from the session), an eco-timer power-off or a press of the remote in the room would otherwise put the PC to sleep or lock the session under the streaming user. The session runs its Sunshine refresh (`eager_refresh_sunshine`) before deciding, as it does for its other gated events.
+- **PC actions never fire while a stream arms the TV.** A fixed gate, with no setting, in both scopes: while the TV is in the world's `StreamArmed` set (mirrored from the session), an eco-timer power-off or a press of the remote in the room would otherwise put the PC to sleep or lock the session under the streaming user. The session runs its Sunshine refresh (`eager_refresh_sunshine`) before deciding, as it does for its other gated events.
 - **The sleep handoff holds until the TV commands are sent.** Today the daemon releases logind's delay inhibitor right after queuing the sleep event (`crates/tisvlay-daemon/src/logind.rs`), so `on_sleep`'s TV power-off races the suspend. A PC-action sleep depends on that power-off landing (the TV follows the PC through `on_sleep`), so the daemon holds the inhibitor until the sleep dispatch's sends complete, bounded by logind's `InhibitDelayMaxSec` (5 s by default).
 - **The polkit rule grants sleeping, not overriding.** logind's suspend and hibernate actions (`sleep` may pick either), with their multiple-sessions variants, which are always needed since the daemon's user has no session of its own. Not the ignore-inhibit actions: a user's block inhibitor wins, and a refused call lands on `event/dispatch-failed`. The NixOS module and the `.deb`/`.rpm`/Arch packages always ship it, from one source file: the profile field, default `none`, is the opt-in, and a second switch at install time would be one a GUI user can't see. The cost is that whoever may edit system profiles (the `tisvlay` group) can have the machine sleep.
 - **Lock and sleep compose.** Setting both runs both, each from its own service. Their order isn't guaranteed, so a lock that must land before the sleep comes from the desktop's own lock-on-sleep setting.
@@ -108,7 +108,7 @@ Two existing CEC device-config fields predate the rule and are choices: `emulate
 ## Implementation
 
 Every slice ships whole:
-- **Its GUI rows**, in a card of their own, as `USER_WHILE_REMOTE_FIELDS` is. The parity tests (`system_field_table_matches_core_schema`, `user_field_table_matches_core_schema`) fail on a core field without a GUI row. The three new enums need options, parsing and a `BodyPatch` arm each; parse their tokens through serde. Rows need a help slot, which `ProfileFieldEntry` lacks today, and the sleep values the daemon reports unavailable show as such, since the ComboBox has no per-option disabled state.
+- **Its GUI rows**, in a card of their own, as `USER_WHILE_STREAMING_FIELDS` is. The parity tests (`system_field_table_matches_core_schema`, `user_field_table_matches_core_schema`) fail on a core field without a GUI row. The three new enums need options, parsing and a `BodyPatch` arm each; parse their tokens through serde. Rows need a help slot, which `ProfileFieldEntry` lacks today, and the sleep values the daemon reports unavailable show as such, since the ComboBox has no per-option disabled state.
 - **Its generated docs** (`just docs-gen`). The profile-defaults partials publish field doc comments in the user guide at once, so they're written for users.
 - **Its `.pot` refresh** (`just i18n-extract`), and its tests.
 
@@ -122,11 +122,11 @@ Every slice ships whole:
 
 #### 2. The sleep handoff
 
-- [ ] The daemon holds logind's delay inhibitor until the sleep dispatch's sends complete, bounded by `InhibitDelayMaxSec`, instead of releasing it right after queuing the event. The world reports completion back to the logind watcher. A `FakeLogind` test pins the order.
+- [x] The daemon holds logind's delay inhibitor until the sleep (or shutdown) dispatch's sends complete, bounded by `InhibitDelayMaxSec`, instead of releasing it right after queuing the event. The logind watcher sends the world a drain token after the event. The reactor queues it on every live connection behind that step's commands, and each connection drops it once it has run them, so the watcher releases when the last copy is gone. `FakeLogind` hands out real pipes and records each release; the tests pin the hold behind a slow power-off and the release at logind's bound.
 
 #### 3. Remote sessions become streams (breaking)
 
-- [ ] The rename in [docs/ideas/power-vocabulary.md](../ideas/power-vocabulary.md#streams): config keys, the `remote/**` and `user/remote/**` keys, the `remote-session` CLI verb, the GUI card, docs. One breaking commit, before steps 6 and 7 take the word "remote".
+- [x] The rename in [docs/ideas/power-vocabulary.md](../ideas/power-vocabulary.md#streams): config keys, the `remote/**` and `user/remote/**` keys, the `remote-session` CLI verb, the GUI card, docs. One breaking commit, before steps 6 and 7 take the word "remote".
 
 ### Core
 

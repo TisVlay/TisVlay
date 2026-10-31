@@ -418,7 +418,7 @@ async fn wire() -> Wire {
 - `tisvlay-tray/tests/it/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
 - `tisvlay-tray/src/lib.rs` (`orchestration_tests`) — real daemon/session stacks drive the production mirror pumps, command dispatcher, scroll coalescers, and captured pairing/liveliness notifications. A private handle adapter substitutes an in-memory tray for ksni updates without changing RPC or subscription behavior. Daemon-lifetime changes must discard old TVs and system profiles; the session-owned user catalog is independent.
 - `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, and discarding cached TVs/profiles across daemon lifetimes.
-- `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, remote sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
+- `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, stream sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
 
 ### Zenoh testing gotchas
 

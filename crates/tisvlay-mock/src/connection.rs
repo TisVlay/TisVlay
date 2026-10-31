@@ -49,6 +49,9 @@ pub struct MockConnection {
     /// Delay between ramp steps. 0 → `yield_now` (instant); >0 →
     /// `tokio::time::sleep` so tests can interleave commands mid-ramp.
     backlight_ramp_step_delay: std::time::Duration,
+    /// How long `power_off` takes at the TV. Sourced from
+    /// [`MockVendorConfig::power_off_delay_ms`].
+    power_off_delay: std::time::Duration,
     /// When `true`, [`TvConnection::subscribe_state`] returns
     /// `NotSupported`, modeling a poll-only backend. Sourced from
     /// [`MockVendorConfig::disable_subscription`].
@@ -122,6 +125,7 @@ impl MockConnection {
             backlight_ramp_step_delay: std::time::Duration::from_millis(
                 config.backlight_ramp_step_delay_ms,
             ),
+            power_off_delay: std::time::Duration::from_millis(config.power_off_delay_ms),
             disable_subscription: config.disable_subscription,
             reachable_in_standby: config.reachable_in_standby,
             link_mac: config.link_mac.clone(),
@@ -218,6 +222,9 @@ impl TvConnection for MockConnection {
     // ------------------------------------------------------------------
 
     async fn power_off(&mut self) -> Result<()> {
+        if !self.power_off_delay.is_zero() {
+            tokio::time::sleep(self.power_off_delay).await;
+        }
         self.mutate_and_push(|s| {
             s.update_power(PowerState::Standby);
         });

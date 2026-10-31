@@ -129,7 +129,7 @@ pub struct Stack {
     /// Device-watcher requests from the reactor, when `run` booted the
     /// stack with device watching (`run` takes them for the watcher).
     devices: Option<mpsc::UnboundedReceiver<tisvlay_world::DeviceRequest>>,
-    /// Shared boot-`Startup` readiness, written by the remote-session
+    /// Shared boot-`Startup` readiness, written by the stream
     /// subscribers; `run` awaits it before the WoL dispatch.
     startup_ready: Arc<StartupReadiness>,
     /// TVs the store held at boot; `run`'s seed config skips them.
@@ -238,12 +238,12 @@ const STARTUP_SETTLE: Duration = Duration::from_secs(1);
 const STARTUP_DEADLINE: Duration = Duration::from_secs(3);
 
 /// Shared readiness state for the boot `Startup` gate, written by the
-/// remote-session subscribers and awaited by the startup task.
+/// stream subscribers and awaited by the startup task.
 #[derive(Debug, Default)]
 struct StartupReadiness {
     /// A `session_alive` liveliness token is currently observed.
     session_present: AtomicBool,
-    /// A remote-session mirror sample has arrived — hydrated from the
+    /// A stream mirror sample has arrived — hydrated from the
     /// session's `@adv` cache on start, or live — so the armed set is known.
     mirror_seen: AtomicBool,
     /// Woken whenever either flag changes, so the startup task re-evaluates.
@@ -527,37 +527,37 @@ async fn serve_stack(
             }
         }
     });
-    // Boot-`Startup` readiness: the remote-session subscribers below write
+    // Boot-`Startup` readiness: the stream subscribers below write
     // it, and `run` awaits it before the WoL dispatch so the fleet arms (or
     // is known not to) before it wakes.
     let startup_ready = Arc::new(StartupReadiness::default());
 
-    // The remote-session fact is a cache-1 AdvancedPublisher served by the
+    // The stream fact is a cache-1 AdvancedPublisher served by the
     // session over its connect-only-peer system link; the directly-dialed
     // daemon hydrates its last sample. `history(detect_late_publishers)` so
     // a daemon starting after (or restarting under) a live session hydrates
     // the standing armed set straight from the session's `@adv` cache —
     // this is what retired the session-side re-put. Forward the computed
     // armed set into the world, which gates the wake-ish system events.
-    let remote_sub = session
-        .declare_subscriber(tisvlay_protocol::keys::remote_session(site))
+    let stream_sub = session
+        .declare_subscriber(tisvlay_protocol::keys::stream_state(site))
         .history(HistoryConfig::default().detect_late_publishers())
         .await
-        .map_err(|e| anyhow!("declare remote session subscriber: {e}"))?;
-    let remote_world = world.clone();
-    let remote_ready = Arc::clone(&startup_ready);
+        .map_err(|e| anyhow!("declare stream subscriber: {e}"))?;
+    let stream_world = world.clone();
+    let stream_ready = Arc::clone(&startup_ready);
     tokio::spawn(async move {
-        let sub = remote_sub;
+        let sub = stream_sub;
         while let Ok(sample) = sub.recv_async().await {
-            let Ok(state) = serde_json::from_slice::<tisvlay_protocol::payload::RemoteSessionState>(
+            let Ok(state) = serde_json::from_slice::<tisvlay_protocol::payload::StreamState>(
                 &sample.payload().to_bytes(),
             ) else {
                 continue;
             };
             // The armed set is now known — release the boot gate.
-            remote_ready.mirror_seen.store(true, Ordering::Release);
-            remote_ready.notify.notify_one();
-            if !remote_world.send(InEvent::RemoteSession { armed: state.armed }) {
+            stream_ready.mirror_seen.store(true, Ordering::Release);
+            stream_ready.notify.notify_one();
+            if !stream_world.send(InEvent::Stream { armed: state.armed }) {
                 return;
             }
         }
@@ -591,8 +591,8 @@ async fn serve_stack(
                         .store(false, Ordering::Release);
                     session_ready.notify.notify_one();
                     // Empty armed set disarms every TV via the world's
-                    // `apply_remote_session` — the crash-robust clear.
-                    if !session_world.send(InEvent::RemoteSession { armed: Vec::new() }) {
+                    // `apply_stream` — the crash-robust clear.
+                    if !session_world.send(InEvent::Stream { armed: Vec::new() }) {
                         return;
                     }
                 }
@@ -778,9 +778,9 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
     // live session's cache, or delivered live), or the settle window passed
     // with no session to arm anything, or the fallback deadline elapsed.
     // Awaiting readiness rather than a fixed timer closes the daemon-restart
-    // race where a stale-or-absent armed set let a boot wake fire for a
-    // remote room; it also subsumes the fleet-replay grace (transport facts
-    // ride one batch behind each dial spawn). The profile's stock
+    // race where a stale-or-absent armed set let a boot wake fire into an
+    // empty room under a stream; it also subsumes the fleet-replay grace
+    // (transport facts ride one batch behind each dial spawn). The profile's stock
     // `on_startup: power_on` then upgrades the plain boot dial to a wake for
     // every automated, unarmed TV.
     {

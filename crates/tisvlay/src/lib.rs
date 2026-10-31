@@ -20,7 +20,7 @@ use tisvlay_core::{
 };
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{
-    Unary, manager, profile, tv, user_profile, user_remote, user_tray, vendors,
+    Unary, manager, profile, tv, user_profile, user_stream, user_tray, vendors,
 };
 use tisvlay_protocol::{bootstrap, keys, rpc};
 
@@ -34,7 +34,7 @@ pub use tisvlay_protocol::bootstrap::{default_connect_socket_path, default_sessi
 pub use tisvlay_protocol::error::ErrorCode;
 pub use tisvlay_protocol::payload::{
     FailureCode, LinkMacOutcome, LinkMacReport, LinkWait, PairingPhase, PairingProgress,
-    PowerPhase, RemoteSessionState, RemoteSource, RemoteSourceKind,
+    PowerPhase, StreamSource, StreamSourceKind, StreamState,
 };
 pub use tisvlay_protocol::rpc::{
     NotificationSettings, NotificationSettingsPatch, PairStarted, ReloadReport, ServiceInfo,
@@ -127,9 +127,9 @@ pub enum StateEvent {
     UserProfileAdded(Uuid),
     /// A user profile was deleted.
     UserProfileRemoved(Uuid),
-    /// The session service republished the remote-session fact; re-read
-    /// [`SessionClient::remote_session`].
-    RemoteSessionChanged,
+    /// The session service republished the stream fact; re-read
+    /// [`SessionClient::stream_state`].
+    StreamChanged,
     /// The tray's liveliness token appeared. Can repeat for one
     /// lifetime.
     TrayAppeared,
@@ -261,9 +261,9 @@ pub struct TvInfo {
     /// `managed` and its resolved profile's `automate_when` policy holds
     /// against the current input.
     pub automated: bool,
-    /// Whether a remote session currently arms this TV — the read-only
-    /// projection of the world's `remote_armed` gate.
-    pub remote_armed: bool,
+    /// Whether a stream currently arms this TV — the read-only
+    /// projection of the world's `stream_armed` gate.
+    pub stream_armed: bool,
     /// The assigned system profile; `None` uses the default.
     pub system_profile: Option<Uuid>,
     /// The input id (as in `inputs`) a profile action lands the TV on
@@ -1023,7 +1023,7 @@ pub struct SessionClient {
 
 impl SessionClient {
     /// Connect to the user socket the session service serves and start
-    /// mirroring its user profiles, assignments and remote-session fact.
+    /// mirroring its user profiles, assignments and stream fact.
     /// Like [`DaemonClient::connect`], this doesn't need the service
     /// running and fails only with [`Error::Transport`].
     pub async fn connect(socket: &Path, site: &str) -> Result<Self> {
@@ -1235,37 +1235,37 @@ impl SessionClient {
         Ok(defaults)
     }
 
-    /// Arm or disarm a manual remote-session source through the session
+    /// Arm or disarm a manual stream source through the session
     /// service's verb rpc — the same escape hatch the CLI and the
     /// Sunshine `global_prep_cmd` hook drive.
-    pub async fn remote_session_set(&self, source: &str, active: bool) -> Result<()> {
-        let request = rpc::RemoteSet {
+    pub async fn stream_set(&self, source: &str, active: bool) -> Result<()> {
+        let request = rpc::StreamSet {
             source: Some(source.into()),
             active,
         };
-        self.call::<user_remote::Set>(&(), &request)
+        self.call::<user_stream::Set>(&(), &request)
             .await
             .map(|_| ())
     }
 
-    /// The current remote-session fact: live sources plus the armed
+    /// The current stream fact: live sources plus the armed
     /// projection. Read from the session service directly (the cached
     /// mirror slot is the passive view).
-    pub async fn remote_session_status(&self) -> Result<RemoteSessionState> {
-        self.call::<user_remote::Status>(&(), &()).await
+    pub async fn stream_status(&self) -> Result<StreamState> {
+        self.call::<user_stream::Status>(&(), &()).await
     }
 
-    /// The remote-session fact as last mirrored from the cached fact key
-    /// — the passive counterpart to [`Self::remote_session_status`],
-    /// updated on every `RemoteSessionChanged` event.
-    pub async fn remote_session(&self) -> Option<RemoteSessionState> {
+    /// The stream fact as last mirrored from the cached fact key
+    /// — the passive counterpart to [`Self::stream_status`],
+    /// updated on every `StreamChanged` event.
+    pub async fn stream_state(&self) -> Option<StreamState> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
         self.mirror
             .lock()
             .expect("mirror lock")
-            .remote_session
+            .stream_state
             .clone()
     }
 
@@ -1710,7 +1710,7 @@ mod mirror_row {
                 waiting_for: self.link.as_ref().and_then(|l| l.waiting_for),
                 managed: meta.managed,
                 automated: meta.automated,
-                remote_armed: meta.remote_armed,
+                stream_armed: meta.stream_armed,
                 system_profile: meta.system_profile,
                 primary_input: meta.primary_input.unwrap_or_default(),
                 hardware_id: HardwareId {

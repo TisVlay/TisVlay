@@ -25,7 +25,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Notification-subsystem follow-up cleanups](notification-subsystem-followups.md)
 - [Shared supervised-task helper (tray link / idle adapter / netlink monitor / seat and logind watches)](supervised-task-helper.md)
 - [Eager remote-state refresh on gated events (world-side DPMS path)](eager-remote-state-refresh.md)
-- [Remote-session detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](remote-session-followups.md)
+- [Stream detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](stream-followups.md)
 - [Screencast detection beyond KWin (no blessed cross-desktop signal; per-producer, class-and-producer, compositor-PID and Hyprland options; upstream `media.role=Screen` and portal-monitor proposals; NixOS VM test)](screencast-detection-coverage.md)
 - [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](zenoh-typed-queryables.md)
 - [SDK methods for the rpcs the GUI can't reach (add-tv, discover, user effective)](sdk-cli-only-rpcs.md)

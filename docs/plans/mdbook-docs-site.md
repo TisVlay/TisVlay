@@ -52,7 +52,7 @@ Merged `origin/main` into this branch. Three conflicts, all mechanical: `Cargo.l
 
 ### Post-merge reconciliation (the v0.3.0 rewrite — #106 onward, 2026-07-12)
 
-The branch had forked at #102, **before** the D-Bus → zenoh + bevy_ecs rewrite (v0.3.0, #106) and everything after it (notably #110 remote-session awareness). Merged `origin/main` into the branch (`f5511ec`, 109 commits of divergence): CONFLICTING → MERGEABLE, `just build` + CLI clap self-check + `docs-cli-check` all green. The CLI doc-gen was re-wired — main's rewritten clap tree moved into `crates/tisvlay-cli/src/lib.rs` (`pub`), `main.rs` imports it, `gen-cli-docs` (now at `src/bin/`, not `examples/`) renders it, and `cli-generated.md` was regenerated (old `power on`/`screen` verbs → new `watch`/`set-volume`/`remote-session`). Old D-Bus clap tree, its dev-deps, and old-CLI snapshot tests dropped.
+The branch had forked at #102, **before** the D-Bus → zenoh + bevy_ecs rewrite (v0.3.0, #106) and everything after it (notably #110 stream awareness). Merged `origin/main` into the branch (`f5511ec`, 109 commits of divergence): CONFLICTING → MERGEABLE, `just build` + CLI clap self-check + `docs-cli-check` all green. The CLI doc-gen was re-wired — main's rewritten clap tree moved into `crates/tisvlay-cli/src/lib.rs` (`pub`), `main.rs` imports it, `gen-cli-docs` (now at `src/bin/`, not `examples/`) renders it, and `cli-generated.md` was regenerated (old `power on`/`screen` verbs → new `watch`/`set-volume`/`stream`). Old D-Bus clap tree, its dev-deps, and old-CLI snapshot tests dropped.
 
 A four-agent read-only audit (getting-started+reference / guide-behavioral / CLI+operations / feature-farming) then mapped the book against current `main`. **Every prose chapter predates the rewrite;** the auto-generated CLI reference is now exact, and the conceptual bones survive almost everywhere, but the *surface* (commands, config paths, IPC model) is wrong throughout and four major features have no coverage.
 
@@ -67,27 +67,27 @@ A four-agent read-only audit (getting-started+reference / guide-behavioral / CLI
 
 | Chapter | Verdict | Headline actions |
 |---|---|---|
-| introduction | rewrite (arch half) | daemon name; drop D-Bus + fix mermaid; add greeter, remote-session, reliability to Features |
+| introduction | rewrite (arch half) | daemon name; drop D-Bus + fix mermaid; add greeter, stream, reliability to Features |
 | getting-started/installation | heavy-edit | `tisvlay-daemon` unit; add mandatory `services.tisvlay.users` grant; `cec`/`greeter`/`openFirewall` opts; socket-group auth; drop "D-Bus policy"; `0.3.0` |
 | getting-started/quick-start | rewrite | every command literal (positional id, `set-volume`, `mute <bool>`); `tisvlay` group prereq |
 | getting-started/pairing | rewrite | `pair <name> --params`; MAC in JSON; `repair`; `schema`; MAC auto-fill & CEC device probe |
 | guide/cli | accurate + gap | generated ref current; optional prose; fix `cli.md:2` comment path (`examples/` → `src/bin/`) |
-| guide/configuration | heavy-edit | drop `ReloadConfig`; `daemon.toml`; EventAction table grammar; `while_remote`/`remote_screencast_arms`; locked/unlocked idle; `restore_input`; `seed.toml` |
-| guide/profiles | heavy-edit | fix assignment verbs; add `while_remote` gate layer; keep resolution chains + `automate_when` table |
-| guide/session-automation | heavy-edit | daemon name; remote-session suppression; per-lock-state idle + drift; `restore_input`; expand reliability; keep DPMS/lifecycle/greeter |
-| guide/gui-tray | heavy-edit | drop D-Bus; REMOTE SESSION card + `while_remote`/`restore` toggles + tray "Remote session active" indicator |
+| guide/configuration | heavy-edit | drop `ReloadConfig`; `daemon.toml`; EventAction table grammar; `while_streaming`/`screencast_arms`; locked/unlocked idle; `restore_input`; `seed.toml` |
+| guide/profiles | heavy-edit | fix assignment verbs; add `while_streaming` gate layer; keep resolution chains + `automate_when` table |
+| guide/session-automation | heavy-edit | daemon name; stream suppression; per-lock-state idle + drift; `restore_input`; expand reliability; keep DPMS/lifecycle/greeter |
+| guide/gui-tray | heavy-edit | drop D-Bus; STREAMING card + `while_streaming`/`restore` toggles + tray "Stream active" indicator |
 | operations/firewall-discovery | light-edit | pair syntax ×2; `--ssdp-port` (no `[discovery] bind_port` key); broaden to streaming discovery + MAC enrichment |
 | operations/troubleshooting | heavy-edit | rewrite `busctl`/`ReloadConfig` sections → `list`/`watch`/`add`; ~11 command fixes; `automate_when` is policy |
 | reference/requirements | heavy-edit | drop "D-Bus [for the daemon]"; socket-group auth; IPv6 note; keep hardware/CEC/WoL/DPMS |
 | reference/faq | heavy-edit | rewrite `busctl` scripting answer → key space/`--json`/`watch`; `daemon.toml`; drop `-t` |
 
-**New chapters to add** (SUMMARY delta): **Remote-Session Awareness** (User Guide — flagship, from `docs/remote/detection.md`, + Sunshine `global_prep_cmd` recipe); **Networking & Reliability** (Operations — routable dials, carrier/route watchers, verify-retry + latch); **HDMI-CEC** (User Guide, or fold into a Vendors chapter); **Observability** or an expanded CLI Reference (`watch`, `status`/`list`, liveliness, `vendors`/`schema`). Broaden **Firewall & Discovery** to cover streaming discovery + manual-entry MAC enrichment. Nothing is deleted wholesale — every chapter maps to a still-real feature.
+**New chapters to add** (SUMMARY delta): **Streaming** (User Guide — flagship, from `docs/streams/detection.md`, + Sunshine `global_prep_cmd` recipe); **Networking & Reliability** (Operations — routable dials, carrier/route watchers, verify-retry + latch); **HDMI-CEC** (User Guide, or fold into a Vendors chapter); **Observability** or an expanded CLI Reference (`watch`, `status`/`list`, liveliness, `vendors`/`schema`). Broaden **Firewall & Discovery** to cover streaming discovery + manual-entry MAC enrichment. Nothing is deleted wholesale — every chapter maps to a still-real feature.
 
 **Writing progress** (decided with the user: I draft, surface fixes first, then new chapters):
 - [x] Batch A — introduction, getting-started/{installation, quick-start, pairing} rewritten against `lib.rs`/`module.nix` (`9aba954`).
 - [x] Batch B — guide/{configuration, profiles, session-automation, gui-tray}, verified vs `config.rs` + the real `daemon.toml`/`seed.toml` (`8da8cac`).
 - [x] Batch C — operations/{firewall-discovery, troubleshooting}, reference/{requirements, faq}, `cli.md` intro + comment-path fix (`11fcc99`).
-- [x] Batch D — new chapters `guide/remote-sessions.md` + `operations/networking-reliability.md` + `SUMMARY.md`. **HDMI-CEC** stays folded into the existing pages (installation/pairing/configuration/requirements/faq) per the pre-rewrite maintainer decision — no separate nav chapter; **Observability** folded into the CLI Reference intro (`watch`/`status`/`list`), not a standalone page.
+- [x] Batch D — new chapters `guide/streaming.md` + `operations/networking-reliability.md` + `SUMMARY.md`. **HDMI-CEC** stays folded into the existing pages (installation/pairing/configuration/requirements/faq) per the pre-rewrite maintainer decision — no separate nav chapter; **Observability** folded into the CLI Reference intro (`watch`/`status`/`list`), not a standalone page.
 - [x] Main syncs — content passes folding in the user-facing changes of #111–#121 (access model, GNOME, completions, OSD name, tray scroll), #123–#137 (WoL MAC read from the TV at pair time, Breeze theme, standby keeps the network up), #138–#150 (configurable Sunshine port, secret client key), #153–#159 (hand-editing and reloading) and #160–#168 (the release-compatibility check: Troubleshooting → Version mismatch).
 
 **Remaining** (maintainer's, non-blocking): a field review of the rewritten commands/config against a live v0.3.0 stack, and the still-deferred GUI/Tray screenshots. *(The `cli.md` double-heading is resolved — `gen-cli-docs` now renders via `help_markdown_custom` with `show_footer(false)` and strips clap-markdown's title + preamble line, so the CLI Reference page carries a single content H1; the drift gate stays green.)*
@@ -104,15 +104,15 @@ The book has grown by accretion: four main syncs, two new chapters, each fact ad
 |---|------|-----------|----------------|-------------------|
 | R1 | Socket-access model (presence grant, `tisvlay` group, `enable-access`, reboot caveat) | installation (intro + packages), quick-start, gui-tray, troubleshooting, requirements ×2, faq | installation: one "Access" section with a stable anchor | one clause + link; troubleshooting keeps the two error messages and links for the fix |
 | R2 | Reliability (verify-and-retry, standby escalation, latched screen state, route-held wake) | networking-reliability, session-automation § Reliability (near-verbatim), session-automation § System events (the escalation property) | networking-reliability | session-automation's section shrinks to one sentence + link |
-| R3 | Remote-session suppress-by-default rule | remote-sessions, profiles § The remote-session gate, session-automation notes, configuration `while_remote`, gui-tray ×2, troubleshooting | remote-sessions | profiles keeps how the gate composes with `automate_when` (one paragraph); the rest link |
-| R4 | Profile field defaults | configuration (system + user blocks), session-automation event table, remote-sessions (connect/disconnect/return defaults), session-automation greeter paragraph (`0`/`screen_off`/`screen_on`) | configuration (generated — see G1) | the session-automation table keeps Event → Field and drops the Default column; prose stops quoting defaults |
+| R3 | Stream suppress-by-default rule | streams, profiles § The stream gate, session-automation notes, configuration `while_streaming`, gui-tray ×2, troubleshooting | streams | profiles keeps how the gate composes with `automate_when` (one paragraph); the rest link |
+| R4 | Profile field defaults | configuration (system + user blocks), session-automation event table, streams (connect/disconnect/return defaults), session-automation greeter paragraph (`0`/`screen_off`/`screen_on`) | configuration (generated — see G1) | the session-automation table keeps Event → Field and drops the Default column; prose stops quoting defaults |
 | R5 | Resolution chain + `automate_when` | configuration § Inheritance and § `automate_when`, profiles § Resolution order and § The automation gate | profiles | configuration keeps the schema, links to profiles for semantics |
 | R6 | CEC adapter requirements (USB Pulse-Eight / amdgpu-i915 DP→HDMI / not Nvidia) | installation § HDMI-CEC, requirements, faq | installation § HDMI-CEC | link |
 | R7 | CEC limitations (power + screen-blank only; blank emulated by power; volume/backlight/input unreliable) | requirements (supported table + limitations ×2), faq ×2, configuration (`emulate_screen_via_power`) | requirements § Limitations | faq answers in a sentence + link; configuration keeps only the key's effect |
 | R8 | Wake-on-LAN prerequisites (right MAC, "TV On via Wi-Fi", same L2 / relay, boot delay, pixel refresh) | troubleshooting, requirements ×3, networking-reliability, pairing, isolated-networks | troubleshooting § The TV won't power on (the checklist) | link; requirements keeps one row |
 | R9 | MAC read from the TV at pairing | pairing (canonical), quick-start, configuration comment, firewall-discovery, gui-tray, troubleshooting, isolated-networks | pairing § The Wake-on-LAN MAC | a clause + link; the LG/IPv4 qualifier lives only in pairing |
 | R10 | The pair-by-IP command line | quick-start, pairing, firewall-discovery, troubleshooting, isolated-networks | pairing (quick-start keeps its own as the walkthrough) | "pair by IP address (see Pairing)" |
-| R11 | `tisvlay watch` / `list` / `status` explanations | cli, quick-start, troubleshooting, faq, remote-sessions | cli (Observability intro) | link |
+| R11 | `tisvlay watch` / `list` / `status` explanations | cli, quick-start, troubleshooting, faq, streams | cli (Observability intro) | link |
 | R12 | GNOME tray (AppIndicator) | gui-tray, troubleshooting | gui-tray | troubleshooting entry is one line + link |
 | R13 | Multi-user foreground-only dispatch | session-automation, troubleshooting, faq | session-automation | link |
 | R14 | Socket paths and defaults | cli global-flags list, requirements § What runs where, plus the generated reference | the generated CLI reference (G2) | requirements keeps the packaged path only |
@@ -135,7 +135,7 @@ The book has grown by accretion: four main syncs, two new chapters, each fact ad
 
 - G1 **Profile defaults partial.** A generator (the `gen-cli-docs` pattern: an optional-feature bin, a committed partial, a `just` drift gate in the docs CI job) renders `SystemProfileConfig::default()` / `UserProfileConfig::default()` as the TOML blocks configuration.md shows today, with each field's doc comment as its trailing comment. Removes the largest hand-copied surface (R4) and makes field renames and default flips self-updating.
 - G2 **Drop cli.md's hand-written global-flags list.** The generated reference already renders `--socket`, `--user-socket`, `--site`, `--json` from their doc comments; cli.md keeps the observability and tab-completion intro.
-- G3 *(optional, larger)* NixOS module options. installation, firewall-discovery, remote-sessions and isolated-networks each quote option names and defaults from `module.nix`. A generated options page (`nixosOptionsDoc`) would own them; the prose would then name the option and link. Worth it only if the option surface keeps growing.
+- G3 *(optional, larger)* NixOS module options. installation, firewall-discovery, streams and isolated-networks each quote option names and defaults from `module.nix`. A generated options page (`nixosOptionsDoc`) would own them; the prose would then name the option and link. Worth it only if the option surface keeps growing.
 - G4 *(defer)* Per-vendor pairing fields and capabilities (`tisvlay vendor <vendor>` / the vendor catalog) could generate the backend tables. Hold until a second network backend exists; one LG row doesn't justify a generator.
 
 ### V — Vendor-specific framing (book-wide)
@@ -170,7 +170,7 @@ The isolated-networks fix (generic mechanism in prose, vendor specifics in a per
 - **Doc comments** are read from `crates/tisvlay-core/src/config.rs` at build time (`include_str!` + a line scan of the two structs), so a field without a doc comment fails generation instead of rendering blank.
 - **G2.** cli.md's hand-written global-flags list goes; the generated reference renders them from their doc comments.
 - **Version source:** the workspace `Cargo.toml` version, which on main always equals the latest release (maintainer-confirmed).
-- **Correctness win:** the generated defaults are the real stock mappings, modifiers included (e.g. `on_startup` restores the input; the off-going events carry `while_remote = true`), which the hand-copied bare tokens had dropped.
+- **Correctness win:** the generated defaults are the real stock mappings, modifiers included (e.g. `on_startup` restores the input; the off-going events carry `while_streaming = true`), which the hand-copied bare tokens had dropped.
 
 **Step 2 done (2026-10-10)** — tisvlay-docgen + the four partials, `just docs-gen`/`docs-gen-check` wired into CI; `just check` (640 tests), the drift gate, the book build and prek all green. The global-flag details cli.md carried moved into the clap doc comments, so `--help` and the book share them.
 
@@ -270,5 +270,5 @@ Authoring rules (supersedes S2):
 
 - Describe tasks with the labels the GUI shows (taken from `crates/tisvlay-gui/ui/`); keep implementation vocabulary (UUIDs, sockets, field names) out of the main path.
 - Command-line equivalents live in one of two places: the "Which command does what the app does" table in the Command Line page, or a collapsed "From a terminal" `<details>` aside where a terminal really is the fix (Troubleshooting, Adding a TV).
-- Canonical homes changed: profile semantics, inheritance, the automation gate, and event meanings → Automation; the file schema and reload rules → Configuration Files; remote-session behavior → Remote-Session Awareness; tray and window behavior → GUI & Tray; WoL checklist → Troubleshooting; MAC explanation → Adding a TV; checking a release (checksums, signatures, SBOMs, scanning an installed system) → Security & Supply Chain (Reference), which Installation links in one clause.
+- Canonical homes changed: profile semantics, inheritance, the automation gate, and event meanings → Automation; the file schema and reload rules → Configuration Files; stream behavior → Remote-Session Awareness; tray and window behavior → GUI & Tray; WoL checklist → Troubleshooting; MAC explanation → Adding a TV; checking a release (checksums, signatures, SBOMs, scanning an installed system) → Security & Supply Chain (Reference), which Installation links in one clause.
 - When the GUI labels change, grep the book for the old label (notification names, tooltip strings, and field labels are quoted verbatim).

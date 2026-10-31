@@ -1,4 +1,4 @@
-//! Fact ingest: backend events, pairing progress, transport facts, carrier and route changes, connector matches, the remote-session mirror, and connection reconciliation.
+//! Fact ingest: backend events, pairing progress, transport facts, carrier and route changes, connector matches, the stream mirror, and connection reconciliation.
 
 use super::*;
 
@@ -815,22 +815,19 @@ pub(super) fn apply_transport_facts(
     }
 }
 
-/// Fold mirrored remote-session updates into the `RemoteArmed` resource.
+/// Fold mirrored stream updates into the `StreamArmed` resource.
 /// Runs ahead of `dispatch_system_events` in the ingest chain so an arm
 /// arriving in the same batch as a DPMS-on gates that dispatch. The
 /// latest update wins outright — the mirror always carries the full
 /// armed set, so a shrinking set (a source disarming) is applied by
 /// replacement, and an empty set disarms every TV.
-pub(super) fn apply_remote_session(
-    mut reader: MessageReader<InEvent>,
-    mut armed: ResMut<RemoteArmed>,
-) {
+pub(super) fn apply_stream(mut reader: MessageReader<InEvent>, mut armed: ResMut<StreamArmed>) {
     for msg in reader.read() {
-        let InEvent::RemoteSession { armed: set } = msg else {
+        let InEvent::Stream { armed: set } = msg else {
             continue;
         };
         let next: HashSet<Uuid> = set.iter().copied().collect();
-        armed.set_if_neq(RemoteArmed(next));
+        armed.set_if_neq(StreamArmed(next));
     }
 }
 

@@ -160,12 +160,16 @@ pub enum InEvent {
         event: SystemEvent,
         connector: Option<String>,
     },
-    /// The mirrored remote-session fact: the set of TVs the session
-    /// service computed as armed (a remote session is active and the
-    /// resolved user profile arms it). Consumed into the `RemoteArmed`
+    /// Queue the token on every live connection behind the commands
+    /// already queued there. The reactor fans it out after its step's
+    /// dispatch, so it also covers a `System` event sent just before it.
+    Drain(DrainToken),
+    /// The mirrored stream fact: the set of TVs the session
+    /// service computed as armed (a stream is active and the
+    /// resolved user profile arms it). Consumed into the `StreamArmed`
     /// resource; an empty set disarms every TV. The world sees only the
     /// armed projection — arming policy stays session-side.
-    RemoteSession { armed: Vec<Uuid> },
+    Stream { armed: Vec<Uuid> },
     /// NIC carrier transition — parks/unparks connections whose
     /// monitored interface (route-resolved NIC) matches `interface`.
     Carrier { interface: String, up: bool },
@@ -562,6 +566,45 @@ pub enum BackendCmd {
     PowerOn,
     ScreenOn,
     ScreenOff,
+    /// Dropped once the commands queued before it have run.
+    Drain(DrainToken),
+}
+
+/// A token each live connection holds behind the commands already queued
+/// on it, dropping it once it has run them. The paired [`Drained`]
+/// resolves when every copy is gone: the logind watcher holds the sleep
+/// inhibitor until then, so a sleep's TV commands land before the
+/// suspend. Only drops carry meaning; nothing is sent on the channel.
+#[derive(Debug, Clone)]
+pub struct DrainToken(mpsc::Sender<()>);
+
+impl DrainToken {
+    /// A fresh token and the [`Drained`] its drops resolve.
+    pub fn pair() -> (Self, Drained) {
+        let (tx, rx) = mpsc::channel(1);
+        (Self(tx), Drained(rx))
+    }
+}
+
+impl PartialEq for DrainToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same_channel(&other.0)
+    }
+}
+
+impl Eq for DrainToken {}
+
+/// Resolves once every copy of its [`DrainToken`] has dropped.
+#[derive(Debug)]
+pub struct Drained(mpsc::Receiver<()>);
+
+impl Drained {
+    /// Wait until every connection has run what was queued before the
+    /// token reached it.
+    pub async fn wait(mut self) {
+        // `recv` yields `None` once every sender is gone.
+        let _ = self.0.recv().await;
+    }
 }
 
 /// One TV's persistable state — the store row, snapshotted from the world

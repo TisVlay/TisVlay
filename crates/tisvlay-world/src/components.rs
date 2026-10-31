@@ -381,10 +381,10 @@ pub(crate) enum ProfileAction {
     PowerOn,
 }
 
-/// Event → `(action, restore_input, while_remote)` mapping applied when
+/// Event → `(action, restore_input, while_streaming)` mapping applied when
 /// a TV has no assigned profile or its profile leaves the event's field
 /// unset — the inheritance base the `profile/rpc/defaults` projection
-/// serves. The trailing bool is the resolved remote-session gate: `true`
+/// serves. The trailing bool is the resolved stream gate: `true`
 /// fires while the TV is armed, `false` suppresses.
 #[derive(Resource, Debug)]
 pub(crate) struct SystemProfile(pub HashMap<SystemEvent, (ProfileAction, bool, bool)>);
@@ -396,7 +396,7 @@ impl SystemProfile {
     /// The session-start wakes restore the primary input (mirrors
     /// `ResolvedSystemProfile::default`).
     ///
-    /// The `while_remote` floor splits by event direction, mirroring
+    /// The `while_streaming` floor splits by event direction, mirroring
     /// [`tisvlay_core::ResolvedSystemProfile::default`]: off-going events
     /// fire while armed (a blank is always safe to let through, and the
     /// machine going away turns the TV off for the empty room), so sleep,
@@ -432,14 +432,14 @@ impl SystemProfile {
     }
 }
 
-/// The set of TVs a remote session currently arms — mirrored from the
+/// The set of TVs a stream currently arms — mirrored from the
 /// session service (which owns arming policy) via
-/// [`InEvent::RemoteSession`](crate::events::InEvent::RemoteSession).
+/// [`InEvent::Stream`](crate::events::InEvent::Stream).
 /// The dispatch gate consults membership to suppress events whose action
-/// carries a `while_remote = false` gate; an empty set (no session
-/// service, or no active remote session) gates nothing.
+/// carries a `while_streaming = false` gate; an empty set (no session
+/// service, or no active stream) gates nothing.
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RemoteArmed(pub HashSet<Uuid>);
+pub(crate) struct StreamArmed(pub HashSet<Uuid>);
 
 /// The `<site>` chunk used in every key this world publishes.
 #[derive(Resource, Debug)]

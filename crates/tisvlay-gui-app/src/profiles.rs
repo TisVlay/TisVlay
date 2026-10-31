@@ -246,14 +246,14 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "on_remote_connect",
+        wire: "on_stream_start",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
             class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
-        wire: "on_remote_disconnect",
+        wire: "on_stream_end",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
             class: EnumClass::SessionAction,
@@ -268,23 +268,23 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-/// User-profile remote-card fields — the REMOTE SESSION card, rendered
+/// User-profile stream-card fields — the STREAMING card, rendered
 /// below the main FIELDS card. Just the screencast-arming switch; the
 /// per-event suppression gate rides each action row in the FIELDS card
 /// as an icon toggle (the `restore_input` pattern), not a card row. The
 /// union of this and [`USER_FIELDS`] is validated against
 /// `tisvlay_core::USER_PROFILE_FIELDS`.
-pub(crate) const USER_WHILE_REMOTE_FIELDS: &[FieldSpec] = &[FieldSpec {
-    wire: "remote_screencast_arms",
+pub(crate) const USER_WHILE_STREAMING_FIELDS: &[FieldSpec] = &[FieldSpec {
+    wire: "screencast_arms",
     kind: FieldKind::Bool,
 }];
 
-/// System-profile remote-card fields — empty. Arming is a user-session
-/// policy question (no `remote_screencast_arms` on the system side), and
+/// System-profile stream-card fields — empty. Arming is a user-session
+/// policy question (no `screencast_arms` on the system side), and
 /// the per-event gate rides the action rows, so the system pane has no
-/// remote card. Kept as the counterpart to [`USER_WHILE_REMOTE_FIELDS`]
+/// stream card. Kept as the counterpart to [`USER_WHILE_STREAMING_FIELDS`]
 /// so the card wiring stays symmetric across both kinds.
-pub(crate) const SYSTEM_WHILE_REMOTE_FIELDS: &[FieldSpec] = &[];
+pub(crate) const SYSTEM_WHILE_STREAMING_FIELDS: &[FieldSpec] = &[];
 
 /// The main-card field table for an editor kind.
 fn main_fields(kind: EditorKind) -> &'static [FieldSpec] {
@@ -294,11 +294,11 @@ fn main_fields(kind: EditorKind) -> &'static [FieldSpec] {
     }
 }
 
-/// The WHILE REMOTE ACTIVE card's field table for an editor kind.
-fn while_remote_fields(kind: EditorKind) -> &'static [FieldSpec] {
+/// The STREAMING card's field table for an editor kind.
+fn while_streaming_fields(kind: EditorKind) -> &'static [FieldSpec] {
     match kind {
-        EditorKind::System => SYSTEM_WHILE_REMOTE_FIELDS,
-        EditorKind::User => USER_WHILE_REMOTE_FIELDS,
+        EditorKind::System => SYSTEM_WHILE_STREAMING_FIELDS,
+        EditorKind::User => USER_WHILE_STREAMING_FIELDS,
     }
 }
 
@@ -306,7 +306,7 @@ fn while_remote_fields(kind: EditorKind) -> &'static [FieldSpec] {
 /// surface for kind/resolve queries that don't care which card a field
 /// lives in.
 fn all_fields(kind: EditorKind) -> impl Iterator<Item = &'static FieldSpec> {
-    main_fields(kind).iter().chain(while_remote_fields(kind))
+    main_fields(kind).iter().chain(while_streaming_fields(kind))
 }
 
 /// Translated label for `spec.wire`. Wrapped in `pgettext` with a
@@ -333,10 +333,10 @@ fn field_label(wire: &str) -> String {
         "idle_timeout_seconds" => pgettext("profile field", "Idle timeout"),
         "locked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (locked)"),
         "unlocked_idle_timeout_seconds" => pgettext("profile field", "Idle timeout (unlocked)"),
-        "on_remote_connect" => pgettext("profile field", "On remote connect"),
-        "on_remote_disconnect" => pgettext("profile field", "On remote disconnect"),
+        "on_stream_start" => pgettext("profile field", "On stream start"),
+        "on_stream_end" => pgettext("profile field", "On stream end"),
         "on_local_return" => pgettext("profile field", "On local return"),
-        "remote_screencast_arms" => pgettext("profile field", "Screen capture arms"),
+        "screencast_arms" => pgettext("profile field", "Screen capture arms"),
         // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.
@@ -520,8 +520,8 @@ fn read_user_action(body: &UserProfileBody, wire: &str) -> Option<tisvlay_core::
         "on_lock_wake" => body.on_lock_wake,
         "on_idle_timeout" => body.on_idle_timeout,
         "on_idle_resume" => body.on_idle_resume,
-        "on_remote_connect" => body.on_remote_connect,
-        "on_remote_disconnect" => body.on_remote_disconnect,
+        "on_stream_start" => body.on_stream_start,
+        "on_stream_end" => body.on_stream_end,
         "on_local_return" => body.on_local_return,
         _ => None,
     }
@@ -567,7 +567,7 @@ fn resolve_user_action(
 
 /// Derive one boolean modifier off a resolved (or floored) action via
 /// the terminal accessor (`EventAction::restore_input` /
-/// `EventAction::while_remote`). An absent action floors to `false`
+/// `EventAction::while_streaming`). An absent action floors to `false`
 /// (no restore, gated) — the suppress-by-default floor. Callers resolve
 /// the `EventAction` once (own → default → baseline, or baseline alone
 /// for the floor) and derive both modifiers from it.
@@ -623,16 +623,14 @@ fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
         "unlocked_idle_timeout_seconds" => {
             body.unlocked_idle_timeout_seconds.map(|v| v.to_string())
         }
-        "on_remote_connect" => body
-            .on_remote_connect
+        "on_stream_start" => body
+            .on_stream_start
             .map(|a| session_action_token(a.action())),
-        "on_remote_disconnect" => body
-            .on_remote_disconnect
-            .map(|a| session_action_token(a.action())),
+        "on_stream_end" => body.on_stream_end.map(|a| session_action_token(a.action())),
         "on_local_return" => body
             .on_local_return
             .map(|a| session_action_token(a.action())),
-        "remote_screencast_arms" => body.remote_screencast_arms.map(|v| v.to_string()),
+        "screencast_arms" => body.screencast_arms.map(|v| v.to_string()),
         _ => None,
     }
 }
@@ -921,7 +919,7 @@ enum SystemOrUser {
 
 struct PreparedEditorRows {
     main: Vec<ProfileFieldRaw>,
-    remote: Vec<ProfileFieldRaw>,
+    stream: Vec<ProfileFieldRaw>,
     can_reset_all: bool,
     same_profile: bool,
 }
@@ -932,23 +930,23 @@ fn prepare_editor_rows(
     uuid: Uuid,
 ) -> PreparedEditorRows {
     // Both cards resolve off the same layer state; `can-reset-all`
-    // spans them. The system editor has no REMOTE SESSION card.
-    let ((main, main_reset), (remote, remote_reset)) = match kind {
+    // spans them. The system editor has no STREAMING card.
+    let ((main, main_reset), (stream, stream_reset)) = match kind {
         EditorKind::System => (
             build_system_rows(&state.system, uuid, SYSTEM_FIELDS),
             (Vec::new(), false),
         ),
         EditorKind::User => (
             build_user_rows(&state.user, uuid, USER_FIELDS),
-            build_user_rows(&state.user, uuid, USER_WHILE_REMOTE_FIELDS),
+            build_user_rows(&state.user, uuid, USER_WHILE_STREAMING_FIELDS),
         ),
     };
     let same_profile = state.displayed == Some((kind, uuid));
     state.displayed = Some((kind, uuid));
     PreparedEditorRows {
         main,
-        remote,
-        can_reset_all: main_reset || remote_reset,
+        stream,
+        can_reset_all: main_reset || stream_reset,
         same_profile,
     }
 }
@@ -983,10 +981,10 @@ fn push_editor_rows(
             },
         );
         push_card_model(
-            profiles.get_editor_remote_fields(),
-            prepared.remote,
+            profiles.get_editor_stream_fields(),
+            prepared.stream,
             prepared.same_profile,
-            |m| profiles.set_editor_remote_fields(m),
+            |m| profiles.set_editor_stream_fields(m),
         );
         profiles.set_editor_can_reset_all(prepared.can_reset_all);
     });
@@ -1047,16 +1045,16 @@ pub(crate) struct ProfileFieldRaw {
     pub unit: &'static str,
     pub bool_value: bool,
     pub is_locally_set: bool,
-    /// This row carries the restore-input + remote-gate toggle slots —
+    /// This row carries the restore-input + stream-gate toggle slots —
     /// true on every `SessionAction` action row. Drives both trailing
     /// toggle slots; the `*_enabled` flags decide interactivity.
     pub has_toggles: bool,
     pub restore_value: bool,
     pub restore_enabled: bool,
     pub restore_differs: bool,
-    pub remote_gate_value: bool,
-    pub remote_gate_enabled: bool,
-    pub remote_gate_differs: bool,
+    pub stream_gate_value: bool,
+    pub stream_gate_enabled: bool,
+    pub stream_gate_differs: bool,
 }
 
 /// Wrap a raw row into the Slint `ProfileFieldEntry`. Must run on
@@ -1080,14 +1078,14 @@ fn into_slint_entry(raw: ProfileFieldRaw) -> ProfileFieldEntry {
         restore_value: raw.restore_value,
         restore_enabled: raw.restore_enabled,
         restore_differs: raw.restore_differs,
-        remote_gate_value: raw.remote_gate_value,
-        remote_gate_enabled: raw.remote_gate_enabled,
-        remote_gate_differs: raw.remote_gate_differs,
+        stream_gate_value: raw.stream_gate_value,
+        stream_gate_enabled: raw.stream_gate_enabled,
+        stream_gate_differs: raw.stream_gate_differs,
     }
 }
 
 /// Build system-side editor rows for one selected profile over the
-/// given field table (the main FIELDS card or the WHILE REMOTE ACTIVE
+/// given field table (the main FIELDS card or the STREAMING
 /// card). Returns the rows plus whether any is locally set — the caller
 /// ORs the two cards' flags into one catalog-body `can-reset-all`.
 fn build_system_rows(
@@ -1109,16 +1107,16 @@ fn build_system_rows(
             let action = resolve_system_action(layers, uuid, field.wire);
             let floor = read_system_action(&layers.baseline, field.wire);
             let restore = action_modifier(action, tisvlay_core::EventAction::restore_input);
-            let gate = action_modifier(action, tisvlay_core::EventAction::while_remote);
+            let gate = action_modifier(action, tisvlay_core::EventAction::while_streaming);
             raw.has_toggles = true;
             raw.restore_value = restore;
             raw.restore_enabled = restore_is_enabled(&resolved);
             raw.restore_differs =
                 restore != action_modifier(floor, tisvlay_core::EventAction::restore_input);
-            raw.remote_gate_value = gate;
-            raw.remote_gate_enabled = remote_gate_is_enabled(field, &resolved);
-            raw.remote_gate_differs =
-                gate != action_modifier(floor, tisvlay_core::EventAction::while_remote);
+            raw.stream_gate_value = gate;
+            raw.stream_gate_enabled = stream_gate_is_enabled(field, &resolved);
+            raw.stream_gate_differs =
+                gate != action_modifier(floor, tisvlay_core::EventAction::while_streaming);
         }
         rows.push(raw);
     }
@@ -1145,23 +1143,23 @@ fn build_user_rows(
             let action = resolve_user_action(layers, uuid, field.wire);
             let floor = read_user_action(&layers.baseline, field.wire);
             let restore = action_modifier(action, tisvlay_core::EventAction::restore_input);
-            let gate = action_modifier(action, tisvlay_core::EventAction::while_remote);
+            let gate = action_modifier(action, tisvlay_core::EventAction::while_streaming);
             raw.has_toggles = true;
             raw.restore_value = restore;
             raw.restore_enabled = restore_is_enabled(&resolved);
             raw.restore_differs =
                 restore != action_modifier(floor, tisvlay_core::EventAction::restore_input);
-            raw.remote_gate_value = gate;
-            raw.remote_gate_enabled = remote_gate_is_enabled(field, &resolved);
-            raw.remote_gate_differs =
-                gate != action_modifier(floor, tisvlay_core::EventAction::while_remote);
+            raw.stream_gate_value = gate;
+            raw.stream_gate_enabled = stream_gate_is_enabled(field, &resolved);
+            raw.stream_gate_differs =
+                gate != action_modifier(floor, tisvlay_core::EventAction::while_streaming);
         }
         rows.push(raw);
     }
     (rows, can_reset)
 }
 
-/// Whether the row carries the restore-input + remote-gate toggle slots:
+/// Whether the row carries the restore-input + stream-gate toggle slots:
 /// every `SessionAction` action row does (never `automate_when`, number,
 /// or bool rows). Both toggles render on such a row unconditionally — the
 /// `*_enabled` predicates below decide interactivity, so there is no
@@ -1184,18 +1182,18 @@ fn restore_is_enabled(resolved: &ResolvedValue) -> bool {
     resolved.current() != "none"
 }
 
-/// The remote-session gate is interactive when there is an action to
+/// The stream gate is interactive when there is an action to
 /// suppress (verb is not `none`) and the row is one the gate can act on.
 /// The connect/disconnect rows fire at the arming edge, where the backend
 /// bypasses the gate outright; the local-return row keeps its backend gate
 /// but hides the toggle here because it only ever fires after a disconnect,
-/// when the TV is normally un-armed, so a `while_remote` toggle would be a
+/// when the TV is normally un-armed, so a `while_streaming` toggle would be a
 /// no-op. Elsewhere the toggle renders inert + dimmed.
-fn remote_gate_is_enabled(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
+fn stream_gate_is_enabled(field: &FieldSpec, resolved: &ResolvedValue) -> bool {
     resolved.current() != "none"
         && !matches!(
             field.wire,
-            "on_remote_connect" | "on_remote_disconnect" | "on_local_return"
+            "on_stream_start" | "on_stream_end" | "on_local_return"
         )
 }
 
@@ -1221,9 +1219,9 @@ fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldR
         restore_value: false,
         restore_enabled: false,
         restore_differs: false,
-        remote_gate_value: false,
-        remote_gate_enabled: false,
-        remote_gate_differs: false,
+        stream_gate_value: false,
+        stream_gate_enabled: false,
+        stream_gate_differs: false,
     };
 
     match field.kind {
@@ -1479,7 +1477,7 @@ pub(crate) fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
             active: false,
         });
         profiles.set_editor_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
-        profiles.set_editor_remote_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
+        profiles.set_editor_stream_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
         profiles.set_editor_can_reset_all(false);
     });
 }
@@ -1573,15 +1571,15 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
             body.unlocked_idle_timeout_seconds =
                 number_patch(patch, "unlocked_idle_timeout_seconds")?;
         }
-        "on_remote_connect" => {
-            body.on_remote_connect = action_field_patch(patch, "on_remote_connect")?;
+        "on_stream_start" => {
+            body.on_stream_start = action_field_patch(patch, "on_stream_start")?;
         }
-        "on_remote_disconnect" => {
-            body.on_remote_disconnect = action_field_patch(patch, "on_remote_disconnect")?;
+        "on_stream_end" => {
+            body.on_stream_end = action_field_patch(patch, "on_stream_end")?;
         }
         "on_local_return" => body.on_local_return = action_field_patch(patch, "on_local_return")?,
-        "remote_screencast_arms" => {
-            body.remote_screencast_arms = bool_patch(patch, "remote_screencast_arms")?;
+        "screencast_arms" => {
+            body.screencast_arms = bool_patch(patch, "screencast_arms")?;
         }
         other => anyhow::bail!("Unknown user-profile field: {other}"),
     }
@@ -1763,12 +1761,12 @@ pub(crate) async fn dispatch_value_edit(
             ..
         } => {
             let action = parse_session_action(value)?;
-            let (_token, restore_input, while_remote) =
+            let (_token, restore_input, while_streaming) =
                 resolve_action_modifiers(editor, kind, uuid, field_wire)?;
             BodyPatch::EventAction(materialize_event_action(
                 action,
                 restore_input,
-                while_remote,
+                while_streaming,
             ))
         }
         _ => parse_enum_token(field_kind, value)?,
@@ -1844,34 +1842,35 @@ pub(crate) async fn dispatch_restore_edit(
     field_wire: &str,
     checked: bool,
 ) -> anyhow::Result<()> {
-    let (token, _restore, while_remote) = resolve_action_modifiers(editor, kind, uuid, field_wire)?;
+    let (token, _restore, while_streaming) =
+        resolve_action_modifiers(editor, kind, uuid, field_wire)?;
     let action = parse_session_action(&token)?;
-    let patch = BodyPatch::EventAction(materialize_event_action(action, checked, while_remote));
+    let patch = BodyPatch::EventAction(materialize_event_action(action, checked, while_streaming));
     match kind {
         EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
         EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
     }
 }
 
-/// Apply a remote-session gate toggle: the mapping becomes the table
-/// form carrying the resolved verb plus the new `while_remote` flag —
+/// Apply a stream gate toggle: the mapping becomes the table
+/// form carrying the resolved verb plus the new `while_streaming` flag —
 /// same whole-value materialization as the restore toggle, preserving
 /// the resolved `restore_input`.
-pub(crate) async fn dispatch_remote_gate_edit(
+pub(crate) async fn dispatch_stream_gate_edit(
     editor: &ProfileEditor,
     daemon: &DaemonClient,
     session: &Arc<RwLock<Option<SessionClient>>>,
     kind: EditorKind,
     uuid: Uuid,
     field_wire: &str,
-    fires_while_remote: bool,
+    fires_while_streaming: bool,
 ) -> anyhow::Result<()> {
     let (token, restore_input, _gate) = resolve_action_modifiers(editor, kind, uuid, field_wire)?;
     let action = parse_session_action(&token)?;
     let patch = BodyPatch::EventAction(materialize_event_action(
         action,
         restore_input,
-        fires_while_remote,
+        fires_while_streaming,
     ));
     match kind {
         EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
@@ -1880,9 +1879,9 @@ pub(crate) async fn dispatch_remote_gate_edit(
 }
 
 /// Resolve an action row's current verb token plus BOTH modifiers
-/// (`restore_input`, `while_remote`) through the inherit chain under one
+/// (`restore_input`, `while_streaming`) through the inherit chain under one
 /// editor lock — the single read every action-row edit path shares. The
-/// verb ComboBox, the restore toggle, and the remote-gate toggle each
+/// verb ComboBox, the restore toggle, and the stream-gate toggle each
 /// override exactly one dimension of this triple and preserve the other
 /// two.
 fn resolve_action_modifiers(
@@ -1903,7 +1902,7 @@ fn resolve_action_modifiers(
                     .current()
                     .to_string(),
                 action_modifier(action, tisvlay_core::EventAction::restore_input),
-                action_modifier(action, tisvlay_core::EventAction::while_remote),
+                action_modifier(action, tisvlay_core::EventAction::while_streaming),
             )
         }
         EditorKind::User => {
@@ -1913,7 +1912,7 @@ fn resolve_action_modifiers(
                     .current()
                     .to_string(),
                 action_modifier(action, tisvlay_core::EventAction::restore_input),
-                action_modifier(action, tisvlay_core::EventAction::while_remote),
+                action_modifier(action, tisvlay_core::EventAction::while_streaming),
             )
         }
     })
@@ -1921,22 +1920,22 @@ fn resolve_action_modifiers(
 
 /// Build the minimal [`EventAction`] for a verb plus its two resolved
 /// modifiers: a bare `Plain` when both sit at the suppress-by-default
-/// floor (`restore_input = false`, `while_remote = false`) so the
+/// floor (`restore_input = false`, `while_streaming = false`) so the
 /// persisted TOML stays a bare token, the `With` table form otherwise.
 /// Shared by all three action-row edit paths (verb, restore toggle,
 /// gate toggle) so touching one control preserves the other two.
 fn materialize_event_action(
     action: SessionAction,
     restore_input: bool,
-    while_remote: bool,
+    while_streaming: bool,
 ) -> tisvlay_core::EventAction {
-    if !restore_input && !while_remote {
+    if !restore_input && !while_streaming {
         tisvlay_core::EventAction::Plain(action)
     } else {
         tisvlay_core::EventAction::With {
             action,
             restore_input,
-            while_remote,
+            while_streaming,
         }
     }
 }
@@ -2129,10 +2128,10 @@ mod tests {
             on_idle_resume: Some(SessionAction::ScreenOn.into()),
             locked_idle_timeout_seconds: Some(0),
             unlocked_idle_timeout_seconds: Some(0),
-            on_remote_connect: Some(SessionAction::ScreenOff.into()),
-            on_remote_disconnect: Some(SessionAction::ScreenOff.into()),
+            on_stream_start: Some(SessionAction::ScreenOff.into()),
+            on_stream_end: Some(SessionAction::ScreenOff.into()),
             on_local_return: Some(SessionAction::ScreenOn.into()),
-            remote_screencast_arms: Some(false),
+            screencast_arms: Some(false),
         }
     }
 
@@ -2177,14 +2176,14 @@ mod tests {
             restore_value: false,
             restore_enabled: true,
             restore_differs: false,
-            remote_gate_value: false,
-            remote_gate_enabled: true,
-            remote_gate_differs: false,
+            stream_gate_value: false,
+            stream_gate_enabled: true,
+            stream_gate_differs: false,
         }
     }
 
     #[test]
-    fn prepare_editor_rows_tracks_profile_and_remote_card_state() {
+    fn prepare_editor_rows_tracks_profile_and_stream_card_state() {
         let system_uuid = Uuid::new_v4();
         let mut state = ProfileEditorState::default();
         state.system.bodies.insert(
@@ -2199,7 +2198,7 @@ mod tests {
         let system = prepare_editor_rows(&mut state, EditorKind::System, system_uuid);
         assert!(!system.same_profile);
         assert_eq!(system.main.len(), SYSTEM_FIELDS.len());
-        assert!(system.remote.is_empty());
+        assert!(system.stream.is_empty());
         assert!(system.can_reset_all);
 
         let refreshed = prepare_editor_rows(&mut state, EditorKind::System, system_uuid);
@@ -2213,15 +2212,15 @@ mod tests {
             user_uuid,
             UserProfileBody {
                 name: "user".into(),
-                remote_screencast_arms: Some(true),
+                screencast_arms: Some(true),
                 ..Default::default()
             },
         );
         let user = prepare_editor_rows(&mut state, EditorKind::User, user_uuid);
         assert!(!user.same_profile);
         assert_eq!(user.main.len(), USER_FIELDS.len());
-        assert_eq!(user.remote.len(), 1);
-        assert_eq!(user.remote[0].field_name, "remote_screencast_arms");
+        assert_eq!(user.stream.len(), 1);
+        assert_eq!(user.stream[0].field_name, "screencast_arms");
         assert!(user.can_reset_all);
     }
 
@@ -2497,9 +2496,9 @@ mod tests {
 
     #[test]
     fn system_field_table_matches_core_schema() {
-        // The system pane has one card — the per-event remote gate rides
+        // The system pane has one card — the per-event stream gate rides
         // the action rows as a toggle, not a card row, and there is no
-        // system-side arming switch (the remote card is empty). So the
+        // system-side arming switch (the stream card is empty). So the
         // single FIELDS table must equal `SYSTEM_PROFILE_FIELDS` exactly;
         // a field added to the core profile but not to the table would
         // silently vanish from the editor.
@@ -2513,14 +2512,14 @@ mod tests {
             "GUI SYSTEM_FIELDS diverged from core SYSTEM_PROFILE_FIELDS"
         );
         assert!(
-            SYSTEM_WHILE_REMOTE_FIELDS.is_empty(),
-            "the system pane has no remote card"
+            SYSTEM_WHILE_STREAMING_FIELDS.is_empty(),
+            "the system pane has no stream card"
         );
     }
 
     #[test]
     fn user_field_table_matches_core_schema() {
-        // The user pane keeps the small REMOTE SESSION card for the
+        // The user pane keeps the small STREAMING card for the
         // screencast-arms switch; the union of the two tables must equal
         // the core schema, and no field appears in both.
         let core: std::collections::BTreeSet<&str> =
@@ -2529,10 +2528,10 @@ mod tests {
             all_fields(EditorKind::User).map(|f| f.wire).collect();
         assert_eq!(
             gui, core,
-            "GUI USER_FIELDS ∪ USER_WHILE_REMOTE_FIELDS diverged from core USER_PROFILE_FIELDS"
+            "GUI USER_FIELDS ∪ USER_WHILE_STREAMING_FIELDS diverged from core USER_PROFILE_FIELDS"
         );
         assert_eq!(
-            USER_FIELDS.len() + USER_WHILE_REMOTE_FIELDS.len(),
+            USER_FIELDS.len() + USER_WHILE_STREAMING_FIELDS.len(),
             gui.len(),
             "a user field appears in both cards"
         );
@@ -2767,9 +2766,9 @@ mod tests {
     }
 
     #[test]
-    fn remote_gate_reads_and_resolves_through_the_chain() {
-        // A gated table (`while_remote = false`) on the profile's own
-        // body resolves as suppressed; an ungated table (`while_remote =
+    fn stream_gate_reads_and_resolves_through_the_chain() {
+        // A gated table (`while_streaming = false`) on the profile's own
+        // body resolves as suppressed; an ungated table (`while_streaming =
         // true`) resolves as fire-while-armed. A bare action inherits the
         // suppress-by-default floor.
         let uuid = Uuid::new_v4();
@@ -2781,7 +2780,7 @@ mod tests {
                 on_dpms_on: Some(tisvlay_core::EventAction::With {
                     action: SessionAction::ScreenOn,
                     restore_input: false,
-                    while_remote: false,
+                    while_streaming: false,
                 }),
                 on_wake: Some(tisvlay_core::EventAction::ungated(SessionAction::PowerOn)),
                 ..Default::default()
@@ -2793,12 +2792,12 @@ mod tests {
             bodies,
         };
         // The gate resolves off the chain-walked action through the
-        // `while_remote` accessor — the same derivation the row build
+        // `while_streaming` accessor — the same derivation the row build
         // and the dispatch seam share.
         let gate = |wire| {
             action_modifier(
                 resolve_system_action(&layers, uuid, wire),
-                tisvlay_core::EventAction::while_remote,
+                tisvlay_core::EventAction::while_streaming,
             )
         };
         assert!(!gate("on_dpms_on"));
@@ -2827,12 +2826,12 @@ mod tests {
             bodies: HashMap::new(),
         };
         // The floor the accent compares against is the baseline read
-        // through the `while_remote` accessor — the same derivation the
+        // through the `while_streaming` accessor — the same derivation the
         // per-row build inlines.
         let floor_gate = |wire| {
             action_modifier(
                 read_system_action(&layers.baseline, wire),
-                tisvlay_core::EventAction::while_remote,
+                tisvlay_core::EventAction::while_streaming,
             )
         };
         assert!(floor_gate("on_sleep"));
@@ -2843,15 +2842,15 @@ mod tests {
     }
 
     #[test]
-    fn remote_card_holds_only_the_screencast_switch() {
-        // The user REMOTE SESSION card carries just the screencast-arms
+    fn stream_card_holds_only_the_screencast_switch() {
+        // The user STREAMING card carries just the screencast-arms
         // switch — the per-event gate rides the action rows. The system
-        // pane has no remote card.
-        let user_remote: Vec<&str> = USER_WHILE_REMOTE_FIELDS.iter().map(|f| f.wire).collect();
-        assert_eq!(user_remote, ["remote_screencast_arms"]);
-        assert!(SYSTEM_WHILE_REMOTE_FIELDS.is_empty());
+        // pane has no stream card.
+        let user_stream: Vec<&str> = USER_WHILE_STREAMING_FIELDS.iter().map(|f| f.wire).collect();
+        assert_eq!(user_stream, ["screencast_arms"]);
+        assert!(SYSTEM_WHILE_STREAMING_FIELDS.is_empty());
         // The connect/disconnect events stay in the main user card.
-        assert!(USER_FIELDS.iter().any(|f| f.wire == "on_remote_connect"));
+        assert!(USER_FIELDS.iter().any(|f| f.wire == "on_stream_start"));
     }
 
     #[test]
@@ -2859,7 +2858,7 @@ mod tests {
         // Every SessionAction row carries the toggle slots (uniform, no
         // visibility shift); `automate_when` and non-action rows do not.
         assert!(row_is_action(find_user("on_session_unlock")));
-        assert!(row_is_action(find_user("on_remote_connect")));
+        assert!(row_is_action(find_user("on_stream_start")));
         assert!(!row_is_action(find_system("automate_when")));
         assert!(!row_is_action(find_user("unlocked_idle_timeout_seconds")));
 
@@ -2868,24 +2867,24 @@ mod tests {
         };
         // Gate is interactive on any real-action row except the
         // connect/disconnect events; inert on `none` and those two.
-        assert!(remote_gate_is_enabled(
+        assert!(stream_gate_is_enabled(
             find_user("on_session_unlock"),
             &action("screen_on")
         ));
-        assert!(remote_gate_is_enabled(
+        assert!(stream_gate_is_enabled(
             find_user("on_session_lock"),
             &action("screen_off")
         ));
-        assert!(!remote_gate_is_enabled(
+        assert!(!stream_gate_is_enabled(
             find_user("on_session_unlock"),
             &action("none")
         ));
-        assert!(!remote_gate_is_enabled(
-            find_user("on_remote_connect"),
+        assert!(!stream_gate_is_enabled(
+            find_user("on_stream_start"),
             &action("screen_off")
         ));
-        assert!(!remote_gate_is_enabled(
-            find_user("on_remote_disconnect"),
+        assert!(!stream_gate_is_enabled(
+            find_user("on_stream_end"),
             &action("screen_on")
         ));
 
@@ -2899,7 +2898,7 @@ mod tests {
 
     #[test]
     fn build_rows_populate_differs_from_floor_accent() {
-        // A profile setting `on_dpms_on` ungated (`while_remote = true`)
+        // A profile setting `on_dpms_on` ungated (`while_streaming = true`)
         // differs from the gated floor, so the gate accent lights; the
         // toggle value tracks the set value independently.
         let uuid = Uuid::new_v4();
@@ -2922,15 +2921,15 @@ mod tests {
         let dpms_on = rows.iter().find(|r| r.field_name == "on_dpms_on").unwrap();
         assert!(dpms_on.has_toggles);
         assert!(
-            dpms_on.remote_gate_value,
+            dpms_on.stream_gate_value,
             "the set value is fire-while-armed"
         );
-        assert!(dpms_on.remote_gate_differs, "differs from the gated floor");
-        assert!(dpms_on.remote_gate_enabled);
+        assert!(dpms_on.stream_gate_differs, "differs from the gated floor");
+        assert!(dpms_on.stream_gate_enabled);
 
         // An inheriting row sits at the floor → no differs accent.
         let dpms_off = rows.iter().find(|r| r.field_name == "on_dpms_off").unwrap();
-        assert!(!dpms_off.remote_gate_differs);
+        assert!(!dpms_off.stream_gate_differs);
         // A number row carries neither toggle slot.
         let idle = rows
             .iter()
@@ -3027,25 +3026,24 @@ mod tests {
     }
 
     #[test]
-    fn set_user_field_writes_remote_screencast_arms_bool() {
+    fn set_user_field_writes_screencast_arms_bool() {
         let mut body = UserProfileBody::default();
-        set_user_field(&mut body, "remote_screencast_arms", BodyPatch::Bool(true))
-            .expect("known wire");
-        assert_eq!(body.remote_screencast_arms, Some(true));
-        set_user_field(&mut body, "remote_screencast_arms", BodyPatch::Clear).expect("known wire");
-        assert_eq!(body.remote_screencast_arms, None);
+        set_user_field(&mut body, "screencast_arms", BodyPatch::Bool(true)).expect("known wire");
+        assert_eq!(body.screencast_arms, Some(true));
+        set_user_field(&mut body, "screencast_arms", BodyPatch::Clear).expect("known wire");
+        assert_eq!(body.screencast_arms, None);
     }
 
     #[test]
     fn gate_toggle_writes_the_whole_event_table() {
         // A gate toggle materializes the action row as the table form,
         // carrying the resolved verb + the resolved restore modifier +
-        // the new `while_remote` flag (whole-value replace, the
+        // the new `while_streaming` flag (whole-value replace, the
         // restore_input precedent).
         let action = tisvlay_core::EventAction::With {
             action: SessionAction::ScreenOn,
             restore_input: true,
-            while_remote: false,
+            while_streaming: false,
         };
         let mut body = UserProfileBody::default();
         set_user_field(
@@ -3056,7 +3054,7 @@ mod tests {
         .expect("known wire");
         assert_eq!(body.on_session_unlock, Some(action));
         // The gate resolves back out of the written table.
-        assert!(!body.on_session_unlock.unwrap().while_remote());
+        assert!(!body.on_session_unlock.unwrap().while_streaming());
         assert!(body.on_session_unlock.unwrap().restore_input());
     }
 
@@ -3074,7 +3072,7 @@ mod tests {
             tisvlay_core::EventAction::With {
                 action: SessionAction::ScreenOn,
                 restore_input: true,
-                while_remote: false,
+                while_streaming: false,
             }
         );
         assert_eq!(
@@ -3082,7 +3080,7 @@ mod tests {
             tisvlay_core::EventAction::With {
                 action: SessionAction::PowerOff,
                 restore_input: false,
-                while_remote: true,
+                while_streaming: true,
             }
         );
     }
@@ -3111,7 +3109,7 @@ mod tests {
             resolve_action_modifiers(&editor, EditorKind::System, uuid, "on_sleep").unwrap();
         let edited = materialize_event_action(SessionAction::ScreenOff, restore, gate);
         assert!(
-            edited.while_remote(),
+            edited.while_streaming(),
             "inherited ungated gate survives the verb edit"
         );
 
@@ -3129,7 +3127,7 @@ mod tests {
             resolve_action_modifiers(&editor, EditorKind::User, uuid, "on_session_lock").unwrap();
         let edited = materialize_event_action(SessionAction::PowerOff, restore, gate);
         assert!(
-            edited.while_remote(),
+            edited.while_streaming(),
             "inherited ungated gate survives the verb edit"
         );
     }
@@ -3182,7 +3180,7 @@ mod tests {
 
     #[test]
     fn build_field_raw_bool_reads_current_token() {
-        let spec = find_user("remote_screencast_arms");
+        let spec = find_user("screencast_arms");
         assert!(matches!(spec.kind, FieldKind::Bool));
         let on = build_field_raw(
             spec,

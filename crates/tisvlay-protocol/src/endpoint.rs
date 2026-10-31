@@ -385,21 +385,21 @@ pub mod user_profile {
     }
 }
 
-/// The session's remote-session rpcs (user socket): `user/remote/rpc/<verb>`.
-pub mod user_remote {
+/// The session's stream rpcs (user socket): `user/stream/rpc/<verb>`.
+pub mod user_stream {
     use super::*;
 
     family! {
-        /// A decoded remote-session rpc.
+        /// A decoded stream rpc.
         target: (),
-        key: |site, _target, verb| keys::user_remote_rpc(site, verb),
-        parse: keys::parse_user_remote_rpc,
-        wild: keys::user_remote_rpc_wild,
+        key: |site, _target, verb| keys::user_stream_rpc(site, verb),
+        parse: keys::parse_user_stream_rpc,
+        wild: keys::user_stream_rpc_wild,
         rpcs: {
-            /// Toggle a manual remote-session source; replies the new state.
-            Set = "set" (rpc::RemoteSet) -> crate::payload::RemoteSessionState, write;
-            /// The current remote-session state.
-            Status = "status" (()) -> crate::payload::RemoteSessionState, read;
+            /// Toggle a manual stream source; replies the new state.
+            Set = "set" (rpc::StreamSet) -> crate::payload::StreamState, write;
+            /// The current stream state.
+            Status = "status" (()) -> crate::payload::StreamState, read;
         }
     }
 }
@@ -691,20 +691,20 @@ mod tests {
 /// A server handles every rpc of its family:
 ///
 /// ```no_run
-/// # use tisvlay_protocol::{endpoint::user_remote, payload::RemoteSessionState};
-/// async fn serve(incoming: user_remote::Incoming, state: RemoteSessionState) {
+/// # use tisvlay_protocol::{endpoint::user_stream, payload::StreamState};
+/// async fn serve(incoming: user_stream::Incoming, state: StreamState) {
 ///     match incoming {
-///         user_remote::Incoming::Set(_, responder) => responder.ok(&state).await,
-///         user_remote::Incoming::Status((), responder) => responder.ok(&state).await,
+///         user_stream::Incoming::Set(_, responder) => responder.ok(&state).await,
+///         user_stream::Incoming::Status((), responder) => responder.ok(&state).await,
 ///     }
 /// }
 /// ```
 ///
 /// ```compile_fail,E0004
-/// # use tisvlay_protocol::{endpoint::user_remote, payload::RemoteSessionState};
-/// async fn serve(incoming: user_remote::Incoming, state: RemoteSessionState) {
+/// # use tisvlay_protocol::{endpoint::user_stream, payload::StreamState};
+/// async fn serve(incoming: user_stream::Incoming, state: StreamState) {
 ///     match incoming {
-///         user_remote::Incoming::Status((), responder) => responder.ok(&state).await,
+///         user_stream::Incoming::Status((), responder) => responder.ok(&state).await,
 ///     }
 /// }
 /// ```

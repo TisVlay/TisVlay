@@ -408,7 +408,7 @@ async fn a_disconnected_tv_reads_off_warns_on_stale_state_and_toggles_on() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn user_profiles_and_remote_sources_use_the_session_socket() {
+async fn user_profiles_and_stream_sources_use_the_session_socket() {
     let rig = CliDaemon::with_session().await;
     assert!(rig.json(&["profile", "user", "defaults"]).await.is_object());
     let profile = rig
@@ -461,23 +461,23 @@ async fn user_profiles_and_remote_sources_use_the_session_socket() {
             .is_none()
     );
 
-    rig.silent(&["remote-session", "start", "--source", "cli-test"])
+    rig.silent(&["stream", "start", "--source", "cli-test"])
         .await;
     assert!(
-        rig.json(&["remote-session", "status"])
+        rig.json(&["stream", "status"])
             .await
             .to_string()
             .contains("cli-test")
     );
     assert!(
-        rig.success(&["remote-session", "status"])
+        rig.success(&["stream", "status"])
             .await
             .contains("cli-test")
     );
-    rig.silent(&["remote-session", "stop", "--source", "cli-test"])
+    rig.silent(&["stream", "stop", "--source", "cli-test"])
         .await;
     assert!(
-        !rig.json(&["remote-session", "status"])
+        !rig.json(&["stream", "status"])
             .await
             .to_string()
             .contains("cli-test")

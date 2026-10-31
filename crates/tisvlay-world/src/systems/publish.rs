@@ -2,17 +2,17 @@
 
 use super::*;
 
-/// Keep the published `remote_armed` flag in step with the `RemoteArmed`
+/// Keep the published `stream_armed` flag in step with the `StreamArmed`
 /// resource — the read-only projection clients read to surface which TVs
-/// a remote session currently arms.
-pub(super) fn derive_remote_armed(
-    armed: Res<RemoteArmed>,
+/// a stream currently arms.
+pub(super) fn derive_stream_armed(
+    armed: Res<StreamArmed>,
     mut q: Query<(&TvId, &mut State<payload::Meta>)>,
 ) {
     for (id, mut meta) in &mut q {
         let is_armed = armed.0.contains(&id.0);
-        if meta.remote_armed != is_armed {
-            meta.remote_armed = is_armed;
+        if meta.stream_armed != is_armed {
+            meta.stream_armed = is_armed;
         }
     }
 }

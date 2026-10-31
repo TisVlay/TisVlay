@@ -125,7 +125,7 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
     // Portal monitor on the session bus (out-of-band name→PID lookups for
     // the remote screencast attribution). Absent bus = monitor disabled.
     match zbus::Connection::session().await {
-        Ok(connection) => crate::spawn_portal_monitor(connection, stack.remote.clone()),
+        Ok(connection) => crate::spawn_portal_monitor(connection, stack.stream.clone()),
         Err(e) => tracing::warn!(%e, "no session bus, portal monitor disabled"),
     }
     // User idle via wayland (ext-idle-notify) or GNOME's Mutter idle
@@ -138,18 +138,18 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
     ));
 
     // PipeWire screencast detector on its own supervised OS thread —
-    // reports the `Screencast` remote source through the detector seam.
+    // reports the `Screencast` stream source through the detector seam.
     // Absent/unreachable PipeWire is handled inside (retry, quiet);
     // without SPA plugins it can't start at all, so it stays off.
     match spa_plugins {
-        Ok(()) => crate::spawn_screencast_detector(stack.remote.clone()),
+        Ok(()) => crate::spawn_screencast_detector(stack.stream.clone()),
         Err(missing) => tracing::warn!(%missing, "screencast detection off"),
     }
 
-    // logind Remote-session detector on the system bus — reports a
+    // logind stream detector on the system bus — reports a
     // `Logind` source for an own-uid `Remote=yes` session (xrdp-class).
     // Absent/unreachable system bus is handled inside (retry, quiet).
-    crate::spawn_logind_detector(stack.remote.clone());
+    crate::spawn_logind_detector(stack.stream.clone());
 
     // Sunshine level poll — a continuous `/serverinfo` detector, gated on
     // a sunshine process being present, that arms a `Sunshine` source on
@@ -157,7 +157,7 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
     // its own source key, coexisting with the optional `global_prep_cmd`
     // hook: the hook is the instant arm, the poll owns disarm, self-heal,
     // and the zero-config fallback. Runs for the session lifetime.
-    crate::spawn_sunshine_detector(stack.remote.clone(), sunshine);
+    crate::spawn_sunshine_detector(stack.stream.clone(), sunshine);
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down");

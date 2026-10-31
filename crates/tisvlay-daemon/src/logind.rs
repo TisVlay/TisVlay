@@ -1,12 +1,13 @@
 //! Consumed-D-Bus adapter: logind lifecycle signals → world system events.
 //! Takes a delay inhibitor so TVs get their sleep/shutdown actions before
-//! the system goes down, releasing it once the actions are dispatched.
+//! the system goes down, releasing it once every connection has run the
+//! commands those actions queued.
 
 use std::future::Future;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tisvlay_world::{InEvent, SystemEvent, WorldClient};
+use tisvlay_world::{DrainToken, InEvent, SystemEvent, WorldClient};
 use tracing::{info, warn};
 use zbus::proxy;
 
@@ -21,6 +22,11 @@ trait Login1Manager {
     /// profile event.
     #[zbus(property)]
     fn scheduled_shutdown(&self) -> zbus::Result<(String, u64)>;
+
+    /// How long logind waits on a delay inhibitor before proceeding
+    /// anyway (`InhibitDelayMaxSec=`), in microseconds.
+    #[zbus(property, name = "InhibitDelayMaxUSec")]
+    fn inhibit_delay_max_usec(&self) -> zbus::Result<u64>;
 
     fn inhibit(
         &self,
@@ -40,6 +46,10 @@ trait Login1Manager {
 /// Pause between a lost watch and the next connection attempt. Short,
 /// since a suspend that lands in the gap leaves the TVs on.
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+/// logind's default `InhibitDelayMaxSec=`, the bound when its property
+/// can't be read.
+const DEFAULT_INHIBIT_DELAY_MAX: Duration = Duration::from_secs(5);
 
 /// Supervised entry: watch logind over a fresh system-bus connection,
 /// reconnecting after [`RECONNECT_DELAY`] whenever the watch ends.
@@ -103,8 +113,9 @@ pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> a
                 if args.start {
                     info!("system going to sleep");
                     world.send(InEvent::System { event: SystemEvent::Sleep, connector: None });
-                    // Let the sleep proceed; retake on resume.
-                    inhibitor.take();
+                    // Let the sleep proceed once the TVs' commands ran;
+                    // retake on resume.
+                    release_after_drain(&world, &manager, &mut inhibitor).await;
                 } else {
                     info!("system resumed");
                     world.send(InEvent::System { event: SystemEvent::Resume, connector: None });
@@ -128,11 +139,36 @@ pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> a
                     };
                     info!(?event, "system shutting down");
                     world.send(InEvent::System { event, connector: None });
-                    inhibitor.take();
+                    release_after_drain(&world, &manager, &mut inhibitor).await;
                 }
             }
         }
     }
+}
+
+/// Release the delay inhibitor once every live connection has run the
+/// commands queued before this call (the event just sent), or at logind's
+/// `InhibitDelayMaxUSec`, after which logind proceeds without us anyway.
+async fn release_after_drain(
+    world: &WorldClient,
+    manager: &Login1ManagerProxy<'_>,
+    inhibitor: &mut Option<zbus::zvariant::OwnedFd>,
+) {
+    if inhibitor.is_some() {
+        let (token, drained) = DrainToken::pair();
+        world.send(InEvent::Drain(token));
+        let bound = manager
+            .inhibit_delay_max_usec()
+            .await
+            .map_or(DEFAULT_INHIBIT_DELAY_MAX, Duration::from_micros);
+        if tokio::time::timeout(bound, drained.wait()).await.is_err() {
+            warn!(
+                ?bound,
+                "TV commands still running at logind's inhibit delay, releasing"
+            );
+        }
+    }
+    inhibitor.take();
 }
 
 async fn take_inhibitor(manager: &Login1ManagerProxy<'_>) -> Option<zbus::zvariant::OwnedFd> {
