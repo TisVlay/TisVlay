@@ -47,7 +47,7 @@ Moved to [cec-device-presence.md](cec-device-presence.md), § Logs.
 
 ### 7. Optional, later
 
-- [ ] A `cec.pulse8.autonomous` NixOS option backed by a new module parameter, for users who'd rather give up suspend autonomy than risk the label after a suspend.
+- [ ] A `cec.pulse8.autonomous` NixOS option backed by a new module parameter, for users who'd rather give up suspend autonomy than risk the label after a suspend. Note (2026-10-31): the driver's flag is the adapter's working state, and a sleeping adapter follows the autonomous flag in its EEPROM instead, so a parameter that only skips arming on claim wouldn't change the wake; libcec 8 writes the EEPROM flag (`am 0`), and the driver's `persistent_config=1` makes its EEPROM follow the claim ([tv-controls-pc.md](tv-controls-pc.md) step 8b).
 - [ ] An upstream note for linux-cec: `all_device_types` is never filled, so CEC 2.0 `<Report Features>` advertises no device types, and there's no way to set `cec_version`. It can go with the pending [OSD-name issue draft](../bugs/upstream-linux-cec-reclaim-drops-osd-name.md).
 
 ## Open questions
