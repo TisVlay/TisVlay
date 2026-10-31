@@ -355,7 +355,6 @@ async fn session_mirror_survives_a_cut_link() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the session mirror keeps its state while the session is down"]
 async fn session_mirror_clears_while_down() {
     let mut rig = session_rig().await;
     let profile = Uuid::from_u128(1);
@@ -377,7 +376,6 @@ async fn session_mirror_clears_while_down() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the session mirror subscribes once, so a delete made while it's down is missed"]
 async fn session_mirror_forgets_a_profile_deleted_while_down() {
     let mut rig = session_rig().await;
     let (doomed, kept) = (Uuid::from_u128(1), Uuid::from_u128(2));
@@ -410,7 +408,6 @@ async fn session_mirror_forgets_a_profile_deleted_while_down() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the session mirror subscribes once, so a restart's lost records stay"]
 async fn session_mirror_replaces_a_restarted_session() {
     let SessionRig {
         sockets,
@@ -440,7 +437,6 @@ async fn session_mirror_replaces_a_restarted_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the session mirror doesn't recover a lost sample yet"]
 async fn session_mirror_recovers_a_put_lost_within_a_lifetime() {
     let mut rig = session_rig().await;
     let profile = Uuid::from_u128(1);
@@ -564,7 +560,6 @@ async fn tray_mirror_survives_a_cut_link() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the tray settings mirror keeps its state while the tray is down"]
 async fn tray_mirror_clears_while_down() {
     let TrayRig {
         sockets,

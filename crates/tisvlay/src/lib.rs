@@ -12,7 +12,7 @@ mod mirror;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -45,7 +45,6 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 use uuid::Uuid;
 use zenoh::Session;
-use zenoh::sample::SampleKind;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use handshake::Handshake;
@@ -111,10 +110,13 @@ pub enum StateEvent {
     /// The session service's liveliness token appeared. Can repeat for
     /// one lifetime.
     SessionAppeared,
-    /// The session service's liveliness token went away. The mirror keeps
-    /// its last state; [`SessionClient::service_info`] has cleared.
+    /// The session service's liveliness token went away. Its user
+    /// profiles, assignments and stream fact have already left the mirror,
+    /// each announced before this event, and
+    /// [`SessionClient::service_info`] has cleared.
     SessionDisappeared,
-    /// A TV's user-profile assignment changed; re-read
+    /// A TV's user-profile assignment changed, or the assignments left the
+    /// mirror because the session service went away; re-read
     /// [`SessionClient::get_tv_user_profile`] for the TVs shown.
     TvUserProfileChanged,
     /// An existing system profile's body changed.
@@ -130,20 +132,23 @@ pub enum StateEvent {
     /// A user profile appeared in the mirror, including each one
     /// replayed when the client first connects.
     UserProfileAdded(Uuid),
-    /// A user profile was deleted.
+    /// A user profile was deleted, or left the mirror because the session
+    /// service went away.
     UserProfileRemoved(Uuid),
-    /// The session service republished the stream fact; re-read
+    /// The session service republished the stream fact, or it left the
+    /// mirror because the service went away; re-read
     /// [`SessionClient::stream_state`].
     StreamChanged,
     /// The tray's liveliness token appeared. Can repeat for one
     /// lifetime.
     TrayAppeared,
     /// The tray's liveliness token went away. Its notification settings
-    /// stay in the mirror; [`TrayClient::service_info`] has cleared.
+    /// have already left the mirror, announced before this event, and
+    /// [`TrayClient::service_info`] has cleared.
     TrayDisappeared,
     /// The tray published its notification settings, on connect and
-    /// after every change; re-read
-    /// [`TrayClient::notification_settings`].
+    /// after every change, or they left the mirror because the tray went
+    /// away; re-read [`TrayClient::notification_settings`].
     TrayNotificationSettingsChanged,
     /// Re-read everything: the watcher's periodic tick
     /// ([`StateWatcherConfig::fallback_poll_interval`]), also sent when
@@ -957,7 +962,7 @@ impl DaemonClient {
 #[derive(Debug, Clone)]
 pub struct SessionClient {
     caller: Arc<Caller>,
-    mirror: Arc<Mutex<UserMirror>>,
+    mirror: LifetimeMirror<UserMirror>,
     events: broadcast::Sender<StateEvent>,
     handshake: Arc<Handshake>,
 }
@@ -974,70 +979,13 @@ impl SessionClient {
         )
         .await
         .map_err(|e| Error::transport("connect to the session socket", e))?;
-        let mirror = Arc::new(Mutex::new(UserMirror::default()));
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let sub = session
-            .declare_subscriber(keys::user_all(site))
-            .history(HistoryConfig::default().detect_late_publishers())
-            .await
-            .map_err(|e| Error::transport("subscribe to the user keys", e))?;
-        {
-            let mirror = Arc::clone(&mirror);
-            let events = events.clone();
-            let site = site.to_string();
-            tokio::spawn(async move {
-                while let Ok(sample) = sub.recv_async().await {
-                    let event = mirror
-                        .lock()
-                        .expect("nothing panics while the mirror lock is held")
-                        .apply(&site, &sample);
-                    if let Some(event) = event {
-                        let _ = events.send(event);
-                    }
-                }
-            });
-        }
-        let liveliness = session
-            .liveliness()
-            .declare_subscriber(keys::user_alive_session(site))
-            .history(true)
-            .await
-            .map_err(|e| Error::transport("subscribe to the session's liveliness", e))?;
-        let caller = Arc::new(Caller::new(session, site));
-        let handshake = Arc::new(Handshake::new(Service::Session));
-        {
-            let mirror = Arc::clone(&mirror);
-            let events = events.clone();
-            let caller = Arc::clone(&caller);
-            let handshake = Arc::clone(&handshake);
-            tokio::spawn(async move {
-                while let Ok(sample) = liveliness.recv_async().await {
-                    let alive = sample.kind() == SampleKind::Put;
-                    mirror
-                        .lock()
-                        .expect("nothing panics while the mirror lock is held")
-                        .session_alive = alive;
-                    on_liveliness(
-                        alive,
-                        if alive {
-                            StateEvent::SessionAppeared
-                        } else {
-                            StateEvent::SessionDisappeared
-                        },
-                        &handshake,
-                        &events,
-                        &caller,
-                        Service::Session,
-                        |caller| async move { caller.call::<user_profile::Info>(&(), &()).await },
-                    );
-                }
-            });
-        }
+        let caller = Arc::new(Caller::new(session.clone(), site));
+        let mirror = LifetimeMirror::<UserMirror>::start(&session, site, &caller).await?;
         Ok(Self {
             caller,
+            events: mirror.events().clone(),
+            handshake: Arc::clone(mirror.handshake()),
             mirror,
-            events,
-            handshake,
         })
     }
 
@@ -1045,10 +993,7 @@ impl SessionClient {
     /// mirror read, with the same caveat as
     /// [`DaemonClient::is_available`].
     pub async fn is_available(&self) -> bool {
-        self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .session_alive
+        self.mirror.is_available()
     }
 
     /// What this lifetime's release check learned: the session service's
@@ -1086,11 +1031,7 @@ impl SessionClient {
             return None;
         }
         self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .assignments
-            .get(&tv)
-            .copied()
+            .read(|mirror| mirror.assignments.get(&tv).copied())
     }
 
     /// Assign a user profile to `tv`, or `None` to fall back to the
@@ -1109,13 +1050,13 @@ impl SessionClient {
         if self.handshake.known_mismatch().is_some() {
             return HashMap::new();
         }
-        self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .profiles
-            .iter()
-            .map(|(id, body)| (*id, body.clone()))
-            .collect()
+        self.mirror.read(|mirror| {
+            mirror
+                .profiles
+                .iter()
+                .map(|(id, body)| (*id, body.clone()))
+                .collect()
+        })
     }
 
     /// A user profile's body, from the mirror; `None` against a service
@@ -1125,11 +1066,7 @@ impl SessionClient {
             return None;
         }
         self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .profiles
-            .get(&profile)
-            .cloned()
+            .read(|mirror| mirror.profiles.get(&profile).cloned())
     }
 
     /// Create a user profile named `name` with every field unset, so it
@@ -1212,11 +1149,7 @@ impl SessionClient {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
-        self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .stream_state
-            .clone()
+        self.mirror.read(|mirror| mirror.stream_state.clone())
     }
 
     fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
@@ -1249,7 +1182,7 @@ impl SessionClient {
 #[derive(Debug, Clone)]
 pub struct TrayClient {
     caller: Arc<Caller>,
-    mirror: Arc<Mutex<TrayMirror>>,
+    mirror: LifetimeMirror<TrayMirror>,
     events: broadcast::Sender<StateEvent>,
     handshake: Arc<Handshake>,
 }
@@ -1265,79 +1198,20 @@ impl TrayClient {
         )
         .await
         .map_err(|e| Error::transport("connect to the tray socket", e))?;
-        let mirror = Arc::new(Mutex::new(TrayMirror::default()));
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let liveliness = session
-            .liveliness()
-            .declare_subscriber(keys::user_alive_tray(site))
-            .history(true)
-            .await
-            .map_err(|e| Error::transport("subscribe to the tray's liveliness", e))?;
         let caller = Arc::new(Caller::new(session.clone(), site));
-        let handshake = Arc::new(Handshake::new(Service::Tray));
-        {
-            let mirror = Arc::clone(&mirror);
-            let events = events.clone();
-            let caller = Arc::clone(&caller);
-            let handshake = Arc::clone(&handshake);
-            tokio::spawn(async move {
-                while let Ok(sample) = liveliness.recv_async().await {
-                    let up = sample.kind() == SampleKind::Put;
-                    mirror
-                        .lock()
-                        .expect("nothing panics while the mirror lock is held")
-                        .tray_alive = up;
-                    on_liveliness(
-                        up,
-                        if up {
-                            StateEvent::TrayAppeared
-                        } else {
-                            StateEvent::TrayDisappeared
-                        },
-                        &handshake,
-                        &events,
-                        &caller,
-                        Service::Tray,
-                        |caller| async move { caller.call::<user_tray::Info>(&(), &()).await },
-                    );
-                }
-            });
-        }
-        let settings_sub = session
-            .declare_subscriber(keys::user_tray_settings(site))
-            .history(HistoryConfig::default().detect_late_publishers())
-            .await
-            .map_err(|e| Error::transport("subscribe to the tray settings", e))?;
-        {
-            let mirror = Arc::clone(&mirror);
-            let events = events.clone();
-            tokio::spawn(async move {
-                while let Ok(sample) = settings_sub.recv_async().await {
-                    let event = mirror
-                        .lock()
-                        .expect("nothing panics while the mirror lock is held")
-                        .apply(&sample);
-                    if let Some(event) = event {
-                        let _ = events.send(event);
-                    }
-                }
-            });
-        }
+        let mirror = LifetimeMirror::<TrayMirror>::start(&session, site, &caller).await?;
         Ok(Self {
             caller,
+            events: mirror.events().clone(),
+            handshake: Arc::clone(mirror.handshake()),
             mirror,
-            events,
-            handshake,
         })
     }
 
     /// Whether the tray's liveliness token is present, with the same
     /// caveat as [`DaemonClient::is_available`]. No rpc.
     pub async fn is_available(&self) -> bool {
-        self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .tray_alive
+        self.mirror.is_available()
     }
 
     /// What this lifetime's release check learned: the tray's release and
@@ -1367,17 +1241,14 @@ impl TrayClient {
 
     /// The tray's notification switches, one per
     /// [`NotificationCategory`], as it last published them: a mirror read,
-    /// updated on each [`StateEvent::TrayNotificationSettingsChanged`]. It
-    /// keeps the last switches while the tray is down. `None` until the
-    /// tray first publishes them, and against a tray on another release.
+    /// updated on each [`StateEvent::TrayNotificationSettingsChanged`].
+    /// `None` until the tray first publishes them, while it's down, and
+    /// against a tray on another release.
     pub async fn notification_settings(&self) -> Option<NotificationSettings> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
-        self.mirror
-            .lock()
-            .expect("nothing panics while the mirror lock is held")
-            .settings
+        self.mirror.read(|mirror| mirror.settings)
     }
 
     /// The tray's notification switches, read from the tray directly: the

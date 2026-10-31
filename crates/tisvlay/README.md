@@ -39,7 +39,7 @@ async fn main() -> tisvlay::Result<()> {
 There are three clients: `DaemonClient` for the system daemon, and `SessionClient` and `TrayClient` for the per-user session service and the tray's settings service. A `StateWatcher` merges their change events into one stream.
 
 - **Connecting.** A client's `connect` returns once its local session is open. It neither waits for nor requires the service: the link dials in the background for as long as the client lives, and availability follows the service's liveliness (`is_available`, and the `*Appeared` / `*Disappeared` events).
-- **Mirror reads** send nothing. A client keeps a mirror of the state its service publishes, so a read such as `list_tvs` answers at once from the last published state. The session's and tray's mirrors keep showing it while the service is down; the daemon's empties, so its TVs and profiles never outlive it.
+- **Mirror reads** send nothing. A client keeps a mirror of the state its service publishes, so a read such as `list_tvs` answers at once from the last published state. Each mirror empties while its service is down, with an event per row it drops, and fills again from the service's caches when it returns, so nothing it shows outlives the service.
 - **Rpcs** are round trips: commands, edits, pairing. Any rpc can fail with `Error::Unavailable`, `Error::Timeout`, `Error::VersionMismatch`, `Error::Transport` or `Error::Protocol`. A refusal is `Error::Rpc`, and each method's docs name the `ErrorCode`s it can be refused with.
 
 ## Requirements

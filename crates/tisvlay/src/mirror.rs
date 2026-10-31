@@ -126,11 +126,32 @@ pub(crate) struct UserMirror {
     /// The stream fact: live sources plus the armed projection.
     /// Absent until the session service first publishes it.
     pub stream_state: Option<payload::StreamState>,
-    pub session_alive: bool,
 }
 
-impl UserMirror {
-    pub(crate) fn apply(&mut self, site: &str, sample: &Sample) -> Option<StateEvent> {
+impl Mirror for UserMirror {
+    const SERVICE: Service = Service::Session;
+
+    fn keys(site: &str) -> Vec<String> {
+        vec![keys::user_all(site)]
+    }
+
+    fn clear(&mut self, _site: &str) -> Vec<StateEvent> {
+        let mut removed: Vec<StateEvent> = self
+            .profiles
+            .keys()
+            .map(|profile| StateEvent::UserProfileRemoved(*profile))
+            .collect();
+        if !self.assignments.is_empty() {
+            removed.push(StateEvent::TvUserProfileChanged);
+        }
+        if self.stream_state.is_some() {
+            removed.push(StateEvent::StreamChanged);
+        }
+        *self = Self::default();
+        removed
+    }
+
+    fn apply(&mut self, site: &str, sample: &Sample) -> Option<StateEvent> {
         let key = sample.key_expr().as_str();
         if let Some(profile) = keys::parse_user_profile(site, key) {
             return match sample.kind() {
@@ -185,14 +206,26 @@ impl UserMirror {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TrayMirror {
     /// The notification switches, as last published. Absent until the
-    /// tray first publishes them; kept while it's down.
+    /// tray first publishes them, and while it's down.
     pub settings: Option<NotificationSettings>,
-    pub tray_alive: bool,
 }
 
-impl TrayMirror {
-    /// Apply one sample of the tray's settings key.
-    pub(crate) fn apply(&mut self, sample: &Sample) -> Option<StateEvent> {
+impl Mirror for TrayMirror {
+    const SERVICE: Service = Service::Tray;
+
+    fn keys(site: &str) -> Vec<String> {
+        vec![keys::user_tray_settings(site)]
+    }
+
+    fn clear(&mut self, _site: &str) -> Vec<StateEvent> {
+        self.settings
+            .take()
+            .map(|_| StateEvent::TrayNotificationSettingsChanged)
+            .into_iter()
+            .collect()
+    }
+
+    fn apply(&mut self, _site: &str, sample: &Sample) -> Option<StateEvent> {
         self.settings = match sample.kind() {
             SampleKind::Put => Some(serde_json::from_slice(&sample.payload().to_bytes()).ok()?),
             SampleKind::Delete => None,

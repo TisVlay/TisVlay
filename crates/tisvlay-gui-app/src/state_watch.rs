@@ -265,8 +265,8 @@ impl View {
             None => (Peer::default(), None),
         };
         drop((session, tray));
-        // The documented defaults until the tray first publishes; the
-        // mirror keeps its last switches while it's down.
+        // The documented defaults until the tray publishes, and while it's
+        // down: the mirror clears then, and the pane dims the switches.
         let tray_settings = tray_settings.unwrap_or_default();
         let changed_settings =
             (self.tray_settings != Some(tray_settings)).then(|| settings_to_slint(&tray_settings));
