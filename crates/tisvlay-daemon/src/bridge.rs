@@ -33,7 +33,9 @@ use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, Mis
 /// wizard replays the whole session.
 const PAIRING_HISTORY: usize = 64;
 
-/// Heartbeat period for sample-miss recovery on cached publishers.
+/// Heartbeat period for sample-miss recovery on cached publishers: a
+/// heartbeat goes out only in a period after a publish, so an idle key
+/// costs a subscriber nothing.
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
 
 /// One vendor's catalog entry: identity, capabilities, and the connector
@@ -197,7 +199,9 @@ impl Bridge {
                 .declare_publisher(key.to_string())
                 .encoding(Encoding::APPLICATION_JSON)
                 .cache(CacheConfig::default().max_samples(depth))
-                .sample_miss_detection(MissDetectionConfig::default().heartbeat(MISS_HEARTBEAT))
+                .sample_miss_detection(
+                    MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
+                )
                 .publisher_detection()
                 .await;
             match declared {

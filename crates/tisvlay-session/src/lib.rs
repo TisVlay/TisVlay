@@ -57,7 +57,9 @@ pub use store::{Assignment, UserProfileRecord, UserStoreSnapshot, load_user_stor
 pub use stream::StreamReport;
 pub use sunshine::spawn as spawn_sunshine_detector;
 
-/// Heartbeat period for sample-miss recovery on cached publishers.
+/// Heartbeat period for sample-miss recovery on cached publishers: a
+/// heartbeat goes out only in a period after a publish, so an idle key
+/// costs a subscriber nothing.
 const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
 
 /// How old a going-off event (`tv-power-off`, `remote-power`) may be on
@@ -344,7 +346,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .declare_publisher(keys::stream_state(&options.site))
         .encoding(Encoding::APPLICATION_JSON)
         .cache(CacheConfig::default().max_samples(1))
-        .sample_miss_detection(MissDetectionConfig::default().heartbeat(MISS_HEARTBEAT))
+        .sample_miss_detection(MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT))
         .publisher_detection()
         .await
         .map_err(|e| anyhow!("declare stream mirror publisher: {e}"))?;
@@ -1506,7 +1508,9 @@ impl Core {
                 .declare_publisher(key.to_string())
                 .encoding(Encoding::APPLICATION_JSON)
                 .cache(CacheConfig::default().max_samples(1))
-                .sample_miss_detection(MissDetectionConfig::default().heartbeat(MISS_HEARTBEAT))
+                .sample_miss_detection(
+                    MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
+                )
                 .publisher_detection()
                 .await;
             match declared {

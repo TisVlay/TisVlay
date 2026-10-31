@@ -100,7 +100,7 @@ impl FakeService {
                 .declare_publisher(key.to_string())
                 .cache(CacheConfig::default().max_samples(1))
                 .sample_miss_detection(
-                    MissDetectionConfig::default().heartbeat(Duration::from_millis(500)),
+                    MissDetectionConfig::default().sporadic_heartbeat(Duration::from_millis(500)),
                 )
                 .publisher_detection()
                 .await
