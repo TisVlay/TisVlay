@@ -544,6 +544,8 @@ async fn serve_stack(
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
         sleep,
+        // Filled per reply from the bridge's live publishers.
+        keys: Vec::new(),
     };
     let (bridge_ready, bridge_declared) = tokio::sync::oneshot::channel();
     let bridge = tokio::spawn(bridge::run(

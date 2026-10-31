@@ -117,6 +117,8 @@ export component AppWindow inherits Window {
     // "N/M CONNECTED" ratio.
     in property <int> tvs-connected-count;
     in property <bool> daemon-available: false;
+    // Up, but its TVs and profiles haven't all arrived yet.
+    in property <bool> daemon-loading: false;
     in property <bool> session-available: false;
     in property <bool> tray-available: false;
     // Presence plus release compatibility, for the footer dots (and the
@@ -444,6 +446,7 @@ export component AppWindow inherits Window {
                         tvs-connected-count: root.tvs-connected-count;
                         selected-index <=> root.selected-tv-index;
                         daemon-available: root.daemon-available;
+                        daemon-loading: root.daemon-loading;
                         daemon-health: root.daemon-health;
                         system-profiles: root.system-profiles;
                         user-profiles: root.user-profiles;

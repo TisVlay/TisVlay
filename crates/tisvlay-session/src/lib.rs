@@ -1361,6 +1361,7 @@ impl Core {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: self.state_path.clone(),
                     sleep: None,
+                    keys: self.publishers.keys().cloned().collect(),
                 };
                 responder.ok(&info).await;
             }

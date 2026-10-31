@@ -184,7 +184,14 @@ async fn apply(
                 .await;
         }
         StateEvent::SystemProfileAdded(uuid) => {
-            profiles::handle_system_added(editor.clone(), daemon.clone(), uuid).await;
+            profiles::handle_system_added(
+                editor.clone(),
+                daemon.clone(),
+                session.clone(),
+                app_weak.clone(),
+                uuid,
+            )
+            .await;
         }
         StateEvent::SystemProfileRemoved(uuid) => {
             profiles::handle_system_removed(editor, app_weak.clone(), uuid);
@@ -194,7 +201,14 @@ async fn apply(
                 .await;
         }
         StateEvent::UserProfileAdded(uuid) => {
-            profiles::handle_user_added(editor.clone(), session.clone(), uuid).await;
+            profiles::handle_user_added(
+                editor.clone(),
+                daemon.clone(),
+                session.clone(),
+                app_weak.clone(),
+                uuid,
+            )
+            .await;
         }
         StateEvent::UserProfileRemoved(uuid) => {
             profiles::handle_user_removed(editor, app_weak.clone(), uuid);
@@ -212,6 +226,7 @@ async fn apply(
         | StateEvent::StreamChanged
         | StateEvent::TrayNotificationSettingsChanged
         | StateEvent::ReleaseChecked(_)
+        | StateEvent::Hydrated(_)
         | StateEvent::VersionMismatch { .. }
         | StateEvent::FallbackPoll => {}
     }
@@ -246,6 +261,12 @@ impl View {
         let daemon = Peer {
             up: self.daemon.is_available().await,
             info: self.daemon.service_info().await.map(PeerInfo::from),
+        };
+        // Up but still hydrating: an empty list means not yet known.
+        let daemon_loading = daemon.up && !self.daemon.is_hydrated().await;
+        let session_loading = match session.as_ref() {
+            Some(client) => client.is_available().await && !client.is_hydrated().await,
+            None => false,
         };
         let session_peer = match session.as_ref() {
             Some(client) => Peer {
@@ -289,6 +310,9 @@ impl View {
         on_ui(&self.app_weak, move |app| {
             push_snapshot(&app, snapshot);
             app.set_daemon_available(daemon_up);
+            app.set_daemon_loading(daemon_loading);
+            app.global::<Profiles>().set_system_loading(daemon_loading);
+            app.global::<Profiles>().set_user_loading(session_loading);
             app.set_session_available(session_up);
             app.set_tray_available(tray_up);
             app.global::<Tray>().set_available(tray_up);

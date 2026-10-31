@@ -15,18 +15,27 @@
 //!
 //! Within a lifetime, recovery retransmits a sample lost on the way from
 //! the publisher's cache, once the publisher's heartbeat shows the gap.
+//!
+//! A lifetime starts hydrating: the history arrives after the
+//! subscriptions are declared, and zenoh-ext doesn't say when it's all
+//! in. The service's `info` reply lists the keys it publishes from a
+//! cache, so the mirror is hydrated once it holds a sample for each one
+//! its subscriptions match, or at a deadline, since keys can change
+//! between the reply and the history.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tisvlay_protocol::caller::{Caller, RpcError};
 use tisvlay_protocol::endpoint::{manager, user_profile, user_tray};
 use tisvlay_protocol::keys;
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tokio::task::JoinHandle;
 use tracing::warn;
 use zenoh::Session;
 use zenoh::handlers::FifoChannelHandler;
+use zenoh::key_expr::KeyExpr;
 use zenoh::pubsub::Subscriber;
 use zenoh::sample::{Sample, SampleKind};
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
@@ -38,6 +47,10 @@ use crate::{EVENT_CAPACITY, Error, Result, Service, ServiceInfo, StateEvent, on_
 /// to [`SUBSCRIBE_RETRY_MAX`].
 const SUBSCRIBE_RETRY_FIRST: Duration = Duration::from_millis(100);
 const SUBSCRIBE_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// How long a lifetime hydrates at most, from its token appearing: past
+/// it, the mirror counts as hydrated with whatever arrived.
+const HYDRATE_DEADLINE: Duration = Duration::from_secs(5);
 
 /// One service's mirrored state: what [`LifetimeMirror`] keeps current.
 pub(crate) trait Mirror: Default + std::fmt::Debug + Send + 'static {
@@ -62,6 +75,10 @@ struct Tracked<M> {
     /// Whether the service's token is present and every subscription is
     /// declared.
     alive: bool,
+    /// Whether this lifetime's history has arrived.
+    hydrated: bool,
+    /// The keys a sample has arrived on this lifetime.
+    seen: HashSet<String>,
 }
 
 /// A mirror that follows its service's lifetime: see the module docs.
@@ -70,6 +87,8 @@ pub(crate) struct LifetimeMirror<M> {
     tracked: Arc<Mutex<Tracked<M>>>,
     events: broadcast::Sender<StateEvent>,
     handshake: Arc<Handshake>,
+    /// Woken whenever a sample arrives, for the hydration wait.
+    arrived: Arc<Notify>,
 }
 
 impl<M> Clone for LifetimeMirror<M> {
@@ -78,6 +97,7 @@ impl<M> Clone for LifetimeMirror<M> {
             tracked: Arc::clone(&self.tracked),
             events: self.events.clone(),
             handshake: Arc::clone(&self.handshake),
+            arrived: Arc::clone(&self.arrived),
         }
     }
 }
@@ -123,6 +143,7 @@ impl<M: Mirror> LifetimeMirror<M> {
             tracked: Arc::new(Mutex::new(Tracked::default())),
             events,
             handshake: Arc::new(Handshake::new(M::SERVICE)),
+            arrived: Arc::new(Notify::new()),
         };
         tokio::spawn(this.clone().follow(
             liveliness,
@@ -141,6 +162,12 @@ impl<M: Mirror> LifetimeMirror<M> {
     /// Whether the service's token is present and its keys subscribed.
     pub(crate) fn is_available(&self) -> bool {
         self.lock().alive
+    }
+
+    /// Whether this lifetime's history has arrived; `false` while the
+    /// service is down.
+    pub(crate) fn is_hydrated(&self) -> bool {
+        self.lock().hydrated
     }
 
     /// Where the mirror's events, and the release check's, go out.
@@ -180,6 +207,8 @@ impl<M: Mirror> LifetimeMirror<M> {
             let removed = {
                 let mut tracked = self.lock();
                 tracked.alive = false;
+                tracked.hydrated = false;
+                tracked.seen.clear();
                 tracked.mirror.clear(&site)
             };
             for event in removed {
@@ -199,8 +228,9 @@ impl<M: Mirror> LifetimeMirror<M> {
 
     /// Subscribe, then report the service available: a client that waits
     /// for it finds the subscriptions in place, their history replaying
-    /// as it arrives.
+    /// as it arrives. Then wait for the history to arrive.
     fn begin(&self, session: &Session, site: &str, caller: &Arc<Caller>) -> Lifetime {
+        let deadline = tokio::time::Instant::now() + HYDRATE_DEADLINE;
         let pumps = Arc::new(Mutex::new(Vec::new()));
         let setup = tokio::spawn({
             let this = self.clone();
@@ -216,6 +246,9 @@ impl<M: Mirror> LifetimeMirror<M> {
                         .expect("nothing panics while the pump list is held")
                         .push(pump);
                 }
+                // Before announcing, so the release check's settling can't
+                // be missed.
+                let events = this.events.subscribe();
                 this.lock().alive = true;
                 on_liveliness(
                     true,
@@ -226,14 +259,70 @@ impl<M: Mirror> LifetimeMirror<M> {
                     M::SERVICE,
                     |caller| service_info(caller, M::SERVICE),
                 );
+                this.hydrate(&site, events, deadline).await;
             }
         });
         Lifetime { setup, pumps }
     }
 
+    /// Wait for the release check's `info` reply, then for a sample on each
+    /// cached key it lists that this mirror subscribes; at the deadline,
+    /// stop waiting. A mismatched service lists nothing this client can
+    /// read, so it's hydrated at once.
+    async fn hydrate(
+        &self,
+        site: &str,
+        mut events: broadcast::Receiver<StateEvent>,
+        deadline: tokio::time::Instant,
+    ) {
+        let info = loop {
+            if let Some(info) = self.handshake.info() {
+                break Some(info);
+            }
+            tokio::select! {
+                // Any event, a lag included, is a cue to look again.
+                _ = events.recv() => {}
+                () = tokio::time::sleep_until(deadline) => break None,
+            }
+        };
+        let expected: Vec<String> = match info {
+            Some(info) if self.handshake.known_mismatch().is_none() => {
+                let subscribed: Vec<KeyExpr<'static>> = M::keys(site)
+                    .into_iter()
+                    .filter_map(|key| KeyExpr::try_from(key).ok())
+                    .collect();
+                info.keys
+                    .into_iter()
+                    .filter(|key| {
+                        KeyExpr::try_from(key.as_str())
+                            .is_ok_and(|key| subscribed.iter().any(|expr| expr.intersects(&key)))
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        loop {
+            let arrived = self.arrived.notified();
+            if expected.iter().all(|key| self.lock().seen.contains(key)) {
+                break;
+            }
+            tokio::select! {
+                () = arrived => {}
+                () = tokio::time::sleep_until(deadline) => break,
+            }
+        }
+        self.lock().hydrated = true;
+        let _ = self.events.send(StateEvent::Hydrated(M::SERVICE));
+    }
+
     async fn pump(self, subscriber: AdvancedSubscriber<FifoChannelHandler<Sample>>, site: String) {
         while let Ok(sample) = subscriber.recv_async().await {
-            let event = self.lock().mirror.apply(&site, &sample);
+            let event = {
+                let mut tracked = self.lock();
+                tracked.seen.insert(sample.key_expr().to_string());
+                tracked.mirror.apply(&site, &sample)
+            };
+            self.arrived.notify_one();
             if let Some(event) = event {
                 let _ = self.events.send(event);
             }

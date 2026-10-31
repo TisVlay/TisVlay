@@ -300,7 +300,11 @@ impl Bridge {
     async fn manager_command(&mut self, incoming: manager::Incoming) -> Option<Command> {
         match incoming {
             manager::Incoming::Info((), responder) => {
-                responder.ok(&self.info).await;
+                let info = rpc::ServiceInfo {
+                    keys: self.publishers.keys().cloned().collect(),
+                    ..self.info.clone()
+                };
+                responder.ok(&info).await;
                 None
             }
             manager::Incoming::Reload((), responder) => {

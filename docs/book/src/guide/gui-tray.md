@@ -37,7 +37,7 @@ The list on the left shows each TV with a green dot when it's connected, and whe
 
 Groups and controls the TV can't use are hidden: an HDMI-CEC TV has no backlight, volume, mute, or input controls, for example. If a TV is off the network and TisVlay has no MAC address for it, **Power on** is disabled and says why; see [The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac).
 
-When the TV list is empty, it says why: **Daemon offline**, **TVs hidden: version mismatch**, or **No TVs configured**.
+When the TV list is empty, it says why: **Daemon offline**, **TVs hidden: version mismatch**, **Loading** (the service just started or came back, and its TVs are still arriving), or **No TVs configured**.
 
 ### Profiles
 

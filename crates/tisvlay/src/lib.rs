@@ -160,6 +160,13 @@ pub enum StateEvent {
     /// after its `*Appeared`, whatever the verdict; a watcher built after
     /// the check settled gets it on start, and may then see it twice.
     ReleaseChecked(Service),
+    /// A service's cached state has arrived in its client's mirror for the
+    /// current lifetime, so an empty read now means empty rather than not
+    /// yet known: until then, show the service as loading. Sent once per
+    /// service lifetime, after its `*Appeared`; a watcher built later reads
+    /// `is_hydrated` instead ([`DaemonClient::is_hydrated`] and the
+    /// session's and tray's).
+    Hydrated(Service),
     /// A service runs a release this client can't talk to: every rpc to
     /// it fails until it's restarted on a matching release. Sent once per
     /// service lifetime, right after its [`Self::ReleaseChecked`]; a
@@ -372,6 +379,13 @@ impl DaemonClient {
     /// stopping, or run another release).
     pub async fn is_available(&self) -> bool {
         self.mirror.is_available()
+    }
+
+    /// Whether the service's cached state has arrived in the mirror for
+    /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
+    /// this is `false`, an empty read means not yet known. A mirror read.
+    pub async fn is_hydrated(&self) -> bool {
+        self.mirror.is_hydrated()
     }
 
     /// What this lifetime's release check learned: the daemon's release
@@ -996,6 +1010,13 @@ impl SessionClient {
         self.mirror.is_available()
     }
 
+    /// Whether the service's cached state has arrived in the mirror for
+    /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
+    /// this is `false`, an empty read means not yet known. A mirror read.
+    pub async fn is_hydrated(&self) -> bool {
+        self.mirror.is_hydrated()
+    }
+
     /// What this lifetime's release check learned: the session service's
     /// release and state-file path. A mirror read, like
     /// [`DaemonClient::service_info`].
@@ -1212,6 +1233,13 @@ impl TrayClient {
     /// caveat as [`DaemonClient::is_available`]. No rpc.
     pub async fn is_available(&self) -> bool {
         self.mirror.is_available()
+    }
+
+    /// Whether the service's cached state has arrived in the mirror for
+    /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
+    /// this is `false`, an empty read means not yet known. A mirror read.
+    pub async fn is_hydrated(&self) -> bool {
+        self.mirror.is_hydrated()
     }
 
     /// What this lifetime's release check learned: the tray's release and

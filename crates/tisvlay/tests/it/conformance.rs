@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tisvlay::{DaemonClient, SessionClient, TrayClient};
+use tisvlay::{
+    DaemonClient, Service, SessionClient, StateEvent, StateWatcher, StateWatcherConfig, TrayClient,
+};
 use tisvlay_protocol::payload::{self, StatePayload};
 use tisvlay_protocol::{VERSION, keys};
 use tisvlay_test::Relay;
@@ -307,6 +309,110 @@ async fn daemon_mirror_shows_a_tv_only_with_its_identity() {
         tvs.iter().all(|tv| tv.uuid != partial),
         "a TV without its identity made a row: {tvs:?}"
     );
+}
+
+/// A lifetime is hydrated once a sample has arrived for every cached key
+/// the daemon's `info` lists, so nothing it lists is missing then; and
+/// it's not hydrated while the daemon is down. Each lifetime here starts
+/// after the keys are published, so its `info` lists them all.
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_mirror_is_hydrated_once_the_listed_keys_arrive() {
+    let mut rig = daemon_rig().await;
+    let tv = Uuid::from_u128(1);
+    let profiles = [Uuid::from_u128(2), Uuid::from_u128(3)];
+    for profile in profiles {
+        rig.fake
+            .put(&keys::profile_system(SITE, &profile), &named("Listed"))
+            .await;
+    }
+    for (path, body) in [
+        (
+            payload::Identity::PATH,
+            serde_json::to_value(payload::Identity::new("Den", "mock")).unwrap(),
+        ),
+        (
+            payload::Meta::PATH,
+            serde_json::to_value(payload::Meta::new(true)).unwrap(),
+        ),
+    ] {
+        rig.fake.put(&keys::tv_path(SITE, &tv, path), &body).await;
+    }
+    let client = &rig.client;
+    let mut watcher = StateWatcher::new(client, None, None, StateWatcherConfig::default());
+    for cut in 1..=2 {
+        cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
+        assert!(
+            !client.is_hydrated().await,
+            "hydrated while down, cut {cut}"
+        );
+        hydrated(&mut watcher, Service::Daemon).await;
+        assert!(client.is_hydrated().await, "cut {cut}");
+        assert_eq!(
+            client.list_system_profile_bodies().await.len(),
+            profiles.len(),
+            "a listed profile is missing once hydrated, cut {cut}"
+        );
+        assert!(
+            client
+                .list_tvs()
+                .await
+                .unwrap()
+                .iter()
+                .any(|info| info.uuid == tv),
+            "the listed TV is missing once hydrated, cut {cut}"
+        );
+    }
+}
+
+/// A listed key that never arrives (deleted after the `info` reply) holds
+/// hydration only until the deadline.
+#[tokio::test(flavor = "multi_thread")]
+async fn hydration_ends_at_the_deadline_without_a_listed_key() {
+    let rig = daemon_rig().await;
+    rig.fake
+        .list_unpublished(&keys::profile_system(SITE, &Uuid::from_u128(1)));
+    let client = &rig.client;
+    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
+    eventually("the daemon never came back", async || {
+        client.is_available().await
+    })
+    .await;
+    assert!(!client.is_hydrated().await, "a listed key is missing");
+    eventually("hydration never ended", async || client.is_hydrated().await).await;
+}
+
+/// The session's mirror hydrates the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_mirror_is_hydrated_once_the_listed_keys_arrive() {
+    let mut rig = session_rig().await;
+    let profile = Uuid::from_u128(1);
+    rig.fake
+        .put(&keys::user_profile(SITE, &profile), &named("Listed"))
+        .await;
+    let client = &rig.client;
+    // The cut clears `is_hydrated`, so this waits for the next lifetime.
+    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
+    eventually("the session never hydrated", async || {
+        client.is_hydrated().await
+    })
+    .await;
+    assert_eq!(
+        user_profile(client, profile).await.as_deref(),
+        Some("Listed")
+    );
+}
+
+async fn hydrated(watcher: &mut StateWatcher, service: Service) {
+    tokio::time::timeout(CONVERGE, async {
+        loop {
+            match watcher.next().await.expect("watcher open") {
+                StateEvent::Hydrated(which) if which == service => return,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the mirror never hydrated");
 }
 
 // --- The session's mirror -------------------------------------------------

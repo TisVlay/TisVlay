@@ -2,10 +2,12 @@
 //! third party might mock one: it listens on a socket, holds its
 //! liveliness token, answers `info` with a chosen release and a reload
 //! with nothing changed, and publishes whatever keys a test puts, through
-//! cached publishers configured like the real services'.
+//! cached publishers configured like the real services', listing them in
+//! its `info` reply.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -32,14 +34,17 @@ pub(crate) struct FakeService {
     token: LivelinessToken,
     serve: JoinHandle<()>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
+    /// The keys the `info` reply lists.
+    listed: Arc<Mutex<BTreeSet<String>>>,
 }
 
 /// Answer `info` and `reload` on `$queryable` for rpc family `$family`.
 macro_rules! answer {
-    ($family:ident, $queryable:expr, $release:expr) => {{
+    ($family:ident, $queryable:expr, $release:expr, $listed:expr) => {{
         use tisvlay_protocol::endpoint::$family;
         let queryable = $queryable;
         let release = $release;
+        let listed = Arc::clone($listed);
         tokio::spawn(async move {
             while let Ok(query) = queryable.recv_async().await {
                 match $family::Incoming::receive(SITE, query).await {
@@ -48,6 +53,7 @@ macro_rules! answer {
                             version: release.clone(),
                             state_path: String::new(),
                             sleep: None,
+                            keys: listed.lock().unwrap().iter().cloned().collect(),
                         };
                         responder.ok(&info).await;
                     }
@@ -78,10 +84,11 @@ impl FakeService {
         };
         let queryable = session.declare_queryable(rpc_wild).await.unwrap();
         let release = release.to_string();
+        let listed = Arc::new(Mutex::new(BTreeSet::new()));
         let serve = match family {
-            Family::Daemon => answer!(manager, queryable, release),
-            Family::Session => answer!(user_profile, queryable, release),
-            Family::Tray => answer!(user_tray, queryable, release),
+            Family::Daemon => answer!(manager, queryable, release, &listed),
+            Family::Session => answer!(user_profile, queryable, release, &listed),
+            Family::Tray => answer!(user_tray, queryable, release, &listed),
         };
         let token = session.liveliness().declare_token(alive).await.unwrap();
         Self {
@@ -89,6 +96,7 @@ impl FakeService {
             token,
             serve,
             publishers: HashMap::new(),
+            listed,
         }
     }
 
@@ -106,6 +114,7 @@ impl FakeService {
                 .await
                 .unwrap();
             self.publishers.insert(key.to_string(), publisher);
+            self.listed.lock().unwrap().insert(key.to_string());
         }
         self.publishers[key]
             .put(serde_json::to_vec(body).unwrap())
@@ -117,7 +126,14 @@ impl FakeService {
     /// the real services do.
     pub(crate) async fn delete(&mut self, key: &str) {
         let publisher = self.publishers.remove(key).unwrap();
+        self.listed.lock().unwrap().remove(key);
         publisher.delete().await.unwrap();
+    }
+
+    /// List `key` in the `info` reply without publishing it: a key the
+    /// service published, then deleted after the reply.
+    pub(crate) fn list_unpublished(&self, key: &str) {
+        self.listed.lock().unwrap().insert(key.to_string());
     }
 
     /// Stop: the token, the rpcs and the publishers go with the session.

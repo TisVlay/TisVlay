@@ -284,6 +284,7 @@ pub async fn serve_settings(
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: config_path.display().to_string(),
                     sleep: None,
+                    keys: vec![keys::user_tray_settings(&site)],
                 };
                 responder.ok(&info).await;
             }

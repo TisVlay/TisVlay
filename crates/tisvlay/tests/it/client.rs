@@ -646,6 +646,7 @@ async fn a_failed_release_check_is_retried() {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: "/var/lib/tisvlay/state.toml".into(),
                     sleep: None,
+                    keys: Vec::new(),
                 };
                 responder.ok(&info).await;
             }
