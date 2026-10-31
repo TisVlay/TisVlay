@@ -80,6 +80,9 @@ pub(crate) struct CecConnection {
     /// The adapter is a USB device that can let the TV wake the PC
     /// (`WAKES_PC`), as the connector read it from sysfs.
     wakes_pc: bool,
+    /// The PC's physical address, which the monitor compares routes with
+    /// to follow whether the TV is showing the PC.
+    physical_address: PhysicalAddress,
 }
 
 impl CecConnection {
@@ -99,7 +102,17 @@ impl CecConnection {
             monitor_task: None,
             events: EventSlot::default(),
             wakes_pc: false,
+            physical_address: crate::config::CecVendorConfig::default()
+                .physical_address
+                .to_linux(),
         }
+    }
+
+    /// Set the PC's physical address, as configured (HDMI 1 until set).
+    #[must_use]
+    pub(crate) fn with_physical_address(mut self, address: PhysicalAddress) -> Self {
+        self.physical_address = address;
+        self
     }
 
     /// Mark the adapter as one that can let the TV wake the PC.
@@ -134,11 +147,22 @@ fn power_from_message(message: &Message) -> Option<PowerState> {
 }
 
 /// Whether a key is the remote's power key, in the forms a TV sends for
-/// "power off this device": LG's SIMPLINK sends `Power`, and Power Off is
-/// unambiguous. Not Power Toggle: a TV may send it to wake the PC, and a
-/// copy that reached the woken PC would put it straight back to sleep.
+/// "power off this device": LG's SIMPLINK sends `Power`, which like Power
+/// Toggle is a toggle, and Power Off is unambiguous.
 fn is_power_key(command: UiCommand) -> bool {
-    matches!(command, UiCommand::Power | UiCommand::PowerOffFunction)
+    matches!(
+        command,
+        UiCommand::Power | UiCommand::PowerToggleFunction | UiCommand::PowerOffFunction
+    )
+}
+
+/// Whether a fresh power-key press means "power off this PC". A toggle
+/// (Power, Power Toggle) does only while the TV is showing the PC: a TV
+/// switching to the PC's input may send one to wake it, and that copy must
+/// not put the PC to sleep (libcec's rule, `efe7d98c`). Power Off can't
+/// mean a wake.
+fn powers_off(command: UiCommand, shown: &Shown) -> bool {
+    command == UiCommand::PowerOffFunction || shown.shown
 }
 
 /// The remote's power key, debounced: one press however long the key is
@@ -150,23 +174,55 @@ struct PowerKey {
 }
 
 impl PowerKey {
-    /// Whether the TV's `message` is a fresh press of the power key. Another
+    /// The power key the TV's `message` freshly presses, if any. Another
     /// key or `<User Control Released>` ends the hold; so does a repeat
     /// later than [`POWER_KEY_REPEAT`].
-    fn press(&mut self, message: &Message, now: Instant) -> bool {
+    fn press(&mut self, message: &Message, now: Instant) -> Option<UiCommand> {
         match message {
             Message::UserControlPressed { ui_command } if is_power_key(*ui_command) => {
                 let repeat = self
                     .held_at
                     .is_some_and(|at| now.saturating_duration_since(at) < POWER_KEY_REPEAT);
                 self.held_at = Some(now);
-                !repeat
+                (!repeat).then_some(*ui_command)
             }
             Message::UserControlPressed { .. } | Message::UserControlReleased => {
                 self.held_at = None;
-                false
+                None
             }
-            _ => false,
+            _ => None,
+        }
+    }
+}
+
+/// Whether the TV is showing this PC, followed from the bus: a route, a
+/// stream path or an active source names the address being shown, and the
+/// PC is shown while that's its own; the TV going to standby shows nothing.
+#[derive(Debug)]
+struct Shown {
+    /// The PC's physical address.
+    ours: PhysicalAddress,
+    shown: bool,
+}
+
+impl Shown {
+    /// Follow `message` from `initiator`, any device on the bus: another
+    /// source's Active Source moves the TV off the PC, and the PC's own
+    /// (looped back from the adapter) onto it.
+    fn observe(&mut self, initiator: LogicalAddress, message: &Message) {
+        match message {
+            Message::RoutingChange {
+                new_address: address,
+                ..
+            }
+            | Message::RoutingInformation { address }
+            | Message::SetStreamPath { address }
+            | Message::ActiveSource { address } => self.shown = *address == self.ours,
+            Message::Standby
+            | Message::ReportPowerStatus {
+                status: PowerStatus::Standby,
+            } if initiator == LogicalAddress::Tv => self.shown = false,
+            _ => {}
         }
     }
 }
@@ -263,6 +319,12 @@ impl TvConnection for CecConnection {
         // (which reads `is_connected()`) suppresses `ConnectionChanged`.
         let connected = Arc::clone(&self.connected);
         let events = Arc::clone(&self.events);
+        // A TV that's on at subscribe is taken to be showing the PC: a
+        // daemon restart sees no route until the TV next switches.
+        let mut shown = Shown {
+            ours: self.physical_address,
+            shown: initial == PowerState::Active,
+        };
         let task = tokio::spawn(async move {
             let mut power_key = PowerKey::default();
             // Running snapshot re-pushed on every power-relevant change. The
@@ -289,6 +351,7 @@ impl TvConnection for CecConnection {
                 match monitor.recv().await {
                     Ok(Some((initiator, message))) => {
                         consecutive_errors = 0;
+                        shown.observe(initiator, &message);
                         // Only the TV's own broadcasts define its power —
                         // ignore the adapter's looped-back wake / Active
                         // Source frames and unrelated sources on the bus.
@@ -302,7 +365,8 @@ impl TvConnection for CecConnection {
                             if tx.send(state.clone()).is_err() {
                                 break; // daemon dropped the subscription
                             }
-                        } else if power_key.press(&message, Instant::now())
+                        } else if let Some(command) = power_key.press(&message, Instant::now())
+                            && powers_off(command, &shown)
                             && let Some(events) = events
                                 .lock()
                                 .expect("nothing panics while the event slot's lock is held")
@@ -571,31 +635,152 @@ mod tests {
     fn the_power_key_is_debounced() {
         let start = Instant::now();
         let mut key = PowerKey::default();
-        assert!(key.press(&pressed(UiCommand::Power), start));
-        assert!(!key.press(&pressed(UiCommand::Power), start), "a repeat");
-        assert!(!key.press(&Message::UserControlReleased, start));
-        assert!(
+        let power = Some(UiCommand::Power);
+        assert_eq!(key.press(&pressed(UiCommand::Power), start), power);
+        assert_eq!(
             key.press(&pressed(UiCommand::Power), start),
+            None,
+            "a repeat"
+        );
+        assert_eq!(key.press(&Message::UserControlReleased, start), None);
+        assert_eq!(
+            key.press(&pressed(UiCommand::Power), start),
+            power,
             "after release"
         );
-        assert!(!key.press(&pressed(UiCommand::Up), start));
-        assert!(key.press(&pressed(UiCommand::Power), start), "after a key");
-        assert!(
+        assert_eq!(key.press(&pressed(UiCommand::Up), start), None);
+        assert_eq!(
+            key.press(&pressed(UiCommand::Power), start),
+            power,
+            "after a key"
+        );
+        assert_eq!(
             key.press(
                 &pressed(UiCommand::Power),
                 start.checked_add(POWER_KEY_REPEAT).unwrap()
             ),
+            power,
             "after a pause"
         );
-        assert!(
-            !key.press(&pressed(UiCommand::Up), start),
+        assert_eq!(
+            key.press(&pressed(UiCommand::Up), start),
+            None,
             "not the power key"
         );
-        assert!(key.press(&pressed(UiCommand::PowerOffFunction), start));
-        assert!(
-            !key.press(&pressed(UiCommand::PowerToggleFunction), start),
-            "a toggle may be a wake"
+        assert_eq!(
+            key.press(&pressed(UiCommand::PowerOffFunction), start),
+            Some(UiCommand::PowerOffFunction)
         );
+        assert_eq!(key.press(&Message::UserControlReleased, start), None);
+        assert_eq!(
+            key.press(&pressed(UiCommand::PowerToggleFunction), start),
+            Some(UiCommand::PowerToggleFunction)
+        );
+        assert_eq!(
+            key.press(&pressed(UiCommand::PowerOnFunction), start),
+            None,
+            "an on never sleeps the PC"
+        );
+    }
+
+    /// The PC's physical address in these tests: HDMI 1.
+    fn ours() -> PhysicalAddress {
+        PhysicalAddress::from(0x1000)
+    }
+
+    /// Routes, stream paths and active sources move the TV onto or off the
+    /// PC, from any device; the TV's standby shows nothing.
+    #[test]
+    fn shown_follows_the_bus() {
+        let mut shown = Shown {
+            ours: ours(),
+            shown: false,
+        };
+        let other = PhysicalAddress::from(0x4000);
+        shown.observe(
+            LogicalAddress::Tv,
+            &Message::SetStreamPath { address: ours() },
+        );
+        assert!(shown.shown, "a stream path to the PC");
+        shown.observe(
+            LogicalAddress::PlaybackDevice1,
+            &Message::ActiveSource { address: other },
+        );
+        assert!(!shown.shown, "another source's Active Source");
+        shown.observe(
+            LogicalAddress::Tv,
+            &Message::RoutingChange {
+                original_address: other,
+                new_address: ours(),
+            },
+        );
+        assert!(shown.shown, "a route to the PC");
+        shown.observe(LogicalAddress::Tv, &Message::Standby);
+        assert!(!shown.shown, "the TV's standby");
+        shown.observe(
+            LogicalAddress::PlaybackDevice2,
+            &Message::ActiveSource { address: ours() },
+        );
+        assert!(shown.shown, "the PC's own Active Source, looped back");
+        shown.observe(LogicalAddress::PlaybackDevice1, &Message::Standby);
+        assert!(shown.shown, "another device's standby isn't the TV's");
+    }
+
+    /// A toggle powers the PC off only while shown; Power Off always does.
+    #[test]
+    fn only_power_off_acts_unshown() {
+        let unshown = Shown {
+            ours: ours(),
+            shown: false,
+        };
+        let shown = Shown {
+            ours: ours(),
+            shown: true,
+        };
+        for toggle in [UiCommand::Power, UiCommand::PowerToggleFunction] {
+            assert!(!powers_off(toggle, &unshown), "{toggle:?} may be a wake");
+            assert!(powers_off(toggle, &shown), "{toggle:?} while shown");
+        }
+        assert!(powers_off(UiCommand::PowerOffFunction, &unshown));
+    }
+
+    /// The monitor drops a toggle the TV sends while it isn't showing the
+    /// PC (the wake press), and acts on one once a stream path names the PC;
+    /// Power Off acts either way.
+    #[tokio::test]
+    async fn a_toggle_counts_only_while_the_pc_is_shown() {
+        let opener = Arc::new(FakeCecLinkOpener::with_monitor_script_from(vec![
+            (LogicalAddress::Tv, Message::Standby),
+            (LogicalAddress::Tv, pressed(UiCommand::Power)),
+            (LogicalAddress::Tv, Message::UserControlReleased),
+            (LogicalAddress::Tv, pressed(UiCommand::PowerOffFunction)),
+            (LogicalAddress::Tv, Message::UserControlReleased),
+            (
+                LogicalAddress::Tv,
+                Message::SetStreamPath {
+                    address: PhysicalAddress::from(0x1000),
+                },
+            ),
+            (LogicalAddress::Tv, pressed(UiCommand::PowerToggleFunction)),
+        ]));
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::On)),
+            opener,
+            "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
+        )
+        .with_physical_address(PhysicalAddress::from(0x1000));
+        let mut events = conn.subscribe_events().await.expect("subscribe events");
+        let _state = conn.subscribe_state().await.expect("subscribe state");
+        for press in ["Power Off, unshown", "the toggle, shown"] {
+            let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{press} within 1s"))
+                .expect("event channel open");
+            assert_eq!(event, TvEvent::RemotePower, "{press}");
+        }
+        let more = tokio::time::timeout(Duration::from_millis(100), events.recv()).await;
+        assert!(more.is_err(), "the unshown toggle: {more:?}");
     }
 
     /// The monitor reports the TV's power-key presses as events, one per

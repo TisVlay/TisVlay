@@ -178,7 +178,8 @@ impl TvConnector for CecConnector {
         let wakes_pc = self.wakes_pc(&config.device);
         Ok(Box::new(
             CecConnection::new(link, self.opener.clone(), config.device, identity)
-                .with_wakes_pc(wakes_pc),
+                .with_wakes_pc(wakes_pc)
+                .with_physical_address(config.physical_address.to_linux()),
         ))
     }
 
@@ -258,7 +259,8 @@ impl TvConnector for CecConnector {
                 let identity = crate::identity::query(link.as_ref()).await;
                 return Ok(Box::new(
                     CecConnection::new(link, self.opener.clone(), config.device.clone(), identity)
-                        .with_wakes_pc(self.wakes_pc(&config.device)),
+                        .with_wakes_pc(self.wakes_pc(&config.device))
+                        .with_physical_address(config.physical_address.to_linux()),
                 ));
             }
         }
