@@ -12,6 +12,7 @@
 
 - [GUI & Tray](./guide/gui-tray.md)
 - [Automation](./guide/automation.md)
+- [The TV Controls the PC](./guide/tv-controls-pc.md)
 - [Streaming](./guide/streaming.md)
 
 # Help
