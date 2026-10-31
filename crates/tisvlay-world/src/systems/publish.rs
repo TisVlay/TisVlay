@@ -37,17 +37,18 @@ pub(super) fn derive_automated(
     }
 }
 
-/// Send the wake list when it changes: every TV's device node with its
-/// system profile's `on_tv_power_on`, so the wakeup unit arms the nodes
-/// that may wake the PC and blocks the rest for each sleep. The unit
-/// resolves each node to its USB device and skips what it can't (an
+/// Send the wake list when it changes: every managed TV's device node with
+/// its system profile's `on_tv_power_on`, so the wakeup unit arms the nodes
+/// that may wake the PC and blocks the rest for each sleep. An unmanaged
+/// TV's adapter isn't listed, so the unit leaves it as the host has it. The
+/// unit resolves each node to its USB device and skips what it can't (an
 /// adapter with no USB device, one unplugged), which is the `wakes_pc`
 /// capability's own test, so the list doesn't wait for a connection to
 /// report it. Two TVs on one node wake the PC if either asks to. The first
 /// run always sends, replacing a list a previous daemon left.
 pub(super) fn publish_wake_list(
     mut outbox: ResMut<Outbox>,
-    q: Query<(Option<&State<payload::Meta>>, &DeviceNode)>,
+    q: Query<(Option<&State<payload::Meta>>, &DeviceNode), With<Managed>>,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
     mut last: Local<Option<WakeList>>,

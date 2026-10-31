@@ -899,10 +899,11 @@ impl Core {
         self.going_off(tv, event).await;
     }
 
-    /// Run the user profile's PC action for a going-off event, for the
-    /// seat's active user only and never while a stream arms the TV. The TV
-    /// powering off by itself is gated on `automated` like the seat-local
-    /// events; the remote's power key is an explicit press, so it isn't.
+    /// Run the user profile's PC action for a going-off event, for a
+    /// managed TV and the seat's active user only, and never while a stream
+    /// arms the TV. The TV powering off by itself is also gated on the TV's
+    /// input (`automated`), like the seat-local events; the remote's power
+    /// key is addressed to the PC, so it isn't.
     async fn going_off(&mut self, tv: Uuid, event: GoingOff) {
         let profile = self.resolve_for(&tv);
         let action = match event {
@@ -917,7 +918,15 @@ impl Core {
             debug!(%tv, ?event, "not the seat's active user");
             return;
         }
-        if event == GoingOff::TvPowerOff && !self.tvs.get(&tv).is_some_and(|m| m.automated) {
+        let Some(meta) = self.tvs.get(&tv) else {
+            debug!(%tv, ?event, "unknown TV");
+            return;
+        };
+        if !meta.managed {
+            debug!(%tv, ?event, "not managed");
+            return;
+        }
+        if event == GoingOff::TvPowerOff && !meta.automated {
             debug!(%tv, ?event, "automation gated off");
             return;
         }

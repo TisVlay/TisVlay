@@ -466,11 +466,12 @@ pub(super) fn dispatch_system_events(
     }
 }
 
-/// This step's going-off events: run each one's system-profile sleep, never
-/// while a stream arms the TV. The TV powering off by itself is gated like
-/// the system profile's other events (`managed`, `automated`); the remote's
-/// power key is an explicit press, so it isn't. Also reports a sleep the
-/// daemon couldn't take as `event/dispatch-failed`.
+/// This step's going-off events: run each one's system-profile sleep for a
+/// managed TV, never while a stream arms the TV. The TV powering off by
+/// itself is also gated on the TV's input (`automated`), since it says
+/// nothing about the PC unless the TV was showing it; the remote's power
+/// key is addressed to the PC, so it isn't. Also reports a sleep the daemon
+/// couldn't take as `event/dispatch-failed`.
 #[expect(
     clippy::too_many_arguments,
     reason = "a bevy system: its parameters are its declared data access"
@@ -498,15 +499,13 @@ pub(super) fn dispatch_going_off(
         let Some((meta, managed)) = index.get(&tv).and_then(|entity| tvs.get(entity).ok()) else {
             continue;
         };
-        if event == GoingOffEvent::TvPowerOff {
-            if !managed {
-                tracing::debug!(%tv, ?event, "not managed");
-                continue;
-            }
-            if meta.is_some_and(|m| !m.automated) {
-                tracing::debug!(%tv, ?event, "automation gated off");
-                continue;
-            }
+        if !managed {
+            tracing::debug!(%tv, ?event, "not managed");
+            continue;
+        }
+        if event == GoingOffEvent::TvPowerOff && meta.is_some_and(|m| !m.automated) {
+            tracing::debug!(%tv, ?event, "automation gated off");
+            continue;
         }
         let field: fn(&tisvlay_core::SystemProfileConfig) -> _ = match event {
             GoingOffEvent::TvPowerOff => |body| body.on_tv_power_off,
@@ -527,8 +526,9 @@ pub(super) fn dispatch_going_off(
 }
 
 /// Tell each live connection whose backend can pass the TV remote's keys
-/// whether to, from its system profile's `remote_keys`: on connect (a new
-/// claim starts without) and whenever the resolved value changes.
+/// whether to, from its system profile's `remote_keys` (never for an
+/// unmanaged TV): on connect (a new claim starts without) and whenever the
+/// resolved value changes.
 #[expect(
     clippy::type_complexity,
     reason = "bevy system: its Query types spell out the components it reads"
@@ -542,17 +542,19 @@ pub(super) fn reconcile_remote_keys(
         &RemoteKeysSent,
         Option<&State<payload::Identity>>,
         Option<&State<payload::Meta>>,
+        Has<Managed>,
     )>,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
 ) {
-    for (entity, id, handle, sent, identity, meta) in &tvs {
+    for (entity, id, handle, sent, identity, meta, managed) in &tvs {
         if !identity.is_some_and(|i| i.capabilities.iter().any(|c| c == "remote_keys")) {
             continue;
         }
-        let want = resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
-            body.remote_keys
-        });
+        let want = managed
+            && resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
+                body.remote_keys
+            });
         if want != sent.0 && handle.cmd_tx.send(BackendCmd::SetRemoteKeys(want)).is_ok() {
             tracing::info!(tv = %id.0, remote_keys = want, "the remote's keys");
             commands.entity(entity).insert(RemoteKeysSent(want));

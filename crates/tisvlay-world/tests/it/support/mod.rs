@@ -289,3 +289,18 @@ pub(crate) async fn assign_system_profile(
     });
     collect_until(effects, |e| reply_to(e, 91)).await;
 }
+
+/// Set whether the daemon manages `tv`.
+pub(crate) async fn set_managed(
+    effects: &mut UnboundedReceiver<WireEffect>,
+    client: &WorldClient,
+    tv: Uuid,
+    managed: bool,
+) {
+    client.command(Command::SetManaged {
+        id: tv,
+        managed,
+        reply: Some(Reply::new(92)),
+    });
+    collect_until(effects, |e| reply_to(e, 92)).await;
+}

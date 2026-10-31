@@ -234,6 +234,26 @@ async fn the_remote_power_key_ignores_the_automation_gate() {
     );
 }
 
+/// An unmanaged TV's power key still publishes its event, but sleeps
+/// nothing: the daemon acts for managed TVs only.
+#[tokio::test]
+async fn an_unmanaged_tvs_remote_power_key_sleeps_nothing() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    let tv = add_connected_tv(&mut effects, &client, "mock://remote-unmanaged").await;
+    let body = tisvlay_core::SystemProfileConfig {
+        name: "Suspend on the remote".into(),
+        on_remote_power: Some(tisvlay_core::SystemSleepAction::Suspend),
+        ..Default::default()
+    };
+    assign_system_profile(&mut effects, &client, tv, body).await;
+    set_managed(&mut effects, &client, tv, false).await;
+
+    mock.press_remote_power("mock://remote-unmanaged");
+    collect_until(&mut effects, |e| remote_powered(e).is_some()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sleeps.try_recv().is_err(), "an unmanaged TV sleeps nothing");
+}
+
 #[tokio::test]
 async fn a_stream_holds_the_remote_power_sleep_back() {
     let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();

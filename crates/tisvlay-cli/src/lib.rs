@@ -140,7 +140,7 @@ pub enum Command {
         #[command(flatten)]
         switch: Switch,
     },
-    /// Set whether the daemon automates a TV, or print it.
+    /// Set whether a TV's profiles act (on the TV, and on this PC for its events), or print it.
     Managed {
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,

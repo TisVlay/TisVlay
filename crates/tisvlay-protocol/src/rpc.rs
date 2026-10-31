@@ -87,9 +87,11 @@ pub struct SetName {
 /// Body for `tv/<id>/rpc/set-managed`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetManaged {
-    /// Whether profiles automate the TV. Unmanaging stops profile
-    /// actions only: the connection stays up for manual control.
-    /// Managing a disconnected TV dials it.
+    /// Whether the TV's profiles act, on the TV and on this PC for the
+    /// TV's own events (its power-off, its remote's power key, its
+    /// remote's keys and waking the PC). Unmanaging stops profile actions
+    /// only: the connection stays up for manual control. Managing a
+    /// disconnected TV dials it.
     pub managed: bool,
 }
 

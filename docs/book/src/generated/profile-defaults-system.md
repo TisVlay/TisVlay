@@ -59,7 +59,7 @@ remote_keys = false
 # system, armed for every sleep), and `none` keeps the PC asleep (on
 # HDMI-CEC, the adapter's USB port is disabled for the sleep, so the
 # TV has no CEC device to show for this PC until it resumes). Where
-# the TV comes up on another input, `wake` may still wake the PC.
-# Default `none`.
+# the TV comes up on another input, `wake` may still wake the PC. An
+# unmanaged TV's adapter is left as the host has it. Default `none`.
 on_tv_power_on = "none"
 ```

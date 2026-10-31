@@ -213,8 +213,9 @@ impl StatePayload for VendorRows {
 /// The TV's settings and the automation state derived from them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
-    /// Whether profiles automate the TV. An unmanaged TV stays
-    /// connected for manual control.
+    /// Whether the TV's profiles act, on the TV and on this PC for the
+    /// TV's own events. An unmanaged TV stays connected for manual
+    /// control.
     pub managed: bool,
     /// The assigned system profile; absent follows the default
     /// profile.

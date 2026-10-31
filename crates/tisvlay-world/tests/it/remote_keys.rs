@@ -50,3 +50,18 @@ async fn the_stock_profile_sends_nothing() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(mock.remote_keys("mock://keys-stock"), None);
 }
+
+/// An unmanaged TV's claim goes without the keys, whatever its profile
+/// says, and gets them back when it's managed again.
+#[tokio::test]
+async fn an_unmanaged_tv_gets_no_remote_keys() {
+    let (mut effects, client, mock) = spawn_reactor();
+    let tv = add_connected_tv(&mut effects, &client, "mock://keys-unmanaged").await;
+    assign_system_profile(&mut effects, &client, tv, keys_profile(true)).await;
+    wait_remote_keys(&mock, "mock://keys-unmanaged", true).await;
+
+    set_managed(&mut effects, &client, tv, false).await;
+    wait_remote_keys(&mock, "mock://keys-unmanaged", false).await;
+    set_managed(&mut effects, &client, tv, true).await;
+    wait_remote_keys(&mock, "mock://keys-unmanaged", true).await;
+}

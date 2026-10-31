@@ -1930,6 +1930,49 @@ async fn the_remote_power_key_requests_a_lock_without_automation() {
     lock_requested_after_remote_power(&mut rig, "mock://remote-lock", tv).await;
 }
 
+/// An unmanaged TV's remote power key locks nothing; managed again, it
+/// locks.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unmanaged_tvs_remote_power_key_locks_nothing() {
+    use tisvlay_protocol::endpoint::tv as tv_rpc;
+
+    let mut rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://remote-unmanaged").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    create_and_assign(
+        &rig,
+        tv,
+        json!({ "name": "Lock on the remote", "on_remote_power": "lock" }),
+    )
+    .await;
+    call::<tv_rpc::SetManaged>(&rig.caller, &tv, &body(json!({ "managed": false })))
+        .await
+        .expect("unmanage ok");
+    wait_tv_state(&sub, &rig.site, tv, "meta/config", |v| {
+        v["managed"] == false
+    })
+    .await;
+    // The session mirrors the meta behind the daemon: give it time to see
+    // the change before pressing.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    for _ in 0..3 {
+        rig.mock.press_remote_power("mock://remote-unmanaged");
+    }
+    let asked =
+        tokio::time::timeout(Duration::from_millis(1500), rig.stack.lock_requests.recv()).await;
+    assert!(asked.is_err(), "an unmanaged TV locks nothing: {asked:?}");
+
+    call::<tv_rpc::SetManaged>(&rig.caller, &tv, &body(json!({ "managed": true })))
+        .await
+        .expect("manage ok");
+    lock_requested_after_remote_power(&mut rig, "mock://remote-unmanaged", tv).await;
+}
+
 /// While a stream arms the TV, its remote's power key locks nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stream_holds_the_remote_power_lock_back() {

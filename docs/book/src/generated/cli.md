@@ -73,7 +73,7 @@ A TV setting or state reads when its value is left out and sets when it's given:
 * `power` — Power a TV on or off, or print whether it's on (connected and awake)
 * `screen` — Blank or wake a TV's screen, or print whether it shows a picture
 * `mute` — Mute or unmute a TV, or print whether it's muted
-* `managed` — Set whether the daemon automates a TV, or print it
+* `managed` — Set whether a TV's profiles act (on the TV, and on this PC for its events), or print it
 * `volume` — Set a TV's volume, or print it
 * `backlight` — Set a TV's backlight level, or print it
 * `input` — Switch a TV's input, or print the current one
@@ -281,7 +281,7 @@ Mute or unmute a TV, or print whether it's muted
 
 ## `tisvlay managed`
 
-Set whether the daemon automates a TV, or print it
+Set whether a TV's profiles act (on the TV, and on this PC for its events), or print it
 
 **Usage:** `tisvlay managed [OPTIONS] <TV> [VALUE]`
 

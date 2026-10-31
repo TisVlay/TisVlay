@@ -134,3 +134,17 @@ async fn only_tvs_with_a_node_are_listed_and_a_wake_wins() {
     let list = tokio::time::timeout(Duration::from_millis(300), lists.recv()).await;
     assert!(list.is_err(), "the list changed again: {list:?}");
 }
+
+/// An unmanaged TV's node leaves the list, so the wakeup unit leaves its
+/// adapter as the host has it, and returns when it's managed again.
+#[tokio::test]
+async fn an_unmanaged_tv_is_left_off_the_list() {
+    let (mut effects, mut lists, client, _mock) = spawn_reactor_with_wake_list();
+    let tv = add_local_tv(&mut effects, &client, "mock://wake-unmanaged", "/dev/cec-u").await;
+    wait_list(&mut lists, &[("/dev/cec-u", SystemWakeAction::None)]).await;
+
+    set_managed(&mut effects, &client, tv, false).await;
+    wait_list(&mut lists, &[]).await;
+    set_managed(&mut effects, &client, tv, true).await;
+    wait_list(&mut lists, &[("/dev/cec-u", SystemWakeAction::None)]).await;
+}
