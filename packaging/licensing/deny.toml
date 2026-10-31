@@ -149,7 +149,6 @@ skip = [
     { crate = "nix@0.30.1", reason = "rtnetlink 0.23 pins nix 0.30; linux-cec and os_info are on 0.31" },
     { crate = "libloading@0.8.9", reason = "dlib/glutin/x11rb/zenoh on libloading 0.8; pipewire-native-spa on 0.9" },
     { crate = "syn@2.0.119", reason = "bevy's macros and other proc-macro crates are still on syn 2" },
-    { crate = "dirs@5.0.1", reason = "freedesktop-icons 0.4 pins dirs 5; shellexpand is on 6" },
     { crate = "downcast-rs@1.2.1", reason = "wayland-backend pins downcast-rs 1; bevy_reflect is on 2" },
     { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (Slint's image stack) pins miniz_oxide 0.8; flate2 is on 0.9" },
     { crate = "rustc-hash@1.1.0", reason = "rowan 0.17 (Slint's compiler) pins rustc-hash 1; bevy's variadics_please (via unsynn) is on 2" },
