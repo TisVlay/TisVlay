@@ -160,6 +160,25 @@ The packaged daemon runs as the `tisvlay` system user under a hardened unit; it 
 
 Three host pieces back the PC actions, shipped by every package and the NixOS module: a **polkit rule** letting the daemon's user call logind's suspend and hibernate methods (with their multiple-sessions variants, since it has no session of its own; never the ignore-inhibit ones, so a user's block inhibitor wins and a refused sleep lands on `event/dispatch-failed`), whose opt-in is the profile field, default `none`; **`tisvlay-wakeup.service`**, a root oneshot that starts with `sleep.target` and stops when it ends, applying the wake list and recording what it changed under its own runtime directory so it only ever undoes that; and the **`rc-cec` keymap**, a hwdb entry dropping the TV remote's power keys so passthrough can't put the PC to sleep through the desktop. Details: [packaging/README.md](../packaging/README.md).
 
+## Vocabulary
+
+One pair of words per subject, each word owned by one subject, so a word names one concept and a search finds it (decided 2026-10-25; the renames still owed by older names are in [ideas/power-vocabulary.md](ideas/power-vocabulary.md)).
+
+| Subject | Verbs | States | Notes |
+|---|---|---|---|
+| The PC | **sleep / wake**; also startup, shutdown, reboot | asleep / awake | "Sleep" is the generic word. Specific sleep modes keep logind's names (suspend, hibernate), as values where the mode matters, such as the system profile's `suspend` and `sleep` actions. "Resume" never names the PC, though it's the kernel's word. In identifiers the PC is **`pc`** (`WAKES_PC`, "PC actions"), never "host", "machine" or "desktop". |
+| The TV | **power off / power on** | **standby / on** | Events and actions use the verbs (`power_off`, `on_tv_power_off`). "Standby" names the state, which is every vendor's name for it (`PowerState::Standby`, CEC power status, Sony, Samsung, LG's Active Standby, the GUI's status text). Wake-on-LAN keeps its name: it names a mechanism, not the concept. |
+| The TV's remote control | **the remote** (its keys, its power key) | | `on_remote_power`, `REMOTE_KEYS`. |
+| The TV's screen | **screen off / screen on** | | The panel blank, emulated as power where a backend has none. |
+| The PC's display | **DPMS off / DPMS on** | | The mechanism's name is already the user-visible one. DPMS's own Standby and Suspend modes stay inside the mechanism; TisVlay uses only off and on. |
+| The session | **lock / unlock** | locked / unlocked | |
+| Activity | **idle / resume** | idle / active | "Resume" means only activity after idle, always qualified (`on_idle_resume`, greeter resume), as in `ext-idle-notify-v1`, swayidle, hypridle and KIdleTime. |
+| Desktop streaming | **a stream starts / ends** | a stream arms a TV | Formerly "remote session": Sunshine and Moonshine, screen capture, remote desktop ([streams/detection.md](streams/detection.md)). "Connect" stays the TV link's word. |
+
+The rule: a word never crosses subjects. A name that needs another subject's word names that subject too, as `on_tv_power_off` does.
+
+Platform and vendor names keep their spelling wherever they name the platform's own thing: logind's methods and `PrepareForSleep`, polkit's `login1.suspend`, the kernel's `power/wakeup` and "PM: suspend entry", `ext-idle-notify`'s `resumed`, PipeWire's `Suspended` / `Idle` node states, linux-cec's `AsyncDevice::wake`, CEC's messages, LG's and other vendors' power states, DPMS's modes.
+
 ## Empirical zenoh laws
 
 Learned the hard way; violating any of these produces silent wrong behavior, not errors:
