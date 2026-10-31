@@ -383,7 +383,11 @@ pub(crate) fn parse_power_state_payload(payload: &Value) -> Option<PowerState> {
 /// Returns `true` if the state was actually modified.
 fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
     if uri.contains("getPowerState") {
-        if let Some(power) = parse_power_state_payload(payload) {
+        let parsed = parse_power_state_payload(payload);
+        // The raw report alongside its reading: which fields flip when LG
+        // reports a power change the panel doesn't show.
+        tracing::debug!(%payload, power = ?parsed, "LG power report");
+        if let Some(power) = parsed {
             state.update_power(power);
             return true;
         }
