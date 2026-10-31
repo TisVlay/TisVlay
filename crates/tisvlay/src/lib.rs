@@ -333,25 +333,36 @@ pub struct DaemonClient {
 
 /// Subscribe the daemon mirror to the daemon's keys, from their history
 /// on: one task per subscription, which ends (undeclaring it) when aborted.
+/// A failed subscription aborts the ones already started, so none outlives
+/// the lifetime unowned.
 async fn mirror_daemon(
     session: &Session,
     site: &str,
     mirror: &Arc<Mutex<SystemMirror>>,
     events: &broadcast::Sender<StateEvent>,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
-    let mut tasks = Vec::new();
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
-        let sub = session
+        let declared = session
             .declare_subscriber(key.as_str())
             .history(HistoryConfig::default().detect_late_publishers())
-            .await
-            .map_err(|e| Error::transport("subscribe to the daemon's keys", e))?;
+            .await;
+        let sub = match declared {
+            Ok(sub) => sub,
+            Err(e) => {
+                tasks.iter().for_each(tokio::task::JoinHandle::abort);
+                return Err(Error::transport("subscribe to the daemon's keys", e));
+            }
+        };
         let mirror = Arc::clone(mirror);
         let events = events.clone();
         let site = site.to_string();
         tasks.push(tokio::spawn(async move {
             while let Ok(sample) = sub.recv_async().await {
-                let event = mirror.lock().expect("mirror lock").apply(&site, &sample);
+                let event = mirror
+                    .lock()
+                    .expect("nothing panics while the mirror lock is held")
+                    .apply(&site, &sample);
                 if let Some(event) = event {
                     let _ = events.send(event);
                 }
@@ -408,18 +419,23 @@ impl DaemonClient {
                             let _ = task.await;
                         }
                     }
-                    {
-                        let mut state = mirror.lock().expect("mirror lock");
-                        if !alive {
-                            state.end_lifetime();
-                        }
-                        state.daemon_alive = alive;
-                    }
+                    // Subscribe before the daemon reads as available, so a
+                    // client that waits for it finds the subscriptions in
+                    // place (their history still replays as it arrives).
                     if alive && mirroring.is_empty() {
                         match mirror_daemon(&session, &site, &mirror, &events).await {
                             Ok(tasks) => mirroring = tasks,
                             Err(e) => warn!(error = %e, "couldn't subscribe to the daemon's keys"),
                         }
+                    }
+                    {
+                        let mut state = mirror
+                            .lock()
+                            .expect("nothing panics while the mirror lock is held");
+                        if !alive {
+                            state.end_lifetime();
+                        }
+                        state.daemon_alive = alive;
                     }
                     on_liveliness(
                         alive,
@@ -451,7 +467,10 @@ impl DaemonClient {
     /// `true` doesn't promise the next rpc succeeds (the daemon may be
     /// stopping, or run another release).
     pub async fn is_available(&self) -> bool {
-        self.mirror.lock().expect("mirror lock").daemon_alive
+        self.mirror
+            .lock()
+            .expect("nothing panics while the mirror lock is held")
+            .daemon_alive
     }
 
     /// What this lifetime's release check learned: the daemon's release
@@ -470,7 +489,10 @@ impl DaemonClient {
     pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
         self.refuse_known_mismatch()?;
         let rows: Vec<(Uuid, mirror_row::Row)> = {
-            let mirror = self.mirror.lock().expect("mirror lock");
+            let mirror = self
+                .mirror
+                .lock()
+                .expect("nothing panics while the mirror lock is held");
             mirror
                 .tvs
                 .iter()
@@ -927,7 +949,7 @@ impl DaemonClient {
         }
         self.mirror
             .lock()
-            .expect("mirror lock")
+            .expect("nothing panics while the mirror lock is held")
             .profiles
             .get(&profile)
             .cloned()
@@ -942,7 +964,7 @@ impl DaemonClient {
         }
         self.mirror
             .lock()
-            .expect("mirror lock")
+            .expect("nothing panics while the mirror lock is held")
             .profiles
             .iter()
             .map(|(id, body)| (*id, body.clone()))
@@ -1078,7 +1100,10 @@ impl SessionClient {
             let site = site.to_string();
             tokio::spawn(async move {
                 while let Ok(sample) = sub.recv_async().await {
-                    let event = mirror.lock().expect("mirror lock").apply(&site, &sample);
+                    let event = mirror
+                        .lock()
+                        .expect("nothing panics while the mirror lock is held")
+                        .apply(&site, &sample);
                     if let Some(event) = event {
                         let _ = events.send(event);
                     }
@@ -1101,7 +1126,10 @@ impl SessionClient {
             tokio::spawn(async move {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let alive = sample.kind() == SampleKind::Put;
-                    mirror.lock().expect("mirror lock").session_alive = alive;
+                    mirror
+                        .lock()
+                        .expect("nothing panics while the mirror lock is held")
+                        .session_alive = alive;
                     on_liveliness(
                         alive,
                         if alive {
@@ -1130,7 +1158,10 @@ impl SessionClient {
     /// mirror read, with the same caveat as
     /// [`DaemonClient::is_available`].
     pub async fn is_available(&self) -> bool {
-        self.mirror.lock().expect("mirror lock").session_alive
+        self.mirror
+            .lock()
+            .expect("nothing panics while the mirror lock is held")
+            .session_alive
     }
 
     /// What this lifetime's release check learned: the session service's
@@ -1169,7 +1200,7 @@ impl SessionClient {
         }
         self.mirror
             .lock()
-            .expect("mirror lock")
+            .expect("nothing panics while the mirror lock is held")
             .assignments
             .get(&tv)
             .copied()
@@ -1193,7 +1224,7 @@ impl SessionClient {
         }
         self.mirror
             .lock()
-            .expect("mirror lock")
+            .expect("nothing panics while the mirror lock is held")
             .profiles
             .iter()
             .map(|(id, body)| (*id, body.clone()))
@@ -1208,7 +1239,7 @@ impl SessionClient {
         }
         self.mirror
             .lock()
-            .expect("mirror lock")
+            .expect("nothing panics while the mirror lock is held")
             .profiles
             .get(&profile)
             .cloned()
@@ -1296,7 +1327,7 @@ impl SessionClient {
         }
         self.mirror
             .lock()
-            .expect("mirror lock")
+            .expect("nothing panics while the mirror lock is held")
             .stream_state
             .clone()
     }
@@ -1365,7 +1396,10 @@ impl TrayClient {
             tokio::spawn(async move {
                 while let Ok(sample) = liveliness.recv_async().await {
                     let up = sample.kind() == SampleKind::Put;
-                    mirror.lock().expect("mirror lock").tray_alive = up;
+                    mirror
+                        .lock()
+                        .expect("nothing panics while the mirror lock is held")
+                        .tray_alive = up;
                     on_liveliness(
                         up,
                         if up {
@@ -1392,7 +1426,10 @@ impl TrayClient {
             let events = events.clone();
             tokio::spawn(async move {
                 while let Ok(sample) = settings_sub.recv_async().await {
-                    let event = mirror.lock().expect("mirror lock").apply(&sample);
+                    let event = mirror
+                        .lock()
+                        .expect("nothing panics while the mirror lock is held")
+                        .apply(&sample);
                     if let Some(event) = event {
                         let _ = events.send(event);
                     }
@@ -1410,7 +1447,10 @@ impl TrayClient {
     /// Whether the tray's liveliness token is present, with the same
     /// caveat as [`DaemonClient::is_available`]. No rpc.
     pub async fn is_available(&self) -> bool {
-        self.mirror.lock().expect("mirror lock").tray_alive
+        self.mirror
+            .lock()
+            .expect("nothing panics while the mirror lock is held")
+            .tray_alive
     }
 
     /// What this lifetime's release check learned: the tray's release and
@@ -1447,7 +1487,10 @@ impl TrayClient {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
-        self.mirror.lock().expect("mirror lock").settings
+        self.mirror
+            .lock()
+            .expect("nothing panics while the mirror lock is held")
+            .settings
     }
 
     /// The tray's notification switches, read from the tray directly: the

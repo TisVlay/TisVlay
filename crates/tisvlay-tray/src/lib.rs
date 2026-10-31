@@ -227,7 +227,9 @@ pub async fn run(options: TrayOptions) -> Result<()> {
 
 /// Everything the menu shows from the system socket: TV state keys and
 /// the system-profile catalog, from their history on. One task per
-/// subscription, which ends (undeclaring it) when aborted.
+/// subscription, which ends (undeclaring it) when aborted. A failed
+/// subscription aborts the ones already started, so none outlives the
+/// lifetime unowned.
 async fn mirror_daemon(
     system: &Session,
     site: &str,
@@ -235,13 +237,19 @@ async fn mirror_daemon(
     reconcilers: &Reconcilers,
     notifier: &notify::Notifier,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
-    let mut tasks = Vec::new();
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
-        let sub = system
+        let declared = system
             .declare_subscriber(key.as_str())
             .history(HistoryConfig::default().detect_late_publishers())
-            .await
-            .map_err(|e| anyhow!("subscribe {key}: {e}"))?;
+            .await;
+        let sub = match declared {
+            Ok(sub) => sub,
+            Err(e) => {
+                tasks.iter().for_each(tokio::task::JoinHandle::abort);
+                return Err(anyhow!("subscribe {key}: {e}"));
+            }
+        };
         let handle = handle.clone();
         let site = site.to_string();
         let reconcilers = reconcilers.clone();
