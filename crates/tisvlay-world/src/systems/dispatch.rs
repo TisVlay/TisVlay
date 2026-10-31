@@ -567,9 +567,21 @@ pub(super) fn reconcile_remote_keys(
         Option<&State<payload::Meta>>,
         Has<Managed>,
     )>,
+    connections: Query<
+        (),
+        Or<(
+            Added<ConnectionHandle>,
+            Changed<RemoteKeysSent>,
+            Changed<State<payload::Identity>>,
+        )>,
+    >,
+    mut inputs: SystemFieldInputs,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
 ) {
+    if !inputs.changed() && connections.is_empty() {
+        return;
+    }
     for (entity, id, handle, sent, identity, meta, managed) in &tvs {
         if !identity.is_some_and(|i| i.capabilities.iter().any(|c| c == "remote_keys")) {
             continue;

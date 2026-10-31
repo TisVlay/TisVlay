@@ -46,13 +46,24 @@ pub(super) fn derive_automated(
 /// capability's own test, so the list doesn't wait for a connection to
 /// report it. Two TVs on one node wake the PC if either asks to. The first
 /// run always sends, replacing a list a previous daemon left.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a bevy system: its parameters are its declared data access"
+)]
 pub(super) fn publish_wake_list(
     mut outbox: ResMut<Outbox>,
     q: Query<(Option<&State<payload::Meta>>, &DeviceNode), With<Managed>>,
+    nodes: Query<(), Changed<DeviceNode>>,
+    mut removed_nodes: RemovedComponents<DeviceNode>,
+    mut inputs: SystemFieldInputs,
     profile_index: Res<ProfileIndex>,
     bodies: Query<&ProfileBody>,
     mut last: Local<Option<WakeList>>,
 ) {
+    let nodes_changed = !nodes.is_empty() || removed_nodes.read().count() > 0;
+    if !inputs.changed() && !nodes_changed && last.is_some() {
+        return;
+    }
     let mut list = WakeList::new();
     for (meta, node) in &q {
         let action = resolve_system_field(meta.map(|m| &m.0), &profile_index, &bodies, |body| {
