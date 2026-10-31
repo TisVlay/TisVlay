@@ -277,3 +277,4 @@ Every slice ships whole:
   - the TV's wake press: settled by step 6b's rule; check 5's remaining phases: the wake unset (step 8b's port cut), a PC-action sleep with the wake armed (Q2) and another input (Q3), all passed (2026-10-31);
   - LG's screen saver no longer reads as a power-off (`a4fd122e`): at a static lock screen its `Request Screen Saver` / `Screen On` reports read `Active` three times, with no edge (2026-10-31, 11:35 to 11:48);
   - the GUI and tray kept their TVs, names and profiles across an everyday suspend on the default profile, with the adapter's port cut for the sleep and restored after (2026-10-31, 13:02).
+  - `remote_keys` set from the GUI's FROM THE TV card (shown since `f8b64269`) on the default profile: the remote's arrows and media keys reached the desktop (2026-10-31).
