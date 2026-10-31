@@ -351,11 +351,12 @@ opt-level = "s"
 #   - `opt-level = "s"`: about −20% more. CLI round trips and GUI render
 #     cost (120 fps, CPU per frame) were within noise of opt-level 3;
 #     "z" was only 4% smaller and turns off loop vectorization.
-# linux-cec 0.2.1 plus a setter for the log-address flags (RC passthrough),
-# from our fork's `rc-passthru` branch off the `linux-cec-0.2.1` tag. Its
-# workspace siblings linux-cec-sys and linux-cec-macros come along by path,
-# unchanged from their crates.io releases. Drop this once a linux-cec
-# release has the setter (docs/build.md, Review triggers). A new `rev`
-# needs packaging/nix/package.nix's `outputHashes` entry moved with it.
+# linux-cec 0.2.1 plus a setter for the log-address flags (RC passthrough)
+# and a fix for reading a claim in progress, from our fork's `rc-passthru`
+# branch off the `linux-cec-0.2.1` tag. Its workspace siblings
+# linux-cec-sys and linux-cec-macros come along by path, unchanged from
+# their crates.io releases. Drop this once a linux-cec release has both
+# (docs/build.md, Review triggers). A new `rev` needs
+# packaging/nix/package.nix's `outputHashes` entry moved with it.
 [patch.crates-io]
-linux-cec = { git = "https://github.com/TisVlay/linux-cec", rev = "334a097e1ee358c8edba42d0df6be070eac70661" }
+linux-cec = { git = "https://github.com/TisVlay/linux-cec", rev = "03b1b0efdb870f08909a1aa9f1627dfc4589e201" }

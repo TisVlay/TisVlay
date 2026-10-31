@@ -34,7 +34,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     lockFile = ../../Cargo.lock;
     # The workspace's `[patch.crates-io]` linux-cec fork, one hash for the
     # repository at its `rev`; move it with the `rev`.
-    outputHashes."linux-cec-0.2.1" = "sha256-vJ6PkqdMqBFv4MvDkSOPQqeIZt/DqQI6Cwur1vnxbLw=";
+    outputHashes."linux-cec-0.2.1" = "sha256-umZXpc9J5a6IPOIxhmvCGglnvVMo7SNKqzSxYqWScb0=";
   };
 
   # tisvlay-gui dlopens Slint's femtovg + winit runtime libs;
