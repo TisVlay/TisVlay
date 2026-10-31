@@ -59,14 +59,15 @@ pub(super) fn apply_backend_events(
     // flush, but later events of the batch must not touch them.
     let mut rolled_back = HashSet::new();
     for msg in reader.read() {
-        // The PC woke: forget every power-off expectation, since the
-        // world's clock stood still while it slept.
+        // The PC woke: restart every power-off expectation's window, since
+        // the world's clock stood still while it slept and a report the TV
+        // sent before the sleep may only be read now.
         if let InEvent::System {
             event: SystemEvent::Resume,
             ..
         } = msg
         {
-            edges.0.values_mut().for_each(PowerEdge::forget_expectation);
+            edges.0.values_mut().for_each(|edge| edge.rearm(clock.0));
             continue;
         }
         let InEvent::Backend { tv, dial, event } = msg else {
@@ -115,11 +116,7 @@ pub(super) fn apply_backend_events(
                     ))
                     .remove::<(Reconnecting, PendingConnect, RetryAt, RetryPromptly)>();
                 apply_state(&mut commands, entity, state, &mut writes);
-                edges
-                    .0
-                    .entry(*tv)
-                    .or_default()
-                    .connected(state.power_state.class());
+                edges.0.entry(*tv).or_default().connected(state.power_state);
                 if let Ok(mut identity) = writes.identity.get_mut(entity) {
                     let mut enriched = identity.0.clone();
                     enriched.brand = brand.clone().or(enriched.brand);
@@ -203,7 +200,7 @@ pub(super) fn apply_backend_events(
             BackendEvent::State(state) => {
                 apply_state(&mut commands, entity, state, &mut writes);
                 let edge = edges.0.entry(*tv).or_default();
-                if edge.report(state.power_state.class(), clock.0, WAKE_HOLD_LIMIT) {
+                if edge.report(state.power_state, clock.0, WAKE_HOLD_LIMIT) {
                     tracing::info!(%tv, "TV powered off by itself");
                     going_off.0.push((*tv, GoingOffEvent::TvPowerOff));
                     outbox.0.push(Effect::Wire(WireEffect::Publish {
@@ -212,7 +209,9 @@ pub(super) fn apply_backend_events(
                     }));
                 }
             }
-            BackendEvent::SendingOff => edges.0.entry(*tv).or_default().sending_off(clock.0),
+            BackendEvent::SendingOff { blank } => {
+                edges.0.entry(*tv).or_default().sending_off(clock.0, *blank);
+            }
             BackendEvent::RemotePower => {
                 tracing::info!(%tv, "the TV's remote powered the PC off");
                 going_off.0.push((*tv, GoingOffEvent::RemotePower));

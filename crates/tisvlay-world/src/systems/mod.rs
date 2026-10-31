@@ -32,9 +32,9 @@ use crate::components::{
     DeviceWatch, DialSeq, DispatchRetry, DispatchVerify, Effect, GoingOff, GoingOffEvent, HeldWake,
     KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox,
     PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
-    PowerEdge, PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
-    RemoteKeysSent, RetryAt, RetryPromptly, Site, State, StreamArmed, SystemProfile,
-    TransportTraits, TvId, TvIndex, VendorRef, dependency_absent,
+    PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteKeysSent,
+    RetryAt, RetryPromptly, Site, SleepPending, State, StreamArmed, SystemProfile, TransportTraits,
+    TvId, TvIndex, VendorRef, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,
@@ -55,6 +55,10 @@ pub(crate) const CONNECT_BACKOFF_CAP: Duration = Duration::from_secs(60);
 /// adapter coming up at boot or resume, short enough that a return hours
 /// later doesn't power the TV on out of nowhere.
 pub(crate) const WAKE_HOLD_LIMIT: Duration = Duration::from_secs(60);
+
+/// How long a sleep the world asked for holds later ones back, should
+/// logind accept it without the PC ever sleeping.
+pub(crate) const SLEEP_PENDING_LIMIT: Duration = Duration::from_secs(60);
 
 /// The wait before the next dial after `attempts` failed ones. The first
 /// [`CONNECT_MAX_ATTEMPTS`] stay [`CONNECT_BACKOFF`] apart, which also

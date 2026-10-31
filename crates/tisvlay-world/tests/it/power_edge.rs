@@ -89,6 +89,44 @@ async fn a_system_profile_sleep_asks_the_daemon() {
     );
 }
 
+/// Two TVs powering off together (or one TV paired twice) ask for one
+/// sleep: logind refuses a second while the first is under way. Once the
+/// PC wakes, the next power-off asks again.
+#[tokio::test]
+async fn one_sleep_at_a_time() {
+    let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();
+    for address in ["mock://sleep-a", "mock://sleep-b"] {
+        let tv = add_connected_tv(&mut effects, &client, address).await;
+        assign_sleep_profile(
+            &mut effects,
+            &client,
+            tv,
+            tisvlay_core::SystemSleepAction::Suspend,
+        )
+        .await;
+    }
+
+    mock.inject_power_state("mock://sleep-a", PowerState::Standby);
+    mock.inject_power_state("mock://sleep-b", PowerState::Standby);
+    tokio::time::timeout(Duration::from_secs(5), sleeps.recv())
+        .await
+        .expect("a sleep request")
+        .expect("reactor alive");
+    let second = tokio::time::timeout(Duration::from_millis(300), sleeps.recv()).await;
+    assert!(second.is_err(), "one sleep, not two: {second:?}");
+
+    client.send(tisvlay_world::InEvent::System {
+        event: tisvlay_world::SystemEvent::Resume,
+        connector: None,
+    });
+    mock.inject_power_state("mock://sleep-a", PowerState::Active);
+    mock.inject_power_state("mock://sleep-a", PowerState::Standby);
+    tokio::time::timeout(Duration::from_secs(5), sleeps.recv())
+        .await
+        .expect("a sleep request after the wake")
+        .expect("reactor alive");
+}
+
 #[tokio::test]
 async fn a_stream_holds_the_sleep_back() {
     let (mut effects, mut sleeps, client, mock) = spawn_reactor_with_sleeper();

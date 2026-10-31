@@ -556,7 +556,10 @@ pub enum BackendEvent {
     /// The bridge is about to send the TV a power-off or a blank, so the
     /// off edge that follows is TisVlay's own. Sent ahead of the command
     /// from the same task as the TV's reports, so it lands before them.
-    SendingOff,
+    SendingOff {
+        /// A blank (`ScreenOff`) rather than a power-off.
+        blank: bool,
+    },
     /// The TV's remote powered this PC off ([`tisvlay_core::TvEvent::RemotePower`]).
     RemotePower,
     /// A reply-carrying command finished at the TV — answer the rpc.

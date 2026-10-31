@@ -132,7 +132,9 @@ pub(crate) async fn connect_flow(
                         let _ = inbox.send(InEvent::Backend {
                             tv,
                             dial,
-                            event: BackendEvent::SendingOff,
+                            event: BackendEvent::SendingOff {
+                                blank: matches!(cmd, BackendCmd::ScreenOff),
+                            },
                         });
                     }
                     let (result, reply) = match &cmd {

@@ -485,15 +485,33 @@ pub(super) fn dispatch_going_off(
     bodies: Query<&ProfileBody>,
     stream_armed: Res<StreamArmed>,
     site: Res<Site>,
+    clock: Res<Clock>,
+    mut pending: ResMut<SleepPending>,
     mut outbox: ResMut<Outbox>,
 ) {
     for msg in reader.read() {
-        if let InEvent::SleepRefused { tv, mode, message } = msg {
-            outbox.0.push(Effect::Wire(WireEffect::Publish {
-                key: keys::event(&site.0, "dispatch-failed"),
-                payload: json!({ "tv": tv, "action": mode.as_str(), "message": message }),
-            }));
+        match msg {
+            InEvent::SleepRefused { tv, mode, message } => {
+                pending.0 = None;
+                outbox.0.push(Effect::Wire(WireEffect::Publish {
+                    key: keys::event(&site.0, "dispatch-failed"),
+                    payload: json!({ "tv": tv, "action": mode.as_str(), "message": message }),
+                }));
+            }
+            InEvent::System {
+                event: SystemEvent::Resume,
+                ..
+            } => pending.0 = None,
+            _ => {}
         }
+    }
+    // A request logind accepted without sleeping (a delay that outlived
+    // it) mustn't hold every later sleep back.
+    if pending
+        .0
+        .is_some_and(|at| clock.0.saturating_duration_since(at) >= SLEEP_PENDING_LIMIT)
+    {
+        pending.0 = None;
     }
     for (tv, event) in going_off.0.drain(..) {
         let Some((meta, managed)) = index.get(&tv).and_then(|entity| tvs.get(entity).ok()) else {
@@ -520,7 +538,12 @@ pub(super) fn dispatch_going_off(
             tracing::debug!(%tv, ?event, "a stream arms the TV");
             continue;
         }
+        if pending.0.is_some() {
+            tracing::debug!(%tv, ?event, "a sleep is already under way");
+            continue;
+        }
         tracing::info!(%tv, ?event, ?mode, "putting the PC to sleep");
+        pending.0 = Some(clock.0);
         outbox.0.push(Effect::Sleep(SleepRequest { tv, mode }));
     }
 }
