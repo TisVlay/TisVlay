@@ -1,4 +1,4 @@
-# The TV controls the PC
+# TV Controls PC
 
 TisVlay drives the TV from the PC. This plan adds the reverse direction. All of it is opt-in and off by default:
 - the TV powering off can lock the session or put the PC to sleep;
@@ -244,7 +244,7 @@ Every slice ships whole:
 - [x] docs/cec/protocol.md: the remote's keys, SIMPLINK's power-off and the wake triggers; the Checks A to C records move under docs/cec/.
 - [x] packaging/README.md: the polkit rule, the wakeup unit and the keymap.
 - [x] The glossary moves to its home (architecture.md; a user-guide reference page was dropped as a third copy to keep in step), the idea doc is trimmed to what stays unplanned, and its index entry with it. The user guide's prose chapter waits until the CEC follow-ups near their end.
-- [x] The user guide (2026-10-31, brought forward from "after the CEC follow-ups"): a [The TV Controls the PC](../book/src/guide/tv-controls-pc.md) chapter, `automation.md`'s managed rule, two troubleshooting entries, and a clause each in installation (what the packages add) and configuration (the pinned label). Developer docs follow the book's one-canonical-home rule: `cec/protocol.md` owns the wake and the shown rule, `packaging/README.md` the host pieces, `architecture.md` the design.
+- [x] The user guide (2026-10-31, brought forward from "after the CEC follow-ups"): a [TV Controls PC](../book/src/guide/tv-controls-pc.md) chapter, `automation.md`'s managed rule, two troubleshooting entries, and a clause each in installation (what the packages add) and configuration (the pinned label). Developer docs follow the book's one-canonical-home rule: `cec/protocol.md` owns the wake and the shown rule, `packaging/README.md` the host pieces, `architecture.md` the design.
 
 ## Verification
 

@@ -2,7 +2,7 @@
 
 TisVlay can react to what your computer is doing: blank the TV when you lock your screen, light it when you come back, power it off when the machine sleeps. You decide what happens by editing **profiles**, which map **events** (lock, unlock, idle, sleep, …) to **actions** (screen off, screen on, power off, power on, or nothing).
 
-This page covers what happens out of the box, how to change it, and the rules that decide which TVs react. For the TV acting on your PC, see [The TV Controls the PC](./tv-controls-pc.md).
+This page covers what happens out of the box, how to change it, and the rules that decide which TVs react. For the TV acting on your PC, see [TV Controls PC](./tv-controls-pc.md).
 
 ## What happens by default
 
@@ -95,7 +95,7 @@ An unattended login screen never blanks by itself. The optional **TisVlay greete
 
 For an event to do anything to a TV, three things must agree:
 
-1. The TV's **Managed** switch (on its page, under STATUS) is on. An unmanaged TV is never automated, and it doesn't act on your PC either ([The TV Controls the PC](./tv-controls-pc.md)).
+1. The TV's **Managed** switch (on its page, under STATUS) is on. An unmanaged TV is never automated, and it doesn't act on your PC either ([TV Controls PC](./tv-controls-pc.md)).
 2. The system profile's **Automate when** setting allows it: `always`, `on_primary` (only while the TV is showing your PC's input), or `off_primary` (only while it's showing something else).
 3. No stream is suppressing the event (see below).
 

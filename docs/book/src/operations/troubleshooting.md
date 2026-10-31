@@ -118,7 +118,7 @@ systemctl --user status tisvlay-session
 
 ## The PC sleeps or locks when the TV turns off
 
-That's **On TV power off** in the TV's system profile (sleep) or your user profile (lock); **On remote power key** does the same for the TV's "power off this device". Set them to `none`, or turn the TV's **Managed** switch off. The TV turning off on its own timer (an energy-saving or no-signal auto-off) counts as it turning off. See [The TV Controls the PC](../guide/tv-controls-pc.md#when-they-act).
+That's **On TV power off** in the TV's system profile (sleep) or your user profile (lock); **On remote power key** does the same for the TV's "power off this device". Set them to `none`, or turn the TV's **Managed** switch off. The TV turning off on its own timer (an energy-saving or no-signal auto-off) counts as it turning off. See [TV Controls PC](../guide/tv-controls-pc.md#when-they-act).
 
 ## The TV wakes the PC, or doesn't
 

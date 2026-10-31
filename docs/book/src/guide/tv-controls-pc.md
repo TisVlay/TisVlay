@@ -1,4 +1,4 @@
-# The TV Controls the PC
+# TV Controls PC
 
 [Automation](./automation.md) runs from your PC to the TV. These settings run the other way: the TV turning off can lock your session or put the PC to sleep, and with an HDMI-CEC adapter the TV's remote and the TV turning on can act on your PC too. Out of the box none of them acts, except that TisVlay keeps the TV from waking a sleeping PC ([below](#the-tv-waking-your-pc)).
 
