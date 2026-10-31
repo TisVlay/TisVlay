@@ -148,62 +148,87 @@ pub fn apply(sysfs: &Path, list: &Path, record: &Path) -> anyhow::Result<Applied
     }
     let recorded = Record::read(record)?;
 
-    let mut applied = Applied::default();
-    let mut ours = Record::default();
+    // Plan from what sysfs reads now.
+    let mut keep = Record::default();
+    let mut to_enable = Vec::new();
     for device in &wake {
         match wakeup(device) {
-            Some(Toggle::Off) => {
-                if set_wakeup(device, Toggle::On) {
-                    applied.enabled.push(device.clone());
-                    ours.wakeups.insert(device.clone());
-                }
-            }
+            Some(Toggle::Off) => to_enable.push(device.clone()),
             Some(Toggle::On) if recorded.wakeups.contains(device) => {
-                ours.wakeups.insert(device.clone());
+                keep.wakeups.insert(device.clone());
             }
             // Enabled by the host: not ours to record, or to undo later.
             Some(Toggle::On) => {}
             None => warn!(device = %device.display(), "unreadable power/wakeup"),
         }
     }
-    for device in recorded.wakeups.difference(&wake) {
-        if wakeup(device) == Some(Toggle::On) {
-            if set_wakeup(device, Toggle::Off) {
-                applied.disabled.push(device.clone());
-            } else {
-                ours.wakeups.insert(device.clone());
-            }
-        }
-    }
-    for port in recorded.ports.difference(&block) {
-        if unblock(port) {
-            applied.unblocked.push(port.clone());
-        } else {
-            ours.ports.insert(port.clone());
-        }
-    }
+    let to_disable: Vec<PathBuf> = recorded
+        .wakeups
+        .difference(&wake)
+        .filter(|device| wakeup(device) == Some(Toggle::On))
+        .cloned()
+        .collect();
+    let to_unblock: Vec<PathBuf> = recorded.ports.difference(&block).cloned().collect();
     let mut to_block = Vec::new();
     for port in &block {
         match disabled(port) {
             Some(Toggle::Off) => to_block.push(port.clone()),
-            Some(Toggle::On) if recorded.ports.contains(port) => {}
-            // Disabled by the host: not ours to record, or to undo later.
-            Some(Toggle::On) => continue,
-            None => {
-                warn!(port = %port.display(), "unreadable port disable");
-                continue;
+            Some(Toggle::On) if recorded.ports.contains(port) => {
+                keep.ports.insert(port.clone());
             }
+            // Disabled by the host: not ours to record, or to undo later.
+            Some(Toggle::On) => {}
+            None => warn!(port = %port.display(), "unreadable port disable"),
         }
-        ours.ports.insert(port.clone());
     }
-    // Record the ports before disabling them, so a write that fails
-    // partway still has its resume.
-    ours.write(record)?;
+
+    // Everything this run may change goes on the record before it
+    // changes, so a record that can't be written changes nothing, and a
+    // run cut short leaves nothing it can't undo.
+    let mut planned = Record {
+        wakeups: keep.wakeups.clone(),
+        ports: keep.ports.clone(),
+    };
+    planned
+        .wakeups
+        .extend(to_enable.iter().chain(&to_disable).cloned());
+    planned
+        .ports
+        .extend(to_unblock.iter().chain(&to_block).cloned());
+    planned.write(record)?;
+
+    let mut applied = Applied::default();
+    let mut ours = keep;
+    for device in to_enable {
+        if set_wakeup(&device, Toggle::On) {
+            applied.enabled.push(device.clone());
+            ours.wakeups.insert(device);
+        }
+    }
+    for device in to_disable {
+        if set_wakeup(&device, Toggle::Off) {
+            applied.disabled.push(device);
+        } else {
+            ours.wakeups.insert(device);
+        }
+    }
+    for port in to_unblock {
+        if unblock(&port) {
+            applied.unblocked.push(port);
+        } else {
+            ours.ports.insert(port);
+        }
+    }
+    // A port stays recorded even if disabling it failed: its resume
+    // enabling an enabled port is harmless.
     for port in to_block {
+        ours.ports.insert(port.clone());
         if set_disabled(&port, Toggle::On) {
             applied.blocked.push(port);
         }
     }
+    // The exact record; the planned one stands if this write fails.
+    ours.write(record)?;
     Ok(applied)
 }
 
@@ -491,6 +516,35 @@ mod tests {
         host.apply();
         std::fs::remove_file(host.run.path().join("wakeup")).unwrap();
         assert_eq!(host.apply().unblocked, std::slice::from_ref(&host.port));
+        assert_eq!(host.disable(), "0");
+    }
+
+    /// A record that can't be written fails the run before anything
+    /// changes, so nothing is left that the unit couldn't undo.
+    #[test]
+    fn an_unwritable_record_changes_nothing() {
+        let host = Host::new();
+        // The record's directory is a file: no record can be written.
+        std::fs::write(host.run.path().join("unit"), "").unwrap();
+        host.list(Some("wake"));
+        assert!(
+            apply(
+                host.sysfs.path(),
+                &host.run.path().join("wakeup"),
+                &host.record()
+            )
+            .is_err()
+        );
+        assert_eq!(host.wakeup(), "disabled");
+        host.list(Some("none"));
+        assert!(
+            apply(
+                host.sysfs.path(),
+                &host.run.path().join("wakeup"),
+                &host.record()
+            )
+            .is_err()
+        );
         assert_eq!(host.disable(), "0");
     }
 

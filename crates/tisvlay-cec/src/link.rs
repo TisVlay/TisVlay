@@ -258,6 +258,19 @@ struct LinuxCecLink {
 }
 
 impl LinuxCecLink {
+    /// Claim a Playback address with `flags`, on an adapter whose claim was
+    /// just cleared.
+    async fn claim_with(&self, flags: LogicalAddressFlags) -> Result<()> {
+        self.device
+            .set_logical_address_flags(flags)
+            .await
+            .map_err(map_cec_err)?;
+        self.device
+            .set_logical_address(LogicalAddressType::Playback)
+            .await
+            .map_err(map_cec_err)
+    }
+
     async fn open(
         device: &str,
         physical_address: PhysicalAddress,
@@ -450,6 +463,7 @@ impl CecLink for LinuxCecLink {
         if flags.contains(LogicalAddressFlags::ALLOW_RC_PASSTHRU) == allow {
             return Ok(());
         }
+        let held = flags;
         flags.set(LogicalAddressFlags::ALLOW_RC_PASSTHRU, allow);
         // Our own name, as the claim holds it: a 14-byte NUL-padded buffer.
         let name = self.device.get_osd_name().await.map_err(map_cec_err)?;
@@ -470,14 +484,15 @@ impl CecLink for LinuxCecLink {
         {
             tracing::warn!(device = self.path, osd_name = %name, %error, "failed to keep the CEC OSD name across a re-claim");
         }
-        self.device
-            .set_logical_address_flags(flags)
-            .await
-            .map_err(map_cec_err)?;
-        self.device
-            .set_logical_address(LogicalAddressType::Playback)
-            .await
-            .map_err(map_cec_err)?;
+        if let Err(error) = self.claim_with(flags).await {
+            // The clear already took the PC off the bus: claim again with
+            // the flags it held, so a failed change costs the passthrough
+            // change only. The next connect's claim applies it again.
+            if let Err(fallback) = self.claim_with(held).await {
+                tracing::warn!(device = self.path, error = %fallback, "couldn't restore the CEC claim after a failed re-claim");
+            }
+            return Err(error);
+        }
         let address = self
             .device
             .get_logical_addresses()
