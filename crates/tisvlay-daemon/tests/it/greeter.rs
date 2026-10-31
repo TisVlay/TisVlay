@@ -15,10 +15,11 @@ use uuid::Uuid;
 use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
+use zenoh::liveliness::LivelinessToken;
 use zenoh::sample::Sample;
 use zenoh_ext::{
-    AdvancedPublisherBuilderExt, AdvancedSubscriber, AdvancedSubscriberBuilderExt, CacheConfig,
-    HistoryConfig, MissDetectionConfig,
+    AdvancedPublisher, AdvancedPublisherBuilderExt, AdvancedSubscriber,
+    AdvancedSubscriberBuilderExt, CacheConfig, HistoryConfig, MissDetectionConfig,
 };
 
 use crate::support::{body, call, raw_refusal};
@@ -144,19 +145,45 @@ async fn put_greeter_idle(w: &Wire, idle: bool) {
 /// set. A plain put (the daemon's history advanced subscriber still
 /// delivers live plain samples); the dedicated hydration test drives the
 /// real cache-1 advanced-pub path.
-async fn put_stream(w: &Wire, armed: &[Uuid]) {
-    let state = tisvlay_protocol::payload::StreamState {
-        sources: Vec::new(),
-        armed: armed.to_vec(),
-    };
-    w.client
-        .put(
-            keys::stream_state(&w.site),
-            serde_json::to_vec(&state).unwrap(),
-        )
-        .encoding(Encoding::APPLICATION_JSON)
+/// The session's side of the stream mirror, as the real session serves it
+/// on its system link: the presence token, and a cache-1 advanced publisher
+/// of the armed set. The daemon subscribes to the stream fact only while
+/// the token is present, hydrating from the cache.
+struct StreamSource {
+    token: LivelinessToken,
+    publisher: AdvancedPublisher<'static>,
+}
+
+async fn stream_source(session: &Session, site: &str) -> StreamSource {
+    let token = session
+        .liveliness()
+        .declare_token(keys::session_alive(site))
         .await
         .unwrap();
+    let publisher = session
+        .declare_publisher(keys::stream_state(site))
+        .encoding(Encoding::APPLICATION_JSON)
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(
+            MissDetectionConfig::default().sporadic_heartbeat(Duration::from_millis(500)),
+        )
+        .publisher_detection()
+        .await
+        .unwrap();
+    StreamSource { token, publisher }
+}
+
+impl StreamSource {
+    async fn put(&self, armed: &[Uuid]) {
+        let state = tisvlay_protocol::payload::StreamState {
+            sources: Vec::new(),
+            armed: armed.to_vec(),
+        };
+        self.publisher
+            .put(serde_json::to_vec(&state).unwrap())
+            .await
+            .unwrap();
+    }
 }
 
 /// The full greeter loop: the timeout key tracks profile assignments, and
@@ -305,14 +332,15 @@ async fn stream_mirror_flips_the_armed_projection() {
     .await;
 
     // Arm via the mirror → the projection flips true.
-    put_stream(&w, &[tv]).await;
+    let source = stream_source(&w.client, &w.site).await;
+    source.put(&[tv]).await;
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
         v["stream_armed"] == true
     })
     .await;
 
     // An empty set disarms.
-    put_stream(&w, &[]).await;
+    source.put(&[]).await;
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
         v["stream_armed"] == false
     })
@@ -349,23 +377,8 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
         .recv_async()
         .await
         .expect("daemon liveliness on the resilient link");
-    let token = session
-        .liveliness()
-        .declare_token(keys::session_alive(&w.site))
-        .await
-        .unwrap();
-    let state = tisvlay_protocol::payload::StreamState {
-        sources: Vec::new(),
-        armed: vec![tv],
-    };
-    session
-        .put(
-            keys::stream_state(&w.site),
-            serde_json::to_vec(&state).unwrap(),
-        )
-        .encoding(Encoding::APPLICATION_JSON)
-        .await
-        .unwrap();
+    let source = stream_source(&session, &w.site).await;
+    source.put(&[tv]).await;
     // The arm flips the projection true — a live republish, so it does not
     // depend on catching the world-derived keys in the history replay.
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
@@ -376,7 +389,7 @@ async fn session_liveliness_delete_clears_the_armed_projection() {
     // The session departs: the token sends its DELETE and the daemon
     // clears the armed set on that DELETE alone — no empty mirror put ever
     // arrives, so the disarm is attributable purely to the liveliness signal.
-    token.undeclare().await.unwrap();
+    source.token.undeclare().await.unwrap();
     wait_tv_state(&sub, &w.site, tv, "meta/config", |v| {
         v["stream_armed"] == false
     })

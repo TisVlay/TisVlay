@@ -29,13 +29,13 @@ use tisvlay_core::TvConnector;
 use tisvlay_world::{Command, InEvent, Reactor, SystemEvent, TvRecord, WorldClient};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{info, warn};
 
 pub use acl::GreeterAccess;
 use uuid::Uuid;
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
-use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
+use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
 
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
@@ -249,6 +249,46 @@ const STARTUP_SETTLE: Duration = Duration::from_secs(1);
 /// daemon never hydrates (a reconnect that drags past the deadline, or a
 /// cache the fresh subscriber cannot reach).
 const STARTUP_DEADLINE: Duration = Duration::from_secs(3);
+
+/// Mirror the session's stream fact for one lifetime of its token,
+/// forwarding each armed set into the world, which gates the wake-ish
+/// system events. The fact is a cache-1 advanced publisher the session
+/// serves over its connect-only-peer system link, and the directly-dialed
+/// daemon hydrates its last sample: so a daemon starting after (or
+/// restarting under) a live session hydrates the standing armed set, and so
+/// does a session whose token returns after its link dropped, whose
+/// unchanged sample a subscription kept from before would drop as already
+/// seen. The returned task ends the subscription when aborted.
+async fn mirror_stream(
+    session: &Session,
+    site: &str,
+    world: &WorldClient,
+    ready: &Arc<StartupReadiness>,
+) -> Result<JoinHandle<()>> {
+    let sub = session
+        .declare_subscriber(tisvlay_protocol::keys::stream_state(site))
+        .history(HistoryConfig::default().detect_late_publishers())
+        .recovery(RecoveryConfig::default().heartbeat())
+        .await
+        .map_err(|e| anyhow!("declare stream subscriber: {e}"))?;
+    let world = world.clone();
+    let ready = Arc::clone(ready);
+    Ok(tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let Ok(state) = serde_json::from_slice::<tisvlay_protocol::payload::StreamState>(
+                &sample.payload().to_bytes(),
+            ) else {
+                continue;
+            };
+            // The armed set is now known — release the boot gate.
+            ready.mirror_seen.store(true, Ordering::Release);
+            ready.notify.notify_one();
+            if !world.send(InEvent::Stream { armed: state.armed }) {
+                return;
+            }
+        }
+    }))
+}
 
 /// Shared readiness state for the boot `Startup` gate, written by the
 /// stream subscribers and awaited by the startup task.
@@ -552,43 +592,16 @@ async fn serve_stack(
     // is known not to) before it wakes.
     let startup_ready = Arc::new(StartupReadiness::default());
 
-    // The stream fact is a cache-1 AdvancedPublisher served by the
-    // session over its connect-only-peer system link; the directly-dialed
-    // daemon hydrates its last sample. `history(detect_late_publishers)` so
-    // a daemon starting after (or restarting under) a live session hydrates
-    // the standing armed set straight from the session's `@adv` cache —
-    // this is what retired the session-side re-put. Forward the computed
-    // armed set into the world, which gates the wake-ish system events.
-    let stream_sub = session
-        .declare_subscriber(tisvlay_protocol::keys::stream_state(site))
-        .history(HistoryConfig::default().detect_late_publishers())
-        .await
-        .map_err(|e| anyhow!("declare stream subscriber: {e}"))?;
-    let stream_world = world.clone();
-    let stream_ready = Arc::clone(&startup_ready);
-    tokio::spawn(async move {
-        let sub = stream_sub;
-        while let Ok(sample) = sub.recv_async().await {
-            let Ok(state) = serde_json::from_slice::<tisvlay_protocol::payload::StreamState>(
-                &sample.payload().to_bytes(),
-            ) else {
-                continue;
-            };
-            // The armed set is now known — release the boot gate.
-            stream_ready.mirror_seen.store(true, Ordering::Release);
-            stream_ready.notify.notify_one();
-            if !stream_world.send(InEvent::Stream { armed: state.armed }) {
-                return;
-            }
-        }
-    });
     // The session's `session_alive` liveliness token: a crash-robust
     // presence signal the daemon (the directly-dialed peer) observes even
     // though the session's link is a connect-only peer. `history(true)` so
     // a daemon starting after a live session still sees the standing token.
-    // Its DELETE — a crash or a clean exit — clears any armed state the
-    // session had mirrored; its PUT tells the boot gate to wait for the
-    // mirror rather than concluding no session will arm.
+    // The stream mirror follows its lifetime, the way a client mirror
+    // follows a service's (docs/architecture.md § Clients): a PUT tells the
+    // boot gate to wait for the mirror rather than concluding no session
+    // will arm, and subscribes to the stream fact afresh; a DELETE (a
+    // crash, a clean exit, or the session's link dropping) ends the
+    // subscription and clears the armed set.
     let session_alive_sub = session
         .liveliness()
         .declare_subscriber(tisvlay_protocol::keys::session_alive(site))
@@ -597,15 +610,35 @@ async fn serve_stack(
         .map_err(|e| anyhow!("declare session liveliness subscriber: {e}"))?;
     let session_world = world.clone();
     let session_ready = Arc::clone(&startup_ready);
+    let stream_session = session.clone();
+    let stream_site = site.to_string();
     tokio::spawn(async move {
         let sub = session_alive_sub;
+        let mut mirror: Option<JoinHandle<()>> = None;
         while let Ok(sample) = sub.recv_async().await {
             match sample.kind() {
                 zenoh::sample::SampleKind::Put => {
                     session_ready.session_present.store(true, Ordering::Release);
                     session_ready.notify.notify_one();
+                    if mirror.is_none() {
+                        match mirror_stream(
+                            &stream_session,
+                            &stream_site,
+                            &session_world,
+                            &session_ready,
+                        )
+                        .await
+                        {
+                            Ok(task) => mirror = Some(task),
+                            Err(e) => warn!(error = %e, "couldn't subscribe to the stream fact"),
+                        }
+                    }
                 }
                 zenoh::sample::SampleKind::Delete => {
+                    if let Some(task) = mirror.take() {
+                        task.abort();
+                        let _ = task.await;
+                    }
                     session_ready
                         .session_present
                         .store(false, Ordering::Release);

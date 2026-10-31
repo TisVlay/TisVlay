@@ -663,7 +663,6 @@ async fn armed(daemon: &DaemonClient, tv: Uuid) -> bool {
 /// The daemon disarms every TV when the session's token goes, and must
 /// arm them again from the session's stream state when it returns.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the daemon's stream mirror subscribes once, so the returning state is dropped as already seen"]
 async fn a_streaming_tv_is_armed_again_when_the_sessions_link_returns() {
     let rig = services_rig().await;
     let tv = pair(&rig.daemon, "mock://stream").await;

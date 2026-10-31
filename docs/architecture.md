@@ -163,6 +163,8 @@ A client mirrors a service's cached keys, and follows the service's lifetime thr
 - **Recovery within a lifetime.** The subscriptions enable heartbeat recovery: when a publisher's heartbeat shows a sample the subscriber missed, it's retransmitted from the publisher's cache. A delete can't be recovered this way (the services drop a deleted key's publisher, and its cache with it), so a lost delete converges at the next lifetime.
 - **Rows come from the service that owns them,** and only once their identity has arrived. A TV is the daemon's: a TV row shows only once its `meta/identity` has arrived, since keys arrive in no particular order and a row made from, say, `state/power` alone would be a nameless TV. Another service's data about a TV (the session's user-profile assignment) is a lookup by id, and a lookup that misses shows as unassigned, never as a row.
 
+The daemon's mirror of the session's stream fact (`mirror_stream` in `tisvlay-daemon`) follows the same rule by hand, since no SDK client can serve it (the daemon never sees the user socket): it subscribes per lifetime of the session's `alive/session` token, and the token's loss clears the armed set.
+
 The conformance suite in `crates/tisvlay/tests/it/conformance.rs` runs each mirror through the same cases, through a relay that cuts or stalls the link or drops one sample while the service keeps running ([testing.md](testing.md)).
 
 ## Deployment and authorization
