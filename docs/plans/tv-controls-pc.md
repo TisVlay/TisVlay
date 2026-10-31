@@ -4,7 +4,7 @@ TisVlay drives the TV from the PC. This plan adds the reverse direction. All of 
 - the TV powering off can lock the session or put the PC to sleep;
 - on HDMI-CEC, the remote's "turn this device off" can act on the PC, the TV can wake a sleeping PC, and the remote's keys can reach the desktop.
 
-The decisions come from [docs/ideas/tv-controls-pc.md](../ideas/tv-controls-pc.md): its hardware checks ([A](../ideas/tv-controls-pc.md#checks-to-run): the TV's own power key; B and B′: the TV waking the PC; C: the remote's keys) ran on pox, the maintainer's PC, with an LG C3 and a Pulse-Eight USB-CEC adapter. SIMPLINK is LG's name for its CEC features. Names follow [docs/ideas/power-vocabulary.md](../ideas/power-vocabulary.md): the PC sleeps and wakes, the TV powers off and on (its off state is standby), the session locks, activity idles and resumes, and desktop streaming (today's "remote session") is a stream.
+The decisions come from [docs/ideas/tv-controls-pc.md](../ideas/tv-controls-pc.md): its hardware checks ([A](../cec/checks.md): the TV's own power key; B and B′: the TV waking the PC; C: the remote's keys) ran on pox, the maintainer's PC, with an LG C3 and a Pulse-Eight USB-CEC adapter. SIMPLINK is LG's name for its CEC features. Names follow [docs/ideas/power-vocabulary.md](../ideas/power-vocabulary.md): the PC sleeps and wakes, the TV powers off and on (its off state is standby), the session locks, activity idles and resumes, and desktop streaming (today's "remote session") is a stream.
 
 It has three parts:
 - **Prerequisites:** two fixes and a rename the rest depends on.
