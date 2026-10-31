@@ -3,4 +3,5 @@
 
 mod about_pane;
 mod contextual_help;
+mod profile_editor;
 mod reload_banner;
