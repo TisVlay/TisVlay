@@ -29,11 +29,11 @@ Users read these, so they go first.
 
 ## 2. Retired D-Bus described as current
 
-- [ ] **`docs/discovery.md`:** rewrite the rpc sections in zenoh terms (`manager/rpc/discover`, `discover-start`, `discover-stop`, `enrich`), and state the real cadence: a 3 s scan and 2 s sleep with no hard cap, and no `poll_interval_ms`. `tisvlay list` reads caches. Drop the line count. The rationale sections stand.
-- [ ] **`packaging/nix/README.md`:** describe what `test.nix` actually tests, drop the `Manager1` and D-Bus claims, the `docs/todo.md` bullet (the firewall options ship), the hard-coded `version = "0.1.0"`, and the D-Bus reload. `config.toml` → `daemon.toml`. Point at `architecture.md`, not `design.md`.
-- [ ] **`docs/diagnostics.md`:** correct each field's source (`manager/vendors`, `row.online`, the hard-coded `runtime.bus`), the hand-rolled build env vars rather than `vergen-gix` (also in `diagnostic.rs` comments), and where the snapshots are taken (`about.rs`).
-- [ ] **`docs/cec/protocol.md`:** restate `Tv1.*`, `ConnectionChanged` and the D-Bus wording in terms of the identity and state keys. Drop the 20 s poll loop (poll-only backends refresh on reconnect), the stale What's Next pointer, and the `design.md#capabilities` link (point to `AutomateWhen::should_automate`).
-- [ ] **`docs/lg/firmware-quirks.md`, `docs/cec/testing.md`:** re-point regression coverage from `tisvlayd/tests/` and retired names (`tv_manager`, `await_power_state`, `state_forwarder`) to the current tests, and update the WoL boot timing to the benchmark.
+- [x] **`docs/discovery.md`:** rewrite the rpc sections in zenoh terms (`manager/rpc/discover`, `discover-start`, `discover-stop`, `enrich`), and state the real cadence: a 3 s scan and 2 s sleep with no hard cap, and no `poll_interval_ms`. `tisvlay list` reads caches. Drop the line count. The rationale sections stand.
+- [x] **`packaging/nix/README.md`:** describe what `test.nix` actually tests, drop the `Manager1` and D-Bus claims, the `docs/todo.md` bullet (the firewall options ship), the hard-coded `version = "0.1.0"`, and the D-Bus reload. `config.toml` → `daemon.toml`. Point at `architecture.md`, not `design.md`.
+- [x] **`docs/diagnostics.md`:** correct each field's source (`manager/vendors`, `row.online`, the hard-coded `runtime.bus`), the hand-rolled build env vars rather than `vergen-gix` (also in `diagnostic.rs` comments), and where the snapshots are taken (`about.rs`).
+- [x] **`docs/cec/protocol.md`:** restate `Tv1.*`, `ConnectionChanged` and the D-Bus wording in terms of the identity and state keys. Drop the 20 s poll loop (poll-only backends refresh on reconnect), the stale What's Next pointer, and the `design.md#capabilities` link (point to `AutomateWhen::should_automate`).
+- [x] **`docs/lg/firmware-quirks.md`, `docs/cec/testing.md`:** re-point regression coverage from `tisvlayd/tests/` and retired names (`tv_manager`, `await_power_state`, `state_forwarder`) to the current tests, and update the WoL boot timing to the benchmark.
 
 ## 3. ScreenSaver and other removed code
 
@@ -100,6 +100,8 @@ Rewrite in current terms:
 ## Deviations
 
 - **Area 1:** the "What happens by default" table in Automation and the list in Quick Start stay. They describe behavior in the user's terms, which is what the pages are for, rather than copying config values. Streaming's defaults became plain-language behavior, and Sunshine's port links to the generated CLI reference.
+
+- **Area 2:** `firmware-quirks.md` keeps its Fix notes in the pre-0.3.0 code names, with a note saying where that logic lives now, rather than rewriting each fix. Two old tests have no successor: CEC identity following a dongle swap, and an LG `screen_off` accepting `ActiveStandby` when the wake refuses. The docs say so; they aren't filed as concerns yet.
 
 ## Verification
 

@@ -4,6 +4,8 @@ Behaviors of LG WebOS firmware (tested on OLED42C3PUA / OLED65G4SUB) that bit us
 
 For SSAP protocol reference (subscription endpoints, request/response shape), see [webos.md](webos.md). For LG-backend test infrastructure (`FakeSsapServer` etc.) see [testing.md](testing.md).
 
+The quirks and measurements still hold. The **Fix** notes name the code that shipped each fix before the 0.3.0 rewrite (`tv_manager`, `TvManager::await_power_state`, `state_forwarder`), whose logic now lives in `tisvlay-world`'s dispatch systems; the **Regression coverage** notes point at today's tests.
+
 ## Power-state mapping: `ActiveStandby` must map to `is_screen_on = false`
 
 **Symptom.** After lock → remote Power button → mouse-move, the inherently-reliable `screen_on` path returned `Ok` but the panel stayed dark. The verify check read cached `PowerState == "active"` and exited "successful".
@@ -24,7 +26,7 @@ self.is_screen_on = !matches!(
 **Regression coverage.**
 
 - `tisvlay-core/src/state.rs` — `active_standby_marks_screen_off` (focused regression) + `update_power_screen_on_mapping_is_complete` (table-driven mapping pin).
-- `tisvlayd/tests/dbus_contract.rs` — `screen_on_escalates_via_verify_retry_loop` (injects `ActiveStandby` + flips `MockHandle::set_screen_on_noop` so the verify-retry loop actually exhausts before escalating; without the noop knob the mock's default `screen_on` would let verify pass on attempt #1).
+- `crates/tisvlay-world/tests/it/dispatch.rs` — `screen_on_noop_retries_then_escalates_to_wake` (a mock whose `screen_on` is a no-op, so the verify-retry loop exhausts before escalating) and `wake_needy_screen_on_preflights_to_the_wake_dial` (cached `ActiveStandby` goes straight to the wake).
 
 ## `screen_on` / `screen_off` error discrimination: only mask code `500`
 
@@ -70,7 +72,7 @@ self.is_screen_on = !matches!(
 
 **Root cause.** When the user's remote-off has just landed (~1 s prior), the LG firmware honors that intent over an incoming `turnOn`/`turnOnScreen` from the network. `power_on` succeeds at the WebSocket layer (reconnect happens, initial subscribe response arrives) but the TV's substate never transitions out of `ActiveStandby` — LG keeps reporting `ActiveStandby` (with `onOff="off"` / `processing` fields) until it eventually settles into deep `Standby` on its own. Wait ~5 s before sending `turnOn` and LG accepts the wake cleanly; click faster and LG won't cooperate. Hardware behavior, not something the daemon can override.
 
-**Fix.** `tv_manager::screen_off` ([crates/tisvlayd/src/tv_manager.rs](../../crates/tisvlayd/src/tv_manager.rs)) adds a post-wake **settle phase** after pre-flight `power_on`: await the cached state leaving the wake-preflight set, bounded by `verify_delay × max_attempts`. Three outcomes:
+**Fix.** `tv_manager::screen_off` added a post-wake **settle phase** after pre-flight `power_on`: await the cached state leaving the wake-preflight set, bounded by `verify_delay × max_attempts`. Three outcomes:
 
 - Settled to `Active` / `ScreenSaver`: TV woke cleanly. Fall through to verify-retry loop, screen_off lands.
 - Settled to `ScreenOff`: LG took the direct path through to the target on wake-up. Return Ok.
@@ -80,7 +82,7 @@ The graceful fallback declares success when the panel is demonstrably off, even 
 
 **Regression coverage.**
 
-- `tisvlayd/tests/dbus_contract.rs` — `screen_off_accepts_active_standby_when_wake_refuses` uses the `MockHandle::set_initial_power_state_override` knob to force every `MockConnection` (including the one `power_on` creates after pre-flight fires) to stay in `ActiveStandby`. Pins that the call returns `Ok` via the graceful-fallback arm without iterating the verify-retry loop (`screen_off_call_count == 0`) and that the TV ends with `power_state == "standby"`.
+- The pre-0.3.0 test for this (`screen_off_accepts_active_standby_when_wake_refuses`) didn't survive the rewrite. `crates/tisvlay-world/tests/it/dispatch.rs` pins the neighboring case, a TV that keeps ACKing dark: `escalation_reasserts_on_reconnect_then_gives_up`.
 - Live-hardware smoke remains the secondary check; the info log `"screen_off: TV did not settle into Active after power_on; accepting wake-preflight substate as panel-off (LG firmware quirk)"` is the on-device verification signal.
 
 ## Field-test verification trace (post-fix)
@@ -193,7 +195,7 @@ Net: 7 s saved on `REQUEST_MS`, 9 s lost on recovery.
 
 ### The pre-flight wake gate is the only bypass that survives
 
-The one short-circuit that *does* belong is the pre-flight wake gate in `tv_manager::screen_on` / `screen_off`. V1 keyed it on cached `"standby"` only; V2 expanded the gate to the full [`needs_wake_preflight`](../../crates/tisvlayd/src/power_state.rs) set — `Standby` / `Suspend` / `ActiveStandby` / `Unknown`. When cached is one of those:
+The one short-circuit that *does* belong is the pre-flight wake gate in `tv_manager::screen_on` / `screen_off`. V1 keyed it on cached `"standby"` only; V2 expanded the gate to the full [`needs_wake_preflight`](../../crates/tisvlay-core/src/state.rs) set — `Standby` / `Suspend` / `ActiveStandby` / `Unknown`. When cached is one of those:
 
 - `Standby` / `Suspend`: TV is genuinely unreachable, `screen_on` would fail anyway and the "knock" doesn't help because the WS is fully torn down (not just stale) — `with_retry`'s reconnect would also fail. Going straight to `power_on` skips a guaranteed-failure round-trip.
 - `ActiveStandby`: transitional substate after a remote-press power-off. LG firmware ACKs `screen_on` at the wire but won't actually transition the panel out of `ActiveStandby`; the with_retry knock has nothing to recover from (WS is alive). `power_on` is the only path that takes the TV out of `ActiveStandby`.
