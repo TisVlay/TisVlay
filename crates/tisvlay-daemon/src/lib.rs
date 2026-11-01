@@ -742,7 +742,7 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         .with_retry(tisvlay_lg::LgBackend::new().verify_retry_config())
         // Pinned SSDP source port: LG TVs reply unicast from ephemeral
         // ports TO this port, so it must match the firewall's allowed UDP
-        // port — see docs/firewall.md at the repo root.
+        // port (why SSDP needs the rule: docs/firewall.md).
         .with_discovery(Arc::new(tisvlay_lg::LgDiscovery::new(options.ssdp_port))),
         VendorReg::new(
             "cec",

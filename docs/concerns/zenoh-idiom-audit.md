@@ -1,5 +1,7 @@
 # Zenoh idiom audit (2026-07-12)
 
+**Status (2026-11-01):** the actionable items landed: B1 (the `stream/state` mirror is a cached advanced publisher), B2 (the key's doc comment), B3 (the session's TV actions go through `DaemonClient::apply_action`), A4, and the GUI crate's unused `zenoh` dependency. What remains is Part C, choices that still look like mistakes and aren't, and B4's accepted smells. File and line references below are from the audit's date.
+
 Codebase-wide audit of TisVlay's zenoh usage against zenoh 1.9.0 ("Longwang") idioms, prompted by the discovery that one recorded empirical law (the serve-side "consume-only peer" law) was stale/overbroad and had driven a heavier-than-necessary workaround (the stream mirror). Question: is that the only stale law, and did it (or others) drive workarounds elsewhere? Method: four read-only agents — one re-verified every recorded law against extracted 1.9.0 source, three inventoried and idiom-classified every zenoh call site (daemon; session; wire/tray/SDK/greeter/cli/gui). Report-first: nothing is changed here; this is the triage list.
 
 ## Verdict

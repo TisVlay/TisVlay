@@ -61,13 +61,7 @@ With `advertise_osd_name` (default `true`), tisvlay answers the TV's name poll o
 
 ## Discovery
 
-```toml
-[discovery]
-bind_port = 1901           # SSDP source port (0 = OS-chosen ephemeral)
-poll_interval_ms = 8000    # streaming-discovery loop period
-```
-
-[Firewall & Discovery](../operations/firewall-discovery.md#open-the-pinned-source-port) explains the source port and its other ways to set it.
+Discovery has no section in `daemon.toml`. The SSDP source port is a daemon flag, `--ssdp-port`; [Firewall & Discovery](../operations/firewall-discovery.md#open-the-pinned-source-port) explains it and its firewall rule.
 
 ## Profiles
 

@@ -36,7 +36,7 @@
 
 ## 📸 Screenshots
 
-GUI and system tray track user DE themes and accent settings.
+GUI and system tray track user DE themes and accent color settings.
 
 | **TVs** — devices, status, profiles (dark theme) | **Controls** — picture, audio, input (light theme) |
 |:---:|:---:|

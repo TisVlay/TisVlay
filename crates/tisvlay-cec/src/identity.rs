@@ -70,11 +70,9 @@ fn resolve_vendor(id: VendorId) -> Option<(&'static str, &'static str)> {
 /// Strip control characters (notably the `NUL` that a CEC OSD name field can
 /// pad with) and trim surrounding whitespace.
 ///
-/// **Load-bearing for D-Bus:** a string with an embedded `NUL` is an invalid
-/// D-Bus message, and emitting one in a `HardwareId`/`Brand` reply makes the
-/// bus disconnect the daemon (it loses its well-known name and reads offline
-/// to every peer). So every device string is cleaned before it can reach the
-/// wire.
+/// Every device string is cleaned before it reaches the wire: a padding
+/// `NUL` or other control character would otherwise land in the TV's
+/// identity, its default name and the GUI's labels.
 pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_control())

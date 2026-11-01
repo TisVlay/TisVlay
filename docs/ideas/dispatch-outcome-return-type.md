@@ -1,6 +1,6 @@
 # Richer `DispatchOutcome` return type for screen_on / screen_off
 
-Today `tv_manager::screen_on` and `tv_manager::screen_off` both return `Result<(), TvManagerError>`. The bare `Ok(())` collapses three semantically distinct success paths:
+Today a screen action rides `DispatchVerify` in `tisvlay-world`: the rpc answers once the command is sent, and a dispatch that runs out of retries and its one wake escalation publishes `event/dispatch-failed`. Short of that give-up, the outcome isn't published, so three distinct endings look the same:
 
 - **Reached target.** Command landed, verify passed, cached state is at the requested target. The happy path.
 - **Graceful fallback (LG firmware quirk).** Pre-flight wake fired but the post-wake settle phase timed out — LG firmware honored a recent remote-off latch and refused to wake into `Active`. The TV sits in `ActiveStandby` with the panel already dark. Daemon accepts this as functionally screen-off and returns `Ok` with an info log. Documented in [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md).
@@ -10,7 +10,7 @@ All three look identical on the wire. Clients (GUI, tray, telemetry) can't disti
 
 ## Why this is worth fixing
 
-- **Telemetry need.** Now that the GUI's Profiles pane has landed, users will benefit from seeing per-TV reliability — "this TV falls back X% of the time" surfaces firmware quirks early.
+- **Telemetry need.** Users will benefit from seeing per-TV reliability — "this TV falls back X% of the time" surfaces firmware quirks early.
 - **Smarter retry logic.** A future session-side event handler could decide differently based on outcome (e.g., suppress repeated screen_off events when graceful-fallback is being hit, since the panel is already off and the command is fighting LG firmware).
 - **Future-proofing the return type.** Retrofitting `Result<()>` → `Result<DispatchOutcome>` later is harder than starting with it. The code review specifically flagged this as the "one design choice most likely to age into a regret."
 
@@ -30,15 +30,15 @@ When picked up:
 
   `#[non_exhaustive]` so adding e.g. `RejectedByPolicy` later isn't breaking.
 
-- Change `tv_manager::screen_on` / `screen_off` to return `Result<DispatchOutcome, TvManagerError>`. Internal call sites (system-event dispatcher, session-event handler, `Tv1.Screen.SetScreen` D-Bus handler) can ignore the variant initially by `.map(|_| ())`.
+- Record the outcome where `verify_dispatch` in `tisvlay-world`'s `systems/dispatch.rs` ends a `DispatchVerify`.
 
-- Decide on the D-Bus surface: either a new optional signal `Tv1.Screen.DispatchOutcome(s)` emitted after each dispatch, or extend the existing `SetScreen` to return the outcome (breaks the existing `b → ()` signature; awkward).
+- Decide on the wire surface: an `event/dispatch-outcome` published after each dispatch, or an outcome field beside the existing `event/dispatch-failed`. The `screen` rpc itself answers before verification, so it can't carry the outcome without waiting for it.
 
-- Surface in the daemon's structured logs first — that gets immediate operational value with no D-Bus contract change.
+- Surface in the daemon's structured logs first — that gets immediate operational value with no wire change.
 
 ## Trade-offs
 
-- The internal API change is small (one method on `TvManager`, three call sites).
+- The internal change is small: the verify system already knows which ending it reached.
 - Risk of orphan plumbing — if no client consumes the variant initially, the enum is dead weight. The "Future-proofing" framing has to actually be paid back by a real consumer.
 - Mitigation: only land this when the GUI Profiles pane or a telemetry consumer is being built and would use the distinction.
 
@@ -53,5 +53,5 @@ File this when one of:
 ## Related
 
 - LG firmware quirk graceful-fallback path: [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md) ("Recent remote-off latches LG firmware against `turnOn`").
-- Reliable screen-state contract: [docs/design.md](../design.md) — "Reliable screen-state actions" subsection.
+- Reliable screen-state contract: [architecture.md](../architecture.md) (`DispatchVerify`, the single screen-intent latch).
 - Multi-agent code review on `feat/screen-on-reliable` flagged this; deferred per "build it before you need it."

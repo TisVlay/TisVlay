@@ -28,14 +28,14 @@ const GUI_PROFILE: &str = if cfg!(debug_assertions) {
     "release"
 };
 
-/// Target triple emitted by `vergen-gix`. Always present.
+/// Target triple emitted by `build.rs`. Always present.
 const GUI_TARGET: &str = env!("VERGEN_CARGO_TARGET_TRIPLE");
 
-/// `rustc --version` semver token emitted by `vergen-gix`. Always
+/// `rustc --version` semver token emitted by `build.rs`. Always
 /// present.
 const GUI_RUSTC: &str = env!("VERGEN_RUSTC_SEMVER");
 
-/// 7-char git short SHA emitted by `vergen-gix`. Falls back to
+/// 7-char git short SHA emitted by `build.rs`. Falls back to
 /// `VERGEN_IDEMPOTENT_OUTPUT` when the build runs outside a git
 /// checkout (release tarball, Nix sandbox without git history); the
 /// renderer translates that sentinel to `null` so consumers can tell
@@ -107,7 +107,7 @@ fn gui_section() -> Value {
     })
 }
 
-/// Collapse `vergen-gix`'s "no git history" sentinel to JSON `null`
+/// Collapse the build script's "no git history" sentinel to JSON `null`
 /// so consumers can tell a tarball / Nix sandbox build apart from a
 /// real checkout. Pure — split out for unit tests.
 fn maybe_git_sha(raw: &str) -> Value {

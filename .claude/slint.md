@@ -108,19 +108,19 @@ that was destroyed`. Re-query.
 `matchElementTypeNameOrBase` does NOT mean "match including subclasses";
 it matches **either the type name OR a known base type**, and only
 works for built-in element types (`Rectangle`, `TouchArea`, `Text`,
-etc.). For user-defined components like my `Btn` or `TvListRow`, use
+etc.). For user-defined components like `IconBtn` or `TvListRow`, use
 `matchElementTypeName` (exact). The `OrBase` form returned `{}` for
 those — confused me for a while.
 
 ```json
 // User component:
-{"matchElementTypeName": "Btn"}
+{"matchElementTypeName": "IconBtn"}
 
 // Built-in:
 {"matchElementTypeNameOrBase": "TouchArea"}
 
 // Qualified user component id:
-{"matchElementId": "Btn::touch"}
+{"matchElementId": "IconBtn::touch"}
 ```
 
 ### click_element on custom components
@@ -130,14 +130,14 @@ the MCP server doesn't synthesize clicks from raw geometry. Two
 patterns that work:
 
 1. Component **inherits Rectangle**; `TouchArea` is a child (TouchArea
-   inherits the Rectangle's size). This is what `Btn`, `TvListRow`,
-   `ThemedCheckBox` use.
+   inherits the Rectangle's size). This is what `IconBtn`, `TvListRow`,
+   `SidebarItem` use.
 2. Component **wraps content + TouchArea inside a layout**, with
    explicit `width: 100%; height: 100%` on the TouchArea.
 
 What does NOT work: a non-Rectangle component with a Rectangle child
 and a sibling TouchArea — the TouchArea's preferred size is 0, click
-events miss it. (Fixed `Btn` by switching it to `inherits Rectangle`.)
+events miss it. (A button widget was fixed by switching it to `inherits Rectangle`.)
 
 ### Limitations to plan around
 
@@ -177,9 +177,9 @@ Two consequences:
 2. The right answer for any input that the design pins down is a
    custom themed widget — not a wrapper around the std-widget. See
    [crates/tisvlay-gui/ui/widgets.slint](../crates/tisvlay-gui/ui/widgets.slint):
-   `Btn`, `ThemedTextInput`, `ThemedCheckBox`, `ThemedSelect`. All of
-   them drive every color from `Theme.*` directly, no platform style
-   in the loop.
+   `IconBtn` and `ThemedSelect` (the latter in
+   `ui/globals/select.slint`). Both drive every color from
+   `Theme.*` directly, no platform style in the loop.
 
 `ThemedSelect` was the hardest — std `ComboBox`'s dropdown is
 non-trivial to replicate. Used Slint's native `PopupWindow` for the
@@ -406,7 +406,7 @@ in case it comes up again:
   code*) confirm this is a known gap without a roadmap.
 
 The pivot: hand the HTML off to the user's browser via `xdg-open`.
-[`crates/tisvlay-gui-app/src/main.rs::open_notices_html`](../crates/tisvlay-gui-app/src/main.rs)
+[`crates/tisvlay-gui-app/src/about.rs::open_notices_html`](../crates/tisvlay-gui-app/src/about.rs)
 prefers an installed copy at `/usr/share/doc/<pkg>/...` (FHS,
 populated by nfpm) or `$prefix/share/doc/<pkg>/...` (current_exe()-
 relative, covers Nix / AppImage / non-FHS), with a per-process

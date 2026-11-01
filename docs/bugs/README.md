@@ -5,8 +5,8 @@
 - [Upstream: linux-cec re-claim drops the OSD name](upstream-linux-cec-reclaim-drops-osd-name.md) — draft for linux-cec, not filed; held until our workaround (`8f764d5`) soaks
 - [Upstream: linux-cec can't set the log-address flags](upstream-linux-cec-log-addr-flags.md) — draft merge request for linux-cec (our fork's `rc-passthru` setter), not filed; held until the TV-controls-the-PC soak
 - [Upstream: linux-cec fails to read a claim in progress](upstream-linux-cec-unclaimed-slots.md) — draft merge request for linux-cec (our fork's `rc-passthru` fix, its own MR), not filed; files with the setter's
-- [Session event handler `last_action` cache survives daemon reconnects](last-action-cache-survives-reconnect.md)
-- [`run_pairing_handshake` has no timeout on `wait_for_completion`](pair-tv-no-timeout.md)
+- [Upstream: KDE's tray collapses a nested submenu on its first expansion](upstream-kde-tray-submenu-collapse.md) — open upstream (KDE 506439, MR !5763); still reproducible on Plasma 6.8.2
+- [A pairing session has no daemon-side deadline](pair-tv-no-timeout.md)
 - [A power-on sent to a closing connection is lost behind an OK reply](power-on-lost-to-a-closing-connection.md) — proposed fix: re-arm it as a held wake
 
 ## Closed

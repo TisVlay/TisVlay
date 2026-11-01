@@ -6,6 +6,3 @@ contact_links:
   - name: User guide
     url: https://tisvlay.readthedocs.io/
     about: Installation, automation and troubleshooting.
-  - name: Security vulnerability
-    url: https://github.com/TisVlay/TisVlay/security/advisories/new
-    about: Report it privately instead of opening a public issue.

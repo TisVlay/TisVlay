@@ -152,11 +152,9 @@ pub struct PairingField {
     pub helper: String,
 
     /// Optional gettext key for `label` + `helper` lookup. `None`
-    /// = use the English literals. Vendor crates ship their own
-    /// `.mo` catalogs keyed off these IDs (per
-    /// [`.claude/CLAUDE.md`][1]'s i18n architecture section).
-    ///
-    /// [1]: ../../../.claude/CLAUDE.md
+    /// = use the English literals. Per-vendor `.mo` catalogs keyed
+    /// off these IDs are the planned home for vendor strings
+    /// (`docs/i18n.md` in the repository).
     #[serde(default)]
     pub translation_key: Option<String>,
 

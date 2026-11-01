@@ -52,7 +52,7 @@ NIC (eno2, wlan0, br0)           ← route lookup (daemon, rtnetlink)
 Carrier state (up/down)          ← netlink RTMGRP_LINK (daemon)
 ```
 
-Backends declare `Transport::Network` and provide the IP via `display_address()`. The daemon resolves IP → NIC → carrier. This keeps backends vendor-agnostic and transport-agnostic.
+Backends declare `Transport::Network` and provide the IP via `primary_descriptor()`. The daemon resolves IP → NIC → carrier. This keeps backends vendor-agnostic and transport-agnostic.
 
 ### When routes are resolved
 
@@ -62,10 +62,10 @@ Backends declare `Transport::Network` and provide the IP via `display_address()`
 
 ## Carrier Detection
 
-A link is considered "usable" when **both** conditions are true:
+A link is considered "usable" when it has carrier (`IFF_LOWER_UP`, the cable plugged in) and its operational state is either:
 
-- `IFF_LOWER_UP` (physical carrier — cable plugged in)
-- `OperState::Up` (software state — link is operationally up)
+- `UP`, or
+- `UNKNOWN` and not dormant, which is how loopback, tun, WireGuard and Tailscale report a link carrying traffic.
 
 This catches both:
 - Cable pull: `IFF_LOWER_UP` goes false
@@ -153,4 +153,4 @@ Carrier/route parking only acts on live connections (`ConnectionHandle`); an in-
 | Wi-Fi connect while wired | No false trigger | Route stays on preferred NIC |
 | Wired disconnect (failover) | Instant disconnect + reconnect via Wi-Fi | Carrier + route + `survives_source_ip_change` |
 | Wired reconnect (failback) | NIC change → reconnect via wired | Route change + `survives_source_ip_change` |
-| Sleep/wake | Unchanged | `reconnecting` flag prevents racing |
+| Sleep/wake | Unchanged | the `Reconnecting` component prevents racing |

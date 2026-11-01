@@ -125,7 +125,7 @@ the TV's assigned profile  →  the default profile  →  built-in defaults
 
 So a profile only spells out what it changes, and it keeps tracking the default for everything else. If you later edit the default, every field that isn't set follows along.
 
-User profiles add one layer: your profile → your default → an admin-set baseline (a system-wide default for user profiles) → built-ins. On a single-user machine you can ignore the admin layer.
+User profiles resolve along the same chain, with your user profiles in place of the system ones.
 
 To see exactly what a TV will do, use the command line's `tisvlay system-profile <tv> --effective` (and `user-profile` for your user profile); the app shows set versus inheriting per field.
 

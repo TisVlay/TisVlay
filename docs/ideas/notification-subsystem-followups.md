@@ -1,65 +1,20 @@
-# Notification-subsystem follow-up cleanups
+# Tray notification settings: a partial `tray.toml`
 
-Deferred cleanups surfaced by the post-merge review of the
-user-configurable desktop-notifications work (the `org.tisvlay.Tray1`
-notifications subsystem — see `docs/design.md`). None are bugs — the
-feature shipped correct and QA-verified. Each is reuse/idiom work with a
-concrete trigger; pick one off when its trigger fires.
+The tray persists its notification switches to `tray.toml` as top-level keys (`tv_connection`, `tv_pairing`, `tv_wake`, `daemon_offline`, plus a `version`). `NotificationSettings` (`tisvlay-protocol`'s `rpc.rs`) has no per-field defaults, so a file that omits a switch doesn't parse. What follows is worse than a refusal:
 
-(Two review observations are *not* listed here because they're decisions,
-not deferred work: reads return the full `NotificationSettings` while an
-update carries a `NotificationSettingsPatch` of only the switches it
-changes (their rustdoc in `tisvlay-protocol`), and the serialized emit-worker /
-backoff rationale (`docs/design.md`'s Tray1 section).)
+- **At startup** the tray falls back to the defaults (`load_settings(..).unwrap_or_default()` in `tisvlay-tray`), silently: every switch on, nothing logged.
+- **On reload** it refuses the file (`store-unreadable`), which at least says so.
+- **On the next settings write** (a toggle in the GUI), the store treats the unparsed file as an edit nobody reloaded and moves it aside to `tray.toml.edited` before writing the defaults over it (`keep_unreloaded_edit` in `tisvlay-runtime`'s `fs.rs`).
 
-## (Speculative) `PeerClient` trait over the client structs
+Hand-editing the file is a supported path (the GUI's **Config** button opens it), and someone turning off one category may well write only that key.
 
-`DaemonClient` / `SessionClient` / `TrayClient` / `GuiClient` repeat the
-same `is_available` (probe `version()`), `version`, `config_path`, and
-proxy-build shapes — only the proxy type and error strings differ. A
-`trait PeerClient { version, config_path, reload_config, is_available }`
-(or a macro over the proxy declarations) could collapse it.
+Two ways to settle it:
 
-**Trade-offs.** Biggest and least-certain-to-pay-off item here: the four
-clients look similar but carry real per-peer differences (bus choice,
-availability-probe target, `GuiClient` has no `reload_config` at all).
-The abstraction may cost more in conditionals than the boilerplate it
-removes, so the uniform-interface precondition this trait would need has
-not materialized.
+- **Per-field defaults** (`#[serde(default = …)]` on the persisted form only, since the wire body is a full snapshot): a partial file means "these switches changed, the rest stay default-on".
+- **Keep it strict and say so**: the book's Configuration Files page lists the four keys as required, and the reload error names the missing one.
 
-**Trigger.** A fifth peer client appears with a genuinely uniform
-interface.
+Either fits [strict-decoding.md](strict-decoding.md)'s question of how the stores treat fields they don't expect; this is the other half, fields they do expect but don't find.
 
-## Converge proxy property-cache strategy across clients
+**Trigger:** a user reports a hand edit of `tray.toml` that the tray refused, or the strict-decoding work picks a policy for the stores.
 
-`TrayClient` is built with `CacheProperties::No` (its mutable
-`NotificationSettings` property is consumed by an independent
-`PropertiesChanged` consumer in the GUI — the cached default raced that
-consumer and produced the stale-settings-pane bug this subsystem fixed).
-`DaemonClient` / `SessionClient` / `GuiClient` proxies are cached-default.
-The *rule* — "a mutable property consumed via an independent
-`PropertiesChanged` signal must be read uncached" — is documented in
-`docs/design.md`'s Tray1 correctness lessons; what's deferred is
-*enforcing* it across the other clients.
-
-**Path forward.** When a second mutable property lands on any peer
-interface, encode the rule in whatever shared `PeerClient` plumbing the
-item above produces (or at minimum add `CacheProperties::No` at that
-site), rather than rediscovering the race.
-
-**Trade-offs.** Pure YAGNI today — no other client currently has a
-mutable property consumed by an independent signal consumer, so there's
-no live bug. Listed only so the next mutable-property author finds the
-rule.
-
-**Trigger.** A second mutable property is added to any peer interface.
-
-## Open question: partial `[notifications]` TOML
-
-Worth a 5-minute check independent of the items above: does a *partial*
-`[notifications]` table in `tray.toml` (e.g. only `tv_wake = false`,
-omitting the other keys) deserialize today, or does it require every key
-present? Hand-editing a partial table is the point of the file. If it
-only works by luck (or not at all) without per-field `#[serde(default)]`,
-that's a real correctness gap to fix — and it directly informs whether
-the two-type split (see design.md) ever needs revisiting.
+The D-Bus-era items once filed here (a shared trait over the per-service clients, converging their proxy property caches) went with the served D-Bus stack.

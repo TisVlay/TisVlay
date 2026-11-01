@@ -1,11 +1,11 @@
 # Switch CI (or workspace) to nightly Rust for build-time knobs
 
-The build-system design ([`docs/build.md`](../build.md)) leaves two candidates on the table because the workspace pins to stable Rust:
+The workspace pins stable Rust, which leaves two nightly-only build-time knobs:
 
-- **`-Zthreads=N` parallel rustc frontend** — flagged as 10–30% cold-build win in the SOTA survey; nightly-only as of rustc 1.95.
-- **`-Zcodegen-backend=cranelift`** — 10–20% codegen-time reduction; nightly-only.
+- **`-Zthreads=N`**, the parallel rustc front end.
+- **`-Zcodegen-backend=cranelift`**, a faster codegen backend.
 
-Greenfield, pre-release projects can absorb nightly's risk more cheaply than published crates, so this is worth keeping on the table even though we said no during the sprint.
+**Measured and rejected (2026-10-04).** A nightly pin with `-Zthreads=8`, after the Slint UI crate split, took a release build from 91.6 to 88.2 s and a clean test build from 51.5 to 46.3 s, with incremental builds unchanged; the nightly alone was slightly slower ([build.md § Never adopted](../build.md#never-adopted)). The estimates below predate that measurement. Revisit once the parallel front end ships a stable `-j`, or on one of the triggers below.
 
 ## What this would buy
 

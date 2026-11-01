@@ -7,10 +7,11 @@
 //!
 //! The mapping carries the matching outcome only — the connector —
 //! not the underlying EDID detail. Tooling that needs richer EDID
-//! data (capability tables, manufacture date, vendor blocks) calls
-//! the probe library directly with the connector name from this
-//! mapping rather than receiving structured detail over the wire. See
-//! `docs/ideas/probe-library-extraction.md` for the rationale.
+//! data (capability tables, manufacture date, vendor blocks) reads the
+//! connector's EDID from sysfs itself, using the connector name from
+//! this mapping, rather than receiving structured detail over the
+//! wire: the EDID is readable without privileges, so the daemon only
+//! publishes the matching decision, the one thing that needs it.
 //!
 //! Empty string represents "unknown / not yet probed".
 

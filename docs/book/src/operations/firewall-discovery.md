@@ -34,13 +34,7 @@ services.tisvlay.openFirewall = true;
 networking.firewall.allowedUDPPorts = [ 1901 ];
 ```
 
-To use a different port, or an OS-chosen ephemeral one (which can't be narrowed to a single firewall rule), set it in the service's config, or pass `tisvlay service daemon --ssdp-port <port>` (`0` = ephemeral):
-
-```toml
-# /var/lib/tisvlay/daemon.toml
-[discovery]
-bind_port = 1901   # the default; any unused port works, or 0 for ephemeral
-```
+To use a different port, or an OS-chosen ephemeral one (which can't be narrowed to a single firewall rule), pass `tisvlay service daemon --ssdp-port <port>` (`0` = ephemeral). On NixOS, set the module's `bindPort` instead.
 
 > Note: a `--sport 1900` rule does **not** work. The TV's reply comes from an ephemeral port, so you must match on the pinned *destination* port instead.
 
@@ -52,9 +46,20 @@ If you'd rather not pin a port, allow UDP from your local subnet:
 # ufw
 sudo ufw allow from 192.168.1.0/24 proto udp
 
+# Generic iptables
+sudo iptables -I INPUT -p udp -s 192.168.1.0/24 -j ACCEPT
+
 # firewalld (rich rule)
 sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" protocol value="udp" accept'
 sudo firewall-cmd --reload
+```
+
+On NixOS, insert the rule into the firewall's own chain, ahead of its final drop, and accept through its own target:
+
+```nix
+networking.firewall.extraCommands = ''
+  iptables -I nixos-fw -p udp -s 192.168.1.0/24 -j nixos-fw-accept
+'';
 ```
 
 ## Ways to discover and add a TV

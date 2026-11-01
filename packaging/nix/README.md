@@ -8,7 +8,7 @@ Flake-based Nix packaging for tisvlay: the Rust package derivation, the NixOS mo
 |---|---|
 | [`package.nix`](package.nix) | `rustPlatform.buildRustPackage` derivation for the workspace. |
 | [`module.nix`](module.nix) | NixOS module wiring the system daemon and both user services. |
-| [`test.nix`](test.nix) | `pkgs.testers.runNixOSTest` — boots a VM with the module enabled and asserts daemon startup, D-Bus name ownership, `Manager1` surface, and `systemd-analyze` posture. |
+| [`test.nix`](test.nix) | `pkgs.testers.runNixOSTest` — boots a VM with the module enabled and asserts daemon startup, the socket and its access model, the CLI probes, the sleep integration, and `systemd-analyze` posture. |
 
 Companion files outside this directory:
 
@@ -16,7 +16,7 @@ Companion files outside this directory:
 |---|---|
 | [`../systemd/tisvlay-daemon.service`](../systemd/tisvlay-daemon.service) | Distro (.deb/.rpm/.archlinux) unit file. Hardening kept in sync with `module.nix`. |
 | [`../systemd/tisvlay-{session,tray}.service`](../systemd/) | Distro user-service unit files. Unhardened (see "User services" below). |
-| [`../scripts/{post,pre}install.sh`](../scripts/) | Distro package lifecycle hooks — create the `tisvlay` system user, reload systemd / D-Bus. |
+| [`../scripts/{post,pre}install.sh`](../scripts/) | Distro package lifecycle hooks — create the `tisvlay` system user, reload systemd and enable the units. |
 
 ## Using the module
 
@@ -58,7 +58,7 @@ Release builds of the flake's package are in the public [tisvlay.cachix.org](htt
 - `cargoLock.lockFile = ../../Cargo.lock` rather than `cargoHash`. Local workspace → no re-hashing needed on every dependency bump.
 - `useNextest = true`. `cargoNextestHook` pulls in `cargo-nextest` automatically; `nativeCheckInputs` just needs `dbus` (the integration tests spawn a private `dbus-daemon`).
 - Production build ships **default features only**, matching the `justfile`'s `package-build` recipe (cross-distro pipeline: see [`../README.md`](../README.md)). Tests still run with `--all-features` via `cargoTestFlags`.
-- All internal `[workspace.dependencies]` entries carry `version = "0.1.0"` alongside `path = "..."` so `cargo package` can resolve the published manifest layout. See [`../../Cargo.toml`](../../Cargo.toml).
+- All internal `[workspace.dependencies]` entries carry the workspace version alongside `path = "..."` so `cargo package` can resolve the published manifest layout. See [`../../Cargo.toml`](../../Cargo.toml).
 
 ## Security posture
 
@@ -101,14 +101,15 @@ nix build .#checks.x86_64-linux.vm --no-link # VM test in isolation
 The test boots a minimal NixOS VM with `services.tisvlay.enable = true` and asserts:
 
 1. `tisvlay-daemon.service` reaches `active (running)`.
-2. `org.tisvlay.Daemon` is owned on the system bus.
-3. `Manager1` introspection at `/org/tisvlay/Manager` exposes the expected interface.
-4. `GetSupportedVendors` returns the LG backend (mock is feature-gated off in production builds).
-5. `ObjectManager.GetManagedObjects` is empty on a fresh install.
-6. `tisvlay-session.service` and `tisvlay-tray.service` user unit files are loaded.
-7. `/var/lib/tisvlay/` exists with owner `tisvlay:tisvlay`.
-8. `tisvlay` user exists with a system-range UID (< 1000). Exact value is NixOS-allocated unless pinned via `services.tisvlay.uid`.
-9. `systemd-analyze security tisvlay-daemon.service` score ≤ 2.0. The full breakdown is logged via `machine.log()` so the VM build log preserves which settings pass / fail without a manual re-run.
+2. The zenoh socket is `0660 tisvlay:tisvlay` in a `0750` runtime directory.
+3. `tisvlay status` reaches the daemon, `tisvlay vendor` lists the LG backend, and `tisvlay list` runs.
+4. A user in `services.tisvlay.users` can reach the socket; any other user can't traverse the runtime directory.
+5. `tisvlay-session.service` and `tisvlay-tray.service` user unit files are loaded.
+6. The polkit rule letting the daemon put the machine to sleep is installed, and the TV remote's power keys are dropped from the compiled hwdb.
+7. `tisvlay-wakeup.service` is wanted by `sleep.target` and runs both halves.
+8. `/var/lib/tisvlay/` exists with owner `tisvlay:tisvlay`.
+9. `tisvlay` user exists with a system-range UID (< 1000). Exact value is NixOS-allocated unless pinned via `services.tisvlay.uid`.
+10. `systemd-analyze security tisvlay-daemon.service` score ≤ 2.0. The full breakdown is logged via `machine.log()` so the VM build log preserves which settings pass / fail without a manual re-run.
 
 **Deliberately not covered**: `tisvlay-session` / `tisvlay-tray` auto-start via `graphical-session.target`. Exercising that path needs a real display manager in the VM. The units are verified to load (they are reachable via `systemctl --global`) but not executed.
 
@@ -119,7 +120,7 @@ These hardening directives are mirrored in [`../systemd/tisvlay-daemon.service`]
 NixOS-only (not backported):
 
 - **UID/GID pinning** via the module option. Distros use `adduser --system` in [`postinstall.sh`](../scripts/postinstall.sh); the assigned UID varies by distro convention.
-- **Declarative `settings` rendering**. Distros expect a mutable `/var/lib/tisvlay/config.toml` managed by the pairing wizard.
+- **Declarative `settings` rendering**. Distros expect a mutable `/var/lib/tisvlay/daemon.toml`, written by the daemon as TVs are paired.
 
 **If you change hardening in one place, change both.** The files carry a comment pointing at their sibling for this reason.
 
@@ -133,12 +134,11 @@ Same holds for the distro user-service files.
 
 - **Not published to nixpkgs.** The module option `package.defaultText` is currently `literalExpression "pkgs.callPackage ./package.nix { }"`. Upstream integration would require a maintainer entry in `nixos/maintainers/maintainer-list.nix`, a UID reservation in `nixos/modules/misc/ids.nix`, and a NixOS release note.
 - **Modular Services migration** (the `_class = "service"` pattern new in NixOS 25.11) is deferred. The API is still evolving; revisit when it graduates from "in development" and we have a concrete nix-darwin or Home Manager consumer.
-- **SSDP discovery in the firewall.** Deferred per [`../../docs/todo.md`](../../docs/todo.md); SSDP needs an inbound UDP allow rule on the daemon's chosen network interface, which requires extra option plumbing.
 
 ## Related documentation
 
 - [`../README.md`](../README.md) — packaging pipeline overview (Nix vs distro vs container channels, build-pipeline rationale, rejected alternatives).
-- [`../../.claude/CLAUDE.md`](../../.claude/CLAUDE.md) — project structure and "Quick Reference" testing table.
-- [`../../docs/design.md`](../../docs/design.md) — architecture, D-Bus interface, config schema.
+- [`../../.claude/CLAUDE.md`](../../.claude/CLAUDE.md) — project structure, known quirks and quick reference.
+- [`../../docs/architecture.md`](../../docs/architecture.md) — architecture, key space, deployment.
 - [`../../docs/testing.md`](../../docs/testing.md) — test harness, mock backend, coverage, observability.
-- [`../../docs/firewall.md`](../../docs/firewall.md) — SSDP firewall notes.
+- [`../../docs/firewall.md`](../../docs/firewall.md) — why SSDP discovery needs a firewall rule; the rules are in the user guide.

@@ -10,8 +10,8 @@ You don't need to set anything up for the common cases. Just connect.
 
 - **Wake actions are held back.** Unlocking, touching the lock screen, activity resuming from idle, and your display waking (DPMS) don't turn the TV on while it's armed.
 - **Blanks and power-offs still happen.** Locking, idle blanking, sleep, and display blanking go through, so a TV that's on still darkens for the empty room.
-- **Starting and ending have their own actions.** When a stream arms the TV, the profile's **On stream start** action runs (by default `screen_off`, so the panel blanks). When it ends, **On stream end** runs (also `screen_off`, since the room is still empty).
-- **Your return wakes it.** After a stream ends, your first genuine touch of the PC's mouse or keyboard runs **On local return** (by default `screen_on`, switching back to your PC's input). This covers the case where your desktop never locked or idled while you were away, so no unlock event would otherwise relight the TV.
+- **Starting and ending have their own actions.** When a stream arms the TV, the profile's **On stream start** action runs (out of the box it blanks the panel). When it ends, **On stream end** runs (out of the box it blanks too, since the room is still empty).
+- **Your return wakes it.** After a stream ends, your first genuine touch of the PC's mouse or keyboard runs **On local return** (out of the box it lights the screen and switches back to your PC's input). This covers the case where your desktop never locked or idled while you were away, so no unlock event would otherwise relight the TV.
 
 You can override the hold-back per event. In the **Profiles** editor, each event row has a network icon: when it shows **Suppressed while streaming**, the event is held back while armed; click it so it shows **Fires while streaming** to let the event run anyway. See [Automation](./automation.md#changing-what-happens).
 
@@ -38,7 +38,7 @@ Everything here is optional. Sunshine works without it, and the command line is 
 
 ### Sunshine integration
 
-TisVlay detects Sunshine by watching Sunshine's own status endpoint on this computer, which is why no configuration is needed. That endpoint sits on Sunshine's base port, 47989 by default. If you've moved Sunshine to another `port`, tell TisVlay where to look, or it will poll whatever now answers on the default port:
+TisVlay detects Sunshine by watching Sunshine's own status endpoint on this computer, which is why no configuration is needed. That endpoint sits on Sunshine's base port, at its default unless you've moved it (the default is under `--sunshine-port` in the [command-line reference](./cli.md#tisvlay-service-session)). If you've moved Sunshine to another `port`, tell TisVlay where to look, or it will poll whatever now answers on the default port:
 
 - **NixOS:** `services.tisvlay.sunshinePort = 48989;` (Sunshine's configured `port`).
 - **Other distros:** add `--sunshine-port 48989` to the session service's command line with `systemctl --user edit --full tisvlay-session`, then `systemctl --user restart tisvlay-session`.
@@ -69,4 +69,4 @@ tisvlay stream stop  --source myapp   # disarm
 tisvlay stream status                 # show live sources + armed TVs
 ```
 
-These talk to your user session service, so add `--user-socket` if you've moved it from the default. `tisvlay --user-socket <sock> watch` streams the stream state live alongside everything else.
+These talk to your user session service, so add `--user-socket` if you've moved it from the default. `tisvlay watch` shows the stream state live, alongside everything else.

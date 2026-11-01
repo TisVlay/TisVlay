@@ -1,12 +1,12 @@
 # Event-driven power-management redesign
 
-Today's `tisvlay-session` listener path (D-Bus screensaver, Wayland idle, logind, idle timer) drives `Tv1.Power.SetIsScreenOn` / `PowerOff` per session events. It works but couples each new event source to a session-bus dependency, and the lock/unlock/idle policy is split between TOML config and `event_handler` code. A redesign should preserve the current UX exactly while opening the door to per-DE adapters with cleaner event semantics.
+Today the session service (logind `LockedHint` for lock, Wayland `ext-idle-notify` or Mutter's IdleMonitor for idle) and the daemon (logind sleep, the sysfs DPMS watcher) map events to screen and power actions through the profiles. It works, but each new event source is its own adapter, wired by hand. A redesign should preserve the current UX exactly while opening the door to per-DE adapters with cleaner event semantics.
 
 ### Hard requirements
 
 - **Sub-100 ms lockscreen-snap-back.** Mouse jiggle on lockscreen → TV unblanks before the user perceives lag. Today's Wayland idle path delivers this; any replacement must too.
-- **Distinguish fast blank from slow power-off.** `Tv1.Power.SetIsScreenOn(false)` keeps the TV powered (~100 ms LG round-trip on resume); `PowerOff` deep-sleeps (5-10 s LG OLED cold boot, requires WoL on wake). Map: lockscreen blank / idle blank → `IsScreenOn(false)`; system suspend / explicit user action / long-idle escalation → `PowerOff`.
-- **Stay multi-TV.** Per-TV instances keyed by EDID-matched DRM connector (the existing `Tv1.Desktop.Connector` surface).
+- **Distinguish fast blank from slow power-off.** `screen_off` keeps the TV powered (~100 ms LG round-trip on resume); `power_off` deep-sleeps (5-10 s LG OLED cold boot, requires WoL on wake). Map: lockscreen blank / idle blank → `screen_off`; system suspend / explicit user action / long-idle escalation → `PowerOff`.
+- **Stay multi-TV.** Per-TV instances keyed by EDID-matched DRM connector (the TV's `connector` identity field).
 - **Handle detached TVs (HDMI splitter, network-only) via per-TV idle timer in the daemon, resets on user-initiated activity.**
 
 ### Candidate event sources, ranked by latency
@@ -26,7 +26,7 @@ Today's `tisvlay-session` listener path (D-Bus screensaver, Wayland idle, logind
 A small per-DE adapter pattern:
 
 ```
-tisvlayd
+tisvlay-daemon
  ├── PowerObserver trait
  │    ├── KdeWaylandObserver (kde_kwin_idle + dpms)
  │    ├── WlrootsObserver (wlr_output_management)
@@ -34,20 +34,20 @@ tisvlayd
  │    └── LogindFallbackObserver (LockedHint + DPMS sysfs poll)
  │         — fallback when no specific adapter matches
  └── Each observer emits ScreenBlank / ScreenWake / Sleep / Wake
-    events on a single channel; daemon dispatches to Tv1.Power.*
+    events on a single channel; daemon dispatches screen and power actions
 ```
 
-The session crate either gets folded into `tisvlayd` (its session-bus connection becomes the `KdeWaylandObserver`'s home) or one of the adapters runs as a small user-context helper. Depends on whether system-bus tisvlayd can hold a Wayland connection — needs investigation.
+The session service already is the user-context helper: the daemon runs as its own system user and can't hold the user's Wayland connection, so the compositor-facing observers stay session-side and the daemon keeps the system-wide ones.
 
 ### What NOT to do
 
-- **Don't ship sysfs-DPMS polling as the *primary* (lockscreen-snap-back) path.** DPMS doesn't distinguish blank from off in modern compositors — KDE/X11 collapse to On/Off in practice. Mapping DPMS_OFF to `Tv1.Power.PowerOff` loses the fast-blank UX (panel toggle, ~100 ms) and replaces it with a TV cold-boot (5-10 s). Mapping DPMS_OFF to `IsScreenOn(false)` works correctness-wise, but the wake-from-lockscreen latency is capped by the polling rate (~1 s at 1 Hz vs ~100 ms today). This prohibition is about the *primary* low-latency path. A *secondary* sysfs-DPMS poller does ship — see `on_dpms_off`/`on_dpms_on` (system profile), driven by `tisvlayd/src/dpms.rs`. It defaults to `screen_off`/`screen_on`, scoped to the EDID-matched connector, and explicitly accepts the ~1 s latency; it complements, not replaces, the session lock/idle path.
+- **Don't ship sysfs-DPMS polling as the *primary* (lockscreen-snap-back) path.** DPMS doesn't distinguish blank from off in modern compositors — KDE/X11 collapse to On/Off in practice. Mapping DPMS_OFF to `power_off` loses the fast-blank UX (panel toggle, ~100 ms) and replaces it with a TV cold-boot (5-10 s). Mapping DPMS_OFF to `screen_off` works correctness-wise, but the wake-from-lockscreen latency is capped by the polling rate (~1 s at 1 Hz vs ~100 ms today). This prohibition is about the *primary* low-latency path. A *secondary* sysfs-DPMS poller does ship — see `on_dpms_off`/`on_dpms_on` (system profile), driven by `tisvlay-daemon`'s `dpms.rs`. It defaults to `screen_off`/`screen_on`, scoped to the EDID-matched connector, and explicitly accepts the ~1 s latency; it complements, not replaces, the session lock/idle path.
 - **Don't unify "blank" and "off" semantics.** Two distinct LG SSAP code paths with different physics. Pick per-event.
 - **Don't drop the per-DE adapter pattern in favor of "one universal observer".** Each DE exposes session state differently and there's no Linux-wide standard event.
 
 ### Zero-input-login screen-on safety net (deferred)
 
-The [greeter idle client](../design.md#greeter-idle-client) restores a blanked login screen from the *resume edge* of whatever input wakes it, and `tisvlay-greeter` additionally asserts presence once at startup — together covering every interactive login as well as the logout-from-locked handoff. The remaining gap is a **zero-input login**: autologin, or a remote/programmatic session, that completes *after* the greeter has already idle-blanked. With no keypress there is no `ext-idle` resume edge, so the per-TV `desired_screen = off` latch can leave the panel dark into the user session.
+The greeter idle client (`tisvlay-greeter`; see [architecture.md](../architecture.md)) restores a blanked login screen from the *resume edge* of whatever input wakes it, and `tisvlay-greeter` additionally asserts presence once at startup — together covering every interactive login as well as the logout-from-locked handoff. The remaining gap is a **zero-input login**: autologin, or a remote/programmatic session, that completes *after* the greeter has already idle-blanked. With no keypress there is no `ext-idle` resume edge, so the per-TV `desired_screen = off` latch can leave the panel dark into the user session.
 
 **Fix when it bites.** Have the daemon re-assert `ScreenOn` on the greeter→user transition. `logind.rs`'s `SessionNew` handler is a no-op today; on a `SessionNew` for an active graphical `user` session it could dispatch a `ScreenOn`-defaulting action for automated TVs, guarded so it fires only on that transition (not on every session add). A new minimal `SystemEvent`, or a targeted call into the screen path mirroring how `on_dpms_on` reaches `screen_on`. Deferred because the target single-user desktop logs in interactively, where the resume edge already covers it; the trigger is someone running autologin — or a headless/remote login — against an OLED they want protected.
 

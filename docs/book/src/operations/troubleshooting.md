@@ -17,7 +17,7 @@ A network TV wakes by **Wake-on-LAN**. On the TV's page, the text beside **Power
 - **Wake over the network enabled on the TV.** On LG, that's **"TV On via Wi-Fi"** (or "Mobile TV On") in its network settings.
 - **The TV and this computer on the same network.** Wake-on-LAN packets are broadcasts and don't cross routers, unless your router relays them onto the TV's subnet or VLAN. See [TVs on an Isolated Network](./isolated-networks.md).
 
-A woken TV takes a few seconds (typically 1–5) to boot before it accepts commands; TisVlay keeps retrying. TVs may ignore Wake-on-LAN during a pixel-refresh cycle.
+A woken TV takes several seconds to boot before it accepts commands, longer from deep standby; TisVlay keeps retrying. TVs may ignore Wake-on-LAN during a pixel-refresh cycle.
 
 <details>
 <summary>From a terminal</summary>
