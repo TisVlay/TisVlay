@@ -8,7 +8,8 @@ Give outside contributors a front door: a short guide that says where each kind 
 |---|---|
 | Location | Everything GitHub reads from `.github/` lives there, so the root checkout stays clean. `README.md` and `LICENSE` stay at the root (see Layout). |
 | Code conventions | Move from `.claude/CLAUDE.md` § Code conventions into the guide. `CLAUDE.md` imports the guide with `@../.github/CONTRIBUTING.md`, so there's one copy and Claude still loads it each session. |
-| Merge policy | Outside PRs are squash-merged, so contributors only need a Conventional Commits PR title. Maintainer trains keep merge commits. |
+| Merge policy | By PR kind, from anyone: small PRs are squash-merged, so they only need a Conventional Commits title. Plan-driven PRs keep merge commits, since a plan created and deleted inside a squash never reaches `main`'s history. |
+| Development process | The guide states it: plan, commit the plan, review it, implement with tests in the same commit and deviations recorded, review again, retire the plan. Reviews are tool-neutral, so agents or a person can do them. |
 | Dev setup | Lead with the Nix dev shell. For a non-Nix setup, point to the CI workflow rather than writing steps that can drift. |
 | Licensing | Apache-2.0 §5 covers contributions. No CLA, no DCO sign-off. |
 | Conduct | Nothing for now: no `CODE_OF_CONDUCT.md`, no expectations section. |

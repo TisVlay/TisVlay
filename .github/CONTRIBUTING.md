@@ -11,7 +11,7 @@ TisVlay controls smart TVs from a Linux desktop. Bug reports, ideas, translation
 | A security problem | [The security policy](SECURITY.md); please don't open a public issue |
 | A translation | [docs/i18n.md](../docs/i18n.md) |
 | A new TV backend | [docs/backends/implementing-a-vendor.md](../docs/backends/implementing-a-vendor.md) |
-| A change bigger than a small fix | An issue first, so the approach is agreed before you write the code |
+| A change bigger than a small fix | An issue first, so the approach is agreed before you plan it ([how changes land](#how-changes-land)) |
 
 ## Setup
 
@@ -41,6 +41,16 @@ The dev stack uses its own sockets, so it won't disturb an installed TisVlay.
 
 Run `just` to list every recipe.
 
+## How changes land
+
+Small fixes go straight to a PR. Anything substantial (several commits, a wire or key change, work across crates) follows a plan:
+
+1. **Plan.** Draft `docs/plans/<name>.md`: the goal, the decisions and why, commit-sized steps, and how each step will be verified. Commit it and open a draft PR, so later changes show up as diffs.
+2. **Review the plan** for design soundness, implementation correctness (do its claims about the code hold?) and maintainability. An agent or a person can do this, and the maintainer settles contested decisions.
+3. **Implement,** one commit per step, each passing `just check`, with tests in the same commit as the code. A bug fix starts with a test that reproduces it, where one can. When the work departs from the plan, record what changed and why in the plan, in the same commit.
+4. **Review the implementation** with the same lenses, and test on hardware whatever the tests can't reach. Fixes land as new commits.
+5. **Retire the plan** in the last commit, moving what's worth keeping into `docs/` ([how](../docs/plans/README.md)).
+
 ## Before opening a PR
 
 - Run `just check`, which runs the same gates as CI. For a docs-only change, `prek run -a --skip build --skip clippy --skip test` is enough.
@@ -49,8 +59,9 @@ Run `just` to list every recipe.
 
 ## Commits and PRs
 
-- **The PR title must follow [Conventional Commits](https://www.conventionalcommits.org/)**, for example `fix(lg): reconnect after a standby`, and CI checks it. PRs from outside contributors are squash-merged, so the title becomes the commit subject on `main`, which sets the next version and the changelog entry.
-- **Commits on your branch** don't need to be tidy. The commit-msg hook checks their format as a convenience, but only the PR title is enforced.
+- **The PR title must follow [Conventional Commits](https://www.conventionalcommits.org/)**, for example `fix(lg): reconnect after a standby`, and CI checks it.
+- **Small PRs are squash-merged,** so the title becomes the commit subject on `main`, which sets the next version and the changelog entry. Commits on the branch don't need to be tidy.
+- **Plan-driven PRs keep their commits** through a merge commit, so the plan and its history stay in git. Each commit's subject then feeds the version and the changelog, so every one must follow Conventional Commits. The commit-msg hook checks them.
 - **Draft PRs** run only the fast checks; marking one ready starts the full run ([what runs when](../docs/build.md#what-runs-when)).
 - **Say what you tested on:** which TV and backend, or the mock.
 - **AI-assisted work is welcome and held to the same standard:** you understand what you submit, you've tested it, and you can answer questions about it. It doesn't need to be disclosed.

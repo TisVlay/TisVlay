@@ -1,7 +1,7 @@
-# Lint the pull-request title against Conventional Commits. Outside PRs are
+# Lint the pull-request title against Conventional Commits. Small PRs are
 # squash-merged, so the PR title is the subject that lands on the default
 # branch and feeds release-plz's version + CHANGELOG derivation — this is the
-# authoritative commit-subject gate for them. Maintainer trains keep merge
+# authoritative commit-subject gate for them. Plan-driven PRs keep merge
 # commits, whose individual subjects feed release-plz instead. (Local commits
 # get an advisory check from the prek commit-msg hook.) A dedicated workflow
 # with an `edited` trigger so a title fix re-runs just this lint, not the full
