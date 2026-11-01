@@ -294,10 +294,13 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             has_remote_keys: tv.capabilities.contains(Capabilities::REMOTE_KEYS),
             wakes_pc: tv.capabilities.contains(Capabilities::WAKES_PC),
             is_screen_on: tv.is_screen_on,
-            volume: i32::from(tv.volume),
-            muted: tv.muted,
-            backlight: i32::from(tv.backlight),
-            current_input: SharedString::from(tv.current_input.as_str()),
+            // The sliders and the input picker show 0 / unmuted / none
+            // until the TV reports; the capability flags already hide
+            // what it can't do.
+            volume: i32::from(tv.volume.unwrap_or_default()),
+            muted: tv.muted.unwrap_or_default(),
+            backlight: i32::from(tv.backlight.unwrap_or_default()),
+            current_input: SharedString::from(tv.current_input.as_deref().unwrap_or_default()),
             available_input_ids,
             // ComboBox renders `current-value` verbatim. Resolve the
             // wire UUID to the friendly name so the picker matches its
@@ -656,11 +659,11 @@ mod tests {
         let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "Living Room");
         tv.connected = true;
         tv.power_state = PowerState::Active;
-        tv.volume = 42;
-        tv.backlight = 80;
-        tv.muted = true;
+        tv.volume = Some(42);
+        tv.backlight = Some(80);
+        tv.muted = Some(true);
         tv.is_screen_on = true;
-        tv.current_input = "HDMI_2".into();
+        tv.current_input = Some("HDMI_2".into());
         tv.inputs = vec![
             ("HDMI_1".into(), "HDMI 1".into()),
             ("HDMI_2".into(), "HDMI 2".into()),

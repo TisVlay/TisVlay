@@ -317,17 +317,17 @@ pub struct TvInfo {
     /// Whether the panel shows a picture: `false` when the TV is off, in
     /// standby or blanked, and before its first report.
     pub is_screen_on: bool,
-    /// Volume level, 0–100. Also 0 before the TV reports one, and for a
+    /// Volume level, 0–100. `None` until the TV reports one, and for a
     /// backend without volume control.
-    pub volume: u8,
-    /// Whether audio is muted; `false` when unknown.
-    pub muted: bool,
-    /// The input id showing now, in the id space of `inputs`; empty when
-    /// unknown.
-    pub current_input: String,
-    /// Backlight (panel brightness), 0–100. Also 0 before the TV reports
+    pub volume: Option<u8>,
+    /// Whether audio is muted. `None` until the TV reports its volume.
+    pub muted: Option<bool>,
+    /// The input id showing now, in the id space of `inputs`. `None` until
+    /// the TV reports one.
+    pub current_input: Option<String>,
+    /// Backlight (panel brightness), 0–100. `None` until the TV reports
     /// one, and for a backend without backlight control.
-    pub backlight: u8,
+    pub backlight: Option<u8>,
     /// The TV's inputs as `(id, label)` pairs. The id is what
     /// [`DaemonClient::switch_input`] and
     /// [`DaemonClient::set_tv_primary_input`] take; the label is for
@@ -1030,6 +1030,13 @@ impl SessionClient {
         )
         .await
         .map_err(|e| Error::transport("connect to the session socket", e))?;
+        Self::with_session(session, site).await
+    }
+
+    /// Start mirroring over a zenoh `session` the caller already holds on
+    /// the session service's socket, like [`DaemonClient::with_session`].
+    /// Fails only with [`Error::Transport`].
+    pub async fn with_session(session: Session, site: &str) -> Result<Self> {
         let caller = Arc::new(Caller::new(session.clone(), site));
         let mirror = LifetimeMirror::<UserMirror>::start(&session, site, &caller).await?;
         Ok(Self {
@@ -1634,14 +1641,10 @@ mod mirror_row {
                 power_state,
                 supports_wake: self.link.as_ref().is_some_and(|l| l.supports_wake),
                 is_screen_on: self.power.as_ref().is_some_and(|p| p.is_screen_on),
-                volume: self.volume.as_ref().map(|v| v.level).unwrap_or_default(),
-                muted: self.volume.as_ref().is_some_and(|v| v.muted),
-                current_input: self
-                    .input
-                    .as_ref()
-                    .and_then(|i| i.current.clone())
-                    .unwrap_or_default(),
-                backlight: self.backlight.as_ref().map(|b| b.level).unwrap_or_default(),
+                volume: self.volume.as_ref().map(|v| v.level),
+                muted: self.volume.as_ref().map(|v| v.muted),
+                current_input: self.input.as_ref().and_then(|i| i.current.clone()),
+                backlight: self.backlight.as_ref().map(|b| b.level),
                 inputs: self
                     .input
                     .as_ref()

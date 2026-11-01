@@ -52,7 +52,7 @@ tisvlay/
 │   │                             # system socket + router owning user/**), user profiles,
 │   │                             # ScreenSaver lock/unlock, wayland idle
 │   ├── tisvlay-greeter/           # Login-greeter idle client (ext-idle-notify → greeter/idle)
-│   ├── tisvlay-tray/              # ksni tray over a live mirror + desktop notifications
+│   ├── tisvlay-tray/              # ksni tray over the SDK clients + desktop notifications
 │   │                             # (notify.rs: settings service on the user socket)
 │   ├── tisvlay/                   # Client SDK: DaemonClient/SessionClient/TrayClient +
 │   │                             # StateWatcher (root-D-Bus-client-compatible surface)
@@ -273,7 +273,7 @@ See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
 
 - `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters, and a `Relay` that cuts, stalls or drops a batch on a zenoh link while the service keeps running.
 - `tisvlay-mock` — fake vendor backend (implements `tisvlay-core` traits), always registered in the daemon.
-- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; tray: mirror + settings; SDK: client + conformance), single-suite crates as one `tests/<name>.rs` (session) — they boot real daemon/session stacks on temp sockets, no fixture crate needed. The SDK's conformance suite runs every mirror through the same link-breaking cases, against a fake service or the real stacks.
+- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; SDK: client + conformance), single-suite crates as one `tests/<name>.rs` (session, tray settings) — they boot real daemon/session stacks on temp sockets, no fixture crate needed. The SDK's conformance suite runs every mirror through the same link-breaking cases, against a fake service or the real stacks.
 
 ```bash
 just test                   # cargo nextest run + doc tests

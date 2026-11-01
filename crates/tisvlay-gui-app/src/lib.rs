@@ -3407,10 +3407,10 @@ mod tests {
         wait_for_tvs(&daemon, |tvs| {
             tvs.iter().any(|info| {
                 info.uuid == tv
-                    && info.volume == 64
-                    && info.backlight == 24
-                    && info.muted
-                    && info.current_input == input
+                    && info.volume == Some(64)
+                    && info.backlight == Some(24)
+                    && info.muted == Some(true)
+                    && info.current_input.as_ref() == Some(&input)
             })
         })
         .await;

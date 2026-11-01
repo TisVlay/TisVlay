@@ -83,7 +83,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         .id;
     wait_for(&daemon, |tvs| {
         tvs.iter()
-            .any(|info| info.uuid == tv && info.connected && info.volume == 30)
+            .any(|info| info.uuid == tv && info.connected && info.volume == Some(30))
     })
     .await;
 
@@ -103,7 +103,8 @@ async fn sdk_mirrors_rpcs_and_watches() {
     // Writes round-trip and land back in the mirror.
     daemon.set_volume(tv, 12).await.unwrap();
     wait_for(&daemon, |tvs| {
-        tvs.iter().any(|info| info.uuid == tv && info.volume == 12)
+        tvs.iter()
+            .any(|info| info.uuid == tv && info.volume == Some(12))
     })
     .await;
     let info = daemon

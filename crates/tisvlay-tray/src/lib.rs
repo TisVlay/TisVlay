@@ -1,5 +1,5 @@
 //! tisvlay-tray: the root ksni tray reshaped for zenoh. The menu renders
-//! from a live mirror of the daemon's cached keys (plus the session
+//! from the SDK clients' mirrors of the daemon (plus the session
 //! service's user keys when its socket exists); every click is an rpc.
 
 pub mod notify;
@@ -7,7 +7,7 @@ pub mod service;
 pub mod state;
 pub mod tray;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,15 +15,13 @@ use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{Unary, tv, user_profile};
-use tisvlay_protocol::payload::{self, PairingPhase, StatePayload};
+use tisvlay_protocol::payload::{self, PairingPhase};
 use tisvlay_protocol::{bootstrap, keys, rpc};
 use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use zenoh::Session;
-use zenoh::sample::SampleKind;
-use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
 use tray::{ScrollTarget, TrayCommand, TvTray};
 
@@ -80,7 +78,7 @@ pub struct TrayOptions {
     pub config: PathBuf,
 }
 
-/// Wire the tray: zenoh sessions, ksni item, mirror pumps, command
+/// Wire the tray: zenoh sessions, ksni item, the SDK clients, command
 /// processor. Runs until ctrl-c.
 pub async fn run(options: TrayOptions) -> Result<()> {
     let system = zenoh::open(
@@ -157,7 +155,7 @@ pub async fn run(options: TrayOptions) -> Result<()> {
 
     // Tray icon. `assume_sni_available(true)` keeps a missing StatusNotifier
     // host — vanilla GNOME with no AppIndicator extension — from failing the
-    // spawn: the handle stays live so the menu mirror and notifications keep
+    // spawn: the handle stays live so the menu and notifications keep
     // working, and the icon registers if a host appears later (extension
     // enabled, or a desktop like KDE that ships one). Only a genuine D-Bus
     // failure errors here; we log and stay up on the settings service above
@@ -178,17 +176,30 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     spawn_power_cycle_toasts(&system, &options.site, handle.clone(), notifier.clone()).await?;
 
     let reconcilers = Reconcilers::new();
-    spawn_liveliness_pump(
-        &system,
-        &options.site,
+    // The SDK's clients over the tray's own links, one per socket: they
+    // follow the daemon's and the session service's lifetimes.
+    let daemon = tisvlay::DaemonClient::with_session(system.clone(), &options.site)
+        .await
+        .map_err(|e| anyhow!("mirror the daemon: {e}"))?;
+    let session = match &user {
+        Some(user) => {
+            match tisvlay::SessionClient::with_session(user.clone(), &options.site).await {
+                Ok(session) => Some(session),
+                Err(e) => {
+                    warn!(%e, "couldn't mirror the session service; user profiles hidden");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    tokio::spawn(follow_services(
+        daemon,
+        session,
         handle.clone(),
         reconcilers.clone(),
         notifier.clone(),
-    )
-    .await?;
-    if let Some(user_session) = &user {
-        spawn_user_pump(user_session, &options.site, handle.clone()).await?;
-    }
+    ));
     // Matching-gated rpc callers, one per socket — menu clicks and
     // scroll writes ride them so route propagation is waited out
     // instead of dropping the action.
@@ -225,167 +236,98 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     Ok(())
 }
 
-/// Everything the menu shows from the system socket: TV state keys and
-/// the system-profile catalog, from their history on. One task per
-/// subscription, which ends (undeclaring it) when aborted. A failed
-/// subscription aborts the ones already started, so none outlives the
-/// lifetime unowned.
-async fn mirror_daemon(
-    system: &Session,
-    site: &str,
-    handle: &TrayHandle,
-    reconcilers: &Reconcilers,
-    notifier: &notify::Notifier,
-) -> Result<Vec<tokio::task::JoinHandle<()>>> {
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    for key in [keys::tv_all(site), keys::profile_system_wild(site)] {
-        let declared = system
-            .declare_subscriber(key.as_str())
-            .history(HistoryConfig::default().detect_late_publishers())
-            .await;
-        let sub = match declared {
-            Ok(sub) => sub,
-            Err(e) => {
-                tasks.iter().for_each(tokio::task::JoinHandle::abort);
-                return Err(anyhow!("subscribe {key}: {e}"));
-            }
-        };
-        let handle = handle.clone();
-        let site = site.to_string();
-        let reconcilers = reconcilers.clone();
-        let notifier = notifier.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                // Echoed levels release the scroll-intent gates.
-                if sample.kind() == SampleKind::Put
-                    && let Some((tv, path)) = keys::parse_tv_path(&site, sample.key_expr().as_str())
-                {
-                    if path == payload::Volume::PATH {
-                        if let Ok(volume) =
-                            serde_json::from_slice::<payload::Volume>(&sample.payload().to_bytes())
-                        {
-                            let _ = reconcilers.volume.observe(&tv, volume.level);
-                        }
-                    } else if path == payload::Backlight::PATH
-                        && let Ok(backlight) = serde_json::from_slice::<payload::Backlight>(
-                            &sample.payload().to_bytes(),
-                        )
-                    {
-                        let _ = reconcilers.backlight.observe(&tv, backlight.level);
-                    }
-                }
-                // The closure reports connection transitions so toasts
-                // ride the same sample that changed the mirror.
-                let transition = handle
-                    .update(|tray| {
-                        let before = keys::parse_tv_path(&site, sample.key_expr().as_str())
-                            .filter(|(_, path)| *path == payload::Link::PATH)
-                            .and_then(|(tv, _)| {
-                                tray.mirror.tvs.get(&tv).map(|view| (tv, view.connected))
-                            });
-                        tray.mirror.apply_system_sample(&site, &sample);
-                        before.and_then(|(tv, was)| {
-                            let view = tray.mirror.tvs.get(&tv)?;
-                            (view.connected != was).then(|| (view.name.clone(), view.connected))
-                        })
-                    })
-                    .await
-                    .flatten();
-                if let Some((name, connected)) = transition {
-                    let (summary, icon) = if connected {
-                        (format!("{name} connected"), "video-display")
-                    } else {
-                        (format!("{name} disconnected"), "video-display-symbolic")
-                    };
-                    notifier.notify(notify::Category::TvConnection, &summary, "", icon);
-                }
-            }
-        }));
-    }
-    Ok(tasks)
-}
-
-async fn spawn_user_pump(user: &Session, site: &str, handle: TrayHandle) -> Result<()> {
-    let sub = user
-        .declare_subscriber(keys::user_all(site))
-        .history(HistoryConfig::default().detect_late_publishers())
-        .await
-        .map_err(|e| anyhow!("subscribe user keys: {e}"))?;
-    let handle = handle.clone();
-    let site = site.to_string();
-    tokio::spawn(async move {
-        while let Ok(sample) = sub.recv_async().await {
-            handle
-                .update(|tray| tray.mirror.apply_user_sample(&site, &sample))
-                .await;
-        }
-    });
-    Ok(())
-}
-
-/// The daemon's liveliness token drives the offline presentation, and the
-/// mirror: the daemon's keys are subscribed only while the token is
-/// present. A token that goes takes its subscriptions (and any sample still
-/// in them) along, and one that comes back, whether a restarted daemon's
-/// or the same daemon's after its links dropped (a resume that froze this
-/// process past the link lease), hydrates afresh from the caches.
-async fn spawn_liveliness_pump(
-    system: &Session,
-    site: &str,
+/// Render the menu from the SDK clients' mirrors, rebuilt on each of their
+/// events: the clients follow the daemon's and the session service's
+/// lifetimes (subscribing per token lifetime, clearing on loss), so the
+/// menu does too. Each rebuild feeds the TVs' levels to the scroll
+/// reconcilers, and toasts connection changes and the daemon going
+/// offline or coming back.
+async fn follow_services(
+    daemon: tisvlay::DaemonClient,
+    session: Option<tisvlay::SessionClient>,
     handle: TrayHandle,
     reconcilers: Reconcilers,
     notifier: notify::Notifier,
-) -> Result<()> {
-    let sub = system
-        .liveliness()
-        .declare_subscriber(keys::daemon_alive(site))
-        .history(true)
-        .await
-        .map_err(|e| anyhow!("subscribe daemon liveliness: {e}"))?;
-    let system = system.clone();
-    let site = site.to_string();
-    tokio::spawn(async move {
-        let mut last: Option<bool> = None;
-        let mut mirroring: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-        while let Ok(sample) = sub.recv_async().await {
-            let alive = sample.kind() == SampleKind::Put;
-            if !alive {
-                for task in mirroring.drain(..) {
-                    task.abort();
-                    let _ = task.await;
-                }
+) {
+    let mut watcher =
+        tisvlay::StateWatcher::new(&daemon, session.as_ref(), None, Default::default());
+    // The daemon's presence before the watcher's first event isn't known
+    // yet, so its first reading is no transition (and an offline toast at
+    // every tray start would be noise).
+    let mut last_alive: Option<bool> = None;
+    let mut started = false;
+    loop {
+        let view = snapshot(&daemon, session.as_ref()).await;
+        for (id, tv) in &view.tvs {
+            // Echoed levels release the scroll-intent gates; an unchanged
+            // one is a no-op.
+            if let Some(level) = tv.volume {
+                let _ = reconcilers.volume.observe(id, level);
             }
-            handle
-                .update(move |tray| {
-                    if !alive {
-                        tray.mirror.tvs.clear();
-                        tray.mirror.system_profiles.clear();
-                    }
-                    tray.mirror.daemon_alive = alive;
-                })
-                .await;
-            if alive && mirroring.is_empty() {
-                match mirror_daemon(&system, &site, &handle, &reconcilers, &notifier).await {
-                    Ok(tasks) => mirroring = tasks,
-                    Err(e) => warn!(error = %e, "couldn't subscribe to the daemon's keys"),
-                }
+            if let Some(level) = tv.backlight {
+                let _ = reconcilers.backlight.observe(id, level);
             }
-            // Toast transitions only; the initial hydrated state is not
-            // news (and an offline toast at every tray start would be).
-            if let Some(was) = last
-                && was != alive
-            {
-                let (summary, icon) = if alive {
-                    ("TisVlay daemon is back online", "video-display")
-                } else {
-                    ("TisVlay daemon went offline", "dialog-warning")
-                };
-                notifier.notify(notify::Category::DaemonOffline, summary, "", icon);
-            }
-            last = Some(alive);
         }
+        let alive = view.daemon_alive;
+        let changes = handle
+            .update(move |tray| {
+                let changes = view.connection_changes(&tray.view);
+                tray.view = view;
+                changes
+            })
+            .await
+            .unwrap_or_default();
+        for (name, connected) in changes {
+            let (summary, icon) = if connected {
+                (format!("{name} connected"), "video-display")
+            } else {
+                (format!("{name} disconnected"), "video-display-symbolic")
+            };
+            notifier.notify(notify::Category::TvConnection, &summary, "", icon);
+        }
+        if let Some(was) = last_alive
+            && was != alive
+        {
+            let (summary, icon) = if alive {
+                ("TisVlay daemon is back online", "video-display")
+            } else {
+                ("TisVlay daemon went offline", "dialog-warning")
+            };
+            notifier.notify(notify::Category::DaemonOffline, summary, "", icon);
+        }
+        if started {
+            last_alive = Some(alive);
+        }
+        started = true;
+        if watcher.next().await.is_none() {
+            return;
+        }
+    }
+}
+
+/// The menu's view of what the clients mirror right now.
+async fn snapshot(
+    daemon: &tisvlay::DaemonClient,
+    session: Option<&tisvlay::SessionClient>,
+) -> state::View {
+    let tvs = daemon.list_tvs().await.unwrap_or_default();
+    let system_profiles = daemon.list_system_profile_bodies().await;
+    let mut user_profiles = std::collections::HashMap::new();
+    let mut assignments = std::collections::HashMap::new();
+    if let Some(session) = session {
+        user_profiles = session.list_user_profile_bodies().await;
+        for tv in &tvs {
+            if let Some(profile) = session.get_tv_user_profile(tv.uuid).await {
+                assignments.insert(tv.uuid, profile);
+            }
+        }
+    }
+    let mut view = state::View::new(&tvs, &system_profiles, &user_profiles, |tv| {
+        assignments.get(&tv).copied()
     });
-    Ok(())
+    view.daemon_alive = daemon.is_available().await;
+    view.daemon_hydrated = daemon.is_hydrated().await;
+    view
 }
 
 /// Execute menu commands as rpcs. Scroll bursts hand off to the
@@ -425,7 +367,7 @@ async fn process_commands(
 }
 
 /// Build the sum-merge coalescer for one scroll target. The apply reads
-/// the reconciled intent (mirror value only as first fallback), clamps,
+/// the reconciled intent (the view's value only as first fallback), clamps,
 /// and dispatches the new intent *before* awaiting the rpc so the gate
 /// is in place before any subscription pushes arrive.
 fn scroll_coalescer(
@@ -443,7 +385,7 @@ fn scroll_coalescer(
             async move {
                 let fallback = handle
                     .update(|tray| {
-                        let tv = tray.mirror.tvs.get(&id)?;
+                        let tv = tray.view.tvs.get(&id)?;
                         match target {
                             ScrollTarget::Volume => tv.volume,
                             ScrollTarget::Backlight => tv.backlight,
@@ -512,7 +454,7 @@ async fn execute(
         }
         TrayCommand::ToggleMute(id) => {
             let muted = handle
-                .update(|tray| tray.mirror.tvs.get(&id).and_then(|tv| tv.muted))
+                .update(|tray| tray.view.tvs.get(&id).and_then(|tv| tv.muted))
                 .await
                 .flatten()
                 .unwrap_or(false);
@@ -562,7 +504,7 @@ async fn activate_gui() -> Result<()> {
     Ok(())
 }
 
-/// One rpc round-trip; failures land in the log, not the UI — the mirror
+/// One rpc round-trip; failures land in the log, not the UI — the view
 /// shows the truth either way. Matching-gated single shot: a click
 /// during route propagation waits it out instead of vanishing.
 async fn call<R: Unary>(caller: &Caller, target: &R::Target, request: &R::Request) {
@@ -574,11 +516,6 @@ async fn call<R: Unary>(caller: &Caller, target: &R::Target, request: &R::Reques
 /// Default session-service socket, shared shape with `tisvlay-session`.
 pub fn default_user_socket() -> PathBuf {
     bootstrap::default_session_socket_path()
-}
-
-/// Re-exported for the wire test's mirror driver.
-pub fn client_config(socket: &Path) -> Result<zenoh::Config> {
-    Ok(bootstrap::client_config(socket)?)
 }
 
 /// Terminal pairing phases become toasts — non-terminal progress is the
@@ -607,7 +544,7 @@ async fn spawn_pairing_toasts(
                 continue;
             };
             let name = handle
-                .update(|tray| tray.mirror.tvs.get(&tv).map(|view| view.name.clone()))
+                .update(|tray| tray.view.tvs.get(&tv).map(|view| view.name.clone()))
                 .await
                 .flatten()
                 .unwrap_or_else(|| "TV".into());
@@ -654,7 +591,7 @@ async fn spawn_power_cycle_toasts(
                 continue;
             };
             let name = handle
-                .update(|tray| tray.mirror.tvs.get(&tv).map(|view| view.name.clone()))
+                .update(|tray| tray.view.tvs.get(&tv).map(|view| view.name.clone()))
                 .await
                 .flatten()
                 .unwrap_or_else(|| "TV".into());
@@ -701,78 +638,11 @@ mod orchestration_tests {
             }
         })
         .await
-        .expect("tray mirror did not converge");
-    }
-
-    /// A daemon whose links drop and come back is still the same session:
-    /// a resume that keeps user processes frozen past the 10 s link lease
-    /// takes the daemon's token away and brings it back. Its TVs come back
-    /// with the token, named, from the caches it still holds.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_daemon_whose_token_returns_is_mirrored_again() {
-        use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
-
-        let dir = tisvlay_test::socket_tempdir();
-        let socket = dir.path().join("sys.sock");
-        let daemon = zenoh::open(bootstrap::peer_config(&socket).unwrap())
-            .await
-            .unwrap();
-        let tv = Uuid::from_u128(5);
-        let identity = daemon
-            .declare_publisher(keys::tv_path("test", &tv, payload::Identity::PATH))
-            .cache(CacheConfig::default().max_samples(1))
-            .sample_miss_detection(
-                MissDetectionConfig::default().sporadic_heartbeat(Duration::from_millis(500)),
-            )
-            .publisher_detection()
-            .await
-            .unwrap();
-        identity
-            .put(
-                serde_json::to_vec(&serde_json::json!({
-                    "name": "Den", "vendor": "mock", "capabilities": []
-                }))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        let alive = keys::daemon_alive("test");
-        let token = daemon.liveliness().declare_token(&alive).await.unwrap();
-
-        let system = zenoh::open(bootstrap::client_config(&socket).unwrap())
-            .await
-            .unwrap();
-        let (commands, _receiver) = mpsc::unbounded_channel();
-        let handle = TrayHandle::Headless(Arc::new(tokio::sync::Mutex::new(TvTray::new(
-            commands,
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        ))));
-        let (notifier, _notifications) = notify::Notifier::capturing(Default::default());
-        spawn_liveliness_pump(
-            &system,
-            "test",
-            handle.clone(),
-            Reconcilers::new(),
-            notifier,
-        )
-        .await
-        .unwrap();
-        let named = |tray: &TvTray| {
-            tray.mirror
-                .tvs
-                .get(&tv)
-                .is_some_and(|view| view.name == "Den")
-        };
-        wait_for_tray(&handle, named).await;
-
-        token.undeclare().await.unwrap();
-        wait_for_tray(&handle, |tray| tray.mirror.tvs.is_empty()).await;
-        let _token = daemon.liveliness().declare_token(&alive).await.unwrap();
-        wait_for_tray(&handle, named).await;
+        .expect("the tray's view did not converge");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn system_pump_and_commands_round_trip_without_a_desktop() {
+    async fn the_view_and_commands_round_trip_without_a_desktop() {
         let directory = tisvlay_test::socket_tempdir();
         let socket = directory.path().join("tray.sock");
         let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();
@@ -787,7 +657,9 @@ mod orchestration_tests {
         )
         .await
         .unwrap();
-        let system = zenoh::open(client_config(&socket).unwrap()).await.unwrap();
+        let system = zenoh::open(bootstrap::client_config(&socket).unwrap())
+            .await
+            .unwrap();
         let caller = Arc::new(Caller::new(system.clone(), "test"));
         let daemon = tisvlay::DaemonClient::connect(&socket, "test")
             .await
@@ -809,15 +681,19 @@ mod orchestration_tests {
         ))));
         let (notifier, mut notifications) = notify::Notifier::capturing(Default::default());
         let reconcilers = Reconcilers::new();
-        spawn_liveliness_pump(
-            &system,
-            "test",
+        // The session service starts later on this socket; its client
+        // follows it whenever it appears.
+        let user_socket = directory.path().join("user.sock");
+        let session = tisvlay::SessionClient::connect(&user_socket, "test")
+            .await
+            .unwrap();
+        tokio::spawn(follow_services(
+            daemon.clone(),
+            Some(session.clone()),
             handle.clone(),
             reconcilers.clone(),
             notifier.clone(),
-        )
-        .await
-        .unwrap();
+        ));
         spawn_pairing_toasts(&system, "test", handle.clone(), notifier.clone())
             .await
             .unwrap();
@@ -838,13 +714,13 @@ mod orchestration_tests {
             .unwrap()
             .id;
         wait_for_tray(&handle, |tray| {
-            tray.mirror.daemon_alive && tray.mirror.tvs.get(&tv).is_some_and(|view| view.connected)
+            tray.view.daemon_alive && tray.view.tvs.get(&tv).is_some_and(|view| view.connected)
         })
         .await;
         execute(&caller, None, TrayCommand::ToggleMute(tv), &handle).await;
-        wait_for_tray(&handle, |tray| tray.mirror.tvs[&tv].muted == Some(true)).await;
+        wait_for_tray(&handle, |tray| tray.view.tvs[&tv].muted == Some(true)).await;
         execute(&caller, None, TrayCommand::ToggleMute(tv), &handle).await;
-        wait_for_tray(&handle, |tray| tray.mirror.tvs[&tv].muted == Some(false)).await;
+        wait_for_tray(&handle, |tray| tray.view.tvs[&tv].muted == Some(false)).await;
         tokio::time::timeout(Duration::from_secs(10), async {
             while let Some(toast) = notifications.recv().await {
                 if toast.summary.ends_with(" paired") {
@@ -856,9 +732,9 @@ mod orchestration_tests {
         .await
         .unwrap();
         execute(&caller, None, TrayCommand::ScreenOff(tv), &handle).await;
-        wait_for_tray(&handle, |tray| !tray.mirror.tvs[&tv].is_screen_on).await;
+        wait_for_tray(&handle, |tray| !tray.view.tvs[&tv].is_screen_on).await;
         execute(&caller, None, TrayCommand::ScreenOn(tv), &handle).await;
-        wait_for_tray(&handle, |tray| tray.mirror.tvs[&tv].is_screen_on).await;
+        wait_for_tray(&handle, |tray| tray.view.tvs[&tv].is_screen_on).await;
         execute(
             &caller,
             None,
@@ -867,13 +743,13 @@ mod orchestration_tests {
         )
         .await;
         wait_for_tray(&handle, |tray| {
-            tray.mirror.tvs[&tv].current_input.as_deref() == Some("HDMI_2")
+            tray.view.tvs[&tv].current_input.as_deref() == Some("HDMI_2")
         })
         .await;
         execute(&caller, None, TrayCommand::SetManaged(tv, true), &handle).await;
-        wait_for_tray(&handle, |tray| tray.mirror.tvs[&tv].managed).await;
+        wait_for_tray(&handle, |tray| tray.view.tvs[&tv].managed).await;
         execute(&caller, None, TrayCommand::SetManaged(tv, false), &handle).await;
-        wait_for_tray(&handle, |tray| !tray.mirror.tvs[&tv].managed).await;
+        wait_for_tray(&handle, |tray| !tray.view.tvs[&tv].managed).await;
         let profile = daemon.create_system_profile("Tray work").await.unwrap();
         execute(
             &caller,
@@ -883,15 +759,15 @@ mod orchestration_tests {
         )
         .await;
         wait_for_tray(&handle, |tray| {
-            tray.mirror.tvs[&tv].system_profile == Some(profile)
-                && tray.mirror.system_profiles.contains_key(&profile)
+            tray.view.tvs[&tv].system_profile == Some(profile)
+                && tray.view.system_profiles.contains_key(&profile)
         })
         .await;
         execute(&caller, None, TrayCommand::PowerOff(tv), &handle).await;
-        wait_for_tray(&handle, |tray| !tray.mirror.tvs[&tv].is_on).await;
+        wait_for_tray(&handle, |tray| !tray.view.tvs[&tv].is_on).await;
         execute(&caller, None, TrayCommand::PowerOn(tv), &handle).await;
         wait_for_tray(&handle, |tray| {
-            tray.mirror.tvs[&tv].connected && tray.mirror.tvs[&tv].is_on
+            tray.view.tvs[&tv].connected && tray.view.tvs[&tv].is_on
         })
         .await;
         execute(
@@ -902,7 +778,6 @@ mod orchestration_tests {
         )
         .await;
 
-        let user_socket = directory.path().join("user.sock");
         let session_stack = tisvlay_session::serve(tisvlay_session::SessionOptions {
             system_socket: socket.clone(),
             user_socket: user_socket.clone(),
@@ -912,16 +787,10 @@ mod orchestration_tests {
         })
         .await
         .unwrap();
-        let user = zenoh::open(client_config(&user_socket).unwrap())
+        let user = zenoh::open(bootstrap::client_config(&user_socket).unwrap())
             .await
             .unwrap();
         let user_caller = Arc::new(Caller::new(user.clone(), "test"));
-        spawn_user_pump(&user, "test", handle.clone())
-            .await
-            .unwrap();
-        let session = tisvlay::SessionClient::connect(&user_socket, "test")
-            .await
-            .unwrap();
         let mut session_events =
             tisvlay::StateWatcher::new(&daemon, Some(&session), None, Default::default());
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -940,8 +809,8 @@ mod orchestration_tests {
         )
         .await;
         wait_for_tray(&handle, |tray| {
-            tray.mirror.tvs[&tv].user_profile == Some(user_profile)
-                && tray.mirror.user_profiles.contains_key(&user_profile)
+            tray.view.tvs[&tv].user_profile == Some(user_profile)
+                && tray.view.user_profiles.contains_key(&user_profile)
         })
         .await;
         let volume = scroll_coalescer(
@@ -971,7 +840,7 @@ mod orchestration_tests {
                 .unwrap();
         }
         wait_for_tray(&handle, |tray| {
-            tray.mirror.tvs[&tv].volume == Some(100) && tray.mirror.tvs[&tv].backlight == Some(100)
+            tray.view.tvs[&tv].volume == Some(100) && tray.view.tvs[&tv].backlight == Some(100)
         })
         .await;
         for (target, steps) in [
@@ -983,16 +852,16 @@ mod orchestration_tests {
                 .unwrap();
         }
         wait_for_tray(&handle, |tray| {
-            tray.mirror.tvs[&tv].volume == Some(0) && tray.mirror.tvs[&tv].backlight == Some(0)
+            tray.view.tvs[&tv].volume == Some(0) && tray.view.tvs[&tv].backlight == Some(0)
         })
         .await;
         command_sender.send(TrayCommand::ToggleMute(tv)).unwrap();
-        wait_for_tray(&handle, |tray| tray.mirror.tvs[&tv].muted == Some(true)).await;
+        wait_for_tray(&handle, |tray| tray.view.tvs[&tv].muted == Some(true)).await;
         processor.abort();
         assert!(processor.await.unwrap_err().is_cancelled());
         drop(session_stack);
         stack.run_until(std::future::ready(())).await.unwrap();
-        wait_for_tray(&handle, |tray| !tray.mirror.daemon_alive).await;
+        wait_for_tray(&handle, |tray| !tray.view.daemon_alive).await;
         tokio::time::timeout(Duration::from_secs(10), async {
             while let Some(toast) = notifications.recv().await {
                 if toast.summary == "TisVlay daemon went offline" {
@@ -1017,7 +886,7 @@ mod orchestration_tests {
         .await
         .unwrap();
         wait_for_tray(&handle, |tray| {
-            tray.mirror.daemon_alive && tray.mirror.tvs.is_empty()
+            tray.view.daemon_alive && tray.view.tvs.is_empty()
         })
         .await;
         tokio::time::timeout(Duration::from_secs(10), async {
