@@ -77,8 +77,8 @@ Rewrite in current terms:
 
 ## 6. Links
 
-- [ ] `git mv` `concerns/remote-session-detector-validation.md` → `stream-detector-validation.md` and `ideas/remote-session-followups.md` → `stream-followups.md`, matching their index entries; fix inbound links.
-- [ ] `docs/firewall.md`'s dead anchor; `docs/kde/gui-application-activation.md` → `tray/src/lib.rs`; `crates/tisvlayd/…` links in ideas; `ideas/gui-test-coverage-fanout.md`'s dead anchor (if it survives step 5).
+- [x] `git mv` `concerns/remote-session-detector-validation.md` → `stream-detector-validation.md` and `ideas/remote-session-followups.md` → `stream-followups.md`, matching their index entries; fix inbound links.
+- [x] `docs/firewall.md`'s dead anchor; `docs/kde/gui-application-activation.md` → `tray/src/lib.rs`; `crates/tisvlayd/…` links in ideas; `ideas/gui-test-coverage-fanout.md`'s dead anchor (if it survives step 5).
 
 ## 7. Duplicates and `CLAUDE.md`
 

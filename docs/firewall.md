@@ -136,7 +136,7 @@ Linux *has* attempted system-wide SSDP daemons of its own — every attempt eith
 - **Avahi** — mDNS/DNS-SD only, not SSDP.
 - **freedesktop / systemd / xdg-desktop-portal** — nothing covers SSDP today. An mDNS device-discovery portal is in [open discussion](https://github.com/flatpak/xdg-desktop-portal/discussions/1365); no SSDP equivalent is proposed.
 
-So applications implement SSDP themselves, and the firewall problem surfaces as a per-app concern. `tisvlay` ships its own transport in the [`tisvlay-ssdp`](../crates/tisvlay-ssdp/) workspace crate, with `bind_port` configurable specifically so a firewall rule can target a known port (see [the section above](#recommended-pin-the-ssdp-source-port)).
+So applications implement SSDP themselves, and the firewall problem surfaces as a per-app concern. `tisvlay` ships its own transport in the [`tisvlay-ssdp`](../crates/tisvlay-ssdp/) workspace crate, with `bind_port` configurable specifically so a firewall rule can target a known port (see [the section above](#the-ssdp-source-port-is-pinned-by-default)).
 
 ### Why conntrack Doesn't Help
 
