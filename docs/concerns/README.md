@@ -5,12 +5,15 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 ## Architecture
 
 - [Zenoh idiom audit against zenoh 1.9.0 (2026-07-12; triage done, its "don't fix these" list still applies)](zenoh-idiom-audit.md)
+- [A poll-only network backend can't confirm its screen actions (no such backend yet)](poll-only-screen-verify.md)
+- [MAC enrichment doesn't check the address's IP family](enrich-no-family-check.md)
 
 ## Testing
 
 - [Intermittent test failures (a session screencast test, a GUI callbacks test)](intermittent-tests.md)
 - [Stream detectors not yet field-validated (krdp, RustDesk, PipeWire, logind)](stream-detector-validation.md)
 - [An LG C3 may ignore CEC `<Standby>` just after waking (unconfirmed)](cec-standby-ignored-after-wake.md)
+- [Two regression tests didn't survive the 0.3.0 rewrite (CEC identity after a dongle swap; LG `screen_off` against a refused wake)](lost-regression-tests.md)
 
 ## Build & CI
 
