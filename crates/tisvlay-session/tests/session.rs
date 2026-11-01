@@ -35,6 +35,9 @@ type Sub = AdvancedSubscriber<FifoChannelHandler<Sample>>;
 struct Rig {
     _dir: tempfile::TempDir,
     system_socket: PathBuf,
+    /// Held for the test: dropping the daemon's stack withdraws its
+    /// liveliness token, and the session follows the daemon's lifetime.
+    _daemon: tisvlay_daemon::Stack,
     stack: SessionStack,
     /// Client on the system socket — TV state and rpcs.
     client: Session,
@@ -59,7 +62,7 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
     let system_socket = dir.path().join("sys.sock");
     let user_socket = dir.path().join("user.sock");
     let (connector, discovery, handle) = new_test_parts();
-    let _daemon = tisvlay_daemon::serve(
+    let daemon = tisvlay_daemon::serve(
         &system_socket,
         "t",
         vec![
@@ -89,6 +92,7 @@ async fn rig_with_store(store: Option<&Path>) -> Rig {
     Rig {
         _dir: dir,
         system_socket,
+        _daemon: daemon,
         stack,
         caller: Caller::new(client.clone(), "t"),
         user_caller: Caller::new(user.clone(), "t"),

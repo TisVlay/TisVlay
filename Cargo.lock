@@ -6844,6 +6844,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tisvlay",
  "tisvlay-core",
  "tisvlay-daemon",
  "tisvlay-mock",

@@ -28,9 +28,9 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use tisvlay_core::{ResolvedUserProfile, SessionAction, UserLockAction, UserProfileConfig};
-use tisvlay_protocol::caller::Caller;
-use tisvlay_protocol::endpoint::{tv, user_profile, user_stream};
+use tisvlay_protocol::endpoint::{user_profile, user_stream};
 use tisvlay_protocol::error::WireError;
+use tisvlay_protocol::payload::StatePayload;
 use tisvlay_protocol::{keys, payload, rpc};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -38,11 +38,7 @@ use uuid::Uuid;
 use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::query::Query;
-use zenoh::sample::SampleKind;
-use zenoh_ext::{
-    AdvancedPublisher, AdvancedPublisherBuilderExt, AdvancedSubscriberBuilderExt, CacheConfig,
-    HistoryConfig, MissDetectionConfig,
-};
+use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
 
 pub use lock::{
     run_locker, seed_lock_state, seed_lock_state_on, spawn as spawn_lock_watcher, spawn_locker,
@@ -307,20 +303,16 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         .await
         .map_err(|e| anyhow!("declare session liveliness: {e}"))?;
 
-    // Fleet mirror: every TV's meta/config, hydrated from history.
-    let meta_sub = system
-        .declare_subscriber(keys::tv_meta_wild(&options.site))
-        .history(HistoryConfig::default().detect_late_publishers())
+    // The daemon, through the SDK over this same system link: the fleet
+    // (each TV's profile state, and its screen bit for the idle drift
+    // re-assert) mirrored per daemon lifetime, the release check, and the
+    // rpcs that carry out profile actions. Its events drive the core's
+    // fleet sync.
+    let daemon = tisvlay::DaemonClient::with_session(system.clone(), &options.site)
         .await
-        .map_err(|e| anyhow!("subscribe tv meta: {e}"))?;
-
-    // Screen mirror: per-TV power state, for the idle drift re-assert
-    // (a panel lit by a stray remote press while the idle action holds).
-    let power_sub = system
-        .declare_subscriber(keys::tv_power_wild(&options.site))
-        .history(HistoryConfig::default().detect_late_publishers())
-        .await
-        .map_err(|e| anyhow!("subscribe tv power: {e}"))?;
+        .map_err(|e| anyhow!("mirror the daemon: {e}"))?;
+    let daemon_events =
+        tisvlay::StateWatcher::new(&daemon, None, None, tisvlay::StateWatcherConfig::default());
 
     // The TV powering off by itself, decided and published by the world.
     // Live only: no history, so a login or a restart can't replay an old
@@ -374,10 +366,6 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     let is_active = Arc::new(AtomicBool::new(true));
     let local_return_armed = Arc::new(AtomicBool::new(false));
 
-    // Matching-gated caller for TV rpcs on the system socket, shared into
-    // every dispatch's spawned task.
-    let caller = Arc::new(Caller::new(system.clone(), options.site.clone()));
-
     let mut core = Core {
         system,
         user,
@@ -412,7 +400,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         stream_sources: stream::StreamSources::default(),
         stream_armed: HashSet::new(),
         stream_mirror,
-        caller,
+        daemon,
         lock_tx,
         _alive: alive,
         _alive_system: alive_system,
@@ -424,8 +412,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             queries,
             stream_queries,
             FleetSubs {
-                meta: meta_sub,
-                power: power_sub,
+                daemon: daemon_events,
                 tv_off: tv_off_sub,
                 remote_power: remote_power_sub,
             },
@@ -454,7 +441,8 @@ struct Core {
     site: String,
     profiles: HashMap<Uuid, UserProfileConfig>,
     assignments: HashMap<Uuid, Uuid>,
-    tvs: HashMap<Uuid, payload::Meta>,
+    /// The daemon's TVs, as its mirror read at the last fleet sync.
+    tvs: HashMap<Uuid, tisvlay::TvInfo>,
     publishers: HashMap<String, AdvancedPublisher<'static>>,
     persist: Option<mpsc::UnboundedSender<store::StoreMsg>>,
     /// The store writer's reload requests; `None` without a store file.
@@ -492,8 +480,10 @@ struct Core {
     /// hydrates its last sample on restart, so the fact survives a daemon
     /// bounce without any re-put from the session.
     stream_mirror: AdvancedPublisher<'static>,
-    /// Matching-gated caller for TV rpcs on the system socket.
-    caller: Arc<Caller>,
+    /// The daemon, for the fleet and the rpcs that carry out profile
+    /// actions. Release-gated: against a daemon of another release, the
+    /// fleet reads empty and nothing is sent.
+    daemon: tisvlay::DaemonClient,
     /// Lock requests for the locker, which owns the D-Bus side.
     lock_tx: mpsc::UnboundedSender<Uuid>,
     _alive: zenoh::liveliness::LivelinessToken,
@@ -503,12 +493,10 @@ struct Core {
     _alive_system: zenoh::liveliness::LivelinessToken,
 }
 
-/// The core's subscriptions on the system socket: the fleet's meta and
-/// power mirrors, hydrated from history, and the live going-off events.
+/// The core's inputs from the system socket: the daemon's events, and
+/// the live going-off events.
 struct FleetSubs {
-    meta: zenoh_ext::AdvancedSubscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
-    power:
-        zenoh_ext::AdvancedSubscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
+    daemon: tisvlay::StateWatcher,
     tv_off: zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
     remote_power:
         zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
@@ -533,8 +521,7 @@ impl Core {
         fleet: FleetSubs,
     ) {
         let FleetSubs {
-            meta: meta_sub,
-            power: power_sub,
+            daemon: mut daemon_events,
             tv_off: tv_off_sub,
             remote_power: remote_power_sub,
         } = fleet;
@@ -576,13 +563,9 @@ impl Core {
                     None => break 'run,
                     Some(query) => self.handle_stream_query(query).await,
                 },
-                sample = meta_sub.recv_async() => match sample {
-                    Err(_) => break 'run,
-                    Ok(sample) => self.apply_meta(&sample).await,
-                },
-                sample = power_sub.recv_async() => match sample {
-                    Err(_) => break 'run,
-                    Ok(sample) => self.apply_power(&sample),
+                event = daemon_events.next() => match event {
+                    None => break 'run,
+                    Some(event) => self.apply_daemon_event(event).await,
                 },
                 sample = tv_off_sub.recv_async() => match sample {
                     Err(_) => break 'run,
@@ -603,24 +586,55 @@ impl Core {
         // mirror put is needed.
     }
 
-    async fn apply_meta(&mut self, sample: &zenoh::sample::Sample) {
-        let Some((tv, "meta/config")) = keys::parse_tv_path(&self.site, sample.key_expr().as_str())
-        else {
-            return;
-        };
-        match sample.kind() {
-            SampleKind::Put => {
-                match serde_json::from_slice::<payload::Meta>(&sample.payload().to_bytes()) {
-                    Ok(meta) => {
-                        self.tvs.insert(tv, meta);
-                    }
-                    Err(e) => warn!(%tv, %e, "undecodable tv meta"),
+    /// A daemon event: re-read the fleet when it may have changed what the
+    /// core uses (a TV's profile state or screen bit, the TVs themselves,
+    /// or the daemon's lifetime and release).
+    async fn apply_daemon_event(&mut self, event: tisvlay::StateEvent) {
+        match &event {
+            tisvlay::StateEvent::DaemonStateChanged(change) => {
+                let path = keys::parse_tv_path(&self.site, &change.key).map(|(_, path)| path);
+                if !matches!(
+                    path,
+                    Some(payload::Meta::PATH | payload::Identity::PATH | payload::Power::PATH)
+                ) {
+                    return;
                 }
             }
-            SampleKind::Delete => {
-                self.tvs.remove(&tv);
+            tisvlay::StateEvent::VersionMismatch { ours, theirs, .. } => {
+                warn!(
+                    %ours,
+                    %theirs,
+                    "the daemon runs a release this session can't talk to: profile actions pause until the next login"
+                );
+            }
+            _ => {}
+        }
+        self.sync_fleet().await;
+    }
+
+    /// Take the daemon mirror's TVs as the fleet. A mismatched daemon reads
+    /// as no TVs, so nothing is dispatched to it.
+    async fn sync_fleet(&mut self) {
+        let fleet: HashMap<Uuid, tisvlay::TvInfo> = self
+            .daemon
+            .list_tvs()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tv| (tv.uuid, tv))
+            .collect();
+        for (tv, info) in &fleet {
+            let was = self.screen_on.insert(*tv, info.is_screen_on);
+            if info.is_screen_on && was != Some(true) {
+                self.arm_drift(*tv);
+            } else if !info.is_screen_on {
+                // Back in compliance — cancel any pending re-assert.
+                self.drift_at.remove(tv);
             }
         }
+        self.screen_on.retain(|tv, _| fleet.contains_key(tv));
+        self.drift_at.retain(|tv, _| fleet.contains_key(tv));
+        self.tvs = fleet;
         self.recompute_idle();
         // The fleet changed — a new TV (or a profile shift reflected in
         // its meta) can move the armed set. TV hydration can postdate a
@@ -629,34 +643,6 @@ impl Core {
         // is the edge that arms a just-learned TV.
         if self.recompute_stream_armed() {
             self.publish_stream().await;
-        }
-    }
-
-    fn apply_power(&mut self, sample: &zenoh::sample::Sample) {
-        let Some((tv, "state/power")) = keys::parse_tv_path(&self.site, sample.key_expr().as_str())
-        else {
-            return;
-        };
-        match sample.kind() {
-            SampleKind::Put => {
-                match serde_json::from_slice::<payload::Power>(&sample.payload().to_bytes()) {
-                    Ok(power) => {
-                        let was = self.screen_on.insert(tv, power.is_screen_on);
-                        if power.is_screen_on && was != Some(true) {
-                            self.arm_drift(tv);
-                        } else if !power.is_screen_on {
-                            // Back in compliance — cancel any pending
-                            // re-assert.
-                            self.drift_at.remove(&tv);
-                        }
-                    }
-                    Err(e) => warn!(%tv, %e, "undecodable tv power"),
-                }
-            }
-            SampleKind::Delete => {
-                self.screen_on.remove(&tv);
-                self.drift_at.remove(&tv);
-            }
         }
     }
 
@@ -1009,44 +995,20 @@ impl Core {
         }
     }
 
-    /// Fire a TV rpc on the system socket through the shared matching gate;
-    /// failures are logged, not fatal — the daemon's own retry tier owns
-    /// delivery. The resolved restore flag rides the rpc as resolved intent:
-    /// the world honors it without knowing the session's event vocabulary,
-    /// and manual clients (which never set it) stay input-neutral.
+    /// Carry out a profile action through the daemon client; failures are
+    /// logged, not fatal — the daemon's own retry tier owns delivery. The
+    /// resolved restore flag rides the rpc as resolved intent: the world
+    /// honors it without knowing the session's event vocabulary, and
+    /// manual clients (which never set it) stay input-neutral.
     fn call_tv(&self, tv: Uuid, spec: tisvlay_core::EventAction) {
-        let action = spec.action();
-        if action == SessionAction::None {
+        if spec.action() == SessionAction::None {
             return;
         }
-        let restore_input = spec.restore_input();
-        let caller = Arc::clone(&self.caller);
-        // Spawned so the matching gate + rpc timeout never block the core
-        // select; the Caller re-issues nothing on a write and classifies
-        // unavailable-vs-rejected for the log line.
+        let daemon = self.daemon.clone();
+        // Spawned so the release check, the matching gate and the rpc
+        // timeout never block the core select.
         tokio::spawn(async move {
-            let outcome = match action {
-                SessionAction::ScreenOff => {
-                    caller
-                        .call::<tv::SetScreen>(&tv, &rpc::SetScreen::manual(false))
-                        .await
-                }
-                SessionAction::ScreenOn => {
-                    let request = rpc::SetScreen {
-                        on: true,
-                        restore_input,
-                    };
-                    caller.call::<tv::SetScreen>(&tv, &request).await
-                }
-                SessionAction::PowerOff => caller.call::<tv::PowerOff>(&tv, &()).await,
-                SessionAction::PowerOn => {
-                    caller
-                        .call::<tv::PowerOn>(&tv, &rpc::PowerOn { restore_input })
-                        .await
-                }
-                SessionAction::None => return,
-            };
-            if let Err(error) = outcome {
+            if let Err(error) = daemon.apply_action(tv, spec).await {
                 warn!(%tv, %error, "tv rpc failed");
             }
         });

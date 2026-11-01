@@ -362,6 +362,17 @@ impl DaemonClient {
         )
         .await
         .map_err(|e| Error::transport("connect to the daemon socket", e))?;
+        Self::with_session(session, site).await
+    }
+
+    /// Start mirroring over a zenoh `session` the caller already holds on
+    /// the daemon's socket, rather than opening one: for a process that
+    /// keeps a single link to the daemon for everything it does (the
+    /// session service serves its own keys on its link too). The session
+    /// should be opened the way [`Self::connect`] opens it, with
+    /// `tisvlay_protocol::bootstrap::client_config_resilient`. Fails only
+    /// with [`Error::Transport`].
+    pub async fn with_session(session: Session, site: &str) -> Result<Self> {
         let caller = Arc::new(Caller::new(session.clone(), site));
         let mirror = LifetimeMirror::<SystemMirror>::start(&session, site, &caller).await?;
         Ok(Self {
@@ -737,6 +748,32 @@ impl DaemonClient {
     pub async fn screen_off(&self, tv: Uuid) -> Result<()> {
         self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(false))
             .await
+    }
+
+    /// Carry out a profile's resolved action on `tv`, the way a session
+    /// service answers an event: blank or light the panel, or power the TV
+    /// off or on, restoring its primary input when `action` asks to.
+    /// [`SessionAction::None`](tisvlay_core::SessionAction::None) sends
+    /// nothing. Rpc, refused like the manual call it matches
+    /// ([`Self::screen_on`] and the others).
+    pub async fn apply_action(&self, tv: Uuid, action: tisvlay_core::EventAction) -> Result<()> {
+        let restore_input = action.restore_input();
+        match action.action() {
+            tisvlay_core::SessionAction::None => Ok(()),
+            tisvlay_core::SessionAction::ScreenOff => self.screen_off(tv).await,
+            tisvlay_core::SessionAction::ScreenOn => {
+                let request = rpc::SetScreen {
+                    on: true,
+                    restore_input,
+                };
+                self.tv_call::<tv::SetScreen>(tv, &request).await
+            }
+            tisvlay_core::SessionAction::PowerOff => self.power_off(tv).await,
+            tisvlay_core::SessionAction::PowerOn => {
+                self.tv_call::<tv::PowerOn>(tv, &rpc::PowerOn { restore_input })
+                    .await
+            }
+        }
     }
 
     /// Switch to `input`, an id from [`TvInfo::inputs`]. A manual switch

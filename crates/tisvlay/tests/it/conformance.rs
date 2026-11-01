@@ -783,7 +783,6 @@ async fn a_streaming_tv_is_armed_again_when_the_sessions_link_returns() {
 /// The session's view of the fleet must lose a TV removed while its
 /// system link was down: here, through the armed set it computes.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the session's fleet mirror subscribes once, so a removal made while it's down is missed"]
 async fn the_session_forgets_a_tv_removed_while_its_link_was_down() {
     let rig = services_rig().await;
     let (doomed, kept) = (

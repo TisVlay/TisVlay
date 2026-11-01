@@ -81,6 +81,8 @@ systemctl --user restart tisvlay-session tisvlay-tray
 
 `tisvlay status` then reports the daemon's release and whether it's compatible. If the CLI is the odd one out, the `tisvlay` on your `PATH` comes from another install.
 
+Until the session service matches the daemon again, your user profile's actions pause rather than act on a daemon it can't talk to. Logging out and back in restarts it on the new release.
+
 ## A hand edit didn't take
 
 This only applies if you edited a configuration file by hand. After clicking **Reload** in the sidebar (or running `tisvlay reload`):
