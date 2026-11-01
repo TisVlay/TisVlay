@@ -46,6 +46,9 @@ If you'd rather not pin a port, allow UDP from your local subnet:
 # ufw
 sudo ufw allow from 192.168.1.0/24 proto udp
 
+# Generic iptables
+sudo iptables -I INPUT -p udp -s 192.168.1.0/24 -j ACCEPT
+
 # firewalld (rich rule)
 sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" protocol value="udp" accept'
 sudo firewall-cmd --reload

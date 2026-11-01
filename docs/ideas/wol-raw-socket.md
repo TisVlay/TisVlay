@@ -18,7 +18,7 @@ The daemon's WoL sends its magic packet to the IPv4 broadcast address (`tisvlay_
 
 - The daemon could craft arbitrary network packets (ARP injection, DHCP poisoning, raw TCP sequence manipulation). Far broader than "magic packets."
 - The NixOS hardened systemd unit has `CapabilityBoundingSet = [ "" ]` explicitly ([packaging/nix/module.nix:256-257](../../packaging/nix/module.nix#L256-L257)). Granting `CAP_NET_RAW` reverts a deliberate hardening decision.
-- For non-Nix distros, the equivalent is `setcap cap_net_raw+ep` on the daemon binary — also a deliberate ops decision.
+- For non-Nix distros, the equivalent is an `AmbientCapabilities=CAP_NET_RAW` drop-in for the daemon's unit — also a deliberate ops decision. Not `setcap` on the binary: the daemon is `tisvlay service daemon`, the same binary every user runs as the CLI, so a file capability would reach them all.
 - Most users on dual-stack home LANs work fine with classic v4 broadcast WoL. The narrow use case doesn't justify expanding privilege by default.
 
 ## NixOS module option shape (when implemented)
@@ -48,7 +48,7 @@ When `true`, the NixOS module's systemd unit extends `AmbientCapabilities = [ "C
 
 Rust side: runtime capability check (try-the-raw-socket-fall-back-to-broadcast) so the daemon works correctly with or without the capability granted. The same binary ships both paths; the systemd unit configures which is reachable.
 
-For non-NixOS distros, the equivalent ops setup is `setcap cap_net_raw+ep $(which tisvlay)` — same runtime detection, same fallback semantics.
+For non-NixOS distros, the equivalent ops setup is an `AmbientCapabilities=CAP_NET_RAW` drop-in for `tisvlay-daemon.service` (not `setcap`, which would reach every user's `tisvlay` CLI calls) — same runtime detection, same fallback semantics.
 
 ## Triggers to revisit
 

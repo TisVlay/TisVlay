@@ -387,7 +387,7 @@ ephemeral := env("EPHEMERAL", "false")
 dpms_connector := env("DPMS_CONNECTOR", "")
 
 # Pinned SSDP source port for LG discovery — must match the firewall
-# rule (docs/firewall.md); 0 = ephemeral.
+# rule (the user guide's Firewall & Discovery page); 0 = ephemeral.
 ssdp_port := env("SSDP_PORT", "1901")
 
 # Cargo profile for the dev-run recipes. `test` reuses what `just build`,

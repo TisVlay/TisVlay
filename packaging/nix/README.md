@@ -102,7 +102,7 @@ The test boots a minimal NixOS VM with `services.tisvlay.enable = true` and asse
 
 1. `tisvlay-daemon.service` reaches `active (running)`.
 2. The zenoh socket is `0660 tisvlay:tisvlay` in a `0750` runtime directory.
-3. `tisvlay status` reaches the daemon, `tisvlay vendor` lists the LG backend, and `tisvlay list` is empty on a fresh install.
+3. `tisvlay status` reaches the daemon, `tisvlay vendor` lists the LG backend, and `tisvlay list` runs.
 4. A user in `services.tisvlay.users` can reach the socket; any other user can't traverse the runtime directory.
 5. `tisvlay-session.service` and `tisvlay-tray.service` user unit files are loaded.
 6. The polkit rule letting the daemon put the machine to sleep is installed, and the TV remote's power keys are dropped from the compiled hwdb.
@@ -141,4 +141,4 @@ Same holds for the distro user-service files.
 - [`../../.claude/CLAUDE.md`](../../.claude/CLAUDE.md) — project structure, known quirks and quick reference.
 - [`../../docs/architecture.md`](../../docs/architecture.md) — architecture, key space, deployment.
 - [`../../docs/testing.md`](../../docs/testing.md) — test harness, mock backend, coverage, observability.
-- [`../../docs/firewall.md`](../../docs/firewall.md) — SSDP firewall notes.
+- [`../../docs/firewall.md`](../../docs/firewall.md) — why SSDP discovery needs a firewall rule; the rules are in the user guide.

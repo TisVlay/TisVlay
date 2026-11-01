@@ -685,7 +685,7 @@ The system daemon: owns the TVs and the system socket
 * `--ephemeral` — Run without persistence (state lives only in the world)
 * `--seed <SEED>` — Seed config (TOML): declaratively provisioned TVs, re-applied each start; ids already in the daemon's own file win
 * `--dpms-connector <DPMS_CONNECTOR>` — Watch this DRM connector's DPMS state in addition to the EDID-matched ones the daemon watches automatically; its transitions dispatch to every automated TV — the override for setups where the EDID match fails (e.g. card1-HDMI-A-1)
-* `--ssdp-port <SSDP_PORT>` — SSDP source port for LG discovery — replies return to this port, so it must match your firewall rule (docs/firewall.md); 0 = ephemeral
+* `--ssdp-port <SSDP_PORT>` — SSDP source port for LG discovery — replies return to this port, so it must match your firewall rule (see the user guide's Firewall & Discovery page); 0 = ephemeral
 
   Default value: `1901`
 * `--greeter-access` — Grant the login-screen greeter socket access by applying a POSIX ACL for the display manager's greeter group, auto-detected from the known set (`gdm`, `Debian-gdm`). The modern GDM greeter is a dynamic-userdb account that `/etc/group` membership can't reach

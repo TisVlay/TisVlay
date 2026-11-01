@@ -211,7 +211,7 @@ The spike measurements used an out-of-band reproducer. It opens its own SSAP Web
 
 ## Post-WoL input-switch timing (unmeasured)
 
-The primary-input restore (`DesiredInput`) fires a `switch-input` in the `Connected` arm after a WoL wake, then verifies with the same bounded retry as `screen_on`. How soon after `Connected` SSAP actually *accepts* an input switch is unmeasured — the 1–5 s WoL-settle window means a switch fired at `Connected` can be silently dropped, exactly like an early `screen_on`. The shipped verify-retry already absorbs this, so this bounds the retry *budget*, not the design. Measure with the same technique as the dispatch-latency spikes (out-of-band SSAP over the daemon's `client_key`): after a WoL wake, time `Connected → first accepted input switch`. Trigger: a report of the input not landing on primary after a wake, or a retry-budget tune.
+The primary-input restore (`DesiredInput`) fires a `switch-input` in the `Connected` arm after a WoL wake, then verifies with the same bounded retry as `screen_on`. How soon after `Connected` SSAP actually *accepts* an input switch is unmeasured — the WoL-settle window ([benchmarks/wake-reconnect.md](benchmarks/wake-reconnect.md)) means a switch fired at `Connected` can be silently dropped, exactly like an early `screen_on`. The shipped verify-retry already absorbs this, so this bounds the retry *budget*, not the design. Measure with the same technique as the dispatch-latency spikes (out-of-band SSAP over the daemon's `client_key`): after a WoL wake, time `Connected → first accepted input switch`. Trigger: a report of the input not landing on primary after a wake, or a retry-budget tune.
 
 ## Reference probe data
 

@@ -7,7 +7,7 @@ Measured on LG OLED evo C3 42" (OLED42C3PUA) connected via Ethernet
 
 Sleep cycles measured via journald timestamps (`-o short-precise`).
 D-Bus power cycles via `busctl` calls. Network blips via `nmcli`.
-Benchmark script: `scripts/bench_network.py`.
+These measurements predate the 0.3.0 rewrite and were taken with a script since replaced by `scripts/bench_wake.py`; a re-measurement on the current stack is pending.
 
 ## Key metrics
 

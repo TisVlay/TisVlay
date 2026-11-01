@@ -24,8 +24,16 @@ A separate report under plasmashell's System Tray component would give it visibi
 
 ## Possible workaround
 
-ksni's `about_to_show()` could return `true` on the first call for each submenu, so the KDE host re-fetches the layout before showing it, which might fill the menu before Qt's guard fires. It also triggers `LayoutUpdated`, with its own side effects. Untested.
+ksni's `about_to_show()` could return `true` on the first call for each submenu, so the KDE host re-fetches the layout before showing it, which might fill the menu before Qt's guard fires. It also triggers `LayoutUpdated`, and in KDE a `LayoutUpdated` closes any open submenu, which is the bug's own symptom; that's also why the tray must not emit one during normal operation (it rebuilds its menu only when the structure changes). Untested.
 
 ## To check on a newer Plasma
 
 Start the tray (`tisvlay service tray`, or the user service), open a TV's submenu, then hover a nested one (Profile or Input). If it stays open on the first try, the upstream fix has landed: note the Plasma version here and move this entry to Closed.
+
+If it collapses, check it's still KDE's doing before blaming a tray change:
+
+```bash
+dbus-monitor --session "interface='com.canonical.dbusmenu'"
+```
+
+On the first expansion the KDE host sends `AboutToShow`, `Event("opened")` and `GetLayout`. The upstream bug shows as an unprompted `Event("closed")` from the host a fraction of a second later, with no `LayoutUpdated` from the tray. A `LayoutUpdated` from the tray would point at a tray-side regression instead.

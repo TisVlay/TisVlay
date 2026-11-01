@@ -31,8 +31,8 @@ export struct WizardDiscoveredTv {
 }
 
 // `supports-ipv4` / `supports-ipv6` mirror the vendor's
-// `Capabilities::IPV4` / `Capabilities::IPV6` bits, fetched via
-// `Manager1.GetVendorCapabilities` at vendor-list-publish time and
+// `Capabilities::IPV4` / `Capabilities::IPV6` bits, read from the
+// daemon's vendor catalog at vendor-list-publish time and
 // kept on the option so any vendor-aware UX (placeholder text,
 // validator hints, badges) reads them directly from the
 // currently-selected option rather than round-tripping the daemon

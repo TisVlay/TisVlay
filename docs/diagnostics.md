@@ -70,7 +70,7 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
 
 ## Caveats — what `null` means
 
-- **`gui.git_sha: null`** — build ran outside a git checkout (release tarball, Nix sandbox without git history). the GUI's build script falls back to a `VERGEN_IDEMPOTENT_OUTPUT` sentinel, which the renderer's `maybe_git_sha()` collapses to JSON `null`. Lets a maintainer tell tarball builds apart from real checkouts.
+- **`gui.git_sha: null`** — build ran outside a git checkout (release tarball, Nix sandbox without git history). The GUI's build script falls back to a `VERGEN_IDEMPOTENT_OUTPUT` sentinel, which the renderer's `maybe_git_sha()` collapses to JSON `null`. Lets a maintainer tell tarball builds apart from real checkouts.
 - **`runtime.os_version` normalization** — `os_info` parses `VERSION_ID` into a typed `Version::Semantic(major, minor, patch)` enum and re-renders, which drops formatting from the original string. NixOS's YY.MM convention loses its leading zero: `VERSION_ID="26.05"` shows up as `"26.5.0"` in the blob. Acknowledged upstream as a bug ([stanislav-tkach/os_info#318](https://github.com/stanislav-tkach/os_info/issues/318), proposed string-based redesign in [#280](https://github.com/stanislav-tkach/os_info/issues/280)); fixes without a code change here when the upstream lands.
 - **`runtime.{kernel,glibc,os_id,os_version}: null`** — the corresponding probe returned `None` (musl builds for `glibc`; `Type::Unknown` / `Version::Unknown` for OS fields; non-UTF-8 syscall output for kernel — the last is theoretical).
 - **`runtime.{desktop,session_type,locale}: null`** — env var unset or empty (e.g., `$XDG_SESSION_TYPE` is sometimes unset under KDE-on-X11).

@@ -10,7 +10,7 @@ LG webOS TVs also advertise over mDNS/DNS-SD, as Chromecast devices (`_googlecas
 
 ## How
 
-- Browse `_googlecast._tcp` and filter by TXT records to pick out LG TVs.
+- Browse `_googlecast._tcp` and filter by TXT records to pick out LG TVs (`avahi-browse -r _googlecast._tcp` shows what a network advertises).
 - The [`mdns-sd`](https://crates.io/crates/mdns-sd) crate fits: pure Rust (no Avahi or Bonjour runtime), dual-stack, widely used. `zeroconf` and `astro-dnssd` need the native libraries, which complicates the Nix build; `mdns` is stale; `simple-mdns` and `searchlight` have a smaller install base.
 - It would be a second discovery transport with its own socket and firewall story, not a subscriber to the shared SSDP socket ([discovery.md § Shared SSDP socket](../discovery.md#shared-ssdp-socket-concurrent-session-coalescing)).
 

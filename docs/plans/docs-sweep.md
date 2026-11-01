@@ -111,6 +111,8 @@ Rewrite in current terms:
 
 - **Area 7:** the test-layer summaries in `architecture.md` and the vendor guide stay: each is already a sentence and a link to `testing.md`. The WoL latency now links to the benchmark doc, which area 8 rewrites; until then it holds the old numbers. `CLAUDE.md` went from 24.7 KB to 19.9 KB (22.9 KB with the imported conventions, against 27.6 KB before the contributing guide).
 
+- **Review:** one agent review of the rewritten docs found 14 problems, all fixed in one commit. The notable ones: a `tray.toml` missing a switch is worse than refused (the tray silently runs all-on, then sets the edit aside on the next write); neither the wizard nor the daemon checks an IP's family before enrichment; the `--ssdp-port` help still sent users to `firewall.md` for the rule; `setcap` on the shared `tisvlay` binary would grant every CLI call the capability; and the split had dropped a few recipes.
+
 ## Verification
 
 - `prek run -a` (file checks and typos) and `just docs-links` after each commit; `just docs-gen-check` after any book change.

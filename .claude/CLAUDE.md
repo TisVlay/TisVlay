@@ -4,7 +4,7 @@
 
 A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Supports LG WebOS TVs (network, SSAP) and HDMI-CEC (the Linux CEC subsystem, via `linux-cec`), with a vendor- and transport-agnostic architecture designed for adding Samsung, Sony, and other backends. The user's Nvidia GPU can't tunnel HDMI-CEC, so the CEC path needs a CEC adapter (USB, or a DP→HDMI adapter on an amdgpu/i915 output) — the network path (LG WebOS SSAP) needs none.
 
-Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machines, and **zenoh over Unix sockets** is the IPC surface — cached publishers for state, queryables for rpcs, liveliness tokens for presence. The served-D-Bus stack shipped through v0.2.0 and was then removed; consumed desktop D-Bus (logind, Mutter's IdleMonitor, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus. The authoritative architecture reference (topology, key space, world/reactor model, empirical zenoh laws) is [docs/architecture.md](../docs/architecture.md); the rewrite's phase-by-phase history lives in git.
+Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machines, and **zenoh over Unix sockets** is the IPC surface — cached publishers for state, queryables for rpcs, liveliness tokens for presence. The served-D-Bus stack shipped through v0.2.0 and was then removed; consumed desktop D-Bus (logind, Mutter's IdleMonitor, xdg-desktop-portal, the file manager, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus. The authoritative architecture reference (topology, key space, world/reactor model, empirical zenoh laws) is [docs/architecture.md](../docs/architecture.md); the rewrite's phase-by-phase history lives in git.
 
 ## Target Hardware
 
@@ -74,7 +74,7 @@ tisvlay/
 │   │                             # (user units), org.tisvlay.Gui.service (GUI activation)
 │   ├── freedesktop/              # org.tisvlay.Gui.desktop
 │   ├── licensing/                # cargo-about config + NOTICE, deny.toml
-│   ├── completions/, polkit/,    # shell completions, the sleep rule, the TV remote's
+│   ├── completions/, polkit/,    # shell completions (generated), the sleep rule, the TV remote's
 │   │   udev/                     # keymap
 │   ├── docker/                   # CI-like build environment, without Nix
 │   └── scripts/                  # nfpm postinstall/preremove
@@ -103,7 +103,7 @@ tisvlay/
 | WebSocket (LG) | `tokio-tungstenite` + `rustls` |
 | JSON / config | `serde`, `serde_json`, `toml`, `directories` |
 | CLI | `clap` |
-| Consumed D-Bus | `zbus` (logind, Mutter idle, ksni, GUI activation) |
+| Consumed D-Bus | `zbus` (logind, Mutter idle, portals, file manager, ksni, GUI activation) |
 | System tray | `ksni` |
 | Notifications | `notify-rust` (z-with-tokio) |
 | Wayland | `wayland-client`, `wayland-protocols` |
@@ -150,7 +150,7 @@ Zenoh stack findings: the full list, with the reasons, is [docs/architecture.md]
 Deployment model:
 
 - Socket access is layered: `tisvlay` group membership, plus daemon-applied ACLs for the greeter group and each seat's active graphical user. Canonical: [packaging/README.md](../packaging/README.md) § "Socket access & the ACL integration".
-- With no `--socket`, clients use the per-user dev socket when it accepts a connection, else `/run/tisvlay/zenoh.sock`; listen-side defaults never fall back (a dev daemon must not take over the packaged socket).
+- With no `--socket`, clients use the per-user dev socket when it accepts a connection, else `/run/tisvlay/zenoh.sock` if it exists, else the dev path (and wait for a dev daemon); listen-side defaults never fall back (a dev daemon must not take over the packaged socket).
 - Shell completions for the `tisvlay` CLI (bash/zsh/fish) ship in every package and the nix build. They use clap_complete's dynamic engine, so `<TAB>` completes live TV UUIDs by calling back into the binary; generation and per-distro caveats are in [packaging/README.md](../packaging/README.md).
 
 ## Quick Reference

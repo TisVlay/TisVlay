@@ -12,7 +12,7 @@ LG control works over IPv4 or IPv6; its SSDP discovery and Wake-on-LAN are IPv4-
 
 ## Host requirements
 
-- **Linux** — the services talk to each other over local sockets, and use D-Bus to integrate with the system and desktop. The daemon watches logind on the system bus for sleep, shutdown and the active seat. The **session and tray** services use logind (lock state and remote sessions), GNOME's idle monitor where present, the system tray and notifications, so they expect a normal desktop bus.
+- **Linux** — the services talk to each other over local sockets, and use D-Bus to integrate with the system and desktop. The daemon watches logind on the system bus for sleep, shutdown and the active seat. The **session and tray** services and the app use logind (lock state and remote sessions), GNOME's idle monitor where present, the desktop portals (screen-capture detection, and the app's accent color), the system tray and notifications, so they expect a normal desktop bus.
 - **Socket access** — automatic for the user at the console; everyone else needs the `tisvlay` group (the app offers an **Enable TV control** button if you need it). See [Access](../getting-started/installation.md#access).
 - **Network reachability** (network backends) — the host can reach the TV; waking it from standby also needs the same L2 network or a relay. See [Troubleshooting → The TV won't power on](../operations/troubleshooting.md#the-tv-wont-power-on).
 - **Idle & lock-wake detection** (optional; powers the in-session idle timer and unblanking the TV when you touch the lock screen) — a Wayland compositor with `ext-idle-notify-v1` (KDE Plasma, wlroots compositors) **or GNOME** (detected through Mutter's own idle monitor).

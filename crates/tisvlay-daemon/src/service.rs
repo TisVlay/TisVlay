@@ -37,7 +37,8 @@ pub struct Args {
     dpms_connector: Option<String>,
 
     /// SSDP source port for LG discovery — replies return to this port, so
-    /// it must match your firewall rule (docs/firewall.md); 0 = ephemeral.
+    /// it must match your firewall rule (see the user guide's Firewall &
+    /// Discovery page); 0 = ephemeral.
     #[arg(long, default_value_t = 1901)]
     ssdp_port: u16,
 

@@ -177,9 +177,9 @@ Two consequences:
 2. The right answer for any input that the design pins down is a
    custom themed widget — not a wrapper around the std-widget. See
    [crates/tisvlay-gui/ui/widgets.slint](../crates/tisvlay-gui/ui/widgets.slint):
-   `IconBtn`, `LineEditField`, `ThemedSelect` (the last in
-   `ui/globals/select.slint`). All of them drive every color from `Theme.*` directly, no platform style
-   in the loop.
+   `IconBtn` and `ThemedSelect` (the latter in
+   `ui/globals/select.slint`). Both drive every color from
+   `Theme.*` directly, no platform style in the loop.
 
 `ThemedSelect` was the hardest — std `ComboBox`'s dropdown is
 non-trivial to replicate. Used Slint's native `PopupWindow` for the
