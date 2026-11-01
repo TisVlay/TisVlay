@@ -13,6 +13,7 @@
 //! may be stale.
 
 use std::fmt::Display;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
@@ -90,7 +91,10 @@ impl TvSnapshot {
         self.supports(capability)?;
         let value = value.ok_or_else(|| anyhow!("the TV hasn't reported its {what} yet"))?;
         if !self.connected() {
-            eprintln!("warning: the TV is disconnected; this is the last {what} it reported");
+            let _ = writeln!(
+                io::stderr(),
+                "warning: the TV is disconnected; this is the last {what} it reported"
+            );
         }
         Ok(value)
     }
@@ -144,18 +148,18 @@ async fn read_tv(
 }
 
 /// Print a getter's value: `text` plainly, `json` with `--json`.
-fn emit(json_out: bool, text: impl Display, json: Value) {
+fn emit(json_out: bool, text: impl Display, json: Value) -> io::Result<()> {
     if json_out {
-        println!("{json}");
+        writeln!(io::stdout(), "{json}")
     } else {
-        println!("{text}");
+        writeln!(io::stdout(), "{text}")
     }
 }
 
 /// Print the value a toggle sent: the requested state, not a confirmed
 /// one.
-fn emit_sent(json_out: bool, on: bool) {
-    emit(json_out, OnOff::from(on), json!(on));
+fn emit_sent(json_out: bool, on: bool) -> io::Result<()> {
+    emit(json_out, OnOff::from(on), json!(on))
 }
 
 async fn send_power(caller: &Caller, tv: &Uuid, on: bool) -> Result<()> {
@@ -185,7 +189,7 @@ pub(crate) async fn power(
     let on = snapshot.power_on();
     if switch.toggle {
         send_power(caller, &tv, !on).await?;
-        emit_sent(json_out, !on);
+        emit_sent(json_out, !on)?;
     } else if json_out {
         let state = snapshot
             .power
@@ -193,11 +197,14 @@ pub(crate) async fn power(
             .map(|power| power.state)
             .unwrap_or_default();
         if !snapshot.connected() {
-            eprintln!("warning: the TV is disconnected; this is the last power state it reported");
+            let _ = writeln!(
+                io::stderr(),
+                "warning: the TV is disconnected; this is the last power state it reported"
+            );
         }
-        println!("{}", serde_json::to_value(state)?);
+        writeln!(io::stdout(), "{}", serde_json::to_value(state)?)?;
     } else {
-        println!("{}", OnOff::from(on));
+        writeln!(io::stdout(), "{}", OnOff::from(on))?;
     }
     Ok(())
 }
@@ -228,9 +235,9 @@ pub(crate) async fn screen(
     let on = snapshot.screen_on();
     if switch.toggle {
         send(!on).await?;
-        emit_sent(json_out, !on);
+        emit_sent(json_out, !on)?;
     } else {
-        emit(json_out, OnOff::from(on), json!(on));
+        emit(json_out, OnOff::from(on), json!(on))?;
     }
     Ok(())
 }
@@ -267,9 +274,9 @@ pub(crate) async fn mute(
     )?;
     if switch.toggle {
         send(!muted).await?;
-        emit_sent(json_out, !muted);
+        emit_sent(json_out, !muted)?;
     } else {
-        emit(json_out, OnOff::from(muted), json!(muted));
+        emit(json_out, OnOff::from(muted), json!(muted))?;
     }
     Ok(())
 }
@@ -291,9 +298,9 @@ pub(crate) async fn managed(
     let managed = config(caller, &tv).await?.managed;
     if switch.toggle {
         send(!managed).await?;
-        emit_sent(json_out, !managed);
+        emit_sent(json_out, !managed)?;
     } else {
-        emit(json_out, OnOff::from(managed), json!(managed));
+        emit(json_out, OnOff::from(managed), json!(managed))?;
     }
     Ok(())
 }
@@ -320,7 +327,7 @@ pub(crate) async fn volume(
         "volume",
         snapshot.volume.as_ref().map(|volume| volume.level),
     )?;
-    emit(json_out, level, json!(level));
+    emit(json_out, level, json!(level))?;
     Ok(())
 }
 
@@ -346,7 +353,7 @@ pub(crate) async fn backlight(
         "backlight level",
         snapshot.backlight.as_ref().map(|backlight| backlight.level),
     )?;
-    emit(json_out, level, json!(level));
+    emit(json_out, level, json!(level))?;
     Ok(())
 }
 
@@ -375,7 +382,7 @@ pub(crate) async fn input(
             .as_ref()
             .and_then(|input| input.current.clone()),
     )?;
-    emit(json_out, &current, json!(current));
+    emit(json_out, &current, json!(current))?;
     Ok(())
 }
 
@@ -393,8 +400,8 @@ pub(crate) async fn primary_input(
     }
     let primary = config(caller, &tv).await?.primary_input;
     match (&primary, json_out) {
-        (_, true) => println!("{}", json!(primary)),
-        (Some(input), false) => println!("{input}"),
+        (_, true) => writeln!(io::stdout(), "{}", json!(primary))?,
+        (Some(input), false) => writeln!(io::stdout(), "{input}")?,
         (None, false) => {}
     }
     Ok(())
@@ -410,7 +417,7 @@ pub(crate) async fn name(
         return ack::<tv::SetName>(caller, &tv, &rpc::SetName { name }).await;
     }
     let name = config(caller, &tv).await?.name;
-    emit(json_out, &name, json!(name));
+    emit(json_out, &name, json!(name))?;
     Ok(())
 }
 
@@ -478,7 +485,7 @@ pub(crate) async fn system_profile(
         .await?
         .system_profile
         .unwrap_or(DEFAULT_SYSTEM_PROFILE_UUID);
-    emit(json_out, assigned, json!(assigned));
+    emit(json_out, assigned, json!(assigned))?;
     Ok(())
 }
 
@@ -517,7 +524,7 @@ pub(crate) async fn user_profile(
         .get(&key)
         .and_then(|value| serde_json::from_value::<Uuid>(value["profile"].clone()).ok())
         .unwrap_or(DEFAULT_USER_PROFILE_UUID);
-    emit(json_out, assigned, json!(assigned));
+    emit(json_out, assigned, json!(assigned))?;
     Ok(())
 }
 

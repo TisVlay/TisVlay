@@ -23,6 +23,7 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 ## CLI
 
 - [CLI `pair` gets no vendor schema defaults](cli-pair-vendor-fields.md)
+- [The CLI handles a closed pipe itself, not through SIGPIPE (until Rust's `on_broken_pipe` stabilizes)](cli-closed-pipe.md)
 
 ## GUI
 

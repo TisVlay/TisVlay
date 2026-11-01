@@ -1,11 +1,8 @@
-// The CLI prints its results to stdout by design; the workspace print
-// lints target the daemons and libraries, which log through tracing.
-// `allow`, not `expect`: the bin's test build doesn't trip `print_stderr`.
-#![allow(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    reason = "the CLI prints its output"
-)]
+// The CLI writes with `writeln!`, never `println!`/`eprintln!`, which panic
+// on a closed pipe. Results are `writeln!(io::stdout(), …)?`, and `main`
+// ends a run whose reader has gone quietly; diagnostics are
+// `let _ = writeln!(io::stderr(), …)`, since a lost stderr has no reader to
+// tell and shouldn't stop the command.
 #![expect(
     unsafe_code,
     reason = "`service session` must start before any thread exists"
@@ -20,6 +17,7 @@ mod status;
 mod stream;
 mod tvs;
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
@@ -51,10 +49,23 @@ fn main() -> Result<()> {
     if let Command::Service(service) = cli.command {
         return run_service(service);
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(cli))
+        .block_on(run(cli));
+    // A reader that stopped early (`tisvlay watch | head`) isn't a failure:
+    // end quietly with status 0, so a `pipefail` pipeline holds. Why not
+    // SIGPIPE: docs/concerns/cli-closed-pipe.md.
+    match result {
+        Err(error)
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 /// `service <name>`: the process becomes that service, which builds its
@@ -81,21 +92,28 @@ fn enable_access(socket: &Path) -> Result<()> {
     // a console user's presence grant makes the socket connectable, yet
     // they are exactly who runs this verb to gain SSH/remote access.
     if access::has_durable_access(socket) {
-        println!("You already have durable TV control access (group member).");
+        writeln!(
+            io::stdout(),
+            "You already have durable TV control access (group member)."
+        )?;
         return Ok(());
     }
-    println!("Granting TV control access — authenticate as an administrator when prompted…");
+    writeln!(
+        io::stdout(),
+        "Granting TV control access — authenticate as an administrator when prompted…"
+    )?;
     match access::enable_access(socket)? {
         EnrollOutcome::Enrolled { user, group } => {
-            println!("Added '{user}' to the '{group}' group.");
-            println!(
+            writeln!(io::stdout(), "Added '{user}' to the '{group}' group.")?;
+            writeln!(
+                io::stdout(),
                 "Log out and back in for it to take effect — a reboot is the most reliable, \
                  since the systemd user manager can outlive a logout and keep the old groups."
-            );
+            )?;
         }
         // The durable gate read false a moment ago; only a race lands here.
         EnrollOutcome::AlreadyMember { .. } => {
-            println!("You already have durable TV control access.");
+            writeln!(io::stdout(), "You already have durable TV control access.")?;
         }
     }
     Ok(())
@@ -155,7 +173,7 @@ async fn run(cli: Cli) -> Result<()> {
         } => pair(&session, &caller, site, name, vendor, &params, !unmanaged).await,
         Command::Repair { tv } => {
             let started = call::<tv::RePair>(&caller, &tv, &()).await?;
-            eprintln!("re-pairing session {tv} started");
+            let _ = writeln!(io::stderr(), "re-pairing session {tv} started");
             watch_pairing(&session, &caller, site, tv, started.attempt).await
         }
         Command::Reconnect { tv } => ack::<tv::Reconnect>(&caller, &tv, &()).await,

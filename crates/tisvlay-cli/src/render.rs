@@ -1,13 +1,15 @@
 //! Human and `--json` rendering shared by the read verbs.
 
+use std::io::{self, Write};
+
 use anyhow::Result;
 use serde_json::Value;
 
 /// Render a flat JSON object as `key = value` lines (nested objects
 /// indent), sorted by key — the human view of config and resolved
 /// profile bodies.
-fn print_fields(value: &Value) {
-    print!("{}", format_fields(value));
+fn print_fields(value: &Value) -> io::Result<()> {
+    write!(io::stdout(), "{}", format_fields(value))
 }
 
 fn format_fields(value: &Value) -> String {
@@ -42,9 +44,9 @@ fn format_fields(value: &Value) -> String {
 pub(crate) fn print_reply(reply: &impl serde::Serialize, json_out: bool) -> Result<()> {
     let value = serde_json::to_value(reply)?;
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        writeln!(io::stdout(), "{}", serde_json::to_string_pretty(&value)?)?;
     } else {
-        print_fields(&value);
+        print_fields(&value)?;
     }
     Ok(())
 }

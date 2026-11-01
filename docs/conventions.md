@@ -6,7 +6,7 @@ These are the rules the lints can't fully express. The lint policy and its reaso
 
 - **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
 - **Errors:** published crates and the client SDK expose `thiserror` types callers can match on. Binaries and binary-glue libraries (`tisvlay-runtime`, the service crates' library halves) may use `anyhow`. The model is in [architecture.md § Error model](architecture.md#error-model).
-- **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
+- **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` anywhere (lint-enforced): they panic on a closed pipe, so the CLI writes its output with `writeln!` and handles the error ([why](concerns/cli-closed-pipe.md)).
 - **Secrets never reach `Debug`.** A credential field is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. Untyped vendor config is a `tisvlay_core::VendorConfig`, and a wire request carrying vendor config hand-writes `Debug` to print key names only.
 - **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
 - **Published crates** (core, protocol, and the `tisvlay` SDK) keep items private by default. `#[non_exhaustive]`, public-dependency and README rules are in [build.md § Public API policy](build.md#public-api-policy); `just package-check` packages them.
