@@ -10,7 +10,7 @@ results to the output file.
 
     nix-shell -p python3 --run \\
         'sudo "$(command -v python3)" scripts/bench_wake.py run --lg <uuid> --cec <uuid> --out bench.json'
-    scripts/bench_wake.py report bench.json
+    scripts/bench_wake.py report bench.json [more.json ...]
 
 Before `run`: stop any dev stack (`just stop-all`) and keep the desktop from
 locking or blanking the screen. `run` stops the user's tisvlay-session for the
@@ -36,16 +36,18 @@ POLL_S = 0.25
 ANSWER_TIMEOUT_S = 180
 SETTLE_S = 15
 
-# Daemon journal messages worth timing, matched exactly.
+# Daemon journal messages worth timing, matched exactly. "connected event
+# applying" is the world taking the new link and its first power state: from
+# then on the power getter can read on.
 EVENTS = [
     "system going to sleep",
     "system resumed",
+    "carrier transition",
     "carrier lost, parking connection",
-    "carrier restored, redialing",
+    "route resolved",
     "WoL packet sent",
-    "Connected via wss://",
     "LG TV online after wake",
-    "Registered with TV, got client key",
+    "connected event applying",
 ]
 
 
@@ -113,7 +115,10 @@ def sleep_cycle(tv: str, alarm_s: int) -> dict:
     cycle["suspend_cmd"] = mark(f"pc-sleep: suspend, RTC alarm in {alarm_s} s")
     # Through logind, so the daemon sees the sleep and runs on_sleep/on_wake.
     subprocess.run(["systemctl", "suspend", "--check-inhibitors=no"], check=True)
-    time.sleep(alarm_s + 20)
+    # The wall clock runs on through the suspend and the monotonic clock
+    # behind time.sleep doesn't, so watch the wall clock for the jump.
+    while time.time() < cycle["suspend_cmd"] + alarm_s:
+        time.sleep(0.5)
     cycle["back"] = mark("pc-sleep: running again")
     cycle["on_seen"] = wait_for(tv, "on")
     mark("pc-sleep: TV answered on" if cycle["on_seen"] else "pc-sleep: no answer")
@@ -212,9 +217,12 @@ def run(args: argparse.Namespace) -> None:
 KERNEL_RESUME = "PM: suspend exit"
 
 
-def journal(since: float, until: float) -> list[tuple[float, str]]:
-    """The daemon's timed events, plus the kernel's resume, which comes before
-    the network and the daemon hear about it."""
+Event = tuple[float, str, dict[str, str]]
+
+
+def journal(since: float, until: float) -> list[Event]:
+    """The daemon's timed events with their fields, plus the kernel's resume,
+    which comes before the network and the daemon hear about it."""
     window = ["-o", "json", "--no-pager", "--since", f"@{since:.3f}", "--until", f"@{until:.3f}"]
     events = []
     for selector, wanted in ((["-u", DAEMON_UNIT], EVENTS), (["-k"], [KERNEL_RESUME])):
@@ -222,57 +230,93 @@ def journal(since: float, until: float) -> list[tuple[float, str]]:
         for line in out.stdout.splitlines():
             entry = json.loads(line)
             if entry.get("MESSAGE") in wanted:
-                events.append((int(entry["__REALTIME_TIMESTAMP"]) / 1e6, entry["MESSAGE"]))
-    return sorted(events)
-
-
-def first_after(events: list[tuple[float, str]], msg: str, t: float) -> float | None:
-    return next((ts for ts, m in events if m == msg and ts >= t), None)
+                fields = {k[2:]: v for k, v in entry.items() if k.startswith("F_") and isinstance(v, str)}
+                events.append((int(entry["__REALTIME_TIMESTAMP"]) / 1e6, entry["MESSAGE"], fields))
+    return sorted(events, key=lambda e: e[0])
 
 
 def report(args: argparse.Namespace) -> None:
-    with open(args.results) as f:
-        results = json.load(f)
-    end = results.get("finished") or time.time()
-    events = journal(results["started"] - 5, end + 5)
     rows: dict[str, dict[str, list[float]]] = {}
+    misses: list[str] = []
 
     def add(kind: str, name: str, start: float | None, stop: float | None) -> None:
         if start is not None and stop is not None:
             rows.setdefault(kind, {}).setdefault(name, []).append(stop - start)
 
-    for c in results["cycles"]:
-        kind = c["kind"]
-        if kind.startswith("power/"):
-            t = c["on_cmd"]
-            add(kind, "on command → WoL sent", t, first_after(events, "WoL packet sent", t))
-            add(kind, "on command → wss connected", t, first_after(events, "Connected via wss://", t))
-            add(kind, "on command → LG online", t, first_after(events, "LG TV online after wake", t))
-            add(kind, "on command → reads on", t, c["on_seen"])
-        elif kind == "pc-sleep":
-            s = c["suspend_cmd"]
-            t = first_after(events, KERNEL_RESUME, s)
-            add(kind, "suspend → daemon saw sleep", s, first_after(events, "system going to sleep", s))
-            add(kind, "resume → carrier restored", t, first_after(events, "carrier restored, redialing", s))
-            add(kind, "resume → daemon saw resume", t, first_after(events, "system resumed", s))
-            add(kind, "resume → WoL sent", t, first_after(events, "WoL packet sent", t or s))
-            add(kind, "resume → LG online", t, first_after(events, "LG TV online after wake", t or s))
-            add(kind, "resume → reads on", t, c["on_seen"])
-        elif kind == "blip":
-            add(kind, "down → carrier lost", c["down_cmd"], first_after(events, "carrier lost, parking connection", c["down_cmd"]))
-            add(kind, "up → carrier restored", c["up_cmd"], first_after(events, "carrier restored, redialing", c["up_cmd"]))
-            add(kind, "up → reads on", c["up_cmd"], c["on_seen"])
-        if c.get("dpms") and "Off" in c["dpms"]:
-            print(f"note: DPMS was off around the {kind} cycle at {datetime.fromtimestamp(c.get('on_cmd') or c.get('suspend_cmd') or c.get('down_cmd')):%H:%M:%S}")
+    for path in args.results:
+        with open(path) as f:
+            results = json.load(f)
+        report_run(results, add)
+        misses += [c["kind"] for c in results["cycles"] if not c.get("on_seen")]
 
     for kind, metrics in rows.items():
         print(f"\n{kind}")
         for name, values in metrics.items():
             values.sort()
             print(f"  {name:32} n={len(values)}  min {values[0]:6.2f}  median {statistics.median(values):6.2f}  max {values[-1]:6.2f} s")
-    misses = [c["kind"] for c in results["cycles"] if not c.get("on_seen")]
     if misses:
         print(f"\nno answer within {ANSWER_TIMEOUT_S} s: {', '.join(misses)}")
+
+
+def report_run(results: dict, add) -> None:
+    end = results.get("finished") or time.time()
+    events = journal(results["started"] - 5, end + 5)
+
+    def began(c: dict) -> float:
+        return c.get("off_cmd") or c.get("suspend_cmd") or c["down_cmd"]
+
+    cycles = results["cycles"]
+    for i, c in enumerate(cycles):
+        kind = c["kind"]
+        # Search only this cycle's window, so a slow or missing event can't
+        # borrow one from the next cycle.
+        lo = began(c)
+        hi = began(cycles[i + 1]) if i + 1 < len(cycles) else end
+
+        def first(msg: str, after: float | None, **want: str) -> float | None:
+            if after is None:
+                return None
+            return next((ts for ts, m, f in events if m == msg and after <= ts < hi and all(f.get(k, "").startswith(v) for k, v in want.items())), None)
+
+        def last(msg: str, before: float | None, **want: str) -> float | None:
+            if before is None:
+                return None
+            hits = [ts for ts, m, f in events if m == msg and lo <= ts <= before and all(f.get(k, "").startswith(v) for k, v in want.items())]
+            return hits[-1] if hits else None
+
+        tv = c["tv"]
+        if kind.startswith("power/"):
+            t = c["on_cmd"]
+            if kind != "power/cec":
+                add(kind, "on command → WoL sent", t, first("WoL packet sent", t))
+                add(kind, "on command → LG online", t, first("LG TV online after wake", t))
+            add(kind, "on command → connected", t, first("connected event applying", t, TV=tv))
+            add(kind, "on command → reads on", t, c["on_seen"])
+        elif kind == "pc-sleep":
+            s = c["suspend_cmd"]
+            t = first(KERNEL_RESUME, s)
+            connected = first("connected event applying", t, TV=tv)
+            add(kind, "suspend → daemon saw sleep", s, first("system going to sleep", s))
+            add(kind, "resume → daemon saw resume", t, first("system resumed", t))
+            add(kind, "resume → WoL sent", t, first("WoL packet sent", t))
+            add(kind, "resume → last carrier up", t, last("carrier transition", connected, INTERFACE=results["env"]["iface"], UP="true"))
+            add(kind, "resume → route back", t, last("route resolved", connected, TV=tv, INTERFACE="Some"))
+            add(kind, "resume → LG online", t, first("LG TV online after wake", t))
+            add(kind, "resume → connected", t, connected)
+            # Only a run that polled from the resume times the getter; an
+            # older one slept on after it.
+            if t is not None and c["back"] - t < 5:
+                add(kind, "resume → reads on", t, c["on_seen"])
+        elif kind == "blip":
+            u = c["up_cmd"]
+            connected = first("connected event applying", u, TV=tv)
+            add(kind, "down → carrier lost", c["down_cmd"], first("carrier lost, parking connection", c["down_cmd"]))
+            add(kind, "up → carrier up", u, first("carrier transition", u, INTERFACE=c["iface"], UP="true"))
+            add(kind, "up → route back", u, last("route resolved", connected, TV=tv, INTERFACE="Some"))
+            add(kind, "up → connected", u, connected)
+            add(kind, "up → reads on", u, c["on_seen"])
+        if c.get("dpms") and "Off" in c["dpms"]:
+            print(f"note: DPMS was off around the {kind} cycle at {datetime.fromtimestamp(c.get('on_cmd') or c.get('suspend_cmd') or c.get('down_cmd')):%H:%M:%S}")
 
 
 def main() -> None:
@@ -293,7 +337,7 @@ def main() -> None:
     r.add_argument("--down-s", type=float, default=5, help="seconds the link stays down")
     r.set_defaults(func=run)
     rep = sub.add_parser("report", help="line a results file up with the journal")
-    rep.add_argument("results")
+    rep.add_argument("results", nargs="+", help="results files, pooled")
     rep.set_defaults(func=report)
     args = p.parse_args()
     args.func(args)
