@@ -1,10 +1,12 @@
-# release-plz drives crates.io. On push to `main` it opens/updates a
-# "release" PR that bumps the shared workspace version (`version.workspace`)
-# and the per-crate CHANGELOGs (.github/workflows/release-plz.yml). Merging
-# that PR lands the bump; the publish of the publishable crates
-# (`publish = true`) to crates.io — in dependency order, skipping the
-# `publish = false` crates (the binaries, their glue, the vendor backends
-# and SSDP, the mock and the test fakes) — runs from
+# release-plz drives the release bump. `just release-bump` runs
+# `release-plz update` locally, which bumps the shared workspace version
+# (`version.workspace`) and the per-crate CHANGELOGs, and the result merges
+# as a `chore(release)` PR (packaging/README.md "Release checklist"). The
+# release-PR workflow (.github/workflows/release-plz.yml) stays off: its
+# PRs wouldn't trigger CI. Merging the PR lands the bump; the publish of
+# the publishable crates (`publish = true`) to crates.io — in dependency
+# order, skipping the `publish = false` crates (the binaries, their glue,
+# the vendor backends and SSDP, the mock and the test fakes) — runs from
 # .github/workflows/release.yml when you promote the GitHub release to a
 # full release, i.e. AFTER you've verified the distro artifacts (crates.io
 # is irreversible, so it comes last).

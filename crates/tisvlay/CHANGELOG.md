@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/TisVlay/TisVlay/compare/tisvlay-v0.5.0...tisvlay-v0.5.1) - 2026-11-01
+
+### Fixed
+
+- `DaemonClient::power_cycle_progress_stream` is live from the call on: it no longer replays an earlier wake's last phase, which read as the new wake's outcome ([#230](https://github.com/TisVlay/TisVlay/pull/230))
+
+### Other
+
+- retire shipped ideas and restate the live ones
+
 ## [0.5.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-v0.4.0...tisvlay-v0.5.0) - 2026-11-01
 
 ### Added

@@ -39,7 +39,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 # MSRV = the oldest rustc the workspace actually builds on, verified by
 # `just msrv` and the CI `msrv` job (both read this value). It must never
@@ -223,18 +223,18 @@ rtnetlink = "0.23"
 # (`publish = false`) are path-ONLY: a *versioned* dev-dependency on one
 # is kept in the published manifest and would demand an unpublished crate
 # from crates.io, whereas a path-only dev-dependency is dropped on publish.
-tisvlay-core = { path = "crates/tisvlay-core", version = "0.5.0" }
+tisvlay-core = { path = "crates/tisvlay-core", version = "0.5.1" }
 tisvlay-ssdp = { path = "crates/tisvlay-ssdp" }
 tisvlay-lg = { path = "crates/tisvlay-lg" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-cec = { path = "crates/tisvlay-cec" }
 tisvlay-test = { path = "crates/tisvlay-test" }
-tisvlay-protocol = { path = "crates/tisvlay-protocol", version = "0.5.0" }
+tisvlay-protocol = { path = "crates/tisvlay-protocol", version = "0.5.1" }
 tisvlay-world = { path = "crates/tisvlay-world" }
 tisvlay-icons = { path = "crates/tisvlay-icons" }
 tisvlay-runtime = { path = "crates/tisvlay-runtime" }
 tisvlay-gui = { path = "crates/tisvlay-gui" }
-tisvlay = { path = "crates/tisvlay", version = "0.5.0" }
+tisvlay = { path = "crates/tisvlay", version = "0.5.1" }
 # Binary crates exposed as libs: services for cross-crate
 # integration tests, the CLI for the user-guide generator (tisvlay-docgen).
 tisvlay-daemon = { path = "crates/tisvlay-daemon" }
