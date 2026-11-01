@@ -24,17 +24,20 @@ prek install    # the pre-commit and commit-msg hooks
 
 The [Nix](https://nixos.org/download/) dev shell provides the Rust toolchain, `just` and every tool the checks use. Without Nix, [the CI workflow](workflows/ci.yml) shows what a plain Ubuntu machine needs. Images under `docs/` are stored in Git LFS, so install it if you're working on them.
 
-Run each service in its own terminal, daemon first:
+Run each service in its own terminal:
 
 ```bash
 just daemon-start
 just session-start
-just gui-start      # or `just tray-start`
+just tray-start
+just gui-start
 ```
+
+In VS Code, the `all: start`, `all: stop` and `all: restart` tasks do this for you, with a panel per service. They need the dev shell's environment to find `just`, so start VS Code from the dev shell or use a direnv extension.
 
 Then add the mock TV: click **+** on the **TVs** page, choose **Don't see your TV? Add it manually**, pick the vendor **Mock (testing)** and enter an address such as `mock://test`. `just cli <verb>` runs any CLI verb against the same stack, and `just stop-all` ends it.
 
-The dev stack uses its own sockets, so it won't disturb an installed TisVlay. Clients do fall back to an installed daemon's socket when no dev daemon is running, which is why the daemon goes first.
+The dev stack uses its own sockets, so it won't disturb an installed TisVlay.
 
 Run `just` to list every recipe.
 
