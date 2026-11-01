@@ -35,10 +35,15 @@ EIS = "EIS"
 wrapp = "wrapp"
 
 [files]
+# Scan the dotted directories too: .github/ holds the contributing guide and
+# .claude/ the project instructions.
+ignore-hidden = false
 extend-exclude = [
     # Translation catalogs: generated, and msgids mirror the sources.
     "*.pot",
     "*.po",
     "Cargo.lock",
     "target/",
+    ".git/",
+    ".direnv/",
 ]
