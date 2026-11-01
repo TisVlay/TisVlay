@@ -10,7 +10,7 @@ It's existing behavior, seen during QA of PR #136. This doc records what happens
 
 ## What happens
 
-The default profile's `Startup` event dispatches `power_on` (with input restore) to every TV. `power_on_tv` in `crates/tisvlay-world/src/systems.rs` branches on whether the TV has a live connection:
+The default profile's `Startup` event dispatches `power_on` (with input restore) to every TV. `power_on_tv` in `crates/tisvlay-world/src/systems/dispatch.rs` branches on whether the TV has a live connection:
 
 - **Not connected, wakeable** (`Link.supports_wake`): re-dial with wake, which is WoL for LG. This is the path power-on was designed around.
 - **Connected:** send `BackendCmd::PowerOn` to the backend task, which calls `TvConnection::power_on`.
@@ -23,7 +23,7 @@ CEC doesn't hit this. Its `power_on` sends Image View On over the live link (wak
 ## Why it's more than log noise
 
 - **A capability/behavior mismatch.** LG advertises `Capabilities::STOCK`, which includes `POWER`, while its `power_on` reports `POWER` as unsupported. The error names a capability the backend claims to have. `POWER` currently means power-off and power-state reads plus "can be powered on *somehow*", where the how is the world's wake dial rather than a backend call. The model doesn't separate "power-on via dial" from "power-on via the live connection".
-- **A possible dark-panel case (unverified).** An LG can stay connected with only its panel off: the screen-off substate entered by `turnOffScreen`, which the daemon itself uses for idle screen-off. If the daemon starts (or a profile fires `power_on`) while the TV is in that state, the connected branch sends a `PowerOn` that does nothing, and the panel stays dark even though the user's intent was "TV on". This follows from the code; it hasn't been reproduced. Reproduce first: blank the panel (`tisvlay set-screen <uuid> off` or idle screen-off), restart the daemon, and see whether the TV lights.
+- **A possible dark-panel case (unverified).** An LG can stay connected with only its panel off: the screen-off substate entered by `turnOffScreen`, which the daemon itself uses for idle screen-off. If the daemon starts (or a profile fires `power_on`) while the TV is in that state, the connected branch sends a `PowerOn` that does nothing, and the panel stays dark even though the user's intent was "TV on". This follows from the code; it hasn't been reproduced. Reproduce first: blank the panel (`tisvlay screen <uuid> off` or idle screen-off), restart the daemon, and see whether the TV lights.
 
 ## The open question
 

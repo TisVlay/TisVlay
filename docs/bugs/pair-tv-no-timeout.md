@@ -1,89 +1,22 @@
-## `run_pairing_handshake` has no timeout on `wait_for_completion`
+## A pairing session has no daemon-side deadline
 
 **Status**: open
-**Severity**: low — async-pair refactor downgraded this from
-"client hangs forever" to "client sees no terminal phase" (clients
-can apply their own drain-timeout on the signal stream)
-**Found by**: mock_discovery test design (the `drain_pairing` helper
-wraps in `tokio::time::timeout` to avoid test hangs)
+**Severity**: low — clients can cancel; only a vendor without its own bound can wait forever
+**Found by**: pairing test design (the test helpers wrap the progress drain in a timeout to avoid hangs)
 
 ### Problem
 
-`tisvlayd/src/tv_manager.rs::run_pairing_handshake` (around line
-1925) calls `session.wait_for_completion().await` with no timeout.
-If the TV never responds to the pairing prompt (powered off mid-pair,
-network drops, firmware bug), the spawned `run_pair_task` /
-`run_re_pair_task` hangs indefinitely. No terminal `PairingProgress`
-fires, the `pairing_sessions` map entry persists (eventually freed
-when the task is aborted on daemon shutdown), and the corresponding
-slot stays claimed (`pairing_in_flight = true` for re-pair).
+`pairing_task` in `crates/tisvlay-world/src/backend.rs` forwards a `PairingSession`'s states to the world until one is terminal, waiting on `rx.changed()` with no deadline. If the device never answers (powered off mid-pair, the network drops, a firmware bug), the session never reaches a terminal state: no `failed` phase is published on `pairing/<uuid>/progress`, and the session holds its slot until it's cancelled or the daemon stops.
 
-The core `PairingSession` deliberately omits a built-in timeout
-(timeouts belong to the caller), which is the right design. But the
-caller (`run_pairing_handshake`) doesn't apply one.
+LG bounds itself: its handshake gives the TV's prompt `PAIRING_MS` (60 s) before failing. A vendor without such a bound inherits the open-ended wait. The mock's `pairing = "manual"` mode is one: it waits for a test handle that production doesn't have ([concerns/cli-pair-vendor-fields.md](../concerns/cli-pair-vendor-fields.md)).
 
-### Pre-refactor severity (historical)
+`PairingSession` deliberately has no built-in timeout, since how long a prompt deserves is the caller's call. The caller here doesn't apply one.
 
-Before the async-pair refactor, `Manager1.AddTv` blocked the D-Bus
-RPC until the handshake completed. A hung pairing meant the calling
-CLI process hung along with it (the D-Bus call never returned). The
-async-spawn shape decoupled this: AddTv returns the tv_id
-immediately, and the hang now happens in a daemon-side task that
-clients can ignore.
+### Mitigations today
 
-### Current client-side mitigations
-
-`DaemonClient::drain_pair_to_terminal` doesn't timeout internally,
-but callers can wrap it in `tokio::time::timeout`:
-
-```rust
-let outcome = tokio::time::timeout(
-    Duration::from_secs(120),
-    DaemonClient::drain_pair_to_terminal(stream, &tv_id, on_progress),
-).await;
-match outcome {
-    Ok(Ok(terminal)) => /* handle */,
-    Ok(Err(e)) => /* stream ended early */,
-    Err(_) => {
-        // Best effort: tell the daemon we're giving up so it
-        // releases the slot + dismisses the TV prompt.
-        let _ = client.cancel_pair(&tv_id).await;
-        // Surface the timeout to the user.
-    }
-}
-```
-
-The GUI wizard's existing Cancel button already routes to
-`Manager1.CancelPair(tv_id)` so manual timeout (user clicks Cancel)
-works today.
+- `manager/rpc/cancel-pair` (`DaemonClient::cancel_pair`) ends a session; the GUI wizard's **Cancel** uses it.
+- A client draining progress can wrap the drain in `tokio::time::timeout` and cancel on expiry, as the tests do.
 
 ### Fix plan
 
-Wrap `wait_for_completion()` inside `run_pairing_handshake` in
-`tokio::time::timeout()` with a configurable deadline (default: 60s
-for network backends; could be longer for Bluetooth). On timeout:
-
-1. Send `PairingCommand::Cancel` to the session so the backend
-   dismisses the TV prompt.
-2. Return `Err(PairingError::Timeout)` so the outer task emits a
-   terminal `failed` PairingProgress with a meaningful reason.
-3. Clear the `pairing_in_flight` slot (already handled by the outer
-   task's cleanup).
-
-```rust
-let result = match tokio::time::timeout(deadline, session.wait_for_completion()).await {
-    Ok(result) => result,
-    Err(_) => {
-        // Dismiss the TV's pairing prompt before bailing.
-        let _ = session.command_sender().send(PairingCommand::Cancel).await;
-        Err(PairingError::timeout())
-    }
-};
-```
-
-### Affected files
-
-- `crates/tisvlayd/src/tv_manager.rs::run_pairing_handshake` —
-  add timeout + cancel-on-timeout
-- `crates/tisvlay-core/src/config.rs` — surface a configurable
-  `pairing_timeout_seconds` (per-vendor optional)
+Bound the wait in `pairing_task` with a deadline: a daemon default, which a backend could lengthen for slow transports. On expiry, send `PairingCommand::Cancel` so the backend dismisses the device's prompt, then publish a terminal `failed` state with a timeout code, so every client sees the same ending.

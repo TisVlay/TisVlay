@@ -8,13 +8,11 @@ demand.
 
 Options for TisVlay:
 
-1. **D-Bus activation for the user session** — ship an
-   `org.tisvlay.Session1.service` D-Bus user service file so that when
-   `tisvlay-tray` (or anything else) calls the session interface on the
-   user bus, systemd auto-starts `tisvlay-session`.
+1. **D-Bus activation for the user session** — out since 0.3.0: the
+   session service is reached over its zenoh socket and owns no D-Bus
+   name to activate on.
 
-2. **Tray/GUI starts the session service** — have `tisvlay-tray` (or the
-   future `tisvlay-gui`) call `systemctl --user start tisvlay-session`
+2. **Tray/GUI starts the session service** — have `tisvlay-tray` (or `tisvlay-gui`) call `systemctl --user start tisvlay-session`
    when it detects the service isn't running. This is closest to what
    NordVPN's desktop client does.
 
@@ -22,6 +20,5 @@ Options for TisVlay:
    activation script kicks user services after `switch`. Fragile because
    it requires enumerating logged-in sessions via `loginctl`.
 
-Option 2 is the most natural fit given the `tisvlay-gui` roadmap — the
-GUI/tray becomes the entry point that ensures the rest of the user-side
+Option 2 is the most natural fit: the GUI and tray become the entry point that ensures the rest of the user-side
 stack is running.

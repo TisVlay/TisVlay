@@ -1,6 +1,6 @@
 # Greeter integration generalization
 
-The greeter idle client (`tisvlay-greeter`) — which blanks managed TVs on login-screen idle for OLED burn-in protection — currently supports only KDE's **plasma-login-manager**. The NixOS module now default-enables it when that greeter is the active display manager (`services.tisvlay.greeter.enable = lib.mkDefault config.services.displayManager.plasma-login-manager.enable`). This doc records how (and whether) to extend it to other greeters.
+The greeter idle client (`tisvlay-greeter`) — which blanks managed TVs on login-screen idle for OLED burn-in protection — supports KDE's **plasma-login-manager** and **GDM**. The NixOS module enables it by default when either is the active display manager, and the packages ship a GDM unit. This doc records how (and whether) to extend it to other greeters.
 
 Researched 2026-06-14 against primary sources (compositor git trees, KDE/GNOME GitLab APIs, man pages).
 
@@ -19,7 +19,7 @@ Support is the product of two *independent* requirements, not one:
 |---|---|---|---|
 | plasma-login-manager (KWin) | ✅ (Plasma 5.27+, registered unconditionally) | `systemd --user` drop-in | ✅ supported today |
 | greetd + cage/sway/labwc (wlroots) | ✅ | wrap `default_session.command` | ⭐ best next — binary unchanged |
-| GDM (Mutter) | ❌ uses `org.gnome.Mutter.IdleMonitor` D-Bus | `systemd --user` / XDG autostart | 🔴 needs a new client transport |
+| GDM (Mutter) | ❌ uses `org.gnome.Mutter.IdleMonitor` D-Bus | `systemd --user` / XDG autostart | ✅ supported, over the Mutter transport |
 | SDDM (Weston default) | ❌ internal timer, no client protocol | fragile `CompositorCommand` hack only | 🔴 dead end |
 | LightDM (X11) | ❌ no Wayland | — | 🔴 no |
 
@@ -41,9 +41,9 @@ command = "cage -s -- sh -c 'tisvlay-greeter & exec gtkgreet'"
 
 The backgrounded client binds the compositor's `WAYLAND_DISPLAY`; it needs to be *connected*, not *visible* (cage runs many clients, shows one). NixOS would wire this into `services.greetd.settings.default_session.command`; non-NixOS ships a documented snippet. This aligns with the established swayidle/hypridle-in-greeter pattern — and the niche (greeter idle → display power for OLED) is otherwise genuinely unfilled across distros.
 
-### GNOME / GDM — sidestep, don't adapt
+### GNOME / GDM — shipped
 
-GDM's greeter is `systemd --user`-attachable, but Mutter lacks `ext-idle-notify-v1`, so the client can't detect idle there without a second transport (the `org.gnome.Mutter.IdleMonitor` D-Bus interface). Prefer **avoiding new client code**: configure the GNOME greeter's own idle-delay so Mutter blanks → DPMS-off, and let the existing daemon-side DPMS connector watcher (`tisvlayd/src/dpms.rs`) drive `on_dpms_off`/`on_dpms_on`. That is greeter-agnostic and needs zero new code — *contingent on verifying Mutter writes the legacy sysfs `dpms` connector attribute the watcher polls* (KWin does; Mutter unverified). If it doesn't, a Mutter-IdleMonitor adapter is a deliberate, larger investment to defer until GNOME demand is real.
+Mutter lacks `ext-idle-notify-v1`, so the client falls back to Mutter's `org.gnome.Mutter.IdleMonitor` D-Bus interface (`tisvlay-runtime`'s `mutter-idle` transport, shared with the session service). The alternative weighed first, letting the GNOME greeter blank the screen and driving the TVs from the daemon's DPMS watcher, depended on Mutter writing the sysfs `dpms` attribute, which was unverified.
 
 ### SDDM / LightDM — out of scope
 
@@ -59,4 +59,4 @@ Detection is portable — `XDG_SESSION_CLASS=greeter` (logind session class) —
 
 ## Trigger
 
-Pick up greetd+wlroots support when a user asks for it or the project gains a non-KDE primary target; the GNOME DPMS-watcher verification can fold into the event-driven power-management work.
+Pick up greetd+wlroots support when a user asks for it.

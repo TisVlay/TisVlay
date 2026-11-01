@@ -5,7 +5,7 @@ Mirrors `kubectl support-bundle` / `docker support-bundle`. Single CLI entrypoin
 Surfaces:
 
 - `tisvlay diagnostic` — JSON to stdout, suitable for `| pbcopy`, `| jq`, or piping into a gist.
-- `tisvlay diagnostic --bundle <path>` — zip containing `diagnostic.json` + `tisvlay.log` (recent journalctl extract or the ring-buffer tail) + `daemon-config.toml` (redacted) + `dbus-objects.json` (one-shot `Manager1.GetManagedObjects` dump).
+- `tisvlay diagnostic --bundle <path>` — zip containing `diagnostic.json` + `tisvlay.log` (recent journalctl extract or the ring-buffer tail) + `daemon-config.toml` (redacted) + `tvs.json` (a one-shot `tisvlay --json list` snapshot).
 
 New deps: `zip` for archive creation. Logs path: `journalctl --user-unit tisvlay-* -n 1000 -o json` if the ring-buffer subscriber hasn't shipped, otherwise the in-memory tail.
 

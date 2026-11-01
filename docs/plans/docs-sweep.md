@@ -59,21 +59,21 @@ Users read these, so they go first.
 
 Retire (delete, after moving any lasting rationale):
 
-- [ ] `bugs/last-action-cache-survives-reconnect.md`: the cache doesn't exist.
-- [ ] `ideas/seat-watch-fake-logind-coverage.md`: shipped in `seat/tests.rs`.
-- [ ] `ideas/dispatch-test-event-driven-waits.md` and `concerns/session-event-tests-real-time-sleeps.md`: the tests and sleeps they describe are gone.
-- [ ] `ideas/asv-wire-format-migration.md`: moot without served D-Bus; `ideas/typed-update-config.md` holds the live version.
-- [ ] `ideas/switchover-followups.md`'s coverage-baseline item: done.
-- [ ] `ideas/gui-test-coverage-fanout.md`: retire, or rewrite to the remaining gaps if any survive a check.
+- [x] `bugs/last-action-cache-survives-reconnect.md`: the cache doesn't exist.
+- [x] `ideas/seat-watch-fake-logind-coverage.md`: shipped in `seat/tests.rs`.
+- [x] `ideas/dispatch-test-event-driven-waits.md` and `concerns/session-event-tests-real-time-sleeps.md`: the tests and sleeps they describe are gone.
+- [x] `ideas/asv-wire-format-migration.md`: moot without served D-Bus; `ideas/typed-update-config.md` holds the live version.
+- [x] `ideas/switchover-followups.md`'s coverage-baseline item: done.
+- [x] `ideas/gui-test-coverage-fanout.md`: retire, or rewrite to the remaining gaps if any survive a check.
 
 Rewrite in current terms:
 
-- [ ] `bugs/pair-tv-no-timeout.md`: the gap survives in `tisvlay-world`'s `pairing_task`, which waits with no deadline for non-LG vendors.
-- [ ] `ideas/ci-nightly-build-knobs.md`: `-Zthreads` was measured and rejected.
-- [ ] `ideas/greeter-integration-generalization.md` and `concerns/README.md`'s greeter entry: the Mutter fallback and GDM wiring shipped.
-- [ ] `concerns/zenoh-idiom-audit.md`: mark B1, B3 and B4 done, or retire it if nothing remains.
-- [ ] `ideas/probe-library-extraction.md`, `ideas/connected-power-on.md`: current names and paths.
-- [ ] Retired names in live ideas: `dispatch-outcome-return-type`, `event-driven-power-management`, `pair-time-mac-capture`, `notification-subsystem-followups`, `polkit-multi-user`, `nixos-user-service-auto-start`, `support-bundle-cli`, `ci-artifact-smoke-test`, `open-logs-affordance`, `wol-raw-socket`, `ssdp-notify-passive-listener`, `tv-side-power-prevention`, `cec-followups`. Retire any that turn out moot.
+- [x] `bugs/pair-tv-no-timeout.md`: the gap survives in `tisvlay-world`'s `pairing_task`, which waits with no deadline for non-LG vendors.
+- [x] `ideas/ci-nightly-build-knobs.md`: `-Zthreads` was measured and rejected.
+- [x] `ideas/greeter-integration-generalization.md` and `concerns/README.md`'s greeter entry: the Mutter fallback and GDM wiring shipped.
+- [x] `concerns/zenoh-idiom-audit.md`: mark B1, B3 and B4 done, or retire it if nothing remains.
+- [x] `ideas/probe-library-extraction.md`, `ideas/connected-power-on.md`: current names and paths.
+- [x] Retired names in live ideas: `dispatch-outcome-return-type`, `event-driven-power-management`, `pair-time-mac-capture`, `notification-subsystem-followups`, `polkit-multi-user`, `nixos-user-service-auto-start`, `support-bundle-cli`, `ci-artifact-smoke-test`, `open-logs-affordance`, `wol-raw-socket`, `ssdp-notify-passive-listener`, `tv-side-power-prevention`, `cec-followups`. Retire any that turn out moot.
 
 ## 6. Links
 
@@ -106,6 +106,8 @@ Rewrite in current terms:
 - **Area 3:** a finding beyond the plan: a poll-only network backend can't verify its screen actions, since the daemon refreshes such a backend's cached state only on connect. The vendor guide now says so; it isn't filed as an idea yet. The tray's planned i18n layout and its two design choices moved to `ideas/switchover-followups.md`.
 
 - **Area 4:** `docs/streams/detection.md` keeps its "stock story" of the stream defaults, since it explains why they are what they are; only the Sunshine hook recipe became a link. `packaging/README.md` keeps its one-clause Pulse-Eight mention, consistent with `cec/protocol.md`. `docs/kde/gui-application-activation.md`'s dead link, an area 6 item, was fixed here.
+
+- **Area 5:** judgment calls. `gui-test-coverage-fanout.md` was retired, not rewritten: its premise (the `TestGui` harness, 52% coverage, one canonical test) is gone, and a fresh gap list would start from a coverage report. `probe-library-extraction.md` was retired: the GUI shipped without needing EDID detail, and its rationale now sits in the SDK's `desktop.rs` doc comment. `zenoh-idiom-audit.md` stays, marked done, since its "don't fix these" list still applies. `notification-subsystem-followups.md` lost its two D-Bus-era items; its open question resolved to a finding (a `tray.toml` missing a switch doesn't parse), which is now the whole idea. `ci-nightly-build-knobs.md` records the 2026-10-04 measurement. The switchover idea's name-sweep item is done by this area and was removed.
 
 ## Verification
 

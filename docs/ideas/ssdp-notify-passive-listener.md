@@ -25,7 +25,7 @@ The discovery latency win is the obvious one; the lifecycle win is the load-bear
 
 - **Multicast group join**: `socket.join_multicast_v4(239.255.255.250, iface)` on a `UdpSocket`. Today's `tisvlay-ssdp` is a pure sender — it binds to an ephemeral port and `send_to`s the multicast address. Receiving unsolicited messages requires explicit group membership.
 - **Bind port 1900**: that's where devices send `NOTIFY`. `SO_REUSEADDR` + `SO_REUSEPORT` are required because other system daemons may already hold the port (avahi, gnome's network discovery, KDE's UPnP browser). On bind failure, log and degrade gracefully — polling still works.
-- **Per-interface binding**: multicast join is per-NIC. The daemon should join on every network interface that resolves to a configured TV's route (reusing the netlink route-resolution path already in [crates/tisvlayd/src/netlink.rs](../../crates/tisvlayd/src/netlink.rs)), and re-join on NIC up/down events.
+- **Per-interface binding**: multicast join is per-NIC. The daemon should join on every network interface that resolves to a configured TV's route (reusing the netlink route-resolution path already in [crates/tisvlay-daemon/src/netlink.rs](../../crates/tisvlay-daemon/src/netlink.rs)), and re-join on NIC up/down events.
 - **Message parse**: differs from `M-SEARCH` responses. Start line is `NOTIFY * HTTP/1.1` (not `HTTP/1.1 200 OK`), and the discriminator is the `NTS:` header rather than the response code. The `USN`, `LOCATION`, and `SERVER` headers carry the same content as `M-SEARCH` replies, so vendor identification/parsing (e.g. LG's `is_lg_tv()` + `parse_response()`) can be reused unchanged.
 
 ## Composed picture
@@ -34,7 +34,7 @@ What this looks like once both layers exist:
 
 - Passive listener runs continuously inside the daemon, joined to the multicast group on every relevant NIC.
 - Wizard's "Start discovery" still kicks off one immediate `M-SEARCH` burst — needed to catch TVs that booted *before* the listener started joining (i.e., already-on TVs that aren't due to refresh-announce for several minutes). After the initial burst, it subscribes to the listener's event stream rather than running its own poll loop.
-- Steady-state network traffic from `tisvlayd` drops to zero between wizard sessions. The listener is pure receiver.
+- Steady-state network traffic from the daemon drops to zero between wizard sessions. The listener is pure receiver.
 - Paired-TV power state benefits independently: `byebye` arrivals flow into the same path that handles connection drops, with a tighter "definitely powered off" signal.
 
 ## Why it's deferred

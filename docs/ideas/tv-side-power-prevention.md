@@ -4,7 +4,7 @@ Deferred at the point that inherently-reliable `screen_on` / `screen_off` shippe
 
 ## Why this is deferred
 
-Writing Luna persistent settings (`automaticStandBy = "Off"` and friends) would be tisvlay's **first persistent TV-setting write**. Every existing `Tv1.*` setter is ephemeral (volume, input, screen-on/off — runtime state the TV forgets on reboot or that the next remote button-press changes). The persistent-settings category has a long tail (TV input names, parental controls, NTP, energy mode, no-signal screensaver, network settings…) and committing to managing it deserves more architectural deliberation than the initial reliability work allowed.
+Writing Luna persistent settings (`automaticStandBy = "Off"` and friends) would be tisvlay's **first persistent TV-setting write**. Every existing setter rpc is ephemeral (volume, input, screen-on/off — runtime state the TV forgets on reboot or that the next remote button-press changes). The persistent-settings category has a long tail (TV input names, parental controls, NTP, energy mode, no-signal screensaver, network settings…) and committing to managing it deserves more architectural deliberation than the initial reliability work allowed.
 
 The inherently-reliable dispatch path handles the symptom client-side (TV slipped past Screen Off → WoL-escalate to power-on). If field use shows the symptom is common enough to warrant the prevention path, revisit with option B below.
 
@@ -23,7 +23,7 @@ The first row (`automaticStandBy`) is the dominant cause in field reports. The h
 
 **A — Defer entirely.** Ship inherently-reliable dispatch client-side only. Document "set your TV's Auto Power Off to Off via the remote" as a manual prerequisite. ← **Currently chosen.**
 
-**B — Opaque "configure for management" capability.** Single trait method `TvConnection::configure_for_management() -> Result<ConfigSnapshot, Error>`. LG impl writes whatever Luna keys it decides (`automaticStandBy = "Off"`, `wolwowlOnOff = "true"`, possibly more) — implementation details, not surfaced in tisvlay's TOML or D-Bus. Triggered by `managed = true` on pair, with a GUI "Sync TV settings" button for re-running on demand. Snapshot original Luna values pre-write; `TvConnection::restore_pre_managed_settings(snapshot)` reverses on un-manage. ← **Expected design when this is un-deferred.**
+**B — Opaque "configure for management" capability.** Single trait method `TvConnection::configure_for_management() -> Result<ConfigSnapshot, Error>`. LG impl writes whatever Luna keys it decides (`automaticStandBy = "Off"`, `wolwowlOnOff = "true"`, possibly more) — implementation details, not surfaced in tisvlay's TOML or on the wire. Triggered by `managed = true` on pair, with a GUI "Sync TV settings" button for re-running on demand. Snapshot original Luna values pre-write; `TvConnection::restore_pre_managed_settings(snapshot)` reverses on un-manage. ← **Expected design when this is un-deferred.**
 
 **C — Full TV-settings-management category.** Explicit `[tv.power] auto_off_hours = N` field with read-on-connect, drift detection, "(out of sync)" GUI badge. Commits tisvlay to being a TV-settings-manager. Each future setting becomes a new field. Future-flexible but bigger ongoing surface. ← **Likely overkill for the immediate need; revisit only if multiple TV settings turn out to need explicit knobs.**
 
@@ -60,4 +60,4 @@ CLAUDE.md notes that direct `setSystemSettings` returns 401 for some categories 
 
 - LG firmware quirks (Bug A, Bug B, the `processing` / `onOff` discriminators, post-wake settle, `REQUEST_MS`-is-load-bearing): [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md)
 - Event-driven power-management redesign (broader power-state work): [docs/ideas/event-driven-power-management.md](event-driven-power-management.md)
-- Reliable screen-state actions design in `docs/design.md`: [docs/design.md](../design.md)
+- Reliable screen-state actions: [architecture.md](../architecture.md) (`DispatchVerify`)

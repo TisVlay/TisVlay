@@ -6,9 +6,9 @@ After the manual-entry MAC autofill work ([docs/discovery.md](../discovery.md)),
 
 A daemon-side hook in the pair flow:
 
-- On `Manager1.AddTv` / `Tv1.RePair` reaching the terminal `complete` phase, look up the just-paired TV's IP in the kernel neighbor table (existing `netlink::arp_lookup`).
-- If a MAC came back AND the saved config's `vendor_data["mac"]` is empty, update the config in-place (atomic write via the existing `apply_reload_diff` machinery or a narrower `update_tv_vendor_data` path).
-- Emit a `PropertiesChanged` so the GUI's TVs-pane refreshes the MAC display without a reload.
+- When an `add-tv`, `pair` or re-pair reaches the terminal `complete` phase, look up the just-paired TV's IP in the kernel neighbor table (the daemon's `arp::lookup_mac`).
+- If a MAC came back AND the saved config's `vendor_data["mac"]` is empty, update the config in-place (through the store's atomic write).
+- Republish the TV's `meta/vendor` so the GUI's TVs pane shows the MAC without a reload.
 
 Net effect: users who type only an IP at pair-time get WoL automatically the moment pair completes. They never have to know the MAC exists.
 
@@ -23,8 +23,8 @@ Net effect: users who type only an IP at pair-time get WoL automatically the mom
 
 Touchpoints in the daemon's pair flow:
 
-- **`run_pair_task` / `run_re_pair_task`** in [crates/tisvlayd/src/tv_manager.rs](../../crates/tisvlayd/src/tv_manager.rs) — these emit the terminal `PairingProgress(complete)` phase. Hook the MAC capture step between handshake-success and that emit, so the GUI's `complete`-observation can rely on the MAC already being in place.
-- **`update_tv_vendor_data`** (or equivalent) — new narrow helper that updates one TV's `vendor_data["mac"]` field, persists via atomic write, emits `Tv1.PropertiesChanged` for `VendorConfig`.
+- **Pairing completion in `tisvlay-world`** (the pairing session's terminal state, forwarded by `pairing_task` in `backend.rs`) — the point where the terminal `complete` phase is published. Today the daemon fills a missing MAC from the ARP cache once, at enrollment (`enrich_config_mac` in `tisvlay-daemon`'s `bridge.rs`), before the handshake has warmed the cache. Hook the MAC capture step between handshake-success and that emit, so the GUI's `complete`-observation can rely on the MAC already being in place.
+- **`update_tv_vendor_data`** (or equivalent) — new narrow helper that updates one TV's `vendor_data["mac"]` field, persists through the store, and republishes `meta/vendor`.
 - **Idempotence**: skip the capture if `vendor_data["mac"]` is already non-empty. Don't overwrite a user-typed MAC even if ARP returns a different value (the user-typed one might be intentional — VLAN aliasing, custom NIC swap).
 
 ## Edge cases worth handling

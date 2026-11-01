@@ -4,11 +4,10 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 ## Architecture
 
-- [Zenoh idiom audit against zenoh 1.9.0 (2026-07-12 triage list)](zenoh-idiom-audit.md)
+- [Zenoh idiom audit against zenoh 1.9.0 (2026-07-12; triage done, its "don't fix these" list still applies)](zenoh-idiom-audit.md)
 
 ## Testing
 
-- [Session event tests use real-time sleeps](session-event-tests-real-time-sleeps.md)
 - [Intermittent test failures (a session screencast test, a GUI callbacks test)](intermittent-tests.md)
 - [Stream detectors not yet field-validated (krdp, RustDesk, PipeWire, logind)](stream-detector-validation.md)
 - [An LG C3 may ignore CEC `<Standby>` just after waking (unconfirmed)](cec-standby-ignored-after-wake.md)
@@ -31,4 +30,4 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 ## Packaging & deployment
 
-- [Packaged greeter socket access — solved via a daemon group ACL (Fedora + Ubuntu validated; NixOS wiring pending)](greeter-packaged-socket-access.md)
+- [Packaged greeter socket access — solved via a daemon group ACL (Fedora, Ubuntu and NixOS)](greeter-packaged-socket-access.md)

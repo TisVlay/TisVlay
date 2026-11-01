@@ -1,6 +1,6 @@
 # WoL via raw socket (CAP_NET_RAW)
 
-The daemon's WoL sends its magic packet to the IPv4 broadcast address (`tisvlay_core::wol`) because IEEE Wake-on-LAN has no IPv6 protocol-level equivalent — v4 magic packet via UDP broadcast remains the only standardized wake path. This works for the common home-LAN case (TV reachable via v4 broadcast on the daemon's local subnet), but degrades in a few specific topologies where granting tisvlayd `CAP_NET_RAW` would unlock more flexible packet construction.
+The daemon's WoL sends its magic packet to the IPv4 broadcast address (`tisvlay_core::wol`) because IEEE Wake-on-LAN has no IPv6 protocol-level equivalent — v4 magic packet via UDP broadcast remains the only standardized wake path. This works for the common home-LAN case (TV reachable via v4 broadcast on the daemon's local subnet), but degrades in a few specific topologies where granting the daemon `CAP_NET_RAW` would unlock more flexible packet construction.
 
 ## What it would add
 
@@ -30,13 +30,13 @@ services.tisvlay.enableWolRawSocket = mkOption {
   type = types.bool;
   default = false;
   description = ''
-    Grant CAP_NET_RAW to tisvlayd so Wake-on-LAN can craft L2
+    Grant CAP_NET_RAW to the daemon so Wake-on-LAN can craft L2
     magic packets directly, enabling wake-up on network topologies
     the kernel's routing table doesn't cover: VPN/tunnel default
     routes, cross-VLAN setups, and IPv6-only LANs where there's
     no v4 broadcast address.
 
-    Trade-off: CAP_NET_RAW lets tisvlayd construct arbitrary
+    Trade-off: CAP_NET_RAW lets the daemon construct arbitrary
     network packets (ARP injection, DHCP poisoning, raw TCP).
     Default false; opt in only if your TV's wake-up doesn't
     work without it.
@@ -48,7 +48,7 @@ When `true`, the NixOS module's systemd unit extends `AmbientCapabilities = [ "C
 
 Rust side: runtime capability check (try-the-raw-socket-fall-back-to-broadcast) so the daemon works correctly with or without the capability granted. The same binary ships both paths; the systemd unit configures which is reachable.
 
-For non-NixOS distros, the equivalent ops setup is `setcap cap_net_raw+ep $(which tisvlayd)` — same runtime detection, same fallback semantics.
+For non-NixOS distros, the equivalent ops setup is `setcap cap_net_raw+ep $(which tisvlay)` — same runtime detection, same fallback semantics.
 
 ## Triggers to revisit
 
