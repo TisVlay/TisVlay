@@ -188,15 +188,24 @@ pub(crate) fn power_on(
     index: Res<TvIndex>,
     clock: Res<Clock>,
     q: Query<TvQuery>,
+    transport: Query<(Option<&TransportTraits>, Option<&State<payload::Power>>)>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let (handle, _, link, _, meta) = q.get(entity).unwrap_or((None, false, None, None, None));
+    let (traits, power) = transport.get(entity).unwrap_or((None, None));
     let restore_to = if restore_input {
         meta.and_then(|m| m.primary_input.clone())
     } else {
         None
     };
-    power_on_tv(&mut commands, &clock, entity, id, handle, link, restore_to)?;
+    power_on_tv(
+        &mut commands,
+        &clock,
+        entity,
+        id,
+        (handle, traits, link, power),
+        restore_to,
+    )?;
     Ok(Ack {})
 }
 

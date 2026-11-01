@@ -418,6 +418,121 @@ async fn wake_needy_screen_on_wakes_in_place_when_standby_reachable() {
     );
 }
 
+/// A power-on to a connected network TV that's half-asleep (LG's
+/// `ActiveStandby` after a remote-off: NIC up, panel dark) spends a wake
+/// dial, since a network transport has no in-band power-on.
+#[tokio::test]
+async fn power_on_wakes_a_connected_tv_that_needs_waking() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://half").await;
+    handle.inject_power_state("mock://half", PowerState::ActiveStandby);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "activestandby")
+    })
+    .await;
+
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(70)),
+    });
+    let mut seen = collect_until(&mut effects, |e| link_connected(e, false)).await;
+    seen.extend(collect_until(&mut effects, |e| link_connected(e, true)).await);
+    assert!(
+        seen.iter().any(|e| matches!(
+            e,
+            tisvlay_world::WireEffect::Reply {
+                to: 70,
+                result: Ok(_)
+            }
+        )),
+        "the power-on is accepted: {seen:#?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|e| is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")),
+        "the wake reconnect reports the TV active: {seen:#?}"
+    );
+    assert_eq!(handle.connect_call_count("mock://half"), 2);
+}
+
+/// A power-on to a connected network TV that's awake with its panel off
+/// (idle screen-off) is already satisfied: no wake dial and no screen-on,
+/// so a daemon start's `power_on` doesn't undo a deliberate screen-off.
+#[tokio::test]
+async fn power_on_leaves_a_connected_screen_off_tv_as_it_is() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://dark").await;
+    handle.inject_power_state("mock://dark", PowerState::ScreenOff);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "screenoff")
+    })
+    .await;
+
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(71)),
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 71)).await;
+    assert!(
+        seen.iter().any(|e| matches!(
+            e,
+            tisvlay_world::WireEffect::Reply {
+                to: 71,
+                result: Ok(_)
+            }
+        )),
+        "the power-on is accepted: {seen:#?}"
+    );
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, false)
+            || is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+    assert_eq!(handle.screen_on_call_count("mock://dark"), 0);
+    assert_eq!(handle.connect_call_count("mock://dark"), 1);
+}
+
+/// An in-place power-on that meets a closing link (a CEC adapter
+/// unplugged under it) isn't lost behind the rpc's OK: it re-arms as a
+/// wake dial, which reports on `progress/power` like any other.
+#[tokio::test]
+async fn a_power_on_lost_to_a_closing_link_rearms_as_a_wake() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert(
+        "address".into(),
+        toml::Value::String("mock://closing".into()),
+    );
+    table.insert("reachable_in_standby".into(), toml::Value::Boolean(true));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Closing", table.into())),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    handle.inject_power_state("mock://closing", PowerState::Standby);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "standby")
+    })
+    .await;
+
+    handle.set_power_on_closes("mock://closing", true);
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(72)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+    handle.set_power_on_closes("mock://closing", false);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "progress/power").is_some_and(|p| p["phase"] == "connected")
+    })
+    .await;
+    assert_eq!(handle.connect_call_count("mock://closing"), 2);
+}
+
 /// A `screen_off` arriving while a dial is in flight latches instead of
 /// no-opping: the reconnect re-asserts it over the fresh link — the
 /// locked-idle timer racing a boot wake must land, not be swallowed.
@@ -789,6 +904,11 @@ async fn automation_wake_restores_the_primary_input() {
         event: SystemEvent::Startup,
         connector: None,
     });
+    // The TV is already on, so the power-on sends nothing and the
+    // restore runs on the next step: the production ticker's. A batch
+    // applies its ticks first, so this one follows the event's batch.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    client.tick(Instant::now());
     collect_until(&mut effects, |e| {
         is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_1")
     })

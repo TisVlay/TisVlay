@@ -550,6 +550,10 @@ pub enum BackendEvent {
     /// The connection ended (device closed it, or `power_off` on a
     /// network-style transport).
     Disconnected,
+    /// An in-place power-on met a closing link and failed after its rpc
+    /// had acked. Sent ahead of the task's `Disconnected`, so the world
+    /// re-arms it as a wake dial before the link goes.
+    PowerOnLost,
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`).
     PowerPhase(tisvlay_protocol::payload::PowerPhase),

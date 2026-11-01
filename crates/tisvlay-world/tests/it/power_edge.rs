@@ -119,6 +119,15 @@ async fn one_sleep_at_a_time() {
         event: tisvlay_world::SystemEvent::Resume,
         connector: None,
     });
+    // Both TVs read standby on a live link, so the resume's power-on
+    // wakes each with a dial: wait for them back before the next edge.
+    let (mut dropped, mut back) = (false, 0);
+    collect_until(&mut effects, |e| {
+        dropped |= link_connected(e, false);
+        back += usize::from(dropped && link_connected(e, true));
+        back == 2
+    })
+    .await;
     mock.inject_power_state("mock://sleep-a", PowerState::Active);
     mock.inject_power_state("mock://sleep-a", PowerState::Standby);
     tokio::time::timeout(Duration::from_secs(5), sleeps.recv())

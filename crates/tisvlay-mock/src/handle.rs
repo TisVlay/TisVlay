@@ -307,6 +307,20 @@ impl MockHandle {
         }
     }
 
+    /// Make an in-band `power_on` meet a closing link: the connection
+    /// closes and the call fails with `ConnectionClosed`, as a CEC
+    /// adapter unplugged under the command does. Pass `enabled = false`
+    /// to restore the default wake in place.
+    #[instrument(skip(self))]
+    pub fn set_power_on_closes(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.power_on_closes.insert(address.to_string());
+        } else {
+            state.power_on_closes.remove(address);
+        }
+    }
+
     /// Override the `PowerState` a freshly-constructed
     /// `MockConnection` initializes with. Takes precedence over
     /// `MockVendorConfig::initial_power_state` and survives across

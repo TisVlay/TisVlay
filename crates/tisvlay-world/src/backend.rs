@@ -163,6 +163,19 @@ pub(crate) async fn connect_flow(
                     };
                     if let Err(error) = &result {
                         warn!(%tv, ?cmd, %error, "backend command failed");
+                        // A power-on carries no reply to fail, so a link
+                        // closing under it would lose it: hand it back to
+                        // the world, ahead of the `Disconnected` below.
+                        if matches!(cmd, BackendCmd::PowerOn)
+                            && (matches!(error, tisvlay_core::Error::ConnectionClosed)
+                                || !connection.is_connected())
+                        {
+                            let _ = inbox.send(InEvent::Backend {
+                                tv,
+                                dial,
+                                event: BackendEvent::PowerOnLost,
+                            });
+                        }
                     }
                     // Deferred rpc release: the caller hears back at device
                     // speed — the backpressure that keeps rapid absolute
