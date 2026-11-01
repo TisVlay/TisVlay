@@ -66,6 +66,8 @@ tisvlay/
 │   └── tisvlay-gui-app/           # Settings window: state, rpcs, tests, `tisvlay-gui`
 │                                 # binary (lib name tisvlay_gui)
 │
+├── .github/                      # CONTRIBUTING.md, SECURITY.md, PR + issue templates,
+│                                 # workflows, dependabot.yml
 ├── packaging/
 │   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM)
 │   ├── systemd/                  # tisvlay-daemon.service (system), session/tray/greeter
@@ -250,19 +252,9 @@ CI (`.github/workflows/ci.yml`) gates its jobs on what a change touches: a `chan
 
 ### Code conventions
 
-Rules the lints can't fully express; the lint policy and its reasons are in `docs/build.md` § Lint policy.
+The rules live in the contributing guide, imported here:
 
-- **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
-- **Errors:** published crates and the client SDK expose `thiserror` types callers can match on. Binaries and binary-glue libraries (`tisvlay-runtime`, the service crates' library halves) may use `anyhow`. The model is in `docs/architecture.md` § Error model.
-- **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
-- **Secrets never reach `Debug`.** A typed secret is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. The LG client key is one everywhere it's typed (`Credentials`, `LgVendorConfig`, the register payloads, `WebOsClient`); a new credential field uses it too. The untyped vendor config is a `tisvlay_core::VendorConfig`, and the wire requests that carry one (`AddTv`, `UpdateConfig`) are hand-written the same way: their `Debug` prints key names only. `Secret` wraps secrecy 0.10 (redacted `Debug`, zeroize on drop, `Serialize` opt-in); zenoh-config still pins 0.8, so `deny.toml` skips that duplicate.
-- **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
-- **Published crates** (core, protocol, and the `tisvlay` SDK) keep items private by default. `#[non_exhaustive]`, public-dependency and README rules are in `docs/build.md` § Public API policy; `just package-check` packages them.
-- **A wire-visible change is a `feat` or a breaking commit, never a `fix`:** any change to a key, payload, rpc or decode rule. Clients and services check each other's release on `major.minor`, and release-plz bumps the minor only for those commit types, so a protocol change shipped as a patch would pass the check and fail at runtime.
-- **A new rpc is declared once** in its family's table in `tisvlay-protocol`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. A world-answered rpc also gets a `Command` variant, and the reactor's exhaustive match then demands its one-shot handler in `tisvlay-world`'s `systems/commands.rs`. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
-- **A new per-TV attribute in the CLI** is a getter/setter verb, `<attribute> <tv> [<value>]`, with `--toggle`/`--clear` where they apply: no `set-` prefix, `on|off` for switches, and the bare form reads the value. No aliases for renamed verbs.
-- **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
-- **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.
+@../.github/CONTRIBUTING.md
 
 ### Dead Code Detection
 

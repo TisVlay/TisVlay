@@ -14,7 +14,7 @@ Give outside contributors a front door: a short guide that says where each kind 
 | Conduct | Nothing for now: no `CODE_OF_CONDUCT.md`, no expectations section. |
 | AI-assisted PRs | Held to the same standard: the author understands and tests what they submit. No disclosure required. |
 | Companion files | PR template, bug-report form, feature-request form. |
-| Discussions | Enable them, and send questions there instead of to issues. |
+| Discussions | Enabled on 2026-11-01. Send questions there instead of to issues. |
 | mdBook plan | Retire it in this PR. Read the Docs is live. Its authoring rules move into the guide. |
 
 ## Layout
@@ -68,7 +68,6 @@ GitHub's page on contributor guidelines states `.github/` for `CONTRIBUTING.md`,
 
 - Authoring rules go to the guide's Docs section.
 - The deferred generators (G3 NixOS options page, G4 vendor tables) go to a `docs/ideas/` entry with an index line.
-- Check whether the deferred GUI and tray screenshots are still missing from the book. If they are, add them to that same idea entry.
 - Sweep the inbound references: `CLAUDE.md`'s What's Next, `docs/plans/README.md`, and the comment in `flake.nix`.
 
 ## Commits
@@ -89,8 +88,6 @@ Before merge:
 - Run the new classifier pattern against sample paths: the guide and templates count as docs-only, while `.github/workflows/ci.yml`, `.github/dependabot.yml` and a crate README don't.
 - Follow the guide's setup steps from a fresh clone, including the mock-backend run.
 - Read the rendered guide and issue forms on the branch.
-
-Enable Discussions just before merge, so the new links don't point at a page that doesn't exist yet. It's a repository setting, so confirm with the maintainer first.
 
 After merge, since GitHub reads these from the default branch:
 

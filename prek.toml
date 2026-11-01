@@ -33,7 +33,7 @@ hooks = [
 ]
 
 # Conventional Commits subject check (commit-msg stage). Advisory locally —
-# the authoritative gate is the PR-title workflow (the repo squash-merges) —
+# the authoritative gate for squash-merged PRs is the PR-title workflow —
 # but it catches malformed subjects at commit time. release-plz parses subjects
 # for version bumps + CHANGELOGs, so the format is load-bearing, not cosmetic.
 [[repos]]
