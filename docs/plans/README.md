@@ -16,6 +16,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 ## Active plans
 
 - [`mdbook-docs-site.md`](mdbook-docs-site.md) — user-facing documentation site built with mdBook and published on Read the Docs; CLI reference auto-generated from the clap tree, prose guide covering install, pairing, profiles, session automation, and troubleshooting.
+- [`contributing.md`](contributing.md) — a contributing guide and issue and PR templates under `.github/`, with the code conventions moved out of `CLAUDE.md` and the mdBook plan retired.
 
 When a plan is in flight, list it here with a one-line summary of the work it covers:
 
