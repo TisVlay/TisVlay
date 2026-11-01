@@ -189,11 +189,11 @@ release.yml
 - **Sigstore bundles as assets, not only attestations.** `gh attestation verify` looks attestations up through the GitHub API, so the verifier needs gh signed in; the bundles let anyone verify offline, they're locked in with the release, and they're what OpenSSF Scorecard's Signed-Releases check reads.
 - **The maintainer's approval to publish, not only a `v*` tag.** A second account has write access, and write access can push tags and publish releases, while the environments only check the tag's name. So `crates-io` and `cachix` need the maintainer's approval, and the tag ruleset limits `v*` tags to admins. release-plz's per-crate tags (`tisvlay-core-v…`) don't match `v*`.
 - **Not attested:** the Nix outputs (Cachix signs them, and Nix users verify with the cache key) and the `.crate` files (crates.io users don't check GitHub attestations, and trusted publishing already ties each publish to `release.yml`).
-- **The version bump runs locally.** `release-plz update` picks the version from the conventional-commit history and writes the CHANGELOGs, and the result merges as a normal PR. The release-PR workflow (`release-plz.yml`) stays off: a PR opened with the workflow's own token doesn't trigger CI, so it could never pass the checks `main` requires. Turning it on means giving it a GitHub App token.
+- **The version bump runs locally.** `just release-bump` runs `release-plz update`, which picks the version from the conventional-commit history and writes the CHANGELOGs, and the result merges as a normal PR. The release-PR workflow (`release-plz.yml`) stays off: a PR opened with the workflow's own token doesn't trigger CI, so it could never pass the checks `main` requires. Turning it on means giving it a GitHub App token.
 
 ### Release checklist
 
-1. On a branch, run `release-plz update`, review the version and the CHANGELOGs, run `just package-check`, and merge it as a PR titled `chore(release): X.Y.Z`.
+1. On a branch, run `just release-bump` (`release-plz update`, then the book's generated partials), review the version and the CHANGELOGs, run `just package-check`, and merge it as a PR titled `chore(release): X.Y.Z`.
 2. Optionally rehearse: tag the merge commit `vX.Y.Z-rc.1`, watch the run, `just verify-release vX.Y.Z-rc.1` on the draft, then delete the draft and the tag.
 3. Tag the merge commit `vX.Y.Z` and run `just verify-release vX.Y.Z` on the draft.
 4. Check the cached Nix install against the draft: on a NixOS host set up as the book's Installation page says, `nixos-rebuild build` fetches `tisvlay` from tisvlay.cachix.org instead of building it (`nix path-info --store https://tisvlay.cachix.org <path>`).

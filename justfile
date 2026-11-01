@@ -740,6 +740,15 @@ verify-release tag:
         echo "release attestation: OK for every asset"
     fi
 
+# release-plz picks the version from the commit history and writes the
+# CHANGELOGs; the book's generated partials follow, its release version
+# among them, so a bump needs nothing remembered by hand
+# (packaging/README.md "Release checklist").
+# Bump the version and CHANGELOGs, then regenerate the book's partials.
+[group('package')]
+release-bump: && docs-gen
+    release-plz update --config .config/release-plz.toml
+
 # Package the crates.io crates and build each from its packaged source,
 # the way crates.io will (docs/build.md "First-publish checklist"). One
 # invocation, so cargo resolves their path dependencies on each other
