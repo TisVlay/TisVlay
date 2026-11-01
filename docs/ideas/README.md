@@ -17,6 +17,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Power and activity vocabulary (the renames still owed by older names; the glossary itself now lives in architecture.md)](power-vocabulary.md)
 - [Strict decoding of unknown fields (requests, stores and configs skip unknown fields today, so typos and renamed fields vanish silently; open questions on which surfaces, store failure, renames)](strict-decoding.md)
 - [SSDP `NOTIFY` passive listener](ssdp-notify-passive-listener.md)
+- [mDNS/DNS-SD discovery (no firewall rule needed on most systems; a path to IPv6 discovery)](mdns-discovery.md)
 - [Pair-time MAC capture (ARP snoop for vendors without a device-reported MAC)](pair-time-mac-capture.md)
 - [WoL via raw socket (CAP_NET_RAW)](wol-raw-socket.md)
 - [Polkit gating for multi-user shared workstations](polkit-multi-user.md)

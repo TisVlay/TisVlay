@@ -51,6 +51,14 @@ sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address
 sudo firewall-cmd --reload
 ```
 
+On NixOS, insert the rule into the firewall's own chain, ahead of its final drop, and accept through its own target:
+
+```nix
+networking.firewall.extraCommands = ''
+  iptables -I nixos-fw -p udp -s 192.168.1.0/24 -j nixos-fw-accept
+'';
+```
+
 ## Ways to discover and add a TV
 
 - **The pairing wizard** scans live: TVs appear as they answer, and the host's CEC adapters are listed alongside the network scan.
