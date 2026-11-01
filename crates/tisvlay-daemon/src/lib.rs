@@ -623,6 +623,7 @@ async fn serve_stack(
                     session_ready.session_present.store(true, Ordering::Release);
                     session_ready.notify.notify_one();
                     if mirror.is_none() {
+                        info!("session present, mirroring its stream state");
                         match mirror_stream(
                             &stream_session,
                             &stream_site,
@@ -637,6 +638,7 @@ async fn serve_stack(
                     }
                 }
                 zenoh::sample::SampleKind::Delete => {
+                    info!("session gone, clearing the stream armed set");
                     if let Some(task) = mirror.take() {
                         task.abort();
                         let _ = task.await;
