@@ -83,9 +83,9 @@ impl PrivateBus {
     }
 
     /// A private bus of the caller's own, for tests that own well-known
-    /// names (a [`FakeLogind`](crate::fake_logind::FakeLogind), a fake
-    /// ScreenSaver). Name ownership is bus-wide, so such tests sharing one
-    /// bus in a process — plain `cargo test` runs a binary's tests
+    /// names (a [`FakeLogind`](crate::fake_logind::FakeLogind)). Name
+    /// ownership is bus-wide, so such tests sharing one bus in a
+    /// process — plain `cargo test` runs a binary's tests
     /// concurrently in one process — would claim each other's names.
     /// Dropping it ends the daemon.
     ///

@@ -1,6 +1,6 @@
 # TisVlay Architecture
 
-The current (v0.3.0+) architecture: a **bevy_ecs world** owns every daemon state machine, and **zenoh over Unix sockets** is the IPC surface. This document is the durable successor to the plan documents that drove the rewrite (the spike and parity plans, now retired to git history; [design.md](design.md) remains for the retired served-D-Bus stack ≤ v0.2.0). Consumed desktop D-Bus (logind, ScreenSaver, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus; nothing serves D-Bus anymore.
+The current (v0.3.0+) architecture: a **bevy_ecs world** owns every daemon state machine, and **zenoh over Unix sockets** is the IPC surface. This document is the durable successor to the plan documents that drove the rewrite (the spike and parity plans, now retired to git history; [design.md](design.md) remains for the retired served-D-Bus stack ≤ v0.2.0). Consumed desktop D-Bus (logind, Mutter's IdleMonitor, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus; nothing serves D-Bus anymore.
 
 ## Process inventory
 
@@ -214,4 +214,4 @@ Learned the hard way; violating any of these produces silent wrong behavior, not
 
 ## Testing
 
-See [testing.md](testing.md). Layers: `tisvlay-test` (private `dbus-daemon`, fake logind/ScreenSaver) for consumed-D-Bus adapters, plus a relay that breaks zenoh links; `tisvlay-mock` (always-registered fake vendor, deliberately `Transport::Network` so carrier/route tests exercise real code paths); wire-level integration tests in each binary crate's `tests/` booting real stacks on temp sockets.
+See [testing.md](testing.md). Layers: `tisvlay-test` (private `dbus-daemon`, fake logind) for consumed-D-Bus adapters, plus a relay that breaks zenoh links; `tisvlay-mock` (always-registered fake vendor, deliberately `Transport::Network` so carrier/route tests exercise real code paths); wire-level integration tests in each binary crate's `tests/` booting real stacks on temp sockets.

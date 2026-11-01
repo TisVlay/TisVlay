@@ -27,7 +27,7 @@ Configuration: `.config/nextest.toml` with two profiles:
 | Profile | Retries | Slow warning | Output |
 |---------|---------|--------------|--------|
 | `default` | 0 | 60s | terminal |
-| `ci` | 0 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
+| `ci` | 0 | 60s | JUnit XML at `target/nextest/ci/junit.xml` |
 
 **Process-per-test isolation** is nextest's default and the canonical runner, since wire tests each boot a full daemon (or daemon + session service) stack — a zenoh runtime on a per-test temp Unix socket, netlink sockets, and for the consumed-D-Bus adapters a private `dbus-daemon`. The suite doesn't *depend* on it, though: plain `cargo test --workspace --all-features` passes too, with each binary's tests concurrent in one process. That holds because every rig binds its own sockets, and tests that own well-known D-Bus names take a [`PrivateBus::isolated`](#privatebus) bus of their own. Keep it that way: a test that only passes alone in its process is relying on an accident.
 
@@ -57,7 +57,7 @@ flowchart LR
     NX --> R{{"tests<br/>(process-per-test)"}}
     DT --> D{{"doc tests"}}
 
-    JTC["just test-ci"] --> COV["cargo llvm-cov<br/>--no-report nextest"]
+    JTC["just test-ci"] --> COV["llvm-cov show-env,<br/>then cargo nextest run"]
     COV --> R
     COV --> LCOV["lcov.info"]
     LCOV --> RATCHET{"coverage >= baseline?"}
@@ -131,7 +131,7 @@ Measured with `cargo-llvm-cov`, ratcheted in CI.
 just cov          # text summary
 just cov-html     # HTML report in browser
 just cov-lcov     # lcov.info for VS Code Coverage Gutters
-just cov-ratchet  # fails if below baseline (CI uses this)
+just cov-ratchet  # fails if below baseline (test-ci applies the same baseline)
 ```
 
 The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Run `just cov` to see the current number.
@@ -275,7 +275,7 @@ Test-only crates are `publish = false` and split by what they fake:
 
 | Crate | Fakes | Example |
 |---|---|---|
-| `tisvlay-test` | OS environment (the system tisvlay runs on) | `PrivateBus`, `FakeLogind`, `FakeScreenSaver` |
+| `tisvlay-test` | OS environment (the system tisvlay runs on) | `PrivateBus`, `FakeLogind`, `Relay` |
 | `tisvlay-mock` | TV protocol peer (fake vendor backend) | `MockConnector`, `MockHandle` |
 
 There is no separate orchestration crate: integration tests live in each binary crate's own `tests/` directory and boot the real `serve()` entry points — the same functions the production binaries call — on per-test temp sockets. See [Wire-level integration tests](#wire-level-integration-tests).
@@ -289,11 +289,11 @@ flowchart TD
     W["<b>crates/*/tests/</b><br/>wire tests: real zenoh clients<br/>over a per-test Unix socket"]
     D["<b>tisvlay-daemon / tisvlay-session</b><br/>the real serve() stack under test"]
     M["<b>tisvlay-mock</b><br/>fake TV (peer side)<br/><i>MockConnector · MockHandle</i>"]
-    T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · FakeScreenSaver · Relay</i>"]
+    T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · Relay</i>"]
 
     W -->|"rpcs + subscribers<br/>(zenoh)"| D
     D -->|"TvBackend / TvConnection traits"| M
-    D -->|"consumed D-Bus: logind / ScreenSaver"| T
+    D -->|"consumed D-Bus: logind"| T
     W -.->|"drives via MockHandle"| M
     W -.->|"drives via fake emit_*"| T
 ```
@@ -301,7 +301,7 @@ flowchart TD
 ### Rules for deciding where new test code lives
 
 1. **Does it implement a `tisvlay-core` trait?** → `tisvlay-mock`. It's a backend, just a fake one — same tier as `tisvlay-lg` (every daemon registers it), not test scaffolding.
-2. **Does it fake part of the OS we don't own (dbus-daemon, logind, ScreenSaver, a socket link, etc.)?** → `tisvlay-test`.
+2. **Does it fake part of the OS we don't own (dbus-daemon, logind, a socket link, etc.)?** → `tisvlay-test`.
 3. **Does it exercise a binary end to end?** → that binary crate's own `tests/` directory, booting the crate's public `serve()` and asserting over the wire.
 
 ### Why these boundaries
@@ -314,7 +314,7 @@ Dev-only crate providing shared infrastructure for the consumed-D-Bus adapters a
 
 ### PrivateBus
 
-`PrivateBus::shared()` is one private `dbus-daemon` per test process (via `LazyLock`): one per test under nextest, one shared by a binary's tests under plain `cargo test`. Tests that own a well-known name (a `FakeLogind`, a fake ScreenSaver) use `PrivateBus::isolated()` instead — a bus of their own, ended when dropped — because name ownership is bus-wide.
+`PrivateBus::shared()` is one private `dbus-daemon` per test process (via `LazyLock`): one per test under nextest, one shared by a binary's tests under plain `cargo test`. Tests that own a well-known name (a `FakeLogind`) use `PrivateBus::isolated()` instead — a bus of their own, ended when dropped — because name ownership is bus-wide.
 
 ```rust
 let bus = PrivateBus::shared();
@@ -333,17 +333,14 @@ Hand-rolled stubs for the system services tisvlay consumes over D-Bus:
 
 | Fake | Real service | Consumed by | Key capability |
 |------|-------------|-------------|----------------|
-| `FakeLogind` | `org.freedesktop.login1.Manager` | daemon's logind watcher (`watch_logind`) | `Inhibit` method + `PrepareForSleep` signal |
-| `FakeScreenSaver` | `org.freedesktop.ScreenSaver` | session service's ScreenSaver adapter | `GetSessionIdleTime` + `ActiveChanged` signal |
+| `FakeLogind` | `org.freedesktop.login1` (Manager and one graphical Session) | daemon's logind watcher (`watch_logind`), session service's lock watcher | `Inhibit` + `PrepareForSleep`, and a `LockedHint` it can toggle |
 
 Register on any bus connection:
 
 ```rust
 let logind = FakeLogind::register(&conn).await?;
 logind.emit_prepare_for_sleep(true).await?;
-
-let ss = FakeScreenSaver::register(&conn).await?;
-ss.emit_active_changed(true).await?;  // simulate lock
+logind.set_locked(true).await?;  // simulate lock
 ```
 
 ### Relay
@@ -419,7 +416,7 @@ async fn wire() -> Wire {
 
 ### Test inventory
 
-- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `pairing_profiles.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
+- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `device.rs`, `held_wake.rs`, `pairing_profiles.rs`, `power_edge.rs`, `reload.rs`, `remote_keys.rs`, `store.rs`, `wake_list.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
 - `tisvlay-daemon/tests/it/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
 - `tisvlay-daemon/tests/it/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
 - `tisvlay-daemon/tests/it/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
@@ -427,10 +424,12 @@ async fn wire() -> Wire {
 - `tisvlay-daemon/tests/it/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
 - `tisvlay-daemon/tests/it/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
 - `tisvlay-daemon/tests/it/access.rs` — socket-permission flips against a live daemon: granting or revoking access mid-run, the kernel-level path a seat ACL change takes.
+- `tisvlay-daemon/tests/it/supervisor.rs` — the stack supervisor: a dead core task ends the stack with an error, and an ordered shutdown flushes the store's pending write.
+- `tisvlay-daemon/tests/it/wakeup.rs` — the wake list the daemon writes beside its socket for the wakeup unit.
 - `tisvlay-daemon/src/seat/tests.rs` — private logind manager/seat/session objects drive the real seat-access watch against a temporary Unix socket. Assertions inspect socket/directory ACLs, qualification gates, user switches, empty seats, seat add/remove, read-failure holding, and periodic repair. Only the private watch's resync interval is shortened; production retains its five-minute cadence.
 - `tisvlay-greeter/src/lib.rs` (`tests`) — real Zenoh router/cache tests cover startup presence, timeout hydration, idle/resume deduplication, history replay, and clean exit. An idle-watch factory supplies transitions without a compositor; separate virtual-time tests cover Wayland retry and Mutter fallback decisions. Filesystem discovery takes explicit directories, with no test-runner environment mutation.
 - `tisvlay-gui-app/src/dbus.rs` (`tests`) — isolated buses verify GUI properties, all Application activation methods, cold tokens, name ownership, and duplicate-instance handoff. Zbus reports a taken name as `Error::NameTaken`, which must follow the proxy-activation path. Warm/dropped-window activation assertions share the existing Slint event-loop initializer.
-- `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the ScreenSaver adapter (via `FakeScreenSaver`), user-store persistence, and the idle-timeout watch.
+- `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the lock watcher (via `FakeLogind`'s `LockedHint`), user-store persistence, and the idle-timeout watch.
 - `tisvlay-tray/tests/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
 - `tisvlay-tray/src/lib.rs` (`orchestration_tests`) — real daemon/session stacks drive the tray's view through the SDK clients (`follow_services`), the command dispatcher, scroll coalescers, and captured pairing/liveliness notifications. A private handle adapter substitutes an in-memory tray for ksni updates without changing RPC or subscription behavior. Daemon-lifetime changes must discard old TVs and system profiles; the session-owned user catalog is independent.
 - `tisvlay/tests/it/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, the release check, and discarding cached TVs/profiles across daemon lifetimes.
@@ -497,7 +496,7 @@ Slint propagates accessibility properties to descendants, so an `accessible-id` 
 
 ### Pin
 
-`i-slint-backend-testing` is pinned `=1.17.0` in `tisvlay-gui`'s Cargo.toml because the crate's README warns "preliminary API, no semver" — it moves test helpers between modules across minors (e.g. [slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516)), so upstream bumps are treated as breaking and re-pinned deliberately.
+`i-slint-backend-testing` is pinned exactly to the Slint version in `tisvlay-gui-app`'s Cargo.toml because the crate's README warns "preliminary API, no semver" — it moves test helpers between modules across minors (e.g. [slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516)), so upstream bumps are treated as breaking and re-pinned deliberately.
 
 ## Test observability
 
@@ -556,7 +555,7 @@ Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
 ### D-Bus name ownership is bus-global
 
-Each fake D-Bus service (`FakeLogind`, `FakeScreenSaver`) claims a well-known name, and only one owner can exist per bus. Plain `cargo test` runs a binary's tests concurrently in one process, so two tests registering the same fake on `PrivateBus::shared()` would claim each other's name. Any test that owns a name therefore takes `PrivateBus::isolated()`; `shared()` is for tests that only connect or use unique object paths.
+A fake D-Bus service (`FakeLogind`) claims a well-known name, and only one owner can exist per bus. Plain `cargo test` runs a binary's tests concurrently in one process, so two tests registering the same fake on `PrivateBus::shared()` would claim each other's name. Any test that owns a name therefore takes `PrivateBus::isolated()`; `shared()` is for tests that only connect or use unique object paths.
 
 ### Real-time waits in wire tests
 
@@ -566,7 +565,7 @@ Deterministic time doesn't apply to zenoh or zbus round-trips, so wire tests wai
 
 These document **why** the framework is shaped this way:
 
-1. **Private dbus-daemon per test binary** (not per test, not shared across binaries). Avoids zbus's `OnceCell` connection cache; amortizes 15-40ms spawn cost via `LazyLock`.
+1. **Private dbus-daemon per test process** (`PrivateBus::shared()`, via `LazyLock`): one per test under nextest, one per binary under plain `cargo test`, never shared across binaries. Avoids zbus's `OnceCell` connection cache.
 
 2. **`parking_lot::Mutex` for MockState** (not `tokio::sync::Mutex`, not `std::sync::Mutex`). Brief critical sections never held across `.await` — async mutex overhead unnecessary. `parking_lot` over `std` because it has no poison state, which eliminates `.expect("…poisoned")` boilerplate at every call site. Migration applies workspace-wide for short non-async critical sections.
 
@@ -582,6 +581,5 @@ These document **why** the framework is shaped this way:
 
 Deferred until the framework matures or a specific need arises:
 
-- **Mutation testing** (`cargo-mutants`) — worth running once coverage stabilizes; would surface tests that pass but don't actually assert meaningful properties.
-- **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points; defer until something obvious emerges (e.g., SSAP message parsing).
-- **Benchmark infrastructure** (`criterion`, `bencher`) — ad-hoc measurement is script-driven today (`scripts/bench_network.py`, the triage scripts); a maintained benchmark suite waits for a recurring performance question.
+- **Mutation testing** and **fuzzing** are filed as ideas: [mutation-testing.md](ideas/mutation-testing.md) and [parser-fuzzing.md](ideas/parser-fuzzing.md).
+- **Benchmark infrastructure** (`criterion`, `bencher`) — ad-hoc measurement is script-driven today (`scripts/bench_wake.py`, the triage scripts); a maintained benchmark suite waits for a recurring performance question.

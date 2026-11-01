@@ -4,7 +4,7 @@
 
 A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Supports LG WebOS TVs (network, SSAP) and HDMI-CEC (the Linux CEC subsystem, via `linux-cec`), with a vendor- and transport-agnostic architecture designed for adding Samsung, Sony, and other backends. The user's Nvidia GPU can't tunnel HDMI-CEC, so the CEC path needs a CEC adapter (USB, or a DP→HDMI adapter on an amdgpu/i915 output) — the network path (LG WebOS SSAP) needs none.
 
-Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machines, and **zenoh over Unix sockets** is the IPC surface — cached publishers for state, queryables for rpcs, liveliness tokens for presence. The served-D-Bus stack shipped through v0.2.0 and was then removed; consumed desktop D-Bus (logind, ScreenSaver, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus. The authoritative architecture reference (topology, key space, world/reactor model, empirical zenoh laws) is [docs/architecture.md](../docs/architecture.md); the rewrite's phase-by-phase history lives in git.
+Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machines, and **zenoh over Unix sockets** is the IPC surface — cached publishers for state, queryables for rpcs, liveliness tokens for presence. The served-D-Bus stack shipped through v0.2.0 and was then removed; consumed desktop D-Bus (logind, Mutter's IdleMonitor, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus. The authoritative architecture reference (topology, key space, world/reactor model, empirical zenoh laws) is [docs/architecture.md](../docs/architecture.md); the rewrite's phase-by-phase history lives in git.
 
 ## Target Hardware
 
@@ -36,7 +36,7 @@ tisvlay/
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)
 │   ├── tisvlay-mock/              # In-memory mock backend (always registered, unpublished)
 │   ├── tisvlay-test/              # OS-environment fakes (private dbus-daemon,
-│   │                             # fake logind/ScreenSaver, link-breaking relay) — dev-only
+│   │                             # fake logind, link-breaking relay) — dev-only
 │   │
 │   ├── tisvlay-protocol/          # Key-space vocabulary, payload structs (serde wire
 │   │                             # payloads; the world stores them as State<T>), typed
@@ -49,7 +49,7 @@ tisvlay/
 │   │                             # probe (EDID matcher driving the watcher set)
 │   ├── tisvlay-session/           # Per-user session service: gateway (client link to
 │   │                             # system socket + router owning user/**), user profiles,
-│   │                             # ScreenSaver lock/unlock, wayland idle
+│   │                             # logind lock/unlock, wayland and Mutter idle
 │   ├── tisvlay-greeter/           # Login-greeter idle client (ext-idle-notify → greeter/idle)
 │   ├── tisvlay-tray/              # ksni tray over the SDK clients + desktop notifications
 │   │                             # (notify.rs: settings service on the user socket)
@@ -98,7 +98,7 @@ tisvlay/
 | WebSocket (LG) | `tokio-tungstenite` + `rustls` |
 | JSON / config | `serde`, `serde_json`, `toml`, `directories` |
 | CLI | `clap` |
-| Consumed D-Bus | `zbus` (logind, ScreenSaver, ksni, GUI activation) |
+| Consumed D-Bus | `zbus` (logind, Mutter idle, ksni, GUI activation) |
 | System tray | `ksni` |
 | Notifications | `notify-rust` (z-with-tokio) |
 | Wayland | `wayland-client`, `wayland-protocols` |
@@ -264,7 +264,7 @@ Public items are invisible to Rust's `dead_code` lint. Use `cargo workspace-unus
 
 See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
 
-- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters, and a `Relay` that cuts, stalls or drops a batch on a zenoh link while the service keeps running.
+- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind) for the consumed-D-Bus adapters, and a `Relay` that cuts, stalls or drops a batch on a zenoh link while the service keeps running.
 - `tisvlay-mock` — fake vendor backend (implements `tisvlay-core` traits), always registered in the daemon.
 - Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; SDK: client + conformance), single-suite crates as one `tests/<name>.rs` (session, tray settings) — they boot real daemon/session stacks on temp sockets, no fixture crate needed. The SDK's conformance suite runs every mirror through the same link-breaking cases, against a fake service or the real stacks.
 

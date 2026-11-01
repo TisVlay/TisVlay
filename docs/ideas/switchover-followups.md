@@ -4,7 +4,11 @@ Small items deferred at the v0.3.0 switchover, grouped here because each is too 
 
 ## Tray gettext re-wiring
 
-The v0.2 tray owned a gettext domain (`tisvlay-tray.pot`, build.rs-compiled `.mo`); the zenoh-era tray shipped without it, so its menu items and notification copy are English-only string literals. Re-wire `gettext()` around user-facing strings, restore the build.rs catalog compile, and re-add the tray extraction pass to `just i18n-extract` (the recipe went GUI-only at the switchover). The i18n architecture doc (docs/i18n.md) still describes the two-domain layout to return to.
+The v0.2 tray owned a gettext domain (`tisvlay-tray.pot`, build.rs-compiled `.mo`); the zenoh-era tray shipped without it, so its menu items and notification copy are English-only string literals. Re-wire `gettext()` around user-facing strings, restore the build.rs catalog compile, and re-add the tray extraction pass to `just i18n-extract` (the recipe went GUI-only at the switchover). [docs/i18n.md](../i18n.md) covers the GUI side; the tray would mirror it:
+
+- **Catalogs** under `crates/tisvlay-tray/lang/`: a committed `tisvlay-tray.pot` and per-locale `<locale>/LC_MESSAGES/tisvlay-tray.{po,mo}`.
+- **A `build.rs` running `msgfmt`**, since the tray has no Slint to compile `.mo` files as a side effect. It soft-fails with `cargo:warning=` (the runtime falls back to source strings), the pattern `tisvlay-gui-app/build.rs` uses for `cargo-about`. Checking in `.mo` files was the alternative: no build step, but two diffs per `.po` edit and binary blobs in git.
+- **`bindtextdomain` + `textdomain` directly**, against `CARGO_MANIFEST_DIR/lang`, rather than `gettextrs::TextDomain`, whose lookup walks XDG paths only and misses the source tree in dev runs. Installed builds then need the catalogs installed under `/usr/share/locale` and the binary taught to look there.
 
 ## Mock backend ships unconditionally
 

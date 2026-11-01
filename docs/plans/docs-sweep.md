@@ -37,10 +37,10 @@ Users read these, so they go first.
 
 ## 3. ScreenSaver and other removed code
 
-- [ ] **`docs/testing.md`:** remove `FakeScreenSaver` and its sample; fix the Slint testing pin and crate, the `ci` slow-test timeout, the `cov-ratchet` and llvm-cov pipeline claims, the dbus-daemon-per-binary contradiction, and the suite lists (world has 11 suites; daemon adds `supervisor` and `wakeup`). Link the fuzzing and mutation ideas instead of restating them.
-- [ ] **ScreenSaver as consumed:** `.claude/CLAUDE.md`, `docs/architecture.md`, `docs/backends/implementing-a-vendor.md`. The real list is logind, Mutter IdleMonitor, ksni, notifications and GUI activation. Also the rustdoc in `tisvlay-test/src/dbus.rs`.
-- [ ] **`docs/backends/implementing-a-vendor.md`:** state the real state contract (refresh on reconnect plus a `get_state` after power and screen commands; no periodic poll, no `watch::Sender<PowerState>`), rewrite the verify section around `DispatchVerify`, add the missing capabilities and trait methods, and fix the `protocol.md` name (`docs/lg/` has `webos.md`).
-- [ ] **`docs/i18n.md`:** list only real recipes (`i18n-extract`, `i18n-update`), drop the tray's nonexistent `lang/` and `build.rs`, and fix the `cargo-about` fallback's crate. Move the tray's planned layout into `ideas/switchover-followups.md`.
+- [x] **`docs/testing.md`:** remove `FakeScreenSaver` and its sample; fix the Slint testing pin and crate, the `ci` slow-test timeout, the `cov-ratchet` and llvm-cov pipeline claims, the dbus-daemon-per-binary contradiction, and the suite lists (world has 11 suites; daemon adds `supervisor` and `wakeup`). Link the fuzzing and mutation ideas instead of restating them.
+- [x] **ScreenSaver as consumed:** `.claude/CLAUDE.md`, `docs/architecture.md`, `docs/backends/implementing-a-vendor.md`. The real list is logind, Mutter IdleMonitor, ksni, notifications and GUI activation. Also the rustdoc in `tisvlay-test/src/dbus.rs`.
+- [x] **`docs/backends/implementing-a-vendor.md`:** state the real state contract (refresh on reconnect plus a `get_state` after power and screen commands; no periodic poll, no `watch::Sender<PowerState>`), rewrite the verify section around `DispatchVerify`, add the missing capabilities and trait methods, and fix the `protocol.md` name (`docs/lg/` has `webos.md`).
+- [x] **`docs/i18n.md`:** list only real recipes (`i18n-extract`, `i18n-update`), drop the tray's nonexistent `lang/` and `build.rs`, and fix the `cargo-about` fallback's crate. Move the tray's planned layout into `ideas/switchover-followups.md`.
 
 ## 4. Other developer docs
 
@@ -102,6 +102,8 @@ Rewrite in current terms:
 - **Area 1:** the "What happens by default" table in Automation and the list in Quick Start stay. They describe behavior in the user's terms, which is what the pages are for, rather than copying config values. Streaming's defaults became plain-language behavior, and Sunshine's port links to the generated CLI reference.
 
 - **Area 2:** `firmware-quirks.md` keeps its Fix notes in the pre-0.3.0 code names, with a note saying where that logic lives now, rather than rewriting each fix. Two old tests have no successor: CEC identity following a dongle swap, and an LG `screen_off` accepting `ActiveStandby` when the wake refuses. The docs say so; they aren't filed as concerns yet.
+
+- **Area 3:** a finding beyond the plan: a poll-only network backend can't verify its screen actions, since the daemon refreshes such a backend's cached state only on connect. The vendor guide now says so; it isn't filed as an idea yet. The tray's planned i18n layout and its two design choices moved to `ideas/switchover-followups.md`.
 
 ## Verification
 
