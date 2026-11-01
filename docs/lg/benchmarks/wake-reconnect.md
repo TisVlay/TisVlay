@@ -1,106 +1,77 @@
-# Wake/Reconnect Benchmarks
+# Wake and reconnect timings
 
-Measured on LG OLED evo C3 42" (OLED42C3PUA) connected via Ethernet
-(2.5Gbps, eno2). Desktop: NixOS, Intel/Nvidia, KDE Plasma Wayland.
+How long a TV takes to come back after a TV power cycle, a PC sleep and a network blip, measured end to end on the installed stack: from the moment something acts to the moment the daemon holds a live connection and the CLI reads the TV as on.
 
-## Test methodology
+## Bench
 
-Sleep cycles measured via journald timestamps (`-o short-precise`).
-D-Bus power cycles via `busctl` calls. Network blips via `nmcli`.
-These measurements predate the 0.3.0 rewrite and were taken with a script since replaced by `scripts/bench_wake.py`; a re-measurement on the current stack is pending.
+- **TV:** LG OLED evo C3 42" (OLED42C3PUA), on Wi-Fi in a routed IoT VLAN. The PC reaches it through its gateway, and Wake-on-LAN crosses into the VLAN through a broadcast reflector ([isolated networks](../../book/src/operations/isolated-networks.md)). The same panel is also enrolled through a CEC adapter, for the CEC cycles.
+- **PC:** NixOS, KDE Plasma on Wayland, wired over 2.5 GbE (an Intel `igc` NIC), with NetworkManager doing DHCP.
+- **Stack:** the 0.5.0 release, installed, measured 2026-11-01.
 
-## Key metrics
+## Method
 
-- **Sleep → disconnect**: time from `PrepareForSleep` to `Connected=false`
-- **Wake → subscribed**: time from `System resumed` to `Subscribed to backend`
-- **Wake → login**: time from `System resumed` to `ScreenSaver` (session unlock)
-- **NM restored → subscribed**: time from NM `ConnectedSite` to subscription
+[`scripts/bench_wake.py`](../../../scripts/bench_wake.py) runs the cycles as root and records when it acted and when the TV read on again; its `report` lines those times up with the daemon's and the kernel's journal. Its docstring has the commands and what to do before a run. It stops the user's `tisvlay-session` for the run, so only system-profile actions fire: the TV powers off on PC sleep and on again on wake, and the screen goes off with DPMS.
 
-## Variant comparison (sleep/wake cycle)
+The anchors:
 
-Tested 6 variants to find the optimal NM watcher + WoL interaction:
+- **on command:** the CLI's `power <tv> on` going out.
+- **resume:** the kernel's `PM: suspend exit`.
+- **LG online:** the LG connector's registration completing after a wake (`LG TV online after wake`).
+- **connected:** the world applying the new connection with its first power state (`connected event applying`). From here the power getter can read on.
+- **reads on:** the CLI's power getter first reading `on`, polled every 250 ms. It trails *connected* by the poll and the publish.
 
-| Variant | Wake→login | Wake→sub | Sleep disconnect | Racing | NM clean |
-|---------|------------|----------|-----------------|--------|----------|
-| Baseline (no NM, 3s retries) | 16.5s | 18.6s | never | no | n/a |
-| V1 (NM, no debounce) | — | 16.1s | 8ms | **yes** | no |
-| V2 (NM, 500ms debounce) | — | 35.3s | 504ms | **yes** | no |
-| V3B (wake window suppression) | — | 18.4s | 9ms | no | yes |
-| VA (reconnecting flag, reconnect only) | — | 14.8s | 8ms | no | no |
-| **VA+ (reconnecting flag, both guards)** | **10-13s** | **14-18s** | **3ms** | **no** | **yes** |
-| VC (deferred wake via NM) | — | 18.0s | 4ms | **yes** | no |
+## Results
 
-### Variant details
+Medians, with the range in brackets.
 
-**V1 (NM, no debounce):** NM oscillated during wake (restored→lost→restored
-in ~50ms). First NM reconnect killed by second NM lost signal.
+### TV power cycle
 
-**V2 (NM, 500ms debounce):** Absorbed NM oscillation but added 500ms latency.
-logind and NM paths still raced. Worst result (35.3s).
+`power off`, a wait, then `power on`, which for LG is a WoL and a dial.
 
-**V3B (wake window suppression):** Suppressed all NM events for 30s after
-logind `PrepareForSleep(false)`. Worked but anchored to wake timestamp,
-so NM blip recovery was also suppressed during the window.
+| | 20 s off (n=3) | 10 min off (n=1) |
+|---|---|---|
+| on command → WoL sent | 0.02 s | 0.02 s |
+| on command → LG online | 1.07 s (0.35–1.19) | 6.95 s |
+| on command → connected | 5.00 s (4.90–6.02) | 10.16 s |
+| on command → reads on | 5.21 s (4.94–6.30) | 10.37 s |
 
-**VA (reconnecting flag):** Per-TV `reconnecting: bool` set during WoL,
-checked by `reconnect_disconnected`. NM reconnect suppressed but NM
-`disconnect_network_tvs` still fired (no-op since connection held by backend).
+The TV's network stays up in standby: within half a second of the WoL it accepts the WebSocket and closes it at once, until its SSAP service is ready. It registers about 1 s after a short standby and about 4 s after the long one, which then spent another 2.7 s answering the hardware-identity query. Between registering and *connected* the daemon waits for the TV's first power-state report, which comes once the TV reports `Active`: 3–4 s after registering, in both cases.
 
-**VA+ (both guards):** Extended VA to also skip `disconnect_network_tvs`
-for TVs with `reconnecting=true`. Fully clean: no NM interference at all.
+A CEC power cycle, on the same panel, reads on in 0.59 s (0.58–0.59, n=3). A CEC link stays connected through standby, so power-on is an Image View On over the live link, and the getter reads on as soon as the TV reports its new power status. When the panel itself lit wasn't measured.
 
-**VC (deferred wake):** logind emitted `SystemWake` instead of executing
-`on_wake` directly. Forwarder deferred actions until NM restored. NM
-oscillation killed in-flight connections. A late NM flap at +18s killed
-an already-working subscription. Fragile — rejected.
+### PC sleep
 
-## WoL retry interval
+`systemctl suspend` with a 45 s RTC alarm (n=2). The TV powers off on the way down and is woken on the way up.
 
-| Interval | D-Bus power cycle | Sleep wake |
-|----------|-------------------|------------|
-| 3s (old, 10 max) | 6.9s | 14-16s |
-| **500ms (new, 60 max)** | **6.8s** | **10-13s** |
+| | |
+|---|---|
+| suspend → daemon saw sleep | 0.02 s |
+| resume → daemon saw resume | 0.32 s (0.31–0.32) |
+| resume → WoL sent | 0.32 s (0.31–0.32) |
+| resume → last carrier up | 13.93 s (13.88–13.98) |
+| resume → route back | 18.72 s (18.17–19.27) |
+| resume → LG online | 22.71 s (22.46–22.97) |
+| resume → connected | 23.32 s (23.05–23.59) |
 
-Each retry attempt costs ~50ms (TCP connect + WebSocket close frame).
-TV SSAP ready ~5.2s after WoL from short power-off, ~8-12s from deep sleep.
-500ms polling catches it within one cycle of SSAP becoming ready.
+The PC's own network sets the pace, not the TV or the daemon. The NIC links up before the kernel finishes resuming, then drops and links up again about 10 s later; the route to the TV's VLAN, through the gateway, is back about 5 s after that. The daemon sends its WoL the moment it hears of the resume, while there's no route to the TV, so that packet is lost. The LG connector resends a WoL before every connect attempt, and the TV registers about 4 s after the route returns, as from the 10-minute standby above. The wake dial came through on attempt 32, both times.
 
-## Network blip recovery (nmcli off/on, no sleep)
+The table has no CLI "reads on" row for sleep: the run that produced it polled only after the alarm plus 20 s of awake time, long after the TV was back. The script now polls from the resume.
 
-| Metric | Value |
-|--------|-------|
-| NM lost → Connected=false | <1ms |
-| NM restored → subscribed | 136ms |
+### Network blip
 
-## TV stays on (automate_when=on_primary, non-primary input)
+`ip link set <iface> down`, 5 s, then `up` (n=2). The TV stays on.
 
-| Metric | Value |
-|--------|-------|
-| Wake → subscribed | 8.1s |
-| Notes | TV not powered off during sleep (Automated=false). WebSocket reconnect only. |
+| | |
+|---|---|
+| down → carrier lost | 0.05 s (0.05–0.06) |
+| up → carrier up | 3.63 s (3.50–3.76) |
+| up → route back | 10.36 s (10.35–10.36) |
+| up → connected | 10.52 s (10.51–10.52) |
+| up → reads on | 10.60 s (10.57–10.63) |
 
-## Static IP experiment
+The daemon parks the connection within 50 ms of the carrier dropping, and reconnects about 150 ms after the route to the TV returns. The rest is the PC: 2.5 GbE autonegotiation takes about 3.5 s, and NetworkManager restores the route to the gateway about 7 s after that. A route that appears for a moment as the link goes up, before carrier, sets off one early dial, which fails after 5 s without delaying the real one.
 
-Hypothesis: static IP eliminates DHCP, saving 2-3s.
+## Observations
 
-| Sample | NM restore | Wake→login |
-|--------|-----------|------------|
-| 1 (warm interface) | 3.6s | 10.1s |
-| 2 (DHCP profiles present) | 7.7s | 10.4s |
-| 3 (static only) | 8.1s | 13.4s |
-
-**Conclusion:** Not consistently faster. Bottleneck is Ethernet link
-negotiation (~3-4s), not DHCP handshake. Sample 1 was an outlier
-(interface was warm from manual activation).
-
-## Hardware observations
-
-- TV displays HDMI input before SSAP accepts WebSocket — greeter
-  visible ~8s after WoL, SSAP ready at ~10-12s
-- TV accepts WebSocket during boot but sends immediate close frame
-  (SSAP service not ready); backend retry loop handles this
-- WoL → TV NIC online is near-instant; the wait is for SSAP firmware boot
-- NM oscillates during wake: ConnectedGlobal → Disconnected → Connecting
-  → ConnectedSite within ~100ms, settles after ~3-8s
-- Ethernet link negotiation after sleep: ~3-4s for 2.5Gbps auto-negotiate
-- eno1 vs eno2: different NICs have different wake times (eno1: 19s, eno2: 3-4s)
+- After the second PC sleep's resume the display went DPMS-off, so the daemon screened the TV off, and it reported `Screen Off` through both blips. That doesn't change the connect timings. It did reproduce the dark-panel case in [connected-power-on.md](../../ideas/connected-power-on.md): the script's final `power on` to the connected, screen-off TV failed with `Operation not supported: power_on (requires capability: power)`, and a `screen_off` five seconds later found the screen still off.
+- On this bench a faster wake is the PC's network and the TV's to win, not the daemon's. The daemon's own share is the WoL after resume (0.3 s) and the reconnect once the route returns (0.15 s); everything else is waiting on the network or the TV.
