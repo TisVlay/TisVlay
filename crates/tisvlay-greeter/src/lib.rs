@@ -97,7 +97,9 @@ where
         .declare_publisher(keys::greeter_idle(site))
         .encoding(zenoh::bytes::Encoding::APPLICATION_JSON)
         .cache(CacheConfig::default().max_samples(1))
-        .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
+        .sample_miss_detection(
+            MissDetectionConfig::default().sporadic_heartbeat(Duration::from_millis(500)),
+        )
         .publisher_detection()
         .await
         .map_err(|e| anyhow!("declare greeter idle publisher: {e}"))?;

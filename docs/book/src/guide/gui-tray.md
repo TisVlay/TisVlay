@@ -37,7 +37,7 @@ The list on the left shows each TV with a green dot when it's connected, and whe
 
 Groups and controls the TV can't use are hidden: an HDMI-CEC TV has no backlight, volume, mute, or input controls, for example. If a TV is off the network and TisVlay has no MAC address for it, **Power on** is disabled and says why; see [The Wake-on-LAN MAC](../getting-started/pairing.md#the-wake-on-lan-mac).
 
-When the TV list is empty, it says why: **Daemon offline**, **TVs hidden: version mismatch**, or **No TVs configured**.
+When the TV list is empty, it says why: **Daemon offline**, **TVs hidden: version mismatch**, **Loading** (the service just started or came back, and its TVs are still arriving), or **No TVs configured**.
 
 ### Profiles
 
@@ -73,7 +73,7 @@ A TV that is on and reachable offers:
 - **Screen Off** (or **Screen On**)
 - **Volume**, showing the current value, with **Up (+10)**, **Down (-10)**, and **Mute** (or **Unmute**)
 
-Controls a TV doesn't support are left out. A TV that is off or unreachable, including an HDMI-CEC TV in standby, offers only **Power On (Wake)**, **Profiles**, and **Manage**/**Unmanage**. If the service isn't running the menu says **Daemon unavailable**, and with no TVs added it says **No TVs configured**.
+Controls a TV doesn't support are left out. A TV that is off or unreachable, including an HDMI-CEC TV in standby, offers only **Power On (Wake)**, **Profiles**, and **Manage**/**Unmanage**. If the service isn't running the menu says **Daemon unavailable**, with no TVs added it says **No TVs configured**, and right after an upgrade it may say **Version mismatch** and name both releases: see [Troubleshooting](../operations/troubleshooting.md#version-mismatch).
 
 **Hover** over the icon for a summary of each TV.
 
@@ -92,7 +92,7 @@ The tray shows desktop notifications for changes that happen while it's running 
 | **TV connection** | a TV connects or disconnects |
 | **Pairing outcome** | pairing or re-pairing completes or fails |
 | **Wake outcome** | a wake from standby starts, succeeds, or fails |
-| **Daemon offline** | the TisVlay service goes offline or comes back |
+| **Daemon offline** | the TisVlay service goes offline or comes back, or was upgraded to a release the tray can't talk to until you log in again |
 
 <details>
 <summary>Starting the app from a terminal</summary>

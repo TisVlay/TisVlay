@@ -827,6 +827,11 @@ pub(crate) struct ProfileEditorState {
     /// the system sleep row offers. `None` until the daemon answers, or
     /// when it couldn't ask logind: then every mode shows.
     pub sleep: Option<tisvlay::SleepSupport>,
+    /// A selection cleared because its profile left the mirror, selected
+    /// again if the same profile comes back: its service returning after
+    /// a blip (the PC waking, say). A deleted profile's id never
+    /// returns, and the next selection replaces it.
+    pub held: Option<(EditorKind, Uuid)>,
 }
 
 impl std::fmt::Debug for ProfileEditorState {
@@ -958,6 +963,7 @@ pub(crate) async fn select(
             kind: Some(kind),
             uuid: Some(uuid),
         };
+        state.held = None;
     }
 
     // Lazy prime: only fetch the body if not already cached (or if
@@ -1491,11 +1497,15 @@ pub(crate) async fn handle_system_changed(
 }
 
 /// `SystemProfileAdded(uuid)`: fetch + insert so subsequent selects
-/// hit the cache without a fetch. The master list redraws in the watch
-/// loop's render (`state_watch.rs`); the editor doesn't redraw here.
+/// hit the cache without a fetch, and select it again if it was the
+/// selection when it left (see [`ProfileEditorState::held`]). The master
+/// list redraws in the watch loop's render (`state_watch.rs`); the editor
+/// doesn't redraw here otherwise.
 pub(crate) async fn handle_system_added(
     editor: ProfileEditor,
     daemon: Arc<DaemonClient>,
+    session: Arc<RwLock<Option<SessionClient>>>,
+    app_weak: slint::Weak<AppWindow>,
     uuid: Uuid,
 ) {
     match fetch_system_profile_body(&daemon, uuid).await {
@@ -1512,10 +1522,15 @@ pub(crate) async fn handle_system_added(
             debug!(uuid = %uuid, "Added system profile body not in the mirror yet");
         }
     }
+    if take_held(&editor, EditorKind::System, uuid) {
+        dispatch_select_after_create(editor, daemon, session, app_weak, EditorKind::System, uuid)
+            .await;
+    }
 }
 
 /// `SystemProfileRemoved(uuid)`: drop from the catalog; clear the
-/// selection if it matched. The Slint side renders the
+/// selection if it matched, holding it to select again should the
+/// profile return (see [`ProfileEditorState::held`]). The Slint side renders the
 /// "Select a profile" empty state once `selected-row.uuid` is empty.
 pub(crate) fn handle_system_removed(
     editor: &ProfileEditor,
@@ -1565,21 +1580,39 @@ pub(crate) async fn handle_user_changed(
 /// User-side mirror of [`handle_system_added`].
 pub(crate) async fn handle_user_added(
     editor: ProfileEditor,
+    daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    app_weak: slint::Weak<AppWindow>,
     uuid: Uuid,
 ) {
-    let session_ref = session.read().await;
-    let Some(client) = session_ref.as_ref() else {
-        return;
-    };
-    match fetch_user_profile_body(client, uuid).await {
-        Some(body) => {
-            editor.lock().user.cache_body(uuid, body);
-        }
-        None => {
-            debug!(uuid = %uuid, "Added user profile body not in the mirror yet");
+    {
+        let session_ref = session.read().await;
+        let Some(client) = session_ref.as_ref() else {
+            return;
+        };
+        match fetch_user_profile_body(client, uuid).await {
+            Some(body) => {
+                editor.lock().user.cache_body(uuid, body);
+            }
+            None => {
+                debug!(uuid = %uuid, "Added user profile body not in the mirror yet");
+            }
         }
     }
+    if take_held(&editor, EditorKind::User, uuid) {
+        dispatch_select_after_create(editor, daemon, session, app_weak, EditorKind::User, uuid)
+            .await;
+    }
+}
+
+/// Whether `(kind, uuid)` is the held selection, releasing it if so.
+fn take_held(editor: &ProfileEditor, kind: EditorKind, uuid: Uuid) -> bool {
+    let mut state = editor.lock();
+    let held = state.held == Some((kind, uuid));
+    if held {
+        state.held = None;
+    }
+    held
 }
 
 /// User-side mirror of [`handle_system_removed`].
@@ -1617,6 +1650,7 @@ fn remove_profile_from_editor(
     }
 
     state.selection = Selection::default();
+    state.held = Some((kind, uuid));
     match kind {
         EditorKind::System => &state.system_gen,
         EditorKind::User => &state.user_gen,
@@ -2554,6 +2588,34 @@ mod tests {
         ));
         assert_eq!(state.selection, selection);
         assert_eq!(state.system_gen.load(Ordering::SeqCst), 5);
+    }
+
+    /// A selected profile that leaves the mirror is held, and only the same
+    /// profile returning releases it for re-selection.
+    #[test]
+    fn a_removed_selection_is_held_until_the_same_profile_returns() {
+        let (selected, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let editor: ProfileEditor = Arc::default();
+        {
+            let mut state = editor.lock();
+            state.selection = Selection {
+                kind: Some(EditorKind::User),
+                uuid: Some(selected),
+            };
+            assert!(remove_profile_from_editor(
+                &mut state,
+                EditorKind::User,
+                selected
+            ));
+            assert_eq!(state.held, Some((EditorKind::User, selected)));
+        }
+        assert!(!take_held(&editor, EditorKind::User, other));
+        assert!(!take_held(&editor, EditorKind::System, selected));
+        assert!(take_held(&editor, EditorKind::User, selected));
+        assert!(
+            !take_held(&editor, EditorKind::User, selected),
+            "released once"
+        );
     }
 
     #[test]

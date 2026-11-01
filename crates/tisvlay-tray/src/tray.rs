@@ -1,4 +1,4 @@
-//! ksni `Tray` implementation: renders the mirror, funnels every click
+//! ksni `Tray` implementation: renders the view, funnels every click
 //! into `TrayCommand`s over an mpsc — the async processor owns the zenoh
 //! rpcs. Structure ports the root `tisvlay-tray` menu; strings stay
 //! English literals until the workspace grows its i18n pass at promotion.
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::state::{Mirror, TvView};
+use crate::state::{TvView, View};
 
 /// Resolve `names` to the icon name that exists in the active desktop's
 /// theme, so the tray host loads (and, for `-symbolic`, recolors) a glyph
@@ -80,7 +80,7 @@ const SCROLL_NOTCH: i32 = 120;
 
 #[derive(Debug)]
 pub struct TvTray {
-    pub mirror: Mirror,
+    pub view: View,
     pub cmd_tx: mpsc::UnboundedSender<TrayCommand>,
     /// The capability the wheel drives, once the user has picked one from
     /// a device menu. `None` until then — the effective target is derived
@@ -102,7 +102,7 @@ impl TvTray {
         open_gui_pending: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            mirror: Mirror::default(),
+            view: View::default(),
             cmd_tx,
             scroll_target: None,
             scroll_tv: None,
@@ -126,10 +126,7 @@ impl TvTray {
 
     /// Whether any powered-on, reachable TV advertises `target`.
     fn any_live_supports(&self, target: ScrollTarget) -> bool {
-        self.mirror
-            .tvs
-            .values()
-            .any(|tv| is_live_target(tv, target))
+        self.view.tvs.values().any(|tv| is_live_target(tv, target))
     }
 
     /// The TV the wheel drives: the last-interacted TV when it's live and
@@ -138,13 +135,13 @@ impl TvTray {
         let target = self.effective_target()?;
         self.scroll_tv
             .filter(|id| {
-                self.mirror
+                self.view
                     .tvs
                     .get(id)
                     .is_some_and(|tv| is_live_target(tv, target))
             })
             .or_else(|| {
-                self.mirror
+                self.view
                     .tvs
                     .iter()
                     .find(|(_, tv)| is_live_target(tv, target))
@@ -163,7 +160,7 @@ impl Tray for TvTray {
 
     /// The desktop has no StatusNotifier host — vanilla GNOME with no
     /// AppIndicator extension, or a host that hasn't come up yet. Keep
-    /// running headless: the menu mirror and desktop notifications stay
+    /// running headless: the menu view and desktop notifications stay
     /// live and the GUI still reaches the tray over the user socket; only
     /// the icon is hidden until a host appears. `true` keeps the service.
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
@@ -186,10 +183,12 @@ impl Tray for TvTray {
     }
 
     fn title(&self) -> String {
-        let connected = self.mirror.tvs.values().filter(|tv| tv.connected).count();
-        let total = self.mirror.tvs.len();
-        if !self.mirror.daemon_alive {
+        let connected = self.view.tvs.values().filter(|tv| tv.connected).count();
+        let total = self.view.tvs.len();
+        if !self.view.daemon_alive {
             "TisVlay [daemon offline]".into()
+        } else if self.view.daemon_mismatch.is_some() {
+            "TisVlay [version mismatch]".into()
         } else if total == 0 {
             "TisVlay".into()
         } else {
@@ -198,7 +197,7 @@ impl Tray for TvTray {
     }
 
     fn icon_name(&self) -> String {
-        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.connected) {
+        if self.view.daemon_alive && self.view.tvs.values().any(|tv| tv.connected) {
             // Connected: the colored device glyph as a status signal.
             themed(&["video-display"], Variant::Color)
         } else {
@@ -208,7 +207,7 @@ impl Tray for TvTray {
     }
 
     fn status(&self) -> ksni::Status {
-        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.connected) {
+        if self.view.daemon_alive && self.view.tvs.values().any(|tv| tv.connected) {
             ksni::Status::Active
         } else {
             ksni::Status::Passive
@@ -218,10 +217,12 @@ impl Tray for TvTray {
     fn tool_tip(&self) -> ToolTip {
         let scroll_tv = self.effective_scroll_tv();
         let scroll_target = self.effective_target();
-        let description = if !self.mirror.daemon_alive {
+        let description = if !self.view.daemon_alive {
             "Daemon not available".into()
+        } else if let Some(theirs) = &self.view.daemon_mismatch {
+            mismatch_text(theirs)
         } else {
-            self.mirror
+            self.view
                 .tvs
                 .iter()
                 .map(|(id, tv)| {
@@ -288,7 +289,7 @@ impl Tray for TvTray {
             return;
         };
         let live: Vec<Uuid> = self
-            .mirror
+            .view
             .tvs
             .iter()
             .filter(|(_, tv)| is_live_target(tv, target))
@@ -310,19 +311,21 @@ impl Tray for TvTray {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let mut items: Vec<MenuItem<Self>> = Vec::new();
-        if !self.mirror.daemon_alive {
+        if !self.view.daemon_alive {
             items.push(disabled("Daemon unavailable"));
-        } else if self.mirror.tvs.is_empty() {
+        } else if let Some(theirs) = &self.view.daemon_mismatch {
+            items.push(disabled(&mismatch_text(theirs)));
+        } else if self.view.tvs.is_empty() {
             items.push(disabled("No TVs configured"));
         } else {
-            for (id, tv) in &self.mirror.tvs {
+            for (id, tv) in &self.view.tvs {
                 items.push(self.tv_submenu(*id, tv));
             }
         }
         // A read-only banner while a stream arms any TV — the
         // while-streaming overrides are suppressing the usual wake actions.
         // No quick-toggle; the indicator only reflects the fact.
-        if self.mirror.daemon_alive && self.mirror.tvs.values().any(|tv| tv.stream_armed) {
+        if self.view.daemon_alive && self.view.tvs.values().any(|tv| tv.stream_armed) {
             items.push(MenuItem::Separator);
             items.push(status_line(
                 "Stream active",
@@ -569,7 +572,7 @@ impl TvTray {
                 &self.cmd_tx,
                 "User",
                 &["im-user", "avatar-default"],
-                &self.mirror.user_profiles,
+                &self.view.user_profiles,
                 tv.user_profile,
                 tisvlay_core::DEFAULT_USER_PROFILE_UUID,
                 move |profile| TrayCommand::SetUserProfile(id, profile),
@@ -578,7 +581,7 @@ impl TvTray {
                 &self.cmd_tx,
                 "System",
                 &["system-users"],
-                &self.mirror.system_profiles,
+                &self.view.system_profiles,
                 tv.system_profile,
                 tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
                 move |profile| TrayCommand::SetSystemProfile(id, profile),
@@ -715,6 +718,15 @@ fn status_line(label: &str, icon: &[&str]) -> MenuItem<TvTray> {
     .into()
 }
 
+/// What the menu and tooltip say about a daemon on release `theirs` this
+/// tray can't talk to. The GUI's banner names both releases too.
+pub fn mismatch_text(theirs: &str) -> String {
+    format!(
+        "Version mismatch: daemon {theirs}, tray {}. Log out and back in.",
+        tisvlay_protocol::VERSION
+    )
+}
+
 fn disabled(label: &str) -> MenuItem<TvTray> {
     StandardItem {
         label: label.into(),
@@ -769,7 +781,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
         for (id, view) in tvs {
-            tray.mirror.tvs.insert(*id, view.clone());
+            tray.view.tvs.insert(*id, view.clone());
         }
         tray
     }
@@ -867,8 +879,8 @@ mod tests {
         let id = Uuid::from_u128(1);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
-        tray.mirror.daemon_alive = true;
-        tray.mirror.tvs.insert(id, tv("CEC", false, false, false));
+        tray.view.daemon_alive = true;
+        tray.view.tvs.insert(id, tv("CEC", false, false, false));
 
         let menu = tray.menu();
         let MenuItem::SubMenu(tv_menu) = &menu[0] else {
@@ -896,7 +908,7 @@ mod tests {
         (wake.activate)(&mut tray);
         assert!(matches!(rx.try_recv(), Ok(TrayCommand::PowerOn(tv)) if tv == id));
 
-        tray.mirror.tvs.insert(id, tv("CEC", true, false, false));
+        tray.view.tvs.insert(id, tv("CEC", true, false, false));
         let live_menu = tray.menu();
         let MenuItem::SubMenu(tv_menu) = &live_menu[0] else {
             panic!("configured TV is rendered as a submenu");
@@ -960,7 +972,7 @@ mod tests {
     #[test]
     fn root_menu_handles_empty_catalog_and_live_stream_status() {
         let mut tray = tray_with(&[]);
-        tray.mirror.daemon_alive = true;
+        tray.view.daemon_alive = true;
         let menu = tray.menu();
         assert!(matches!(
             menu.first(),
@@ -970,13 +982,13 @@ mod tests {
         let tv_id = Uuid::from_u128(1);
         let mut stream_tv = tv("Office", true, false, false);
         stream_tv.stream_armed = true;
-        tray.mirror.tvs.insert(tv_id, stream_tv);
+        tray.view.tvs.insert(tv_id, stream_tv);
         let menu = tray.menu();
         assert!(menu.iter().any(|item| {
             matches!(item, MenuItem::Standard(item) if item.label == "Stream active" && !item.enabled)
         }));
 
-        tray.mirror.daemon_alive = false;
+        tray.view.daemon_alive = false;
         let menu = tray.menu();
         assert!(!menu.iter().any(|item| {
             matches!(item, MenuItem::Standard(item) if item.label == "Stream active")
@@ -994,8 +1006,8 @@ mod tests {
         let id = Uuid::from_u128(1);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
-        tray.mirror.daemon_alive = true;
-        tray.mirror.tvs.insert(id, tv("C3", true, true, true));
+        tray.view.daemon_alive = true;
+        tray.view.tvs.insert(id, tv("C3", true, true, true));
 
         tray.scroll(120, ksni::Orientation::Vertical);
         assert!(matches!(
@@ -1020,8 +1032,24 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// A daemon on a release this tray can't talk to hides its TVs behind
+    /// one disabled item naming both releases, in the menu and tooltip.
     #[test]
-    fn status_title_and_tooltip_follow_mirror_state() {
+    fn a_mismatched_daemon_shows_the_releases_instead_of_tvs() {
+        let mut tray = tray_with(&[]);
+        tray.view.daemon_alive = true;
+        tray.view.daemon_mismatch = Some("99.0.0".into());
+        let text = mismatch_text("99.0.0");
+        assert!(text.contains("daemon 99.0.0") && text.contains(tisvlay_protocol::VERSION));
+        assert_eq!(tray.title(), "TisVlay [version mismatch]");
+        assert_eq!(tray.tool_tip().description, text);
+        let mut menu = tray.menu();
+        let item = find_standard_item(&mut menu, &text).expect("the mismatch item");
+        assert!(!item.enabled);
+    }
+
+    #[test]
+    fn status_title_and_tooltip_follow_the_view() {
         let offline = tray_with(&[]);
         assert_eq!(offline.title(), "TisVlay [daemon offline]");
         assert_eq!(offline.status(), ksni::Status::Passive);
@@ -1038,7 +1066,7 @@ mod tests {
             ..Default::default()
         };
         let mut tray = tray_with(&[(connected_id, connected), (down_id, down)]);
-        tray.mirror.daemon_alive = true;
+        tray.view.daemon_alive = true;
         tray.scroll_target = Some(ScrollTarget::Backlight);
         tray.scroll_tv = Some(connected_id);
 
@@ -1056,7 +1084,7 @@ mod tests {
             ..Default::default()
         };
         let mut tray = tray_with(&[(Uuid::from_u128(3), waiting)]);
-        tray.mirror.daemon_alive = true;
+        tray.view.daemon_alive = true;
         assert_eq!(
             tray.tool_tip().description,
             "Den\n  waiting for its adapter"
@@ -1076,18 +1104,18 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
-        tray.mirror.daemon_alive = true;
-        tray.mirror.tvs.insert(tv_id, view);
-        tray.mirror
+        tray.view.daemon_alive = true;
+        tray.view.tvs.insert(tv_id, view);
+        tray.view
             .user_profiles
             .insert(user_default, "default".into());
-        tray.mirror
+        tray.view
             .user_profiles
             .insert(user_custom, "Personal".into());
-        tray.mirror
+        tray.view
             .system_profiles
             .insert(system_default, "default".into());
-        tray.mirror
+        tray.view
             .system_profiles
             .insert(system_custom, "Work".into());
         let mut menu = tray.menu();
@@ -1149,8 +1177,8 @@ mod tests {
         ];
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
-        tray.mirror.daemon_alive = true;
-        tray.mirror.tvs.insert(tv_id, view);
+        tray.view.daemon_alive = true;
+        tray.view.tvs.insert(tv_id, view);
         let mut menu = tray.menu();
 
         let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
@@ -1182,10 +1210,10 @@ mod tests {
         let tv_id = Uuid::from_u128(1);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
-        tray.mirror.daemon_alive = true;
+        tray.view.daemon_alive = true;
         let mut view = tv("Office", false, false, false);
         view.managed = true;
-        tray.mirror.tvs.insert(tv_id, view);
+        tray.view.tvs.insert(tv_id, view);
 
         let mut menu = tray.menu();
         let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
@@ -1207,7 +1235,7 @@ mod tests {
 
         let mut view = tv("Office", false, false, false);
         view.managed = false;
-        tray.mirror.tvs.insert(tv_id, view);
+        tray.view.tvs.insert(tv_id, view);
         let mut menu = tray.menu();
         let MenuItem::SubMenu(tv_menu) = &mut menu[0] else {
             panic!("TV entry is a submenu");
@@ -1232,7 +1260,7 @@ mod tests {
         let tv_id = Uuid::from_u128(1);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tray = TvTray::new(tx, Arc::new(AtomicBool::new(false)));
-        tray.mirror.daemon_alive = true;
+        tray.view.daemon_alive = true;
         let mut view = tv("Office", true, true, true);
         view.has_screen = true;
         view.has_mute = true;
@@ -1240,7 +1268,7 @@ mod tests {
         view.volume = Some(40);
         view.muted = Some(false);
         view.backlight = Some(60);
-        tray.mirror.tvs.insert(tv_id, view);
+        tray.view.tvs.insert(tv_id, view);
         let mut menu = tray.menu();
 
         activate_item(&mut tray, &mut menu, "Power Off");

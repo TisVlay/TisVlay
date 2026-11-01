@@ -37,7 +37,7 @@ tisvlay/
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)
 │   ├── tisvlay-mock/              # In-memory mock backend (always registered, unpublished)
 │   ├── tisvlay-test/              # OS-environment fakes (private dbus-daemon,
-│   │                             # fake logind/ScreenSaver) — dev-only
+│   │                             # fake logind/ScreenSaver, link-breaking relay) — dev-only
 │   │
 │   ├── tisvlay-protocol/          # Key-space vocabulary, payload structs (serde wire
 │   │                             # payloads; the world stores them as State<T>), typed
@@ -52,7 +52,7 @@ tisvlay/
 │   │                             # system socket + router owning user/**), user profiles,
 │   │                             # ScreenSaver lock/unlock, wayland idle
 │   ├── tisvlay-greeter/           # Login-greeter idle client (ext-idle-notify → greeter/idle)
-│   ├── tisvlay-tray/              # ksni tray over a live mirror + desktop notifications
+│   ├── tisvlay-tray/              # ksni tray over the SDK clients + desktop notifications
 │   │                             # (notify.rs: settings service on the user socket)
 │   ├── tisvlay/                   # Client SDK: DaemonClient/SessionClient/TrayClient +
 │   │                             # StateWatcher (root-D-Bus-client-compatible surface)
@@ -143,7 +143,7 @@ Zenoh stack findings (load-bearing, learned empirically):
 - A zenoh `get` matching zero queryables completes instantly with no reply — first-rpc-after-serve paths retry the no-reply case.
 - Zenoh rejects tokio's current-thread scheduler — zenoh-touching tests need `#[tokio::test(flavor = "multi_thread")]`.
 - Stale Unix socket files are fine: zenoh's `.lock` protocol takes over an unclean listener path on the next bind.
-- A suspend can drop every link: systemd freezes `user.slice` around the sleep, and the monotonic 10 s lease keeps counting through the kernel's device suspend/resume (12+ s where the NVIDIA driver saves video memory), so user-side links expire on thaw and the daemon's token returns under the same session. The daemon mirrors (the SDK's and the tray's) subscribe per token lifetime and re-hydrate on its return.
+- A suspend can drop every link: systemd freezes `user.slice` around the sleep, and the monotonic 10 s lease keeps counting through the kernel's device suspend/resume (12+ s where the NVIDIA driver saves video memory), so user-side links expire on thaw and the daemon's token returns under the same session. The daemon's mirrors subscribe per token lifetime and re-hydrate on its return ([docs/architecture.md](../docs/architecture.md) § Clients).
 - Reply-side backpressure is load-bearing: backend commands ack on TV completion (`BackendEvent::CommandDone`), not on enqueue — this is what makes the tray's Coalescer "latest wins" actually bound queue depth (the C3 volume-storm fix).
 
 Deployment model:
@@ -271,9 +271,9 @@ Public items are invisible to Rust's `dead_code` lint. Use `cargo workspace-unus
 
 See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
 
-- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters.
+- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind, fake ScreenSaver) for the consumed-D-Bus adapters, and a `Relay` that cuts, stalls or drops a batch on a zenoh link while the service keeps running.
 - `tisvlay-mock` — fake vendor backend (implements `tisvlay-core` traits), always registered in the daemon.
-- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; tray: mirror + settings), single-suite crates as one `tests/<name>.rs` (session, SDK client) — they boot real daemon/session stacks on temp sockets, no fixture crate needed.
+- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; SDK: client + conformance), single-suite crates as one `tests/<name>.rs` (session, tray settings) — they boot real daemon/session stacks on temp sockets, no fixture crate needed. The SDK's conformance suite runs every mirror through the same link-breaking cases, against a fake service or the real stacks.
 
 ```bash
 just test                   # cargo nextest run + doc tests

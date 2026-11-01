@@ -1,17 +1,14 @@
 //! The GUI-facing SDK against a live daemon + session service: mirror
 //! hydration into `TvInfo`, watcher events, rpcs, and profile bodies.
 
-#![expect(
-    clippy::unwrap_used,
-    reason = "integration tests fail loudly by design; clippy's allow-*-in-tests keys don't reach helper fns under tests/"
-)]
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
 use tisvlay::{DaemonClient, SessionClient, StateEvent, StateWatcher, StateWatcherConfig};
 use tisvlay_mock::new_test_parts;
+
+use crate::fake::{FakeService, Family};
 
 /// A vendor config object from a JSON literal.
 fn config(json: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -86,7 +83,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         .id;
     wait_for(&daemon, |tvs| {
         tvs.iter()
-            .any(|info| info.uuid == tv && info.connected && info.volume == 30)
+            .any(|info| info.uuid == tv && info.connected && info.volume == Some(30))
     })
     .await;
 
@@ -106,7 +103,8 @@ async fn sdk_mirrors_rpcs_and_watches() {
     // Writes round-trip and land back in the mirror.
     daemon.set_volume(tv, 12).await.unwrap();
     wait_for(&daemon, |tvs| {
-        tvs.iter().any(|info| info.uuid == tv && info.volume == 12)
+        tvs.iter()
+            .any(|info| info.uuid == tv && info.volume == Some(12))
     })
     .await;
     let info = daemon
@@ -517,42 +515,6 @@ async fn first_rpc_races_route_propagation_and_still_lands() {
     assert_eq!(error.rpc_code(), Some(tisvlay::ErrorCode::UnknownVendor));
 }
 
-/// A stand-in service built from the protocol's `serve` dispatch, as a
-/// third party might mock one: it listens on `socket`, holds `alive`'s
-/// liveliness token, answers `info` with `release`, and reports nothing
-/// changed to a reload.
-macro_rules! stub_service {
-    ($socket:expr, $wild:expr, $alive:expr, $family:ident, $release:expr) => {{
-        use tisvlay_protocol::endpoint::$family;
-        let session = zenoh::open(tisvlay_protocol::bootstrap::peer_config($socket).unwrap())
-            .await
-            .unwrap();
-        let queryable = session.declare_queryable($wild).await.unwrap();
-        let token = session.liveliness().declare_token($alive).await.unwrap();
-        let release: String = $release.into();
-        let task = tokio::spawn(async move {
-            while let Ok(query) = queryable.recv_async().await {
-                match $family::Incoming::receive("t", query).await {
-                    Some((_, $family::Incoming::Info((), responder))) => {
-                        let info = tisvlay_protocol::rpc::ServiceInfo {
-                            version: release.clone(),
-                            state_path: String::new(),
-                            sleep: None,
-                        };
-                        responder.ok(&info).await;
-                    }
-                    Some((_, $family::Incoming::Reload((), responder))) => {
-                        let report = tisvlay_protocol::rpc::ReloadReport { changed: false };
-                        responder.ok(&report).await;
-                    }
-                    _ => {}
-                }
-            }
-        });
-        (session, token, task)
-    }};
-}
-
 async fn next_matching(
     watcher: &mut StateWatcher,
     want: impl Fn(&StateEvent) -> bool,
@@ -575,13 +537,7 @@ async fn next_matching(
 async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("sys.sock");
-    let stub = stub_service!(
-        &socket,
-        tisvlay_protocol::keys::manager_rpc_wild("t"),
-        tisvlay_protocol::keys::daemon_alive("t"),
-        manager,
-        "99.0.0"
-    );
+    let stub = FakeService::start(&socket, Family::Daemon, "99.0.0").await;
     let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
     let mut watcher = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
 
@@ -635,22 +591,13 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
 
     // The service restarts on this release: its next lifetime is checked
     // afresh, and calls go through.
-    let (session, token, task) = stub;
-    drop(token);
-    task.abort();
-    session.close().await.unwrap();
+    stub.stop().await;
     next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonDisappeared)).await;
     assert!(
         daemon.service_info().await.is_none(),
         "the release clears before the disappearance is announced"
     );
-    let _restarted = stub_service!(
-        &socket,
-        tisvlay_protocol::keys::manager_rpc_wild("t"),
-        tisvlay_protocol::keys::daemon_alive("t"),
-        manager,
-        tisvlay_protocol::VERSION
-    );
+    let _restarted = FakeService::start(&socket, Family::Daemon, tisvlay_protocol::VERSION).await;
     next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonAppeared)).await;
     next_matching(&mut watcher, |e| {
         matches!(e, StateEvent::ReleaseChecked(tisvlay::Service::Daemon))
@@ -700,6 +647,7 @@ async fn a_failed_release_check_is_retried() {
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: "/var/lib/tisvlay/state.toml".into(),
                     sleep: None,
+                    keys: Vec::new(),
                 };
                 responder.ok(&info).await;
             }
@@ -737,13 +685,7 @@ async fn try_next_drains_without_waiting() {
 async fn a_watcher_built_late_still_hears_of_a_known_mismatch() {
     let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("sys.sock");
-    let _stub = stub_service!(
-        &socket,
-        tisvlay_protocol::keys::manager_rpc_wild("t"),
-        tisvlay_protocol::keys::daemon_alive("t"),
-        manager,
-        "99.0.0"
-    );
+    let _stub = FakeService::start(&socket, Family::Daemon, "99.0.0").await;
     let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
     // A call settles the verdict before any watcher exists.
     assert!(matches!(
@@ -771,20 +713,8 @@ async fn the_session_and_tray_clients_refuse_another_release() {
     let dir = tisvlay_test::socket_tempdir();
     let session_socket = dir.path().join("session.sock");
     let tray_socket = dir.path().join("tray.sock");
-    let _session_stub = stub_service!(
-        &session_socket,
-        tisvlay_protocol::keys::user_profile_rpc_wild("t"),
-        tisvlay_protocol::keys::user_alive_session("t"),
-        user_profile,
-        "99.0.0"
-    );
-    let _tray_stub = stub_service!(
-        &tray_socket,
-        tisvlay_protocol::keys::user_tray_rpc_wild("t"),
-        tisvlay_protocol::keys::user_alive_tray("t"),
-        user_tray,
-        "99.0.0"
-    );
+    let _session_stub = FakeService::start(&session_socket, Family::Session, "99.0.0").await;
+    let _tray_stub = FakeService::start(&tray_socket, Family::Tray, "99.0.0").await;
     let session = SessionClient::connect(&session_socket, "t").await.unwrap();
     let tray = tisvlay::TrayClient::connect(&tray_socket, "t")
         .await
@@ -822,56 +752,4 @@ async fn the_session_and_tray_clients_refuse_another_release() {
         tray.notification_settings().await.is_none(),
         "the settings mirror is gated like the others"
     );
-}
-
-/// A daemon whose links drop and come back is still the same session: a
-/// resume that keeps user processes frozen past the 10 s link lease takes
-/// the daemon's liveliness token away and brings it back. Its state
-/// comes back with the token, from the caches it still holds.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_daemon_whose_token_returns_is_mirrored_again() {
-    use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
-
-    let dir = tisvlay_test::socket_tempdir();
-    let socket = dir.path().join("sys.sock");
-    let session = zenoh::open(tisvlay_protocol::bootstrap::peer_config(&socket).unwrap())
-        .await
-        .unwrap();
-    let profile = uuid::Uuid::from_u128(7);
-    let publisher = session
-        .declare_publisher(tisvlay_protocol::keys::profile_system("t", &profile))
-        .cache(CacheConfig::default().max_samples(1))
-        .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
-        .publisher_detection()
-        .await
-        .unwrap();
-    publisher
-        .put(serde_json::to_vec(&json!({ "name": "Kept" })).unwrap())
-        .await
-        .unwrap();
-    let alive = tisvlay_protocol::keys::daemon_alive("t");
-    let token = session.liveliness().declare_token(&alive).await.unwrap();
-
-    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
-    let named = |body: Option<tisvlay::SystemProfileBody>| body.map(|b| b.name);
-    let wait_profile = async |want: Option<&str>| {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let got = named(daemon.get_system_profile(profile).await);
-            if got.as_deref() == want {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the profile read {got:?}, not {want:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    };
-    wait_profile(Some("Kept")).await;
-
-    token.undeclare().await.unwrap();
-    wait_profile(None).await;
-    let _token = session.liveliness().declare_token(&alive).await.unwrap();
-    wait_profile(Some("Kept")).await;
 }

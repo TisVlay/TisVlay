@@ -1,6 +1,6 @@
 [package]
 name = "tisvlay-tray"
-description = "TisVlay system tray: ksni StatusNotifierItem over a live zenoh state mirror"
+description = "TisVlay system tray: ksni StatusNotifierItem over the client SDK's mirrors"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,6 +23,7 @@ tokio = { workspace = true }
 zbus = { workspace = true }
 tracing = { workspace = true }
 tisvlay-protocol = { workspace = true }
+tisvlay = { workspace = true }
 uuid = { workspace = true }
 zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
@@ -32,7 +33,6 @@ tisvlay-test = { workspace = true }
 serde = { workspace = true }
 tisvlay-mock = { workspace = true }
 tisvlay-daemon = { workspace = true }
-tisvlay = { workspace = true }
 tisvlay-session = { workspace = true }
 
 [lints]

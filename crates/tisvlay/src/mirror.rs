@@ -12,7 +12,8 @@ use tisvlay_protocol::{keys, payload};
 use uuid::Uuid;
 use zenoh::sample::{Sample, SampleKind};
 
-use crate::StateEvent;
+use crate::lifetime::Mirror;
+use crate::{Service, StateEvent};
 
 /// One TV's mirrored keys, raw payload structs.
 #[derive(Debug, Clone, Default)]
@@ -27,26 +28,46 @@ pub(crate) struct TvRow {
     pub vendor: Option<payload::VendorRows>,
 }
 
+/// The daemon's TVs and system profiles. A TV's keys arrive in no
+/// particular order, so a row collects them as they come, and shows only
+/// once its identity has arrived: a TV without one isn't a TV yet.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SystemMirror {
-    pub tvs: BTreeMap<Uuid, TvRow>,
+    tvs: BTreeMap<Uuid, TvRow>,
     pub profiles: BTreeMap<Uuid, SystemProfileConfig>,
-    pub daemon_alive: bool,
 }
 
 impl SystemMirror {
-    /// The daemon's token went: drop its state. Its subscriptions went
-    /// first ([`DaemonClient`](crate::DaemonClient) holds them only while
-    /// the token is present), so no sample it sent before it stopped can
-    /// arrive after.
-    pub(crate) fn end_lifetime(&mut self) {
-        self.tvs.clear();
-        self.profiles.clear();
+    /// The TVs to show: the rows whose identity has arrived.
+    pub(crate) fn tvs(&self) -> impl Iterator<Item = (&Uuid, &TvRow)> {
+        self.tvs.iter().filter(|(_, row)| row.identity.is_some())
+    }
+}
+
+impl Mirror for SystemMirror {
+    const SERVICE: Service = Service::Daemon;
+
+    fn keys(site: &str) -> Vec<String> {
+        vec![keys::tv_all(site), keys::profile_system_wild(site)]
     }
 
-    /// Apply one system-socket sample; the returned event (if any) is
-    /// what a watcher should broadcast.
-    pub(crate) fn apply(&mut self, site: &str, sample: &Sample) -> Option<StateEvent> {
+    fn clear(&mut self, site: &str) -> Vec<StateEvent> {
+        let tvs = self.tvs().map(|(tv, _)| {
+            StateEvent::DaemonStateChanged(crate::TvStateChange {
+                key: keys::tv_path(site, tv, payload::Meta::PATH),
+            })
+        });
+        let profiles = self
+            .profiles
+            .keys()
+            .map(|profile| StateEvent::SystemProfileRemoved(*profile));
+        let removed = tvs.chain(profiles).collect();
+        self.tvs.clear();
+        self.profiles.clear();
+        removed
+    }
+
+    fn apply(&mut self, site: &str, sample: &Sample) -> Option<StateEvent> {
         let key = sample.key_expr().as_str();
         if let Some((tv, path)) = keys::parse_tv_path(site, key) {
             if sample.kind() == SampleKind::Delete {
@@ -105,11 +126,32 @@ pub(crate) struct UserMirror {
     /// The stream fact: live sources plus the armed projection.
     /// Absent until the session service first publishes it.
     pub stream_state: Option<payload::StreamState>,
-    pub session_alive: bool,
 }
 
-impl UserMirror {
-    pub(crate) fn apply(&mut self, site: &str, sample: &Sample) -> Option<StateEvent> {
+impl Mirror for UserMirror {
+    const SERVICE: Service = Service::Session;
+
+    fn keys(site: &str) -> Vec<String> {
+        vec![keys::user_all(site)]
+    }
+
+    fn clear(&mut self, _site: &str) -> Vec<StateEvent> {
+        let mut removed: Vec<StateEvent> = self
+            .profiles
+            .keys()
+            .map(|profile| StateEvent::UserProfileRemoved(*profile))
+            .collect();
+        if !self.assignments.is_empty() {
+            removed.push(StateEvent::TvUserProfileChanged);
+        }
+        if self.stream_state.is_some() {
+            removed.push(StateEvent::StreamChanged);
+        }
+        *self = Self::default();
+        removed
+    }
+
+    fn apply(&mut self, site: &str, sample: &Sample) -> Option<StateEvent> {
         let key = sample.key_expr().as_str();
         if let Some(profile) = keys::parse_user_profile(site, key) {
             return match sample.kind() {
@@ -164,14 +206,26 @@ impl UserMirror {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TrayMirror {
     /// The notification switches, as last published. Absent until the
-    /// tray first publishes them; kept while it's down.
+    /// tray first publishes them, and while it's down.
     pub settings: Option<NotificationSettings>,
-    pub tray_alive: bool,
 }
 
-impl TrayMirror {
-    /// Apply one sample of the tray's settings key.
-    pub(crate) fn apply(&mut self, sample: &Sample) -> Option<StateEvent> {
+impl Mirror for TrayMirror {
+    const SERVICE: Service = Service::Tray;
+
+    fn keys(site: &str) -> Vec<String> {
+        vec![keys::user_tray_settings(site)]
+    }
+
+    fn clear(&mut self, _site: &str) -> Vec<StateEvent> {
+        self.settings
+            .take()
+            .map(|_| StateEvent::TrayNotificationSettingsChanged)
+            .into_iter()
+            .collect()
+    }
+
+    fn apply(&mut self, _site: &str, sample: &Sample) -> Option<StateEvent> {
         self.settings = match sample.kind() {
             SampleKind::Put => Some(serde_json::from_slice(&sample.payload().to_bytes()).ok()?),
             SampleKind::Delete => None,
@@ -197,23 +251,57 @@ mod tests {
 
     use super::*;
 
-    /// A TV's `meta` sample.
-    fn meta(tv: Uuid) -> Sample {
-        let key = KeyExpr::try_from(keys::tv_path("t", &tv, payload::Meta::PATH))
+    /// A sample of one of `tv`'s keys.
+    fn tv_key<T: StatePayload + serde::Serialize>(tv: Uuid, body: &T) -> Sample {
+        let key = KeyExpr::try_from(keys::tv_path("t", &tv, T::PATH))
             .expect("a TV key is a valid key expression");
-        let body = serde_json::to_vec(&payload::Meta::new(false)).expect("meta serializes");
+        let body = serde_json::to_vec(body).expect("a payload serializes");
         SampleBuilder::put(key, body).into()
     }
 
-    /// The end of a lifetime drops its TVs; the next lifetime's apply.
+    fn shown(mirror: &SystemMirror) -> Vec<Uuid> {
+        mirror.tvs().map(|(tv, _)| *tv).collect()
+    }
+
+    /// A TV shows once its identity arrives, whatever came before it.
     #[test]
-    fn a_lifetime_ends_with_its_state() {
-        let (old_tv, new_tv) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    fn a_tv_shows_once_its_identity_arrives() {
+        let tv = Uuid::from_u128(1);
         let mut mirror = SystemMirror::default();
-        assert!(mirror.apply("t", &meta(old_tv)).is_some());
-        mirror.end_lifetime();
-        assert!(mirror.tvs.is_empty());
-        assert!(mirror.apply("t", &meta(new_tv)).is_some());
-        assert_eq!(mirror.tvs.keys().collect::<Vec<_>>(), [&new_tv]);
+        mirror.apply("t", &tv_key(tv, &payload::Meta::new(false)));
+        assert_eq!(shown(&mirror), Vec::<Uuid>::new());
+        mirror.apply("t", &tv_key(tv, &payload::Identity::new("Den", "mock")));
+        assert_eq!(shown(&mirror), [tv]);
+    }
+
+    /// Clearing drops everything, with an event for each TV and profile
+    /// that was showing; the next lifetime's samples apply afresh.
+    #[test]
+    fn clearing_reports_what_was_showing() {
+        let (shown_tv, partial, new_tv) =
+            (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let profile = Uuid::from_u128(4);
+        let mut mirror = SystemMirror::default();
+        mirror.apply(
+            "t",
+            &tv_key(shown_tv, &payload::Identity::new("Den", "mock")),
+        );
+        mirror.apply("t", &tv_key(partial, &payload::Meta::new(false)));
+        mirror
+            .profiles
+            .insert(profile, SystemProfileConfig::default());
+
+        let removed = mirror.clear("t");
+        assert_eq!(removed.len(), 2, "one event per row showing: {removed:?}");
+        assert!(matches!(
+            &removed[0],
+            StateEvent::DaemonStateChanged(change) if change.key == keys::tv_path("t", &shown_tv, payload::Meta::PATH)
+        ));
+        assert!(matches!(removed[1], StateEvent::SystemProfileRemoved(id) if id == profile));
+        assert_eq!(shown(&mirror), Vec::<Uuid>::new());
+        assert!(mirror.profiles.is_empty());
+
+        mirror.apply("t", &tv_key(new_tv, &payload::Identity::new("Den", "mock")));
+        assert_eq!(shown(&mirror), [new_tv]);
     }
 }

@@ -430,6 +430,12 @@ pub struct ServiceInfo {
     /// `None` from the other services, or when logind couldn't be asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sleep: Option<SleepSupport>,
+    /// The keys the service publishes from a cache right now, so a client
+    /// knows when its history has arrived: once it holds a sample for
+    /// each one its subscriptions match. Empty from a service that
+    /// publishes none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
 }
 
 /// Which of logind's sleep methods the daemon may call without a prompt

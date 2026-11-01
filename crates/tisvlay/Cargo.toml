@@ -39,6 +39,7 @@ tisvlay-test = { workspace = true }
 tisvlay-mock = { workspace = true }
 tisvlay-daemon = { workspace = true }
 tisvlay-session = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

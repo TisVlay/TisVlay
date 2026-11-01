@@ -224,7 +224,9 @@ pub async fn serve_settings(
         .declare_publisher(keys::user_tray_settings(&site))
         .encoding(Encoding::APPLICATION_JSON)
         .cache(CacheConfig::default().max_samples(1))
-        .sample_miss_detection(MissDetectionConfig::default().heartbeat(Duration::from_millis(500)))
+        .sample_miss_detection(
+            MissDetectionConfig::default().sporadic_heartbeat(Duration::from_millis(500)),
+        )
         .publisher_detection()
         .await
         .map_err(|e| anyhow!("declare tray settings publisher: {e}"))?;
@@ -282,6 +284,7 @@ pub async fn serve_settings(
                     version: tisvlay_protocol::VERSION.into(),
                     state_path: config_path.display().to_string(),
                     sleep: None,
+                    keys: vec![keys::user_tray_settings(&site)],
                 };
                 responder.ok(&info).await;
             }

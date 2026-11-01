@@ -204,7 +204,7 @@ The published crates release in lockstep on the shared workspace version, and at
 - **Public dependencies** are the crates whose types appear in a published API, so their major-version bumps are breaking for us too. Each crate's README lists its own under "Public dependencies" and names the items that expose them. Today those are:
   - core: tokio, uuid, bitflags, serde, toml, serde_json and async-trait;
   - the protocol: zenoh, core, serde, serde_json and uuid;
-  - the SDK: core, the protocol, uuid, serde, serde_json and futures-core.
+  - the SDK: core, the protocol, zenoh, uuid, serde, serde_json and futures-core.
 
   zenoh-ext stays out of every signature, but the SDK depends on its `unstable` feature, so it's pinned with a tilde (`~1.10`): that feature switches on zenoh's unstable and internal APIs, which may break within 1.x, so a caret range could pull a breaking minor into a user's build. A pre-1.0 or young dependency gets a newtype instead, which keeps it out of the API. A test-only feature is outside the crate's semver guarantees and may re-export a dependency's types. Until cargo's `public` dependency marker (RFC 3516) stabilizes, the README list is the record.
 

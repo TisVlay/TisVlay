@@ -288,6 +288,7 @@ component TvList inherits Rectangle {
     in property <[TvViewModel]> tvs;
     in property <int> connected-count;
     in property <bool> daemon-available;
+    in property <bool> daemon-loading;
     in property <ServiceHealth> daemon-health;
     in-out property <int> selected-index;
 
@@ -439,7 +440,22 @@ component TvList inherits Rectangle {
             }
         }
 
-        if root.tvs.length == 0 && root.daemon-available && root.daemon-health != ServiceHealth.incompatible: Rectangle {
+        // Up but still hydrating: its TVs may be on the way.
+        if root.tvs.length == 0 && root.daemon-available && root.daemon-loading && root.daemon-health != ServiceHealth.incompatible: Rectangle {
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: Design.gap-pane;
+                Text {
+                    text: @tr("Loading");
+                    color: Theme.text-faint;
+                    font-size: Design.font-body;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        if root.tvs.length == 0 && root.daemon-available && !root.daemon-loading && root.daemon-health != ServiceHealth.incompatible: Rectangle {
             VerticalLayout {
                 width: 100%;
                 alignment: center;
@@ -1215,6 +1231,7 @@ export component TvsPane {
     in property <[TvViewModel]> tvs;
     in property <int> tvs-connected-count;
     in property <bool> daemon-available;
+    in property <bool> daemon-loading;
     in property <ServiceHealth> daemon-health;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
@@ -1277,6 +1294,7 @@ export component TvsPane {
                 tvs: root.tvs;
                 connected-count: root.tvs-connected-count;
                 daemon-available: root.daemon-available;
+                daemon-loading: root.daemon-loading;
                 daemon-health: root.daemon-health;
                 selected-index <=> root.selected-index;
             }

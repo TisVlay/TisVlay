@@ -289,7 +289,7 @@ flowchart TD
     W["<b>crates/*/tests/</b><br/>wire tests: real zenoh clients<br/>over a per-test Unix socket"]
     D["<b>tisvlay-daemon / tisvlay-session</b><br/>the real serve() stack under test"]
     M["<b>tisvlay-mock</b><br/>fake TV (peer side)<br/><i>MockConnector · MockHandle</i>"]
-    T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · FakeScreenSaver</i>"]
+    T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · FakeScreenSaver · Relay</i>"]
 
     W -->|"rpcs + subscribers<br/>(zenoh)"| D
     D -->|"TvBackend / TvConnection traits"| M
@@ -301,7 +301,7 @@ flowchart TD
 ### Rules for deciding where new test code lives
 
 1. **Does it implement a `tisvlay-core` trait?** → `tisvlay-mock`. It's a backend, just a fake one — same tier as `tisvlay-lg` (every daemon registers it), not test scaffolding.
-2. **Does it fake a system service we don't own (dbus-daemon, logind, ScreenSaver, etc.)?** → `tisvlay-test`.
+2. **Does it fake part of the OS we don't own (dbus-daemon, logind, ScreenSaver, a socket link, etc.)?** → `tisvlay-test`.
 3. **Does it exercise a binary end to end?** → that binary crate's own `tests/` directory, booting the crate's public `serve()` and asserting over the wire.
 
 ### Why these boundaries
@@ -310,7 +310,7 @@ flowchart TD
 
 ## Test utilities: tisvlay-test
 
-Dev-only crate providing shared infrastructure for the consumed-D-Bus adapters. Never shipped in release.
+Dev-only crate providing shared infrastructure for the consumed-D-Bus adapters and for breaking zenoh links. Never shipped in release.
 
 ### PrivateBus
 
@@ -344,6 +344,23 @@ logind.emit_prepare_for_sleep(true).await?;
 
 let ss = FakeScreenSaver::register(&conn).await?;
 ss.emit_active_changed(true).await?;  // simulate lock
+```
+
+### Relay
+
+`Relay` sits between a zenoh client and the service socket it dials, so a test can break the link the way the OS does while the service keeps its zenoh session:
+
+- `cut()` closes every forwarded connection, as when a link's lease expires after the PC wakes: the service's tokens go and come back under the same session.
+- `stall()` stops forwarding without closing anything, as when systemd freezes the client's slice before a sleep.
+- `drop_batch_containing(marker)` drops the next zenoh batch carrying `marker`, losing one sample while the link stays up.
+
+It forwards whole batches using the stream link's length prefix. While stalled or cut, it closes new connections at once rather than leaving them unanswered, since a connect that never hears back holds a zenoh session's close until its open timeout.
+
+```rust
+let relay = Relay::start(&dir.path().join("relay.sock"), &service_socket);
+let client = DaemonClient::connect(relay.front(), "t").await?;
+relay.cut();
+relay.restore();
 ```
 
 ### Tracing re-exports
@@ -414,10 +431,10 @@ async fn wire() -> Wire {
 - `tisvlay-greeter/src/lib.rs` (`tests`) — real Zenoh router/cache tests cover startup presence, timeout hydration, idle/resume deduplication, history replay, and clean exit. An idle-watch factory supplies transitions without a compositor; separate virtual-time tests cover Wayland retry and Mutter fallback decisions. Filesystem discovery takes explicit directories, with no test-runner environment mutation.
 - `tisvlay-gui-app/src/dbus.rs` (`tests`) — isolated buses verify GUI properties, all Application activation methods, cold tokens, name ownership, and duplicate-instance handoff. Zbus reports a taken name as `Error::NameTaken`, which must follow the proxy-activation path. Warm/dropped-window activation assertions share the existing Slint event-loop initializer.
 - `tisvlay-session/tests/session.rs` — the two-socket gateway: a `Rig` boots daemon + session service and holds both client sessions a real user client holds. Covers gateway isolation (`user/**` never transits the system peer), lock/unlock/idle dispatch through user profiles, the ScreenSaver adapter (via `FakeScreenSaver`), user-store persistence, and the idle-timeout watch.
-- `tisvlay-tray/tests/it/mirror.rs` — the tray's pure state projection against the real wire, `Mirror::apply_*` fed by plain subscribers, without ksni.
-- `tisvlay-tray/tests/it/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
-- `tisvlay-tray/src/lib.rs` (`orchestration_tests`) — real daemon/session stacks drive the production mirror pumps, command dispatcher, scroll coalescers, and captured pairing/liveliness notifications. A private handle adapter substitutes an in-memory tray for ksni updates without changing RPC or subscription behavior. Daemon-lifetime changes must discard old TVs and system profiles; the session-owned user catalog is independent.
-- `tisvlay/tests/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, discarding cached TVs/profiles across daemon lifetimes, and re-hydrating them when the same daemon's token returns after its links dropped.
+- `tisvlay-tray/tests/settings.rs` — the tray settings service end to end: SDK `TrayClient` ↔ headless `serve_settings` through the session service's user-socket peer, including the supervised client-mode serve link.
+- `tisvlay-tray/src/lib.rs` (`orchestration_tests`) — real daemon/session stacks drive the tray's view through the SDK clients (`follow_services`), the command dispatcher, scroll coalescers, and captured pairing/liveliness notifications. A private handle adapter substitutes an in-memory tray for ksni updates without changing RPC or subscription behavior. Daemon-lifetime changes must discard old TVs and system profiles; the session-owned user catalog is independent.
+- `tisvlay/tests/it/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, the release check, and discarding cached TVs/profiles across daemon lifetimes.
+- `tisvlay/tests/it/conformance.rs` — the cases every mirror must pass, through a `Relay`: each SDK client against a fake service (`tests/it/fake.rs`) across a cut link, a stalled then cut link, a restart, a delete while down, a record re-created under its key, a sample lost within a lifetime, a TV key arriving before its identity, and an assignment for a TV the daemon doesn't have; and the services' mirrors of each other against the real daemon and session, with the session's system link through the relay. A case the code fails today is `#[ignore]`d with the reason, until the change that fixes it turns it on.
 - `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, stream sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
 
 ### Zenoh testing gotchas

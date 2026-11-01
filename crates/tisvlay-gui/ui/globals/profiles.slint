@@ -235,6 +235,11 @@ export global Profiles {
     /// section renders a "Session service unavailable" hint instead
     /// of the list, and the User-section `+` is disabled.
     in property <bool> session-available: false;
+    /// True while the daemon, or the session service, is up but its
+    /// profiles haven't all arrived: the section says "Loading" rather
+    /// than show a partial list.
+    in property <bool> system-loading: false;
+    in property <bool> user-loading: false;
 
     /// `selected-kind` + `selected-uuid` are written by the master
     /// list's click handlers (so the row highlight updates instantly)
