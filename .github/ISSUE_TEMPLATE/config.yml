@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Question
     url: https://github.com/TisVlay/TisVlay/discussions
-    about: Ask how to do something, or talk through an idea.
+    about: Ask how to do something.
   - name: User guide
     url: https://tisvlay.readthedocs.io/
     about: Installation, automation and troubleshooting.

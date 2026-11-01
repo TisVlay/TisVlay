@@ -98,7 +98,7 @@ Recorded so nobody re-scouts:
 - **`allow_attributes`:** it flags reasoned `#[allow]`s too, which rule 3 relies on.
 - **`redundant_pub_crate`:** it contradicts the `unreachable_pub` lint already in the table.
 - **`missing_docs_in_private_items`.**
-- **Pedantic lints weighed and passed over**, so the yearly probe needn't re-weigh them: `needless_pass_by_value` (it fights `move`-into-task signatures), `missing_const_for_fn` (its suggestions can be wrong) and `must_use_candidate` (very noisy; `#[must_use]` goes on by hand, see CLAUDE.md's code conventions).
+- **Pedantic lints weighed and passed over**, so the yearly probe needn't re-weigh them: `needless_pass_by_value` (it fights `move`-into-task signatures), `missing_const_for_fn` (its suggestions can be wrong) and `must_use_candidate` (very noisy; `#[must_use]` goes on by hand, see [conventions.md](conventions.md)).
 - **A `disallowed-methods` list,** until a real incident motivates an entry. One for `process::exit` would duplicate `clippy::exit`.
 - **Nightly-only rustfmt options, and a nightly toolchain:** `-Zthreads` measured at 3–5 s off a cold build and nothing off an incremental one.
 - **Tools:** Miri, Kani, loom and cargo-geiger (our `unsafe` is FFI that Miri can't execute); cargo-vet and cargo-crev (their review burden doesn't fit one maintainer); cargo-udeps (needs nightly); rust-code-analysis (stale); `unused_crate_dependencies` (fires once per compile target).

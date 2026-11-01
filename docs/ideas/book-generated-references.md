@@ -4,11 +4,11 @@ The user guide already generates what lives in code: the CLI reference, the prof
 
 ## NixOS module options
 
-Every option mention is consolidated by hand in Installation's NixOS section, and other pages link there. A generated page (`nixosOptionsDoc`) would own the names and defaults from `packaging/nix/module.nix`, and the prose would name an option and link to it.
+Option names and defaults are consolidated by hand in Installation's NixOS section, and a couple of other pages quote the one they need. A generated page (`nixosOptionsDoc`) would own them from `packaging/nix/module.nix`, and the prose would name an option and link to it.
 
-The drift gate is the catch: CI doesn't use Nix, so checking this page needs a Nix step in CI.
+The drift gate is the catch: `ci.yml` doesn't use Nix, so checking this page needs a Nix step there.
 
-**Trigger:** the option surface keeps growing, or CI gains a Nix step anyway.
+**Trigger:** the option surface keeps growing, or `ci.yml` gains a Nix step anyway.
 
 ## Per-vendor pairing fields and capabilities
 

@@ -1,6 +1,6 @@
 # Plans
 
-Working space for in-progress plan docs — anything substantial enough that a multi-commit PR benefits from a checked-in design rationale up front. The steps from plan to merge are in the [contributing guide](../../.github/CONTRIBUTING.md#how-changes-land).
+Working space for in-progress plan docs. Which changes need one, and the steps from plan to merge, are in the [contributing guide](../../.github/CONTRIBUTING.md#how-changes-land).
 
 ## What a plan holds
 
@@ -11,7 +11,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Convention
 
-- One file per plan, `kebab-case.md`.
+- One file per plan, `kebab-case.md`, listed under Active plans below.
 - Plans live here while the work is active. In the PR's last commit, migrate the long-term content (decisions worth re-reading, war stories, deferred work pointers) into a durable home in `docs/` and delete the plan file. Plan-driven PRs keep their commits through a merge commit, so git history is the archive.
 - Suggested destinations for the typical sections:
   - **Architecture / decisions** → `docs/architecture.md`.

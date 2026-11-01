@@ -7,8 +7,9 @@ Give outside contributors a front door: a short guide that says where each kind 
 | Topic | Decision |
 |---|---|
 | Location | Everything GitHub reads from `.github/` lives there, so the root checkout stays clean. `README.md` and `LICENSE` stay at the root (see Layout). |
-| Code conventions | Move from `.claude/CLAUDE.md` § Code conventions into the guide. `CLAUDE.md` imports the guide with `@../.github/CONTRIBUTING.md`, so there's one copy and Claude still loads it each session. |
-| Merge policy | By PR kind, from anyone: small PRs are squash-merged, so they only need a Conventional Commits title. Plan-driven PRs keep merge commits, since a plan created and deleted inside a squash never reaches `main`'s history. |
+| Code conventions | Move from `.claude/CLAUDE.md` to `docs/conventions.md`. `CLAUDE.md` imports that file and the guide links to it, so there's one copy and sessions cost about what they did before this PR. |
+| Book rules | The authoring rules move to `docs/book/README.md`, read when editing the book. |
+| Merge policy | By PR kind, from anyone: small PRs are squash-merged under their title, a repository setting. Plan-driven PRs keep merge commits, since a plan created and deleted inside a squash never reaches `main`'s history. CI checks every commit subject once a commit touches `docs/plans/`, and contributors may reword their own unmerged branch. |
 | Development process | The guide states it: plan, commit the plan, review it, implement with tests in the same commit and deviations recorded, review again, retire the plan. Reviews are tool-neutral, so agents or a person can do them. |
 | Dev setup | Lead with the Nix dev shell. For a non-Nix setup, point to the CI workflow rather than writing steps that can drift. |
 | Licensing | Apache-2.0 §5 covers contributions. No CLA, no DCO sign-off. |
@@ -47,7 +48,15 @@ GitHub's page on contributor guidelines states `.github/` for `CONTRIBUTING.md`,
 7. **Where to read more:** `docs/architecture.md`, `docs/build.md`, `docs/testing.md`, the `docs/ideas/`, `docs/concerns/` and `docs/bugs/` indexes.
 8. **License:** one sentence on Apache-2.0 §5.
 
-`CLAUDE.md` imports the whole guide, so every line also costs context in each Claude session: another reason to keep it short.
+## Deviations
+
+From the implementation review, four read-only reviews of this PR:
+
+- **The guide isn't imported.** The baseline had `CLAUDE.md` import the whole guide. That added about 7.3 KB to each session and made its process text read as orders to Claude, so only `docs/conventions.md` is imported.
+- **Conventions and book rules left the guide,** so items 5 and 6 of the outline above are now links.
+- **`prek run -a` replaces `just check`** in the guide, since it also runs the file checks.
+- **Added:** a CI check on commit subjects, hidden files in the typos scan, the `PR_TITLE` squash setting, and a warning about sharing a machine with an installed TisVlay. The review found the guide's claim that the dev stack doesn't disturb an installed one was false.
+- **The wider docs sweep** goes to a follow-up PR branched from this one.
 
 ## Companion files
 

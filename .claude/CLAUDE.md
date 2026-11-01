@@ -78,6 +78,7 @@ tisvlay/
 ├── docs/                         # design.md (RETIRED D-Bus stack, ≤ v0.2.0),
 │   ├── architecture.md           # ← current architecture reference
 │   ├── build.md                  # build, lint policy, public API policy, first-publish checklist
+│   ├── conventions.md            # code conventions (imported below)
 │   ├── book/                     # mdBook user guide (Read the Docs); src/generated/ is docgen output
 │   ├── plans/                    # in-flight plan docs (README convention; git holds retired ones)
 │   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
@@ -238,6 +239,12 @@ just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI
 - **Don't translate**: brand names (`"TisVlay"`, `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`), Unicode glyphs, technical placeholders, file paths, URLs.
 - **Format strings**: use `gettext("Foo: {0}").replace("{0}", &v.to_string())` — never `format!`, which `xgettext` can't extract from.
 
+## Contributing
+
+[.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md) is written for outside contributors. Read § How changes land when asked to land work; the maintainer's instructions win over it. Read [docs/book/README.md](../docs/book/README.md) before editing the book.
+
+@../docs/conventions.md
+
 ## Linting & CI
 
 All checks are defined in `prek.toml`, which dispatches to `just` recipes. Hook ids match the corresponding `just` recipe names, ordered by priority: file checks → `fmt` → `build` → `clippy`/`doc` → `test`. Build and clippy use `--profile test` so `cargo test` reuses all build artifacts. The gate recipes deny warnings by exporting `CARGO_BUILD_WARNINGS=deny` — never set in `.cargo/config.toml`, which the Nix package build reads; the policy lives in `docs/build.md` § Lint policy.
@@ -248,12 +255,6 @@ prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt on
 ```
 
 CI (`.github/workflows/ci.yml`) gates its jobs on what a change touches: a `changes` job classifies the diff, so docs-only changes run only the fast `checks` job (prek file checks, typos, actionlint + zizmor), plus `docs` when the book is touched, and draft PRs run only `checks` (`docs/build.md` § What runs when). Code changes also run a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-links`) jobs. Design notes: `docs/build.md`.
-
-### Code conventions
-
-The rules live in the contributing guide, imported here:
-
-@../.github/CONTRIBUTING.md
 
 ### Dead Code Detection
 

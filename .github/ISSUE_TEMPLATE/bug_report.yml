@@ -23,7 +23,7 @@ body:
     id: version
     attributes:
       label: TisVlay version
-      description: Shown on the app's About page, or by `tisvlay status`.
+      description: Shown by `tisvlay --version`, or on the app's About page.
     validations:
       required: true
   - type: dropdown
@@ -41,15 +41,16 @@ body:
   - type: input
     id: tv
     attributes:
-      label: TV model
-      placeholder: OLED42C3PUA
+      label: TV model and firmware
+      description: How it's connected can matter too, such as Wi-Fi, Ethernet, a routed VLAN or a CEC adapter.
+      placeholder: OLED42C3PUA, webOS 23.20.71, Ethernet
   - type: dropdown
     id: backend
     attributes:
       label: Backend
       options:
         - LG WebOS
-        - HDMI-CEC
+        - HDMI CEC
         - Mock (testing)
         - Not sure
   - type: input

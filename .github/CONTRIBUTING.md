@@ -10,7 +10,7 @@ TisVlay controls smart TVs from a Linux desktop. Bug reports, ideas, translation
 | A bug or a feature idea | [The issue forms](https://github.com/TisVlay/TisVlay/issues/new/choose) |
 | A security problem | [The security policy](SECURITY.md); please don't open a public issue |
 | A translation | [docs/i18n.md](../docs/i18n.md) |
-| A new TV backend | [docs/backends/implementing-a-vendor.md](../docs/backends/implementing-a-vendor.md) |
+| A new TV backend | An issue first, then [docs/backends/implementing-a-vendor.md](../docs/backends/implementing-a-vendor.md) |
 | A change bigger than a small fix | An issue first, so the approach is agreed before you plan it ([how changes land](#how-changes-land)) |
 
 ## Setup
@@ -22,91 +22,55 @@ nix develop     # or `direnv allow`
 prek install    # the pre-commit and commit-msg hooks
 ```
 
-The [Nix](https://nixos.org/download/) dev shell provides the Rust toolchain, `just` and every tool the checks use. Without Nix, [the CI workflow](workflows/ci.yml) shows what a plain Ubuntu machine needs. Images under `docs/` are stored in Git LFS, so install it if you're working on them.
+The [Nix](https://nixos.org/download/) dev shell provides the Rust toolchain, `just` and every tool the checks use. Without Nix, [the CI workflow](workflows/ci.yml) shows what CI installs on Ubuntu, which is a starting point. Images under `docs/` are stored in Git LFS, so install it if you're working on them.
 
-Run each service in its own terminal:
+`prek install` makes every commit run the full build, clippy and the tests. For just the commit subject check, use `prek install -t commit-msg` and run the checks yourself before pushing.
+
+Run each service in its own terminal, each inside the dev shell:
 
 ```bash
 just daemon-start
 just session-start
 just tray-start
-just gui-start
+GUI_LIVE=false just gui-start
 ```
 
-In VS Code, the `all: start`, `all: stop` and `all: restart` tasks do this for you, with a panel per service. They need the dev shell's environment to find `just`, so start VS Code from the dev shell or use a direnv extension.
+`just gui-start` defaults to Slint's live preview, which can crash when a click navigates away from what was clicked, so `GUI_LIVE=false` turns it off. In VS Code, the `all: start`, `all: stop` and `all: restart` tasks run the stack with a panel per service, with live preview on. They need the dev shell's environment to find `just`, so start VS Code from the dev shell or use a direnv extension.
 
-Then add the mock TV: click **+** on the **TVs** page, choose **Don't see your TV? Add it manually**, pick the vendor **Mock (testing)** and enter an address such as `mock://test`. `just cli <verb>` runs any CLI verb against the same stack, and `just stop-all` ends it.
+Then add a mock TV, as [Troubleshooting](../docs/book/src/operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend) describes. `just cli <verb>` runs any CLI verb against the same stack, and `just stop-all` ends it. Run `just` to list every recipe.
 
-The dev stack uses its own sockets, so it won't disturb an installed TisVlay.
-
-Run `just` to list every recipe.
+If TisVlay is also installed on the machine, only the daemon has its own socket and state. The dev session and tray share the installed ones' user socket and config files, and the installed GUI and CLI connect to a running dev daemon. So first stop the installed user services (`systemctl --user stop tisvlay-session tisvlay-tray`) and close its GUI, and run with `EPHEMERAL=true` so the dev session doesn't save to your config.
 
 ## How changes land
 
-Small fixes go straight to a PR. Anything substantial (several commits, a wire or key change, work across crates) follows a plan:
+Small fixes go straight to a PR. Anything that changes a wire key, payload or rpc, adds a feature, or needs reviewing in stages follows a plan. If you're unsure, ask on the issue; the maintainer decides. If a PR outgrows "small", or you've already written the code, open it anyway and say so: the maintainer will take it as is or ask for a short plan on the same branch.
 
-1. **Plan.** Draft `docs/plans/<name>.md`: the goal, the decisions and why, commit-sized steps, and how each step will be verified. Commit it and open a draft PR, so later changes show up as diffs.
-2. **Review the plan** for design soundness, implementation correctness (do its claims about the code hold?) and maintainability. An agent or a person can do this, and the maintainer settles contested decisions.
-3. **Implement,** one commit per step, each passing `just check`, with tests in the same commit as the code. A bug fix starts with a test that reproduces it, where one can. When the work departs from the plan, record what changed and why in the plan, in the same commit.
-4. **Review the implementation** with the same lenses, and test on hardware whatever the tests can't reach. Fixes land as new commits.
-5. **Retire the plan** in the last commit, moving what's worth keeping into `docs/` ([how](../docs/plans/README.md)).
+1. **Agree the approach** in an issue.
+2. **Plan.** Draft `docs/plans/<name>.md` ([what it holds](../docs/plans/README.md#what-a-plan-holds)). Commit it and open a draft PR, so later changes show up as diffs.
+3. **Get the plan reviewed.** Ask for review on the draft PR and wait for the maintainer's agreement before implementing. Reviewing it yourself or with an agent first is welcome. A review looks at design soundness, implementation correctness (do the plan's claims about the code hold?) and maintainability.
+4. **Implement,** one commit per step, each passing the checks, with tests in the same commit as the code. A bug fix starts with a test that reproduces it, where one can. When the work departs from the plan, record what changed and why in the plan, in the same commit. Mark the PR ready when you want the full CI run.
+5. **Get the implementation reviewed** with the same lenses. Fixes land as new commits. Whatever the tests can't reach gets tested on hardware; if you don't have it, say what's untested, and the maintainer will test it or find someone who can.
+6. **Retire the plan** when the maintainer says the PR is ready to merge, moving what's worth keeping into `docs/` ([how](../docs/plans/README.md#convention)). If you're unsure what to keep, ask.
 
 ## Before opening a PR
 
-- Run `just check`, which covers most of what CI gates; CI also checks the minimum Rust version, feature combinations and the book ([what runs when](../docs/build.md#what-runs-when)). For a docs-only change, `prek run -a --skip build --skip clippy --skip test` is enough.
-- If you changed the CLI or a profile default, run `just docs-gen`. If you changed a user-facing GUI string, run `just i18n-extract`. Commit what they regenerate; CI fails on stale generated docs.
-- Add tests for what you changed. [docs/testing.md](../docs/testing.md) covers the layers and where new tests go.
+- Run `prek run -a`. CI also checks the minimum Rust version, feature combinations, coverage and the book ([what runs when](../docs/build.md#what-runs-when)). For a docs-only change, `prek run -a --skip build --skip clippy --skip test --skip doc` is enough, plus `just docs-links` if you touched the book.
+- If you changed the CLI or the profile structs (defaults, fields or their doc comments), run `just docs-gen`. If you changed a user-facing GUI string, run `just i18n-extract`. Commit what they regenerate; CI fails on stale generated docs.
+- Add tests for what you changed, where it applies. [docs/testing.md](../docs/testing.md) covers the layers and where new tests go.
 
 ## Commits and PRs
 
-- **The PR title must follow [Conventional Commits](https://www.conventionalcommits.org/)**, for example `fix(lg): reconnect after a standby`, and CI checks it.
-- **Small PRs are squash-merged,** so the title becomes the commit subject on `main`, which sets the next version and the changelog entry. Commits on the branch don't need to be tidy.
-- **Plan-driven PRs keep their commits** through a merge commit, so the plan and its history stay in git. Each commit's subject then feeds the version and the changelog, so every one must follow Conventional Commits. The commit-msg hook checks them.
-- **Draft PRs** run only the fast checks; marking one ready starts the full run ([what runs when](../docs/build.md#what-runs-when)).
+- **The PR title must follow [Conventional Commits](https://www.conventionalcommits.org/),** for example `fix(lg): reconnect after a standby`, and CI checks it. release-plz derives the next version and the changelog from the subjects on `main`, for commits that touch a published crate.
+- **Small PRs are squash-merged** under that title, so commits on the branch don't need to be tidy.
+- **Plan-driven PRs keep their commits** through a merge commit, so the plan and its history stay in git. Every commit subject on the branch must follow Conventional Commits too, and CI checks that once a commit touches `docs/plans/`. To fix a bad subject, reword it and force-push your own branch before merge, the one exception to fixes landing as new commits. To sync with `main`, merge it in.
+- **Draft PRs** run only the fast checks; marking one ready starts the full run ([what runs when](../docs/build.md#what-runs-when)). On your first PR, CI waits for the maintainer to approve the run.
 - **Say what you tested on:** which TV and backend, or the mock.
 - **AI-assisted work is welcome and held to the same standard:** you understand what you submit, you've tested it, and you can answer questions about it. It doesn't need to be disclosed.
 
-## Code conventions
-
-These are the rules the lints can't fully express. The lint policy and its reasons are in [docs/build.md § Lint policy](../docs/build.md#lint-policy).
-
-- **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
-- **Errors:** published crates and the client SDK expose `thiserror` types callers can match on. Binaries and binary-glue libraries (`tisvlay-runtime`, the service crates' library halves) may use `anyhow`. The model is in [docs/architecture.md § Error model](../docs/architecture.md#error-model).
-- **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
-- **Secrets never reach `Debug`.** A typed secret is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. The LG client key is one everywhere it's typed (`Credentials`, `LgVendorConfig`, the register payloads, `WebOsClient`); a new credential field uses it too. The untyped vendor config is a `tisvlay_core::VendorConfig`, and the wire requests that carry one (`AddTv`, `UpdateConfig`) are hand-written the same way: their `Debug` prints key names only. `Secret` wraps secrecy 0.10 (redacted `Debug`, zeroize on drop, `Serialize` opt-in); zenoh-config still pins 0.8, so `deny.toml` skips that duplicate.
-- **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
-- **Published crates** (core, protocol, and the `tisvlay` SDK) keep items private by default. `#[non_exhaustive]`, public-dependency and README rules are in [docs/build.md § Public API policy](../docs/build.md#public-api-policy); `just package-check` packages them.
-- **A wire-visible change is a `feat` or a breaking commit, never a `fix`:** any change to a key, payload, rpc or decode rule. Clients and services check each other's release on `major.minor`, and release-plz bumps the minor only for those commit types, so a protocol change shipped as a patch would pass the check and fail at runtime.
-- **A new rpc is declared once** in its family's table in `tisvlay-protocol`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. A world-answered rpc also gets a `Command` variant, and the reactor's exhaustive match then demands its one-shot handler in `tisvlay-world`'s `systems/commands.rs`. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
-- **A new per-TV attribute in the CLI** is a getter/setter verb, `<attribute> <tv> [<value>]`, with `--toggle`/`--clear` where they apply: no `set-` prefix, `on|off` for switches, and the bare form reads the value. No aliases for renamed verbs.
-- **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
-- **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.
-- **Spelling and wrapping:** American English, which the typos gate enforces. Markdown isn't hard-wrapped: one paragraph per line.
-
-## Docs
-
-The user guide is the mdBook in [docs/book/](../docs/book/), published on [Read the Docs](https://tisvlay.readthedocs.io/). Everything else under `docs/` is for developers.
-
-- **One canonical home per fact.** Elsewhere, keep only the consequence the reader needs at that point, in a clause, plus a link.
-- **Values that live in code are generated,** into `docs/book/src/generated/` behind a drift gate. Don't hand-copy a default or a flag into the prose.
-- **Describe tasks with the labels the GUI shows,** taken from `crates/tisvlay-gui/ui/`, and keep implementation vocabulary (UUIDs, sockets, field names) off the main path. When a label changes, grep the book for the old one.
-- **Command-line equivalents live in one of two places:** the "Which command does what the app does" table on the Command Line page, or a collapsed "From a terminal" `<details>` aside where a terminal really is the fix.
-- **Stay agnostic to vendor and transport.** Vendor specifics go in a per-backend table or an explicit "for LG" clause.
-
-Canonical homes in the book:
-
-| Fact | Page |
-|---|---|
-| Profile semantics, inheritance, the automation gate, event meanings | Automation |
-| The file schema and reload rules | Configuration Files |
-| Stream behavior | Streaming |
-| Tray and window behavior | GUI & Tray |
-| The Wake-on-LAN checklist | Troubleshooting |
-| The MAC explanation | Adding a TV |
-| Checking a release (checksums, signatures, SBOMs, scanning an installed system) | Security & Supply Chain |
-
 ## Where to read more
 
+- [docs/conventions.md](../docs/conventions.md): the code conventions the lints can't express. Read this before writing code.
+- [docs/book/README.md](../docs/book/README.md): the rules for writing the user guide.
 - [docs/architecture.md](../docs/architecture.md): topology, key space, the world and reactor model, and what's been learned about zenoh.
 - [docs/build.md](../docs/build.md): the build, lint policy, public API policy and what CI runs.
 - [docs/testing.md](../docs/testing.md): test layers, the mock backend and the link-breaking relay.
