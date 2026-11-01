@@ -1,0 +1,74 @@
+name: Bug report
+description: Something in TisVlay doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a security problem? Please don't report it here: see the [security policy](https://github.com/TisVlay/TisVlay/security/policy). For a suspected TV or network problem, [Troubleshooting](https://tisvlay.readthedocs.io/en/latest/operations/troubleshooting.html) shows how to rule it out with the mock backend.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, and what TisVlay did. Steps to reproduce help most.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: TisVlay version
+      description: Shown by `tisvlay --version`, or on the app's About page.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is it installed?
+      options:
+        - Debian / Ubuntu package
+        - Fedora / RHEL package
+        - Arch package
+        - NixOS module or Nix package
+        - From source
+    validations:
+      required: true
+  - type: input
+    id: tv
+    attributes:
+      label: TV model and firmware
+      description: How it's connected can matter too, such as Wi-Fi, Ethernet, a routed VLAN or a CEC adapter.
+      placeholder: OLED42C3PUA, webOS 23.20.71, Ethernet
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - LG WebOS
+        - HDMI CEC
+        - Mock (testing)
+        - Not sure
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop and session
+      placeholder: KDE Plasma on Wayland
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics report
+      description: Copy it from the app's About page, if the app runs.
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        [Inspecting the daemon](https://tisvlay.readthedocs.io/en/latest/operations/troubleshooting.html#inspecting-the-daemon) shows how to get them.
+        This is public, so remove anything you'd rather not share, such as IP or MAC addresses.
+      render: text

@@ -1,6 +1,6 @@
 # Build system
 
-Developer-facing reference for how the workspace compiles, what gets pulled into the dep graph, and the conventions that keep the build fast on stable Rust + 2-core CI. Audience: someone touching the test pipeline, adjusting a profile, swapping a dep, or investigating "why does this take so long?". For the testing surface (mock backends, wire tests, observability) see [testing.md](testing.md); for license attribution + policy see [licensing.md](licensing.md); for architectural decisions see [design.md](design.md).
+Developer-facing reference for how the workspace compiles, what gets pulled into the dep graph, and the conventions that keep the build fast on stable Rust + 2-core CI. Audience: someone touching the test pipeline, adjusting a profile, swapping a dep, or investigating "why does this take so long?". For the testing surface (mock backends, wire tests, observability) see [testing.md](testing.md); for license attribution + policy see [licensing.md](licensing.md); for architectural decisions see [architecture.md](architecture.md).
 
 ## Build pipeline
 
@@ -36,7 +36,7 @@ Three checks take minutes cold or need the network, so they run as CI jobs rathe
 
 `ci.yml` gates its jobs on what a change touches, so a docs fix doesn't pay for a full Rust build. Its first job, `changes`, diffs the change (a PR's merge commit against main, or a push against the previous tip) and classifies the files:
 
-- **Docs-only:** `docs/`, `.claude/`, the root `README.md`, `SECURITY.md`, `LICENSE` and `.config/.readthedocs.yaml`. Crate READMEs don't count: each is its crate's rustdoc, and its examples run as doctests.
+- **Docs-only:** `docs/`, `.claude/`, the root `README.md`, `LICENSE`, `.config/.readthedocs.yaml`, and the guide, security policy and templates under `.github/` (not its workflows or `dependabot.yml`). Crate READMEs don't count: each is its crate's rustdoc, and its examples run as doctests.
 - **Book inputs:** `docs/book/`, `docs/screenshots/`, `docs/artwork/`, the root `README.md` (the book's introduction includes it) and `.config/.readthedocs.yaml`.
 
 | Change | Jobs |
@@ -98,7 +98,7 @@ Recorded so nobody re-scouts:
 - **`allow_attributes`:** it flags reasoned `#[allow]`s too, which rule 3 relies on.
 - **`redundant_pub_crate`:** it contradicts the `unreachable_pub` lint already in the table.
 - **`missing_docs_in_private_items`.**
-- **Pedantic lints weighed and passed over**, so the yearly probe needn't re-weigh them: `needless_pass_by_value` (it fights `move`-into-task signatures), `missing_const_for_fn` (its suggestions can be wrong) and `must_use_candidate` (very noisy; `#[must_use]` goes on by hand, see CLAUDE.md's code conventions).
+- **Pedantic lints weighed and passed over**, so the yearly probe needn't re-weigh them: `needless_pass_by_value` (it fights `move`-into-task signatures), `missing_const_for_fn` (its suggestions can be wrong) and `must_use_candidate` (very noisy; `#[must_use]` goes on by hand, see [conventions.md](conventions.md)).
 - **A `disallowed-methods` list,** until a real incident motivates an entry. One for `process::exit` would duplicate `clippy::exit`.
 - **Nightly-only rustfmt options, and a nightly toolchain:** `-Zthreads` measured at 3–5 s off a cold build and nothing off an incremental one.
 - **Tools:** Miri, Kani, loom and cargo-geiger (our `unsafe` is FFI that Miri can't execute); cargo-vet and cargo-crev (their review burden doesn't fit one maintainer); cargo-udeps (needs nightly); rust-code-analysis (stale); `unused_crate_dependencies` (fires once per compile target).

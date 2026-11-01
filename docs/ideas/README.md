@@ -69,6 +69,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [SBOM file inside the distro packages (no install-location convention yet; scanners read the auditable binaries)](in-package-sbom.md)
 - [OpenSSF Scorecard (zizmor already gates the workflow checks; what's left is a badge and repo settings)](openssf-scorecard.md)
 - [SBOM precision (features unified across binaries; Slint's elected license not recorded)](sbom-precision.md)
+- [More generated references in the book (NixOS module options, per-vendor pairing fields and capabilities)](book-generated-references.md)
 
 ## Diagnostics & telemetry
 

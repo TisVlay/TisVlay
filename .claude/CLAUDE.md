@@ -16,7 +16,6 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 ## What's Next
 
 - **Release automation after v0.3.0.** v0.3.0 shipped 2026-10-14: the repo is public at TisVlay/TisVlay, and the three `publish = true` crates (core, protocol and the `tisvlay` SDK) were published to crates.io by hand. The vendor backends (lg, cec) and ssdp stay unpublished, since only the unpublished daemon uses them. Still to set up: each crate's trusted publisher plus the `crates-io` environment (docs/build.md § First-publish checklist, step 7); a `maintainers` org team as crates.io co-owner; then "Allow GitHub Actions to create and approve pull requests" and the release-plz workflow, which is disabled in GitHub's settings until then (`gh workflow enable release-plz.yml`).
-- **User docs:** the mdBook guide isn't on Read the Docs yet: import the public repo and set the project's "Path for .readthedocs.yaml" to `.config/.readthedocs.yaml`. The fragment-aware `docs-links` gate is in CI; after connecting Read the Docs, retire docs/plans/mdbook-docs-site.md.
 - **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext, coverage baseline), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
 
 ## Current Project Structure
@@ -66,6 +65,8 @@ tisvlay/
 │   └── tisvlay-gui-app/           # Settings window: state, rpcs, tests, `tisvlay-gui`
 │                                 # binary (lib name tisvlay_gui)
 │
+├── .github/                      # CONTRIBUTING.md, SECURITY.md, PR + issue templates,
+│                                 # workflows, dependabot.yml
 ├── packaging/
 │   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM)
 │   ├── systemd/                  # tisvlay-daemon.service (system), session/tray/greeter
@@ -77,6 +78,7 @@ tisvlay/
 ├── docs/                         # design.md (RETIRED D-Bus stack, ≤ v0.2.0),
 │   ├── architecture.md           # ← current architecture reference
 │   ├── build.md                  # build, lint policy, public API policy, first-publish checklist
+│   ├── conventions.md            # code conventions (imported below)
 │   ├── book/                     # mdBook user guide (Read the Docs); src/generated/ is docgen output
 │   ├── plans/                    # in-flight plan docs (README convention; git holds retired ones)
 │   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
@@ -237,6 +239,12 @@ just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI
 - **Don't translate**: brand names (`"TisVlay"`, `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`), Unicode glyphs, technical placeholders, file paths, URLs.
 - **Format strings**: use `gettext("Foo: {0}").replace("{0}", &v.to_string())` — never `format!`, which `xgettext` can't extract from.
 
+## Contributing
+
+[.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md) is written for outside contributors. Read § How changes land when asked to land work; the maintainer's instructions win over it. Read [docs/book/README.md](../docs/book/README.md) before editing the book.
+
+@../docs/conventions.md
+
 ## Linting & CI
 
 All checks are defined in `prek.toml`, which dispatches to `just` recipes. Hook ids match the corresponding `just` recipe names, ordered by priority: file checks → `fmt` → `build` → `clippy`/`doc` → `test`. Build and clippy use `--profile test` so `cargo test` reuses all build artifacts. The gate recipes deny warnings by exporting `CARGO_BUILD_WARNINGS=deny` — never set in `.cargo/config.toml`, which the Nix package build reads; the policy lives in `docs/build.md` § Lint policy.
@@ -247,22 +255,6 @@ prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt on
 ```
 
 CI (`.github/workflows/ci.yml`) gates its jobs on what a change touches: a `changes` job classifies the diff, so docs-only changes run only the fast `checks` job (prek file checks, typos, actionlint + zizmor), plus `docs` when the book is touched, and draft PRs run only `checks` (`docs/build.md` § What runs when). Code changes also run a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-links`) jobs. Design notes: `docs/build.md`.
-
-### Code conventions
-
-Rules the lints can't fully express; the lint policy and its reasons are in `docs/build.md` § Lint policy.
-
-- **Panics state their invariant.** `expect("… because …")`, never a bare `unwrap()` in shipped code. Tests may unwrap.
-- **Errors:** published crates and the client SDK expose `thiserror` types callers can match on. Binaries and binary-glue libraries (`tisvlay-runtime`, the service crates' library halves) may use `anyhow`. The model is in `docs/architecture.md` § Error model.
-- **Logging:** through `tracing`, with structured fields (`info!(%tv, "connected")`) rather than values formatted into the message. No `println!`/`eprintln!` outside the CLI (lint-enforced).
-- **Secrets never reach `Debug`.** A typed secret is a `tisvlay_core::Secret`: its `Debug` prints `[REDACTED]`, serde sees a plain string, and the value is read through `expose()`. The LG client key is one everywhere it's typed (`Credentials`, `LgVendorConfig`, the register payloads, `WebOsClient`); a new credential field uses it too. The untyped vendor config is a `tisvlay_core::VendorConfig`, and the wire requests that carry one (`AddTv`, `UpdateConfig`) are hand-written the same way: their `Debug` prints key names only. `Secret` wraps secrecy 0.10 (redacted `Debug`, zeroize on drop, `Serialize` opt-in); zenoh-config still pins 0.8, so `deny.toml` skips that duplicate.
-- **Handles whose drop cancels work** (watch handles, the service stacks, liveliness guards) carry `#[must_use = "…"]` saying what dropping them does.
-- **Published crates** (core, protocol, and the `tisvlay` SDK) keep items private by default. `#[non_exhaustive]`, public-dependency and README rules are in `docs/build.md` § Public API policy; `just package-check` packages them.
-- **A wire-visible change is a `feat` or a breaking commit, never a `fix`:** any change to a key, payload, rpc or decode rule. Clients and services check each other's release on `major.minor`, and release-plz bumps the minor only for those commit types, so a protocol change shipped as a patch would pass the check and fail at runtime.
-- **A new rpc is declared once** in its family's table in `tisvlay-protocol`'s `endpoint` module (key, request, response, read or write); the compiler then demands the server arm. A world-answered rpc also gets a `Command` variant, and the reactor's exhaustive match then demands its one-shot handler in `tisvlay-world`'s `systems/commands.rs`. Add the SDK or CLI surface by hand. Requests decode strictly: no compatibility shims on the wire.
-- **A new per-TV attribute in the CLI** is a getter/setter verb, `<attribute> <tv> [<value>]`, with `--toggle`/`--clear` where they apply: no `set-` prefix, `on|off` for switches, and the bare form reads the value. No aliases for renamed verbs.
-- **Allowances:** reasoned `#[expect(lint, reason = "…")]`. Use `#[allow]` with a reason only where the lint depends on features or tests.
-- **`unsafe`:** only in files that carry a reasoned `#![expect(unsafe_code)]`, one operation per block, each with a `// SAFETY:` comment.
 
 ### Dead Code Detection
 

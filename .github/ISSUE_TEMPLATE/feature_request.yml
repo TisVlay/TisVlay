@@ -1,0 +1,26 @@
+name: Feature request
+description: Something TisVlay could do but doesn't.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What you're trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should TisVlay do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: input
+    id: tv
+    attributes:
+      label: TV model and backend, if it matters
+      placeholder: OLED42C3PUA over LG WebOS

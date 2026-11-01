@@ -8,3 +8,4 @@
 - 🔎 Discovery not finding your TV? See [Firewall & Discovery](./operations/firewall-discovery.md).
 - 🔒 TV discovering too much about you? See [TVs on an Isolated Network](./operations/isolated-networks.md).
 - ⌨️ Scripting? See the [Command Line](./guide/cli.md) and [Configuration Files](./guide/configuration.md).
+- 🤝 Want to help? See the [Contributing Guide](https://github.com/TisVlay/TisVlay/blob/main/.github/CONTRIBUTING.md).

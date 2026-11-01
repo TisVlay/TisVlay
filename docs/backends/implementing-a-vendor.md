@@ -105,6 +105,8 @@ No other crate changes — clients pick up the new vendor from the daemon's cata
 
 Create a `docs/<vendor>/` directory mirroring [docs/lg/](../lg): a `protocol.md` (the wire protocol, command vocabulary, quirks — the reference), a `firmware-quirks.md` (a Symptom → Root Cause → Fix → Regression-Coverage bug inventory, grown as field testing surfaces issues), and a `testing.md` (your fake-server infrastructure). Add the protocol and quirks docs to the Reference Documentation list in [`.claude/CLAUDE.md`](../../.claude/CLAUDE.md) once they carry real content.
 
+In the user guide, a new backend folds into the existing pages rather than getting its own chapter ([rules](../book/README.md)). Add it to the `Backend` dropdown in `.github/ISSUE_TEMPLATE/bug_report.yml` too.
+
 ## Decision rationale
 
 Why the abstraction is shaped this way:

@@ -38,4 +38,4 @@ Yes. Add each one with the **+** button. Automation is per-TV too: each TV has i
 
 ---
 
-Something not answered here? [Troubleshooting](../operations/troubleshooting.md) covers the common failure modes (discovery, Wake-on-LAN, pairing), and bug reports are welcome on [GitHub](https://github.com/TisVlay/TisVlay/issues).
+Something not answered here? [Troubleshooting](../operations/troubleshooting.md) covers the common failure modes (discovery, Wake-on-LAN, pairing), and bug reports are welcome on [GitHub](https://github.com/TisVlay/TisVlay/issues). To help out in other ways, see the [contributing guide](https://github.com/TisVlay/TisVlay/blob/main/.github/CONTRIBUTING.md).
