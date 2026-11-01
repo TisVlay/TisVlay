@@ -38,7 +38,7 @@ slint = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
-parking_lot = "0.12"
+parking_lot = { workspace = true }
 fontique = { workspace = true }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 wl-clipboard-rs = "0.9"
