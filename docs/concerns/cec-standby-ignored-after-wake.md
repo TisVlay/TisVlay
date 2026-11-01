@@ -1,10 +1,12 @@
 # An LG C3 may ignore CEC `<Standby>` just after waking (unconfirmed)
 
-**Priority:** low until confirmed. **Found:** 2026-10-24, while verifying [docs/plans/cec-device-presence.md](../plans/cec-device-presence.md) on an LG C3 with a Pulse-Eight adapter.
+**Priority:** low until confirmed. **Found:** 2026-10-24, while verifying the CEC device-presence work ([docs/watchers/devices.md](../watchers/devices.md)) on an LG C3 with a Pulse-Eight adapter.
 
 ## Observation
 
 Three `tisvlay power <cec-tv> off` calls left the TV on (`state/power` still `active` 10 s later), and each came within seconds of the TV being turned on with its remote (the TV is the PC's display, so it was woken to read the terminal). Every power-off sent once the TV had been on for a while worked. The successful case was traced: `40 36` (`<Standby>`) ACKed, then the TV's `0f 36` broadcast and `90 01` (standby) replies. No failing case was traced, so it's open whether the TV received and ignored the message, or something woke it back up within the 10 s.
+
+A related observation (2026-10-31): at the lock screen, a 5 s locked idle timeout turned the screen off and on twice while the password was typed, each emulated over CEC as `<Standby>` and `<Image View On>`. After that the TV answered every power query with standby and ignored `<Image View On>` while its panel showed the PC (the LG record read `active`), until it was power-cycled with its remote. Rapid off-on cycles may leave the C3's CEC side stuck, the same family as the above.
 
 ## Risk
 

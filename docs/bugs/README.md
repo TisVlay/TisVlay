@@ -11,7 +11,7 @@
 
 ## Closed
 
-- [Pulse-Eight autonomous mode pins the TV's input label](cec-pulse8-autonomous-label.md) — our out-of-tree `pulse8-cec` build disarms the dongle on disconnect; follow-ups in [docs/plans/cec-pulse8-autonomous.md](../plans/cec-pulse8-autonomous.md)
+- [Pulse-Eight autonomous mode pins the TV's input label](cec-pulse8-autonomous-label.md) — our out-of-tree `pulse8-cec` build disarms the dongle on disconnect; follow-ups in [docs/ideas/cec-followups.md](../ideas/cec-followups.md#the-pulse-eight-disarm-upstream-a-suspend-opt-out-and-linux-cec)
 - [GUI and tray show a remote-off LG TV as powered on](power-switch-active-standby.md) — all three clients key on the shared `PowerState::is_awake`
 - [GUI power-state gate misses the wire's new power-state spellings](power-state-vocabulary-drift.md) — gate now delegates to `PowerState::is_on` via `parse`
 - [Per-field config-validation error routing is dead in the GUI](edit-pane-field-error-routing-dead.md) — typed `RpcError` + daemon-side `invalid-field` validation

@@ -1,6 +1,6 @@
 # A power-on sent to a closing connection is lost behind an OK reply
 
-**Status:** open (2026-10-24). Found while verifying [docs/plans/cec-device-presence.md](../plans/cec-device-presence.md).
+**Status:** open (2026-10-24). Found while verifying the CEC device-presence work ([docs/watchers/devices.md](../watchers/devices.md)).
 
 **Severity:** low. The window is short, but nothing reports the loss, and an automated profile action can hit it as easily as a person.
 

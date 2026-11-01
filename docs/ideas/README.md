@@ -29,6 +29,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Stream detection follow-ups (Steam/Parsec + udev detectors, GNOME port, tray quick-toggle, allow-list GUI, Sunshine poll off-switch, PipeWire test fake)](stream-followups.md)
 - [Screencast detection beyond KWin (no blessed cross-desktop signal; per-producer, class-and-producer, compositor-PID and Hyprland options; upstream `media.role=Screen` and portal-monitor proposals; NixOS VM test)](screencast-detection-coverage.md)
 - [Sit the rpc layer on zenoh-ext's typed queryables (if zenoh#2510 lands)](zenoh-typed-queryables.md)
+- [A longer lease on the Unix-socket links, so a sleep doesn't drop them](zenoh-link-lease.md)
 - [SDK methods for the rpcs the GUI can't reach (add-tv, discover, user effective)](sdk-cli-only-rpcs.md)
 - [A typed `update-config` request (settings fields + flattened vendor map)](typed-update-config.md)
 
@@ -67,6 +68,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Cache `main` builds in tisvlay.cachix.org (closure-only push, release pins)](nix-cache-main-builds.md)
 - [SBOM file inside the distro packages (no install-location convention yet; scanners read the auditable binaries)](in-package-sbom.md)
 - [OpenSSF Scorecard (zizmor already gates the workflow checks; what's left is a badge and repo settings)](openssf-scorecard.md)
+- [SBOM precision (features unified across binaries; Slint's elected license not recorded)](sbom-precision.md)
 
 ## Diagnostics & telemetry
 

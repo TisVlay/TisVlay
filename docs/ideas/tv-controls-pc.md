@@ -1,6 +1,6 @@
 # TV-driven PC power and input
 
-TisVlay drives the TV from the PC, and since the [TV-controls-the-PC plan](../plans/tv-controls-pc.md) the TV acts on the PC too: its power-off locks the session or puts the PC to sleep on any backend, and over HDMI-CEC its remote's power key acts on the PC, its keys can reach the desktop, and it can wake a sleeping PC. How that works is in [architecture.md](../architecture.md) (the TV acts on the PC) and [docs/cec/protocol.md](../cec/protocol.md#the-tv-acting-on-the-pc); the hardware checks behind it are in [docs/cec/checks.md](../cec/checks.md). This doc keeps what isn't planned. Names follow [power-vocabulary.md](power-vocabulary.md).
+TisVlay drives the TV from the PC, and the TV acts on the PC too: its power-off locks the session or puts the PC to sleep on any backend, and over HDMI-CEC its remote's power key acts on the PC, its keys can reach the desktop, and it can wake a sleeping PC. How that works is in [architecture.md](../architecture.md) (the TV acts on the PC) and [docs/cec/protocol.md](../cec/protocol.md#the-tv-acting-on-the-pc); the hardware checks behind it are in [docs/cec/checks.md](../cec/checks.md). This doc keeps what isn't planned. Names follow [power-vocabulary.md](power-vocabulary.md).
 
 ## Not yet planned
 
@@ -27,13 +27,15 @@ Raised while generalizing beyond CEC (2026-10-24) and while building the wake (2
   - it's Pulse-Eight-only, where the port cut covers any USB adapter that wakes the PC unasked.
 
   The EEPROM also keeps the daemon's name and address, so an unattended adapter would answer as "TisVlay"; whether that keeps the input's label is untested.
-- **A kernel patch for the wake (not pursued).** The cleaner route is in the driver, which our out-of-tree build already patches (the disarm on disconnect): write the autonomous flag to the EEPROM as soon as it changes rather than on the next ping, or let the claim say whether the adapter stays autonomous, so the daemon's choice takes effect before the sleep without a root unit. Either is a linux-media patch with the same review path as the disarm ([cec-pulse8-autonomous.md](../plans/cec-pulse8-autonomous.md)). Revisit if the port cut's costs (the adapter off USB and re-enumerated each sleep, a possibly pinned label) show up in use.
+- **A kernel patch for the wake (not pursued).** The cleaner route is in the driver, which our out-of-tree build already patches (the disarm on disconnect): write the autonomous flag to the EEPROM as soon as it changes rather than on the next ping, or let the claim say whether the adapter stays autonomous, so the daemon's choice takes effect before the sleep without a root unit. Either is a linux-media patch with the same review path as the disarm ([the bug doc](../bugs/cec-pulse8-autonomous-label.md#the-fix)). Revisit if the port cut's costs (the adapter off USB and re-enumerated each sleep, a possibly pinned label) show up in use.
 - **Other adapters (unverified).** DisplayPort-AUX CEC on amdgpu or i915 is driven by the GPU driver over the DP AUX channel, so it should go quiet with the GPU when the PC sleeps, with no firmware of its own to answer the TV or raise a wake. Nothing here verified it; the path for those hosts would be another wake source (Wake-on-LAN from a phone, a USB keyboard), not CEC.
 
 ## Open questions
 
 - **The wake against the label.** A sleeping PC's Pulse-Eight wakes it only with autonomous mode on in its EEPROM ([docs/cec/protocol.md](../cec/protocol.md#the-tv-waking-the-pc)), and an adapter left autonomous can answer the TV on its own with LG's vendor ID, which pins "LG DVD Player" on the input until the TV re-detects the device. With `wake`, should anything be done about the label? So far: "TisVlay" after a 105 s and a 48 s sleep (2026-10-24), and the label pinned after a sleep with the port cut while the adapter stayed armed (2026-10-30). Watched in daily use.
 - **One run where the TV didn't wake the PC.** With the EEPROM on and the adapter claimed, turning the TV on didn't wake the PC once (2026-10-31, 00:03), though SIMPLINK's power press did; three later runs woke on the TV. Unexplained.
+- **A sleep at the login screen.** A system-profile sleep (`on_tv_power_off`) with nobody logged in hasn't been tried on hardware: the daemon acts there without a session, so it should, but nothing has shown it.
+- **What LG reports during a screen off and on.** A screen off and on made no power-off edge over SSAP, but LG's intermediate `processing` reports weren't captured, so whether some firmware reads as a power-off there is unknown.
 - **The TV waking a hibernated PC.** Hibernation is a full power-off to the firmware, so whether the adapter even has power in S4 depends on the board. A control run (does the PC hibernate and come back at all) and a TV-key run are pending.
 
 ## Trigger

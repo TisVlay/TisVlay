@@ -2,7 +2,7 @@
 
 **Status:** draft merge request, not filed (2026-10-31). The fix is on our fork's `rc-passthru` branch ([TisVlay/linux-cec](https://github.com/TisVlay/linux-cec/tree/rc-passthru), `03b1b0ef`, on top of the log-address flags setter), which the workspace's `[patch.crates-io]` uses. It's independent of the setter, so it goes as its own merge request at [holo/linux-cec merge requests](https://gitlab.steamos.cloud/holo/linux-cec/-/merge_requests), cherry-picked onto upstream `main`. File it with the setter's ([upstream-linux-cec-log-addr-flags.md](upstream-linux-cec-log-addr-flags.md)). Once a release carries both, drop the `[patch]` (docs/build.md, Review triggers).
 
-TisVlay hit it when the daemon's CEC dial opened a Pulse-Eight while the `pulse8-cec` driver was restoring the claim stored in the adapter's EEPROM at attach (`persistent_config=1`): the dial failed with `Invalid value 255 for type LogicalAddress`, and its retry 3 s later connected ([the plan's step 8b](../plans/tv-controls-pc.md#8b-the-adapters-eeprom-decides-the-wake-found-on-hardware)).
+TisVlay hit it when the daemon's CEC dial opened a Pulse-Eight while the `pulse8-cec` driver was restoring the claim stored in the adapter's EEPROM at attach (`persistent_config=1`): the dial failed with `Invalid value 255 for type LogicalAddress`, and its retry 3 s later connected ([docs/cec/protocol.md](../cec/protocol.md#the-tv-waking-the-pc)).
 
 ---
 
