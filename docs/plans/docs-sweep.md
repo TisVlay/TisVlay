@@ -22,7 +22,7 @@ Users read these, so they go first.
 - [ ] **`guide/configuration.md` and `operations/firewall-discovery.md`:** delete the `[discovery]` TOML blocks (`bind_port`, `poll_interval_ms`). The daemon has no such section and skips unknown fields, so an edit silently does nothing. Point to `--ssdp-port` and the NixOS `bindPort` option.
 - [ ] **`guide/automation.md`:** delete the "admin-set baseline" layer. User profiles resolve the assigned profile over the default, then the built-ins, as system profiles do.
 - [ ] **`reference/requirements.md`:** the daemon does use the system bus (logind). The session uses logind (`LockedHint`, remote sessions) and Mutter's IdleMonitor on GNOME, not the screensaver.
-- [ ] **`guide/streaming.md`:** `tisvlay watch` ignores `--user-socket`. Say `watch` shows each TV's armed state and `tisvlay stream status` lists the sources.
+- [ ] **`guide/streaming.md`:** `tisvlay watch` ignores `--user-socket`, and doesn't need it: a plain `tisvlay watch` shows the daemon's `stream/state` mirror (checked on a dev stack, 2026-11-01).
 - [ ] **Hand-copied defaults** in `guide/streaming.md` (the stream event values, Sunshine's port), `guide/automation.md`'s default table and `getting-started/quick-start.md`: name the event or flag and link to the generated defaults or CLI reference. Keep a table only where it explains meaning, not values.
 - [ ] **`operations/troubleshooting.md`:** "typically 1–5" seconds for a woken TV is below the repo's own measurement (5–12 s). Drop the number.
 - [ ] **`guide/gui-tray.md`:** use the tray's full labels ("Backlight Up (+10)", "Volume Up (+10)").
@@ -49,11 +49,11 @@ Users read these, so they go first.
 - [ ] **`packaging/README.md`:** two binaries, not five; the Bazzite record's "system bus" connection (date the record); the Docker image is Ubuntu 26.04. Link to `cec/protocol.md` for the Pulse-Eight steps rather than restating them.
 - [ ] **`docs/licensing.md`** and `packaging/licensing/about.toml`: published crates are checked against `accepted`, not skipped; `sources` also allows the `linux-cec` fork; `installed_notices_path()` is in `about.rs`.
 - [ ] **`docs/watchers/network.md`:** `primary_descriptor()` (also in `core/src/traits.rs`'s module doc), the UNKNOWN-and-not-dormant fallback, and the `Reconnecting` component.
-- [ ] **`docs/streams/detection.md`:** `tisvlay service session --sunshine-port`; link the book for the Sunshine `global_prep_cmd` recipe and the stock defaults. Check live whether the system-socket `stream/state` mirror shows in a plain `tisvlay watch` before keeping that claim.
+- [ ] **`docs/streams/detection.md`:** `tisvlay service session --sunshine-port`; link the book for the Sunshine `global_prep_cmd` recipe and the stock defaults. Its claim that a plain `tisvlay watch` shows the `stream/state` mirror holds (checked live).
 - [ ] **`.claude/slint.md`:** the `Btn`, `ThemedCheckBox` and `ThemedTextInput` examples (gone; use `IconBtn` or `LineEditField`), and `open_notices_html` in `about.rs`.
 - [ ] **`docs/gui/`:** `HelpTrigger` is in `ui/globals/help.slint`; `accent.rs` is in `tisvlay-gui-app`.
 - [ ] **`docs/lg/testing.md`:** drop the fake server's line count.
-- [ ] **Dated investigations:** add a dated history header to `docs/lg/benchmarks/wake-reconnect.md` (the NetworkManager watcher is gone) and fix the repro command in `docs/kde/tray_issue.md` (`tisvlay service tray`).
+- [ ] **`docs/kde/tray_issue.md`:** retire it into `docs/bugs/upstream-kde-tray-submenu-collapse.md`, like the upstream linux-cec entries: the symptom (a nested submenu closes on its first expansion after the tray starts; still reproducible 2026-11-01), KDE bug 506439 and its MRs, the untested `about_to_show` workaround, and what to check on a newer Plasma. The old tray-side fixes stay in git history.
 
 ## 5. Ideas, concerns and bugs
 
@@ -82,12 +82,20 @@ Rewrite in current terms:
 
 ## 7. Duplicates and `CLAUDE.md`
 
-- [ ] **SSDP setup:** the book for users, `docs/discovery.md` for rationale; `docs/firewall.md`'s recipes become a link, and its research section, repeated in `discovery.md`, goes.
+- [ ] **SSDP and the firewall, split by job:** recipes live only in the book's Firewall & Discovery page; `docs/firewall.md` keeps only the network evidence (how SSDP replies arrive, why Linux alone drops them, conntrack, the captures, why other projects don't hit it), so the code comments pointing there stay right; `docs/discovery.md` keeps our design, and the research it shares with `firewall.md` stays in one of them. The mDNS alternative moves to an idea doc.
 - [ ] **Zenoh laws:** canonical in `docs/architecture.md`. `CLAUDE.md`'s copy has drifted (it misses the "dialed hub does observe" correction and the querier-matching gate). Keep one-liners and a link, or only the laws a session most often trips on.
 - [ ] **Test layers:** canonical in `docs/testing.md`; `CLAUDE.md`, `architecture.md` and the vendor guide link to it.
-- [ ] **WoL boot latency:** canonical in the benchmark; `CLAUDE.md`'s Known Quirks and `firmware-quirks.md` link to it.
+- [ ] **WoL boot latency:** canonical in the re-measured benchmark (area 8); `CLAUDE.md`'s Known Quirks and `firmware-quirks.md` link to it.
 - [ ] **Socket access:** canonical in `packaging/README.md`.
 - [ ] **`CLAUDE.md` trim:** cut what the guide or a canonical doc now holds (Running the Stack's basic commands, the recipe block, the testing summary, the CI paragraph, duplicated reference entries, the i18n workflow beyond its traps). Fix the project tree (`tisvlay-icons`, `docs/backends/`, `packaging/` subdirectories), the "root-D-Bus-client-compatible" phrase, and What's Next. Re-point `docs/testing.md`'s reference to the Tasks section and `pairing_schema.rs`'s reference to CLAUDE.md's i18n section.
+
+## 8. Re-measure wake timing
+
+`docs/lg/benchmarks/wake-reconnect.md` compares pre-0.3.0 reconnect designs (NetworkManager watcher variants) measured with `busctl`, and `scripts/bench_network.py` matches log lines that no longer exist. Only its TV hardware timings still hold. Re-measure on the current stack and rewrite both.
+
+- [ ] Rewrite `scripts/bench_network.py` for the current log lines and keys (to be designed with the maintainer).
+- [ ] Run it as an unattended script logging to a file, since the TV goes dark.
+- [ ] Rewrite the doc with current numbers, dated, and its hardware observations re-checked. Link it from the book's Troubleshooting page, `CLAUDE.md` and `firmware-quirks.md` instead of quoting numbers.
 
 ## Verification
 
