@@ -15,7 +15,7 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 
 ## What's Next
 
-- **Release automation after v0.3.0.** v0.3.0 shipped 2026-10-14: the repo is public at TisVlay/TisVlay, and the three `publish = true` crates (core, protocol and the `tisvlay` SDK) were published to crates.io by hand. The vendor backends (lg, cec) and ssdp stay unpublished, since only the unpublished daemon uses them. Still to set up: each crate's trusted publisher plus the `crates-io` environment (docs/build.md § First-publish checklist, step 7); a `maintainers` org team as crates.io co-owner; then "Allow GitHub Actions to create and approve pull requests" and the release-plz workflow, which is disabled in GitHub's settings until then (`gh workflow enable release-plz.yml`).
+- **Cutting a release:** [packaging/README.md](../packaging/README.md) § Release checklist. The bump runs locally (`just release-bump` on a branch, merged as `chore(release): X.Y.Z`), then a `v*` tag builds the signed packages, and approving `publish-crates` publishes the three `publish = true` crates (core, protocol and the `tisvlay` SDK) through crates.io trusted publishing. The release-PR workflow stays off: its PRs wouldn't trigger CI without a GitHub App token.
 - **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
 
 ## Current Project Structure

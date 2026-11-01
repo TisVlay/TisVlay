@@ -197,7 +197,7 @@ release.yml
 2. Optionally rehearse: tag the merge commit `vX.Y.Z-rc.1`, watch the run, `just verify-release vX.Y.Z-rc.1` on the draft, then delete the draft and the tag.
 3. Tag the merge commit `vX.Y.Z` and run `just verify-release vX.Y.Z` on the draft.
 4. Check the cached Nix install against the draft: on a NixOS host set up as the book's Installation page says, `nixos-rebuild build` fetches `tisvlay` from tisvlay.cachix.org instead of building it (`nix path-info --store https://tisvlay.cachix.org <path>`).
-5. Publish the release, then run `just verify-release vX.Y.Z` again, which now includes `gh release verify`. Approve the `publish-crates` deployment once trusted publishing is set up ([docs/build.md](../docs/build.md) § First-publish checklist); until then the three crates are published by hand.
+5. Publish the release, then run `just verify-release vX.Y.Z` again, which now includes `gh release verify`. Approve the `publish-crates` deployment, which publishes the three crates through crates.io trusted publishing ([docs/build.md](../docs/build.md) § First-publish checklist covers a newly published crate).
 6. On a machine with the new `.deb` installed, `gh attestation verify /usr/bin/tisvlay` with the signer pins from the book's Security & Supply Chain page.
 
 ## Shell completions
