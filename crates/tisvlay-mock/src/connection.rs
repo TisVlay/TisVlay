@@ -244,7 +244,12 @@ impl TvConnection for MockConnection {
     async fn power_on(&mut self) -> Result<()> {
         // Wake in place: a reachable-in-standby bus stays live in standby,
         // so the daemon wakes on this existing connection (no teardown).
-        // Push Active as the wake result, matching CecConnection.
+        // Push Active as the wake result, matching CecConnection. A
+        // network transport has no in-band power-on (LG wakes by WoL
+        // only), so the trait default's refusal is what it answers.
+        if !self.reachable_in_standby {
+            return Err(Error::not_supported("power_on", Capabilities::POWER));
+        }
         self.mutate_and_push(|s| {
             s.update_power(PowerState::Active);
         });

@@ -74,5 +74,5 @@ The daemon parks the connection within 50 ms of the carrier dropping, and reconn
 
 ## Observations
 
-- After the second PC sleep's resume the display went DPMS-off, so the daemon screened the TV off, and it reported `Screen Off` through both blips. That doesn't change the connect timings. It did reproduce the dark-panel case in [connected-power-on.md](../../ideas/connected-power-on.md): the script's final `power on` to the connected, screen-off TV failed with `Operation not supported: power_on (requires capability: power)`, and a `screen_off` five seconds later found the screen still off.
+- After the second PC sleep's resume the display went DPMS-off, so the daemon screened the TV off, and it reported `Screen Off` through both blips. That doesn't change the connect timings. It did show the script's final `power on` to the connected, screen-off TV failing with `Operation not supported: power_on (requires capability: power)`. Power-on now routes by transport, and treats a connected, awake network TV as already on ([architecture](../../architecture.md#the-world)).
 - On this bench a faster wake is the PC's network and the TV's to win, not the daemon's. The daemon's own share is the WoL after resume (0.3 s) and the reconnect once the route returns (0.15 s); everything else is waiting on the network or the TV.

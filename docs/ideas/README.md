@@ -8,7 +8,6 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Greeter integration generalization (greetd+wlroots, non-NixOS; GDM shipped)](greeter-integration-generalization.md)
 - [TV-side power prevention (manage LG auto-off Luna settings)](tv-side-power-prevention.md)
 - [Richer `DispatchOutcome` return type for screen_on / screen_off](dispatch-outcome-return-type.md)
-- [Power-on for an already-connected TV (startup `PowerOn` warning, LG capability mismatch, possible dark panel)](connected-power-on.md)
 - [Idempotent write rpcs via client-minted ids (extend caller re-issue to writes)](idempotent-write-rpcs.md)
 - [Virtual DRM connector for detached TVs](virtual-drm-connector.md)
 - [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding, inputattach start limit)](cec-followups.md)

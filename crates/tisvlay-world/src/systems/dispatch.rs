@@ -19,25 +19,51 @@ pub(super) fn arm_desired_input(
     }
 }
 
-/// Route a power-on request: in-band on a live handle, otherwise the wake
-/// dial for wake-capable transports. `Ok` once the action is sent or the
-/// wake dial is armed.
+/// What a power-on routes on: the live handle, the transport, wake
+/// support and the cached power state.
+pub(super) type PowerRow<'a> = (
+    Option<&'a ConnectionHandle>,
+    Option<&'a TransportTraits>,
+    Option<&'a State<payload::Link>>,
+    Option<&'a State<payload::Power>>,
+);
+
+/// Route a power-on request by transport: in place on a standby-reachable
+/// bus's live handle, otherwise the wake dial for a TV that needs waking.
+/// A network TV that's connected and awake is already on. `Ok` once the
+/// action is sent, the wake dial is armed, or there's nothing to do.
 pub(super) fn power_on_tv(
     commands: &mut Commands,
     clock: &Clock,
     entity: Entity,
     id: Uuid,
-    handle: Option<&ConnectionHandle>,
-    link: Option<&State<payload::Link>>,
+    (handle, traits, link, power): PowerRow,
     restore_to: Option<String>,
 ) -> Result<(), WireError> {
+    let wakeable = link.is_some_and(|l| l.supports_wake);
     match handle {
-        Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOn).is_ok() => {
-            arm_desired_input(commands, entity, clock, restore_to);
-            Ok(())
+        // A standby-reachable bus (CEC) wakes in place over its live link.
+        Some(handle) if traits.is_some_and(|t| t.0.reachable_in_standby) => {
+            if handle.cmd_tx.send(BackendCmd::PowerOn).is_err() {
+                return Err(WireError::not_connected(id));
+            }
         }
-        Some(_) => Err(WireError::not_connected(id)),
-        None if link.is_some_and(|l| l.supports_wake) => {
+        // A network transport has no in-band power-on (LG wakes by WoL
+        // only). A live link to a TV that needs waking, such as LG's
+        // `ActiveStandby` after a remote-off, spends a wake dial.
+        Some(_) if power.is_some_and(|p| p.state.needs_wake_preflight()) => {
+            if !wakeable {
+                return Err(WireError::wake_not_supported(id));
+            }
+            let mut e = commands.entity(entity);
+            e.remove::<(ConnectionHandle, RetryAt)>();
+            redial(&mut e, true);
+        }
+        // One to an awake TV is already on. Its panel is the screen
+        // action's to decide, so a daemon start's power-on doesn't undo a
+        // deliberate screen-off.
+        Some(_) => {}
+        None if wakeable => {
             // Reinsert even when a dial is already pending: an explicit
             // power-on upgrades an in-flight plain retry (which cannot
             // reach an off TV) to a fresh wake dial — the boot Startup
@@ -45,11 +71,11 @@ pub(super) fn power_on_tv(
             let mut e = commands.entity(entity);
             redial(&mut e, true);
             e.remove::<RetryAt>();
-            arm_desired_input(commands, entity, clock, restore_to);
-            Ok(())
         }
-        None => Err(WireError::wake_not_supported(id)),
+        None => return Err(WireError::wake_not_supported(id)),
     }
+    arm_desired_input(commands, entity, clock, restore_to);
+    Ok(())
 }
 
 /// Arm the screen verify: the action was sent (or routed onto the wake
@@ -103,7 +129,14 @@ pub(super) fn dispatch_screen(
     let (handle, pending, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
-            return power_on_tv(commands, clock, entity, id, handle, link, restore_to);
+            return power_on_tv(
+                commands,
+                clock,
+                entity,
+                id,
+                (handle, traits, link, power),
+                restore_to,
+            );
         }
         if let Some(handle) = handle {
             let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
@@ -132,7 +165,14 @@ pub(super) fn dispatch_screen(
     match handle {
         Some(handle) if wake_needy && traits.is_some_and(|t| t.0.reachable_in_standby) => {
             // Wake in place on the live standby connection.
-            let sent = power_on_tv(commands, clock, entity, id, Some(handle), link, restore_to);
+            let sent = power_on_tv(
+                commands,
+                clock,
+                entity,
+                id,
+                (Some(handle), traits, link, power),
+                restore_to,
+            );
             arm_screen_verify(commands, entity, clock, retry, on, false);
             sent
         }
@@ -166,7 +206,14 @@ pub(super) fn dispatch_screen(
             // instead of erroring (the rpc acks when the dial is armed,
             // same as `power-on`); the verify survives the dial, spends
             // the dispatch's one wake, and re-asserts on reconnect.
-            let armed = power_on_tv(commands, clock, entity, id, None, link, restore_to);
+            let armed = power_on_tv(
+                commands,
+                clock,
+                entity,
+                id,
+                (None, traits, link, power),
+                restore_to,
+            );
             arm_screen_verify(commands, entity, clock, retry, true, true);
             armed
         }
@@ -454,8 +501,7 @@ pub(super) fn dispatch_system_events(
                     &clock,
                     entity,
                     id.0,
-                    handle,
-                    link,
+                    (handle, traits, link, power),
                     restore_to,
                 ),
             };

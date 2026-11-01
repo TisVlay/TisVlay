@@ -44,7 +44,7 @@ tisvlay mute <id> --toggle    # flip mute, printing what was sent: on
 - Settings that can be unset (the primary input, the assigned profiles) take `--clear`. A TV with no assigned profile reads as the default profile's id; an unset primary input prints nothing.
 - Commands that change something print nothing when they succeed. A failure exits non-zero with the reason on stderr.
 - A reader that stops early, as in `tisvlay watch | head`, ends the command quietly with status 0.
-- `power` reads `on` only when the TV is connected and awake, so a TV switched off with its remote reads `off`, and `power --toggle` wakes it.
+- `power` reads `on` only when the TV is connected and awake, so a TV switched off with its remote reads `off`, and `power --toggle` wakes it. A TV whose screen alone is off reads `on`, and `power on` leaves it so; `screen on` lights it.
 - Values the TV reports, such as volume or the current input, come from its last report. If the TV is disconnected the command still prints the value, with a warning on stderr that it may be stale; if the TV hasn't reported it since the service started, the command fails.
 - Two `--toggle`s in quick succession can both see the old value, so a hotkey can miss a very fast double press.
 - In a script, quote a read you pass on to another command: an empty result would otherwise turn the second command into a read.
