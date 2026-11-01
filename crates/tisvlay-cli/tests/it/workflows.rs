@@ -516,6 +516,63 @@ async fn discover_watch_streams_until_interrupted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_reader_closing_the_pipe_ends_watch_quietly() {
+    let rig = CliDaemon::start().await;
+    let mut child = rig
+        .cli(&["watch"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+    let banner = tokio::time::timeout(SETTLE, stdout.next_line())
+        .await
+        .expect("no watch banner")
+        .unwrap()
+        .unwrap();
+    assert!(banner.starts_with("watching"), "{banner:?}");
+    drop(stdout);
+    // A new TV publishes fresh samples, whose write hits the closed pipe.
+    rig.pair("Living Room", "10.0.0.1").await;
+    let output = tokio::time::timeout(SETTLE, child.wait_with_output())
+        .await
+        .expect("watch kept running after its reader left")
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{:?}: {stderr}", output.status);
+    assert_eq!(stderr, "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_stderr_doesnt_fail_the_command() {
+    let rig = CliDaemon::start().await;
+    let mut child = rig
+        .cli(&["discover", "--watch", "--vendor", "mock"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+    tokio::time::timeout(SETTLE, stderr.next_line())
+        .await
+        .expect("no discovery banner")
+        .unwrap()
+        .unwrap();
+    drop(stderr);
+    let pid = libc::pid_t::try_from(child.id().unwrap()).unwrap();
+    // SAFETY: `pid` is our own live child (it just printed its banner and
+    // we hold its handle, so it can't have been reaped); on SIGINT it
+    // writes "stopped" to the stderr we just closed.
+    let sent = unsafe { libc::kill(pid, libc::SIGINT) };
+    assert_eq!(sent, 0);
+    let status = tokio::time::timeout(SETTLE, child.wait())
+        .await
+        .expect("discover --watch didn't stop on SIGINT")
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn reload_reports_service_failures_and_absent_services() {
     let rig = CliDaemon::start().await;
     let output = rig.command(&["--json", "reload"]).await;

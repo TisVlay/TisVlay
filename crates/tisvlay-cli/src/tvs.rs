@@ -1,6 +1,7 @@
 //! Whole-fleet views: `list` and `watch`.
 
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -42,14 +43,21 @@ pub(crate) async fn list(
             .into_iter()
             .map(|(id, fields)| (id.to_string(), Value::Object(fields.into_iter().collect())))
             .collect();
-        println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
+        writeln!(
+            io::stdout(),
+            "{}",
+            serde_json::to_string_pretty(&Value::Object(out))?
+        )?;
         return Ok(());
     }
     if tvs.is_empty() {
-        println!("No TVs configured. Use 'tisvlay pair' to add one.");
+        writeln!(
+            io::stdout(),
+            "No TVs configured. Use 'tisvlay pair' to add one."
+        )?;
         return Ok(());
     }
-    println!("Configured TVs:");
+    writeln!(io::stdout(), "Configured TVs:")?;
     let mut descriptor_fields: BTreeMap<String, Option<String>> = BTreeMap::new();
     for (id, fields) in &tvs {
         let identity = fields.get("meta/identity").cloned().unwrap_or(Value::Null);
@@ -74,7 +82,10 @@ pub(crate) async fn list(
             None => None,
         }
         .unwrap_or_else(|| "?".into());
-        println!("  {id} - {name} ({descriptor}) [{status}] <{vendor}>{managed}");
+        writeln!(
+            io::stdout(),
+            "  {id} - {name} ({descriptor}) [{status}] <{vendor}>{managed}"
+        )?;
     }
     Ok(())
 }
@@ -125,7 +136,11 @@ pub(crate) async fn watch(session: &Session, site: &str) -> Result<()> {
         .recovery(RecoveryConfig::default().heartbeat())
         .await
         .map_err(|e| anyhow!("subscribe: {e}"))?;
-    println!("watching {} (ctrl-c to stop)", keys::all(site));
+    writeln!(
+        io::stdout(),
+        "watching {} (ctrl-c to stop)",
+        keys::all(site)
+    )?;
     loop {
         tokio::select! {
             sample = subscriber.recv_async() => match sample {
@@ -134,7 +149,13 @@ pub(crate) async fn watch(session: &Session, site: &str) -> Result<()> {
                         .payload()
                         .try_to_string()
                         .unwrap_or_else(|e| e.to_string().into());
-                    println!("{:6} {} {}", sample.kind().to_string(), sample.key_expr(), payload);
+                    writeln!(
+                        io::stdout(),
+                        "{:6} {} {}",
+                        sample.kind().to_string(),
+                        sample.key_expr(),
+                        payload
+                    )?;
                 }
                 Err(_) => return Ok(()),
             },

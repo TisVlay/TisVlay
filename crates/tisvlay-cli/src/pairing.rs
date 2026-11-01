@@ -1,6 +1,7 @@
 //! Discovery, pairing and re-pairing: the verbs that find TVs and enroll them.
 
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -38,7 +39,7 @@ pub(crate) async fn discover_session(
     let id = call::<manager::DiscoverStart>(caller, &(), &rpc::DiscoverStart { vendor })
         .await?
         .session;
-    eprintln!("discovery session {id} — ctrl-c stops");
+    let _ = writeln!(io::stderr(), "discovery session {id} — ctrl-c stops");
     let sub = session
         .declare_subscriber(format!("tisvlay/{site}/discovery/{id}/found/*"))
         .await
@@ -53,28 +54,29 @@ pub(crate) async fn discover_session(
                 let finding = tv["id"].as_str().unwrap_or_default().to_string();
                 if seen.insert(finding, ()).is_none() {
                     if json_out {
-                        println!("{tv}");
+                        writeln!(io::stdout(), "{tv}")?;
                         continue;
                     }
                     let mac = tv["vendor_data"]["mac"]
                         .as_str()
                         .map(|mac| format!("  mac={mac}"))
                         .unwrap_or_default();
-                    println!(
+                    writeln!(
+                        io::stdout(),
                         "{}  {}  {}  id={}{}",
                         tv["vendor"].as_str().unwrap_or("?"),
                         tv["name"].as_str().unwrap_or("?"),
                         tv["address"].as_str().unwrap_or("?"),
                         tv["id"].as_str().unwrap_or("?"),
                         mac,
-                    );
+                    )?;
                 }
             }
             _ = interrupt.recv() => break,
         }
     }
     call::<manager::DiscoverStop>(caller, &(), &rpc::DiscoverStop { session: id }).await?;
-    eprintln!("stopped");
+    let _ = writeln!(io::stderr(), "stopped");
     Ok(())
 }
 
@@ -92,14 +94,15 @@ pub(crate) async fn discover(
     let request = rpc::Discover { vendor, timeout_ms };
     let found = caller.call_many::<manager::Discover>(&(), &request).await?;
     if json_out {
-        println!(
+        writeln!(
+            io::stdout(),
             "{}",
             serde_json::to_string_pretty(&serde_json::to_value(&found)?)?
-        );
+        )?;
         return Ok(());
     }
     if found.is_empty() {
-        println!("nothing found");
+        writeln!(io::stdout(), "nothing found")?;
         return Ok(());
     }
     for tv in found {
@@ -108,10 +111,15 @@ pub(crate) async fn discover(
             .get("mac")
             .map(|mac| format!("  mac={mac}"))
             .unwrap_or_default();
-        println!(
+        writeln!(
+            io::stdout(),
             "{}  {}  {}  id={}{}",
-            tv.vendor, tv.name, tv.address, tv.id, mac,
-        );
+            tv.vendor,
+            tv.name,
+            tv.address,
+            tv.id,
+            mac,
+        )?;
     }
     Ok(())
 }
@@ -125,12 +133,13 @@ pub(crate) async fn vendor(caller: &Caller, id: Option<String>, json_out: bool) 
             return print_reply(&catalog, true);
         }
         for vendor in catalog {
-            println!(
+            writeln!(
+                io::stdout(),
                 "{}  {}  [{}]",
                 vendor.id,
                 vendor.name,
                 vendor.capabilities.join(", "),
-            );
+            )?;
         }
         return Ok(());
     };
@@ -144,15 +153,22 @@ pub(crate) async fn vendor(caller: &Caller, id: Option<String>, json_out: bool) 
         row["schema"] = serde_json::to_value(&schema)?;
         return print_reply(&row, true);
     }
-    println!(
+    writeln!(
+        io::stdout(),
         "{}  {}  [{}]",
         vendor.id,
         vendor.name,
         vendor.capabilities.join(", "),
-    );
+    )?;
     for field in schema {
         let required = if field.required { " (required)" } else { "" };
-        println!("  {}{}  {}", field.name, required, field.helper);
+        writeln!(
+            io::stdout(),
+            "  {}{}  {}",
+            field.name,
+            required,
+            field.helper
+        )?;
     }
     Ok(())
 }
@@ -179,7 +195,7 @@ pub(crate) async fn pair(
         config: pairing_config(params)?,
     };
     let started = call::<manager::Pair>(caller, &(), &request).await?;
-    eprintln!("pairing session {} started", started.id);
+    let _ = writeln!(io::stderr(), "pairing session {} started", started.id);
     watch_pairing(session, caller, site, started.id, started.attempt).await
 }
 
@@ -230,13 +246,13 @@ pub(crate) async fn watch_pairing(
                 if !is_current_pairing_attempt(&progress, attempt) {
                     continue;
                 }
-                eprintln!("[{}] {}", progress.phase, progress.message);
+                let _ = writeln!(io::stderr(), "[{}] {}", progress.phase, progress.message);
                 match progress.phase {
                     payload::PairingPhase::Complete => {
                         if let Some(report) = &progress.link_mac {
-                            eprintln!("{}", link_mac_line(id, report));
+                            let _ = writeln!(io::stderr(), "{}", link_mac_line(id, report));
                         }
-                        println!("{id}");
+                        writeln!(io::stdout(), "{id}")?;
                         return Ok(());
                     }
                     payload::PairingPhase::Failed => bail!(
@@ -247,7 +263,7 @@ pub(crate) async fn watch_pairing(
                 }
             }
             _ = interrupt.recv() => {
-                eprintln!("cancelling…");
+                let _ = writeln!(io::stderr(), "cancelling…");
                 let _ = call::<manager::CancelPair>(caller, &(), &rpc::TvRef { id }).await;
             }
         }

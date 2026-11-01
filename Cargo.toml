@@ -280,8 +280,8 @@ unimplemented = "warn"
 # `process::exit` outside `main` skips destructors; `main` is exempt.
 exit = "warn"
 get_unwrap = "warn"
-# Binaries and libraries log through tracing; the CLI, which prints its
-# output, opts out at its crate root. `println!` also panics on a closed pipe.
+# Binaries and libraries log through tracing, and the CLI writes with
+# `writeln!`: `println!` and `eprintln!` panic on a closed pipe.
 print_stdout = "warn"
 print_stderr = "warn"
 # A panic in shipped code states its invariant: `expect("… because …")`,

@@ -1,6 +1,7 @@
 //! The system- and user-profile catalogs.
 
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
@@ -19,8 +20,8 @@ use crate::{ack, call};
 const CATALOG_QUIET: Duration = Duration::from_millis(600);
 
 /// Print one profile catalog row.
-fn print_profile(id: &str, body: &Value) {
-    print!("{}", format_profile(id, body));
+fn print_profile(id: &str, body: &Value) -> io::Result<()> {
+    write!(io::stdout(), "{}", format_profile(id, body))
 }
 
 fn format_profile(id: &str, body: &Value) -> String {
@@ -53,14 +54,18 @@ async fn list_catalog(session: &Session, keyexpr: &str, json_out: bool) -> Resul
         .collect();
     if json_out {
         let out: serde_json::Map<String, Value> = rows.into_iter().collect();
-        println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
+        writeln!(
+            io::stdout(),
+            "{}",
+            serde_json::to_string_pretty(&Value::Object(out))?
+        )?;
         return Ok(());
     }
     if rows.is_empty() {
-        println!("no profiles");
+        writeln!(io::stdout(), "no profiles")?;
     }
     for (id, body) in rows {
-        print_profile(&id, &body);
+        print_profile(&id, &body)?;
     }
     Ok(())
 }
@@ -100,7 +105,7 @@ pub(crate) async fn profile_cmd(
                 body: profile_body(name, body)?,
             };
             let created = call::<profile::Create>(caller, &(), &request).await?;
-            println!("{}", created.id);
+            writeln!(io::stdout(), "{}", created.id)?;
             Ok(())
         }
         SystemProfileCmd::Update { id, body } => {
@@ -111,7 +116,7 @@ pub(crate) async fn profile_cmd(
             let created =
                 call::<profile::Duplicate>(caller, &(), &rpc::ProfileDuplicate { id, name })
                     .await?;
-            println!("{}", created.id);
+            writeln!(io::stdout(), "{}", created.id)?;
             Ok(())
         }
         SystemProfileCmd::Delete { id } => {
@@ -142,7 +147,7 @@ pub(crate) async fn user_profile_cmd(
                 body: profile_body(name, body)?,
             };
             let created = call::<user_profile::Create>(user_caller, &(), &request).await?;
-            println!("{}", created.id);
+            writeln!(io::stdout(), "{}", created.id)?;
             Ok(())
         }
         UserProfileCmd::Update { id, body } => {
@@ -153,7 +158,7 @@ pub(crate) async fn user_profile_cmd(
         UserProfileCmd::Duplicate { id, name } => {
             let request = rpc::ProfileDuplicate { id, name };
             let created = call::<user_profile::Duplicate>(user_caller, &(), &request).await?;
-            println!("{}", created.id);
+            writeln!(io::stdout(), "{}", created.id)?;
             Ok(())
         }
         UserProfileCmd::Delete { id } => {

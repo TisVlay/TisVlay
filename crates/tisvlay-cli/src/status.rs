@@ -1,5 +1,6 @@
 //! `status`: the daemon's liveliness and release.
 
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -36,7 +37,8 @@ pub(crate) async fn status(
         .as_deref()
         .map(|release| tisvlay_protocol::compatible(tisvlay_protocol::VERSION, release));
     if json_out {
-        println!(
+        writeln!(
+            io::stdout(),
             "{}",
             json!({
                 "alive": alive,
@@ -45,7 +47,7 @@ pub(crate) async fn status(
                 "release": release,
                 "compatible": compatible,
             })
-        );
+        )?;
     }
     let healthy = alive && compatible != Some(false);
     if json_out {
@@ -59,12 +61,17 @@ pub(crate) async fn status(
         return Ok(());
     }
     if alive {
-        println!("daemon alive: site '{site}' at {}", socket.display());
+        writeln!(
+            io::stdout(),
+            "daemon alive: site '{site}' at {}",
+            socket.display()
+        )?;
         if let Some(release) = &release {
-            println!(
+            writeln!(
+                io::stdout(),
                 "daemon release: {release} (this CLI: {})",
                 tisvlay_protocol::VERSION
-            );
+            )?;
         }
         if compatible == Some(false) {
             bail!(

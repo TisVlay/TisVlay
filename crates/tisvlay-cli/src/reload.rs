@@ -1,5 +1,6 @@
 //! `reload`: apply hand edits of every service's state file.
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
@@ -52,20 +53,25 @@ pub(crate) async fn reload(
             .iter()
             .map(|(service, outcome)| ((*service).to_string(), outcome.to_json()))
             .collect();
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        writeln!(io::stdout(), "{}", serde_json::to_string_pretty(&report)?)?;
     } else {
         for (service, outcome) in &outcomes {
-            println!("{:<8} {}", format!("{service}:"), outcome.describe());
+            writeln!(
+                io::stdout(),
+                "{:<8} {}",
+                format!("{service}:"),
+                outcome.describe()
+            )?;
         }
         // Each failure's report after the table: a file the service
         // couldn't parse reads like a compiler error, path included.
         for (service, outcome) in &outcomes {
             if let ReloadOutcome::Failed(report) = outcome {
-                println!();
+                writeln!(io::stdout())?;
                 if report.starts_with("error: ") {
-                    println!("{report}");
+                    writeln!(io::stdout(), "{report}")?;
                 } else {
-                    println!("error: {service}: {report}");
+                    writeln!(io::stdout(), "error: {service}: {report}")?;
                 }
             }
         }
