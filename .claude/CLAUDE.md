@@ -16,7 +16,7 @@ Architecture (since v0.3.0): a **bevy_ecs world** holds all daemon state machine
 ## What's Next
 
 - **Release automation after v0.3.0.** v0.3.0 shipped 2026-10-14: the repo is public at TisVlay/TisVlay, and the three `publish = true` crates (core, protocol and the `tisvlay` SDK) were published to crates.io by hand. The vendor backends (lg, cec) and ssdp stay unpublished, since only the unpublished daemon uses them. Still to set up: each crate's trusted publisher plus the `crates-io` environment (docs/build.md § First-publish checklist, step 7); a `maintainers` org team as crates.io co-owner; then "Allow GitHub Actions to create and approve pull requests" and the release-plz workflow, which is disabled in GitHub's settings until then (`gh workflow enable release-plz.yml`).
-- **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext, coverage baseline), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
+- **Follow-ups:** docs/ideas/switchover-followups.md (IPC performance harness, tray gettext), docs/ideas/screencast-detection-coverage.md (no desktop-agnostic signal exists; options for GNOME and others).
 
 ## Current Project Structure
 
@@ -35,6 +35,7 @@ tisvlay/
 │   ├── tisvlay-cec/               # HDMI-CEC vendor implementation (linux-cec)
 │   ├── tisvlay-ssdp/              # SSDP multicast transport (LG discovery)
 │   ├── tisvlay-mock/              # In-memory mock backend (always registered, unpublished)
+│   ├── tisvlay-icons/             # freedesktop icon-theme resolution (GUI and tray)
 │   ├── tisvlay-test/              # OS-environment fakes (private dbus-daemon,
 │   │                             # fake logind, link-breaking relay) — dev-only
 │   │
@@ -54,7 +55,7 @@ tisvlay/
 │   ├── tisvlay-tray/              # ksni tray over the SDK clients + desktop notifications
 │   │                             # (notify.rs: settings service on the user socket)
 │   ├── tisvlay/                   # Client SDK: DaemonClient/SessionClient/TrayClient +
-│   │                             # StateWatcher (root-D-Bus-client-compatible surface)
+│   │                             # StateWatcher
 │   ├── tisvlay-cli/               # The `tisvlay` binary: zenoh CLI client + the
 │   │                             # `service` verbs (daemon/session/tray/greeter);
 │   │                             # its lib exposes the clap tree for docgen
@@ -72,7 +73,10 @@ tisvlay/
 │   ├── systemd/                  # tisvlay-daemon.service (system), session/tray/greeter
 │   │                             # (user units), org.tisvlay.Gui.service (GUI activation)
 │   ├── freedesktop/              # org.tisvlay.Gui.desktop
-│   ├── licensing/                # cargo-about config + NOTICE
+│   ├── licensing/                # cargo-about config + NOTICE, deny.toml
+│   ├── completions/, polkit/,    # shell completions, the sleep rule, the TV remote's
+│   │   udev/                     # keymap
+│   ├── docker/                   # CI-like build environment, without Nix
 │   └── scripts/                  # nfpm postinstall/preremove
 │
 ├── docs/                         # design.md (RETIRED D-Bus stack, ≤ v0.2.0),
@@ -81,6 +85,7 @@ tisvlay/
 │   ├── conventions.md            # code conventions (imported below)
 │   ├── book/                     # mdBook user guide (Read the Docs); src/generated/ is docgen output
 │   ├── plans/                    # in-flight plan docs (README convention; git holds retired ones)
+│   ├── backends/                 # implementing a vendor backend
 │   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
 │   │   streams/                  # stream detectors
 │   ├── ideas/, bugs/, concerns/  # one doc per item; each folder's README.md is its index
@@ -114,14 +119,14 @@ tisvlay/
 Vendor/protocol quirks (unchanged by the rewrite):
 
 - Newer LG firmware requires wss:// (port 3001) with self-signed cert; uses `rustls` with custom `InsecureCertVerifier`
-- TV may ignore WoL during pixel refresh; ~1-5 s needed between WoL and first command; need "TV On via Wi-Fi" enabled
+- TV may ignore WoL during pixel refresh; it takes several seconds after WoL to accept commands, longer from deep standby (measured in docs/lg/benchmarks/wake-reconnect.md); need "TV On via Wi-Fi" enabled
 - TV closes WebSocket on standby; reconnection logic required
 - Backlight is SSAP-subscribable but writes need the Luna `createAlert` workaround (direct setSystemSettings returns 401)
 - SSAP subscription updates carry the original request ID, not the URI — routing uses a request-ID→URI map
 - LG pairing is two-phase (`Response` prompt shown → `Registered` accepted); see docs/lg/firmware-quirks.md
 - CEC: Connected ≠ powered (reachable in standby); `power_on` = Image View On wake-in-place; INPUT capability deliberately not advertised — see docs/cec/protocol.md
 - CEC: the kernel keeps a logical-address claim after the handle closes, and clearing it blanks the OSD name — so the connection-holding opens clear before setting the name, and the probe/bare wake reuse a held claim (`link::Claim`)
-- SSDP discovery pins source port 1901 to match the firewall rule (docs/firewall.md)
+- SSDP discovery pins source port 1901 so one firewall rule admits the replies (why: docs/firewall.md; the rules: the book's Firewall & Discovery)
 - KWin on Wayland writes DPMS-off through to the legacy sysfs `dpms` connector attribute, so the daemon polls it without a per-DE compositor protocol; the watcher gates on `status == connected`
 
 Stream detection quirks (session-side detectors — see docs/streams/detection.md):
@@ -133,42 +138,26 @@ Stream detection quirks (session-side detectors — see docs/streams/detection.m
 - `pipewire-native` (the screencast detector's client) loads PipeWire's C support plugin from an SPA plugin dir baked at build time, so Nix builds need pipewire as a build input; the session checks the plugin exists before starting the detector and skips `client.conf` (`config.name = "null"`, avoiding the `spa-json-dump` tool). KWin capture nodes are matched by `media.name` prefix `kwin-screencast-`, never `node.name` (the process binary, renamed by wrappers), and `media.name` isn't in the registry's global props, so candidates are bound and judged on their full info — see docs/streams/detection.md
 - NixOS `makeWrapper` truncates process comm to the kernel's 15-byte limit, so Sunshine's comm is `.sunshine-wrapp` (from `.sunshine-wrapped`) — procfs presence gates match `comm.trim_start_matches('.').starts_with("sunshine")`, not `== "sunshine"`
 
-Zenoh stack findings (load-bearing, learned empirically):
+Zenoh stack findings: the full list, with the reasons, is [docs/architecture.md](../docs/architecture.md) § Empirical zenoh laws. Violating one produces silent wrong behavior, so read it before touching links, caches or rpcs. The ones code changes trip most:
 
-- **Consume-only peer leaves**: a connect-only peer (resilient link) can subscribe, query, and hydrate caches, but anything it SERVES (queryables, liveliness tokens, cached pubs) is invisible to other leaves through a hub — under both peer-mode and router-mode hubs. Servers must use client-mode links (fail-fast open, supervised retry loop) into a router hub. The session service's user socket is a router for exactly this reason; the tray's settings service is a supervised client link.
-- Zenoh *client* mode keeps a single link (`single_link: true`): a multi-endpoint connect list is failover, not fan-out — hence two sessions per user client (system + user socket), which also makes user/** isolation structural.
-- Advanced-cache hydration is subscriber-history-only: the cache queryable sits under a verbatim `@adv` suffix, plain gets can't reach it.
-- Multi-reply queries (discovery streaming) need `ConsolidationMode::None` querier-side or consolidation eats same-key replies.
-- `timestamping/enabled` must be on daemon-side for cache ordering.
-- Zenoh publishers guarantee no cross-key sample ordering — tests wait on combined predicates in a single drain (never two sequential waits on one subscriber).
-- History replay vs live samples has no guaranteed order, and per-publisher sequencing drops replayed history once a newer live sample is delivered — so pairing progress carries a per-session `attempt` (returned by pair / re-pair) and watchers drain only theirs.
-- A zenoh `get` matching zero queryables completes instantly with no reply — first-rpc-after-serve paths retry the no-reply case.
-- Zenoh rejects tokio's current-thread scheduler — zenoh-touching tests need `#[tokio::test(flavor = "multi_thread")]`.
-- Stale Unix socket files are fine: zenoh's `.lock` protocol takes over an unclean listener path on the next bind.
-- A suspend can drop every link: systemd freezes `user.slice` around the sleep, and the monotonic 10 s lease keeps counting through the kernel's device suspend/resume (12+ s where the NVIDIA driver saves video memory), so user-side links expire on thaw and the daemon's token returns under the same session. The daemon's mirrors subscribe per token lifetime and re-hydrate on its return ([docs/architecture.md](../docs/architecture.md) § Clients).
-- Reply-side backpressure is load-bearing: backend commands ack on TV completion (`BackendEvent::CommandDone`), not on enqueue — this is what makes the tray's Coalescer "latest wins" actually bound queue depth (the C3 volume-storm fix).
+- A connect-only peer can consume but can't serve to *other* leaves through a hub; servers use client-mode links into a router (architecture.md § Link modes and the serve-side law).
+- A zenoh client keeps a single link, so each user client opens two sessions, one per socket.
+- Publishers guarantee no cross-key ordering, and history replay races live samples: tests wait on combined predicates in one drain.
+- A `get` matching zero queryables returns no reply at once: clients gate rpcs on querier matching, not on liveliness.
+- Zenoh-touching tests need `#[tokio::test(flavor = "multi_thread")]`.
+- Backend commands ack on TV completion (`BackendEvent::CommandDone`), not on enqueue; the tray's Coalescer relies on it.
 
 Deployment model:
 
-- The daemon chmods its socket 0660 after bind (packaged unit runs UMask=0077). Access is layered: `tisvlay` group membership is the durable grant (`tisvlay enable-access` enrolls one-click via polkit), plus daemon-applied ACLs — the greeter group (`--greeter-access`, static while the daemon runs) and, presence-scoped, each seat's active graphical user (`--seat-access`, default on; keyed off logind `Seat.ActiveSession`, gated Class=user ∧ Type∈{x11,wayland} ∧ ¬Remote). Full integration detail: [packaging/README.md](../packaging/README.md) § "Socket access & the ACL integration".
-- Connect-side socket defaults fall back to `/run/tisvlay/zenoh.sock` when the dev socket is absent; listen-side defaults never fall back (a dev daemon must not take over the packaged socket).
+- Socket access is layered: `tisvlay` group membership, plus daemon-applied ACLs for the greeter group and each seat's active graphical user. Canonical: [packaging/README.md](../packaging/README.md) § "Socket access & the ACL integration".
+- With no `--socket`, clients use the per-user dev socket when it accepts a connection, else `/run/tisvlay/zenoh.sock`; listen-side defaults never fall back (a dev daemon must not take over the packaged socket).
 - Shell completions for the `tisvlay` CLI (bash/zsh/fish) ship in every package and the nix build. They use clap_complete's dynamic engine, so `<TAB>` completes live TV UUIDs by calling back into the binary; generation and per-distro caveats are in [packaging/README.md](../packaging/README.md).
 
 ## Quick Reference
 
 ### Running the Stack (dev)
 
-All dev-run targets share socket/site knobs (see the justfile dev section):
-
-```bash
-just daemon-start        # system-socket owner; DPMS_CONNECTOR=… EPHEMERAL=true SSDP_PORT=…
-just session-start       # user-socket owner (lock/idle dispatch, user profiles)
-just tray-start
-just gui-start           # GUI_MCP=true for the Slint MCP server
-just greeter-start       # needs a wayland compositor
-just stop-all
-just cli <verb…>         # any CLI verb against the dev sockets, e.g. `just cli list`
-```
+The contributing guide's Setup has the basic `*-start` recipes, `just cli` and `just stop-all`. Beyond those, the dev-run targets share socket and site knobs (the justfile's dev section): `DPMS_CONNECTOR=…`, `EPHEMERAL=true` and `SSDP_PORT=…` for the daemon, `GUI_MCP=true` for the Slint MCP server, and `just greeter-start`, which needs a Wayland compositor.
 
 After a `flake.nix` change, run `direnv reload` (or reopen the terminal) before restarting the stack: a stale dev shell rebuilds with the old inputs, e.g. the session without pipewire's pkg-config entry, so its screencast detector stays off.
 
@@ -206,38 +195,11 @@ This sets up the `tisvlay-daemon` system service (runs as `tisvlay` user, state 
 
 ## Tasks & Commands (`just`)
 
-All project commands live in the `justfile` at the repo root — it is the single source of truth. prek hooks, VSCode tasks, and CI workflows all dispatch through `just` so command strings are defined in exactly one place.
-
-```bash
-just              # list all recipes, grouped by purpose
-just check        # deny + shear + typos + actionlint + zizmor + licenses + fmt + build + clippy + doc + test
-just build        # cargo build --profile test --workspace --all-targets --all-features
-just clippy       # cargo clippy (warnings denied via build.warnings)
-just doc          # cargo doc --workspace --no-deps (warnings denied)
-just shear        # unused / misplaced dependencies (cargo-shear)
-just typos        # spell check, American English (.config/typos.toml)
-just actionlint / zizmor  # workflow lint (.config/actionlint.yaml); workflow + Dependabot security audit
-just test         # cargo nextest run + cargo test --doc
-just test-ci      # nextest with the 'ci' profile (JUnit XML + coverage)
-just cov          # coverage summary
-just msrv / hack / audit  # CI-only checks, reproducible locally (docs/build.md)
-just package-check  # package the three published crates in one invocation (first-publish gate)
-just package-deb  # build the .deb package
-just sbom-check   # per-binary SBOMs, checked against what the built binaries embed
-just verify-release vX.Y.Z  # check a release's (or draft's) signatures the way users will
-just docs-serve   # mdBook user guide, live (docs-build: one-shot build)
-just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI drift gate)
-```
-
-`just` is provided by the Nix dev shell. Outside Nix, install with `cargo install just` or your distro package manager.
+All project commands live in the `justfile` at the repo root — it is the single source of truth. prek hooks, VSCode tasks, and CI workflows all dispatch through `just` so command strings are defined in exactly one place. Run `just` to list every recipe, grouped by purpose; `just check` runs the local gates, and `just msrv`, `just hack` and `just audit` reproduce the CI-only ones.
 
 ## Internationalization (i18n)
 
-`tisvlay-gui` is wired for gettext translation (Slint `@tr()` + Rust `gettext()`); v1 ships English only. The ported tray is not gettext-wired yet (tracked in docs/ideas/switchover-followups.md). Architecture and workflow: [docs/i18n.md](../docs/i18n.md). After adding or changing user-facing GUI strings, run `just i18n-extract` and commit the refreshed `.pot` diff.
-
-- **Translate**: button labels, pane headers, status text, menu items, tooltip copy, error messages.
-- **Don't translate**: brand names (`"TisVlay"`, `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`), Unicode glyphs, technical placeholders, file paths, URLs.
-- **Format strings**: use `gettext("Foo: {0}").replace("{0}", &v.to_string())` — never `format!`, which `xgettext` can't extract from.
+`tisvlay-gui` is wired for gettext translation (Slint `@tr()` + Rust `gettext()`); the tray isn't yet. What to translate and the workflow: [docs/i18n.md](../docs/i18n.md). After adding or changing user-facing GUI strings, run `just i18n-extract` and commit the refreshed `.pot` diff. Format strings use `gettext("Foo: {0}").replace("{0}", &v.to_string())`, never `format!`, which `xgettext` can't extract from.
 
 ## Contributing
 
@@ -250,11 +212,11 @@ just docs-gen     # regenerate the book's generated partials (docs-gen-check: CI
 All checks are defined in `prek.toml`, which dispatches to `just` recipes. Hook ids match the corresponding `just` recipe names, ordered by priority: file checks → `fmt` → `build` → `clippy`/`doc` → `test`. Build and clippy use `--profile test` so `cargo test` reuses all build artifacts. The gate recipes deny warnings by exporting `CARGO_BUILD_WARNINGS=deny` — never set in `.cargo/config.toml`, which the Nix package build reads; the policy lives in `docs/build.md` § Lint policy.
 
 ```bash
-prek run -a                                          # all checks
-prek run -a --skip build --skip clippy --skip test   # fast file checks + fmt only
+prek run -a                                                     # all checks
+prek run -a --skip build --skip clippy --skip test --skip doc   # docs-only changes
 ```
 
-CI (`.github/workflows/ci.yml`) gates its jobs on what a change touches: a `changes` job classifies the diff, so docs-only changes run only the fast `checks` job (prek file checks, typos, actionlint + zizmor), plus `docs` when the book is touched, and draft PRs run only `checks` (`docs/build.md` § What runs when). Code changes also run a single `just test-ci` (clippy + nextest + doc tests + coverage under one instrumented build, `--all-features`), plus `msrv`, `features` (`just hack`) and `docs` (`just docs-gen-check` + `just docs-links`) jobs. Design notes: `docs/build.md`.
+CI runs jobs by what a change touches, and drafts run only the fast checks: `docs/build.md` § What runs when.
 
 ### Dead Code Detection
 
@@ -262,11 +224,7 @@ Public items are invisible to Rust's `dead_code` lint. Use `cargo workspace-unus
 
 ### Testing
 
-See [docs/testing.md](../docs/testing.md) for the testing guide. Layers:
-
-- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake logind) for the consumed-D-Bus adapters, and a `Relay` that cuts, stalls or drops a batch on a zenoh link while the service keeps running.
-- `tisvlay-mock` — fake vendor backend (implements `tisvlay-core` traits), always registered in the daemon.
-- Wire-level integration tests live in each binary crate's `tests/` — one test binary per crate, a multi-suite crate's suites as modules of `tests/it/` (daemon: wire/profiles/cec/greeter/logind/liveliness/access; SDK: client + conformance), single-suite crates as one `tests/<name>.rs` (session, tray settings) — they boot real daemon/session stacks on temp sockets, no fixture crate needed. The SDK's conformance suite runs every mirror through the same link-breaking cases, against a fake service or the real stacks.
+[docs/testing.md](../docs/testing.md) is the testing guide: the layers (`tisvlay-test`'s OS fakes and link-breaking `Relay`, the `tisvlay-mock` backend, wire tests in each binary crate's `tests/`), the suites, and where new tests go. One integration-test binary per crate; zenoh-touching tests boot real stacks on temp sockets.
 
 ```bash
 just test                   # cargo nextest run + doc tests
@@ -275,19 +233,14 @@ just cov / cov-html / cov-ratchet
 
 ## Reference Documentation
 
-- [docs/architecture.md](../docs/architecture.md) - **Current architecture**: topology, key space, world/reactor model, compatibility (release handshake), deployment, empirical zenoh laws
-- [docs/book/](../docs/book/) - User guide (mdBook, published on Read the Docs): install, pairing, profiles, automation, streams, operations
-- [docs/build.md](../docs/build.md) - Build and lint policy, public API policy, first-publish checklist, review triggers
+The contributing guide's § Where to read more lists the main developer docs (architecture, build, testing, and the ideas, concerns and bugs indexes). The subsystem and vendor docs:
+
 - [docs/streams/detection.md](../docs/streams/detection.md) - Stream detectors (PipeWire, portal, logind, Sunshine) and their quirks
 - [docs/design.md](../docs/design.md) - The retired served-D-Bus architecture (≤ v0.2.0); kept for history
 - [docs/discovery.md](../docs/discovery.md) - SSDP transport, streaming discovery, manual-entry MAC enrichment
+- [docs/firewall.md](../docs/firewall.md) - Why SSDP discovery needs a firewall rule
 - [docs/i18n.md](../docs/i18n.md) - Translation architecture and workflow
-- [docs/testing.md](../docs/testing.md) - Testing guide
 - [docs/lg/firmware-quirks.md](../docs/lg/firmware-quirks.md) - LG WebOS firmware quirks
 - [docs/cec/protocol.md](../docs/cec/protocol.md) - HDMI-CEC backend model
 - [docs/cec/testing.md](../docs/cec/testing.md) - CecLink seam + FakeCecLink
 - [docs/watchers/network.md](../docs/watchers/network.md) - Carrier detection, route resolution
-- [docs/firewall.md](../docs/firewall.md) - SSDP firewall configuration
-- [docs/ideas/](../docs/ideas/README.md) - Deferred work + research notes
-- [docs/concerns/](../docs/concerns/README.md) - Design concerns + technical debt
-- [docs/bugs/](../docs/bugs/README.md) - Known bugs

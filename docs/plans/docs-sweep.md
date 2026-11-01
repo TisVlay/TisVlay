@@ -82,12 +82,12 @@ Rewrite in current terms:
 
 ## 7. Duplicates and `CLAUDE.md`
 
-- [ ] **SSDP and the firewall, split by job:** recipes live only in the book's Firewall & Discovery page; `docs/firewall.md` keeps only the network evidence (how SSDP replies arrive, why Linux alone drops them, conntrack, the captures, why other projects don't hit it), so the code comments pointing there stay right; `docs/discovery.md` keeps our design, and the research it shares with `firewall.md` stays in one of them. The mDNS alternative moves to an idea doc.
-- [ ] **Zenoh laws:** canonical in `docs/architecture.md`. `CLAUDE.md`'s copy has drifted (it misses the "dialed hub does observe" correction and the querier-matching gate). Keep one-liners and a link, or only the laws a session most often trips on.
-- [ ] **Test layers:** canonical in `docs/testing.md`; `CLAUDE.md`, `architecture.md` and the vendor guide link to it.
-- [ ] **WoL boot latency:** canonical in the re-measured benchmark (area 8); `CLAUDE.md`'s Known Quirks and `firmware-quirks.md` link to it.
-- [ ] **Socket access:** canonical in `packaging/README.md`.
-- [ ] **`CLAUDE.md` trim:** cut what the guide or a canonical doc now holds (Running the Stack's basic commands, the recipe block, the testing summary, the CI paragraph, duplicated reference entries, the i18n workflow beyond its traps). Fix the project tree (`tisvlay-icons`, `docs/backends/`, `packaging/` subdirectories), the "root-D-Bus-client-compatible" phrase, and What's Next. Re-point `docs/testing.md`'s reference to the Tasks section and `pairing_schema.rs`'s reference to CLAUDE.md's i18n section.
+- [x] **SSDP and the firewall, split by job:** recipes live only in the book's Firewall & Discovery page; `docs/firewall.md` keeps only the network evidence (how SSDP replies arrive, why Linux alone drops them, conntrack, the captures, why other projects don't hit it), so the code comments pointing there stay right; `docs/discovery.md` keeps our design, and the research it shares with `firewall.md` stays in one of them. The mDNS alternative moves to an idea doc.
+- [x] **Zenoh laws:** canonical in `docs/architecture.md`. `CLAUDE.md`'s copy has drifted (it misses the "dialed hub does observe" correction and the querier-matching gate). Keep one-liners and a link, or only the laws a session most often trips on.
+- [x] **Test layers:** canonical in `docs/testing.md`; `CLAUDE.md`, `architecture.md` and the vendor guide link to it.
+- [x] **WoL boot latency:** canonical in the re-measured benchmark (area 8); `CLAUDE.md`'s Known Quirks and `firmware-quirks.md` link to it.
+- [x] **Socket access:** canonical in `packaging/README.md`.
+- [x] **`CLAUDE.md` trim:** cut what the guide or a canonical doc now holds (Running the Stack's basic commands, the recipe block, the testing summary, the CI paragraph, duplicated reference entries, the i18n workflow beyond its traps). Fix the project tree (`tisvlay-icons`, `docs/backends/`, `packaging/` subdirectories), the "root-D-Bus-client-compatible" phrase, and What's Next. Re-point `docs/testing.md`'s reference to the Tasks section and `pairing_schema.rs`'s reference to CLAUDE.md's i18n section.
 
 ## 8. Re-measure wake timing
 
@@ -108,6 +108,8 @@ Rewrite in current terms:
 - **Area 4:** `docs/streams/detection.md` keeps its "stock story" of the stream defaults, since it explains why they are what they are; only the Sunshine hook recipe became a link. `packaging/README.md` keeps its one-clause Pulse-Eight mention, consistent with `cec/protocol.md`. `docs/kde/gui-application-activation.md`'s dead link, an area 6 item, was fixed here.
 
 - **Area 5:** judgment calls. `gui-test-coverage-fanout.md` was retired, not rewritten: its premise (the `TestGui` harness, 52% coverage, one canonical test) is gone, and a fresh gap list would start from a coverage report. `probe-library-extraction.md` was retired: the GUI shipped without needing EDID detail, and its rationale now sits in the SDK's `desktop.rs` doc comment. `zenoh-idiom-audit.md` stays, marked done, since its "don't fix these" list still applies. `notification-subsystem-followups.md` lost its two D-Bus-era items; its open question resolved to a finding (a `tray.toml` missing a switch doesn't parse), which is now the whole idea. `ci-nightly-build-knobs.md` records the 2026-10-04 measurement. The switchover idea's name-sweep item is done by this area and was removed.
+
+- **Area 7:** the test-layer summaries in `architecture.md` and the vendor guide stay: each is already a sentence and a link to `testing.md`. The WoL latency now links to the benchmark doc, which area 8 rewrites; until then it holds the old numbers. `CLAUDE.md` went from 24.7 KB to 19.9 KB (22.9 KB with the imported conventions, against 27.6 KB before the contributing guide).
 
 ## Verification
 

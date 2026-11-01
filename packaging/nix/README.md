@@ -138,7 +138,7 @@ Same holds for the distro user-service files.
 ## Related documentation
 
 - [`../README.md`](../README.md) — packaging pipeline overview (Nix vs distro vs container channels, build-pipeline rationale, rejected alternatives).
-- [`../../.claude/CLAUDE.md`](../../.claude/CLAUDE.md) — project structure and "Quick Reference" testing table.
+- [`../../.claude/CLAUDE.md`](../../.claude/CLAUDE.md) — project structure, known quirks and quick reference.
 - [`../../docs/architecture.md`](../../docs/architecture.md) — architecture, key space, deployment.
 - [`../../docs/testing.md`](../../docs/testing.md) — test harness, mock backend, coverage, observability.
 - [`../../docs/firewall.md`](../../docs/firewall.md) — SSDP firewall notes.

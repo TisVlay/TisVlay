@@ -1,6 +1,6 @@
 # Testing
 
-This is the single source of truth for how testing works in tisvlay. For quick-reference commands, see the `Tasks & Commands` section in [CLAUDE.md](../.claude/CLAUDE.md). For the architecture (two-socket topology, key space, persistence), see [architecture.md](architecture.md).
+This is the single source of truth for how testing works in tisvlay. For the commands, run `just` to list the recipes. For the architecture (two-socket topology, key space, persistence), see [architecture.md](architecture.md).
 
 ## Overview
 
