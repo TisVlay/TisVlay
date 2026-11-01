@@ -32,10 +32,10 @@ Run each service in its own terminal, each inside the dev shell:
 just daemon-start
 just session-start
 just tray-start
-GUI_LIVE=false just gui-start
+just gui-start
 ```
 
-`just gui-start` defaults to Slint's live preview, which can crash when a click navigates away from what was clicked, so `GUI_LIVE=false` turns it off. In VS Code, the `all: start`, `all: stop` and `all: restart` tasks run the stack with a panel per service, with live preview on. They need the dev shell's environment to find `just`, so start VS Code from the dev shell or use a direnv extension.
+In VS Code, the `all: start`, `all: stop` and `all: restart` tasks run the stack with a panel per service. They need the dev shell's environment to find `just`, so start VS Code from the dev shell or use a direnv extension.
 
 Then add a mock TV, as [Troubleshooting](../docs/book/src/operations/troubleshooting.md#isolating-tisvlay-from-the-tv-mock-backend) describes. `just cli <verb>` runs any CLI verb against the same stack, and `just stop-all` ends it. Run `just` to list every recipe.
 
