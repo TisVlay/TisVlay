@@ -3431,6 +3431,33 @@ mod tests {
         })
         .await;
 
+        // A power-on to an off TV rides a wake: the row follows its phases
+        // to the terminal one, holds it, then clears.
+        let phase = move |app: &AppWindow| {
+            find_tv_by_uuid(&app.get_tvs(), &tv.to_string())
+                .map(|row| row.power_cycle_phase.to_string())
+                .unwrap_or_default()
+        };
+        controls.invoke_power_off(tv.to_string().into());
+        wait_for_tvs(&daemon, |tvs| {
+            tvs.iter().any(|info| info.uuid == tv && !info.connected)
+        })
+        .await;
+        controls.invoke_power_on(tv.to_string().into());
+        wait_for_ui(&app, move |app| phase(app) == "connected");
+        wait_for_ui(&app, move |app| phase(app).is_empty());
+        // One to a TV that's on has no wake behind it, and mustn't replay
+        // the last wake's phase.
+        controls.invoke_power_on(tv.to_string().into());
+        let shown = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = shown.clone();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        wait_for_ui(&app, move |app| {
+            seen.set(seen.get() || !phase(app).is_empty());
+            std::time::Instant::now() >= until
+        });
+        assert!(!shown.get(), "a power-on with no wake showed a phase");
+
         let profiles = app.global::<Profiles>();
         profiles.invoke_confirm_create(ProfileKind::System, "Work".into());
         wait_for_ui(&app, |app| {

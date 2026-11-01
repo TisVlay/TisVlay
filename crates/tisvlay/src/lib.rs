@@ -611,9 +611,11 @@ impl DaemonClient {
         })
     }
 
-    /// One TV's `progress/power` phases (wake feedback). Refused with
-    /// [`Error::VersionMismatch`] while the daemon is known to run another
-    /// release, and silent while it does.
+    /// One TV's `progress/power` phases (wake feedback), live from the
+    /// call on: subscribe before [`Self::power_on`] to follow its wake. An
+    /// earlier wake's last phase isn't replayed, since it would read as
+    /// this one's. Refused with [`Error::VersionMismatch`] while the
+    /// daemon is known to run another release, and silent while it does.
     pub async fn power_cycle_progress_stream(
         &self,
         tv: Uuid,
@@ -622,7 +624,6 @@ impl DaemonClient {
         let sub = self
             .session
             .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
-            .history(HistoryConfig::default().detect_late_publishers())
             .await
             .map_err(|e| Error::transport("subscribe to power progress", e))?;
         let (tx, rx) = mpsc::unbounded_channel();
