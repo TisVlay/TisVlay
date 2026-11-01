@@ -6,17 +6,32 @@
 
 use crate::with_id;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use slint::{Model, SharedString};
 use tisvlay::DaemonClient;
 use tisvlay::PowerPhase;
+use tokio::time::Instant;
 
 use crate::{AppWindow, on_ui};
 
+/// How long after the ack a power-on waits for its first phase. None
+/// comes when no wake was armed (an in-place power-on, or a TV already
+/// on), and the row is then done.
+const FIRST_PHASE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long a terminal phase ("Connected", "Wake failed") stays on the row.
+const TERMINAL_HOLD: Duration = Duration::from_secs(3);
+
+/// The longest a wake is followed, past the daemon's held-wake limit and
+/// dial budget: a missed terminal phase mustn't leave the button disabled.
+const WAKE_FOLLOW_LIMIT: Duration = Duration::from_secs(180);
+
 /// Subscribe to `progress/power` for `tv_id`, fire `power_on`, and
 /// stream phase strings into the matching row's `power_cycle_phase`
-/// field. Drains the subscription for the duration of the call.
+/// field. The ack only says the wake is under way, so the row follows
+/// the phases to a terminal one, holds it, then clears.
 pub(crate) async fn run_power_on_with_progress(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
@@ -25,24 +40,55 @@ pub(crate) async fn run_power_on_with_progress(
     use futures_util::StreamExt;
 
     let stream = with_id(&tv_id, |tv| daemon.power_cycle_progress_stream(tv)).await?;
-    let app_weak_drainer = app_weak.clone();
-    let tv_id_drainer = tv_id.clone();
-    let drainer = tokio::spawn(async move {
-        let mut s = std::pin::pin!(stream);
-        while let Some(phase) = s.next().await {
-            update_power_cycle_phase(&app_weak_drainer, &tv_id_drainer, Some(phase));
+    let mut phases = std::pin::pin!(stream);
+    let mut power_on = std::pin::pin!(with_id(&tv_id, |tv| daemon.power_on(tv)));
+    let terminal = |phase: PowerPhase| matches!(phase, PowerPhase::Connected | PowerPhase::Failed);
+    let (mut acked, mut ended, mut last) = (false, false, None);
+    let mut deadline = None;
+    loop {
+        let expired = async {
+            match deadline {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            result = &mut power_on, if !acked => {
+                if let Err(error) = result {
+                    update_power_cycle_phase(&app_weak, &tv_id, None);
+                    return Err(error);
+                }
+                acked = true;
+                if ended || last.is_some_and(terminal) {
+                    break;
+                }
+                let wait = if last.is_some() { WAKE_FOLLOW_LIMIT } else { FIRST_PHASE_GRACE };
+                deadline = Some(Instant::now() + wait);
+            }
+            phase = phases.next(), if !ended => match phase {
+                Some(phase) => {
+                    update_power_cycle_phase(&app_weak, &tv_id, Some(phase));
+                    if acked && last.is_none() {
+                        deadline = Some(Instant::now() + WAKE_FOLLOW_LIMIT);
+                    }
+                    last = Some(phase);
+                    if acked && terminal(phase) {
+                        break;
+                    }
+                }
+                None if acked => break,
+                None => ended = true,
+            },
+            () = expired => break,
         }
-    });
-
-    let result = with_id(&tv_id, |tv| daemon.power_on(tv)).await;
-    drainer.abort();
-
-    // Clear the phase indicator so the button re-enables. The regular
-    // refresh will repopulate `connected: true` (or surface the
-    // failure via daemon state changes).
+    }
+    if last.is_some_and(terminal) {
+        tokio::time::sleep(TERMINAL_HOLD).await;
+    }
+    // Clear the phase indicator; the regular refresh carries the TV's
+    // link and power state from here.
     update_power_cycle_phase(&app_weak, &tv_id, None);
-
-    result
+    Ok(())
 }
 
 /// Update a single TV's `power_cycle_phase` field on the Slint side.
