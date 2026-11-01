@@ -36,6 +36,8 @@
 
 ## 📸 Screenshots
 
+GUI and system tray track user DE themes and accent settings.
+
 | **TVs** — devices, status, profiles (dark theme) | **Controls** — picture, audio, input (light theme) |
 |:---:|:---:|
 | ![TVs pane showing a connected LG TV with its status, managed toggle and profile assignments](docs/screenshots/tvs_pane.png) | ![TVs pane in the light theme showing backlight, screen, volume, mute and input controls](docs/screenshots/tvs_pane_2.png) |
