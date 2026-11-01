@@ -34,6 +34,7 @@ pub(super) struct StateWrites<'w, 's> {
     monitored: Query<'w, 's, &'static MonitoredInterface>,
     device: Query<'w, 's, &'static DeviceAvailable>,
     traits: Query<'w, 's, &'static TransportTraits>,
+    link: Query<'w, 's, &'static State<payload::Link>>,
     promptly: Query<'w, 's, (), With<RetryPromptly>>,
 }
 
@@ -240,6 +241,19 @@ pub(super) fn apply_backend_events(
                     tracing::info!(%tv, "local-device connection dropped, redialing");
                     redial(&mut e, false);
                     e.insert(RetryAt(clock.0 + CONNECT_BACKOFF));
+                }
+            }
+            BackendEvent::PowerOnLost => {
+                // Re-arm it as the power-on a disconnected TV gets: a wake
+                // dial, held while the device or route is missing,
+                // cancelled by a later off, and reported on
+                // `progress/power`. The task's `Disconnected` follows and
+                // finds the dial pending, so it leaves the intent alone.
+                if writes.link.get(entity).is_ok_and(|l| l.supports_wake) {
+                    tracing::info!(%tv, "power-on lost to a closing link, re-armed as a wake");
+                    let mut e = commands.entity(entity);
+                    e.remove::<(ConnectionHandle, RetryAt)>();
+                    redial(&mut e, true);
                 }
             }
             BackendEvent::ConnectFailed { reason } => {

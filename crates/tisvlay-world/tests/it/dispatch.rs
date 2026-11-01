@@ -494,6 +494,45 @@ async fn power_on_leaves_a_connected_screen_off_tv_as_it_is() {
     assert_eq!(handle.connect_call_count("mock://dark"), 1);
 }
 
+/// An in-place power-on that meets a closing link (a CEC adapter
+/// unplugged under it) isn't lost behind the rpc's OK: it re-arms as a
+/// wake dial, which reports on `progress/power` like any other.
+#[tokio::test]
+async fn a_power_on_lost_to_a_closing_link_rearms_as_a_wake() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert(
+        "address".into(),
+        toml::Value::String("mock://closing".into()),
+    );
+    table.insert("reachable_in_standby".into(), toml::Value::Boolean(true));
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Closing", table.into())),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    handle.inject_power_state("mock://closing", PowerState::Standby);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "standby")
+    })
+    .await;
+
+    handle.set_power_on_closes("mock://closing", true);
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(72)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+    handle.set_power_on_closes("mock://closing", false);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "progress/power").is_some_and(|p| p["phase"] == "connected")
+    })
+    .await;
+    assert_eq!(handle.connect_call_count("mock://closing"), 2);
+}
+
 /// A `screen_off` arriving while a dial is in flight latches instead of
 /// no-opping: the reconnect re-asserts it over the fresh link — the
 /// locked-idle timer racing a boot wake must land, not be swallowed.

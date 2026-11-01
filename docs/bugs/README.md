@@ -7,10 +7,10 @@
 - [Upstream: linux-cec fails to read a claim in progress](upstream-linux-cec-unclaimed-slots.md) — draft merge request for linux-cec (our fork's `rc-passthru` fix, its own MR), not filed; files with the setter's
 - [Upstream: KDE's tray collapses a nested submenu on its first expansion](upstream-kde-tray-submenu-collapse.md) — open upstream (KDE 506439, MR !5763); still reproducible on Plasma 6.8.2
 - [A pairing session has no daemon-side deadline](pair-tv-no-timeout.md)
-- [A power-on sent to a closing connection is lost behind an OK reply](power-on-lost-to-a-closing-connection.md) — proposed fix: re-arm it as a held wake
 
 ## Closed
 
+- [A power-on sent to a closing connection is lost behind an OK reply](power-on-lost-to-a-closing-connection.md) — re-armed as a wake dial through `BackendEvent::PowerOnLost`
 - [Pulse-Eight autonomous mode pins the TV's input label](cec-pulse8-autonomous-label.md) — our out-of-tree `pulse8-cec` build disarms the dongle on disconnect; follow-ups in [docs/ideas/cec-followups.md](../ideas/cec-followups.md#the-pulse-eight-disarm-upstream-a-suspend-opt-out-and-linux-cec)
 - [GUI and tray show a remote-off LG TV as powered on](power-switch-active-standby.md) — all three clients key on the shared `PowerState::is_awake`
 - [GUI power-state gate misses the wire's new power-state spellings](power-state-vocabulary-drift.md) — gate now delegates to `PowerState::is_on` via `parse`

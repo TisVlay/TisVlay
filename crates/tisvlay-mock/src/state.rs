@@ -112,6 +112,12 @@ pub(crate) struct MockState {
     /// verify-retry tests, mirroring the `screen_on_noop` knob.
     pub(crate) screen_off_noop: std::collections::HashSet<String>,
 
+    /// Per-address flag: an in-band `power_on` finds the link closing
+    /// under it, so it closes the connection and fails with
+    /// `ConnectionClosed`. Set via
+    /// [`MockHandle::set_power_on_closes`](crate::handle::MockHandle::set_power_on_closes).
+    pub(crate) power_on_closes: std::collections::HashSet<String>,
+
     /// Per-address override for the `PowerState` a new
     /// `MockConnection` initializes with at construct-time. When
     /// present, takes precedence over `MockVendorConfig::initial_power_state`

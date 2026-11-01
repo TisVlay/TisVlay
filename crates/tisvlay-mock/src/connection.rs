@@ -250,6 +250,10 @@ impl TvConnection for MockConnection {
         if !self.reachable_in_standby {
             return Err(Error::not_supported("power_on", Capabilities::POWER));
         }
+        if self.shared.lock().power_on_closes.contains(&self.address) {
+            self.connected = false;
+            return Err(Error::ConnectionClosed);
+        }
         self.mutate_and_push(|s| {
             s.update_power(PowerState::Active);
         });
