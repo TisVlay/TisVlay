@@ -41,21 +41,22 @@ A CEC power cycle, on the same panel, reads on in 0.59 s (0.58–0.59, n=3). A C
 
 ### PC sleep
 
-`systemctl suspend` with a 45 s RTC alarm (n=2). The TV powers off on the way down and is woken on the way up.
+`systemctl suspend` with a 45 s RTC alarm (n=3, over two runs). The TV powers off on the way down and is woken on the way up.
 
 | | |
 |---|---|
 | suspend → daemon saw sleep | 0.02 s |
-| resume → daemon saw resume | 0.32 s (0.31–0.32) |
-| resume → WoL sent | 0.32 s (0.31–0.32) |
-| resume → last carrier up | 13.93 s (13.88–13.98) |
-| resume → route back | 18.72 s (18.17–19.27) |
-| resume → LG online | 22.71 s (22.46–22.97) |
-| resume → connected | 23.32 s (23.05–23.59) |
+| resume → daemon saw resume | 0.31 s (0.31–0.32) |
+| resume → WoL sent | 0.31 s (0.31–0.32) |
+| resume → last carrier up | 13.98 s (13.88–14.26) |
+| resume → route back | 18.55 s (18.17–19.27) |
+| resume → LG online | 22.95 s (22.46–22.97) |
+| resume → connected | 23.59 s (23.05–25.76) |
+| resume → reads on | 26.00 s (n=1) |
 
-The PC's own network sets the pace, not the TV or the daemon. The NIC links up before the kernel finishes resuming, then drops and links up again about 10 s later; the route to the TV's VLAN, through the gateway, is back about 5 s after that. The daemon sends its WoL the moment it hears of the resume, while there's no route to the TV, so that packet is lost. The LG connector resends a WoL before every connect attempt, and the TV registers about 4 s after the route returns, as from the 10-minute standby above. The wake dial came through on attempt 32, both times.
+The PC's own network sets the pace, not the TV or the daemon. The NIC links up before the kernel finishes resuming, then drops and links up again about 14 s after the resume; the route to the TV's VLAN, through the gateway, is back about 5 s after that. The daemon sends its WoL the moment it hears of the resume, while there's no route to the TV, so that packet is lost. The LG connector resends a WoL before every connect attempt, and the TV registers about 4 s after the route returns, as from the 10-minute standby above. The wake dial came through on attempts 32, 35 and 33. The slowest *connected* is the TV again: its first power report came 2.8 s after registering, where the other two took 1.1 s and 0.1 s.
 
-The table has no CLI "reads on" row for sleep: the run that produced it polled only after the alarm plus 20 s of awake time, long after the TV was back. The script now polls from the resume.
+Only the second run times the getter: the first polled only after the alarm plus 20 s of awake time, long after the TV was back, and the script now polls from the resume.
 
 ### Network blip
 

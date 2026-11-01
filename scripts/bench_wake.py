@@ -10,7 +10,7 @@ results to the output file.
 
     nix-shell -p python3 --run \\
         'sudo "$(command -v python3)" scripts/bench_wake.py run --lg <uuid> --cec <uuid> --out bench.json'
-    scripts/bench_wake.py report bench.json
+    scripts/bench_wake.py report bench.json [more.json ...]
 
 Before `run`: stop any dev stack (`just stop-all`) and keep the desktop from
 locking or blanking the screen. `run` stops the user's tisvlay-session for the
@@ -236,15 +236,31 @@ def journal(since: float, until: float) -> list[Event]:
 
 
 def report(args: argparse.Namespace) -> None:
-    with open(args.results) as f:
-        results = json.load(f)
-    end = results.get("finished") or time.time()
-    events = journal(results["started"] - 5, end + 5)
     rows: dict[str, dict[str, list[float]]] = {}
+    misses: list[str] = []
 
     def add(kind: str, name: str, start: float | None, stop: float | None) -> None:
         if start is not None and stop is not None:
             rows.setdefault(kind, {}).setdefault(name, []).append(stop - start)
+
+    for path in args.results:
+        with open(path) as f:
+            results = json.load(f)
+        report_run(results, add)
+        misses += [c["kind"] for c in results["cycles"] if not c.get("on_seen")]
+
+    for kind, metrics in rows.items():
+        print(f"\n{kind}")
+        for name, values in metrics.items():
+            values.sort()
+            print(f"  {name:32} n={len(values)}  min {values[0]:6.2f}  median {statistics.median(values):6.2f}  max {values[-1]:6.2f} s")
+    if misses:
+        print(f"\nno answer within {ANSWER_TIMEOUT_S} s: {', '.join(misses)}")
+
+
+def report_run(results: dict, add) -> None:
+    end = results.get("finished") or time.time()
+    events = journal(results["started"] - 5, end + 5)
 
     def began(c: dict) -> float:
         return c.get("off_cmd") or c.get("suspend_cmd") or c["down_cmd"]
@@ -287,6 +303,10 @@ def report(args: argparse.Namespace) -> None:
             add(kind, "resume → route back", t, last("route resolved", connected, TV=tv, INTERFACE="Some"))
             add(kind, "resume → LG online", t, first("LG TV online after wake", t))
             add(kind, "resume → connected", t, connected)
+            # Only a run that polled from the resume times the getter; an
+            # older one slept on after it.
+            if t is not None and c["back"] - t < 5:
+                add(kind, "resume → reads on", t, c["on_seen"])
         elif kind == "blip":
             u = c["up_cmd"]
             connected = first("connected event applying", u, TV=tv)
@@ -297,15 +317,6 @@ def report(args: argparse.Namespace) -> None:
             add(kind, "up → reads on", u, c["on_seen"])
         if c.get("dpms") and "Off" in c["dpms"]:
             print(f"note: DPMS was off around the {kind} cycle at {datetime.fromtimestamp(c.get('on_cmd') or c.get('suspend_cmd') or c.get('down_cmd')):%H:%M:%S}")
-
-    for kind, metrics in rows.items():
-        print(f"\n{kind}")
-        for name, values in metrics.items():
-            values.sort()
-            print(f"  {name:32} n={len(values)}  min {values[0]:6.2f}  median {statistics.median(values):6.2f}  max {values[-1]:6.2f} s")
-    misses = [c["kind"] for c in results["cycles"] if not c.get("on_seen")]
-    if misses:
-        print(f"\nno answer within {ANSWER_TIMEOUT_S} s: {', '.join(misses)}")
 
 
 def main() -> None:
@@ -326,7 +337,7 @@ def main() -> None:
     r.add_argument("--down-s", type=float, default=5, help="seconds the link stays down")
     r.set_defaults(func=run)
     rep = sub.add_parser("report", help="line a results file up with the journal")
-    rep.add_argument("results")
+    rep.add_argument("results", nargs="+", help="results files, pooled")
     rep.set_defaults(func=report)
     args = p.parse_args()
     args.func(args)
