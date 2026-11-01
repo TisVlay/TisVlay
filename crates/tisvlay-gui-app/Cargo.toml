@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+repository.workspace = true
 
 # The library keeps the `tisvlay_gui` name — module paths, log targets and
 # the integration tests' imports read as the GUI — while the package name
