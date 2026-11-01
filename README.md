@@ -20,7 +20,7 @@
   - Navigate PC via TV remote keypress (via HDMI CEC)
 - 🧰 Flexible profile customization
   - System-wide and per-user profiles for per-device behavior
-  - Unified API and CLI for further scripting and integrations
+  - Unified CLI and SDK for further scripting and integrations
 - 🧩 Modular & vendor agnostic
   - Supports HDMI CEC, Network IP Control (LG WebOS SSAP)
   - Generalized for further interfaces, protocols, and transports
