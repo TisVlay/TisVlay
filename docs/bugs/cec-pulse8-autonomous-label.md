@@ -1,6 +1,6 @@
 # Pulse-Eight autonomous mode pins the TV's input label
 
-**Status:** closed (2026-10-24). Our out-of-tree `pulse8-cec` build disarms the dongle in `pulse8_disconnect` while `serio` is still usable ([the patch](../../packaging/nix/pulse8-cec-disarm-on-disconnect.patch)). It passes the detach reproducer and a warm reboot with the TV on (steps 10–13). The fix applies to the NixOS module's build only; other distros keep the unpatched driver until it goes upstream. Fix plan and remaining follow-ups: [docs/plans/cec-pulse8-autonomous.md](../plans/cec-pulse8-autonomous.md).
+**Status:** closed (2026-10-24). Our out-of-tree `pulse8-cec` build disarms the dongle in `pulse8_disconnect` while `serio` is still usable ([the patch](../../packaging/nix/pulse8-cec-disarm-on-disconnect.patch)). It passes the detach reproducer and a warm reboot with the TV on (steps 10–13). The fix applies to the NixOS module's build only; other distros keep the unpatched driver until it goes upstream. The fix's decisions are under [The fix](#the-fix); what's left is in [docs/ideas/cec-followups.md](../ideas/cec-followups.md#the-pulse-eight-disarm-upstream-a-suspend-opt-out-and-linux-cec).
 
 For an LG C3 on a Pulse-Eight USB-CEC adapter (`pulse8-cec`, firmware `000c` built 2020-04-28, Linux 7.3.0, tisvlay 0.4.0 at `a59c4eee`), the TV labels the PC's HDMI 1 input **"LG DVD Player"** while the kernel advertises `OSD Name : 'TisVlay'`. The fix from [PR #197](https://github.com/TisVlay/TisVlay/pull/197) is in place and working: the kernel answers `<Give OSD Name>` with our name, and the TV acknowledges it. The TV keeps its own label anyway.
 
@@ -61,6 +61,12 @@ Disarmed, the dongle isn't silent once it leaves controlled mode: the TV first s
 - `323f52e02be6` (2026-03, Vicki Pfau), "Handle partial deinit": fixes an oops when the CEC node is held open across a disconnect (the daemon holds it open). It nulls `serio` before `cec_unregister_adapter` and guards the send path with `-ENODEV`. From the code, this is the change that stops the unconfigure-time disarm from reaching the dongle on disconnect. Before it, the disarm would have been sent while `serio` was still set. Step 12 shows the tty is still usable inside disconnect, so that path would have worked; an older kernel wasn't tested to confirm it did.
 
 So upstream's intended behavior is: armed while the host is suspended, disarmed when unconfigured. A reboot or an inputattach stop is a disconnect, not a suspend, and should disarm.
+
+## The fix
+
+- **Restore upstream's design, don't remove the feature.** The driver arms autonomous mode on purpose, so the adapter keeps working with the host's settings while the host is suspended; it's meant to disarm when unconfigured. The patch targets the disconnect path only, and suspend autonomy stays. The trade-off: a suspended PC's adapter still runs autonomously, so it can still pin the label; the disarm covers reboots and shutdowns.
+- **Patch our own module build.** `packaging/nix/pulse8-cec.nix` already compiles the driver out of tree from `kernel.src`, so a `postPatch` step applies the patch, gated on the source (the `-ENODEV` guard `323f52e02be6` added) rather than a kernel version, since that commit carries no stable Cc and a version gate would miss a backport. Drivers without the guard still disarm on their own.
+- **Any autonomy knob is host configuration, never a TisVlay profile setting:** it's driver-level and Pulse-Eight-specific, and applying it needs root, while the daemon runs sandboxed. Profiles stay vendor- and transport-agnostic.
 
 ## Related findings
 

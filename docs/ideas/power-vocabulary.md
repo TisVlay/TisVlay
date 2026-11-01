@@ -2,7 +2,7 @@
 
 TisVlay's names for power and activity grew one feature at a time, so its words cross subjects. "Wake" means the PC resuming, the TV powering on and activity on the lock screen. The PC's sleep is also called "suspend", and its wake also "resume". "Remote" means both a remote session and the TV's remote control. Decided (2026-10-25, after the research below): **one pair of words per subject, each word owned by one subject**, so a word names one concept and a search finds it.
 
-The vocabulary applies now: the names the [TV-controls-the-PC plan](../plans/tv-controls-pc.md) introduces follow it from the start. Two renames land inside that campaign, as its prerequisites: remote sessions become [streams](#streams), before the plan's remote-control steps take the word "remote", and the GUI's power-state labels get keyed on the wire's tokens. The other existing names are renamed after the campaign, as one breaking change. The glossary now lives in [architecture.md § Vocabulary](../architecture.md#vocabulary).
+The vocabulary applies to new names now, and the TV-controls-the-PC work followed it from the start. Two renames landed with that work: remote sessions became [streams](#streams), and the GUI's power-state labels are keyed on the wire's tokens. The other existing names are still to be renamed, as one breaking change. The glossary lives in [architecture.md § Vocabulary](../architecture.md#vocabulary).
 
 ## Vocabulary
 
@@ -46,7 +46,7 @@ Done (2026-10-25), before the plan's remote-control steps, as one breaking chang
 - **Docs:** docs/remote/ became docs/streams/, and the user guide's remote-sessions chapter `streaming.md` ("Streaming").
 - **Kept:** logind's own remote sessions (`Remote=yes`, `RemoteHost`) and the portal's `RemoteDesktop` interface keep their platform names, the TV's remote control keeps "remote", and test fixtures keep their labels.
 
-## Renames after the campaign
+## Renames still to do
 
 One breaking change (no aliases), grouped by what each one breaks:
 - **Config keys:**
@@ -107,4 +107,4 @@ One breaking change (no aliases), grouped by what each one breaks:
 
 ## Trigger
 
-The streams rename and the GUI's power-state labels are prerequisites of the TV-controls-the-PC plan. The glossary moved to architecture.md at that plan's merge; the other renames follow the campaign.
+The streams rename and the GUI's power-state labels landed with the TV-controls-the-PC work, and the glossary lives in architecture.md. The renames above are one breaking change, for a release that's breaking anyway or a sprint with slack.

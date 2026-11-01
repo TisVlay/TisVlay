@@ -2,7 +2,9 @@
 
 A CEC TV's config pins a kernel node name (`device = "/dev/cec0"`, which the pairing wizard prefills from discovery). Kernel names are assigned at registration, so they aren't stable: a second adapter, or a re-attached one that comes back while a descriptor on the old node is still open, can register as `/dev/cec1`. The configured path then never becomes available, and the TV waits for a device that's now under another name.
 
-How it surfaced: the device-availability work ([docs/plans/cec-device-presence.md](../plans/cec-device-presence.md), § Renumbering). The kernel frees a node's minor only when the last descriptor on it closes, and that plan drops the handle on the unavailable edge, so our own descriptors no longer hold the old minor. That makes renumbering rare, not impossible: another process holding the node, or two adapters registering in a different order at boot, still renumbers.
+How it surfaced: the device-availability work ([docs/watchers/devices.md](../watchers/devices.md#renumbering)). The kernel frees a node's minor only when the last descriptor on it closes, and the daemon drops its handle on the unavailable edge, so our own descriptors no longer hold the old minor. That makes renumbering rare, not impossible: another process holding the node, or two adapters registering in a different order at boot, still renumbers.
+
+It happened on 2026-10-31, after an ordinary 62 s suspend with the dev stack running: the Pulse-Eight came back as `/dev/cec1`, the daemon logged that the adapter may have been renumbered, and the CEC TV waited for `/dev/cec0` until the adapter was replugged.
 
 ## Path forward
 

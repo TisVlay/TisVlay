@@ -39,3 +39,14 @@ Deferred because TisVlay owns no registered OUI — any value it claims is anoth
 The NixOS module's `pulse8-cec-inputattach@` unit restarts `inputattach` whatever its exit (`Restart=always`, #212) and is bound to the tty device, so a suspend's clean exit and a real unplug are both covered. What's left is systemd's default start limit: more than 5 starts in 10 s marks the unit failed for good, and `/dev/cecN` then stays gone while the adapter is still plugged in, until someone restarts the unit. `StartLimitIntervalSec=0` would make it keep trying for as long as the tty exists; `BindsTo` still stops it when the adapter is unplugged, so it can't loop on a missing node.
 
 Deferred because nothing has hit the limit yet: the two suspends tested (2026-10-24) each needed one restart. Trigger: a journal showing the unit failed with `start-limit-hit`, or an adapter that flaps on resume.
+
+## The Pulse-Eight disarm: upstream, a suspend opt-out, and linux-cec
+
+Our out-of-tree `pulse8-cec` build disarms the dongle on disconnect ([the bug doc](../bugs/cec-pulse8-autonomous-label.md)). What's left of that work:
+
+- **Upstream the patch.** It's Nix-only until it has soaked in use. Then it goes to linux-media with a `Fixes: 323f52e02be6` tag, cc Hans Verkuil and Vicki Pfau, so other distros get it.
+- **A suspend opt-out.** The disarm covers reboots and shutdowns, not a suspend: a sleeping adapter runs autonomously by design, so it can still pin the label. An opt-out would be a NixOS option (`cec.pulse8.autonomous`) beside `cec.pulse8.enable`, never a TisVlay profile setting, since it's driver-level, Pulse-Eight-specific and needs root. A sleeping adapter follows the autonomous flag in its EEPROM, not the driver's working state, so the option has to set the EEPROM: libcec 8 writes it (`am 0`), and the driver's `persistent_config=1` makes it follow the claim ([docs/cec/protocol.md](../cec/protocol.md#the-tv-waking-the-pc)). Turning autonomy off also stops the TV from waking the PC.
+- **A distro-agnostic fallback.** The daemon could clear its claim on SIGTERM, with its unit ordered `After=` the inputattach unit so it stops first, disarming through a live serio on any distro without the driver patch. Not needed while the patch holds.
+- **A linux-cec note upstream.** `all_device_types` is never filled, so a CEC 2.0 `<Report Features>` advertises no device types, and there's no way to set `cec_version` ([the bug doc](../bugs/cec-pulse8-autonomous-label.md), § Related findings). It can go with the pending [OSD-name issue draft](../bugs/upstream-linux-cec-reclaim-drops-osd-name.md).
+
+Trigger: a soak with no label regressions (upstream), a user who'd rather give up the wake than risk the label after a suspend (the opt-out), or the next linux-cec issue filed (the note).

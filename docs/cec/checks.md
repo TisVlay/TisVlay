@@ -115,3 +115,16 @@ end
 - Key events for each press: the kernel path works, and passthrough is a linux-cec flag away. Nothing: the TV doesn't forward keys to this input (check SIMPLINK is on and the PC's input is selected), and section 3 stays "document and stay out".
 
 **Result (2026-10-24, 16:19, LG C3).** With `cec-ctl`'s passthrough claim (`Logical Addresses : 1 (Allow RC Passthrough)`), the remote drove the desktop: the arrows, OK, Exit, CH+/−, the four color keys, rewind, play, pause, fast-forward, stop, Info and Home (`KEY_ROOT_MENU`) each arrived as a key press and release on the `rc-cec` input, and the arrows also reached the focused terminal as keystrokes. The TV's own power key isn't forwarded, but SIMPLINK's device power-off is: it arrived as `KEY_POWER` (scan `0x40`) at 16:20:25, and the test PC entered suspend in the same second, so KDE's power-button action here is sleep. That's the hazard section 3 names, confirmed: passthrough without a `KEY_POWER` override lets anyone with the remote suspend the PC through SIMPLINK. the test PC resumed at 16:21:13, `inputattach` restarted after the resume (#212's fix, second time), and the daemon reclaimed without passthrough.
+
+## Field results (2026-10-25 to 2026-10-31, LG C3)
+
+From the kernel's CEC log and the journals, with the scripted runs unattended since the TV was the PC's display:
+
+- Over CEC, the TV powering off by itself locked the session and, with the sleep set, suspended the PC; TisVlay's own power-off made no edge on that TV; after a keyboard wake with the TV in standby the PC didn't sleep again.
+- Over SSAP, the TV powering off by itself locked the session; a screen off and on made no power-off edge; TisVlay's own power-off made no edge; an LG turned on with its own remote went unseen, as expected. LG's screen saver (`Request Screen Saver`, `Screen On`) reads `Active`, with no edge.
+- With passthrough off, SIMPLINK's power-off reached the follower, locked the session and suspended the PC.
+- With `remote_keys` on, the re-claim showed `Allow RC Passthrough` with the OSD name kept, and the arrows, OK, Exit, CH±, the media keys, Home and Info arrived on the `rc-cec` input; `0x40` arrived as a scan code with no key (the keymap), and the follower still got it. Turning it off re-claimed without passthrough. Set from the GUI, the remote's keys reached the desktop.
+- The TV woke the PC through the wakeup unit, which armed the adapter's port before the sleep; with the wake unset, the port was cut for the sleep and the TV didn't wake it; a PC-action sleep with the wake armed stayed asleep until the TV came on; a TV coming on to another input didn't wake it.
+- The GUI and tray kept their TVs, names and profiles across an everyday suspend with the adapter's port cut for the sleep and restored after.
+
+Not yet tried: a sleep at the login screen with nobody logged in, and the TV waking a hibernated PC ([docs/ideas/tv-controls-pc.md](../ideas/tv-controls-pc.md#open-questions)).
