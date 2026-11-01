@@ -79,7 +79,7 @@ tisvlay/
 │   ├── docker/                   # CI-like build environment, without Nix
 │   └── scripts/                  # nfpm postinstall/preremove
 │
-├── docs/                         # design.md (RETIRED D-Bus stack, ≤ v0.2.0),
+├── docs/
 │   ├── architecture.md           # ← current architecture reference
 │   ├── build.md                  # build, lint policy, public API policy, first-publish checklist
 │   ├── conventions.md            # code conventions (imported below)
@@ -236,7 +236,6 @@ just cov / cov-html / cov-ratchet
 The contributing guide's § Where to read more lists the main developer docs (architecture, build, testing, and the ideas, concerns and bugs indexes). The subsystem and vendor docs:
 
 - [docs/streams/detection.md](../docs/streams/detection.md) - Stream detectors (PipeWire, portal, logind, Sunshine) and their quirks
-- [docs/design.md](../docs/design.md) - The retired served-D-Bus architecture (≤ v0.2.0); kept for history
 - [docs/discovery.md](../docs/discovery.md) - SSDP transport, streaming discovery, manual-entry MAC enrichment
 - [docs/firewall.md](../docs/firewall.md) - Why SSDP discovery needs a firewall rule
 - [docs/i18n.md](../docs/i18n.md) - Translation architecture and workflow

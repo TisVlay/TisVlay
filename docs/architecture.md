@@ -1,6 +1,6 @@
 # TisVlay Architecture
 
-The current (v0.3.0+) architecture: a **bevy_ecs world** owns every daemon state machine, and **zenoh over Unix sockets** is the IPC surface. This document is the durable successor to the plan documents that drove the rewrite (the spike and parity plans, now retired to git history; [design.md](design.md) remains for the retired served-D-Bus stack ≤ v0.2.0). Consumed desktop D-Bus (logind, Mutter's IdleMonitor, xdg-desktop-portal, the file manager, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus; nothing serves D-Bus anymore.
+The current (v0.3.0+) architecture: a **bevy_ecs world** owns every daemon state machine, and **zenoh over Unix sockets** is the IPC surface. This document is the durable successor to the plan documents that drove the rewrite (the spike and parity plans, now retired to git history; the retired served-D-Bus design doc is in git history as `docs/design.md`, last at `cbb3ee27`). Consumed desktop D-Bus (logind, Mutter's IdleMonitor, xdg-desktop-portal, the file manager, ksni tray, notifications, `org.freedesktop.Application` GUI activation) remains zbus; nothing serves D-Bus anymore.
 
 ## Process inventory
 

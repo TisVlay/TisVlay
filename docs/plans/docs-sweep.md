@@ -12,6 +12,9 @@ Each item below names the file and the fix. Line numbers drift, so items quote t
 | Duplicates | One canonical home per fact; other copies become a clause and a link. |
 | `CLAUDE.md` | Keep what every session must not get wrong; link everything else. |
 | Process | This plan is the checklist. Commit it, the maintainer reviews it, implementation goes one commit per area, then one agent review at the end. Merge commit. |
+| `design.md` | Retired in this PR (decided after the sweep): the served-D-Bus design doc leaves the tree, and its references point at git history. |
+| Gaps found | Filed as concerns rather than fixed here: a poll-only backend's screen verify, enrichment's missing IP-family check, and two regression tests lost in the rewrite. |
+| Wake benchmark | Moved to a follow-up PR (area 8). The rewritten script stays here, since it replaces one that matched retired log lines. |
 
 Already done on this branch: the contributing plan is retired, the guide's links are root-relative (GitHub's Contributing tab resolves relative links from the repository root), and the issue chooser's duplicate security link is gone.
 
@@ -89,11 +92,13 @@ Rewrite in current terms:
 - [x] **Socket access:** canonical in `packaging/README.md`.
 - [x] **`CLAUDE.md` trim:** cut what the guide or a canonical doc now holds (Running the Stack's basic commands, the recipe block, the testing summary, the CI paragraph, duplicated reference entries, the i18n workflow beyond its traps). Fix the project tree (`tisvlay-icons`, `docs/backends/`, `packaging/` subdirectories), the "root-D-Bus-client-compatible" phrase, and What's Next. Re-point `docs/testing.md`'s reference to the Tasks section and `pairing_schema.rs`'s reference to CLAUDE.md's i18n section.
 
-## 8. Re-measure wake timing
+## 8. Re-measure wake timing (follow-up PR)
+
+Moved out of this PR: it needs the maintainer to run the script with the TV dark. `scripts/bench_wake.py` lands here, unrun; the run and the doc rewrite follow separately.
 
 `docs/lg/benchmarks/wake-reconnect.md` compares pre-0.3.0 reconnect designs (NetworkManager watcher variants) measured with `busctl`, and `scripts/bench_network.py` matches log lines that no longer exist. Only its TV hardware timings still hold. Re-measure on the current stack and rewrite both.
 
-- [ ] Rewrite `scripts/bench_network.py` for the current log lines and keys (to be designed with the maintainer).
+- [x] Rewrite `scripts/bench_network.py` for the current log lines and keys, as `scripts/bench_wake.py`.
 - [ ] Run it as an unattended script logging to a file, since the TV goes dark.
 - [ ] Rewrite the doc with current numbers, dated, and its hardware observations re-checked. Link it from the book's Troubleshooting page, `CLAUDE.md` and `firmware-quirks.md` instead of quoting numbers.
 

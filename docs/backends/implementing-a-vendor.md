@@ -145,4 +145,3 @@ A second worked example — **CEC's screen-via-power** — emulates `SCREEN` wit
 - [docs/testing.md](../testing.md) — the workspace testing framework and layers.
 - [docs/lg/](../lg) — the worked real-world vendor: `webos.md` (protocol), `firmware-quirks.md` (bug inventory), `testing.md` (`FakeSsapServer`).
 - [docs/cec/](../cec) — the non-network worked vendor: HDMI-CEC over the Linux CEC subsystem, and the canonical `reachable_in_standby` (Connected ≠ power) model.
-- [docs/design.md](../design.md) — the retired served-D-Bus architecture (≤ v0.2.0); historical background for the trait rationale.

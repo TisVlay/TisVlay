@@ -84,7 +84,7 @@ One breaking change (no aliases), grouped by what each one breaks:
   - architecture.md;
   - docs/watchers, docs/cec, docs/backends, docs/remote and docs/testing.md;
   - two file names (lg/benchmarks/wake-reconnect.md, concerns/cec-standby-ignored-after-wake.md).
-  - docs/design.md is retired and stays as it is.
+  - docs/design.md, the retired D-Bus design, was removed; git history keeps it (last at `cbb3ee27`).
 
 ## Research (2026-10-25)
 

@@ -20,4 +20,4 @@ The switchover carried no numbers — the enqueue-ack volume-lag bug on the C3 *
 
 ## Fresh consolidated design doc
 
-docs/design.md is banner-marked as the retired D-Bus architecture. The topology/key-space/persistence consolidation this item originally asked for now lives in [docs/architecture.md](../architecture.md), which is the durable architecture reference. What remains open is folding the **stock-profile and pairing flows** (still only in code + the retired design.md) into a durable home — either a section in architecture.md or a fresh design.md — if a reader ever needs them narrated.
+The retired D-Bus architecture doc, `docs/design.md`, is gone from the tree (git history keeps it, last at `cbb3ee27`). The topology/key-space/persistence consolidation this item originally asked for now lives in [docs/architecture.md](../architecture.md), which is the durable architecture reference. What remains open is folding the **stock-profile and pairing flows** (still only in code and that retired doc) into a durable home — a section in architecture.md, say — if a reader ever needs them narrated.
