@@ -34,10 +34,10 @@ targets = [
 #   rustix   transitive; triple-licensed with COPYRIGHT file quirk
 workarounds = ["rustls", "ring", "wasmtime", "rustix"]
 
-# Skip license checks on our own workspace crates. They're all
-# `publish = false` per the workspace package metadata; without this
-# cargo-about would either try to validate them against `accepted`
-# or warn noisily about the unpublished status.
+# Skip license checks on the unpublished workspace crates (`publish =
+# false`); without this cargo-about would validate them against
+# `accepted` or warn about their unpublished status. The published
+# ones are checked against `accepted` like any dependency.
 private = { ignore = true }
 
 # Build-deps' generated output ships in our binaries, so they keep

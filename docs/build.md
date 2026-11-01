@@ -12,11 +12,11 @@ Each run starts with `cargo llvm-cov clean --workspace`, which drops the workspa
 
 There's a residual dual-compile that *can't* be eliminated on stable today (verified by `cargo clippy -v` rustc invocations): even with one target dir and one instrumentation setting, cargo treats `cargo clippy` and `cargo nextest run` as different "modes" with different artifact-emit flags. clippy emits `--emit=dep-info,metadata` (rmeta only — interface, no machine code); nextest emits `--emit=dep-info,metadata,link` (rmeta + `.rlib`). cargo's fingerprint distinguishes the two artifact kinds, so every workspace crate is recompiled in the second invocation. This is upstream cargo design — see "Review triggers" for the goal that may eventually fix it.
 
-`tisvlay-gui` looks uniquely doubly-compiled when grepping for `Compiling X` lines because it's the only workspace crate with a `build.rs` — its build-script binary forces a "Compiling" verb in the clippy step where every other workspace crate gets "Checking" (rmeta-only). Cosmetic, not actual extra duplication.
+The crates with a `build.rs` (`tisvlay-gui`, `tisvlay-gui-app` and `tisvlay-session`) look doubly compiled when grepping for `Compiling X` lines: each build-script binary forces a "Compiling" verb in the clippy step where every other workspace crate gets "Checking" (rmeta-only). Cosmetic, not actual extra duplication.
 
 ### CI feature scope
 
-CI lints and tests with `--all-features` — the same flags as local `prek` — so the instrumented build has exactly one feature configuration to reason about. The workspace's feature surface is small (runtime's `access`/`logging`/`wayland`/`mutter-idle`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled). What that single configuration can't catch, a crate that no longer builds with one of its features off, is the separate `features` job's concern (`just hack`; see "Checks that run in CI"). The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
+CI lints and tests with `--all-features` — the same flags as local `prek` — so the instrumented build has exactly one feature configuration to reason about. The workspace's feature surface is small (runtime's `access`/`fs`/`client`/`logging`/`wayland`/`mutter-idle`, lg's `discovery`, cec's `test-link`; the mock backend is always compiled). What that single configuration can't catch, a crate that no longer builds with one of its features off, is the separate `features` job's concern (`just hack`; see "Checks that run in CI"). The Slint MCP debug server is enabled ad-hoc with `--features slint/mcp` (a dependency feature, not a crate feature) and guards no workspace source.
 
 ## Checks that run in CI
 
@@ -135,6 +135,8 @@ The GUI is split across two crates so the Slint-generated code — about 120k li
 
 CI provisions `cargo-about` via `taiki-e/install-action` (the Setup step), so the `licenses-html` gate and `build.rs` both run the real generator; the stub fallback covers only ad-hoc builds outside CI / the dev shell where `cargo-about` isn't on `$PATH`. Shipped distro builds invoke `just licenses-html` from the Nix dev shell where `cargo-about` is provisioned. See [licensing.md](licensing.md) for the packaging path.
 
+[`tisvlay-session/build.rs`](../crates/tisvlay-session/build.rs) is the third: it records where pkg-config says PipeWire's SPA plugins live, so the session can check the support plugin exists before starting its screencast detector ([streams/detection.md](streams/detection.md)).
+
 ## Dep-graph posture
 
 The workspace pulls several hundred transitive crates. Each *version* of a crate is a separate compile unit, so duplicates cost compile time, and on a 2-core CI runner that's real wall time.
@@ -168,7 +170,7 @@ The skip list's reasons are the inventory of known duplicates; this doc doesn't 
 
 `[graph] targets = [{ triple = "x86_64-unknown-linux-gnu" }]` restricts cargo-deny's resolution to the platforms we ship for. Without it the default view considers every target triple and surfaces ~20 duplicate warnings for crates we never compile (`objc2-*` Apple, `windows-*` Windows, `jni-sys` Android, `r-efi`, `redox_*`).
 
-`[graph]` is global — it affects `licenses` too. So a Linux-only license-policy gate won't catch an Apple/Windows-conditional one. That trade-off matches shipping reality: every binary we ship is Linux-only (D-Bus + systemd; the GUI is Wayland-only — see [design.md](design.md) "Known Challenges & Mitigations"). If we ever add a non-Linux release artifact, broaden the targets list.
+`[graph]` is global — it affects `licenses` too. So a Linux-only license-policy gate won't catch an Apple/Windows-conditional one. That trade-off matches shipping reality: every binary we ship is Linux-only (D-Bus + systemd; the GUI is Wayland-only). If we ever add a non-Linux release artifact, broaden the targets list.
 
 ### Default-feature resolution
 
@@ -241,7 +243,8 @@ nix shell nixpkgs#python3 --command python3 scripts/bench_build_baselines.py
 - [`packaging/licensing/deny.toml`](../packaging/licensing/deny.toml) — `[graph]` / `[licenses]` / `[bans]` config with per-entry rationale.
 - [`crates/tisvlay-gui/build.rs`](../crates/tisvlay-gui/build.rs) — slint-build.
 - [`crates/tisvlay-gui-app/build.rs`](../crates/tisvlay-gui-app/build.rs) — env-var emitter, cargo-about wrapper with stub fallback.
+- [`crates/tisvlay-session/build.rs`](../crates/tisvlay-session/build.rs) — the SPA plugin dir.
 - [`justfile`](../justfile) — `test-ci` recipe (show-env entry point), `deny` recipe.
 - [Cargo cross-workspace-cache 2026 goal](https://rust-lang.github.io/rust-project-goals/2026/cargo-cross-workspace-cache.html) — upstream work that may obsolete the share-target workaround.
 - [taiki-e/cargo-llvm-cov `show-env`](https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#get-coverage-of-cc-code-linked-to-rust-libtest-binary) — the `--sh` invocation our pipeline depends on.
-- Sibling docs: [testing.md](testing.md), [licensing.md](licensing.md), [diagnostics.md](diagnostics.md), [design.md](design.md).
+- Sibling docs: [testing.md](testing.md), [licensing.md](licensing.md), [diagnostics.md](diagnostics.md), [architecture.md](architecture.md).

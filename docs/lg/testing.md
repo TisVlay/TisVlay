@@ -6,7 +6,7 @@ For the workspace-wide testing framework, see [testing.md](../testing.md).
 
 ## FakeSsapServer
 
-`crates/tisvlay-lg/src/test_server.rs` (~200 lines, `#[cfg(test)]`). Binds to `127.0.0.1:0`, accepts WebSocket connections, and dispatches SSAP messages by type.
+`crates/tisvlay-lg/src/test_server.rs` (`#[cfg(test)]`). Binds to `127.0.0.1:0`, accepts WebSocket connections, and dispatches SSAP messages by type.
 
 ```rust
 use crate::test_server::{FakeSsapServer, RegistrationOutcome};

@@ -44,16 +44,16 @@ Users read these, so they go first.
 
 ## 4. Other developer docs
 
-- [ ] **`docs/build.md`:** three crates have a `build.rs`, not one or two; runtime's feature list; drop the `design.md` pointer for Linux-only; reconcile nightly being both "never adopted" and a review trigger.
-- [ ] **`docs/architecture.md`:** add `event/dispatch-failed` to the key table.
-- [ ] **`packaging/README.md`:** two binaries, not five; the Bazzite record's "system bus" connection (date the record); the Docker image is Ubuntu 26.04. Link to `cec/protocol.md` for the Pulse-Eight steps rather than restating them.
-- [ ] **`docs/licensing.md`** and `packaging/licensing/about.toml`: published crates are checked against `accepted`, not skipped; `sources` also allows the `linux-cec` fork; `installed_notices_path()` is in `about.rs`.
-- [ ] **`docs/watchers/network.md`:** `primary_descriptor()` (also in `core/src/traits.rs`'s module doc), the UNKNOWN-and-not-dormant fallback, and the `Reconnecting` component.
-- [ ] **`docs/streams/detection.md`:** `tisvlay service session --sunshine-port`; link the book for the Sunshine `global_prep_cmd` recipe and the stock defaults. Its claim that a plain `tisvlay watch` shows the `stream/state` mirror holds (checked live).
-- [ ] **`.claude/slint.md`:** the `Btn`, `ThemedCheckBox` and `ThemedTextInput` examples (gone; use `IconBtn` or `LineEditField`), and `open_notices_html` in `about.rs`.
-- [ ] **`docs/gui/`:** `HelpTrigger` is in `ui/globals/help.slint`; `accent.rs` is in `tisvlay-gui-app`.
-- [ ] **`docs/lg/testing.md`:** drop the fake server's line count.
-- [ ] **`docs/kde/tray_issue.md`:** retire it into `docs/bugs/upstream-kde-tray-submenu-collapse.md`, like the upstream linux-cec entries: the symptom (a nested submenu closes on its first expansion after the tray starts; still reproducible 2026-11-01), KDE bug 506439 and its MRs, the untested `about_to_show` workaround, and what to check on a newer Plasma. The old tray-side fixes stay in git history.
+- [x] **`docs/build.md`:** three crates have a `build.rs`, not one or two; runtime's feature list; drop the `design.md` pointer for Linux-only; reconcile nightly being both "never adopted" and a review trigger.
+- [x] **`docs/architecture.md`:** add `event/dispatch-failed` to the key table.
+- [x] **`packaging/README.md`:** two binaries, not five; the Bazzite record's "system bus" connection (date the record); the Docker image is Ubuntu 26.04. Link to `cec/protocol.md` for the Pulse-Eight steps rather than restating them.
+- [x] **`docs/licensing.md`** and `packaging/licensing/about.toml`: published crates are checked against `accepted`, not skipped; `sources` also allows the `linux-cec` fork; `installed_notices_path()` is in `about.rs`.
+- [x] **`docs/watchers/network.md`:** `primary_descriptor()` (also in `core/src/traits.rs`'s module doc), the UNKNOWN-and-not-dormant fallback, and the `Reconnecting` component.
+- [x] **`docs/streams/detection.md`:** `tisvlay service session --sunshine-port`; link the book for the Sunshine `global_prep_cmd` recipe and the stock defaults. Its claim that a plain `tisvlay watch` shows the `stream/state` mirror holds (checked live).
+- [x] **`.claude/slint.md`:** the `Btn`, `ThemedCheckBox` and `ThemedTextInput` examples (gone; use `IconBtn` or `LineEditField`), and `open_notices_html` in `about.rs`.
+- [x] **`docs/gui/`:** `HelpTrigger` is in `ui/globals/help.slint`; `accent.rs` is in `tisvlay-gui-app`.
+- [x] **`docs/lg/testing.md`:** drop the fake server's line count.
+- [x] **`docs/kde/tray_issue.md`:** retire it into `docs/bugs/upstream-kde-tray-submenu-collapse.md`, like the upstream linux-cec entries: the symptom (a nested submenu closes on its first expansion after the tray starts; still reproducible 2026-11-01), KDE bug 506439 and its MRs, the untested `about_to_show` workaround, and what to check on a newer Plasma. The old tray-side fixes stay in git history.
 
 ## 5. Ideas, concerns and bugs
 
@@ -104,6 +104,8 @@ Rewrite in current terms:
 - **Area 2:** `firmware-quirks.md` keeps its Fix notes in the pre-0.3.0 code names, with a note saying where that logic lives now, rather than rewriting each fix. Two old tests have no successor: CEC identity following a dongle swap, and an LG `screen_off` accepting `ActiveStandby` when the wake refuses. The docs say so; they aren't filed as concerns yet.
 
 - **Area 3:** a finding beyond the plan: a poll-only network backend can't verify its screen actions, since the daemon refreshes such a backend's cached state only on connect. The vendor guide now says so; it isn't filed as an idea yet. The tray's planned i18n layout and its two design choices moved to `ideas/switchover-followups.md`.
+
+- **Area 4:** `docs/streams/detection.md` keeps its "stock story" of the stream defaults, since it explains why they are what they are; only the Sunshine hook recipe became a link. `packaging/README.md` keeps its one-clause Pulse-Eight mention, consistent with `cec/protocol.md`. `docs/kde/gui-application-activation.md`'s dead link, an area 6 item, was fixed here.
 
 ## Verification
 

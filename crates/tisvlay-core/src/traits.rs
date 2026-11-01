@@ -9,7 +9,7 @@
 //! ```text
 //! TvBackend (metadata: vendor_id, vendor_name, capabilities)
 //!     │
-//!     ├── TvConnector (factory: connect, wake, pair, display_address)
+//!     ├── TvConnector (factory: connect, wake, pair, primary_descriptor)
 //!     │
 //!     └── TvDiscovery (network discovery)
 //!

@@ -2,7 +2,7 @@
 
 ## Context
 
-`tisvlay-gui`'s color tokens (`crates/tisvlay-gui/ui/theme.slint`) were re-valued to match the KDE **Breeze** color schemes — **Breeze Light** and **Breeze Dark** — so the app reads as a native Breeze application in either scheme. The values are not eyeballed: each token derives from a specific Breeze color-scheme role, listed below. The accent stays DE-driven (`src/accent.rs` pushes `org.freedesktop.appearance.accent-color`); its default is already Breeze's blue.
+`tisvlay-gui`'s color tokens (`crates/tisvlay-gui/ui/theme.slint`) were re-valued to match the KDE **Breeze** color schemes — **Breeze Light** and **Breeze Dark** — so the app reads as a native Breeze application in either scheme. The values are not eyeballed: each token derives from a specific Breeze color-scheme role, listed below. The accent stays DE-driven (`crates/tisvlay-gui-app/src/accent.rs` pushes `org.freedesktop.appearance.accent-color`); its default is already Breeze's blue.
 
 Provenance is pinned by `crates/tisvlay-gui/tests/theme_breeze.rs`, which text-parses `theme.slint` and asserts each fixed-hex token equals the value in this table (the tokens are `out property` brushes, so they can't be read back at runtime).
 

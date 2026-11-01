@@ -30,23 +30,11 @@ The logind detector watches the system bus for own-uid sessions that are both `R
 
 Sunshine publishes no D-Bus interface and no push/event API, and its default NvFBC capture on Nvidia is invisible to both the portal monitor and the PipeWire watcher. Its one machine-readable state signal is the unauthenticated `/serverinfo` endpoint on loopback, which reports `SUNSHINE_SERVER_BUSY` while a stream is active and `SUNSHINE_SERVER_FREE` while idle. The session service runs a continuous poll against it, so Sunshine detection works **zero-config** — no hook required.
 
-The poll gates on process presence (a cheap procfs scan, free when Sunshine is absent) and, while a `sunshine` process is running, issues a `GET http://127.0.0.1:<port>/serverinfo` on a short cadence (~2 s; a coarser ~10 s while no process is present), where `<port>` is Sunshine's base port: 47989 by default, set with `tisvlay-session --sunshine-port` (the NixOS module's `services.tisvlay.sunshinePort`) when Sunshine runs elsewhere, e.g. moved aside so Moonshine keeps the GameStream defaults. The poll and the eager pull below share one injected probe, which tests replace with a scripted one. It reports a `sunshine` source keyed by `serverinfo` that it fully owns: `BUSY` arms it, `FREE` or a vanished process disarms it, and a reachable-but-unclassifiable or transiently-unreachable endpoint keeps the last level so a blip does not flap the source. Reporting only on a level change keeps needless traffic off the aggregator. Because it re-derives the level every tick, a session-service restart mid-stream re-arms within one interval — no separate startup step. It needs Sunshine's HTTP port reachable on loopback; a firewall or a non-default port defeats it.
+The poll gates on process presence (a cheap procfs scan, free when Sunshine is absent) and, while a `sunshine` process is running, issues a `GET http://127.0.0.1:<port>/serverinfo` on a short cadence (~2 s; a coarser ~10 s while no process is present), where `<port>` is Sunshine's base port: its default unless set with `tisvlay service session --sunshine-port` (the NixOS module's `services.tisvlay.sunshinePort`) when Sunshine runs elsewhere, e.g. moved aside so Moonshine keeps the GameStream defaults. The poll and the eager pull below share one injected probe, which tests replace with a scripted one. It reports a `sunshine` source keyed by `serverinfo` that it fully owns: `BUSY` arms it, `FREE` or a vanished process disarms it, and a reachable-but-unclassifiable or transiently-unreachable endpoint keeps the last level so a blip does not flap the source. Reporting only on a level change keeps needless traffic off the aggregator. Because it re-derives the level every tick, a session-service restart mid-stream re-arms within one interval — no separate startup step. It needs Sunshine's HTTP port reachable on loopback; a firewall or a non-default port defeats it.
 
 Because the disarm rides that ~2 s cadence, a user who returns within the window after a stream ends could hit a suppressed wake for up to one tick. The gate and the detector share the session process, so before dispatching a session-side event whose action a live Sunshine source is currently suppressing, the session pulls `/serverinfo` once on a tight budget and decides on fresh state — a stream that just ended un-gates the action immediately rather than waiting for the next poll. The trigger is policy-driven, not a fixed event list: for the stock floor it is exactly the wake events (unlock, lock-wake, idle-resume), but any event a profile gates is served the same. The world-side DPMS-on wake is cross-process and stays covered by the poll cadence; an eager refresh there is a filed follow-up.
 
-The `global_prep_cmd` hook is now **optional**. Its sole remaining value is ordering: it arms the instant the app launches, ahead of the poll's interval latency and ahead of any injected input. Add one only if that sub-interval arm latency matters:
-
-```json
-{
-  "global_prep_cmd": [
-    {
-      "do": "tisvlay stream start --source sunshine",
-      "undo": "tisvlay stream stop --source sunshine",
-      "elevated": false
-    }
-  ]
-}
-```
+The `global_prep_cmd` hook is now **optional**. Its sole remaining value is ordering: it arms the instant the app launches, ahead of the poll's interval latency and ahead of any injected input. Add one only if that sub-interval arm latency matters; the user guide has the recipe ([Streaming § Sunshine integration](book/src/guide/streaming.md#sunshine-integration)).
 
 The CLI verb is fast and fire-and-forget by design, so a slow or stalled hook cannot delay Sunshine's stream launch. The hook fires at application launch, ahead of the stream and any injected input. It arms a **separate** `manual/sunshine` source, distinct from the poll's `sunshine/serverinfo` key, so the two coexist without racing: `/serverinfo` reads briefly `FREE` during the hook's `do` -> app-launch window, and a shared key would let the poll's disarm clear the hook's just-armed source. The aggregate is armed while either source is; both disarm on stream end.
 

@@ -7,7 +7,7 @@ High-level overview of every channel we ship through, why the build pipeline is 
 | Channel | Source of truth | Use case |
 |---|---|---|
 | **Nix flake / NixOS module** | [`nix/package.nix`](nix/package.nix), [`nix/module.nix`](nix/module.nix) | NixOS hosts, declarative service config. See [`nix/README.md`](nix/README.md) for the full deep-dive on the Nix derivation, hardening posture, VM test, and module options. |
-| **`.deb` / `.rpm` / `.pkg.tar.zst`** (this directory) | [`crates/tisvlay-cli/Cargo.toml`](../crates/tisvlay-cli/Cargo.toml) `[package.metadata.nfpm*]` + [`justfile`](../justfile) `package-*` recipes | Debian/Ubuntu, Fedora/RHEL, Arch Linux. One bundled package per format containing all five binaries plus systemd units, the GUI desktop entry, and the CLI's shell completions. |
+| **`.deb` / `.rpm` / `.pkg.tar.zst`** (this directory) | [`crates/tisvlay-cli/Cargo.toml`](../crates/tisvlay-cli/Cargo.toml) `[package.metadata.nfpm*]` + [`justfile`](../justfile) `package-*` recipes | Debian/Ubuntu, Fedora/RHEL, Arch Linux. One bundled package per format containing both binaries (`tisvlay` and `tisvlay-gui`) plus systemd units, the GUI desktop entry, and the CLI's shell completions. |
 | **Test container** | [`docker/Dockerfile`](docker/Dockerfile) | Reproducible Ubuntu environment for verifying the build matrix without touching CI, and for smoke-testing the resulting `.rpm`/`.deb` against a clean glibc target. |
 | **Dev-shell native build** | [`flake.nix`](../flake.nix) `devShells.default` | `cargo run` / `cargo test` / `just check` directly from the Nix dev shell. **Not** what produces shippable binaries — see "Build pipeline" below. |
 
@@ -301,7 +301,7 @@ The build host produces the package, but only the target distro proves it instal
 
 ### Quick local smoke test (Docker / Podman)
 
-The [`docker/Dockerfile`](docker/Dockerfile) provides a clean Ubuntu 24.04 environment that mirrors the GitHub Actions `ubuntu-latest` runner:
+The [`docker/Dockerfile`](docker/Dockerfile) provides a clean Ubuntu 26.04 environment that mirrors the GitHub Actions `ubuntu-latest` runner:
 
 ```bash
 docker build -t tisvlay-ci -f packaging/docker/Dockerfile .
@@ -314,8 +314,8 @@ That validates the GUI compiles against a real distro's libfontconfig headers. A
 
 The actual ground-truth test: copy the produced `.rpm` (or `.deb`) to a VM running the target distro, install via the native package manager, run `tisvlay-gui` from a graphical session.
 
-Verified working as of this commit:
-- **Bazzite** (Fedora 42 base, KDE Plasma on Wayland, glibc 2.41): GUI launches, daemon connection over the system bus, pairing wizard interactive.
+Verified working on 2026-05-03, before the 0.3.0 rewrite:
+- **Bazzite** (Fedora 42 base, KDE Plasma on Wayland, glibc 2.41): GUI launches, daemon connection over what was then the system bus, pairing wizard interactive.
 
 Known benign noise during VM testing:
 

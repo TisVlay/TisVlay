@@ -45,6 +45,7 @@ manager/vendors[, /<id>/schema]                       vendor catalog + pairing-f
 manager/rpc/<verb>                                    add-tv, pair, discover[-start/-stop], enrich, info, …
 discovery/<session>/found/<id>                        streaming findings + alive/discovery/<session> token
 event/session/<name>, event/connect-failed            observability taps
+event/dispatch-failed                                 an action that couldn't run (a refused sleep, a screen intent that gave up)
 event/tv-power-off                                    the TV powered off by itself (live edge; the session reads it without history)
 event/remote-power                                    the TV's remote powered this PC off (a remote_power connection's; the session reads it without history)
 greeter/{idle,timeout}                                greeter idle events + published timeout
