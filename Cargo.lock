@@ -6555,7 +6555,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tisvlay"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "futures-util",
  "serde",
@@ -6578,7 +6578,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-cec"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -6595,7 +6595,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6621,7 +6621,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bitflags 2.13.2",
@@ -6639,7 +6639,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-daemon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6674,7 +6674,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-docgen"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap-markdown",
@@ -6686,7 +6686,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-greeter"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6702,7 +6702,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-gui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "slint",
  "slint-build",
@@ -6710,7 +6710,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-gui-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -6748,7 +6748,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-icons"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "freedesktop-icons",
  "tracing",
@@ -6756,7 +6756,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-lg"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -6778,7 +6778,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-mock"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -6790,7 +6790,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-protocol"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6805,7 +6805,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-runtime"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -6832,7 +6832,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-session"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6862,7 +6862,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-ssdp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-stream",
  "futures-core",
@@ -6875,7 +6875,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-test"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "futures-util",
  "libc",
@@ -6892,7 +6892,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-tray"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6921,7 +6921,7 @@ dependencies = [
 
 [[package]]
 name = "tisvlay-world"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bevy_ecs",

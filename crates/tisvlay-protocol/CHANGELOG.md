@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-protocol-v0.4.0...tisvlay-protocol-v0.5.0) - 2026-11-01
+
+### Added
+
+- *(protocol,sdk,daemon,session,tray,gui)* [**breaking**] say when a mirror's history has arrived
+- make managed a kill switch for a TV's profile actions
+- act on the PC when the TV's remote powers it off
+- offer only the sleep modes logind grants the daemon
+- lock the session when the TV powers off by itself
+- [**breaking**] rename remote sessions to streams
+- tell clients what a disconnected TV is waiting for
+
 ## [0.4.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-protocol-v0.3.0...tisvlay-protocol-v0.4.0) - 2026-10-24
 
 ### Other
