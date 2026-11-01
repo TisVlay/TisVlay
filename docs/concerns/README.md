@@ -19,6 +19,7 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 - [CI test-ci pipeline depends on `cargo llvm-cov show-env` workaround](test-ci-cargo-llvm-cov-show-env.md)
 - [Stray `.profraw` files outside `target/` from instrumented binaries](profraw-stray-files-outside-target.md)
+- [zenoh pins an lz4_flex with a decompression advisory (unreachable: compression is off)](lz4-flex-advisory.md)
 
 ## CLI
 
