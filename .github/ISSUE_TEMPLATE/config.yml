@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question
+    url: https://github.com/TisVlay/TisVlay/discussions
+    about: Ask how to do something, or talk through an idea.
+  - name: User guide
+    url: https://tisvlay.readthedocs.io/
+    about: Installation, automation and troubleshooting.
+  - name: Security vulnerability
+    url: https://github.com/TisVlay/TisVlay/security/advisories/new
+    about: Report it privately instead of opening a public issue.
