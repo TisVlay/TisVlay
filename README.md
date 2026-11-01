@@ -104,7 +104,7 @@ Rendered docs available at [tisvlay.readthedocs.io](https://tisvlay.readthedocs.
 - 🔎 Discovery not finding your TV? See [Firewall & Discovery](docs/book/src/operations/firewall-discovery.md).
 - 🔒 TV discovering too much about you? See [TVs on an Isolated Network](docs/book/src/operations/isolated-networks.md).
 - ⌨️ Scripting? See the [Command Line](docs/book/src/guide/cli.md) and [Configuration Files](docs/book/src/guide/configuration.md).
-- 🤝 Want to help? See the [contributing guide](.github/CONTRIBUTING.md).
+- 🤝 Want to help? See the [Contributing Guide](.github/CONTRIBUTING.md).
 
 ## 🙏 Acknowledgments
 
