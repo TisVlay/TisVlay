@@ -53,7 +53,7 @@ Small fixes go straight to a PR. Anything substantial (several commits, a wire o
 
 ## Before opening a PR
 
-- Run `just check`, which runs the same gates as CI. For a docs-only change, `prek run -a --skip build --skip clippy --skip test` is enough.
+- Run `just check`, which covers most of what CI gates; CI also checks the minimum Rust version, feature combinations and the book ([what runs when](../docs/build.md#what-runs-when)). For a docs-only change, `prek run -a --skip build --skip clippy --skip test` is enough.
 - If you changed the CLI or a profile default, run `just docs-gen`. If you changed a user-facing GUI string, run `just i18n-extract`. Commit what they regenerate; CI fails on stale generated docs.
 - Add tests for what you changed. [docs/testing.md](../docs/testing.md) covers the layers and where new tests go.
 
