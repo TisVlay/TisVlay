@@ -34,13 +34,7 @@ services.tisvlay.openFirewall = true;
 networking.firewall.allowedUDPPorts = [ 1901 ];
 ```
 
-To use a different port, or an OS-chosen ephemeral one (which can't be narrowed to a single firewall rule), set it in the service's config, or pass `tisvlay service daemon --ssdp-port <port>` (`0` = ephemeral):
-
-```toml
-# /var/lib/tisvlay/daemon.toml
-[discovery]
-bind_port = 1901   # the default; any unused port works, or 0 for ephemeral
-```
+To use a different port, or an OS-chosen ephemeral one (which can't be narrowed to a single firewall rule), pass `tisvlay service daemon --ssdp-port <port>` (`0` = ephemeral). On NixOS, set the module's `bindPort` instead.
 
 > Note: a `--sport 1900` rule does **not** work. The TV's reply comes from an ephemeral port, so you must match on the pinned *destination* port instead.
 

@@ -19,13 +19,13 @@ Already done on this branch: the contributing plan is retired, the guide's links
 
 Users read these, so they go first.
 
-- [ ] **`guide/configuration.md` and `operations/firewall-discovery.md`:** delete the `[discovery]` TOML blocks (`bind_port`, `poll_interval_ms`). The daemon has no such section and skips unknown fields, so an edit silently does nothing. Point to `--ssdp-port` and the NixOS `bindPort` option.
-- [ ] **`guide/automation.md`:** delete the "admin-set baseline" layer. User profiles resolve the assigned profile over the default, then the built-ins, as system profiles do.
-- [ ] **`reference/requirements.md`:** the daemon does use the system bus (logind). The session uses logind (`LockedHint`, remote sessions) and Mutter's IdleMonitor on GNOME, not the screensaver.
-- [ ] **`guide/streaming.md`:** `tisvlay watch` ignores `--user-socket`, and doesn't need it: a plain `tisvlay watch` shows the daemon's `stream/state` mirror (checked on a dev stack, 2026-11-01).
-- [ ] **Hand-copied defaults** in `guide/streaming.md` (the stream event values, Sunshine's port), `guide/automation.md`'s default table and `getting-started/quick-start.md`: name the event or flag and link to the generated defaults or CLI reference. Keep a table only where it explains meaning, not values.
-- [ ] **`operations/troubleshooting.md`:** "typically 1–5" seconds for a woken TV is below the repo's own measurement (5–12 s). Drop the number.
-- [ ] **`guide/gui-tray.md`:** use the tray's full labels ("Backlight Up (+10)", "Volume Up (+10)").
+- [x] **`guide/configuration.md` and `operations/firewall-discovery.md`:** delete the `[discovery]` TOML blocks (`bind_port`, `poll_interval_ms`). The daemon has no such section and skips unknown fields, so an edit silently does nothing. Point to `--ssdp-port` and the NixOS `bindPort` option.
+- [x] **`guide/automation.md`:** delete the "admin-set baseline" layer. User profiles resolve the assigned profile over the default, then the built-ins, as system profiles do.
+- [x] **`reference/requirements.md`:** the daemon does use the system bus (logind). The session uses logind (`LockedHint`, remote sessions) and Mutter's IdleMonitor on GNOME, not the screensaver.
+- [x] **`guide/streaming.md`:** `tisvlay watch` ignores `--user-socket`, and doesn't need it: a plain `tisvlay watch` shows the daemon's `stream/state` mirror (checked on a dev stack, 2026-11-01).
+- [x] **Hand-copied defaults** in `guide/streaming.md` (the stream event values, Sunshine's port), `guide/automation.md`'s default table and `getting-started/quick-start.md`: name the event or flag and link to the generated defaults or CLI reference. Keep a table only where it explains meaning, not values.
+- [x] **`operations/troubleshooting.md`:** "typically 1–5" seconds for a woken TV is below the repo's own measurement (5–12 s). Drop the number.
+- [x] **`guide/gui-tray.md`:** use the tray's full labels ("Backlight Up (+10)", "Volume Up (+10)").
 
 ## 2. Retired D-Bus described as current
 
@@ -96,6 +96,10 @@ Rewrite in current terms:
 - [ ] Rewrite `scripts/bench_network.py` for the current log lines and keys (to be designed with the maintainer).
 - [ ] Run it as an unattended script logging to a file, since the TV goes dark.
 - [ ] Rewrite the doc with current numbers, dated, and its hardware observations re-checked. Link it from the book's Troubleshooting page, `CLAUDE.md` and `firmware-quirks.md` instead of quoting numbers.
+
+## Deviations
+
+- **Area 1:** the "What happens by default" table in Automation and the list in Quick Start stay. They describe behavior in the user's terms, which is what the pages are for, rather than copying config values. Streaming's defaults became plain-language behavior, and Sunshine's port links to the generated CLI reference.
 
 ## Verification
 

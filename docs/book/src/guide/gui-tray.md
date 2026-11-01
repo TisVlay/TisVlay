@@ -69,9 +69,9 @@ A TV that is on and reachable offers:
 - **Profiles**, with **User** and **System** submenus to pick each profile
 - **Unmanage** (or **Manage**)
 - **Input**, if the TV reports its inputs
-- **Backlight**, showing the current value, with **Up (+10)** and **Down (-10)**
+- **Backlight**, showing the current value, with **Backlight Up (+10)** and **Backlight Down (-10)**
 - **Screen Off** (or **Screen On**)
-- **Volume**, showing the current value, with **Up (+10)**, **Down (-10)**, and **Mute** (or **Unmute**)
+- **Volume**, showing the current value, with **Volume Up (+10)**, **Volume Down (-10)**, and **Mute** (or **Unmute**)
 
 Controls a TV doesn't support are left out. A TV that is off or unreachable, including an HDMI-CEC TV in standby, offers only **Power On (Wake)**, **Profiles**, and **Manage**/**Unmanage**. If the service isn't running the menu says **Daemon unavailable**, with no TVs added it says **No TVs configured**, and right after an upgrade it may say **Version mismatch** and name both releases: see [Troubleshooting](../operations/troubleshooting.md#version-mismatch).
 
