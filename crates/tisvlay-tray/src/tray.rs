@@ -187,6 +187,8 @@ impl Tray for TvTray {
         let total = self.view.tvs.len();
         if !self.view.daemon_alive {
             "TisVlay [daemon offline]".into()
+        } else if self.view.daemon_mismatch.is_some() {
+            "TisVlay [version mismatch]".into()
         } else if total == 0 {
             "TisVlay".into()
         } else {
@@ -217,6 +219,8 @@ impl Tray for TvTray {
         let scroll_target = self.effective_target();
         let description = if !self.view.daemon_alive {
             "Daemon not available".into()
+        } else if let Some(theirs) = &self.view.daemon_mismatch {
+            mismatch_text(theirs)
         } else {
             self.view
                 .tvs
@@ -309,6 +313,8 @@ impl Tray for TvTray {
         let mut items: Vec<MenuItem<Self>> = Vec::new();
         if !self.view.daemon_alive {
             items.push(disabled("Daemon unavailable"));
+        } else if let Some(theirs) = &self.view.daemon_mismatch {
+            items.push(disabled(&mismatch_text(theirs)));
         } else if self.view.tvs.is_empty() {
             items.push(disabled("No TVs configured"));
         } else {
@@ -712,6 +718,15 @@ fn status_line(label: &str, icon: &[&str]) -> MenuItem<TvTray> {
     .into()
 }
 
+/// What the menu and tooltip say about a daemon on release `theirs` this
+/// tray can't talk to. The GUI's banner names both releases too.
+pub fn mismatch_text(theirs: &str) -> String {
+    format!(
+        "Version mismatch: daemon {theirs}, tray {}. Log out and back in.",
+        tisvlay_protocol::VERSION
+    )
+}
+
 fn disabled(label: &str) -> MenuItem<TvTray> {
     StandardItem {
         label: label.into(),
@@ -1015,6 +1030,22 @@ mod tests {
         tray.scroll(120, ksni::Orientation::Horizontal);
         tray.scroll(0, ksni::Orientation::Vertical);
         assert!(rx.try_recv().is_err());
+    }
+
+    /// A daemon on a release this tray can't talk to hides its TVs behind
+    /// one disabled item naming both releases, in the menu and tooltip.
+    #[test]
+    fn a_mismatched_daemon_shows_the_releases_instead_of_tvs() {
+        let mut tray = tray_with(&[]);
+        tray.view.daemon_alive = true;
+        tray.view.daemon_mismatch = Some("99.0.0".into());
+        let text = mismatch_text("99.0.0");
+        assert!(text.contains("daemon 99.0.0") && text.contains(tisvlay_protocol::VERSION));
+        assert_eq!(tray.title(), "TisVlay [version mismatch]");
+        assert_eq!(tray.tool_tip().description, text);
+        let mut menu = tray.menu();
+        let item = find_standard_item(&mut menu, &text).expect("the mismatch item");
+        assert!(!item.enabled);
     }
 
     #[test]

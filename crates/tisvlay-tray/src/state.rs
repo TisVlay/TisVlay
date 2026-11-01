@@ -83,6 +83,9 @@ pub struct View {
     /// Whether the daemon's state has all arrived for its lifetime: until
     /// then, a TV changing state is hydration, not news.
     pub daemon_hydrated: bool,
+    /// The daemon's release, when this tray can't talk to it (an upgrade
+    /// without a re-login): its TVs are hidden, and the menu says so.
+    pub daemon_mismatch: Option<String>,
 }
 
 impl View {
@@ -111,6 +114,7 @@ impl View {
                 .collect(),
             daemon_alive: false,
             daemon_hydrated: false,
+            daemon_mismatch: None,
         }
     }
 
