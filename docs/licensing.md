@@ -88,6 +88,32 @@ When `just deny` fails on a new transitive dep:
 
 Both invocations pass `--locked --fail`: `--locked` keeps the bundle reproducible (fails on `Cargo.lock` drift), `--fail` exits non-zero if any crate's license can't be resolved (catches new weird-packaging deps at PR time).
 
+## SBOMs
+
+Releases carry one CycloneDX 1.5 JSON SBOM per shipped binary (`tisvlay`, `tisvlay-gui`) per architecture, as assets and as attestations ([packaging/README.md](../packaging/README.md) § Release signing and verification). `just sbom` is the one recipe that writes them.
+
+- **cargo-cyclonedx, limited to the binary.** Each SBOM covers that binary, its target and its features, with licenses and checksums: a probe listed 456 crates for `tisvlay` and 608 for `tisvlay-gui`, every one with a license.
+- **Checked against cargo-auditable.** cargo-cyclonedx works the dependency set out from cargo metadata, not from the build, so the packages are built with cargo-auditable, which embeds the set actually compiled, and `just sbom-check` fails if the two disagree. The embedded data also lets Trivy, grype, syft and `cargo audit bin` scan an installed binary.
+- **Assets and attestations both.** An asset serves anyone who wants the file (Dependency-Track, `grype sbom:…`); an attestation binds each SBOM to its binary and to its architecture's packages, which an asset alone can't do. Not inside the packages: [docs/ideas/in-package-sbom.md](ideas/in-package-sbom.md).
+- **Known gaps:** [docs/ideas/sbom-precision.md](ideas/sbom-precision.md) (feature unification across binaries, and Slint's elected license).
+
+### Tooling survey (2026-10-23)
+
+Downloads are crates.io's last-90-day counts on that date; the first two rows were measured on this repo, the rest come from each tool's docs.
+
+| Tool | Limited to what ships? | Licenses | Checksums | Last release | Downloads (90 d) |
+|---|---|---|---|---|---|
+| cargo-sbom (used before) | No: the whole workspace, or one package | Yes | None | 0.10.0, 2025-06-17 | 69k |
+| **cargo-cyclonedx** (chosen) | Yes: one binary, target and feature set | Yes | Yes, except workspace crates | 0.5.9, 2026-03-19 | 867k |
+| cargo-auditable, read by syft or Trivy | Exact: read from the compiled binary | No | No | 0.7.7, 2026-10-02 | 429k |
+| syft or Trivy on `Cargo.lock` | No: every target | No | not checked | 2026-10 | Go tools |
+| Cargo's `-Z sbom` | Exact: written by the build | No | not checked | nightly only | n/a |
+
+- cargo-sbom also rewrote Slint's `GPL-3.0-only` as the deprecated SPDX id `GPL-3.0`, and has no target, feature or binary options.
+- cargo-auditable's embedded data is the distro convention for Rust (Alpine, NixOS, openSUSE, Void, Chimera, Wolfi, some Ubuntu 26.04 packages), and every major scanner reads it, but it records no licenses or checksums, and syft can't add licenses for Rust.
+- Cargo's own SBOM support ([RFC 3553](https://github.com/rust-lang/rfcs/pull/3553)) is the long-term answer, still unstable when surveyed; its precursor files carry no licenses either, so licenses would still be joined in from cargo metadata. Switching means changing only `just sbom`.
+- dist (cargo-dist) bundles cargo-auditable, cargo-cyclonedx and GitHub attestations, but replacing the nfpm and zigbuild pipeline to get them wasn't worth it.
+
 ## References
 
 - [cargo-about CLI docs](https://embarkstudios.github.io/cargo-about/)

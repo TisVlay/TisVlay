@@ -1,6 +1,6 @@
 # Ship an SBOM file inside the distro packages
 
-Considered in the release supply-chain plan ([docs/plans/release-supply-chain.md](../plans/release-supply-chain.md)) and deferred. Releases carry one SBOM per binary per architecture, as release assets and as signed attestations, but the `.deb`, `.rpm` and `.pkg.tar.zst` themselves contain no SBOM file.
+Considered while building the signed release pipeline ([packaging/README.md](../../packaging/README.md#release-signing-and-verification)) and deferred. Releases carry one SBOM per binary per architecture, as release assets and as signed attestations, but the `.deb`, `.rpm` and `.pkg.tar.zst` themselves contain no SBOM file.
 
 ## Why it's deferred
 

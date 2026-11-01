@@ -16,17 +16,9 @@ Working space for in-progress plan docs — anything substantial enough that a m
 ## Active plans
 
 - [`mdbook-docs-site.md`](mdbook-docs-site.md) — user-facing documentation site built with mdBook and published on Read the Docs; CLI reference auto-generated from the clap tree, prose guide covering install, pairing, profiles, session automation, and troubleshooting.
-- [`cli-reword.md`](cli-reword.md) — CLI rework: one getter/setter grammar for TV attributes (`--toggle`, `--clear`, on/off values, silent writers), profile catalogs split by scope, per-TV profile assignment verbs, `vendor`/`discover --watch` consolidation, `add` removed; one breaking release, no aliases.
-- [`nix-binary-cache.md`](nix-binary-cache.md) — public Cachix cache filled by release-tag CI, with opt-in install docs so NixOS users can skip building from source.
-- [`release-supply-chain.md`](release-supply-chain.md) — verifiable releases: immutable GitHub releases, SLSA Build Level 3 provenance from a reusable build workflow, and per-binary CycloneDX SBOMs checked against cargo-auditable; v0.4.0 waits for it.
 
-When a plan is in flight, list it here with
-a one-line summary of the work it covers:
+When a plan is in flight, list it here with a one-line summary of the work it covers:
 
-> - [`example-feature.md`](example-feature.md) — short
->   description of what's landing and why a multi-commit PR
->   benefits from an upfront design doc.
+> - [`example-feature.md`](example-feature.md) — short description of what's landing and why a multi-commit PR benefits from an upfront design doc.
 
-Remove the entry when the plan retires and its file deletes
-(per Convention above). Git history is the archive — no need
-to maintain a retired-plans list here.
+Remove the entry when the plan retires and its file deletes (per Convention above). Git history is the archive — no need to maintain a retired-plans list here.

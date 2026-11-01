@@ -50,6 +50,8 @@ Release builds of the flake's package are in the public [tisvlay.cachix.org](htt
 - **When:** the `nix-cache` job in [`release.yml`](../../.github/workflows/release.yml) runs on every `v*` tag push, beside the distro package build. Nothing on `main` or in pull requests is pushed.
 - **Access:** the push token (`CACHIX_AUTH_TOKEN`) lives in the `cachix` environment, which only admits `v*` tags. The job builds from cache.nixos.org alone and never substitutes from this cache, so it only writes to it.
 - **Budget:** Cachix's free open-source plan holds 5 GB and evicts the least recently used paths past that. Paths already on cache.nixos.org aren't stored again.
+- **Why Cachix:** its open-source plan allows anonymous reads. FlakeHub Cache is paid-only and needs an authenticated client (`determinate-nixd login`), so only logged-in Determinate Nix users would get hits.
+- **Opt-in, by design:** a cache only hits when the user's derivation hashes to what CI built, which means the flake's package from *our* `flake.lock`. The module's default package builds against the host's nixpkgs and never matches, and it stays the default: it shares the system's libraries, the host's security updates reach it, and the GUI's OpenGL renderer stays paired with the system's Mesa. Users who want prebuilt binaries set `services.tisvlay.package` to the flake's package and accept a second set of runtime libraries (the book's Installation page has the steps).
 
 ## How the package builds
 

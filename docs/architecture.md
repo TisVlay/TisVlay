@@ -166,6 +166,8 @@ A client mirrors a service's cached keys, and follows the service's lifetime thr
 
 The daemon's mirror of the session's stream fact (`mirror_stream` in `tisvlay-daemon`) follows the same rule by hand, since no SDK client can serve it (the daemon never sees the user socket): it subscribes per lifetime of the session's `alive/session` token, and the token's loss clears the armed set. The other way round, the session holds a `DaemonClient` built on its own system link (`DaemonClient::with_session`), and re-reads its fleet from that mirror on the daemon's events.
 
+The CLI is a client without a mirror: each run reads what it needs from the caches (`list`, an attribute's bare getter) or streams samples (`watch`), then exits. Its grammar is one getter/setter verb per TV attribute (`<attribute> <tv> [<value>]`) and one command family per profile scope, since system and user profiles are different schemas; the user-facing rules are the book's Command Line page, and the reasons sit beside `ProfileScope` and the attribute readers in `tisvlay-cli`.
+
 The conformance suite in `crates/tisvlay/tests/it/conformance.rs` runs each mirror through the same cases, through a relay that cuts or stalls the link or drops one sample while the service keeps running ([testing.md](testing.md)).
 
 ## Deployment and authorization

@@ -183,6 +183,23 @@ release.yml
   - a required reviewer on the `crates-io` and `cachix` environments.
 - **Rehearsal:** a throwaway `vX.Y.Z-rc.N` tag runs the whole pipeline against a draft that's deleted, unpublished, along with its tag.
 
+### Why this shape
+
+- **A reusable workflow in this repository, for SLSA Build Level 3.** The signing certificate names `build-packages.yml`, which is what lets a verifier pin the signer. A builder in a separate org repository would isolate the build further, but it's a second repository to maintain and a ref to bump for every build change, with the same maintainer reviewing both. Level 2 (`actions/attest` in the build job) would let dependency code reach the signing token; OpenSSF's slsa-github-generator is the older Level 3 route, while GitHub's `attest` is first-party and verified with the same `gh` the docs use.
+- **Sigstore bundles as assets, not only attestations.** `gh attestation verify` looks attestations up through the GitHub API, so the verifier needs gh signed in; the bundles let anyone verify offline, they're locked in with the release, and they're what OpenSSF Scorecard's Signed-Releases check reads.
+- **The maintainer's approval to publish, not only a `v*` tag.** A second account has write access, and write access can push tags and publish releases, while the environments only check the tag's name. So `crates-io` and `cachix` need the maintainer's approval, and the tag ruleset limits `v*` tags to admins. release-plz's per-crate tags (`tisvlay-core-v…`) don't match `v*`.
+- **Not attested:** the Nix outputs (Cachix signs them, and Nix users verify with the cache key) and the `.crate` files (crates.io users don't check GitHub attestations, and trusted publishing already ties each publish to `release.yml`).
+- **The version bump runs locally.** `release-plz update` picks the version from the conventional-commit history and writes the CHANGELOGs, and the result merges as a normal PR. The release-PR workflow (`release-plz.yml`) stays off: a PR opened with the workflow's own token doesn't trigger CI, so it could never pass the checks `main` requires. Turning it on means giving it a GitHub App token.
+
+### Release checklist
+
+1. On a branch, run `release-plz update`, review the version and the CHANGELOGs, run `just package-check`, and merge it as a PR titled `chore(release): X.Y.Z`.
+2. Optionally rehearse: tag the merge commit `vX.Y.Z-rc.1`, watch the run, `just verify-release vX.Y.Z-rc.1` on the draft, then delete the draft and the tag.
+3. Tag the merge commit `vX.Y.Z` and run `just verify-release vX.Y.Z` on the draft.
+4. Check the cached Nix install against the draft: on a NixOS host set up as the book's Installation page says, `nixos-rebuild build` fetches `tisvlay` from tisvlay.cachix.org instead of building it (`nix path-info --store https://tisvlay.cachix.org <path>`).
+5. Publish the release, then run `just verify-release vX.Y.Z` again, which now includes `gh release verify`. Approve the `publish-crates` deployment once trusted publishing is set up ([docs/build.md](../docs/build.md) § First-publish checklist); until then the three crates are published by hand.
+6. On a machine with the new `.deb` installed, `gh attestation verify /usr/bin/tisvlay` with the signer pins from the book's Security & Supply Chain page.
+
 ## Shell completions
 
 The `tisvlay` CLI ships tab-completion for bash, zsh, and fish, present after install with no user setup. We use clap_complete's *dynamic* engine rather than static generators: the file dropped into each shell's autoload dir is a small bootstrap that calls back into the `tisvlay` binary at `<TAB>`, so completion covers subcommands, flags, and **live values** — TV UUIDs, profile UUIDs, and vendor ids, queried from the daemon and described by name — the same model Docker uses for container-name completion.
