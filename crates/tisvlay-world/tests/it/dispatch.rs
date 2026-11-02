@@ -155,6 +155,41 @@ async fn screen_off_noop_gives_up_with_event() {
     );
 }
 
+/// A `screen_off` to an LG still in `ActiveStandby` after a remote-off,
+/// whose firmware refuses the blank: the panel is already dark, so the
+/// verify is satisfied at once, with no retry, no wake and no failure.
+#[tokio::test]
+async fn screen_off_accepts_active_standby_when_the_blank_is_refused() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://dim").await;
+    handle.inject_power_state("mock://dim", PowerState::ActiveStandby);
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "activestandby")
+    })
+    .await;
+    handle.set_screen_off_noop("mock://dim", true);
+
+    let t0 = Instant::now();
+    client.tick(t0);
+    client.command(Command::SetScreen {
+        id,
+        on: false,
+        restore_input: false,
+        reply: Some(Reply::new(32)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 32)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.tick(t0 + Duration::from_millis(400));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.tick(t0 + Duration::from_millis(800));
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "event/dispatch-failed").is_some() || link_connected(e, false)
+    })
+    .await;
+    assert_eq!(handle.screen_off_call_count("mock://dim"), 1, "no retry");
+    assert_eq!(handle.connect_call_count("mock://dim"), 1, "no wake");
+}
+
 /// CEC shape: standby-reachable + screen-via-power. Screen actions become
 /// power actions, the link never drops (Connected ≠ power), and wake
 /// happens in place on the live handle.
