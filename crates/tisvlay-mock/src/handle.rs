@@ -321,6 +321,19 @@ impl MockHandle {
         }
     }
 
+    /// Make an in-band `power_on` go unheeded: it returns `Ok` and the TV
+    /// stays off, as a TV that ignores the wake frame does. Pass
+    /// `enabled = false` to restore the default wake in place.
+    #[instrument(skip(self))]
+    pub fn set_power_on_ignored(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.power_on_ignored.insert(address.to_string());
+        } else {
+            state.power_on_ignored.remove(address);
+        }
+    }
+
     /// Override the `PowerState` a freshly-constructed
     /// `MockConnection` initializes with. Takes precedence over
     /// `MockVendorConfig::initial_power_state` and survives across

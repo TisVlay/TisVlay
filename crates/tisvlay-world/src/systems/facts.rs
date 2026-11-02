@@ -267,6 +267,26 @@ pub(super) fn apply_backend_events(
                     redial(&mut e, true);
                 }
             }
+            BackendEvent::PowerOnDone { abandoned } => {
+                // The in-place wake's verdict, from the state the task's
+                // refresh just cached; an abandoned one failed outright.
+                // A success publishes nothing, so a CEC screen-on (power
+                // emulated) doesn't announce itself. A failure drops the
+                // intents that would otherwise act on an off TV: a riding
+                // screen-on would escalate into a second in-place wake.
+                let failed = *abandoned
+                    || writes
+                        .power
+                        .get(entity)
+                        .is_ok_and(|power| wake_failed(power.state));
+                if failed {
+                    tracing::info!(%tv, abandoned, "the in-place wake didn't land");
+                    publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
+                    let mut e = commands.entity(entity);
+                    drop_screen_on_intent(&mut e);
+                    e.remove::<DesiredInput>();
+                }
+            }
             BackendEvent::ConnectFailed { reason } => {
                 // A freshly paired TV fails its pairing on the first
                 // dial failure — no retries, root parity: the terminal

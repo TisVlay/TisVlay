@@ -54,4 +54,4 @@ Each step carries its own doc and comment updates, so the tree's docs match its 
 
 ## Deviations
 
-None yet.
+- **Step 4: an in-place wake's input restore isn't held for the wake.** For a TV woken in place the link is already up, so `reconcile_input` sends its switch at once, and the connection task runs it after the wake (commands run in order). After a failed in-place wake, that one switch still reaches the off TV; the `PowerOnDone` verdict drops `DesiredInput`, so nothing retries. No backend wakes in place with `INPUT` today (CEC sheds the restore by capability), so holding the restore until an in-place wake lands, which needs a marker the reconcile can wait on, is noted for the retirement step's `docs/ideas/` entry rather than built. The step's world test covers `failed` and the kept link, not the input.

@@ -666,6 +666,157 @@ async fn a_refused_wake_drops_its_input_restore() {
     .await;
 }
 
+/// Add a standby-reachable mock TV (the CEC shape: its link survives
+/// standby, so a power-on wakes it in place) and put it in standby.
+async fn add_standby_reachable_tv(
+    effects: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::WireEffect>,
+    client: &tisvlay_world::WorldClient,
+    handle: &tisvlay_mock::MockHandle,
+    address: &str,
+    configure: impl FnOnce(&mut toml::value::Table, &mut tisvlay_world::TvRecord),
+) -> Uuid {
+    let id = Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert("address".into(), toml::Value::String(address.into()));
+    table.insert("reachable_in_standby".into(), toml::Value::Boolean(true));
+    let mut record = tv_record(id, "InPlace", toml::value::Table::new().into());
+    configure(&mut table, &mut record);
+    record.config = table.into();
+    client.command(Command::AddTv {
+        record: Box::new(record),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(effects, |e| link_connected(e, true)).await;
+    handle.inject_power_state(address, PowerState::Standby);
+    collect_until(effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "standby")
+    })
+    .await;
+    id
+}
+
+fn phase_published(effect: &tisvlay_world::WireEffect, phase: &str) -> bool {
+    is_publish_on(effect, "progress/power").is_some_and(|p| p["phase"] == phase)
+}
+
+/// An in-place power-on the TV ignores ends `failed` and keeps the link
+/// (the TV is reachable in standby).
+#[tokio::test]
+async fn an_ignored_in_place_power_on_reports_failed_and_keeps_the_link() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id =
+        add_standby_reachable_tv(&mut effects, &client, &handle, "mock://deaf", |_, _| {}).await;
+    handle.set_power_on_ignored("mock://deaf", true);
+
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(90)),
+    });
+    collect_until(&mut effects, |e| phase_published(e, "failed")).await;
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, false) || is_publish_on(e, "event/dispatch-failed").is_some()
+    })
+    .await;
+}
+
+/// A screen-on that wakes a standby TV in place and fails drops its
+/// intent: the verify would otherwise escalate into a second wake.
+#[tokio::test]
+async fn a_failed_in_place_wake_drops_its_screen_on_intent() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_standby_reachable_tv(
+        &mut effects,
+        &client,
+        &handle,
+        "mock://deaf-screen",
+        |_, _| {},
+    )
+    .await;
+    handle.set_power_on_ignored("mock://deaf-screen", true);
+
+    let t0 = Instant::now();
+    client.tick(t0);
+    client.command(Command::SetScreen {
+        id,
+        on: true,
+        restore_input: false,
+        reply: Some(Reply::new(91)),
+    });
+    collect_until(&mut effects, |e| phase_published(e, "failed")).await;
+    for step in 1..=6 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.tick(t0 + Duration::from_millis(400 * step));
+    }
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        phase_published(e, "failed") || is_publish_on(e, "event/dispatch-failed").is_some()
+    })
+    .await;
+}
+
+/// An in-place power-on that lands publishes nothing: a CEC screen-on
+/// (power emulated) mustn't announce itself.
+#[tokio::test]
+async fn a_landed_in_place_power_on_publishes_no_phase() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id =
+        add_standby_reachable_tv(&mut effects, &client, &handle, "mock://heard", |_, _| {}).await;
+
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(92)),
+    });
+    collect_until(&mut effects, |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "progress/power").is_some()
+    })
+    .await;
+}
+
+/// A power-off sent while a slow in-place wake runs doesn't wait for it:
+/// it abandons the wake (reported `failed`) and reaches the TV at once,
+/// as a sleep's power-off must within logind's inhibit delay.
+#[tokio::test]
+async fn a_power_off_interrupts_a_slow_in_place_wake() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_standby_reachable_tv(&mut effects, &client, &handle, "mock://slow", |table, _| {
+        table.insert("power_on_delay_ms".into(), toml::Value::Integer(3000));
+    })
+    .await;
+
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(93)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 93)).await;
+    let sent = Instant::now();
+    client.command(Command::PowerOff {
+        id,
+        reply: Some(Reply::new(94)),
+    });
+    let (mut acked, mut abandoned) = (false, false);
+    collect_until(&mut effects, |e| {
+        acked |= reply_to(e, 94);
+        abandoned |= phase_published(e, "failed");
+        acked && abandoned
+    })
+    .await;
+    assert!(
+        sent.elapsed() < Duration::from_millis(1500),
+        "the power-off waited for the wake: {:?}",
+        sent.elapsed()
+    );
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
 /// An in-place power-on that meets a closing link (a CEC adapter
 /// unplugged under it) isn't lost behind the rpc's OK: it re-arms as a
 /// wake dial, which reports on `progress/power` like any other.

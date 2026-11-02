@@ -8,7 +8,7 @@ If the wizard's scan comes up empty but you know the TV is on, the cause is almo
 
 ## The TV won't power on
 
-An HDMI-CEC TV wakes over the cable. Check that it's on the adapter's input and that the service can reach the adapter ([Installation](../getting-started/installation.md#hdmi-cec-backend-optional)).
+An HDMI-CEC TV wakes over the cable. Check that it's on the adapter's input and that the service can reach the adapter ([Installation](../getting-started/installation.md#hdmi-cec-backend-optional)). TisVlay re-sends the wake for a few seconds; if the TV still reports standby, the text beside **Power on** says *Wake failed*.
 
 A network TV wakes by **Wake-on-LAN**. On the TV's page, the text beside **Power on** shows how far the wake got (*Sending wake-up…*, *Connecting…*, *Waiting for the network…*, or *Wake failed*). Wake-on-LAN needs all of these:
 
@@ -17,7 +17,7 @@ A network TV wakes by **Wake-on-LAN**. On the TV's page, the text beside **Power
 - **Wake over the network enabled on the TV.** On LG, that's **"TV On via Wi-Fi"** (or "Mobile TV On") in its network settings.
 - **The TV and this computer on the same network.** Wake-on-LAN packets are broadcasts and don't cross routers, unless your router relays them onto the TV's subnet or VLAN. See [TVs on an Isolated Network](./isolated-networks.md).
 
-A woken TV takes several seconds to boot before it accepts commands, longer from deep standby; TisVlay keeps retrying. TVs may ignore Wake-on-LAN during a pixel-refresh cycle.
+A woken TV takes several seconds to boot before it accepts commands, longer from deep standby; TisVlay keeps retrying. TVs may ignore Wake-on-LAN during a pixel-refresh cycle, or for a moment after being switched off with their remote; TisVlay keeps re-sending for a few seconds, then reports *Wake failed* if the TV still reads off.
 
 <details>
 <summary>From a terminal</summary>

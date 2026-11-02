@@ -554,6 +554,14 @@ pub enum BackendEvent {
     /// had acked. Sent ahead of the task's `Disconnected`, so the world
     /// re-arms it as a wake dial before the link goes.
     PowerOnLost,
+    /// An in-place power-on ran to its end (or an off-going command
+    /// abandoned it), after the post-command state refresh: the world
+    /// judges the wake from the power state that refresh cached, or
+    /// reports an `abandoned` one failed outright.
+    PowerOnDone {
+        /// A `PowerOff` or `ScreenOff` interrupted the wake.
+        abandoned: bool,
+    },
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`,
     /// judged from the connection's power snapshot).

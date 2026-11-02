@@ -389,6 +389,8 @@ pub enum PowerPhase {
     Connected,
     /// The wake didn't land: the dial ran out of attempts, or it connected
     /// to a TV that still reported an off state, whose link then stays up.
+    /// It's also the only phase a power-on over a live link publishes,
+    /// when the TV stayed off or an off-going command interrupted it.
     Failed,
 }
 
