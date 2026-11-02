@@ -2,27 +2,92 @@
 //!
 //! [`LgConnector`] turns a vendor config into a live
 //! [`LgConnection`](crate::connection::LgConnection): a single-attempt
-//! `connect`, the WoL `wake_and_connect` retry loop, the pairing
-//! handshake, and the persisted-config schema.
+//! `connect`, the WoL `wake_and_connect` (its loop is
+//! [`wake`](crate::wake)), the pairing handshake, and the persisted-config
+//! schema.
 
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
 use crate::connection::LgConnection;
+use crate::wake::{Poll, WakeSteps};
 use async_trait::async_trait;
-use std::time::Duration;
 use tisvlay_core::{
     Credentials, Error, MacAddress, PairingCommand, PairingSession, PairingState, Result,
     TvConnection, TvConnector, VendorConfig,
 };
 use tracing::{debug, info, warn};
 
-/// Maximum number of connection attempts after sending WoL.
-const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 60;
+/// The real steps of the wake loop: dial and poll the raw client, before
+/// it's wrapped, so `LgConnection`'s reconnect-on-stale retry never runs
+/// underneath a poll.
+struct LiveWake<'a> {
+    config: &'a LgVendorConfig,
+    mac: Option<MacAddress>,
+}
 
-/// Delay between connection retry attempts during wake-and-connect.
-/// Each attempt is cheap (~50ms TCP connect + close frame), so we
-/// poll aggressively to find the earliest moment the TV is ready.
-const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+impl WakeSteps for LiveWake<'_> {
+    type Link = WebOsClient;
+
+    async fn connect(&mut self) -> Result<WebOsClient> {
+        dial(self.config).await
+    }
+
+    async fn poll(&mut self, client: &mut WebOsClient, until: tokio::time::Instant) -> Poll {
+        if !client.is_connected() {
+            return Poll::LinkLost;
+        }
+        match tokio::time::timeout_at(until, client.get_power_state()).await {
+            // No answer in time: a waking TV doesn't answer the power query
+            // until it's on. Dropping the request is safe: the transport
+            // discards a late reply.
+            Err(_) | Ok(Err(Error::RequestTimeout)) => Poll::NotYet,
+            Ok(Ok(tisvlay_core::PowerState::Unknown)) => Poll::CantTell,
+            Ok(Ok(state)) if state.is_awake() => Poll::On,
+            Ok(Ok(_)) => Poll::NotYet,
+            Ok(Err(Error::ConnectionClosed | Error::Connection(_) | Error::Io(_))) => {
+                Poll::LinkLost
+            }
+            Ok(Err(error)) => {
+                debug!(ip = %self.config.ip, %error, "the LG TV can't report its power state");
+                Poll::CantTell
+            }
+        }
+    }
+
+    fn resend(&mut self) {
+        if let Some(mac) = &self.mac {
+            tisvlay_core::wol::wake_best_effort(mac);
+        }
+    }
+}
+
+/// One fail-fast dial and registration.
+async fn dial(config: &LgVendorConfig) -> Result<WebOsClient> {
+    debug!(
+        ip = %config.ip,
+        has_key = config.client_key.is_some(),
+        scheme = %config.scheme,
+        "Connecting to LG TV"
+    );
+    WebOsClient::connect_with_scheme(&config.ip, config.scheme, config.client_key.clone()).await
+}
+
+/// Wrap a registered client, after a best-effort identity fetch that lets
+/// the daemon fill the identity payload's hardware fields (`meta/identity`)
+/// on the first registration, before any user interaction.
+async fn into_connection(mut client: WebOsClient, config: LgVendorConfig) -> Box<dyn TvConnection> {
+    let hardware_id = match client.get_hardware_id().await {
+        Ok(id) => {
+            debug!(ip = %config.ip, ?id, "fetched LG hardware identity");
+            Some(id)
+        }
+        Err(e) => {
+            debug!(ip = %config.ip, error = %e, "getSystemInfo failed");
+            None
+        }
+    };
+    Box::new(LgConnection::new(client, config, hardware_id))
+}
 
 /// Factory for creating LG WebOS connections.
 #[derive(Debug)]
@@ -50,37 +115,10 @@ impl TvConnector for LgConnector {
 
     async fn connect(&self, vendor_config: &VendorConfig) -> Result<Box<dyn TvConnection>> {
         let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
-
-        debug!(
-            ip = %config.ip,
-            has_key = config.client_key.is_some(),
-            scheme = %config.scheme,
-            "Connecting to LG TV"
-        );
-
-        // Single attempt — fail-fast contract. Stale-session
-        // takeover and other "TV not ready yet" cases are handled
-        // by `wake_and_connect`'s outer retry loop, which is the
-        // only retry layer.
-        let mut client =
-            WebOsClient::connect_with_scheme(&config.ip, config.scheme, config.client_key.clone())
-                .await?;
-
-        // Best-effort identity fetch right after connect. Lets the
-        // daemon fill the identity payload's hardware fields
-        // (`meta/identity`) on the first registration, before any
-        // user interaction.
-        let hardware_id = match client.get_hardware_id().await {
-            Ok(id) => {
-                debug!(ip = %config.ip, ?id, "fetched LG hardware identity");
-                Some(id)
-            }
-            Err(e) => {
-                debug!(ip = %config.ip, error = %e, "getSystemInfo failed");
-                None
-            }
-        };
-        Ok(Box::new(LgConnection::new(client, config, hardware_id)))
+        // Single attempt — fail-fast contract. A TV that isn't ready yet is
+        // `wake_and_connect`'s to wait for.
+        let client = dial(&config).await?;
+        Ok(into_connection(client, config).await)
     }
 
     fn supports_wake(&self, vendor_config: &VendorConfig) -> bool {
@@ -105,38 +143,22 @@ impl TvConnector for LgConnector {
         vendor_config: &VendorConfig,
     ) -> Result<Box<dyn TvConnection>> {
         self.wake(vendor_config).await?;
-
         let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
-        let mut last_err = None;
-
-        for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
-            // Resend WoL before retrying — earlier packets may have been
-            // lost if the desktop network wasn't up after system resume.
-            if attempt > 1
-                && let Some(ref mac) = config.mac
-                && let Ok(mac_addr) = MacAddress::parse(mac)
-            {
-                tisvlay_core::wol::wake_best_effort(&mac_addr);
-            }
-
-            match self.connect(vendor_config).await {
-                Ok(conn) => {
-                    info!(ip = %config.ip, attempt, "LG TV online after wake");
-                    return Ok(conn);
-                }
-                Err(e) => {
-                    debug!(ip = %config.ip, attempt, error = %e, "LG TV not ready yet");
-                    last_err = Some(e);
-                    tokio::time::sleep(WAKE_CONNECT_RETRY_INTERVAL).await;
-                }
-            }
+        let mac = config
+            .mac
+            .as_deref()
+            .and_then(|mac| MacAddress::parse(mac).ok());
+        let woke = crate::wake::wake_and_confirm(&mut LiveWake {
+            config: &config,
+            mac,
+        })
+        .await?;
+        if woke.confirmed {
+            info!(ip = %config.ip, "LG TV online after wake");
+        } else {
+            info!(ip = %config.ip, "LG TV answered but didn't report on after the wake");
         }
-
-        Err(last_err.unwrap_or_else(|| Error::Backend {
-            vendor: "lg".into(),
-            message: format!("LG TV at {} did not come online after wake", config.ip),
-            source: None,
-        }))
+        Ok(into_connection(woke.link, config).await)
     }
 
     fn start_pairing(&self, vendor_config: &VendorConfig) -> Result<PairingSession> {

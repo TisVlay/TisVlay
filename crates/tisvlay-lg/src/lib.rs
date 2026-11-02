@@ -11,6 +11,7 @@ mod connector;
 mod endpoints;
 mod protocol;
 mod transport;
+mod wake;
 
 #[cfg(feature = "discovery")]
 mod discovery;

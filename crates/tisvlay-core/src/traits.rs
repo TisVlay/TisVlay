@@ -604,6 +604,14 @@ pub trait TvConnector: Send + Sync {
     /// count, wake packet resends, readiness probes, etc. The daemon does
     /// not provide any timing parameters — each backend knows its own
     /// transport characteristics.
+    ///
+    /// A wake is done when the device has acted on it, not when the link
+    /// opens: once connected, keep resending the wake and probing within a
+    /// short window until the device reports an awake state, then return
+    /// the connection whatever it reports. The daemon judges the wake from
+    /// that connection's power state, failing it only on an off report, so
+    /// a device that can't report one isn't held to it. Return an error
+    /// only when no connection could be made.
     async fn wake_and_connect(&self, vendor_config: &VendorConfig)
     -> Result<Box<dyn TvConnection>>;
 
