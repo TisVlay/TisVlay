@@ -641,6 +641,14 @@ mod fake {
             }
         }
 
+        /// A TV that drops the first `ignored` Image View On sends before
+        /// it wakes (`usize::MAX`: one that never does).
+        #[must_use]
+        pub fn with_ignored_wakes(self, ignored: usize) -> Self {
+            *self.ignore_wakes.lock() = ignored;
+            self
+        }
+
         /// An adapter without `CEC_CAP_RC`.
         #[must_use]
         pub fn without_rc(mut self) -> Self {

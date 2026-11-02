@@ -292,8 +292,14 @@ pub trait TvConnection: Send + Sync {
     /// while the TV sleeps, so the daemon can wake it in place instead of
     /// tearing the connection down and opening a fresh link via
     /// [`TvConnector::wake_and_connect`] — the teardown would flap
-    /// `Connected` (a spurious disconnect on a power-*on*). Default: not
-    /// supported, so those callers fall back to `wake_and_connect`.
+    /// `Connected` (a spurious disconnect on a power-*on*). The contract
+    /// matches `wake_and_connect`'s: keep re-sending and probing within a
+    /// short window until the device reports an awake state, then return
+    /// `Ok` whatever it reports, and leave the verdict to the daemon (it
+    /// judges the wake from the power state the connection reads next).
+    /// Return an error only for a link problem. Default: not supported,
+    /// which a backend that isn't reachable in standby never needs: the
+    /// daemon wakes such a TV through `wake_and_connect`.
     async fn power_on(&mut self) -> Result<()> {
         Err(Error::not_supported("power_on", Capabilities::POWER))
     }

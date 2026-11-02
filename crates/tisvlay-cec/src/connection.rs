@@ -1,8 +1,9 @@
 //! `CecConnection` — a live CEC control handle for one TV.
 //!
-//! Surface: power (report state, turn off — power-on is the connector's
-//! wake path, since the bus reaches the TV even in standby) and
-//! active-source input switching (`Set Stream Path`). Everything else
+//! Surface: power (report state, turn off, and wake in place over the
+//! live link, since the bus reaches the TV even in standby; the loop is
+//! [`confirm`](crate::confirm)) and active-source input switching
+//! (`Set Stream Path`). Everything else
 //! stays at the trait's `NotSupported` default.
 
 // External-input profile: this module handles CEC events from the TV, so
@@ -459,12 +460,22 @@ impl TvConnection for CecConnection {
     }
 
     async fn power_on(&mut self) -> Result<()> {
-        // Wake in place: the connection is still live in standby, so send
-        // Image View On on the existing link. This lets the daemon wake the
-        // TV without tearing the connection down and re-opening it — the
-        // teardown would flap `Connected` (a spurious disconnect on a
-        // power-*on*). One Touch Play is idempotent for an already-on TV.
-        self.link.power_on().await
+        // Wake in place: the connection is still live in standby, so wake
+        // the TV over the existing link instead of tearing it down and
+        // re-opening it, which would flap `Connected` (a spurious
+        // disconnect on a power-*on*). The loop re-sends Image View On on
+        // the held link until the TV reports on or its window ends; the
+        // daemon judges the wake from the state it leaves.
+        let woke = crate::confirm::wake_until_on(
+            &mut self.link,
+            crate::confirm::IN_PLACE_WINDOW,
+            crate::confirm::OnSendError::Resend,
+        )
+        .await?;
+        if !woke {
+            tracing::info!(device = %self.device, "the TV didn't report on after the wake");
+        }
+        Ok(())
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
@@ -888,7 +899,7 @@ mod tests {
         assert!(conn.brand().is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn power_on_wakes_in_place_on_the_existing_link() {
         // A standby-but-connected TV: power_on sends Image View On on the
         // existing link (no reconnect) and the TV comes up, still connected.
@@ -902,6 +913,44 @@ mod tests {
             conn.get_power_state().await.expect("power state"),
             PowerState::Active,
             "Image View On woke the TV on the existing link",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn power_on_resends_in_place_until_the_tv_wakes() {
+        // The TV drops the first two Image View On frames: the in-place wake
+        // keeps re-sending on the held link and the third lands.
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::Standby).with_ignored_wakes(2)),
+            Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby)),
+            "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
+        );
+        conn.power_on().await.expect("power on");
+        assert_eq!(
+            conn.get_power_state().await.expect("power state"),
+            PowerState::Active
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn power_on_returns_when_its_window_ends_with_the_tv_still_off() {
+        // A TV that never takes the frame: the wake gives up when its window
+        // ends and reports success at the link level, leaving the verdict
+        // (the TV is still in standby) to the daemon.
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::Standby).with_ignored_wakes(usize::MAX)),
+            Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby)),
+            "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
+        );
+        let t0 = tokio::time::Instant::now();
+        conn.power_on().await.expect("power on");
+        assert!(t0.elapsed() >= crate::confirm::IN_PLACE_WINDOW);
+        assert!(conn.is_connected());
+        assert_eq!(
+            conn.get_power_state().await.expect("power state"),
+            PowerState::Standby
         );
     }
 
