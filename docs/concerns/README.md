@@ -7,7 +7,6 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 - [Zenoh idiom audit against zenoh 1.9.0 (2026-07-12; triage done, its "don't fix these" list still applies)](zenoh-idiom-audit.md)
 - [A poll-only network backend can't confirm its screen actions (no such backend yet)](poll-only-screen-verify.md)
 - [MAC enrichment doesn't check the address's IP family](enrich-no-family-check.md)
-- [A power-on isn't verified, so a refused wake leaves the TV dark without a word](power-on-unverified.md)
 
 ## Testing
 

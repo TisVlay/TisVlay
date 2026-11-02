@@ -22,8 +22,6 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 
 ## Active plans
 
-- [`wake-confirms-power.md`](wake-confirms-power.md) — backends keep trying a wake within a short window, the world judges the outcome from the power state, and a failed in-place power-on is reported.
-
 When a plan is in flight, list it here with a one-line summary of the work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short description of what's landing and why a multi-commit PR benefits from an upfront design doc.
