@@ -14,7 +14,6 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 - [Intermittent test failures (a session screencast test, a GUI callbacks test)](intermittent-tests.md)
 - [Stream detectors not yet field-validated (krdp, RustDesk, PipeWire, logind)](stream-detector-validation.md)
 - [An LG C3 may ignore CEC `<Standby>` just after waking (unconfirmed)](cec-standby-ignored-after-wake.md)
-- [Two regression tests didn't survive the 0.3.0 rewrite (CEC identity after a dongle swap; LG `screen_off` against a refused wake)](lost-regression-tests.md)
 
 ## Build & CI
 

@@ -82,7 +82,7 @@ The graceful fallback declares success when the panel is demonstrably off, even 
 
 **Regression coverage.**
 
-- The pre-0.3.0 test for this (`screen_off_accepts_active_standby_when_wake_refuses`) didn't survive the rewrite ([concerns/lost-regression-tests.md](../concerns/lost-regression-tests.md)). `crates/tisvlay-world/tests/it/dispatch.rs` pins the neighboring case, a TV that keeps ACKing dark: `escalation_reasserts_on_reconnect_then_gives_up`.
+- Since the 0.3.0 rewrite a `screen_off` never pre-flights a wake: `ActiveStandby` already reads as screen-off, so the verify is satisfied at once. `crates/tisvlay-world/tests/it/dispatch.rs` pins that, for a TV whose firmware refuses the blank (`screen_off_accepts_active_standby_when_the_blank_is_refused`), and the neighboring case, a TV that keeps ACKing dark (`escalation_reasserts_on_reconnect_then_gives_up`).
 - Live-hardware smoke remains the secondary check; the info log `"screen_off: TV did not settle into Active after power_on; accepting wake-preflight substate as panel-off (LG firmware quirk)"` is the on-device verification signal.
 
 ## Field-test verification trace (post-fix)
