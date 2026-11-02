@@ -3,7 +3,9 @@
 # Exercises the module end-to-end: imports it, enables the service,
 # and verifies the system daemon reaches `active (running)`, exposes
 # its zenoh socket with the group-gated permissions, and answers the
-# CLI's liveliness/vendor probes.
+# CLI's liveliness/vendor probes. It runs the package it's given, which
+# the flake passes as its own: the `dist` build tisvlay.cachix.org
+# serves, so the test boots the binaries users install.
 #
 # User services (`tisvlay-session`, `tisvlay-tray`) are not auto-started
 # because their `wantedBy = graphical-session.target` requires a real
@@ -16,17 +18,24 @@
 
 {
   pkgs ? import <nixpkgs> { },
+  package ? null,
 }:
 
 pkgs.testers.runNixOSTest {
   name = "tisvlay";
 
   nodes.machine =
-    { config, pkgs, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     {
       imports = [ ../../packaging/nix/module.nix ];
 
       services.tisvlay.enable = true;
+      services.tisvlay.package = lib.mkIf (package != null) package;
       # Socket-permission access model under test: alice is granted,
       # bob is not.
       services.tisvlay.users = [ "alice" ];

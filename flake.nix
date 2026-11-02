@@ -71,9 +71,12 @@
         };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
+        # on the `dist` package above, the build tisvlay.cachix.org serves,
         # and asserts the module's end-to-end behavior. Run via
         # `nix build .#checks.${system}.vm` or `nix flake check`.
-        checks.vm = pkgs.callPackage ./packaging/nix/test.nix { };
+        checks.vm = pkgs.callPackage ./packaging/nix/test.nix {
+          package = self.packages.${system}.tisvlay;
+        };
 
         # Cargo unit + integration suite in the Nix sandbox. The package
         # ships with doCheck = false (most consumers build from source and
