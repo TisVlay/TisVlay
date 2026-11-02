@@ -37,7 +37,7 @@ Medians, with the range in brackets.
 
 The TV's network stays up in standby: within half a second of the WoL it accepts the WebSocket and closes it at once, until its SSAP service is ready. It registers about 1 s after a short standby and about 4 s after the long one, which then spent another 2.7 s answering the hardware-identity query. Between registering and *connected* the daemon waits for the TV's first power-state report, which comes once the TV reports `Active`: 3–4 s after registering, in both cases.
 
-A CEC power cycle, on the same panel, reads on in 0.59 s (0.58–0.59, n=3). A CEC link stays connected through standby, so power-on is an Image View On over the live link, and the getter reads on as soon as the TV reports its new power status. When the panel itself lit wasn't measured. This predates the in-place wake's re-send-and-poll loop, which now holds the power-on until the TV reports on; it polls early, so a TV that takes the first frame should read on about as fast.
+A CEC power cycle, on the same panel, reads on in 0.59 s (0.58–0.59, n=3). A CEC link stays connected through standby, so power-on is an Image View On over the live link, and the getter reads on as soon as the TV reports its new power status. When the panel itself lit wasn't measured. These runs predate the in-place wake's re-send-and-poll loop, which polls from 300 ms, so a TV that takes the first frame should read on about as fast.
 
 ### PC sleep
 

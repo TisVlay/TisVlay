@@ -80,7 +80,7 @@ self.is_screen_on = !matches!(
 
 The graceful fallback declares success when the panel is demonstrably off, even if LG's substate isn't the literal `ScreenOff` we'd prefer. The two substates differ on the front-panel red LED (on for `ActiveStandby`, off for `ScreenOff`) but the panel is dark in both, and both leave the TV reachable for the next command — functionally indistinguishable from the screen-off-intent perspective.
 
-**Today.** LG's `wake_and_connect` resends WoL and polls the power state for a confirm window after each connect (`crates/tisvlay-lg/src/wake.rs`), which outlasts this latch, and the world reports a wake that still reads off when the window ends as `failed`, keeping the link.
+**The wake path.** LG's `wake_and_connect` resends WoL and polls the power state for a confirm window after each connect (`crates/tisvlay-lg/src/wake.rs`), which outlasts this latch, and the world reports a wake that still reads off when the window ends as `failed`, keeping the link.
 
 **Regression coverage.**
 
