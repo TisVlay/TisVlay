@@ -28,7 +28,23 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # package with doCheck on.
   checkType = "release";
 
-  src = lib.cleanSource ../../.;
+  # Only what the build and its tests read, so the source hash, and with it
+  # the output path tisvlay.cachix.org serves, is the same however the repo
+  # was fetched: a GitHub tarball carries the docs' Git LFS images, a git
+  # checkout their pointer files.
+  src = lib.fileset.toSource {
+    root = ../..;
+    fileset = lib.fileset.intersection (lib.fileset.fromSource (lib.cleanSource ../..)) (
+      lib.fileset.unions [
+        ../../Cargo.toml
+        ../../Cargo.lock
+        ../../.cargo
+        ../../crates
+        ../../packaging/licensing
+        ../../packaging/systemd
+      ]
+    );
+  };
 
   cargoLock = {
     lockFile = ../../Cargo.lock;
@@ -52,7 +68,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeBuildInputs = [
     # build.rs (tisvlay-gui-app) and preBuild both invoke cargo-about for
     # the same THIRD-PARTY-LICENSES.html — embedded in the binary and
-    # installed to share/doc/ respectively. At least 0.9.1, or the Slint
+    # installed to share/doc/ respectively. Pinned to 0.9.1, or the Slint
     # crates' license text goes missing (./cargo-about.nix).
     (callPackage ./cargo-about.nix { inherit cargo-about; })
     pkg-config
