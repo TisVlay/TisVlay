@@ -176,7 +176,18 @@ pub(super) fn apply_backend_events(
                     );
                 }
                 if wake_dial {
-                    publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Connected);
+                    // The backend's wake tried within its window and handed
+                    // over the link either way: the connect snapshot says
+                    // whether the TV acted on it. A refused wake keeps the
+                    // link (the TV is reachable, just off) and drops the
+                    // input restore, which would only nag an off TV.
+                    if wake_failed(state.power_state) {
+                        tracing::info!(%tv, power = ?state.power_state, "the TV didn't act on the wake");
+                        commands.entity(entity).remove::<DesiredInput>();
+                        publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
+                    } else {
+                        publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Connected);
+                    }
                 }
                 // A screen intent that survived the dial (elevation or
                 // wake escalation) re-asserts over the fresh link:
@@ -382,6 +393,13 @@ pub(super) fn apply_backend_events(
             },
         }
     }
+}
+
+/// Whether a wake failed, judged from the power state it left: only a
+/// positive off report fails it. A warming-up TV has acted on the wake,
+/// and one that can't report its power state gets no false failure.
+pub(super) fn wake_failed(power: tisvlay_core::PowerState) -> bool {
+    power.class() == tisvlay_core::PowerClass::Off
 }
 
 pub(super) fn publish_power_phase(

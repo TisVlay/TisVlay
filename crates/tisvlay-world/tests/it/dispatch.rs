@@ -529,6 +529,143 @@ async fn power_on_leaves_a_connected_screen_off_tv_as_it_is() {
     assert_eq!(handle.connect_call_count("mock://dark"), 1);
 }
 
+/// Power a connected mock TV off, then power it on again into `woke_into`:
+/// the effects from the power-on until its wake dial's link is back up.
+async fn wake_into(
+    effects: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::WireEffect>,
+    client: &tisvlay_world::WorldClient,
+    handle: &tisvlay_mock::MockHandle,
+    id: Uuid,
+    address: &str,
+    woke_into: PowerState,
+    restore_input: bool,
+) -> Vec<tisvlay_world::WireEffect> {
+    client.command(Command::PowerOff { id, reply: None });
+    collect_until(effects, |e| link_connected(e, false)).await;
+    handle.set_initial_power_state_override(address, woke_into);
+    client.command(Command::PowerOn {
+        id,
+        restore_input,
+        reply: Some(Reply::new(80)),
+    });
+    // The link and the wake's terminal phase land in one step, in no
+    // promised order: wait for both in one drain.
+    let (mut linked, mut ended) = (false, false);
+    collect_until(effects, |e| {
+        linked |= link_connected(e, true);
+        ended |= is_publish_on(e, "progress/power")
+            .is_some_and(|p| p["phase"] == "connected" || p["phase"] == "failed");
+        linked && ended
+    })
+    .await
+}
+
+fn last_phase(seen: &[tisvlay_world::WireEffect]) -> serde_json::Value {
+    seen.iter()
+        .rev()
+        .find_map(|e| is_publish_on(e, "progress/power"))
+        .map(|p| p["phase"].clone())
+        .unwrap_or_default()
+}
+
+/// A wake the TV doesn't act on (it comes back still in `ActiveStandby`)
+/// ends `failed`, but the link stays up: the TV is reachable, just off, so
+/// it's no failed connect.
+#[tokio::test]
+async fn a_refused_wake_reports_failed_and_keeps_the_link() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://refuse").await;
+    let seen = wake_into(
+        &mut effects,
+        &client,
+        &handle,
+        id,
+        "mock://refuse",
+        PowerState::ActiveStandby,
+        false,
+    )
+    .await;
+    assert_eq!(last_phase(&seen), "failed", "{seen:#?}");
+    assert!(
+        !seen
+            .iter()
+            .any(|e| is_publish_on(e, "event/connect-failed").is_some()),
+        "a refused wake isn't a failed connect: {seen:#?}"
+    );
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        link_connected(e, false)
+    })
+    .await;
+}
+
+/// A wake that leaves the TV on, warming up, or unable to say ends
+/// `connected`: only a positive off report fails a wake.
+#[tokio::test]
+async fn a_wake_fails_only_on_an_off_report() {
+    for (address, woke_into) in [
+        ("mock://on", PowerState::Active),
+        ("mock://warm", PowerState::WarmingUp),
+        ("mock://unsure", PowerState::Unknown),
+    ] {
+        let (mut effects, client, handle) = spawn_reactor();
+        let id = add_connected_tv(&mut effects, &client, address).await;
+        let seen = wake_into(
+            &mut effects,
+            &client,
+            &handle,
+            id,
+            address,
+            woke_into,
+            false,
+        )
+        .await;
+        assert_eq!(last_phase(&seen), "connected", "{woke_into:?}: {seen:#?}");
+    }
+}
+
+/// A refused wake drops its input restore: switching the input of a TV
+/// that stayed off would only run out its budget into `dispatch-failed`.
+#[tokio::test]
+async fn a_refused_wake_drops_its_input_restore() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let mut table = toml::value::Table::new();
+    table.insert(
+        "address".into(),
+        toml::Value::String("mock://norestore".into()),
+    );
+    table.insert("initial_input".into(), toml::Value::String("HDMI_2".into()));
+    let mut record = tv_record(id, "NoRestore", table.into());
+    record.primary_input = Some("HDMI_1".into());
+    client.command(Command::AddTv {
+        record: Box::new(record),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+
+    let seen = wake_into(
+        &mut effects,
+        &client,
+        &handle,
+        id,
+        "mock://norestore",
+        PowerState::ActiveStandby,
+        true,
+    )
+    .await;
+    assert_eq!(last_phase(&seen), "failed", "{seen:#?}");
+    let t0 = Instant::now();
+    for step in 1..=4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.tick(t0 + Duration::from_millis(400 * step));
+    }
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_1")
+            || is_publish_on(e, "event/dispatch-failed").is_some()
+    })
+    .await;
+}
+
 /// An in-place power-on that meets a closing link (a CEC adapter
 /// unplugged under it) isn't lost behind the rpc's OK: it re-arms as a
 /// wake dial, which reports on `progress/power` like any other.

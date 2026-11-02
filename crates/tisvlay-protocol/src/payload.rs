@@ -368,7 +368,10 @@ pub struct RemotePower {
 }
 
 /// The phases a wake-and-connect flow walks through, ending in
-/// `connected` or `failed`.
+/// `connected` or `failed`. The world judges the end from the power state
+/// the wake left: a wake fails only if the TV reports an off state
+/// (`PowerState::class` is `Off`), so a TV that's warming up, cooling
+/// down or can't report its state ends `connected`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum PowerPhase {
@@ -381,9 +384,11 @@ pub enum PowerPhase {
     /// The dial is deferred until the local device the connection needs
     /// (a USB CEC adapter) returns.
     AwaitingDevice,
-    /// The wake dial connected: the TV is up and serving commands.
+    /// The wake dial connected and the TV didn't report an off state: it
+    /// acted on the wake.
     Connected,
-    /// The wake dial ran out of attempts.
+    /// The wake didn't land: the dial ran out of attempts, or it connected
+    /// to a TV that still reported an off state, whose link then stays up.
     Failed,
 }
 

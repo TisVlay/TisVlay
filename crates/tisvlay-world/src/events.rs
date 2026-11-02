@@ -555,7 +555,8 @@ pub enum BackendEvent {
     /// re-arms it as a wake dial before the link goes.
     PowerOnLost,
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
-    /// `connecting`; the world adds the terminal `connected`/`failed`).
+    /// `connecting`; the world adds the terminal `connected`/`failed`,
+    /// judged from the connection's power snapshot).
     PowerPhase(tisvlay_protocol::payload::PowerPhase),
     /// The bridge is about to send the TV a power-off or a blank, so the
     /// off edge that follows is TisVlay's own. Sent ahead of the command
