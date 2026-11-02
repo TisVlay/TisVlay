@@ -267,18 +267,16 @@ pub(super) fn apply_backend_events(
                     redial(&mut e, true);
                 }
             }
-            BackendEvent::PowerOnDone { abandoned } => {
+            BackendEvent::PowerOnDone { abandoned, power } => {
                 // The in-place wake's verdict, from the state the task's
-                // refresh just cached; an abandoned one failed outright.
+                // refresh read (none when it couldn't: then the TV
+                // couldn't say, and only a positive off report fails a
+                // wake); an abandoned one failed outright.
                 // A success publishes nothing, so a CEC screen-on (power
                 // emulated) doesn't announce itself. A failure drops the
                 // intents that would otherwise act on an off TV: a riding
                 // screen-on would escalate into a second in-place wake.
-                let failed = *abandoned
-                    || writes
-                        .power
-                        .get(entity)
-                        .is_ok_and(|power| wake_failed(power.state));
+                let failed = *abandoned || power.is_some_and(wake_failed);
                 if failed {
                     tracing::info!(%tv, abandoned, "the in-place wake didn't land");
                     publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);

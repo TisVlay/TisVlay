@@ -720,6 +720,29 @@ async fn an_ignored_in_place_power_on_reports_failed_and_keeps_the_link() {
     .await;
 }
 
+/// An in-place power-on whose state refresh can't read the TV (a CEC
+/// power query timing out while the TV comes on) isn't reported failed:
+/// the TV couldn't say, and only a positive off report fails a wake.
+#[tokio::test]
+async fn an_in_place_power_on_that_cant_be_read_back_isnt_failed() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id =
+        add_standby_reachable_tv(&mut effects, &client, &handle, "mock://mute", |_, _| {}).await;
+    handle.set_power_on_ignored("mock://mute", true);
+    handle.set_state_query_fails("mock://mute", true);
+
+    client.command(Command::PowerOn {
+        id,
+        restore_input: false,
+        reply: Some(Reply::new(95)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 95)).await;
+    assert_quiet(&mut effects, Duration::from_millis(500), |e| {
+        phase_published(e, "failed")
+    })
+    .await;
+}
+
 /// A screen-on that wakes a standby TV in place and fails drops its
 /// intent: the verify would otherwise escalate into a second wake.
 #[tokio::test]

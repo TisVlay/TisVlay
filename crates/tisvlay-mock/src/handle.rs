@@ -334,6 +334,18 @@ impl MockHandle {
         }
     }
 
+    /// Make `get_state` time out, as a CEC power query can while the TV is
+    /// busy coming on. Pass `enabled = false` to answer again.
+    #[instrument(skip(self))]
+    pub fn set_state_query_fails(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.state_query_fails.insert(address.to_string());
+        } else {
+            state.state_query_fails.remove(address);
+        }
+    }
+
     /// Override the `PowerState` a freshly-constructed
     /// `MockConnection` initializes with. Takes precedence over
     /// `MockVendorConfig::initial_power_state` and survives across

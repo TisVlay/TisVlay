@@ -208,6 +208,7 @@ pub(crate) async fn connect_flow(
                     // Standby-reachable transports (CEC) have no push for
                     // their own command effects — refresh state so the
                     // world's cache reflects the transition it just caused.
+                    let mut refreshed = None;
                     if traits.reachable_in_standby
                         && matches!(
                             cmd,
@@ -218,19 +219,24 @@ pub(crate) async fn connect_flow(
                         )
                         && let Ok(state) = connection.get_state().await
                     {
+                        refreshed = Some(state.power_state);
                         let _ = inbox.send(InEvent::Backend {
                             tv,
                             dial,
                             event: BackendEvent::State(Box::new(state)),
                         });
                     }
-                    // After the refresh, so the world judges the wake from
-                    // the state it just cached.
+                    // The wake's verdict rides on what the refresh read,
+                    // not the world's cache: a refresh that failed leaves
+                    // the cache at the pre-wake standby.
                     if matches!(cmd, BackendCmd::PowerOn) && !power_on_lost {
                         let _ = inbox.send(InEvent::Backend {
                             tv,
                             dial,
-                            event: BackendEvent::PowerOnDone { abandoned },
+                            event: BackendEvent::PowerOnDone {
+                                abandoned,
+                                power: refreshed,
+                            },
                         });
                     }
                     if !connection.is_connected() {

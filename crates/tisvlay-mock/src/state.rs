@@ -123,6 +123,11 @@ pub(crate) struct MockState {
     /// [`MockHandle::set_power_on_ignored`](crate::handle::MockHandle::set_power_on_ignored).
     pub(crate) power_on_ignored: std::collections::HashSet<String>,
 
+    /// Per-address flag: `get_state` times out, as a CEC power query can
+    /// while the TV is busy coming on. Set via
+    /// [`MockHandle::set_state_query_fails`](crate::handle::MockHandle::set_state_query_fails).
+    pub(crate) state_query_fails: std::collections::HashSet<String>,
+
     /// Per-address override for the `PowerState` a new
     /// `MockConnection` initializes with at construct-time. When
     /// present, takes precedence over `MockVendorConfig::initial_power_state`

@@ -193,6 +193,9 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
+        if self.shared.lock().state_query_fails.contains(&self.address) {
+            return Err(Error::RequestTimeout);
+        }
         Ok(self.state.lock().clone())
     }
 

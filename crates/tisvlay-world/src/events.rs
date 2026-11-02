@@ -556,11 +556,15 @@ pub enum BackendEvent {
     PowerOnLost,
     /// An in-place power-on ran to its end (or an off-going command
     /// abandoned it), after the post-command state refresh: the world
-    /// judges the wake from the power state that refresh cached, or
-    /// reports an `abandoned` one failed outright.
+    /// judges the wake from the power state that refresh read, or reports
+    /// an `abandoned` one failed outright.
     PowerOnDone {
         /// A `PowerOff` or `ScreenOff` interrupted the wake.
         abandoned: bool,
+        /// The power state the refresh read; `None` when the refresh
+        /// failed (a power query can time out while the TV is busy coming
+        /// on), so the TV couldn't say and the wake isn't failed.
+        power: Option<tisvlay_core::PowerState>,
     },
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
     /// `connecting`; the world adds the terminal `connected`/`failed`,
