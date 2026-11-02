@@ -23,10 +23,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
   version = (builtins.fromTOML (builtins.readFile ../../Cargo.toml)).workspace.package.version;
 
   buildType = cargoProfile;
-  # The test suite always builds under `release`: `dist`'s LTO would make
-  # every test binary slow to link, and `checks.tests` reuses this
-  # package with doCheck on.
-  checkType = "release";
+  # The test suite builds under cargo's `test` profile (nixpkgs passes no
+  # profile flag for "debug"), as `just test` and CI's do: the GUI tests
+  # find elements through Slint debug info, which the shipped profiles
+  # leave out, and overflow checks and debug assertions stay on.
+  # `checks.tests` reuses this package with doCheck on; `checks.vm` is
+  # what runs the shipped build.
+  checkType = "debug";
 
   # Only what the build and its tests read, so the source hash, and with it
   # the output path tisvlay.cachix.org serves, is the same however the repo
