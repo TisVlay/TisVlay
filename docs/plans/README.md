@@ -22,6 +22,7 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 
 ## Active plans
 
+- [`wake-confirms-power.md`](wake-confirms-power.md) — a wake (LG's dial, CEC's in-place power-on) reports success only once the TV reports awake, and a failed in-place power-on is reported.
 
 When a plan is in flight, list it here with a one-line summary of the work it covers:
 
