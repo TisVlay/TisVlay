@@ -26,7 +26,8 @@ This retires [concerns/power-on-unverified.md](../concerns/power-on-unverified.m
 6. **Failures use `Error::Backend`,** as CEC's dial path does today. A new `tisvlay_core::Error` variant would be published API for a case the world doesn't need to tell apart.
 7. **The contract lives in the trait docs** (`TvConnector::wake_and_connect`, `TvConnection::power_on` in `tisvlay-core`'s `traits.rs`), stated once; the vendor guide gives a clause and a link, and `architecture.md` describes only the world's verdict.
 8. **No new tuning places.** LG's wake budget becomes one wall-clock deadline (replacing `WAKE_CONNECT_MAX_ATTEMPTS` as the bound) plus a short confirm window; CEC's `WAKE_VERIFY_*` constants are renamed `WAKE_CONFIRM_*` so they don't read as the world's verify tier (`RetryConfig`, `DispatchVerify`), which stays screen-only.
-9. **Loops are tested under paused time with seams,** not against sockets: each backend's loop is factored over closures (connect, read power, send wake), so LG's needs no fake SSAP server and no real WoL broadcast; `tisvlay-lg` gains `tokio`'s `test-util` dev-feature. CEC's fakes gain `FakeCecLink::with_ignored_wakes(n)`.
+9. **The confirm windows: LG 8 s, CEC 4 s in place.** LG resends WoL and polls every 0.5 s for 8 s after the first connect, which outlasts the remote-off latch (about 1 s, with turn-on accepted after ~5 s per `lg/firmware-quirks.md`). CEC in place polls from ~300 ms, backing off, and resends Image View On every 1.5 s, for 4 s, which keeps non-off commands queued behind it brief. Step 5 confirms or adjusts them, recorded as a deviation if it does.
+10. **Loops are tested under paused time with seams,** not against sockets: each backend's loop is factored over closures (connect, read power, send wake), so LG's needs no fake SSAP server and no real WoL broadcast; `tisvlay-lg` gains `tokio`'s `test-util` dev-feature. CEC's fakes gain `FakeCecLink::with_ignored_wakes(n)`.
 
 ## Steps
 
@@ -44,7 +45,6 @@ Each step carries its own doc and comment updates, so the tree's docs match its 
 
 ## Open questions
 
-- **The confirm windows' lengths.** LG's must outlast the remote-off latch (`lg/firmware-quirks.md`: about 1 s, with turn-on accepted after ~5 s) without holding a refused wake long; CEC's in place must be short enough that commands queued behind it (only non-off ones, after decision 5) don't stall. Proposed: a few seconds each, settled by step 5.
 - **A power-off during a dialing LG wake isn't cancelled** (`cancel_held_wake` leaves a wake that's already dialing), so the confirm loop can resend WoL briefly after an off. The short window bounds it; a mid-loop awake-to-off edge could also stop it.
 - **A screen intent's in-place wake** never reaches `dispatch-failed` (`verify_dispatch` sends `PowerOn` and drops the latch). No current backend is standby-reachable without emulating screen through power, so this is noted, not fixed.
 
