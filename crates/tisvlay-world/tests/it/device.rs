@@ -127,6 +127,40 @@ async fn removal_parks_and_return_redials() {
     assert_eq!(handle.connect_call_count("mock://park"), 2);
 }
 
+/// Swapping the adapter for one on another TV: the reconnect republishes
+/// the identity the new device reports, not the old one's.
+#[tokio::test]
+async fn a_swapped_device_republishes_its_identity() {
+    let (mut effects, mut requests, client, handle) = spawn_reactor_with_devices();
+    let id = Uuid::new_v4();
+    let identity = |e: &WireEffect, model: &str| {
+        is_publish_on(e, "/meta/identity").is_some_and(|p| p["model"] == model)
+    };
+    handle.set_hardware_id(
+        "mock://swap",
+        tisvlay_core::HardwareId::new(Some("GSM"), Some("OLED42C3PUA"), None::<String>),
+    );
+    add(&client, id, local_config("mock://swap"));
+    expect_monitor(&mut requests, id).await;
+    report(&client, id, true);
+    collect_until(&mut effects, |e| identity(e, "OLED42C3PUA")).await;
+
+    report(&client, id, false);
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+    handle.set_hardware_id(
+        "mock://swap",
+        tisvlay_core::HardwareId::new(Some("SNY"), Some("XR-55A80L"), None::<String>),
+    );
+    report(&client, id, true);
+    let seen = collect_until(&mut effects, |e| identity(e, "XR-55A80L")).await;
+    let republished = seen
+        .iter()
+        .rev()
+        .find_map(|e| is_publish_on(e, "/meta/identity"))
+        .expect("the reconnect published an identity");
+    assert_eq!(republished["make"], "SNY");
+}
+
 /// A dropped local-device connection redials after one backoff by
 /// itself: a remove-and-add too quick for the watcher to report must not
 /// leave the TV down.
