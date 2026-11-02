@@ -9,7 +9,7 @@
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
 use crate::connection::LgConnection;
-use crate::wake::{Poll, WakeSteps};
+use crate::wake::{Reading, WakeSteps};
 use async_trait::async_trait;
 use tisvlay_core::{
     Credentials, Error, MacAddress, PairingCommand, PairingSession, PairingState, Result,
@@ -23,35 +23,34 @@ use tracing::{debug, info, warn};
 struct LiveWake<'a> {
     config: &'a LgVendorConfig,
     mac: Option<MacAddress>,
+    /// Whether a dial has registered yet, so only the first logs it.
+    registered: bool,
 }
 
 impl WakeSteps for LiveWake<'_> {
     type Link = WebOsClient;
 
     async fn connect(&mut self) -> Result<WebOsClient> {
-        dial(self.config).await
+        let client = dial(self.config).await?;
+        if !std::mem::replace(&mut self.registered, true) {
+            info!(ip = %self.config.ip, "LG TV online after wake");
+        }
+        Ok(client)
     }
 
-    async fn poll(&mut self, client: &mut WebOsClient, until: tokio::time::Instant) -> Poll {
+    async fn poll(&mut self, client: &mut WebOsClient, until: tokio::time::Instant) -> Reading {
         if !client.is_connected() {
-            return Poll::LinkLost;
+            return Reading::LinkLost;
         }
-        match tokio::time::timeout_at(until, client.get_power_state()).await {
-            // No answer in time: a waking TV doesn't answer the power query
-            // until it's on. Dropping the request is safe: the transport
-            // discards a late reply.
-            Err(_) | Ok(Err(Error::RequestTimeout)) => Poll::NotYet,
-            Ok(Ok(tisvlay_core::PowerState::Unknown)) => Poll::CantTell,
-            Ok(Ok(state)) if state.is_awake() => Poll::On,
-            Ok(Ok(_)) => Poll::NotYet,
-            Ok(Err(Error::ConnectionClosed | Error::Connection(_) | Error::Io(_))) => {
-                Poll::LinkLost
-            }
-            Ok(Err(error)) => {
-                debug!(ip = %self.config.ip, %error, "the LG TV can't report its power state");
-                Poll::CantTell
-            }
+        // Dropping a request at `until` is safe: the transport discards a
+        // late reply.
+        let read = tokio::time::timeout_at(until, client.get_power_state())
+            .await
+            .ok();
+        if let Some(Err(error)) = &read {
+            debug!(ip = %self.config.ip, %error, "LG TV power read failed while waking");
         }
+        crate::wake::classify(read)
     }
 
     fn resend(&mut self) {
@@ -151,12 +150,13 @@ impl TvConnector for LgConnector {
         let woke = crate::wake::wake_and_confirm(&mut LiveWake {
             config: &config,
             mac,
+            registered: false,
         })
         .await?;
         if woke.confirmed {
-            info!(ip = %config.ip, "LG TV online after wake");
+            info!(ip = %config.ip, "LG TV reports on after the wake");
         } else {
-            info!(ip = %config.ip, "LG TV answered but didn't report on after the wake");
+            info!(ip = %config.ip, "LG TV didn't report on after the wake");
         }
         Ok(into_connection(woke.link, config).await)
     }
