@@ -28,11 +28,11 @@ pub(crate) const DIAL_WINDOW: Duration = Duration::from_secs(6);
 pub(crate) const IN_PLACE_WINDOW: Duration = Duration::from_secs(4);
 
 /// Delay between Image View On re-sends.
-pub(crate) const RESEND_INTERVAL: Duration = Duration::from_millis(1500);
+const RESEND_INTERVAL: Duration = Duration::from_millis(1500);
 
 /// Delay before the first power poll; each later one doubles, up to
 /// [`RESEND_INTERVAL`]. A TV that takes the first frame answers on soon.
-pub(crate) const FIRST_POLL: Duration = Duration::from_millis(300);
+const FIRST_POLL: Duration = Duration::from_millis(300);
 
 /// What a send that fails (other than on a closed link) does next.
 #[derive(Debug, Clone, Copy)]
@@ -52,9 +52,10 @@ pub(crate) enum OnSendError<'a> {
 }
 
 /// Re-send Image View On and poll power until the TV reports on (`true`)
-/// or `window` ends (`false`). A closed link returns its error at once: a
-/// dead adapter won't recover by retrying, and the daemon re-arms the
-/// power-on as a wake on it.
+/// or `window` ends (`false`), sending nothing once it has. A link that
+/// closes, on a send or a poll, returns its error at once: a dead adapter
+/// won't recover by retrying, and the daemon re-arms the power-on as a
+/// wake on it.
 pub(crate) async fn wake_until_on(
     link: &mut Box<dyn CecLink>,
     window: Duration,
@@ -64,7 +65,11 @@ pub(crate) async fn wake_until_on(
     let mut next_send = Instant::now();
     let mut poll_delay = FIRST_POLL;
     loop {
-        if Instant::now() >= next_send {
+        let now = Instant::now();
+        if now >= end {
+            return Ok(false);
+        }
+        if now >= next_send {
             match link.power_on().await {
                 Ok(()) => {}
                 Err(e @ Error::ConnectionClosed) => return Err(e),
@@ -84,16 +89,97 @@ pub(crate) async fn wake_until_on(
             }
             next_send = Instant::now() + RESEND_INTERVAL;
         }
-        let now = Instant::now();
-        if now >= end {
-            return Ok(false);
-        }
-        tokio::time::sleep(poll_delay.min(end - now)).await;
+        tokio::time::sleep(poll_delay.min(end.saturating_duration_since(Instant::now()))).await;
         poll_delay = (poll_delay * 2).min(RESEND_INTERVAL);
-        if let Ok(status) = link.query_power().await
-            && map_power(status).class() == PowerClass::On
-        {
-            return Ok(true);
+        match link.query_power().await {
+            Ok(status) if map_power(status).class() == PowerClass::On => return Ok(true),
+            Err(e @ Error::ConnectionClosed) => return Err(e),
+            _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use linux_cec::operand::PowerStatus;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    /// A TV that never takes the frame, recording when each one was sent;
+    /// `closes` makes every poll find the link closed.
+    #[derive(Debug, Default)]
+    struct Deaf {
+        sends: Arc<Mutex<Vec<Instant>>>,
+        closes: bool,
+    }
+
+    #[async_trait]
+    impl CecLink for Deaf {
+        async fn query_power(&self) -> Result<PowerStatus> {
+            if self.closes {
+                Err(Error::ConnectionClosed)
+            } else {
+                Ok(PowerStatus::Standby)
+            }
+        }
+        async fn power_on(&self) -> Result<()> {
+            self.sends.lock().push(Instant::now());
+            Ok(())
+        }
+        async fn power_off(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn set_stream_path(&self, _address: PhysicalAddress) -> Result<()> {
+            Ok(())
+        }
+        async fn query_osd_name(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        async fn query_vendor_id(&self) -> Result<Option<linux_cec::VendorId>> {
+            Ok(None)
+        }
+        fn has_rc(&self) -> bool {
+            false
+        }
+        async fn set_rc_passthrough(&self, _allow: bool) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nothing_is_sent_once_the_window_ends() {
+        let sends = Arc::new(Mutex::new(Vec::new()));
+        let mut link: Box<dyn CecLink> = Box::new(Deaf {
+            sends: sends.clone(),
+            closes: false,
+        });
+        let t0 = Instant::now();
+        let woke = wake_until_on(&mut link, IN_PLACE_WINDOW, OnSendError::Resend)
+            .await
+            .expect("the link stays open");
+        assert!(!woke);
+        let sends = sends.lock();
+        assert!(sends.len() >= 2, "re-sent while waiting: {}", sends.len());
+        assert!(
+            sends.iter().all(|sent| *sent < t0 + IN_PLACE_WINDOW),
+            "{:?}",
+            sends.iter().map(|sent| *sent - t0).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_that_finds_the_link_closed_ends_the_wake() {
+        let mut link: Box<dyn CecLink> = Box::new(Deaf {
+            closes: true,
+            ..Deaf::default()
+        });
+        let t0 = Instant::now();
+        let error = wake_until_on(&mut link, IN_PLACE_WINDOW, OnSendError::Resend)
+            .await
+            .expect_err("the link closed");
+        assert!(matches!(error, Error::ConnectionClosed));
+        assert!(t0.elapsed() < RESEND_INTERVAL, "{:?}", t0.elapsed());
     }
 }
