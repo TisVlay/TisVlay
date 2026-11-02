@@ -237,6 +237,11 @@ pub(crate) fn is_publish_on<'a>(
     }
 }
 
+/// A `progress/power` sample in `phase`.
+pub(crate) fn phase_published(effect: &WireEffect, phase: &str) -> bool {
+    is_publish_on(effect, "progress/power").is_some_and(|p| p["phase"] == phase)
+}
+
 pub(crate) fn link_connected(effect: &WireEffect, connected: bool) -> bool {
     is_publish_on(effect, "/state/link").is_some_and(|p| p["connected"] == connected)
 }

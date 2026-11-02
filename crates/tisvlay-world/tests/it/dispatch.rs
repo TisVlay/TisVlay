@@ -695,10 +695,6 @@ async fn add_standby_reachable_tv(
     id
 }
 
-fn phase_published(effect: &tisvlay_world::WireEffect, phase: &str) -> bool {
-    is_publish_on(effect, "progress/power").is_some_and(|p| p["phase"] == phase)
-}
-
 /// An in-place power-on the TV ignores ends `failed` and keeps the link
 /// (the TV is reachable in standby).
 #[tokio::test]
@@ -757,6 +753,9 @@ async fn a_failed_in_place_wake_drops_its_screen_on_intent() {
     )
     .await;
     handle.set_power_on_ignored("mock://deaf-screen", true);
+    // The verify's screen-on retries leave the panel dark too, so only a
+    // second wake could light it.
+    handle.set_screen_on_noop("mock://deaf-screen", true);
 
     let t0 = Instant::now();
     client.tick(t0);
@@ -801,8 +800,9 @@ async fn a_landed_in_place_power_on_publishes_no_phase() {
 }
 
 /// A power-off sent while a slow in-place wake runs doesn't wait for it:
-/// it abandons the wake (reported `failed`) and reaches the TV at once,
-/// as a sleep's power-off must within logind's inhibit delay.
+/// it abandons the wake and reaches the TV at once, as a sleep's power-off
+/// must within logind's inhibit delay. The abandoned wake publishes
+/// nothing: the off is what was asked for last.
 #[tokio::test]
 async fn a_power_off_interrupts_a_slow_in_place_wake() {
     let (mut effects, client, handle) = spawn_reactor();
@@ -822,13 +822,7 @@ async fn a_power_off_interrupts_a_slow_in_place_wake() {
         id,
         reply: Some(Reply::new(94)),
     });
-    let (mut acked, mut abandoned) = (false, false);
-    collect_until(&mut effects, |e| {
-        acked |= reply_to(e, 94);
-        abandoned |= phase_published(e, "failed");
-        acked && abandoned
-    })
-    .await;
+    collect_until(&mut effects, |e| reply_to(e, 94)).await;
     assert!(
         sent.elapsed() < Duration::from_millis(1500),
         "the power-off waited for the wake: {:?}",
@@ -836,8 +830,120 @@ async fn a_power_off_interrupts_a_slow_in_place_wake() {
     );
     assert_quiet(&mut effects, Duration::from_millis(300), |e| {
         is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+            || is_publish_on(e, "progress/power").is_some()
     })
     .await;
+}
+
+/// A standby-reachable TV whose wake takes `delay_ms`, with an input to
+/// restore: it sits on HDMI_2 and its primary input is HDMI_1.
+async fn add_slow_waking_tv(
+    effects: &mut tokio::sync::mpsc::UnboundedReceiver<tisvlay_world::WireEffect>,
+    client: &tisvlay_world::WorldClient,
+    handle: &tisvlay_mock::MockHandle,
+    address: &str,
+    delay_ms: i64,
+) -> Uuid {
+    add_standby_reachable_tv(effects, client, handle, address, |table, record| {
+        table.insert("power_on_delay_ms".into(), toml::Value::Integer(delay_ms));
+        table.insert("initial_input".into(), toml::Value::String("HDMI_2".into()));
+        record.primary_input = Some("HDMI_1".into());
+    })
+    .await
+}
+
+/// Step the world clock past several verify delays.
+async fn tick_past_verify(client: &tisvlay_world::WorldClient) {
+    let t0 = Instant::now();
+    for step in 1..=6 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.tick(t0 + Duration::from_millis(400 * step));
+    }
+}
+
+fn input_restored(effect: &tisvlay_world::WireEffect) -> bool {
+    is_publish_on(effect, "/state/input").is_some_and(|p| p["current"] == "HDMI_1")
+}
+
+/// An off that abandons an in-place wake also drops the intents riding
+/// it: neither the input restore nor a screen-on may act once the wake
+/// has given way.
+#[tokio::test]
+async fn an_abandoned_in_place_wake_drops_its_intents() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_slow_waking_tv(&mut effects, &client, &handle, "mock://given-way", 1500).await;
+    handle.set_screen_on_noop("mock://given-way", true);
+
+    client.command(Command::SetScreen {
+        id,
+        on: true,
+        restore_input: true,
+        reply: Some(Reply::new(96)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 96)).await;
+    client.command(Command::PowerOff {
+        id,
+        reply: Some(Reply::new(97)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 97)).await;
+    tick_past_verify(&client).await;
+    assert_quiet(&mut effects, Duration::from_millis(300), |e| {
+        input_restored(e)
+            || is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+            || is_publish_on(e, "event/dispatch-failed").is_some()
+    })
+    .await;
+}
+
+/// A power-on sent while an in-place wake runs rides it rather than
+/// queuing a second wake, so an off sent after both stays off.
+#[tokio::test]
+async fn a_second_power_on_rides_the_running_in_place_wake() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_slow_waking_tv(&mut effects, &client, &handle, "mock://twice", 600).await;
+
+    for reply in [98, 99] {
+        client.command(Command::PowerOn {
+            id,
+            restore_input: false,
+            reply: Some(Reply::new(reply)),
+        });
+        collect_until(&mut effects, |e| reply_to(e, reply)).await;
+    }
+    client.command(Command::PowerOff {
+        id,
+        reply: Some(Reply::new(100)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 100)).await;
+    assert_quiet(&mut effects, Duration::from_millis(1200), |e| {
+        is_publish_on(e, "/state/power").is_some_and(|p| p["state"] == "active")
+    })
+    .await;
+}
+
+/// The input restore waits out an in-place wake: a switch sent mid-wake
+/// would land on a TV the wake then leaves off.
+#[tokio::test]
+async fn an_in_place_wake_holds_its_input_restore() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_slow_waking_tv(&mut effects, &client, &handle, "mock://held", 800).await;
+    handle.set_power_on_ignored("mock://held", true);
+
+    client.command(Command::PowerOn {
+        id,
+        restore_input: true,
+        reply: Some(Reply::new(101)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 101)).await;
+    tick_past_verify(&client).await;
+    let mut seen = Vec::new();
+    collect_until(&mut effects, |e| {
+        seen.push(e.clone());
+        phase_published(e, "failed")
+    })
+    .await;
+    assert!(!seen.iter().any(input_restored), "{seen:#?}");
+    assert_quiet(&mut effects, Duration::from_millis(300), input_restored).await;
 }
 
 /// An in-place power-on that meets a closing link (a CEC adapter

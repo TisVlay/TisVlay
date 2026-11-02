@@ -550,16 +550,18 @@ pub enum BackendEvent {
     /// The connection ended (device closed it, or `power_off` on a
     /// network-style transport).
     Disconnected,
-    /// An in-place power-on met a closing link and failed after its rpc
-    /// had acked. Sent ahead of the task's `Disconnected`, so the world
-    /// re-arms it as a wake dial before the link goes.
+    /// An in-place power-on met a closing link after its rpc had acked,
+    /// whether or not the backend noticed. Sent ahead of the task's
+    /// `Disconnected`, so the world re-arms it as a wake dial before the
+    /// link goes.
     PowerOnLost,
-    /// An in-place power-on ran to its end (or an off-going command
-    /// abandoned it), after the post-command state refresh: the world
-    /// judges the wake from the power state that refresh read, or reports
-    /// an `abandoned` one failed outright.
+    /// An in-place power-on ran to its end, after the post-command state
+    /// refresh, or an off-going command abandoned it: the world judges the
+    /// wake from the power state that refresh read, and drops an abandoned
+    /// one's intents without a verdict.
     PowerOnDone {
-        /// A `PowerOff` or `ScreenOff` interrupted the wake.
+        /// A `PowerOff` or `ScreenOff` interrupted the wake, so no
+        /// refresh ran.
         abandoned: bool,
         /// The power state the refresh read; `None` when the refresh
         /// failed (a power query can time out while the TV is busy coming

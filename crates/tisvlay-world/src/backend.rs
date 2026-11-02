@@ -175,13 +175,14 @@ pub(crate) async fn connect_flow(
                         BackendCmd::Drain(_) => continue,
                     };
                     // A power-on carries no reply to fail, so a link closing
-                    // under it would lose it: hand it back to the world,
-                    // ahead of the `Disconnected` below.
+                    // under it would lose it, whether the backend noticed or
+                    // returned as if it had sent: hand it back to the world,
+                    // ahead of the `Disconnected` below. An abandoned one
+                    // was superseded by the off that runs next.
                     let power_on_lost = matches!(cmd, BackendCmd::PowerOn)
-                        && result.as_ref().is_err_and(|error| {
-                            matches!(error, tisvlay_core::Error::ConnectionClosed)
-                                || !connection.is_connected()
-                        });
+                        && !abandoned
+                        && (matches!(result, Err(tisvlay_core::Error::ConnectionClosed))
+                            || !connection.is_connected());
                     if let Err(error) = &result {
                         warn!(%tv, ?cmd, %error, "backend command failed");
                     }
@@ -208,8 +209,11 @@ pub(crate) async fn connect_flow(
                     // Standby-reachable transports (CEC) have no push for
                     // their own command effects — refresh state so the
                     // world's cache reflects the transition it just caused.
+                    // An abandoned wake skips it: the off it gave way to
+                    // runs next, and must not wait on a query.
                     let mut refreshed = None;
                     if traits.reachable_in_standby
+                        && !abandoned
                         && matches!(
                             cmd,
                             BackendCmd::PowerOn
@@ -292,10 +296,11 @@ async fn next_command(
 
 /// Run an in-place power-on while still taking commands, since a backend's
 /// wake can take seconds. An off-going command (`PowerOff`, `ScreenOff`)
-/// abandons the wake and runs next: the latest intent wins, and a sleep's
-/// power-off must reach the TV inside logind's inhibit delay. Others wait
-/// their turn, in order. `None` when the wake was abandoned, including by
-/// the world dropping the handle.
+/// abandons the wake and runs next, dropping the on-going ones queued
+/// behind the wake: the latest intent wins, and a sleep's power-off must
+/// reach the TV inside logind's inhibit delay. Another power-on rides the
+/// running wake. Others wait their turn, in order. `None` when the wake was
+/// abandoned, including by the world dropping the handle.
 async fn power_on_in_place(
     connection: &mut dyn tisvlay_core::TvConnection,
     cmd_rx: &mut mpsc::UnboundedReceiver<BackendCmd>,
@@ -307,9 +312,11 @@ async fn power_on_in_place(
             result = &mut wake => return Some(result),
             cmd = cmd_rx.recv() => match cmd {
                 Some(off @ (BackendCmd::PowerOff(_) | BackendCmd::ScreenOff)) => {
+                    deferred.retain(|cmd| !matches!(cmd, BackendCmd::ScreenOn));
                     deferred.push_front(off);
                     return None;
                 }
+                Some(BackendCmd::PowerOn) => {}
                 Some(other) => deferred.push_back(other),
                 None => return None,
             },
