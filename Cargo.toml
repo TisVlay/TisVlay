@@ -78,7 +78,7 @@ toml_edit = "0.25"
 
 # The system's monospace family for the GUI (the font library Slint uses;
 # kept on the version Slint pins so the graph holds one copy).
-fontique = "0.11"
+fontique = "0.12"
 
 # Error handling
 thiserror = "2"
@@ -114,7 +114,7 @@ clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 
 # D-Bus (tokio feature ensures zbus uses tokio runtime instead of async-io)
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "6", default-features = false, features = ["tokio"] }
 
 # Networking (for WoL)
 socket2 = "0.6"
@@ -127,7 +127,7 @@ socket2 = "0.6"
 # from, and our critical sections are panic-free by inspection
 # (HashMap ops on owned strings + channel senders). For locks
 # held across `.await` we still use `tokio::sync::Mutex`.
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 # XDG directories
 directories = "6"
