@@ -550,12 +550,27 @@ pub enum BackendEvent {
     /// The connection ended (device closed it, or `power_off` on a
     /// network-style transport).
     Disconnected,
-    /// An in-place power-on met a closing link and failed after its rpc
-    /// had acked. Sent ahead of the task's `Disconnected`, so the world
-    /// re-arms it as a wake dial before the link goes.
+    /// An in-place power-on met a closing link after its rpc had acked,
+    /// whether or not the backend noticed. Sent ahead of the task's
+    /// `Disconnected`, so the world re-arms it as a wake dial before the
+    /// link goes.
     PowerOnLost,
+    /// An in-place power-on ran to its end, after the post-command state
+    /// refresh, or an off-going command abandoned it: the world judges the
+    /// wake from the power state that refresh read, and drops an abandoned
+    /// one's intents without a verdict.
+    PowerOnDone {
+        /// A `PowerOff` or `ScreenOff` interrupted the wake, so no
+        /// refresh ran.
+        abandoned: bool,
+        /// The power state the refresh read; `None` when the refresh
+        /// failed (a power query can time out while the TV is busy coming
+        /// on), so the TV couldn't say and the wake isn't failed.
+        power: Option<tisvlay_core::PowerState>,
+    },
     /// A wake-dial phase for the `progress/power` key (`wol_sent`,
-    /// `connecting`; the world adds the terminal `connected`/`failed`).
+    /// `connecting`; the world adds the terminal `connected`/`failed`,
+    /// judged from the connection's power snapshot).
     PowerPhase(tisvlay_protocol::payload::PowerPhase),
     /// The bridge is about to send the TV a power-off or a blank, so the
     /// off edge that follows is TisVlay's own. Sent ahead of the command

@@ -6,6 +6,7 @@
 mod address;
 mod backend;
 mod config;
+mod confirm;
 mod connection;
 mod connector;
 mod discovery;

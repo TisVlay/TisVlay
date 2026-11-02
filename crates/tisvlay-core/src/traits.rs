@@ -287,13 +287,25 @@ pub trait TvConnection: Send + Sync {
 
     /// Wake the TV on this *existing* connection (e.g. CEC Image View On).
     ///
-    /// Only meaningful for backends that stay reachable in standby (see
-    /// [`TvConnector::reachable_in_standby`]): the connection is still live
-    /// while the TV sleeps, so the daemon can wake it in place instead of
-    /// tearing the connection down and opening a fresh link via
-    /// [`TvConnector::wake_and_connect`] — the teardown would flap
-    /// `Connected` (a spurious disconnect on a power-*on*). Default: not
-    /// supported, so those callers fall back to `wake_and_connect`.
+    /// The daemon calls it only for backends that stay reachable in
+    /// standby (see [`TvConnector::reachable_in_standby`]): the connection
+    /// is still live while the TV sleeps, so it wakes the TV in place
+    /// instead of tearing the connection down and opening a fresh link via
+    /// [`TvConnector::wake_and_connect`], which would flap `Connected` (a
+    /// spurious disconnect on a power-*on*). Default: not supported, which
+    /// such a backend's daemon never asks of it.
+    ///
+    /// A wake here is done as `wake_and_connect`'s is, judged by the
+    /// daemon from the power state the connection reads next, with two
+    /// further obligations:
+    ///
+    /// - **Return within a few seconds**, the read-back included: other
+    ///   commands to the TV wait behind it, and clients waiting to hear of
+    ///   a failure give an in-place wake 8 s before they assume it landed.
+    /// - **Be cancel-safe:** an off-going command dropped onto the TV
+    ///   mid-wake abandons it, by dropping this future at any await point.
+    ///
+    /// Return an error only for a link problem.
     async fn power_on(&mut self) -> Result<()> {
         Err(Error::not_supported("power_on", Capabilities::POWER))
     }
@@ -604,6 +616,17 @@ pub trait TvConnector: Send + Sync {
     /// count, wake packet resends, readiness probes, etc. The daemon does
     /// not provide any timing parameters — each backend knows its own
     /// transport characteristics.
+    ///
+    /// A wake is done when the device has acted on it, not when the link
+    /// opens: once connected, keep resending the wake and probing within a
+    /// short window until the device reports an awake state, then return
+    /// the connection whatever it reports. The daemon judges the wake from
+    /// that connection's power state, failing it only on an off report, so
+    /// a device that can't report one isn't held to it.
+    ///
+    /// The daemon doesn't time the call out, so bound its wall time: give
+    /// up with an error once no connection could be made within the
+    /// backend's own deadline.
     async fn wake_and_connect(&self, vendor_config: &VendorConfig)
     -> Result<Box<dyn TvConnection>>;
 

@@ -72,7 +72,7 @@ One breaking change (no aliases), grouped by what each one breaks:
   - the `HeldWake` family to held power-ons;
   - the wake dial (`PendingDial::wake`, `wake_dial`, `wake_needy`) to a power-on dial;
   - the session's lock-wake family (`LockWake`, `lock_wake_policy`, `LOCK_WAKE_TAG`, `gated_wake`);
-  - LG's `WAKE_CONNECT_*` and CEC's `WAKE_VERIFY_*`;
+  - LG's `wake` module (`WAKE_DEADLINE`, `wake_and_confirm`) and CEC's `confirm::wake_until_on`;
   - the GUI's `power_cycle` module and `power-cycle-phase`, and the tray's `TvWake`;
   - log messages ("system resumed", "online after wake", "a held wake expired", "sending lock wake").
 - **Strings:**

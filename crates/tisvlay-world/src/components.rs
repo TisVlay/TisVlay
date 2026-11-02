@@ -247,10 +247,27 @@ pub(crate) struct MirrorsConnector(pub String);
 /// Live connection: channel into the tokio task that owns the
 /// `TvConnection`. Dropping this (despawn, disconnect) closes the channel
 /// and the task shuts the connection down — RAII instead of a drain layer.
+/// A [`WakingInPlace`] goes with it, so no teardown path leaves one behind.
 #[derive(Component, Debug)]
+#[component(on_discard = end_wake_in_place)]
 pub(crate) struct ConnectionHandle {
     pub cmd_tx: mpsc::UnboundedSender<BackendCmd>,
 }
+
+fn end_wake_in_place(mut world: DeferredWorld, ctx: HookContext) {
+    world
+        .commands()
+        .entity(ctx.entity)
+        .try_remove::<WakingInPlace>();
+}
+
+/// An in-place power-on is running on this TV's connection: the screen
+/// verify and the input restore wait for it to end, since what they check
+/// is still changing. Removed when the task reports the wake's end
+/// (`PowerOnDone`, `PowerOnLost`), and with the handle. A second power-on
+/// sent meanwhile rides the running wake: the connection task drops it.
+#[derive(Component, Debug)]
+pub(crate) struct WakingInPlace;
 
 /// The local device node a TV's connection needs, as configured (CEC's
 /// `/dev/cecN` or a udev alias of it): what the wake list names.

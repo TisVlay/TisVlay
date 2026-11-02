@@ -34,7 +34,7 @@ use crate::components::{
     PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
     PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteKeysSent,
     RetryAt, RetryPromptly, Site, SleepPending, State, StreamArmed, SystemProfile, TransportTraits,
-    TvId, TvIndex, VendorRef, dependency_absent,
+    TvId, TvIndex, VendorRef, WakingInPlace, dependency_absent,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,

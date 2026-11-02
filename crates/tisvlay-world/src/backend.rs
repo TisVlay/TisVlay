@@ -3,6 +3,7 @@
 //! The world talks to it through a command channel; facts flow back through
 //! the reactor inbox.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tisvlay_core::{
     PairingError, PairingErrorCode, PairingSession, PairingState, TvConnector, VendorConfig,
@@ -116,9 +117,12 @@ pub(crate) async fn connect_flow(
     });
 
     let mut subscription = subscription;
+    // Commands that arrived while an in-place power-on ran, ahead of
+    // anything still in `cmd_rx`.
+    let mut deferred = VecDeque::new();
     loop {
         tokio::select! {
-            cmd = cmd_rx.recv() => match cmd {
+            cmd = next_command(&mut deferred, &mut cmd_rx) => match cmd {
                 None => {
                     // World dropped the handle (removal / disconnect / despawn):
                     // close and exit without an event — the entity is already gone
@@ -137,6 +141,7 @@ pub(crate) async fn connect_flow(
                             },
                         });
                     }
+                    let mut abandoned = false;
                     let (result, reply) = match &cmd {
                         BackendCmd::SetVolume(level, reply) => {
                             (connection.set_volume(*level).await, *reply)
@@ -151,7 +156,15 @@ pub(crate) async fn connect_flow(
                             (connection.set_backlight(*level).await, *reply)
                         }
                         BackendCmd::PowerOff(reply) => (connection.power_off().await, *reply),
-                        BackendCmd::PowerOn => (connection.power_on().await, None),
+                        BackendCmd::PowerOn => {
+                            match power_on_in_place(connection.as_mut(), &mut cmd_rx, &mut deferred).await {
+                                Some(result) => (result, None),
+                                None => {
+                                    abandoned = true;
+                                    (Ok(()), None)
+                                }
+                            }
+                        }
                         BackendCmd::ScreenOn => (connection.screen_on().await, None),
                         BackendCmd::ScreenOff => (connection.screen_off().await, None),
                         BackendCmd::SetRemoteKeys(on) => {
@@ -161,21 +174,24 @@ pub(crate) async fn connect_flow(
                         // token (with `cmd`) is the signal.
                         BackendCmd::Drain(_) => continue,
                     };
+                    // A power-on carries no reply to fail, so a link closing
+                    // under it would lose it, whether the backend noticed or
+                    // returned as if it had sent: hand it back to the world,
+                    // ahead of the `Disconnected` below. An abandoned one
+                    // was superseded by the off that runs next.
+                    let power_on_lost = matches!(cmd, BackendCmd::PowerOn)
+                        && !abandoned
+                        && (matches!(result, Err(tisvlay_core::Error::ConnectionClosed))
+                            || !connection.is_connected());
                     if let Err(error) = &result {
                         warn!(%tv, ?cmd, %error, "backend command failed");
-                        // A power-on carries no reply to fail, so a link
-                        // closing under it would lose it: hand it back to
-                        // the world, ahead of the `Disconnected` below.
-                        if matches!(cmd, BackendCmd::PowerOn)
-                            && (matches!(error, tisvlay_core::Error::ConnectionClosed)
-                                || !connection.is_connected())
-                        {
-                            let _ = inbox.send(InEvent::Backend {
-                                tv,
-                                dial,
-                                event: BackendEvent::PowerOnLost,
-                            });
-                        }
+                    }
+                    if power_on_lost {
+                        let _ = inbox.send(InEvent::Backend {
+                            tv,
+                            dial,
+                            event: BackendEvent::PowerOnLost,
+                        });
                     }
                     // Deferred rpc release: the caller hears back at device
                     // speed — the backpressure that keeps rapid absolute
@@ -193,7 +209,11 @@ pub(crate) async fn connect_flow(
                     // Standby-reachable transports (CEC) have no push for
                     // their own command effects — refresh state so the
                     // world's cache reflects the transition it just caused.
+                    // An abandoned wake skips it: the off it gave way to
+                    // runs next, and must not wait on a query.
+                    let mut refreshed = None;
                     if traits.reachable_in_standby
+                        && !abandoned
                         && matches!(
                             cmd,
                             BackendCmd::PowerOn
@@ -203,10 +223,24 @@ pub(crate) async fn connect_flow(
                         )
                         && let Ok(state) = connection.get_state().await
                     {
+                        refreshed = Some(state.power_state);
                         let _ = inbox.send(InEvent::Backend {
                             tv,
                             dial,
                             event: BackendEvent::State(Box::new(state)),
+                        });
+                    }
+                    // The wake's verdict rides on what the refresh read,
+                    // not the world's cache: a refresh that failed leaves
+                    // the cache at the pre-wake standby.
+                    if matches!(cmd, BackendCmd::PowerOn) && !power_on_lost {
+                        let _ = inbox.send(InEvent::Backend {
+                            tv,
+                            dial,
+                            event: BackendEvent::PowerOnDone {
+                                abandoned,
+                                power: refreshed,
+                            },
                         });
                     }
                     if !connection.is_connected() {
@@ -243,6 +277,48 @@ pub(crate) async fn connect_flow(
                     let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected });
                     return;
                 }
+            },
+        }
+    }
+}
+
+/// The next command: one deferred while an in-place power-on ran, else the
+/// next from the world.
+async fn next_command(
+    deferred: &mut VecDeque<BackendCmd>,
+    cmd_rx: &mut mpsc::UnboundedReceiver<BackendCmd>,
+) -> Option<BackendCmd> {
+    match deferred.pop_front() {
+        Some(cmd) => Some(cmd),
+        None => cmd_rx.recv().await,
+    }
+}
+
+/// Run an in-place power-on while still taking commands, since a backend's
+/// wake can take seconds. An off-going command (`PowerOff`, `ScreenOff`)
+/// abandons the wake and runs next, dropping the on-going ones queued
+/// behind the wake: the latest intent wins, and a sleep's power-off must
+/// reach the TV inside logind's inhibit delay. Another power-on rides the
+/// running wake. Others wait their turn, in order. `None` when the wake was
+/// abandoned, including by the world dropping the handle.
+async fn power_on_in_place(
+    connection: &mut dyn tisvlay_core::TvConnection,
+    cmd_rx: &mut mpsc::UnboundedReceiver<BackendCmd>,
+    deferred: &mut VecDeque<BackendCmd>,
+) -> Option<tisvlay_core::Result<()>> {
+    let mut wake = connection.power_on();
+    loop {
+        tokio::select! {
+            result = &mut wake => return Some(result),
+            cmd = cmd_rx.recv() => match cmd {
+                Some(off @ (BackendCmd::PowerOff(_) | BackendCmd::ScreenOff)) => {
+                    deferred.retain(|cmd| !matches!(cmd, BackendCmd::ScreenOn));
+                    deferred.push_front(off);
+                    return None;
+                }
+                Some(BackendCmd::PowerOn) => {}
+                Some(other) => deferred.push_back(other),
+                None => return None,
             },
         }
     }

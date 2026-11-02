@@ -12,10 +12,6 @@ use tisvlay_world::{Command, InEvent, Reply, SystemEvent, WireEffect, WorldClien
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
-fn phase(effect: &WireEffect, phase: &str) -> bool {
-    is_publish_on(effect, "progress/power").is_some_and(|p| p["phase"] == phase)
-}
-
 fn failed(effect: &WireEffect) -> bool {
     is_publish_on(effect, "event/connect-failed").is_some()
 }
@@ -87,16 +83,16 @@ async fn a_routeless_wake_expires_into_a_plain_reconnect() {
     let t0 = Instant::now();
     client.tick(t0);
     power_on(&client, id, 1);
-    collect_until(&mut effects, |e| phase(e, "awaiting_network")).await;
+    collect_until(&mut effects, |e| phase_published(e, "awaiting_network")).await;
 
     // Within the limit the wake is still held.
     client.tick(t0 + Duration::from_secs(30));
     assert_quiet(&mut effects, Duration::from_millis(200), |e| {
-        phase(e, "failed")
+        phase_published(e, "failed")
     })
     .await;
     client.tick(t0 + Duration::from_secs(61));
-    collect_until(&mut effects, |e| phase(e, "failed")).await;
+    collect_until(&mut effects, |e| phase_published(e, "failed")).await;
 
     client.tick(t0 + Duration::from_secs(70));
     client.send(InEvent::RouteResolved {
@@ -105,7 +101,7 @@ async fn a_routeless_wake_expires_into_a_plain_reconnect() {
     });
     let seen = collect_until(&mut effects, failed).await;
     assert!(
-        !seen.iter().any(|e| phase(e, "wol_sent")),
+        !seen.iter().any(|e| phase_published(e, "wol_sent")),
         "the expired wake's return dials without waking: {seen:#?}"
     );
     assert_eq!(handle.connect_call_count("mock://expire"), 2);
@@ -119,14 +115,14 @@ async fn a_power_off_cancels_a_routeless_wake() {
     let (mut effects, client, _handle) = spawn_reactor();
     let id = routeless_tv(&mut effects, &client, "mock://cancel").await;
     power_on(&client, id, 1);
-    collect_until(&mut effects, |e| phase(e, "awaiting_network")).await;
+    collect_until(&mut effects, |e| phase_published(e, "awaiting_network")).await;
 
     client.command(Command::PowerOff {
         id,
         reply: Some(Reply::new(2)),
     });
     // The reply and the cancelled wake's report go out in the same step.
-    let seen = collect_until(&mut effects, |e| phase(e, "failed")).await;
+    let seen = collect_until(&mut effects, |e| phase_published(e, "failed")).await;
     assert!(
         seen.iter()
             .any(|e| reply_to(e, 2) && reply_err_code(e, 2).is_none()),
@@ -138,7 +134,10 @@ async fn a_power_off_cancels_a_routeless_wake() {
         interface: Some("eth0".into()),
     });
     let seen = collect_until(&mut effects, failed).await;
-    assert!(!seen.iter().any(|e| phase(e, "wol_sent")), "{seen:#?}");
+    assert!(
+        !seen.iter().any(|e| phase_published(e, "wol_sent")),
+        "{seen:#?}"
+    );
 }
 
 /// The profile's sleep action (power off) cancels a held wake too, so a
@@ -151,18 +150,21 @@ async fn a_profile_power_off_cancels_a_held_wake() {
         event: SystemEvent::Startup,
         connector: None,
     });
-    collect_until(&mut effects, |e| phase(e, "awaiting_network")).await;
+    collect_until(&mut effects, |e| phase_published(e, "awaiting_network")).await;
     client.send(InEvent::System {
         event: SystemEvent::Sleep,
         connector: None,
     });
-    collect_until(&mut effects, |e| phase(e, "failed")).await;
+    collect_until(&mut effects, |e| phase_published(e, "failed")).await;
     client.send(InEvent::RouteResolved {
         tv: id,
         interface: Some("eth0".into()),
     });
     let seen = collect_until(&mut effects, failed).await;
-    assert!(!seen.iter().any(|e| phase(e, "wol_sent")), "{seen:#?}");
+    assert!(
+        !seen.iter().any(|e| phase_published(e, "wol_sent")),
+        "{seen:#?}"
+    );
 }
 
 /// Without a power-off, the route's return within the limit still wakes:
@@ -174,13 +176,13 @@ async fn a_wake_still_goes_out_when_the_route_returns_in_time() {
     let t0 = Instant::now();
     client.tick(t0);
     power_on(&client, id, 1);
-    collect_until(&mut effects, |e| phase(e, "awaiting_network")).await;
+    collect_until(&mut effects, |e| phase_published(e, "awaiting_network")).await;
     client.tick(t0 + Duration::from_secs(20));
     client.send(InEvent::RouteResolved {
         tv: id,
         interface: Some("eth0".into()),
     });
-    collect_until(&mut effects, |e| phase(e, "wol_sent")).await;
+    collect_until(&mut effects, |e| phase_published(e, "wol_sent")).await;
 }
 
 /// A wake held on a missing device expires the same way, and the device's
@@ -199,16 +201,19 @@ async fn a_deviceless_wake_expires_into_a_plain_reconnect() {
     let t0 = Instant::now();
     client.tick(t0);
     power_on(&client, id, 1);
-    collect_until(&mut effects, |e| phase(e, "awaiting_device")).await;
+    collect_until(&mut effects, |e| phase_published(e, "awaiting_device")).await;
     client.tick(t0 + Duration::from_secs(61));
-    collect_until(&mut effects, |e| phase(e, "failed")).await;
+    collect_until(&mut effects, |e| phase_published(e, "failed")).await;
 
     client.send(InEvent::DeviceAvailability {
         tv: id,
         available: true,
     });
     let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
-    assert!(!seen.iter().any(|e| phase(e, "wol_sent")), "{seen:#?}");
+    assert!(
+        !seen.iter().any(|e| phase_published(e, "wol_sent")),
+        "{seen:#?}"
+    );
     assert_eq!(handle.connect_call_count("mock://dev-expire"), 1);
 }
 
@@ -234,11 +239,17 @@ async fn an_emulated_screen_off_cancels_a_deviceless_wake() {
         reply: Some(Reply::new(2)),
     });
     let seen = collect_until(&mut effects, |e| reply_to(e, 2)).await;
-    assert!(seen.iter().any(|e| phase(e, "failed")), "{seen:#?}");
+    assert!(
+        seen.iter().any(|e| phase_published(e, "failed")),
+        "{seen:#?}"
+    );
     client.send(InEvent::DeviceAvailability {
         tv: id,
         available: true,
     });
     let seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
-    assert!(!seen.iter().any(|e| phase(e, "wol_sent")), "{seen:#?}");
+    assert!(
+        !seen.iter().any(|e| phase_published(e, "wol_sent")),
+        "{seen:#?}"
+    );
 }

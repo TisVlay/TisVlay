@@ -44,7 +44,7 @@ pub(super) fn power_on_tv(
     match handle {
         // A standby-reachable bus (CEC) wakes in place over its live link.
         Some(handle) if traits.is_some_and(|t| t.0.reachable_in_standby) => {
-            if handle.cmd_tx.send(BackendCmd::PowerOn).is_err() {
+            if !wake_in_place(commands, entity, handle) {
                 return Err(WireError::not_connected(id));
             }
         }
@@ -76,6 +76,20 @@ pub(super) fn power_on_tv(
     }
     arm_desired_input(commands, entity, clock, restore_to);
     Ok(())
+}
+
+/// Send an in-place power-on and mark it running; `false` when the
+/// connection task is gone.
+pub(super) fn wake_in_place(
+    commands: &mut Commands,
+    entity: Entity,
+    handle: &ConnectionHandle,
+) -> bool {
+    let sent = handle.cmd_tx.send(BackendCmd::PowerOn).is_ok();
+    if sent {
+        commands.entity(entity).insert(WakingInPlace);
+    }
+    sent
 }
 
 /// Arm the screen verify: the action was sent (or routed onto the wake
@@ -248,16 +262,22 @@ pub(super) fn verify_dispatch(
         &mut DispatchVerify,
         Option<&ConnectionHandle>,
         Has<PendingConnect>,
+        Has<WakingInPlace>,
         Option<&State<payload::Power>>,
         Option<&State<payload::Link>>,
         Option<&TransportTraits>,
         Option<&DispatchRetry>,
     )>,
 ) {
-    for (entity, id, mut verify, handle, pending, power, link, traits, retry) in &mut q {
+    for (entity, id, mut verify, handle, pending, waking, power, link, traits, retry) in &mut q {
         if pending {
             // A dial is in flight (elevation or wake escalation): defer —
             // the Connected arm re-asserts and restarts the verify clock.
+            continue;
+        }
+        if waking {
+            // The wake's refresh lands before it ends, so the check that
+            // follows reads what the wake left.
             continue;
         }
         if verify.verify_at > clock.0 {
@@ -293,7 +313,7 @@ pub(super) fn verify_dispatch(
         if verify.target_on {
             if traits.is_some_and(|t| t.0.reachable_in_standby) {
                 // Wake in place on the live standby connection (CEC).
-                let _ = handle.cmd_tx.send(BackendCmd::PowerOn);
+                wake_in_place(&mut commands, entity, handle);
                 commands.entity(entity).remove::<DispatchVerify>();
                 continue;
             }
@@ -333,19 +353,22 @@ pub(super) fn reconcile_input(
         &mut DesiredInput,
         Option<&ConnectionHandle>,
         Has<PendingConnect>,
+        Has<WakingInPlace>,
         Option<&State<payload::Input>>,
         Option<&State<payload::Identity>>,
         Option<&DispatchRetry>,
     )>,
 ) {
-    for (entity, id, mut desired, handle, pending, input, identity, retry) in &mut q {
+    for (entity, id, mut desired, handle, pending, waking, input, identity, retry) in &mut q {
         let Some(handle) = handle else {
             if !pending {
                 commands.entity(entity).remove::<DesiredInput>();
             }
             continue;
         };
-        if desired.next_at > clock.0 {
+        // An input switch sent mid-wake can land before the TV is on, and
+        // a failed wake drops the restore.
+        if waking || desired.next_at > clock.0 {
             continue;
         }
         // Capabilities are enriched by the time a handle exists; a

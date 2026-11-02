@@ -31,6 +31,7 @@ let mut client = WebOsClient::connect_url(&server.ws_url(), None).await?;
 | Client integration | registration, commands, subscriptions | `src/client.rs` (inline) |
 | Backend traits | subscription merging, `LgConnection` surface | `src/connection.rs` (inline) |
 | Fault injection | malformed JSON + connection drop (`src/client.rs`); `with_retry` (`src/connection.rs`) | inline |
+| Wake loop | deadline, confirm window, WoL resends and redials under paused time, over scripted `WakeSteps`; the power-read classification | `src/wake.rs` (inline) |
 
 ## Connection seam
 

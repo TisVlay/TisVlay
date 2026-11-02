@@ -10,10 +10,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use linux_cec::operand::PowerStatus;
 use tisvlay_core::{
     Credentials, Error, LocalDevice, PairingSession, PairingState, Result, Transport, TvConnection,
     TvConnector, VendorConfig,
@@ -23,13 +21,6 @@ use tracing::instrument;
 use crate::config::{CecVendorConfig, DEFAULT_OSD_NAME};
 use crate::connection::CecConnection;
 use crate::link::{CecLinkOpener, Claim, LinuxCecLinkOpener};
-
-/// Delay between post-wake power-status probes, and how many to try before
-/// giving up. A CEC TV can take a second or more to report `On` after
-/// `Image View On`, so this is deliberately more patient than a network
-/// backend's verify loop.
-const WAKE_VERIFY_DELAY: Duration = Duration::from_millis(1500);
-const WAKE_VERIFY_ATTEMPTS: usize = 4;
 
 /// Factory for CEC TV connections.
 #[derive(Debug)]
@@ -87,12 +78,6 @@ impl Default for CecConnector {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Whether a CEC power status means the TV is reachable for control —
-/// i.e. on, or transitioning on.
-fn reachable(status: PowerStatus) -> bool {
-    matches!(status, PowerStatus::On | PowerStatus::ToOn)
 }
 
 /// The claim a connection-holding open makes: advertising the configured
@@ -220,53 +205,30 @@ impl TvConnector for CecConnector {
             )
             .await
             .map_err(|e| unavailable(&config.device, e))?;
-        // Image View On is fire-and-forget, a freshly-opened adapter is
-        // still claiming its logical address, and a just-standby TV can
-        // ignore the first wake — so a single send is easily lost. Re-send
-        // on every attempt (One Touch Play is idempotent for an already-on
-        // TV) and poll power between sends until the TV reports on.
-        // A permission failure (the daemon can't open the node) surfaces
-        // from the initial `open()?` above, before this loop runs — so the
-        // loop only handles the wake itself.
-        for _ in 0..WAKE_VERIFY_ATTEMPTS {
-            match link.power_on().await {
-                Ok(()) => {}
-                // A dead adapter won't recover by retrying — surface the
-                // concrete error now instead of burning the whole verify
-                // window on a generic "did not report power-on".
-                Err(e @ Error::ConnectionClosed) => return Err(e),
-                // Otherwise the send may have failed on a lost
-                // logical-address claim; re-open to re-claim before the
-                // next re-send (keep the old handle if the re-open fails).
-                Err(_) => {
-                    if let Ok(fresh) = self
-                        .opener
-                        .open(
-                            &config.device,
-                            config.physical_address.to_linux(),
-                            advertising_claim(&config),
-                        )
-                        .await
-                    {
-                        link = fresh;
-                    }
-                }
-            }
-            tokio::time::sleep(WAKE_VERIFY_DELAY).await;
-            if let Ok(status) = link.query_power().await
-                && reachable(status)
-            {
-                let identity = crate::identity::query(link.as_ref()).await;
-                return Ok(Box::new(
-                    CecConnection::new(link, self.opener.clone(), config.device.clone(), identity)
-                        .with_wakes_pc(self.wakes_pc(&config.device))
-                        .with_physical_address(config.physical_address.to_linux()),
-                ));
-            }
+        // The send-and-poll loop owns the wake's retries; a permission
+        // failure (the daemon can't open the node) already surfaced from
+        // the `open()?` above. A TV that never reports on still connects:
+        // the bus reaches it in standby, and the daemon judges the wake
+        // from the connection's power state.
+        let woke = crate::confirm::wake_until_on(
+            &mut link,
+            crate::confirm::DIAL_WINDOW,
+            crate::confirm::OnSendError::Reclaim {
+                opener: self.opener.as_ref(),
+                device: &config.device,
+                physical_address: config.physical_address.to_linux(),
+                claim: advertising_claim(&config),
+            },
+        )
+        .await?;
+        if !woke {
+            tracing::info!(device = %config.device, "the TV didn't report on after the wake");
         }
-        Err(Error::backend(
-            crate::VENDOR_ID,
-            "TV did not report power-on after repeated Image View On",
+        let identity = crate::identity::query(link.as_ref()).await;
+        Ok(Box::new(
+            CecConnection::new(link, self.opener.clone(), config.device.clone(), identity)
+                .with_wakes_pc(self.wakes_pc(&config.device))
+                .with_physical_address(config.physical_address.to_linux()),
         ))
     }
 
@@ -369,6 +331,7 @@ impl TvConnector for CecConnector {
 mod tests {
     use super::*;
     use crate::link::FakeCecLinkOpener;
+    use linux_cec::operand::PowerStatus;
 
     fn cfg() -> VendorConfig {
         VendorConfig::from_typed(&CecVendorConfig::default()).unwrap()
@@ -527,29 +490,52 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn wake_and_connect_powers_on_then_connects() {
-        // Fake starts in standby; power_on flips it to On, and the verify
-        // loop then sees it reachable. `start_paused` makes the verify
-        // sleeps run in virtual time.
-        let conn = connector(PowerStatus::Standby)
+        // Fake starts in standby; power_on flips it to On, and the wake
+        // loop then sees it on. `start_paused` makes the loop's sleeps run
+        // in virtual time.
+        let mut conn = connector(PowerStatus::Standby)
             .wake_and_connect(&cfg())
-            .await;
-        assert!(conn.is_ok(), "wake_and_connect should connect after wake");
-        assert!(conn.unwrap().is_connected());
+            .await
+            .expect("wake_and_connect connects after the wake");
+        assert!(conn.is_connected());
+        assert_eq!(
+            conn.get_power_state().await.expect("power state"),
+            tisvlay_core::PowerState::Active
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn wake_and_connect_resends_until_tv_wakes() {
         // The TV drops the first two Image View On sends and only wakes on
         // the third. A single fire-and-forget send would strand it in
-        // standby; the re-send loop must keep trying across verify attempts.
-        let conn = CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new_flaky_wake(2)))
+        // standby; the loop must keep re-sending until it does.
+        let mut conn = CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new_flaky_wake(2)))
             .wake_and_connect(&cfg())
-            .await;
-        assert!(
-            conn.is_ok(),
-            "wake_and_connect should re-send Image View On until the TV wakes",
+            .await
+            .expect("wake_and_connect connects");
+        assert!(conn.is_connected());
+        assert_eq!(
+            conn.get_power_state().await.expect("power state"),
+            tisvlay_core::PowerState::Active,
+            "the re-sent Image View On woke the TV",
         );
-        assert!(conn.unwrap().is_connected());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wake_and_connect_hands_over_the_link_when_the_tv_never_wakes() {
+        // A TV that ignores every Image View On still answers on the bus, so
+        // the dial connects when its window ends; the daemon then judges
+        // the wake from the connection's standby state.
+        let mut conn =
+            CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new_flaky_wake(usize::MAX)))
+                .wake_and_connect(&cfg())
+                .await
+                .expect("the bus reaches the TV in standby");
+        assert!(conn.is_connected());
+        assert_eq!(
+            conn.get_power_state().await.expect("power state"),
+            tisvlay_core::PowerState::Standby
+        );
     }
 
     #[test]

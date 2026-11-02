@@ -176,7 +176,18 @@ pub(super) fn apply_backend_events(
                     );
                 }
                 if wake_dial {
-                    publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Connected);
+                    // The backend's wake tried within its window and handed
+                    // over the link either way: the connect snapshot says
+                    // whether the TV acted on it. A refused wake keeps the
+                    // link (the TV is reachable, just off) and drops the
+                    // input restore, which would only nag an off TV.
+                    if wake_failed(state.power_state) {
+                        tracing::info!(%tv, power = ?state.power_state, "the TV didn't act on the wake");
+                        commands.entity(entity).remove::<DesiredInput>();
+                        publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
+                    } else {
+                        publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Connected);
+                    }
                 }
                 // A screen intent that survived the dial (elevation or
                 // wake escalation) re-asserts over the fresh link:
@@ -249,11 +260,37 @@ pub(super) fn apply_backend_events(
                 // cancelled by a later off, and reported on
                 // `progress/power`. The task's `Disconnected` follows and
                 // finds the dial pending, so it leaves the intent alone.
+                let mut e = commands.entity(entity);
+                e.remove::<WakingInPlace>();
                 if writes.link.get(entity).is_ok_and(|l| l.supports_wake) {
                     tracing::info!(%tv, "power-on lost to a closing link, re-armed as a wake");
-                    let mut e = commands.entity(entity);
                     e.remove::<(ConnectionHandle, RetryAt)>();
                     redial(&mut e, true);
+                }
+            }
+            BackendEvent::PowerOnDone { abandoned, power } => {
+                // The in-place wake's verdict, from the state the task's
+                // refresh read (none when it couldn't: then the TV
+                // couldn't say, and only a positive off report fails a
+                // wake). A success publishes nothing, so a CEC screen-on
+                // (power emulated) doesn't announce itself, and neither
+                // does an abandoned wake: the off that interrupted it is
+                // what was asked for last. A failed or abandoned wake
+                // drops the intents that would otherwise act on an off
+                // TV: a riding screen-on would escalate into another
+                // in-place wake.
+                let mut e = commands.entity(entity);
+                e.remove::<WakingInPlace>();
+                let failed = power.is_some_and(wake_failed);
+                if failed {
+                    tracing::info!(%tv, "the in-place wake didn't land");
+                    publish_power_phase(&mut outbox, &site, tv, payload::PowerPhase::Failed);
+                } else if *abandoned {
+                    tracing::info!(%tv, "an off interrupted the in-place wake");
+                }
+                if failed || *abandoned {
+                    drop_screen_on_intent(&mut e);
+                    e.remove::<DesiredInput>();
                 }
             }
             BackendEvent::ConnectFailed { reason } => {
@@ -382,6 +419,13 @@ pub(super) fn apply_backend_events(
             },
         }
     }
+}
+
+/// Whether a wake failed, judged from the power state it left: only a
+/// positive off report fails it. A warming-up TV has acted on the wake,
+/// and one that can't report its power state gets no false failure.
+fn wake_failed(power: tisvlay_core::PowerState) -> bool {
+    power.class() == tisvlay_core::PowerClass::Off
 }
 
 pub(super) fn publish_power_phase(

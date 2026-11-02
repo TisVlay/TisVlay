@@ -102,6 +102,12 @@ pub struct MockVendorConfig {
     #[serde(default)]
     pub power_off_delay_ms: u64,
 
+    /// How long an in-place `power_on` takes, in milliseconds, before it
+    /// wakes the TV and returns. Default 0 (instant). For tests of what
+    /// can interrupt a wake that's still running.
+    #[serde(default)]
+    pub power_on_delay_ms: u64,
+
     /// Make this mock TV behave like a poll-only backend.
     ///
     /// When `true`, the mock connection's `subscribe_state` returns
@@ -188,6 +194,7 @@ impl Default for MockVendorConfig {
             backlight_ramp_intermediates: Vec::new(),
             backlight_ramp_step_delay_ms: 0,
             power_off_delay_ms: 0,
+            power_on_delay_ms: 0,
             disable_subscription: false,
             reachable_in_standby: false,
             emulate_screen_via_power: false,

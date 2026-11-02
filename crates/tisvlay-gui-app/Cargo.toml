@@ -53,6 +53,7 @@ zbus = { workspace = true }
 
 [dev-dependencies]
 tisvlay-test = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tisvlay-daemon = { workspace = true }
 tisvlay-mock = { workspace = true }
 tisvlay-session = { workspace = true }

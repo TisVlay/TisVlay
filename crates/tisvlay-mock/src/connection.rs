@@ -52,6 +52,9 @@ pub struct MockConnection {
     /// How long `power_off` takes at the TV. Sourced from
     /// [`MockVendorConfig::power_off_delay_ms`].
     power_off_delay: std::time::Duration,
+    /// How long an in-place `power_on` takes. Sourced from
+    /// [`MockVendorConfig::power_on_delay_ms`].
+    power_on_delay: std::time::Duration,
     /// When `true`, [`TvConnection::subscribe_state`] returns
     /// `NotSupported`, modeling a poll-only backend. Sourced from
     /// [`MockVendorConfig::disable_subscription`].
@@ -126,6 +129,7 @@ impl MockConnection {
                 config.backlight_ramp_step_delay_ms,
             ),
             power_off_delay: std::time::Duration::from_millis(config.power_off_delay_ms),
+            power_on_delay: std::time::Duration::from_millis(config.power_on_delay_ms),
             disable_subscription: config.disable_subscription,
             reachable_in_standby: config.reachable_in_standby,
             link_mac: config.link_mac.clone(),
@@ -189,6 +193,9 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
+        if self.shared.lock().state_query_fails.contains(&self.address) {
+            return Err(Error::RequestTimeout);
+        }
         Ok(self.state.lock().clone())
     }
 
@@ -253,6 +260,13 @@ impl TvConnection for MockConnection {
         if self.shared.lock().power_on_closes.contains(&self.address) {
             self.connected = false;
             return Err(Error::ConnectionClosed);
+        }
+        if !self.power_on_delay.is_zero() {
+            tokio::time::sleep(self.power_on_delay).await;
+        }
+        // A TV that ignores the wake: the send went out, the TV stays off.
+        if self.shared.lock().power_on_ignored.contains(&self.address) {
+            return Ok(());
         }
         self.mutate_and_push(|s| {
             s.update_power(PowerState::Active);
