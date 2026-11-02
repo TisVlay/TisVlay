@@ -87,7 +87,7 @@
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
             slintViewer = self.packages.${system}.slint-viewer;
-            # The same cargo-about (at least 0.9.1) the package builds with,
+            # The same cargo-about (0.9.1) the package builds with,
             # so the dev shell's license bundle matches the shipped one.
             cargoAbout = pkgs.callPackage ./packaging/nix/cargo-about.nix { };
             cargoNfpmSrc = pkgs.fetchCrate {
@@ -123,7 +123,7 @@
                 # attribution; cargo-deny enforces the SPDX allow-list
                 # at PR time via prek so a future dep bump can't drag
                 # in a forbidden license. Maintenance reference:
-                # docs/licensing.md. At least 0.9.1, via cargoAbout (above).
+                # docs/licensing.md. Pinned to 0.9.1, via cargoAbout (above).
                 cargoAbout
                 cargo-deny
                 # cargo-hack checks each feature in isolation (`just hack`);
