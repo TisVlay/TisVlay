@@ -71,8 +71,8 @@
         };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
-        # on the `dist` package above, the build tisvlay.cachix.org serves,
-        # and asserts the module's end-to-end behavior. Run via
+        # on the flake's own package, the `dist` build tisvlay.cachix.org
+        # serves, and asserts the module's end-to-end behavior. Run via
         # `nix build .#checks.${system}.vm` or `nix flake check`.
         checks.vm = pkgs.callPackage ./packaging/nix/test.nix {
           package = self.packages.${system}.tisvlay;
@@ -90,8 +90,8 @@
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
             slintViewer = self.packages.${system}.slint-viewer;
-            # The same cargo-about (0.9.1) the package builds with,
-            # so the dev shell's license bundle matches the shipped one.
+            # The same pinned cargo-about the package builds with, so the
+            # dev shell's license bundle matches the shipped one.
             cargoAbout = pkgs.callPackage ./packaging/nix/cargo-about.nix { };
             cargoNfpmSrc = pkgs.fetchCrate {
               pname = "cargo-nfpm";
@@ -126,7 +126,7 @@
                 # attribution; cargo-deny enforces the SPDX allow-list
                 # at PR time via prek so a future dep bump can't drag
                 # in a forbidden license. Maintenance reference:
-                # docs/licensing.md. Pinned to 0.9.1, via cargoAbout (above).
+                # docs/licensing.md. The pinned one, via cargoAbout.
                 cargoAbout
                 cargo-deny
                 # cargo-hack checks each feature in isolation (`just hack`);

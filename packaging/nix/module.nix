@@ -340,9 +340,9 @@ in
     # Lets the daemon's user put the machine to sleep for a system
     # profile's on_tv_power_off (the profile field is the opt-in); the
     # same rule the distro packages ship, for this module's user.
-    security.polkit.extraConfig =
-      lib.replaceStrings [ ''"tisvlay"'' ] [ ''"${cfg.user}"'' ]
-        (builtins.readFile ../polkit/50-tisvlay.rules);
+    security.polkit.extraConfig = lib.replaceStrings [ ''"tisvlay"'' ] [ ''"${cfg.user}"'' ] (
+      builtins.readFile ../polkit/50-tisvlay.rules
+    );
 
     # Keeps the TV remote's power keys away from the desktop when a system
     # profile's remote_keys lets the remote through; the same keymap the

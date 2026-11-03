@@ -27,8 +27,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # profile flag for "debug"), as `just test` and CI's do: the GUI tests
   # find elements through Slint debug info, which the shipped profiles
   # leave out, and overflow checks and debug assertions stay on.
-  # `checks.tests` reuses this package with doCheck on; `checks.vm` is
-  # what runs the shipped build.
   checkType = "debug";
 
   # Only what the build and its tests read, so the source hash, and with it
@@ -71,8 +69,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeBuildInputs = [
     # build.rs (tisvlay-gui-app) and preBuild both invoke cargo-about for
     # the same THIRD-PARTY-LICENSES.html — embedded in the binary and
-    # installed to share/doc/ respectively. Pinned to 0.9.1, or the Slint
-    # crates' license text goes missing (./cargo-about.nix).
+    # installed to share/doc/ respectively. The pinned one, or the Slint
+    # crates' license text can go missing (./cargo-about.nix).
     (callPackage ./cargo-about.nix { inherit cargo-about; })
     pkg-config
     # Setup-hook that copies `desktopItems` into $out/share/applications/.
