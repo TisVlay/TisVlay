@@ -20,6 +20,12 @@ updates:
         patterns:
           - "*"
   # Cargo: bump weekly, grouped into a single PR. Titles are "chore(deps): ...".
+  # Semver-major bumps match no group, so Dependabot opens one PR per crate
+  # for them: a major often has to wait for the crates that share its types
+  # to move too, and one waiting in the group would block the rest of the
+  # week's bumps. Dependabot calls a 0.x bump like 0.11 → 0.12 a minor one,
+  # though Cargo treats it as breaking, so 0.x crates that have hit that
+  # wait are excluded from the group by name and get their own PRs too.
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
@@ -34,3 +40,11 @@ updates:
       cargo:
         patterns:
           - "*"
+        exclude-patterns:
+          # Shared with Slint, which is pinned exactly.
+          - "fontique"
+          # Shared with arboard and pipewire-native.
+          - "parking_lot"
+        update-types:
+          - "minor"
+          - "patch"
