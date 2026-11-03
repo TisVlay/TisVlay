@@ -24,9 +24,8 @@
 #
 # Default-feature resolution intentionally — matches the dep graph
 # we actually ship. The MCP debug stack (`i-slint-backend-testing/mcp`'s
-# prost chain, which contains crates we don't audit for production, e.g.
-# `generational-arena` under MPL-2.0) is reachable only via an ad-hoc
-# `cargo run --features slint/mcp` — a `slint` dependency feature that no
+# prost chain, which contains crates we don't audit for production) is
+# reachable only via an ad-hoc `cargo run --features slint/mcp` — a `slint` dependency feature that no
 # workspace crate enables — so it is absent from both default- and
 # all-feature resolution and never reaches the licenses check.
 [graph]
@@ -67,7 +66,6 @@ exceptions = [
     { name = "slint-build", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "slint-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-backend-selector", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
-    { name = "i-slint-backend-testing", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-backend-winit", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-common", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-compiler", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
