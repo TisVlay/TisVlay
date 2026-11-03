@@ -1,34 +1,34 @@
-# cargo-about 0.9.1, exactly. It's the first release whose generator honors
-# LicenseRef-* clarify files (EmbarkStudios/cargo-about#303); an older one
-# drops the vendored Slint crates' royalty-free license text from
-# THIRD-PARTY-LICENSES.html with only a "no license file" warning, and
-# 0.9.2 drops it again the same way. Neither fails the build, so the
-# version is pinned rather than floored: bump it only after generating the
-# bundle with both versions and checking the Slint crates keep their
-# license text.
+# cargo-about, pinned to one release. Some releases ignore the Slint crates'
+# LicenseRef-* clarify files (EmbarkStudios/cargo-about#303 and #329) and
+# drop their royalty-free license text from THIRD-PARTY-LICENSES.html with
+# only a "no license file" warning, which doesn't fail the build. So bump
+# `version` only after generating the bundle with the new release and
+# checking the Slint crates keep their license text.
 #
 # nixpkgs' copy passes through when it's this version; otherwise this
-# builds 0.9.1 from source.
+# builds it from source.
 {
   cargo-about,
   fetchFromGitHub,
   rustPlatform,
 }:
 
-if cargo-about.version == "0.9.1" then
+let
+  version = "0.9.1";
+in
+if cargo-about.version == version then
   cargo-about
 else
   let
     src = fetchFromGitHub {
       owner = "EmbarkStudios";
       repo = "cargo-about";
-      tag = "0.9.1";
+      tag = version;
       hash = "sha256-mZyfECnlpYom/XI445DOeUAthqK3HKC+QkkK+5gf0/E=";
     };
   in
   cargo-about.overrideAttrs {
-    version = "0.9.1";
-    inherit src;
+    inherit version src;
     cargoDeps = rustPlatform.fetchCargoVendor {
       inherit src;
       hash = "sha256-//t3ASNljC4rosk5oOmcJy8PZKRYjlQ0euzzAmfiSPQ=";
