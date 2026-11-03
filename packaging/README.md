@@ -195,10 +195,11 @@ release.yml
 
 1. On a branch, run `just release-bump` (`release-plz update`, then the book's generated partials), review the version and the CHANGELOGs, run `just package-check`, and merge it as a PR titled `chore(release): X.Y.Z`.
 2. Optionally rehearse: tag the merge commit `vX.Y.Z-rc.1`, watch the run, `just verify-release vX.Y.Z-rc.1` on the draft, then delete the draft and the tag.
-3. Tag the merge commit `vX.Y.Z` and run `just verify-release vX.Y.Z` on the draft.
-4. Check the cached Nix install against the draft: on a NixOS host set up as the book's Installation page says, `nixos-rebuild build` fetches `tisvlay` from tisvlay.cachix.org instead of building it (`nix path-info --store https://tisvlay.cachix.org <path>`).
-5. Publish the release, then run `just verify-release vX.Y.Z` again, which now includes `gh release verify`. Approve the `publish-crates` deployment, which publishes the three crates through crates.io trusted publishing ([docs/build.md](../docs/build.md) § First-publish checklist covers a newly published crate).
-6. On a machine with the new `.deb` installed, `gh attestation verify /usr/bin/tisvlay` with the signer pins from the book's Security & Supply Chain page.
+3. Run the Nix checks on the merge commit: `nix build .#checks.x86_64-linux.tests .#checks.x86_64-linux.vm` (the VM test needs KVM). No CI job runs them: the first is the test suite in the Nix sandbox, the second boots the `dist` package tisvlay.cachix.org will serve.
+4. Tag the merge commit `vX.Y.Z` and run `just verify-release vX.Y.Z` on the draft.
+5. Check the cached Nix install against the draft: on a NixOS host set up as the book's Installation page says, `nixos-rebuild build` fetches `tisvlay` from tisvlay.cachix.org instead of building it (`nix path-info --store https://tisvlay.cachix.org <path>`).
+6. Publish the release, then run `just verify-release vX.Y.Z` again, which now includes `gh release verify`. Approve the `publish-crates` deployment, which publishes the three crates through crates.io trusted publishing ([docs/build.md](../docs/build.md) § First-publish checklist covers a newly published crate).
+7. On a machine with the new `.deb` installed, `gh attestation verify /usr/bin/tisvlay` with the signer pins from the book's Security & Supply Chain page.
 
 ## Shell completions
 
