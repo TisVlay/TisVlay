@@ -21,21 +21,6 @@ Companion files outside this directory:
 
 ## Using the module
 
-Without flakes, from a fetched copy of the repository (or one pinned with npins or niv). The module is also importable by path, `"${src}/packaging/nix/module.nix"`, which skips the flake-compat evaluation:
-
-```nix
-# configuration.nix
-let
-  tisvlay = import (builtins.fetchTarball "https://github.com/TisVlay/TisVlay/archive/main.tar.gz");
-in
-{
-  imports = [ tisvlay.nixosModules.default ];
-  services.tisvlay.enable = true;
-}
-```
-
-With flakes:
-
 ```nix
 {
   inputs.tisvlay.url = "github:TisVlay/TisVlay";
@@ -51,10 +36,10 @@ With flakes:
 }
 ```
 
-Authoritative option reference: read [`module.nix`](module.nix) directly — every option has a docstring. Highlights:
+The user-facing recipes, the plain-Nix `import` and the cached release builds included, are the book's [Installation](../../docs/book/src/getting-started/installation.md#nixos-module) page. Without flakes, the module is also importable by path, `"${src}/packaging/nix/module.nix"`, which skips the flake-compat evaluation.
 
-- `services.tisvlay.logLevel` — maps to `RUST_LOG` on all three systemd units.
-- `services.tisvlay.extraArgs` — appended to the daemon's `ExecStart`.
+Authoritative option reference: read [`module.nix`](module.nix) directly — every option has a docstring. The book's option table covers the user-facing ones; two whose semantics it doesn't spell out:
+
 - `services.tisvlay.settings` — declarative seed config (TOML), rendered to the Nix store and passed as `--seed <path>`. Provisioning semantics: re-applied every start, ids already in the daemon-owned `/var/lib/tisvlay/daemon.toml` win, pairing still persists there — and a still-declared TV removed at runtime returns on the next start (drop the entry to drop the TV).
 - `services.tisvlay.user` / `group` — defaults `"tisvlay"` / `"tisvlay"`. `uid` / `gid` default to `null`, letting NixOS pick a system UID and pin it via `/var/lib/nixos/uid-map`. Override only if you need the UID fixed across multiple hosts.
 

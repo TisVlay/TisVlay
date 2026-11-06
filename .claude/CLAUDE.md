@@ -180,24 +180,7 @@ tisvlay profile user list --user-socket …
 
 ### NixOS Installation
 
-```nix
-# configuration.nix, without flakes
-let
-  tisvlay = import (builtins.fetchTarball "https://github.com/TisVlay/TisVlay/archive/main.tar.gz");
-in {
-  imports = [ tisvlay.nixosModules.default ];
-  services.tisvlay.enable = true;
-}
-
-# with flakes: inputs.tisvlay.url = "github:TisVlay/TisVlay";
-{ inputs, ... }: {
-  imports = [ inputs.tisvlay.nixosModules.default ];
-  services.tisvlay.enable = true;
-  services.tisvlay.users = [ "yourname" ];   # socket-permission grant
-}
-```
-
-This sets up the `tisvlay-daemon` system service (runs as `tisvlay` user, state in `/var/lib/tisvlay/`, socket in `/run/tisvlay/`), `tisvlay-session` + `tisvlay-tray` user services, the CLI in `$PATH`, and optionally the greeter client (`greeter.enable`).
+`services.tisvlay.enable` runs the daemon as the `tisvlay` user (state in `/var/lib/tisvlay/`, socket in `/run/tisvlay/`) plus the session, tray and optional greeter units. The install recipes (the flake input, the plain-Nix `import`, the cached release builds) are the book's [Installation](../docs/book/src/getting-started/installation.md#nixos-module) page; how the package, the module and the root `default.nix` shim fit together is [packaging/nix/README.md](../packaging/nix/README.md).
 
 ## Tasks & Commands (`just`)
 
