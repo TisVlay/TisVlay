@@ -67,6 +67,8 @@ The repository provides a NixOS module that wires up the daemon, user services, 
 }
 ```
 
+<details><summary id="module-without-flakes">Without flakes</summary>
+
 Without flakes, import a fetched copy of the repository (or one pinned with npins or niv); it evaluates to the same outputs the flake has:
 
 ```nix
@@ -80,6 +82,8 @@ in
   services.tisvlay.users = [ "yourname" ];
 }
 ```
+
+</details>
 
 <details><summary id="prebuilt-binaries-optional">Prebuilt binaries (optional)</summary>
 
@@ -111,7 +115,7 @@ By default the module builds tisvlay against your system's nixpkgs, so it compil
 }
 ```
 
-Without flakes:
+<details><summary id="prebuilt-without-flakes">Without flakes</summary>
 
 ```nix
 # configuration.nix
@@ -130,6 +134,8 @@ in
   services.tisvlay.package = tisvlay.packages.${pkgs.stdenv.hostPlatform.system}.default;
 }
 ```
+
+</details>
 
 The `nix.settings` lines take effect once a switch activates them, so pass the cache on the command line for the first switch, or it builds locally (without flakes, drop `--flake`):
 
