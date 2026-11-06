@@ -10,7 +10,7 @@
     # Evaluates this flake for plain Nix: default.nix reads the pin from
     # flake.lock, so `nix-build` and `import` reach the same outputs.
     flake-compat = {
-      url = "github:nix-community/flake-compat";
+      url = "github:NixOS/flake-compat";
       flake = false;
     };
   };

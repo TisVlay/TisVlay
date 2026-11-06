@@ -1,6 +1,6 @@
 # tisvlay — Nix packaging
 
-Nix packaging for tisvlay: the Rust package derivation, the NixOS module, and an integration test that boots everything in a VM. The definitions are the flake's outputs. Plain Nix reaches the same outputs through [`default.nix`](../../default.nix) at the repository root, a [flake-compat](https://github.com/nix-community/flake-compat) shim pinned in `flake.lock`: `nix-build -A default` builds the package, and `import` of the repository gives `nixosModules.default`, `packages.<system>` and the rest, so both kinds of user build the same derivations, the cached release builds included.
+Nix packaging for tisvlay: the Rust package derivation, the NixOS module, and an integration test that boots everything in a VM. The definitions are the flake's outputs. Plain Nix reaches the same outputs through [`default.nix`](../../default.nix) at the repository root, a [flake-compat](https://github.com/NixOS/flake-compat) shim pinned in `flake.lock`: `nix-build -A default` builds the package, and `import` of the repository gives `nixosModules.default`, `packages.<system>` and the rest, so both kinds of user build the same derivations, the cached release builds included.
 
 ## Contents
 
