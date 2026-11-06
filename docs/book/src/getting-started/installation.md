@@ -161,6 +161,7 @@ Later switches pick the cache up from `nix.settings` alone.
 | `openFirewall`, `bindPort` | Open the pinned discovery port in the host firewall (see [Firewall & Discovery](../operations/firewall-discovery.md)). |
 | `sunshinePort` | Where to find Sunshine if you moved it off its default port (see [Streaming](../guide/streaming.md#sunshine-integration)). |
 | `logLevel`, `extraArgs` | The services' log level, and extra `tisvlay-daemon` arguments for anything the module doesn't expose. |
+| `user`, `group`, `uid`, `gid` | The daemon's service account. Fix `uid` and `gid` only when they must match across hosts. |
 
 Types and defaults are in each option's description in [`module.nix`](https://github.com/TisVlay/TisVlay/blob/main/packaging/nix/module.nix).
 
