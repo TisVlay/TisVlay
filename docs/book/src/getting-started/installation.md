@@ -2,7 +2,7 @@
 
 Most Linux users can install a pre-built package below. Choose the instructions for your distribution.
 
-## Distro packages (.deb / .rpm / .pkg.tar.zst / flake)
+## Distro packages (.deb / .rpm / .pkg.tar.zst / Nix)
 
 Pre-built packages are published on the [releases page](https://github.com/TisVlay/TisVlay/releases) for each tagged version, for x86_64 and arm64 (aarch64). The commands below pick the one that matches your machine. Each package is signed; to check one before you install it, see [Security & Supply Chain](../reference/security-supply-chain.md).
 
@@ -44,9 +44,23 @@ sudo rpm-ostree install ./tisvlay-${VERSION}-1.$(uname -m).rpm
 ### NixOS / Source Install
 
 <details>
-<summary id="nixos-flake-module">NixOS (flake module)</summary>
+<summary id="nixos-module">NixOS module</summary>
 
-The repository's flake provides a NixOS module that wires up the daemon, user services, and CLI together.
+The repository provides a NixOS module that wires up the daemon, user services, and CLI together. Without flakes, import a fetched copy of the repository (or one pinned with npins or niv); it evaluates to the same outputs the flake has:
+
+```nix
+# configuration.nix
+let
+  tisvlay = import (builtins.fetchTarball "https://github.com/TisVlay/TisVlay/archive/main.tar.gz");
+in
+{
+  imports = [ tisvlay.nixosModules.default ];
+  services.tisvlay.enable = true;
+  services.tisvlay.users = [ "yourname" ];
+}
+```
+
+With flakes, add the repository as an input:
 
 ```nix
 # flake.nix
@@ -69,7 +83,27 @@ The repository's flake provides a NixOS module that wires up the daemon, user se
 
 <details><summary id="prebuilt-binaries-optional">Prebuilt binaries (optional)</summary>
 
-By default the module builds tisvlay against your system's nixpkgs, so it compiles locally on every install and update. Each [release](https://github.com/TisVlay/TisVlay/releases) is also built by CI and published to the public `tisvlay.cachix.org` binary cache, for x86_64 and aarch64 Linux. To use those builds instead, pin the input to a release tag, trust the cache, and point the module at the flake's own package:
+By default the module builds tisvlay against your system's nixpkgs, so it compiles locally on every install and update. Each [release](https://github.com/TisVlay/TisVlay/releases) is also built by CI and published to the public `tisvlay.cachix.org` binary cache, for x86_64 and aarch64 Linux. To use those builds instead, pin the repository to a release tag, trust the cache, and point the module at the repository's own package. Without flakes:
+
+```nix
+# configuration.nix
+{ pkgs, ... }:
+let
+  # A release tag.
+  tisvlay = import (builtins.fetchTarball "https://github.com/TisVlay/TisVlay/archive/vX.Y.Z.tar.gz");
+in
+{
+  imports = [ tisvlay.nixosModules.default ];
+  nix.settings.substituters = [ "https://tisvlay.cachix.org" ];
+  nix.settings.trusted-public-keys = [
+    "tisvlay.cachix.org-1:pa9AnLlywwXfm4cwUzRD1afQh2VbGTbYF6a9iQgzb/g="
+  ];
+  services.tisvlay.enable = true;
+  services.tisvlay.package = tisvlay.packages.${pkgs.stdenv.hostPlatform.system}.default;
+}
+```
+
+With flakes:
 
 ```nix
 # flake.nix
@@ -97,10 +131,10 @@ By default the module builds tisvlay against your system's nixpkgs, so it compil
 }
 ```
 
-The `nix.settings` lines take effect once a switch activates them, so pass the cache on the command line for the first switch, or it builds locally:
+The `nix.settings` lines take effect once a switch activates them, so pass the cache on the command line for the first switch, or it builds locally (with flakes, add `--flake .#your-host`):
 
 ```sh
-sudo nixos-rebuild switch --flake .#your-host \
+sudo nixos-rebuild switch \
   --option extra-substituters https://tisvlay.cachix.org \
   --option extra-trusted-public-keys tisvlay.cachix.org-1:pa9AnLlywwXfm4cwUzRD1afQh2VbGTbYF6a9iQgzb/g=
 ```

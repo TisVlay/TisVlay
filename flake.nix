@@ -3,10 +3,15 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # Evaluates this flake for plain Nix: default.nix reads the pin from
+    # flake.lock, so `nix-build` and `import` reach the same outputs.
+    flake-compat = {
+      url = "github:nix-community/flake-compat";
+      flake = false;
     };
   };
 
@@ -14,9 +19,22 @@
     {
       self,
       nixpkgs,
-      flake-utils,
       rust-overlay,
+      ...
     }:
+    let
+      # `f system` for each supported system, keyed the flake's way
+      # (`packages.${system}`). Linux only, as the project is;
+      # tisvlay.cachix.org serves both.
+      eachSystem =
+        f:
+        let
+          bySystem = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] f;
+        in
+        nixpkgs.lib.genAttrs [ "packages" "checks" "devShells" ] (
+          output: nixpkgs.lib.mapAttrs (_: outputs: outputs.${output}) bySystem
+        );
+    in
     # System-agnostic outputs
     {
       nixosModules.default = import ./packaging/nix/module.nix;
@@ -25,8 +43,8 @@
         tisvlay = final.callPackage ./packaging/nix/package.nix { };
       };
     }
-    # Per-system outputs (packages, devShell)
-    // flake-utils.lib.eachDefaultSystem (
+    # Per-system outputs (packages, checks, devShell)
+    // eachSystem (
       system:
       let
         overlays = [ rust-overlay.overlays.default ];

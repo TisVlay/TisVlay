@@ -69,7 +69,8 @@ tisvlay/
 ├── .github/                      # CONTRIBUTING.md, SECURITY.md, PR + issue templates,
 │                                 # workflows, dependabot.yml
 ├── packaging/
-│   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM)
+│   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM);
+│   │                             # the root default.nix is a flake-compat shim over flake.nix
 │   ├── systemd/                  # tisvlay-daemon.service (system), session/tray/greeter
 │   │                             # (user units), org.tisvlay.Gui.service (GUI activation)
 │   ├── freedesktop/              # org.tisvlay.Gui.desktop
@@ -180,10 +181,15 @@ tisvlay profile user list --user-socket …
 ### NixOS Installation
 
 ```nix
-# flake.nix input
-inputs.tisvlay.url = "github:TisVlay/TisVlay";
+# configuration.nix, without flakes
+let
+  tisvlay = import (builtins.fetchTarball "https://github.com/TisVlay/TisVlay/archive/main.tar.gz");
+in {
+  imports = [ tisvlay.nixosModules.default ];
+  services.tisvlay.enable = true;
+}
 
-# configuration.nix
+# with flakes: inputs.tisvlay.url = "github:TisVlay/TisVlay";
 { inputs, ... }: {
   imports = [ inputs.tisvlay.nixosModules.default ];
   services.tisvlay.enable = true;
