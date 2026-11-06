@@ -6,10 +6,10 @@ High-level overview of every channel we ship through, why the build pipeline is 
 
 | Channel | Source of truth | Use case |
 |---|---|---|
-| **Nix / NixOS module** | [`nix/package.nix`](nix/package.nix), [`nix/module.nix`](nix/module.nix) | NixOS hosts, declarative service config. See [`nix/README.md`](nix/README.md) for the full deep-dive on the Nix derivation, hardening posture, VM test, and module options. |
+| **Nix flake / NixOS module** | [`nix/package.nix`](nix/package.nix), [`nix/module.nix`](nix/module.nix) | NixOS hosts, declarative service config. See [`nix/README.md`](nix/README.md) for the full deep-dive on the Nix derivation, hardening posture, VM test, and module options. |
 | **`.deb` / `.rpm` / `.pkg.tar.zst`** (this directory) | [`crates/tisvlay-cli/Cargo.toml`](../crates/tisvlay-cli/Cargo.toml) `[package.metadata.nfpm*]` + [`justfile`](../justfile) `package-*` recipes | Debian/Ubuntu, Fedora/RHEL, Arch Linux. One bundled package per format containing both binaries (`tisvlay` and `tisvlay-gui`) plus systemd units, the GUI desktop entry, and the CLI's shell completions. |
 | **Test container** | [`docker/Dockerfile`](docker/Dockerfile) | Reproducible Ubuntu environment for verifying the build matrix without touching CI, and for smoke-testing the resulting `.rpm`/`.deb` against a clean glibc target. |
-| **Dev-shell native build** | [`nix/devshell.nix`](nix/devshell.nix) (`nix-shell` or `nix develop`) | `cargo run` / `cargo test` / `just check` directly from the Nix dev shell. **Not** what produces shippable binaries — see "Build pipeline" below. |
+| **Dev-shell native build** | [`flake.nix`](../flake.nix) `devShells.default` | `cargo run` / `cargo test` / `just check` directly from the Nix dev shell. **Not** what produces shippable binaries — see "Build pipeline" below. |
 
 The rest of this document is about the second channel — the cross-distro `.deb`/`.rpm`/`.pkg.tar.zst` produced by `just package-{deb,rpm,archlinux,all}`.
 
@@ -132,7 +132,7 @@ The packages build with the `dist` Cargo profile, not `release`: thin LTO, one c
 
 **Architectures.** The recipes package the host's architecture (`just`'s `arch()`), so the release workflow builds x86_64 on `ubuntu-latest` and arm64 on `ubuntu-26.04-arm`, each natively, and collects both into one draft release. `ARCH=aarch64 just package-deb` cross-builds from an x86_64 host. That needs the `aarch64-unknown-linux-gnu` Rust target, and an arm64 sysroot with fontconfig for the GUI's link, so in practice arm64 packages come from CI. `package-build` points `target/nfpm-dist` at the built triple's `dist/`: nfpm doesn't expand variables in `src` paths, and the GUI binary's path in the nfpm contents goes through that link.
 
-The dev shell ([`nix/devshell.nix`](nix/devshell.nix)) provides:
+The dev shell ([`flake.nix`](../flake.nix) `devShells.default`) provides:
 
 - `cargo-zigbuild` + `zig` — the build pipeline
 - `nfpm` — the package generator

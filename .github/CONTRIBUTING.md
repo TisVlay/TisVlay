@@ -18,7 +18,7 @@ TisVlay controls smart TVs from a Linux desktop. Bug reports, ideas, translation
 ```bash
 git clone https://github.com/TisVlay/TisVlay.git
 cd TisVlay
-nix develop     # or `nix-shell`, or `direnv allow`
+nix develop     # or `direnv allow`
 prek install    # the pre-commit and commit-msg hooks
 ```
 

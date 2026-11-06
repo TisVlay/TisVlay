@@ -1,7 +1,7 @@
 # System libraries Slint's femtovg renderer + winit's Wayland backend
 # dlopen at runtime. patchelf can't see dlopen targets, so package.nix
-# splices them onto the GUI binary's rpath in postFixup, and the
-# dev shell (devshell.nix) exports them via LD_LIBRARY_PATH so `cargo
+# splices them onto the GUI binary's rpath in postFixup, and
+# flake.nix's dev shell exports them via LD_LIBRARY_PATH so `cargo
 # run` works in-tree.
 #
 #   - fontconfig: femtovg renderer (default)

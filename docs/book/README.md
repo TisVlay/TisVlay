@@ -30,5 +30,5 @@ The user guide is this mdBook, published on [Read the Docs](https://tisvlay.read
 ## Tooling
 
 - **Why mdBook:** it's a single Rust binary in nixpkgs, with no Python toolchain to add. Reconsider it if the guide ever needs versioned or translated docs.
-- **A new preprocessor** has to be installed in three places: `packaging/nix/devshell.nix`, the `docs` job in `.github/workflows/ci.yml`, and `.config/.readthedocs.yaml`. Keep their versions in step.
+- **A new preprocessor** has to be installed in three places: `flake.nix`, the `docs` job in `.github/workflows/ci.yml`, and `.config/.readthedocs.yaml`. Keep their versions in step.
 - **The release version partial** comes from the workspace `Cargo.toml`: `just release-bump` regenerates it with the bump, and `just docs-gen-check` fails if it's stale. It assumes `main`'s version equals the latest release, which is untrue from a release PR's merge until that release is published.

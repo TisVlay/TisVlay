@@ -89,7 +89,7 @@ On startup, on shutdown, on reboot, on sleep, and on wake are handled by the sys
 
 ### Login-screen idle
 
-An unattended login screen never blanks by itself. The optional **TisVlay greeter** client closes that gap, using the system profile's **Idle timeout** with **On idle timeout** and **On idle resume**. Blanking stays off until you set a non-zero timeout. GDM and plasma-login-manager are supported; the distro packages enable it for GDM, and on NixOS it turns on by itself for either. See [Installation](../getting-started/installation.md#nixos-module). It also lights the panel once at startup, so the login screen isn't left dark after a logout.
+An unattended login screen never blanks by itself. The optional **TisVlay greeter** client closes that gap, using the system profile's **Idle timeout** with **On idle timeout** and **On idle resume**. Blanking stays off until you set a non-zero timeout. GDM and plasma-login-manager are supported; the distro packages enable it for GDM, and on NixOS it turns on by itself for either. See [Installation](../getting-started/installation.md#nixos-flake-module). It also lights the panel once at startup, so the login screen isn't left dark after a logout.
 
 ## Which TVs react
 

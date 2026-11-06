@@ -69,10 +69,7 @@ tisvlay/
 ├── .github/                      # CONTRIBUTING.md, SECURITY.md, PR + issue templates,
 │                                 # workflows, dependabot.yml
 ├── packaging/
-│   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM),
-│   │                             # devshell.nix, overlay.nix, all reached through the root
-│   │                             # default.nix (pins read from flake.lock), which shell.nix
-│   │                             # and flake.nix wrap
+│   ├── nix/                      # package.nix, module.nix (services.tisvlay), test.nix (VM)
 │   ├── systemd/                  # tisvlay-daemon.service (system), session/tray/greeter
 │   │                             # (user units), org.tisvlay.Gui.service (GUI activation)
 │   ├── freedesktop/              # org.tisvlay.Gui.desktop
@@ -162,7 +159,7 @@ Deployment model:
 
 The contributing guide's Setup has the basic `*-start` recipes, `just cli` and `just stop-all`. Beyond those, the dev-run targets share socket and site knobs (the justfile's dev section): `DPMS_CONNECTOR=…`, `EPHEMERAL=true` and `SSDP_PORT=…` for the daemon, `GUI_MCP=true` for the Slint MCP server, and `just greeter-start`, which needs a Wayland compositor.
 
-After a change to the dev shell (`packaging/nix/devshell.nix`, `default.nix`, `flake.nix` or `flake.lock`), run `direnv reload` (or reopen the terminal) before restarting the stack: a stale dev shell rebuilds with the old inputs, e.g. the session without pipewire's pkg-config entry, so its screencast detector stays off.
+After a `flake.nix` change, run `direnv reload` (or reopen the terminal) before restarting the stack: a stale dev shell rebuilds with the old inputs, e.g. the session without pipewire's pkg-config entry, so its screencast detector stays off.
 
 ### CLI smoke tests
 
@@ -183,15 +180,10 @@ tisvlay profile user list --user-socket …
 ### NixOS Installation
 
 ```nix
-# configuration.nix, without flakes
-let
-  tisvlay = builtins.fetchTarball "https://github.com/TisVlay/TisVlay/archive/main.tar.gz";
-in {
-  imports = [ "${tisvlay}/packaging/nix/module.nix" ];
-  services.tisvlay.enable = true;
-}
+# flake.nix input
+inputs.tisvlay.url = "github:TisVlay/TisVlay";
 
-# with flakes: inputs.tisvlay.url = "github:TisVlay/TisVlay";
+# configuration.nix
 { inputs, ... }: {
   imports = [ inputs.tisvlay.nixosModules.default ];
   services.tisvlay.enable = true;
