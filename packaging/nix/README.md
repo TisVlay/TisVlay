@@ -1,6 +1,21 @@
 # tisvlay — Nix packaging
 
-Flake-based Nix packaging for tisvlay: the Rust package derivation, the NixOS module, and an integration test that boots everything in a VM.
+Nix packaging for tisvlay: the Rust package derivation, the NixOS module, the contributor dev shell, and an integration test that boots everything in a VM. Plain Nix and flakes reach the same derivations.
+
+## Entry points
+
+[`default.nix`](../../default.nix) at the repository root defines everything, and works without flakes. [`flake.nix`](../../flake.nix) only maps its attributes onto the flake output schema, for x86_64-linux and aarch64-linux.
+
+| `default.nix` attribute | Flake output | What it is |
+|---|---|---|
+| `tisvlay` | `packages.${system}.default` (also `.tisvlay`) | The package, `dist` profile, on the pinned nixpkgs: the build tisvlay.cachix.org serves. |
+| `module` | `nixosModules.default` | [`module.nix`](module.nix). |
+| `overlay` | `overlays.default` | [`overlay.nix`](overlay.nix): adds `pkgs.tisvlay`, built against the consumer's nixpkgs. |
+| `shell` | `devShells.${system}.default` | The dev shell; [`shell.nix`](../../shell.nix) makes it `nix-shell`'s default. |
+| `checks.vm`, `checks.tests` | `checks.${system}.*` | The VM test and the sandboxed test suite. |
+| `pulse8-cec`, `slint-viewer`, `msrv-rust` | `packages.${system}.*` | The Pulse-Eight driver, the pinned Slint viewer, the MSRV toolchain. |
+
+`default.nix` reads its nixpkgs and rust-overlay pins from `flake.lock`, so the lock is the only pin set and `nix flake update` moves both entry points. Its arguments are `system`, `nixpkgs`, `rust-overlay` and `pkgs`; passing your own `pkgs` builds against it and misses the cache. The derivations are identical either way: `nix-build -A tisvlay` from a release tarball and `nix build .#default` from the tag produce the same store path.
 
 ## Contents
 
@@ -8,17 +23,35 @@ Flake-based Nix packaging for tisvlay: the Rust package derivation, the NixOS mo
 |---|---|
 | [`package.nix`](package.nix) | `rustPlatform.buildRustPackage` derivation for the workspace. |
 | [`module.nix`](module.nix) | NixOS module wiring the system daemon and both user services. |
+| [`overlay.nix`](overlay.nix) | Overlay adding `tisvlay` to a nixpkgs. |
+| [`devshell.nix`](devshell.nix) | The contributor dev shell: the Rust toolchain, `just` and every tool the checks use. |
 | [`test.nix`](test.nix) | `pkgs.testers.runNixOSTest` — boots a VM with the module enabled and asserts daemon startup, the socket and its access model, the CLI probes, the sleep integration, and `systemd-analyze` posture. |
 
 Companion files outside this directory:
 
 | File | Purpose |
 |---|---|
+| [`../../default.nix`](../../default.nix), [`../../shell.nix`](../../shell.nix), [`../../flake.nix`](../../flake.nix) | The entry points (above). |
 | [`../systemd/tisvlay-daemon.service`](../systemd/tisvlay-daemon.service) | Distro (.deb/.rpm/.archlinux) unit file. Hardening kept in sync with `module.nix`. |
 | [`../systemd/tisvlay-{session,tray}.service`](../systemd/) | Distro user-service unit files. Unhardened (see "User services" below). |
 | [`../scripts/{post,pre}install.sh`](../scripts/) | Distro package lifecycle hooks — create the `tisvlay` system user, reload systemd and enable the units. |
 
 ## Using the module
+
+Without flakes, import it from a fetched copy of the repository (or one pinned with npins or niv):
+
+```nix
+# configuration.nix
+let
+  tisvlay = builtins.fetchTarball "https://github.com/TisVlay/TisVlay/archive/main.tar.gz";
+in
+{
+  imports = [ "${tisvlay}/packaging/nix/module.nix" ];
+  services.tisvlay.enable = true;
+}
+```
+
+With flakes:
 
 ```nix
 {
@@ -44,14 +77,14 @@ Authoritative option reference: read [`module.nix`](module.nix) directly — eve
 
 ## Binary cache
 
-Release builds of the flake's package are in the public [tisvlay.cachix.org](https://app.cachix.org/organization/tisvlay/cache/tisvlay) cache (public key `tisvlay.cachix.org-1:pa9AnLlywwXfm4cwUzRD1afQh2VbGTbYF6a9iQgzb/g=`), for x86_64-linux and aarch64-linux.
+Release builds of the pinned package (`default.nix`'s `tisvlay`, the flake's `packages.${system}.default`) are in the public [tisvlay.cachix.org](https://app.cachix.org/organization/tisvlay/cache/tisvlay) cache (public key `tisvlay.cachix.org-1:pa9AnLlywwXfm4cwUzRD1afQh2VbGTbYF6a9iQgzb/g=`), for x86_64-linux and aarch64-linux.
 
-- **What's pushed:** `packages.${system}.default`, built from the flake's own `flake.lock`, and only its runtime closure. Build-only paths such as the vendored crate sources stay out, and so does anything cache.nixos.org already serves. Each build is pinned as `<tag>-<system>` (e.g. `v0.3.1-x86_64-linux`), keeping one revision, so eviction can't drop a release, and a re-pushed tag moves the pin to its new build. The module's default `package` builds against the host's nixpkgs, so it never matches the cache; using the cache is opt-in (the book's install guide, "Prebuilt binaries"). Users who keep the default build locally, as before.
+- **What's pushed:** `packages.${system}.default`, built from our own `flake.lock`, and only its runtime closure. Build-only paths such as the vendored crate sources stay out, and so does anything cache.nixos.org already serves. Each build is pinned as `<tag>-<system>` (e.g. `v0.3.1-x86_64-linux`), keeping one revision, so eviction can't drop a release, and a re-pushed tag moves the pin to its new build. The module's default `package` builds against the host's nixpkgs, so it never matches the cache; using the cache is opt-in (the book's install guide, "Prebuilt binaries"). Users who keep the default build locally, as before.
 - **When:** the `nix-cache` job in [`release.yml`](../../.github/workflows/release.yml) runs on every `v*` tag push, beside the distro package build. Nothing on `main` or in pull requests is pushed.
 - **Access:** the push token (`CACHIX_AUTH_TOKEN`) lives in the `cachix` environment, which only admits `v*` tags. The job builds from cache.nixos.org alone and never substitutes from this cache, so it only writes to it.
 - **Budget:** Cachix's free open-source plan holds 5 GB and evicts the least recently used paths past that. Paths already on cache.nixos.org aren't stored again.
 - **Why Cachix:** its open-source plan allows anonymous reads. FlakeHub Cache is paid-only and needs an authenticated client (`determinate-nixd login`), so only logged-in Determinate Nix users would get hits.
-- **Opt-in, by design:** a cache only hits when the user's derivation hashes to what CI built, which means the flake's package from *our* `flake.lock`. The module's default package builds against the host's nixpkgs and never matches, and it stays the default: it shares the system's libraries, the host's security updates reach it, and the GUI's OpenGL renderer stays paired with the system's Mesa. Users who want prebuilt binaries set `services.tisvlay.package` to the flake's package and accept a second set of runtime libraries (the book's Installation page has the steps).
+- **Opt-in, by design:** a cache only hits when the user's derivation hashes to what CI built, which means the pinned package from *our* `flake.lock`, reached through either entry point. The module's default package builds against the host's nixpkgs and never matches, and it stays the default: it shares the system's libraries, the host's security updates reach it, and the GUI's OpenGL renderer stays paired with the system's Mesa. Users who want prebuilt binaries set `services.tisvlay.package` to the pinned package and accept a second set of runtime libraries (the book's Installation page has the steps).
 
 ## How the package builds
 
@@ -96,6 +129,7 @@ systemd-analyze security --offline=true packaging/systemd/tisvlay-daemon.service
 ```bash
 nix flake check                              # full check suite, includes VM
 nix build .#checks.x86_64-linux.vm --no-link # VM test in isolation
+nix-build -A checks.vm --no-out-link         # the same, without flakes
 ```
 
 The test boots a minimal NixOS VM with `services.tisvlay.enable = true` and asserts:

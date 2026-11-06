@@ -11,7 +11,7 @@
 # loaded correctly; exercising them end-to-end needs a graphical VM
 # which is out of scope here.
 #
-# Invoke: `nix build .#checks.x86_64-linux.vm`
+# Invoke: `nix-build -A checks.vm`, `nix build .#checks.x86_64-linux.vm`
 #         or `nix flake check`
 
 {

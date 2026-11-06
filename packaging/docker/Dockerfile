@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Slint runtime/build deps (femtovg + winit, no Qt). Tracks
-# slintRuntimeLibs in flake.nix and the System libs step in
+# packaging/nix/slint-runtime.nix and the System libs step in
 # .github/workflows/ci.yml — keep all three in sync.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -39,7 +39,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 RUN cargo install --locked cargo-nextest cargo-llvm-cov
 
 # Slint runtime/build deps (femtovg + winit, no Qt). Tracks
-# slintRuntimeLibs in flake.nix and the System libs step in
+# packaging/nix/slint-runtime.nix and the System libs step in
 # .github/workflows/ci.yml — keep all three in sync.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \

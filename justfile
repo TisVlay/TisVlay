@@ -155,7 +155,7 @@ audit:
 hack:
     cargo hack check --each-feature --no-dev-deps --workspace --target-dir target/hack
 
-# Check the workspace on its MSRV floor: the flake's `msrv-rust`
+# Check the workspace on its MSRV floor: default.nix's `msrv-rust`
 # toolchain (read from Cargo.toml's `rust-version`) first on PATH, inside
 # the dev shell for the system libraries. No `--ignore-rust-version`: the
 # toolchain IS the floor, so a dependency that outgrows it fails here.
@@ -163,7 +163,7 @@ hack:
 msrv:
     #!/usr/bin/env bash
     set -euo pipefail
-    tc=$(nix build --no-link --print-out-paths .#msrv-rust)
+    tc=$(nix-build --no-out-link -A msrv-rust)
     PATH="$tc/bin:$PATH" cargo check --workspace --all-targets --all-features --target-dir target/msrv
 
 # --- License attribution / policy --------------------------------------

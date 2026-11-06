@@ -11,11 +11,21 @@
   installShellFiles,
   # Cargo profile for the shipped binaries. `release` builds fastest, for
   # hosts that compile tisvlay themselves (the module's default package,
-  # the overlay); the flake's own package passes `dist`, the smaller
+  # the overlay); default.nix's `tisvlay` passes `dist`, the smaller
   # profile CI builds once for tisvlay.cachix.org (Cargo.toml has both).
   cargoProfile ? "release",
 }:
 
+let
+  # The repository as a flake or a release tarball has it: from a checkout,
+  # only what git tracks, so generated files (the licenses bundle, SBOMs)
+  # can't change the source hash. Flake and tarball sources carry no .git.
+  repo =
+    if builtins.pathExists ../../.git then
+      lib.fileset.gitTracked ../..
+    else
+      lib.fileset.fromSource (lib.cleanSource ../..);
+in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tisvlay";
   # The workspace version, so a release bump (`release-plz update`) needs no
@@ -35,7 +45,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # checkout their pointer files.
   src = lib.fileset.toSource {
     root = ../..;
-    fileset = lib.fileset.intersection (lib.fileset.fromSource (lib.cleanSource ../..)) (
+    fileset = lib.fileset.intersection repo (
       lib.fileset.unions [
         ../../Cargo.toml
         ../../Cargo.lock
@@ -63,7 +73,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # need wayland; sharing the GUI's lib set keeps the rpath plumbing
   # single-sourced (the unused entries are stat()'d once at startup
   # and the libs are already in the closure). The set is shared with
-  # flake.nix's dev shell via slint-runtime.nix.
+  # dev shell (devshell.nix) via slint-runtime.nix.
   rpathLibs = callPackage ./slint-runtime.nix { };
 
   nativeBuildInputs = [
@@ -196,12 +206,12 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # build would also compile the dev-only crates (tisvlay-mock /
   # tisvlay-test).
 
-  # Most consumers build from source (only release builds of the flake's
-  # own package are in the binary cache), so the checkPhase would re-run,
-  # from scratch, the same suite CI already gates on, compiling far more
-  # than the shipping build (the dev-only crates plus every feature). Skip it here; `checks.tests` in flake.nix
-  # flips doCheck back on for `nix flake check`, keeping the flags below
-  # exercised.
+  # Most consumers build from source (only release builds of default.nix's
+  # pinned `tisvlay` are in the binary cache), so the checkPhase would
+  # re-run, from scratch, the same suite CI already gates on, compiling far
+  # more than the shipping build (the dev-only crates plus every feature).
+  # Skip it here; `checks.tests` in default.nix flips doCheck back on,
+  # keeping the flags below exercised.
   doCheck = false;
 
   useNextest = true;
