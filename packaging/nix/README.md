@@ -1,6 +1,6 @@
 # tisvlay — Nix packaging
 
-Flake-based Nix packaging for tisvlay: the Rust package derivation, the NixOS module, and an integration test that boots everything in a VM.
+Nix packaging for tisvlay: the Rust package derivation, the NixOS module, and an integration test that boots everything in a VM. The definitions are the flake's outputs. Plain Nix reaches the same outputs through [`default.nix`](../../default.nix) at the repository root, a [flake-compat](https://github.com/NixOS/flake-compat) shim pinned in `flake.lock`: `nix-build -A default` builds the package, and `import` of the repository gives `nixosModules.default`, `packages.<system>` and the rest, so both kinds of user build the same derivations, the cached release builds included.
 
 ## Contents
 
@@ -14,6 +14,7 @@ Companion files outside this directory:
 
 | File | Purpose |
 |---|---|
+| [`../../default.nix`](../../default.nix) | flake-compat shim: the flake's outputs for plain Nix (`nix-build`, `import`). |
 | [`../systemd/tisvlay-daemon.service`](../systemd/tisvlay-daemon.service) | Distro (.deb/.rpm/.archlinux) unit file. Hardening kept in sync with `module.nix`. |
 | [`../systemd/tisvlay-{session,tray}.service`](../systemd/) | Distro user-service unit files. Unhardened (see "User services" below). |
 | [`../scripts/{post,pre}install.sh`](../scripts/) | Distro package lifecycle hooks — create the `tisvlay` system user, reload systemd and enable the units. |
@@ -35,12 +36,9 @@ Companion files outside this directory:
 }
 ```
 
-Authoritative option reference: read [`module.nix`](module.nix) directly — every option has a docstring. Highlights:
+The user-facing recipes, the plain-Nix `import` and the cached release builds included, are the book's [Installation](../../docs/book/src/getting-started/installation.md#nixos-module) page. Without flakes, the module is also importable by path, `"${src}/packaging/nix/module.nix"`, which skips the flake-compat evaluation.
 
-- `services.tisvlay.logLevel` — maps to `RUST_LOG` on all three systemd units.
-- `services.tisvlay.extraArgs` — appended to the daemon's `ExecStart`.
-- `services.tisvlay.settings` — declarative seed config (TOML), rendered to the Nix store and passed as `--seed <path>`. Provisioning semantics: re-applied every start, ids already in the daemon-owned `/var/lib/tisvlay/daemon.toml` win, pairing still persists there — and a still-declared TV removed at runtime returns on the next start (drop the entry to drop the TV).
-- `services.tisvlay.user` / `group` — defaults `"tisvlay"` / `"tisvlay"`. `uid` / `gid` default to `null`, letting NixOS pick a system UID and pin it via `/var/lib/nixos/uid-map`. Override only if you need the UID fixed across multiple hosts.
+Authoritative option reference: read [`module.nix`](module.nix) directly — every option has a docstring; the book's option table has the user-facing subset.
 
 ## Binary cache
 
