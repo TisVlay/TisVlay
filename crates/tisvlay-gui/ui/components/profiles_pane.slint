@@ -46,6 +46,7 @@ component ProfileListRow inherits Focusable {
     accessible-label: root.entry.name;
     accessible-id: "profiles-row-" + root.entry.uuid;
     activated => { root.clicked(); }
+    ring-inside: true;
 
     // 3px left accent stripe when selected — mirrors TvListRow.
     Rectangle {

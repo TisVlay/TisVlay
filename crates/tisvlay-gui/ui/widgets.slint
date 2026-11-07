@@ -29,14 +29,18 @@ export component FocusRing inherits Rectangle {
     in property <length> host-height;
     /// The host's corner radius; the ring's follows it at the offset.
     in property <length> host-radius;
+    /// Draw the ring just inside the host instead of outside it: for a
+    /// host that fills a clipped column, like a list row, an outside
+    /// ring would be cut to its one unclipped edge.
+    in property <bool> inside: false;
 
-    x: -Design.ring-offset;
-    y: -Design.ring-offset;
-    width: root.host-width + 2 * Design.ring-offset;
-    height: root.host-height + 2 * Design.ring-offset;
+    x: root.inside ? 1px : -Design.ring-offset;
+    y: root.inside ? 1px : -Design.ring-offset;
+    width: root.host-width + (root.inside ? -2px : 2 * Design.ring-offset);
+    height: root.host-height + (root.inside ? -2px : 2 * Design.ring-offset);
     border-width: Design.ring-width;
     border-color: Theme.focus-ring;
-    border-radius: root.host-radius + Design.ring-offset;
+    border-radius: root.inside ? root.host-radius : root.host-radius + Design.ring-offset;
     opacity: root.shown ? 1.0 : 0.0;
 }
 
@@ -63,6 +67,9 @@ export component FocusRing inherits Rectangle {
 export component Focusable inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> focusable: true;
+    /// Draw the ring inside the control (a row that fills a clipped
+    /// column) rather than around it.
+    in property <bool> ring-inside: false;
     /// Cursor over the hit area; `pointer` is reserved for URL opens.
     in property <MouseCursor> mouse-cursor: default;
     /// A click, Return, Space, or the accessibility default action.
@@ -91,6 +98,7 @@ export component Focusable inherits Rectangle {
         host-width: root.width;
         host-height: root.height;
         host-radius: root.border-radius;
+        inside: root.ring-inside;
     }
 
     fs := FocusScope {
