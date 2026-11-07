@@ -73,6 +73,7 @@ impl FakeLogind {
         let manager = ManagerIface {
             releases: Arc::clone(&releases),
             inhibit_delay_max_usec: DEFAULT_INHIBIT_DELAY_MAX_USEC,
+            inhibits: Vec::new(),
             sleeps: Vec::new(),
             refuse_sleep: false,
         };
@@ -118,6 +119,11 @@ impl FakeLogind {
         self.session.get().await.lock_requests
     }
 
+    /// The `what` of each inhibitor the fake handed out, in order.
+    pub async fn inhibits(&self) -> Vec<String> {
+        self.manager.get().await.inhibits.clone()
+    }
+
     /// When each inhibitor the fake handed out was released (its fd closed
     /// by every holder), in release order.
     pub fn inhibitor_releases(&self) -> Vec<Instant> {
@@ -158,6 +164,7 @@ const DEFAULT_INHIBIT_DELAY_MAX_USEC: u64 = 5_000_000;
 pub(crate) struct ManagerIface {
     releases: Arc<Mutex<Vec<Instant>>>,
     inhibit_delay_max_usec: u64,
+    inhibits: Vec<String>,
     sleeps: Vec<String>,
     refuse_sleep: bool,
 }
@@ -176,14 +183,22 @@ impl ManagerIface {
 impl ManagerIface {
     /// Hand out the write end of a pipe, as the real logind does, and
     /// record when it's released: the read end sees EOF once every
-    /// holder has closed it.
+    /// holder has closed it. A combined `what` (`sleep:shutdown`) is
+    /// refused, as an unpatched logind (systemd#33834) refuses it to a
+    /// caller without a session while granting each kind alone.
     async fn inhibit(
-        &self,
-        _what: &str,
+        &mut self,
+        what: &str,
         _who: &str,
         _why: &str,
         _mode: &str,
     ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
+        if what.contains(':') {
+            return Err(zbus::fdo::Error::AccessDenied(format!(
+                "inhibit {what} refused"
+            )));
+        }
+        self.inhibits.push(what.to_string());
         let (mut reader, writer) = std::io::pipe()
             .map_err(|e| zbus::fdo::Error::Failed(format!("inhibitor pipe: {e}")))?;
         let releases = Arc::clone(&self.releases);

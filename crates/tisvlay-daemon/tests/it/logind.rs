@@ -181,6 +181,41 @@ async fn sleep_inhibitor_releases_at_loginds_bound() {
     );
 }
 
+/// The watcher holds one delay inhibitor per kind (the fake refuses a
+/// combined `sleep:shutdown`, as an unpatched logind does), and a sleep
+/// releases both.
+#[tokio::test(flavor = "multi_thread")]
+async fn watcher_takes_one_inhibitor_per_kind() {
+    let f = fixture().await;
+    let watcher_conn = f.bus.connect().await.expect("watcher conn");
+    let world = f.stack.world.clone();
+    tokio::spawn(async move {
+        let _ = tisvlay_daemon::watch_logind(watcher_conn, world).await;
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while f.fake.inhibits().await.len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "inhibitors taken: {:?}",
+            f.fake.inhibits().await
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(f.fake.inhibits().await, ["sleep", "shutdown"]);
+
+    f.fake.emit_prepare_for_sleep(true).await.unwrap();
+    wait_power(&f.sub, f.id, "standby").await;
+    while f.fake.inhibitor_releases().len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "inhibitors released: {}",
+            f.fake.inhibitor_releases().len()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// When the first inhibitor the fake handed out was released, polled to
 /// a deadline.
 async fn first_release(fake: &FakeLogind) -> std::time::Instant {

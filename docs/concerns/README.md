@@ -35,3 +35,4 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 ## Packaging & deployment
 
 - [Packaged greeter socket access — solved via a daemon group ACL (Fedora, Ubuntu and NixOS)](greeter-packaged-socket-access.md)
+- [The daemon takes its sleep and shutdown inhibitors separately (systemd#33834 workaround for Ubuntu 24.04 bases)](logind-combined-inhibitor.md)
