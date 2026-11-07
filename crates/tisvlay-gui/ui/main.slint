@@ -61,8 +61,24 @@ component SidebarItem inherits Focusable {
     accessible-label: root.label;
     accessible-checkable: true;
     accessible-checked: root.selected;
+    // The pane follows focus along the rail, and only the active item
+    // is a Tab stop, so Tab (or Up and Down, which step the rail in the
+    // shell) never switches panes on the way somewhere else. Return or
+    // Space on the item enters its pane, as Right does; a click only
+    // switches.
+    tab-stop: root.selected;
+    focus-in => {
+        if (!root.selected) {
+            root.clicked();
+        }
+    }
     activated => {
-        root.clicked();
+        if (!root.selected) {
+            root.clicked();
+        }
+        if (Nav.focus-visible) {
+            Nav.request-column(1);
+        }
     }
 
     height: Design.size-sidebar-item;
@@ -170,6 +186,79 @@ export component AppWindow inherits Window {
         } else {
             Nav.focus-visible = true;
             Nav.request-column(Nav.column == 1 ? 1 : 2);
+        }
+    }
+
+    // Up and Down inside the focused region: the sidebar steps its
+    // items and Reload as a rail, a list steps its own stops, and the
+    // detail steps the Tab order. Rail and list stop at their ends;
+    // Right or Return enters the next column.
+    function step-focus(forward: bool) {
+        if (Nav.column == 0 && root.rail-step(forward)) {
+            return;
+        }
+        if (Nav.column == 1) {
+            Nav.request-list-step(forward);
+            return;
+        }
+        Nav.step(forward);
+    }
+    function rail-step(forward: bool) -> bool {
+        if (tvs-item.focused) {
+            if (forward) {
+                profiles-item.focus();
+            }
+            return true;
+        }
+        if (profiles-item.focused) {
+            if (forward) {
+                settings-item.focus();
+            } else {
+                tvs-item.focus();
+            }
+            return true;
+        }
+        if (settings-item.focused) {
+            if (forward) {
+                about-item.focus();
+            } else {
+                profiles-item.focus();
+            }
+            return true;
+        }
+        if (about-item.focused) {
+            if (forward) {
+                if (reload.enabled) {
+                    reload.focus();
+                }
+            } else {
+                settings-item.focus();
+            }
+            return true;
+        }
+        if (reload.focused) {
+            if (!forward) {
+                about-item.focus();
+            }
+            return true;
+        }
+        return false;
+    }
+    // A list step nobody served (no list stop has focus, or the wizard's
+    // last row was passed) steps the Tab order instead, a tick later
+    // for the same reason as the anchor fallback.
+    property <int> list-step-mirror: Nav.list-step-tick;
+    changed list-step-mirror => {
+        list-step-fallback.running = true;
+    }
+    list-step-fallback := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if (Nav.list-step-served != Nav.list-step-tick) {
+                Nav.step(Nav.list-step-forward);
+            }
         }
     }
 
@@ -301,9 +390,9 @@ export component AppWindow inherits Window {
         //
         // - A navigation key reveals the focus ring on whatever ends up
         //   focused; a pointer press on a control hides it again.
-        // - Up and Down always step through the Tab order, taken here so
-        //   a text field's caret moves don't keep them, except while a
-        //   select's list is open and owns them.
+        // - Up and Down always step inside the focused region, taken
+        //   here so a text field's caret moves don't keep them, except
+        //   while a select's list is open and owns them.
         capture-key-pressed(event) => {
             Nav.key-seen += 1;
             if (event.text == Key.Tab || event.text == Key.Backtab
@@ -312,15 +401,10 @@ export component AppWindow inherits Window {
                 || event.text == Key.Return || event.text == " ") {
                 Nav.focus-visible = true;
             }
-            if (!Select.open && !event.modifiers.alt && !event.modifiers.control) {
-                if (event.text == Key.DownArrow) {
-                    Nav.step(true);
-                    return accept;
-                }
-                if (event.text == Key.UpArrow) {
-                    Nav.step(false);
-                    return accept;
-                }
+            if (!Select.open && !event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.DownArrow || event.text == Key.UpArrow)) {
+                root.step-focus(event.text == Key.DownArrow);
+                return accept;
             }
             reject
         }
@@ -424,6 +508,7 @@ export component AppWindow inherits Window {
                     // the service status block it acts on.
                     reload := Focusable {
                         height: 28px;
+                        column: 0;
                         enabled: root.daemon-available;
                         background: reload.hovered && root.daemon-available
                             ? Theme.sidebar-hover

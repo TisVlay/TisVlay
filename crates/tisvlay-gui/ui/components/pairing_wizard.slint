@@ -164,6 +164,15 @@ component DiscoveryRow inherits Focusable {
             root.focus();
         }
     }
+    /// Up or Down while the row has focus: the step moves focus to the
+    /// neighbor (`Nav.list-step-tick`).
+    callback step(bool);
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (root.focused) {
+            root.step(Nav.list-step-forward);
+        }
+    }
 
     column: 1;
     ring-inside: true;
@@ -308,6 +317,9 @@ component StepDiscover {
     in-out property <int> manual-vendor-index;
     in-out property <string> manual-ip;
     callback selection-changed(int);
+    /// A row was activated (clicked, or Return on it) after selecting
+    /// its TV: the wizard moves focus on to Next.
+    callback row-activated();
     callback manual-ip-edited(string);
     callback manual-add();
 
@@ -322,6 +334,22 @@ component StepDiscover {
             root.focus-row-tick += 1;
         } else {
             address-field.take-focus();
+        }
+    }
+    // Up and Down among the discovered rows; past the last row the
+    // request goes unserved, and the shell steps the Tab order on to
+    // the manual-entry fields below.
+    function step-from(index: int, forward: bool) {
+        if (forward && index + 1 >= root.discovered.length) {
+            return;
+        }
+        Nav.list-step-served = Nav.list-step-tick;
+        if (forward) {
+            root.focus-row-index = index + 1;
+            root.focus-row-tick += 1;
+        } else if (index > 0) {
+            root.focus-row-index = index - 1;
+            root.focus-row-tick += 1;
         }
     }
 
@@ -428,9 +456,23 @@ component StepDiscover {
                             for tv[i] in root.discovered: DiscoveryRow {
                                 tv: tv;
                                 selected: i == root.selected-index;
+                                tab-stop: root.selected-index >= 0 ? i == root.selected-index : i == 0;
                                 focus-tick: root.focus-row-tick;
                                 focus-wanted: i == root.focus-row-index;
-                                clicked => { root.selection-changed(i); }
+                                // Selection follows focus; Return, Right or
+                                // a click then move on to Next.
+                                focus-in => {
+                                    if (i != root.selected-index) {
+                                        root.selection-changed(i);
+                                    }
+                                }
+                                clicked => {
+                                    root.selection-changed(i);
+                                    root.row-activated();
+                                }
+                                step(forward) => {
+                                    root.step-from(i, forward);
+                                }
                             }
                         }
                     }
@@ -1098,10 +1140,12 @@ export component PairingWizardPane inherits Rectangle {
                     selected-index: PairingWizard.selected-index;
                     manual-vendor-index <=> PairingWizard.manual-vendor-index;
                     manual-ip <=> PairingWizard.manual-ip;
-                    // A chosen row hands focus to Next, past the manual
-                    // entry fields, once the pick enabled it.
                     selection-changed(i) => {
                         PairingWizard.selected-changed(i);
+                    }
+                    // An activated row hands focus to Next, past the
+                    // manual entry fields, once the pick enabled it.
+                    row-activated => {
                         if (root.next-enabled) {
                             next-button.focus();
                         }

@@ -231,6 +231,15 @@ component TvListRow inherits Focusable {
             root.focus();
         }
     }
+    /// Up or Down while the row has focus: the list moves focus to the
+    /// neighbor (`Nav.list-step-tick`).
+    callback step(bool);
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (root.focused) {
+            root.step(Nav.list-step-forward);
+        }
+    }
 
     column: 1;
     ring-inside: true;
@@ -326,6 +335,28 @@ component TvList inherits Rectangle {
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
         root.serve-column-request();
+    }
+    property <bool> has-selection: root.selected-index >= 0 && root.selected-index < root.tvs.length;
+
+    // The list's stops, in order: the pair button, then the rows. The
+    // selected row (the first, with nothing selected) is the one Tab
+    // stop; Up and Down step the rest here and stop at the ends.
+    function focus-slot(slot: int) {
+        if (slot < 0) {
+            pair.focus();
+        } else if (slot < root.tvs.length) {
+            root.focus-row-index = slot;
+            root.focus-row-tick += 1;
+        }
+    }
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (pair.focused) {
+            Nav.list-step-served = Nav.list-step-tick;
+            if (Nav.list-step-forward) {
+                root.focus-slot(0);
+            }
+        }
     }
     // The list is created by the change that closes the wizard, the
     // same one that asks for the list: no tick change to see, so
@@ -433,6 +464,7 @@ component TvList inherits Rectangle {
                     height: 24px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 12px;
+                    column: 1;
                     enabled: root.daemon-available;
                     background: !root.daemon-available
                         ? Theme.text-faint
@@ -545,11 +577,21 @@ component TvList inherits Rectangle {
                 for tv[i] in root.tvs: TvListRow {
                     tv: tv;
                     selected: i == root.selected-index;
+                    tab-stop: root.has-selection ? i == root.selected-index : i == 0;
                     focus-tick: root.focus-row-tick;
                     focus-wanted: i == root.focus-row-index;
+                    // Selection follows focus; Return, Right or a click
+                    // then enter the detail.
+                    focus-in => {
+                        root.selected-index = i;
+                    }
                     clicked => {
                         root.selected-index = i;
                         root.activated();
+                    }
+                    step(forward) => {
+                        Nav.list-step-served = Nav.list-step-tick;
+                        root.focus-slot(forward ? i + 1 : i - 1);
                     }
                 }
             }

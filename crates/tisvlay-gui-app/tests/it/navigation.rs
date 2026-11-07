@@ -17,9 +17,10 @@ use tisvlay_gui::{
 
 use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
 
-/// The shell's first stops: the four sidebar items. Reload follows them
+/// The shell's first Tab stop: the active pane's sidebar item (the
+/// others are stepped with Up and Down, not Tab). Reload follows it
 /// only while the daemon is reachable.
-const SIDEBAR_STOPS: usize = 4;
+const SIDEBAR_STOPS: usize = 1;
 
 fn tabs(app: &AppWindow, count: usize) {
     for _ in 0..count {
@@ -80,10 +81,11 @@ fn shift_tab_from_the_first_stop_wraps_to_the_last_not_the_window_scope() {
     });
 
     press(&app, Key::Tab);
-    // Backwards from the first stop (the sidebar's TVs item). Before
-    // `nav-scope` left the Tab order this landed on the window-filling
-    // scope, an invisible stop where Return does nothing; now it wraps
-    // to the window's last stop, the "Send test notification" button.
+    // Backwards from the first stop (the active pane's sidebar item).
+    // Before `nav-scope` left the Tab order this landed on the
+    // window-filling scope, an invisible stop where Return does nothing;
+    // now it wraps to the window's last stop, the "Send test
+    // notification" button.
     press_shift_tab(&app);
     press(&app, Key::Return);
     assert_eq!(
@@ -249,18 +251,80 @@ fn counter() -> Rc<RefCell<usize>> {
     Rc::new(RefCell::new(0))
 }
 
-#[test]
-fn return_on_a_sidebar_item_navigates() {
-    i_slint_backend_testing::init_no_event_loop();
-    let app = boot_tvs(&[]);
+/// Record every pane navigation and apply it, as Rust does.
+fn record_navigation(app: &AppWindow) -> Rc<RefCell<Vec<Pane>>> {
     let navigated = Rc::new(RefCell::new(Vec::new()));
     let sink = navigated.clone();
-    app.on_navigate(move |pane| sink.borrow_mut().push(pane));
+    let weak = app.as_weak();
+    app.on_navigate(move |pane| {
+        sink.borrow_mut().push(pane);
+        if let Some(app) = weak.upgrade() {
+            app.set_active_pane(pane);
+        }
+    });
+    navigated
+}
 
-    // TVs, Profiles, Settings.
-    tabs(&app, 3);
+#[test]
+fn the_pane_follows_focus_along_the_sidebar_and_return_enters_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&[]);
+    bind_key_router(&app);
+    app.global::<Tray>().set_available(true);
+    let navigated = record_navigation(&app);
+
+    // Tab reaches the active item; Down steps the rail, switching the
+    // pane as it goes, and stops at the rail's end (About, then Reload).
+    press(&app, Key::Tab);
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
+    assert_eq!(
+        navigated.borrow().as_slice(),
+        [Pane::Profiles, Pane::Settings]
+    );
+    assert!(ring_on(&app, "sidebar-settings"));
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
+    assert_eq!(
+        navigated.borrow().as_slice(),
+        [Pane::Profiles, Pane::Settings, Pane::About],
+        "the rail ends at Reload, no wrap"
+    );
+    assert!(ring_on(&app, "sidebar-reload"));
+    // Up comes back; Return on an item enters its pane.
+    press(&app, Key::UpArrow);
+    press(&app, Key::UpArrow);
+    assert!(ring_on(&app, "sidebar-settings"));
     press(&app, Key::Return);
-    assert_eq!(navigated.borrow().as_slice(), [Pane::Settings]);
+    assert!(
+        ring_on(&app, "settings-couch-mode"),
+        "Return entered the Settings pane at its first stop"
+    );
+    assert_eq!(
+        navigated.borrow().len(),
+        4,
+        "Return on the active item navigates nowhere new"
+    );
+}
+
+#[test]
+fn tab_skips_the_inactive_sidebar_items() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&[]);
+    let navigated = record_navigation(&app);
+
+    // The active item, Reload, the pair button: Tab never lands on an
+    // inactive item, so a desktop user tabbing through switches nothing.
+    tabs(&app, 3);
+    assert!(ring_on(&app, "tvs-pair-button"));
+    assert!(navigated.borrow().is_empty());
+    press_shift_tab(&app);
+    press_shift_tab(&app);
+    assert!(
+        ring_on(&app, "sidebar-tvs"),
+        "Shift+Tab comes back to the active item"
+    );
 }
 
 #[test]
@@ -288,24 +352,54 @@ fn return_on_reload_and_on_the_pair_button_fire_their_actions() {
 }
 
 #[test]
-fn return_on_a_tv_row_selects_it_and_enters_the_detail() {
+fn a_tv_row_selects_on_focus_and_return_enters_the_detail() {
     i_slint_backend_testing::init_no_event_loop();
     let app = boot_tvs(&["tv-1", "tv-2"]);
+    bind_key_router(&app);
     let powered = Rc::new(RefCell::new(Vec::new()));
     let sink = powered.clone();
     app.global::<Daemon>()
         .on_power_on(move |uuid| sink.borrow_mut().push(uuid.to_string()));
 
-    // Sidebar, Reload, the pair button, the first row, the second row.
-    tabs(&app, SIDEBAR_STOPS + 4);
-    press(&app, Key::Return);
+    // Sidebar, Reload, the pair button, then the first row, which is
+    // the list's Tab stop while nothing is selected; focusing it
+    // selects it.
+    tabs(&app, SIDEBAR_STOPS + 3);
+    assert_eq!(
+        app.get_selected_tv_index(),
+        0,
+        "focus selected the first row"
+    );
+    // Down steps the list: the second row, selected in turn; Down at
+    // the end stays, Up comes back to the pair button past the first.
+    press(&app, Key::DownArrow);
     assert_eq!(
         app.get_selected_tv_index(),
         1,
-        "Return selects the row's TV"
+        "Down selected the second row"
     );
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "tvs-row-tv-2"),
+        "Down at the list's end stays"
+    );
+    press(&app, Key::UpArrow);
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "tvs-pair-button"),
+        "Up past the first row reaches the pair button"
+    );
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "tvs-pair-button"),
+        "Up at the list's start stays"
+    );
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
+    assert_eq!(app.get_selected_tv_index(), 1);
 
-    // Focus moved into the detail, onto its Power button.
+    // Return moves focus into the detail, onto its Power button.
+    press(&app, Key::Return);
     press(&app, Key::Return);
     assert_eq!(powered.borrow().as_slice(), ["tv-2"]);
 }
@@ -334,20 +428,89 @@ fn return_on_a_profile_row_selects_it_and_enters_the_detail() {
     };
 
     // Sidebar, the system "+" (the user one is disabled without a
-    // session), the row.
+    // session), the row: focusing it selects the profile.
     tabs(&app, SIDEBAR_STOPS + 2);
-    press(&app, Key::Return);
     assert_eq!(
         selected.borrow().as_slice(),
         [(ProfileKind::System, "p-1".to_string())],
-        "Return selects the row's profile"
+        "focus selects the row's profile"
     );
 
-    // Focus moved into the detail, onto Duplicate: Return opens the
-    // name dialog, whose text field is the pane's only text input.
+    // Return moves focus into the detail, onto Duplicate, without
+    // selecting again: Return there opens the name dialog, whose text
+    // field is the pane's only text input.
     assert_eq!(text_inputs(&app), 0, "no text input before the dialog");
     press(&app, Key::Return);
+    assert_eq!(
+        selected.borrow().len(),
+        1,
+        "entering the detail selects nothing anew"
+    );
+    press(&app, Key::Return);
     assert!(text_inputs(&app) > 0, "the duplicate dialog opened");
+}
+
+#[test]
+fn up_and_down_step_the_profile_list_across_its_sections() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Profiles);
+    bind_key_router(&app);
+    let profiles = app.global::<Profiles>();
+    profiles.set_session_available(true);
+    let row = |uuid: &str| ProfileRow {
+        uuid: SharedString::from(uuid),
+        name: SharedString::from(uuid),
+        display_name: SharedString::from(uuid),
+        ..ProfileRow::default()
+    };
+    profiles.set_system(ModelRc::new(VecModel::from(vec![row("s-1"), row("s-2")])));
+    profiles.set_user(ModelRc::new(VecModel::from(vec![row("u-1")])));
+    let selected = Rc::new(RefCell::new(Vec::new()));
+    let sink = selected.clone();
+    let weak = app.as_weak();
+    profiles.on_select(move |kind, uuid| {
+        sink.borrow_mut().push(uuid.to_string());
+        if let Some(app) = weak.upgrade() {
+            // The Slint side already set the selection; Rust's part is
+            // the editor, not needed here.
+            let _ = app.global::<Profiles>();
+        }
+        let _ = kind;
+    });
+
+    // The system "+", then Down through both sections: system rows,
+    // the user "+", the user row, and the end.
+    tabs(&app, SIDEBAR_STOPS + 1);
+    assert!(ring_on(&app, "profiles-add-system"));
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
+    assert_eq!(selected.borrow().as_slice(), ["s-1", "s-2"]);
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "profiles-add-user"),
+        "past the last system row lies the user \"+\""
+    );
+    press(&app, Key::DownArrow);
+    assert_eq!(selected.borrow().as_slice(), ["s-1", "s-2", "u-1"]);
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "profiles-row-u-1"),
+        "Down at the list's end stays"
+    );
+    // And back up the same way.
+    press(&app, Key::UpArrow);
+    assert!(ring_on(&app, "profiles-add-user"));
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "profiles-row-s-2"),
+        "Up from the user \"+\" is the last system row"
+    );
+    assert_eq!(
+        selected.borrow().len(),
+        4,
+        "stepping back onto a row selects it again"
+    );
 }
 
 #[test]
@@ -375,14 +538,54 @@ fn return_on_a_discovered_tv_selects_it_and_focuses_next() {
     let sink = nexts.clone();
     wizard.on_step_next(move || *sink.borrow_mut() += 1);
 
-    // Sidebar (no daemon: Reload is disabled), then the discovered row.
+    // Sidebar (no daemon: Reload is disabled), then the discovered row:
+    // focusing it picks its TV.
     tabs(&app, SIDEBAR_STOPS + 1);
-    press(&app, Key::Return);
-    assert_eq!(wizard.get_selected_index(), 0, "Return picks the row's TV");
+    assert_eq!(wizard.get_selected_index(), 0, "focus picks the row's TV");
 
-    // Focus moved to the footer's Next.
+    // Return moves focus to the footer's Next.
+    press(&app, Key::Return);
     press(&app, Key::Return);
     assert_eq!(*nexts.borrow(), 1, "Return on Next steps the wizard");
+}
+
+#[test]
+fn down_past_the_last_discovered_tv_reaches_the_address_field() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Tvs);
+    bind_key_router(&app);
+    let wizard = app.global::<PairingWizard>();
+    wizard.set_active(true);
+    wizard.set_step(1);
+    wizard.set_discovered(ModelRc::new(VecModel::from(vec![WizardDiscoveredTv {
+        id: SharedString::from("d-1"),
+        name: SharedString::from("Living room"),
+        address: SharedString::from("192.168.1.5"),
+        ..Default::default()
+    }])));
+    let weak = app.as_weak();
+    wizard.on_selected_changed(move |i| {
+        if let Some(app) = weak.upgrade() {
+            app.global::<PairingWizard>().set_selected_index(i);
+        }
+    });
+    let typed = Rc::new(RefCell::new(Vec::new()));
+    let sink = typed.clone();
+    wizard.on_manual_ip_edited(move |v| sink.borrow_mut().push(v.to_string()));
+
+    // The row, then Down: no row follows, so the step falls through to
+    // the Tab order, which continues into the manual-entry address
+    // field (a text field: typing lands there).
+    tabs(&app, SIDEBAR_STOPS + 1);
+    assert!(ring_on(&app, "wizard-row-d-1"));
+    press(&app, Key::DownArrow);
+    press_text(&app, SharedString::from("1"));
+    assert_eq!(
+        typed.borrow().as_slice(),
+        ["1"],
+        "Down left the list for the address field"
+    );
 }
 
 #[test]
@@ -392,11 +595,13 @@ fn down_and_up_step_through_the_tab_order() {
     bind_key_router(&app);
     let toggles = record_toggles(&app);
 
-    // Down walks the same stops Tab does: the sidebar, then the couch
+    // Down from nothing lands on the active sidebar item; Right enters
+    // the pane, and Down then walks its stops as Tab does: the couch
     // select and spin box, then the first switch.
-    for _ in 0..SIDEBAR_STOPS + 3 {
-        press(&app, Key::DownArrow);
-    }
+    press(&app, Key::DownArrow);
+    press(&app, Key::RightArrow);
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
     press(&app, Key::Return);
     assert_eq!(
         toggles.borrow().len(),
@@ -440,9 +645,7 @@ fn left_and_right_jump_between_the_columns() {
     i_slint_backend_testing::init_no_event_loop();
     let app = boot_tvs(&["tv-1"]);
     bind_key_router(&app);
-    let navigated = Rc::new(RefCell::new(Vec::new()));
-    let sink = navigated.clone();
-    app.on_navigate(move |pane| sink.borrow_mut().push(pane));
+    let navigated = record_navigation(&app);
     let powered = counter();
     let sink = powered.clone();
     app.global::<Daemon>()
@@ -463,11 +666,10 @@ fn left_and_right_jump_between_the_columns() {
     // Left twice: detail → row → the sidebar's TVs item.
     press(&app, Key::LeftArrow);
     press(&app, Key::LeftArrow);
-    press(&app, Key::Return);
-    assert_eq!(
-        navigated.borrow().as_slice(),
-        [Pane::Tvs],
-        "Left reached the sidebar"
+    assert!(ring_on(&app, "sidebar-tvs"), "Left reached the sidebar");
+    assert!(
+        navigated.borrow().is_empty(),
+        "the active item switches nothing"
     );
     // Right from the sidebar: the pane's selected row.
     press(&app, Key::RightArrow);
@@ -481,20 +683,12 @@ fn left_and_right_jump_between_the_columns() {
 }
 
 #[test]
-fn couch_mode_tab_cycles_the_panes_but_a_synthesized_tab_does_not() {
+fn couch_mode_tab_cycles_the_panes_and_down_steps_the_rail() {
     i_slint_backend_testing::init_no_event_loop();
     let app = AppWindow::new().expect("AppWindow::new");
     bind_key_router(&app);
     app.global::<Couch>().set_active(true);
-    let navigated = Rc::new(RefCell::new(Vec::new()));
-    let sink = navigated.clone();
-    let weak = app.as_weak();
-    app.on_navigate(move |pane| {
-        sink.borrow_mut().push(pane);
-        if let Some(app) = weak.upgrade() {
-            app.set_active_pane(pane);
-        }
-    });
+    let navigated = record_navigation(&app);
 
     press(&app, Key::Tab);
     press(&app, Key::Tab);
@@ -503,15 +697,30 @@ fn couch_mode_tab_cycles_the_panes_but_a_synthesized_tab_does_not() {
         navigated.borrow().as_slice(),
         [Pane::Profiles, Pane::Settings, Pane::Profiles]
     );
-    // Down synthesizes a Tab for Slint's traversal; the shell lets it
-    // through instead of cycling again.
+    // Down on the rail steps to the next item, Settings, and the pane
+    // follows; the Tab the shell synthesizes elsewhere isn't a cycle.
+    press(&app, Key::DownArrow);
+    assert_eq!(
+        navigated.borrow().as_slice(),
+        [
+            Pane::Profiles,
+            Pane::Settings,
+            Pane::Profiles,
+            Pane::Settings
+        ]
+    );
+    assert!(ring_on(&app, "sidebar-settings"));
+    press(&app, Key::RightArrow);
     press(&app, Key::DownArrow);
     assert_eq!(
         navigated.borrow().len(),
-        3,
-        "a synthesized Tab doesn't cycle"
+        4,
+        "Down inside the pane cycles nothing"
     );
-    assert_eq!(visible_rings(&app), 1, "focus moved to the next stop");
+    assert!(
+        ring_on(&app, "settings-couch-scale"),
+        "Down stepped to the pane's next stop"
+    );
 }
 
 #[test]
@@ -1069,10 +1278,11 @@ fn in_couch_mode_a_spin_box_types_only_after_return() {
     app.global::<Couch>()
         .on_scale_changed(move |v| sink.borrow_mut().push(v));
 
-    // Down to the couch-scale spin box (the sidebar, the select, it).
-    for _ in 0..SIDEBAR_STOPS + 2 {
-        press(&app, Key::DownArrow);
-    }
+    // Down to the active sidebar item, Right into the pane (its couch
+    // select), Down to the couch-scale spin box.
+    press(&app, Key::DownArrow);
+    press(&app, Key::RightArrow);
+    press(&app, Key::DownArrow);
     assert!(
         ring_on(&app, "settings-couch-scale"),
         "the spin box is focused"

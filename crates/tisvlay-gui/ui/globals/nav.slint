@@ -46,6 +46,20 @@ export global Nav {
     /// the shell to restore focus to the last column.
     in-out property <int> key-seen: 0;
 
+    /// Up and Down inside a list. The shell asks through
+    /// `request-list-step`; the list stop that has focus (a row, a "+")
+    /// answers by moving focus to its neighbor and marks the request
+    /// served, and the shell falls back to the Tab order a tick later
+    /// when none does (past the wizard's last row lies its address
+    /// field). The rail steps in the shell itself.
+    in-out property <int> list-step-tick: 0;
+    in-out property <bool> list-step-forward: true;
+    in-out property <int> list-step-served: 0;
+    public function request-list-step(forward: bool) {
+        self.list-step-forward = forward;
+        self.list-step-tick += 1;
+    }
+
     /// Focus anchors. Every stop reports its focus-in through
     /// `stop-focused`, which counts it; a focusable keeps the count as
     /// its anchor. A dialog records the anchor and column at open and

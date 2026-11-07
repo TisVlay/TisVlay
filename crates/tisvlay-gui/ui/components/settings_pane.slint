@@ -122,6 +122,7 @@ export component SettingsPane inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     couch-select := ThemedSelect {
+                        accessible-id: "settings-couch-mode";
                         width: 200px;
                         model: root.couch-modes;
                         current-value: root.couch-modes[root.mode-index];
