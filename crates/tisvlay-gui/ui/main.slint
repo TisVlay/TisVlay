@@ -271,6 +271,46 @@ export component AppWindow inherits Window {
         }
     }
 
+    // Escape, past the surfaces that take it themselves (a select's
+    // list, a dialog, an editing field, an entered slider or spin box,
+    // a pinned help button, a rename): one level out per press. A help
+    // bubble closes first; the wizard mirrors its footer; a config
+    // edit cancels, asking first when it has changes; the detail goes
+    // to its list row (from any of its stops) and a list to the active
+    // sidebar item; the sidebar goes back through a click-through, and
+    // with none left closes the window in couch mode. A desktop's
+    // Escape on the sidebar does nothing.
+    function escape() -> bool {
+        if (Help.shown) {
+            Help.dismiss();
+            return true;
+        }
+        if (PairingWizard.active) {
+            if (PairingWizard.back-enabled) {
+                PairingWizard.step-back();
+            } else if (PairingWizard.cancel-enabled) {
+                PairingWizard.cancel();
+            }
+            return true;
+        }
+        if (EditPane.tv-uuid != "") {
+            EditPane.request-cancel();
+            return true;
+        }
+        if (Nav.column != 0) {
+            return root.jump-left();
+        }
+        if (Nav.click-through-back) {
+            root.nav-back();
+            return true;
+        }
+        if (Couch.active) {
+            Nav.close();
+            return true;
+        }
+        return false;
+    }
+
     // Couch mode's Tab: the next or previous pane, with focus on its
     // sidebar item.
     function cycle-pane(forward: bool) {
@@ -452,6 +492,9 @@ export component AppWindow inherits Window {
                 && (event.text == Key.Tab || event.text == Key.Backtab)) {
                 root.cycle-pane(event.text == Key.Tab && !event.modifiers.shift);
                 return accept;
+            }
+            if (event.text == Key.Escape && !event.modifiers.alt && !event.modifiers.control) {
+                return root.escape() ? accept : reject;
             }
             return reject;
         }

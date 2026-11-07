@@ -140,6 +140,17 @@ pub fn stop_step(app: &AppWindow, forward: bool) -> bool {
     false
 }
 
+/// The keys Plasma Bigscreen's input handler sends for a gamepad's
+/// Share or L2 (KEY_BACK) that Slint's winit backend drops, as the
+/// Slint key they mean: the hook dispatches that one instead.
+pub fn remap_dropped_key(key: &slint::winit_030::winit::keyboard::Key) -> Option<Key> {
+    use slint::winit_030::winit::keyboard::{Key as WinitKey, NamedKey};
+    match key {
+        WinitKey::Named(NamedKey::BrowserBack) => Some(Key::Escape),
+        _ => None,
+    }
+}
+
 /// The shell's key count, taken before a key is dispatched.
 pub fn key_seen(app: &AppWindow) -> i32 {
     app.global::<Nav>().get_key_seen()
@@ -153,4 +164,20 @@ pub fn recover_if_unhandled(app: &AppWindow, seen_before: i32) -> bool {
     }
     app.invoke_restore_focus();
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slint::winit_030::winit::keyboard::{Key as WinitKey, NamedKey};
+
+    #[test]
+    fn xf86back_becomes_escape_and_the_rest_is_left_alone() {
+        assert_eq!(
+            remap_dropped_key(&WinitKey::Named(NamedKey::BrowserBack)),
+            Some(Key::Escape)
+        );
+        assert_eq!(remap_dropped_key(&WinitKey::Named(NamedKey::Escape)), None);
+        assert_eq!(remap_dropped_key(&WinitKey::Character("a".into())), None);
+    }
 }

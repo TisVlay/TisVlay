@@ -50,6 +50,13 @@ export global EditPane {
     /// and clears it on `start()`.
     in-out property <bool> dirty;
 
+    /// Escape in an edit: the shell asks the edit to cancel, and the
+    /// TV detail in edit mode answers (asking first when `dirty`).
+    in-out property <int> cancel-tick;
+    public function request-cancel() {
+        self.cancel-tick += 1;
+    }
+
     /// Begin an edit session for the given TV. Rust prefetches
     /// `Tv1.GetConfig`, populates `name` + `fields` from the
     /// vendor's `config_schema`, and sets `tv-uuid` last so the

@@ -11,8 +11,8 @@ use slint::platform::{Key, PointerEventButton};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tisvlay_gui::keys::{bind_key_router, key_seen, recover_if_unhandled};
 use tisvlay_gui::{
-    AppWindow, Couch, Daemon, EditPane, PairingWizard, Pane, ProfileFieldEntry, ProfileKind,
-    ProfileRow, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
+    AppWindow, Couch, Daemon, EditPane, Help, Nav, PairingWizard, Pane, ProfileFieldEntry,
+    ProfileKind, ProfileRow, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
 };
 
 use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
@@ -1528,6 +1528,217 @@ fn in_couch_mode_a_slider_adjusts_only_once_entered() {
         backlights.borrow().as_slice(),
         [11],
         "Right after Escape adjusts nothing"
+    );
+}
+
+#[test]
+fn escape_walks_from_an_icon_to_the_row_to_the_sidebar_and_stops_on_a_desktop() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_system_profiles(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "default",
+    )])));
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    let navigated = record_navigation(&app);
+    let closes = counter();
+    let sink = closes.clone();
+    app.global::<Nav>()
+        .on_close(move || *sink.borrow_mut() += 1);
+
+    // Into the detail, down to the System row, out to its pencil.
+    tabs(&app, SIDEBAR_STOPS + 3);
+    press(&app, Key::Return);
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "tv-detail-tv-1-system-profile-edit"));
+    // One level out per Escape: the list row (straight from the icon),
+    // the sidebar, and on a desktop nothing more.
+    press(&app, Key::Escape);
+    assert!(
+        ring_on(&app, "tvs-row-tv-1"),
+        "Escape from an icon went to the list row"
+    );
+    press(&app, Key::Escape);
+    assert!(
+        ring_on(&app, "sidebar-tvs"),
+        "Escape from the list went to the sidebar"
+    );
+    press(&app, Key::Escape);
+    assert!(
+        ring_on(&app, "sidebar-tvs"),
+        "a desktop's Escape on the sidebar stays"
+    );
+    assert_eq!(*closes.borrow(), 0);
+    assert!(navigated.borrow().is_empty());
+}
+
+#[test]
+fn escape_on_the_sidebar_goes_back_through_a_click_through_or_closes_in_couch_mode() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&[]);
+    bind_key_router(&app);
+    app.global::<Couch>().set_active(true);
+    let closes = counter();
+    let sink = closes.clone();
+    app.global::<Nav>()
+        .on_close(move || *sink.borrow_mut() += 1);
+    let backs = counter();
+    let sink = backs.clone();
+    app.on_nav_back(move || *sink.borrow_mut() += 1);
+
+    // With a click-through to go back from (Rust's history says so),
+    // Escape goes back; with none, it closes the window.
+    press(&app, Key::Tab);
+    app.global::<Nav>().set_click_through_back(true);
+    press(&app, Key::Escape);
+    assert_eq!(
+        (*backs.borrow(), *closes.borrow()),
+        (1, 0),
+        "Escape went back"
+    );
+    app.global::<Nav>().set_click_through_back(false);
+    press(&app, Key::Escape);
+    assert_eq!((*backs.borrow(), *closes.borrow()), (1, 1), "Escape closed");
+}
+
+#[test]
+fn escape_in_a_tv_edit_cancels_it_or_asks_to_discard_changes() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    let edit = app.global::<EditPane>();
+    let cancels = counter();
+    let sink = cancels.clone();
+    let weak = app.as_weak();
+    edit.on_cancel(move || {
+        *sink.borrow_mut() += 1;
+        if let Some(app) = weak.upgrade() {
+            app.global::<EditPane>().set_tv_uuid(SharedString::from(""));
+        }
+    });
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+
+    // Changes: Escape asks first, and Escape on the dialog comes back
+    // to the field (its text selected, as a tab-in leaves it).
+    edit.set_dirty(true);
+    press(&app, Key::Escape);
+    assert!(
+        ring_on(&app, "dialog-cancel"),
+        "Escape opened the discard confirm"
+    );
+    assert_eq!(*cancels.borrow(), 0);
+    press(&app, Key::Escape);
+    press_text(&app, SharedString::from("y"));
+    assert_eq!(
+        edit.get_name(),
+        "y",
+        "the dialog's Escape returned to the field"
+    );
+    // No changes: Escape cancels at once, and Edit takes focus.
+    edit.set_dirty(false);
+    press(&app, Key::Escape);
+    assert_eq!(*cancels.borrow(), 1, "Escape cancelled the clean edit");
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-edit-button"),
+        "the Edit button took focus"
+    );
+}
+
+#[test]
+fn escape_dismisses_a_help_bubble_before_moving_focus() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_selected_tv_index(0);
+    let powered = counter();
+    let sink = powered.clone();
+    app.global::<Daemon>()
+        .on_power_on(move |_| *sink.borrow_mut() += 1);
+
+    // Into the detail (Power), with a help bubble pinned open as a
+    // Menu press would leave it (step 9); Escape closes the bubble and
+    // leaves focus where it was.
+    tabs(&app, SIDEBAR_STOPS + 3);
+    press(&app, Key::Return);
+    let help = app.global::<Help>();
+    help.set_text(SharedString::from("What Power does."));
+    help.set_pinned(true);
+    assert!(help.get_shown());
+    press(&app, Key::Escape);
+    assert!(!help.get_shown(), "Escape dismissed the bubble");
+    press(&app, Key::Return);
+    assert_eq!(*powered.borrow(), 1, "focus stayed on Power");
+}
+
+#[test]
+fn an_anchor_finds_its_stop_again_by_id_after_the_pane_was_recreated() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_system_profiles(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "default",
+    )])));
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+
+    // On the System row's pencil, as a click-through leaves it; the
+    // pane switch destroys the pane, and coming back re-creates it.
+    tabs(&app, SIDEBAR_STOPS + 3);
+    press(&app, Key::Return);
+    press(&app, Key::DownArrow);
+    press(&app, Key::DownArrow);
+    press(&app, Key::RightArrow);
+    let nav = app.global::<Nav>();
+    assert_eq!(nav.get_focus_id(), "tv-detail-tv-1-system-profile-edit");
+    let (seq, id) = (nav.get_focus_seq(), nav.get_focus_id());
+    app.set_active_pane(Pane::Profiles);
+    settle();
+    app.set_active_pane(Pane::Tvs);
+    settle();
+    // What history back asks for: the count names a dead instance, the
+    // id finds the new one.
+    nav.invoke_request_anchor(seq, id, 2);
+    settle();
+    settle();
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-system-profile-edit"),
+        "the re-created pencil took the anchor by id"
+    );
+}
+
+#[test]
+fn escape_in_the_wizard_mirrors_its_footer() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Tvs);
+    bind_key_router(&app);
+    let wizard = app.global::<PairingWizard>();
+    wizard.set_active(true);
+    wizard.set_step(1);
+    let cancels = counter();
+    let sink = cancels.clone();
+    wizard.on_cancel(move || *sink.borrow_mut() += 1);
+    let backs = counter();
+    let sink = backs.clone();
+    wizard.on_step_back(move || *sink.borrow_mut() += 1);
+
+    // Discovery has no Back: Escape cancels. Configure has: Escape
+    // goes back. The last step has neither.
+    press(&app, Key::Tab);
+    press(&app, Key::Escape);
+    assert_eq!((*cancels.borrow(), *backs.borrow()), (1, 0));
+    wizard.set_step(2);
+    press(&app, Key::Escape);
+    assert_eq!((*cancels.borrow(), *backs.borrow()), (1, 1));
+    wizard.set_step(4);
+    press(&app, Key::Escape);
+    assert_eq!(
+        (*cancels.borrow(), *backs.borrow()),
+        (1, 1),
+        "the last step takes no Escape"
     );
 }
 

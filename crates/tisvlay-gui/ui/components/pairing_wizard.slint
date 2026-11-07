@@ -1238,13 +1238,13 @@ export component PairingWizardPane inherits Rectangle {
                 spacing: Design.gap-stack;
                 alignment: stretch;
 
-                if PairingWizard.step != 4: ThemedButton {
+                if PairingWizard.cancel-enabled: ThemedButton {
                     nav-row: root.footer-row;
                     text: @tr("Cancel");
                     clicked => { PairingWizard.cancel(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): ThemedButton {
+                if PairingWizard.back-enabled: ThemedButton {
                     nav-row: root.footer-row;
                     text: @tr("Back");
                     clicked => { PairingWizard.step-back(); }

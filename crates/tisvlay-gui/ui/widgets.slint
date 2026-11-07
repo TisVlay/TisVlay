@@ -158,7 +158,7 @@ export component Focusable inherits Rectangle {
     // first stop from `init`), which `init` covers.
     property <int> anchor: -1;
     function take-anchor() {
-        Nav.stop-focused(root.column, root.nav-row);
+        Nav.stop-focused(root.column, root.nav-row, root.accessible-id);
         root.anchor = Nav.focus-seq;
     }
     init => {
@@ -166,9 +166,12 @@ export component Focusable inherits Rectangle {
             root.focus-in();
         }
     }
+    // By the count for an instance that still exists, by the id for
+    // one re-created with its pane (history back).
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
-        if (Nav.anchor-seq == root.anchor && root.anchor >= 0) {
+        if ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
+            || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id)) {
             Nav.anchor-served = Nav.anchor-tick;
             root.focus();
         }
@@ -372,7 +375,7 @@ export component ContextualHelpButton inherits Rectangle {
             return reject;
         }
         focus-gained(reason) => {
-            Nav.stop-focused(2, root.nav-row);
+            Nav.stop-focused(2, root.nav-row, "");
         }
         changed has-focus => {
             if (!self.has-focus && trigger.pinned-mine) {
@@ -1038,7 +1041,8 @@ export component LineEditField inherits Rectangle {
             reject
         }
         focus-gained(reason) => {
-            Nav.stop-focused(2, root.nav-row);
+            Nav.stop-focused(2, root.nav-row, "");
+            root.anchor = Nav.focus-seq;
         }
         changed has-focus => {
             if (self.has-focus && !root.couch) {
@@ -1046,6 +1050,18 @@ export component LineEditField inherits Rectangle {
                 // What a direct tab-in does; programmatic focus doesn't.
                 field.select-all();
             }
+        }
+    }
+
+    // The field's focus anchor, so a dialog Escape opens from it (the
+    // discard confirm) comes back to it; a focusable keeps its own.
+    property <int> anchor: -1;
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        if ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
+            || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id)) {
+            Nav.anchor-served = Nav.anchor-tick;
+            root.take-focus();
         }
     }
 
@@ -1147,7 +1163,8 @@ export component LineEditField inherits Rectangle {
                     }
                     changed has-focus => {
                         if (self.has-focus) {
-                            Nav.stop-focused(2, root.nav-row);
+                            Nav.stop-focused(2, root.nav-row, "");
+                            root.anchor = Nav.focus-seq;
                         } else {
                             root.leaving-backwards = false;
                             root.editing = false;
@@ -1477,7 +1494,7 @@ export component OptimisticSlider {
                     changed(v) => { root.committed(round(v)); }
                     changed has-focus => {
                         if (self.has-focus) {
-                            Nav.stop-focused(2, root.nav-row);
+                            Nav.stop-focused(2, root.nav-row, "");
                         }
                         root.entered = false;
                         root.sync-idle();
@@ -1704,7 +1721,7 @@ export component ThemedSpinBox inherits Rectangle {
             }
             changed has-focus => {
                 if (self.has-focus) {
-                    Nav.stop-focused(2, root.nav-row);
+                    Nav.stop-focused(2, root.nav-row, "");
                 } else {
                     root.commit-text(self.text);
                     root.editing = false;
@@ -2184,14 +2201,16 @@ export component ConfirmDialog inherits Rectangle {
     // only while enabled), and closing puts focus back on the opener,
     // through its anchor (`Nav`).
     property <int> opener-anchor;
+    property <string> opener-id;
     property <int> opener-column;
     changed open => {
         if (root.open) {
             root.opener-anchor = Nav.focus-seq;
+            root.opener-id = Nav.focus-id;
             root.opener-column = Nav.column;
             cancel-button.focus();
         } else {
-            Nav.request-anchor(root.opener-anchor, root.opener-column);
+            Nav.request-anchor(root.opener-anchor, root.opener-id, root.opener-column);
         }
     }
     function cycle(forward: bool) {
@@ -2334,15 +2353,17 @@ export component NameInputDialog inherits Rectangle {
     // cycle field, Cancel and Confirm (Confirm only while enabled), and
     // closing puts focus back on the opener, through its anchor (`Nav`).
     property <int> opener-anchor;
+    property <string> opener-id;
     property <int> opener-column;
     property <bool> confirm-enabled: root.name != "" && root.error-message == "";
     changed open => {
         if (root.open) {
             root.opener-anchor = Nav.focus-seq;
+            root.opener-id = Nav.focus-id;
             root.opener-column = Nav.column;
             name-field.focus-input();
         } else {
-            Nav.request-anchor(root.opener-anchor, root.opener-column);
+            Nav.request-anchor(root.opener-anchor, root.opener-id, root.opener-column);
         }
     }
     function cycle(forward: bool) {

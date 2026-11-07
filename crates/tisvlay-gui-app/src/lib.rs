@@ -839,6 +839,13 @@ pub fn run() -> Result<()> {
     fonts::resolve_monospace(app.as_weak());
 
     keys::bind_key_router(&app);
+    // Escape on the sidebar with nothing to go back to, in couch mode:
+    // the window closes and the process ends, as Bigscreen's apps do.
+    app.global::<Nav>().on_close(|| {
+        if let Err(e) = slint::quit_event_loop() {
+            warn!(error = %e, "close requested with no event loop");
+        }
+    });
 
     // Couch mode's window side. The `Couch` global carries the decision
     // and the preference to the panes; the Settings pane's edits come
@@ -954,6 +961,26 @@ pub fn run() -> Result<()> {
                         _ => EventResult::Propagate,
                     }
                 }
+                // A key the backend would drop (a gamepad's Share or L2
+                // as `XF86Back`): dispatch the key it means instead.
+                WindowEvent::KeyboardInput { event, .. }
+                    if !event.repeat && keys::remap_dropped_key(&event.logical_key).is_some() =>
+                {
+                    if let Some(app) = app_weak.upgrade()
+                        && let Some(key) = keys::remap_dropped_key(&event.logical_key)
+                    {
+                        let text: SharedString = key.into();
+                        if event.state == ElementState::Pressed {
+                            watch_focus_after(&app);
+                            app.window()
+                                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text });
+                        } else {
+                            app.window()
+                                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+                        }
+                    }
+                    EventResult::PreventDefault
+                }
                 // A navigation key with nothing focused reaches no
                 // handler; check after the dispatch and restore focus.
                 WindowEvent::KeyboardInput { event, .. }
@@ -962,15 +989,7 @@ pub fn run() -> Result<()> {
                         && is_navigation_key(&event.logical_key) =>
                 {
                     if let Some(app) = app_weak.upgrade() {
-                        let seen = keys::key_seen(&app);
-                        let weak = app.as_weak();
-                        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-                            if let Some(app) = weak.upgrade()
-                                && keys::recover_if_unhandled(&app, seen)
-                            {
-                                info!("focus was lost; restored to its column");
-                            }
-                        });
+                        watch_focus_after(&app);
                     }
                     EventResult::Propagate
                 }
@@ -1000,6 +1019,20 @@ pub fn run() -> Result<()> {
 
     info!("tisvlay-gui shutting down");
     Ok(())
+}
+
+/// Note the shell's key count now and, once the key about to be
+/// dispatched has run, restore focus if the shell never saw it.
+fn watch_focus_after(app: &AppWindow) {
+    let seen = keys::key_seen(app);
+    let weak = app.as_weak();
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        if let Some(app) = weak.upgrade()
+            && keys::recover_if_unhandled(&app, seen)
+        {
+            info!("focus was lost; restored to its column");
+        }
+    });
 }
 
 /// The keys a remote navigates with, whose arrival with no focus means

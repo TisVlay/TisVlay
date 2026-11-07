@@ -847,6 +847,17 @@ component TvDetail inherits Rectangle {
             root.focus-form-when-shown = false;
         }
     }
+    /// Escape asked the edit to cancel (`EditPane.request-cancel`): the
+    /// pane decides, asking first when the draft has changes, and the
+    /// Edit button takes focus when the edit ends.
+    callback cancel-requested();
+    property <int> cancel-mirror: EditPane.cancel-tick;
+    changed cancel-mirror => {
+        if (root.in-edit-mode) {
+            root.focus-edit-when-shown = true;
+            root.cancel-requested();
+        }
+    }
 
     /// Bumped by the pane when a list row is activated: the visible
     /// detail takes focus, landing on its first stop.
@@ -1589,6 +1600,7 @@ export component TvsPane {
                         root.pending-re-pair-id = tv.uuid;
                         root.pending-re-pair-name = tv.name;
                     }
+                    cancel-requested => { root.cancel-edit(); }
                 }
             }
         }
