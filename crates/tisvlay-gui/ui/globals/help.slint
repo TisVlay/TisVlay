@@ -48,6 +48,16 @@ export global Help {
     out property <bool> shown: root.text != ""
         && (root.pinned || root.requester-hovered || root.bubble-hovered);
 
+    // Menu on a stop: the "i" of that stop's row toggles its help (a
+    // profile field row, which has none, passes the request on to its
+    // section's "i"). The buttons observe `menu-tick`.
+    in-out property <int> menu-row;
+    in-out property <int> menu-tick;
+    public function menu-toggle(row: int) {
+        root.menu-row = row;
+        root.menu-tick += 1;
+    }
+
     // Shared setup for a new request (hover or click). Resets the
     // per-request state — crucially the `clip` back to the whole-window
     // fallback — then stores the new content + anchor. A ScrollView only

@@ -304,20 +304,21 @@ export component Chip inherits Focusable {
 // ContextualHelpButton — KDE-style "i" toggletip for settings-row help.
 // =============================================================================
 //
-// A circled "i" glyph placed trailing a control. Click/tap latches the
-// help card open; hovering (after a short linger) also opens it
-// transiently. The glyph does NOT render the card — it reports its
-// content and absolute position to the `Help` global, and a single
-// HelpOverlay at the window root draws it (centered over the anchor,
-// edge-aware, no focus steal, dismissable). See globals/help.slint.
-export component ContextualHelpButton inherits Rectangle {
+// A circled "i" glyph placed trailing a control, a stop of its row.
+// Return, Space or a click pins the help open (and again closes it);
+// Menu on any stop of the row does the same (`Help.menu-toggle`);
+// hovering (after a short linger) opens it transiently. A pinned
+// bubble closes when focus leaves the row, on Escape, or when another
+// pins. The glyph does NOT render the card — it reports its content and
+// absolute position to the `Help` global, and a single HelpOverlay at
+// the window root draws it (centered over the anchor, edge-aware, no
+// focus steal). See globals/help.slint.
+export component ContextualHelpButton inherits Focusable {
     in property <string> text;
     // Accessible name (the button's role label); the help copy itself
     // rides on `accessible-description` so a screen-reader user who
     // can't hover still hears it.
     in property <string> name: @tr("Show help");
-    /// The detail row the button sits in (`Nav.next-row-id`); 0 for none.
-    in property <int> nav-row: 0;
 
     // Ghost style matching IconBtn: squarish, no resting border, dim
     // glyph — so it sits naturally among the other right-side row
@@ -327,23 +328,39 @@ export component ContextualHelpButton inherits Rectangle {
     min-width: 24px;
     min-height: 24px;
     border-radius: Design.radius-control;
-    background: touch.has-hover || trigger.active ? Theme.info-soft : transparent;
+    background: root.hovered || trigger.active ? Theme.info-soft : transparent;
     animate background { duration: 150ms; }
+    mouse-cursor: help;
 
-    accessible-role: button;
     accessible-label: root.name;
     accessible-description: root.text;
-    accessible-action-default => {
-        root.activate();
-    }
 
-    // A pinning click both toggles the bubble AND focuses this button,
-    // so losing that focus (clicking another control, or Tab) fires the
-    // focus-out dismiss in `fs` — the KDE mechanism, no blocking scrim.
-    function activate() {
+    activated => {
         trigger.toggle();
-        if (trigger.pinned-mine) {
-            fs.focus();
+    }
+    key(event) => {
+        if (event.text == Key.Escape && trigger.pinned-mine) {
+            Help.dismiss();
+            return accept;
+        }
+        reject
+    }
+    hover-changed(hovering) => {
+        trigger.set-hover(hovering);
+    }
+    // Pinned from the keyboard or a click, the bubble follows the row:
+    // focus moving to another row (or to a list, the rail) closes it.
+    property <int> row-mirror: Nav.focus-row;
+    changed row-mirror => {
+        if (trigger.pinned-mine && Nav.focus-row != root.nav-row) {
+            Help.dismiss();
+        }
+    }
+    // Menu on a stop of this row toggles this help.
+    property <int> menu-mirror: Help.menu-tick;
+    changed menu-mirror => {
+        if (root.nav-row != 0 && Help.menu-row == root.nav-row) {
+            trigger.toggle();
         }
     }
 
@@ -353,9 +370,9 @@ export component ContextualHelpButton inherits Rectangle {
         height: Design.size-glyph;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        colorize: touch.has-hover || trigger.active ? Theme.info-text : Theme.text-dim;
+        colorize: root.hovered || trigger.active ? Theme.info-text : Theme.text-dim;
         // Dim at rest like IconBtn's ghost glyph; full on engage.
-        opacity: touch.has-hover || trigger.active ? 1.0 : 0.7;
+        opacity: root.hovered || trigger.active ? 1.0 : 0.7;
     }
 
     // Shared id / anchor / hover-timer machinery (fills the button so
@@ -364,46 +381,6 @@ export component ContextualHelpButton inherits Rectangle {
         width: 100%;
         height: 100%;
         text: root.text;
-    }
-
-    // Toggletip focus-out + Escape dismissal. Below `touch` in z-order,
-    // so the pointer/cursor still go to the TouchArea; this only tracks
-    // focus + Escape.
-    fs := FocusScope {
-        width: 100%;
-        height: 100%;
-        // Focus is taken explicitly on the pinning click, not on any click.
-        focus-on-click: false;
-        key-pressed(event) => {
-            if (event.text == Key.Escape && trigger.pinned-mine) {
-                Help.dismiss();
-                return accept;
-            }
-            return reject;
-        }
-        focus-gained(reason) => {
-            Nav.stop-focused(2, root.nav-row, "");
-            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
-        }
-        changed has-focus => {
-            if (!self.has-focus && trigger.pinned-mine) {
-                Help.dismiss();
-            }
-        }
-    }
-
-    touch := TouchArea {
-        mouse-cursor: help;
-        clicked => {
-            root.activate();
-        }
-        changed has-hover => {
-            if (self.has-hover) {
-                trigger.hover-enter();
-            } else {
-                trigger.hover-leave();
-            }
-        }
     }
 }
 
@@ -2100,6 +2077,13 @@ export component IconBtn inherits Focusable {
     }
     hover-changed(hovering) => {
         tip-trigger.set-hover(hovering);
+    }
+    // An icon-only button shows its tip once keyboard focus lingers on
+    // it, the way hover does: the glyph alone doesn't name the action.
+    changed focused => {
+        if (!root.has-label) {
+            tip-trigger.set-hover(self.focused && root.interactive);
+        }
     }
 
     property <bool> interactive: root.enabled && !root.loading;

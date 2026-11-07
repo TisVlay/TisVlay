@@ -462,6 +462,21 @@ export component AppWindow inherits Window {
                 root.horizontal-step(event.text == Key.RightArrow);
                 return accept;
             }
+            // Menu (a gamepad's Square) toggles the focused row's help
+            // without moving focus, taken here so a text field's context
+            // menu never sees it (decision 6).
+            if (event.text == Key.Menu) {
+                Help.menu-toggle(Nav.focus-row);
+                return accept;
+            }
+            reject
+        }
+        // The context menu opens on the Menu key's release as well as
+        // its press; take both.
+        capture-key-released(event) => {
+            if (event.text == Key.Menu) {
+                return accept;
+            }
             reject
         }
         // Keys no child took. Alt+Left/Right is the browser-style history

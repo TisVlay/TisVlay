@@ -140,13 +140,17 @@ pub fn stop_step(app: &AppWindow, forward: bool) -> bool {
     false
 }
 
-/// The keys Plasma Bigscreen's input handler sends for a gamepad's
-/// Share or L2 (KEY_BACK) that Slint's winit backend drops, as the
-/// Slint key they mean: the hook dispatches that one instead.
+/// The keys Plasma Bigscreen's input handler sends that Slint's winit
+/// backend drops, as the Slint key they mean: a gamepad's Share or L2
+/// (KEY_BACK, `XF86Back`) is Escape, and its Square (KEY_MENU, the
+/// `XF86MenuKB` keysym winit leaves unidentified) is Menu. The hook
+/// dispatches that key instead.
 pub fn remap_dropped_key(key: &slint::winit_030::winit::keyboard::Key) -> Option<Key> {
-    use slint::winit_030::winit::keyboard::{Key as WinitKey, NamedKey};
+    use slint::winit_030::winit::keyboard::{Key as WinitKey, NamedKey, NativeKey};
+    const XF86_MENU_KB: u32 = 0x1008_ff65;
     match key {
         WinitKey::Named(NamedKey::BrowserBack) => Some(Key::Escape),
+        WinitKey::Unidentified(NativeKey::Xkb(XF86_MENU_KB)) => Some(Key::Menu),
         _ => None,
     }
 }
@@ -172,12 +176,22 @@ mod tests {
     use slint::winit_030::winit::keyboard::{Key as WinitKey, NamedKey};
 
     #[test]
-    fn xf86back_becomes_escape_and_the_rest_is_left_alone() {
+    fn xf86back_and_xf86menukb_are_remapped_and_the_rest_is_left_alone() {
+        use slint::winit_030::winit::keyboard::NativeKey;
         assert_eq!(
             remap_dropped_key(&WinitKey::Named(NamedKey::BrowserBack)),
             Some(Key::Escape)
         );
+        assert_eq!(
+            remap_dropped_key(&WinitKey::Unidentified(NativeKey::Xkb(0x1008_ff65))),
+            Some(Key::Menu)
+        );
         assert_eq!(remap_dropped_key(&WinitKey::Named(NamedKey::Escape)), None);
+        // The keyboard's Menu key arrives named, and the backend maps it itself.
+        assert_eq!(
+            remap_dropped_key(&WinitKey::Named(NamedKey::ContextMenu)),
+            None
+        );
         assert_eq!(remap_dropped_key(&WinitKey::Character("a".into())), None);
     }
 }

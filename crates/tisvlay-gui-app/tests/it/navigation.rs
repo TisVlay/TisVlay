@@ -1732,6 +1732,136 @@ fn a_pane_scrolls_to_keep_a_margin_around_the_focused_stop() {
     );
 }
 
+/// Boot the TVs pane with one TV selected and a system profile, tall,
+/// and walk into the detail's Managed row.
+fn boot_on_managed_row() -> AppWindow {
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_system_profiles(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "default",
+    )])));
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    tabs(&app, SIDEBAR_STOPS + 3);
+    press(&app, Key::Return);
+    press(&app, Key::DownArrow);
+    assert!(ring_on(&app, "tv-detail-tv-1-managed"));
+    app
+}
+
+#[test]
+fn return_on_an_i_pins_its_help_until_focus_leaves_the_row() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_on_managed_row();
+    let help = app.global::<Help>();
+
+    // Right to the row's "i", a ringed stop; Return pins its help.
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "help-Managed"), "the \"i\" is a ringed stop");
+    press(&app, Key::Return);
+    assert!(
+        help.get_shown() && help.get_pinned(),
+        "Return pinned the help"
+    );
+    // Left, back to the switch on the same row: still shown. Down, to
+    // the next row: closed.
+    press(&app, Key::LeftArrow);
+    assert!(help.get_shown(), "help stays while focus is on its row");
+    press(&app, Key::DownArrow);
+    assert!(!help.get_shown(), "leaving the row closed it");
+    // Return twice on the "i": pinned, then closed again; Escape closes too.
+    press(&app, Key::UpArrow);
+    press(&app, Key::RightArrow);
+    press(&app, Key::Return);
+    press(&app, Key::Return);
+    assert!(!help.get_shown(), "a second Return closes");
+    press(&app, Key::Return);
+    press(&app, Key::Escape);
+    assert!(!help.get_shown(), "Escape closes");
+    assert!(
+        ring_on(&app, "help-Managed"),
+        "and leaves focus on the \"i\""
+    );
+}
+
+#[test]
+fn menu_toggles_the_focused_rows_help_without_moving_focus() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_on_managed_row();
+    let help = app.global::<Help>();
+
+    press(&app, Key::Menu);
+    assert!(
+        help.get_shown() && help.get_pinned(),
+        "Menu pinned the row's help"
+    );
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-managed"),
+        "focus stayed on the switch"
+    );
+    press(&app, Key::Menu);
+    assert!(!help.get_shown(), "Menu again closed it");
+    // A row without help, like the Power row: nothing opens.
+    press(&app, Key::UpArrow);
+    press(&app, Key::Menu);
+    assert!(!help.get_shown());
+}
+
+#[test]
+fn menu_on_a_profile_field_row_opens_its_sections_help() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_profile_editor(&["on_startup"]);
+    bind_key_router(&app);
+    let help = app.global::<Help>();
+
+    assert!(tab_to(&app, "profiles-field-on_startup"));
+    press(&app, Key::Menu);
+    assert!(
+        help.get_shown(),
+        "the FIELDS section's help opened for its row"
+    );
+    press(&app, Key::UpArrow);
+    assert!(!help.get_shown(), "and closed when focus left the row");
+}
+
+#[test]
+fn menu_in_a_text_field_opens_no_context_menu_and_keeps_typing() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    let edit = app.global::<EditPane>();
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+
+    // The name row has no help: Menu does nothing visible, and the
+    // field keeps its focus and takes the next character.
+    let seen = key_seen(&app);
+    press(&app, Key::Menu);
+    assert_eq!(key_seen(&app), seen + 1, "the shell saw the Menu key");
+    assert!(!app.global::<Help>().get_shown());
+    press_text(&app, SharedString::from("y"));
+    assert_eq!(edit.get_name(), "xy", "typing continued in the field");
+}
+
+#[test]
+fn an_icon_button_shows_its_tip_after_focus_lingers() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_on_managed_row();
+    let help = app.global::<Help>();
+
+    // Down to the System row, Right to its pencil: no tip at once, the
+    // tip after the hover delay, gone when focus moves on.
+    press(&app, Key::DownArrow);
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "tv-detail-tv-1-system-profile-edit"));
+    assert!(!help.get_shown(), "no tip the moment focus lands");
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(800));
+    settle();
+    assert!(help.get_shown(), "the tip shows once focus lingers");
+    assert_eq!(help.get_text(), "Edit system profile");
+    press(&app, Key::LeftArrow);
+    assert!(!help.get_shown(), "focus moving on hides it");
+}
+
 #[test]
 fn escape_in_the_wizard_mirrors_its_footer() {
     i_slint_backend_testing::init_no_event_loop();

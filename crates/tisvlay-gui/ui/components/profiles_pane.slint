@@ -26,7 +26,7 @@ import { Icons } from "../globals/icons.slint";
 import { Nav } from "../globals/nav.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
 import { ConfirmDialog, Chip, ContextualHelpButton, Focusable, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
-import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
+import { Help, HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -703,6 +703,14 @@ component ProfileRowTrailing inherits HorizontalLayout {
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;
     property <int> row-id;
+    /// The section toolbar's row: its "i" answers Menu on this row, which has none.
+    in property <int> section-row;
+    property <int> menu-mirror: Help.menu-tick;
+    changed menu-mirror => {
+        if (Help.menu-row == root.row-id) {
+            Help.menu-toggle(root.section-row);
+        }
+    }
     init => {
         root.row-id = Nav.next-row-id();
     }
@@ -776,6 +784,14 @@ component ProfileFieldRowEnum inherits Rectangle {
 component ProfileFieldRowNumber inherits Rectangle {
     in property <ProfileFieldEntry> entry;
     property <int> row-id;
+    /// The section toolbar's row: its "i" answers Menu on this row, which has none.
+    in property <int> section-row;
+    property <int> menu-mirror: Help.menu-tick;
+    changed menu-mirror => {
+        if (Help.menu-row == root.row-id) {
+            Help.menu-toggle(root.section-row);
+        }
+    }
     init => {
         root.row-id = Nav.next-row-id();
     }
@@ -862,6 +878,14 @@ component ProfileFieldRowNumber inherits Rectangle {
 component ProfileFieldRowBool inherits Rectangle {
     in property <ProfileFieldEntry> entry;
     property <int> row-id;
+    /// The section toolbar's row: its "i" answers Menu on this row, which has none.
+    in property <int> section-row;
+    property <int> menu-mirror: Help.menu-tick;
+    changed menu-mirror => {
+        if (Help.menu-row == root.row-id) {
+            Help.menu-toggle(root.section-row);
+        }
+    }
     init => {
         root.row-id = Nav.next-row-id();
     }
@@ -1409,6 +1433,7 @@ component ProfileDetail inherits Rectangle {
                             alignment: center;
                             ContextualHelpButton {
                                 nav-row: root.fields-row;
+                                accessible-id: "profiles-fields-help";
                                 text: @tr("Profile automation maps events to actions. Unset fields inherit from default.");
                             }
                         }
@@ -1470,12 +1495,15 @@ component ProfileDetail inherits Rectangle {
                             alignment: start;
                             for entry[i] in Profiles.editor-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
+                                    section-row: root.fields-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "number": ProfileFieldRowNumber {
+                                    section-row: root.fields-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "bool": ProfileFieldRowBool {
+                                    section-row: root.fields-row;
                                     entry: entry;
                                 }
                             }
@@ -1507,6 +1535,7 @@ component ProfileDetail inherits Rectangle {
                             alignment: center;
                             ContextualHelpButton {
                                 nav-row: root.from-tv-row;
+                                accessible-id: "profiles-from-tv-help";
                                 text: @tr("What this PC does when the TV powers off by itself, or when the TV's remote powers this PC off, whether the TV powering on wakes this PC, and whether the remote's keys reach the desktop. TisVlay's own power-offs never count, and neither event acts while a stream arms the TV. The TV's pane shows what its connection supports.");
                             }
                         }
@@ -1526,9 +1555,11 @@ component ProfileDetail inherits Rectangle {
                             alignment: start;
                             for entry[i] in Profiles.editor-from-tv-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
+                                    section-row: root.from-tv-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "bool": ProfileFieldRowBool {
+                                    section-row: root.from-tv-row;
                                     entry: entry;
                                 }
                             }
@@ -1563,6 +1594,7 @@ component ProfileDetail inherits Rectangle {
                             alignment: center;
                             ContextualHelpButton {
                                 nav-row: root.stream-row;
+                                accessible-id: "profiles-stream-help";
                                 text: @tr("What counts as a stream, so events can be suppressed for an empty room. Suppress an individual event with the network toggle on its row in FIELDS above.");
                             }
                         }
@@ -1582,12 +1614,15 @@ component ProfileDetail inherits Rectangle {
                             alignment: start;
                             for entry[i] in Profiles.editor-stream-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
+                                    section-row: root.stream-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "number": ProfileFieldRowNumber {
+                                    section-row: root.stream-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "bool": ProfileFieldRowBool {
+                                    section-row: root.stream-row;
                                     entry: entry;
                                 }
                                 // Helper copy under the screencast-arms
