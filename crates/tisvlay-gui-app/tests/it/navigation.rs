@@ -568,14 +568,15 @@ fn a_slider_keeps_left_and_right() {
     );
 }
 
-/// Whether the control found by `id` draws its ring, so a test can tell
-/// where focus is without pressing anything.
+/// Whether the control found by `id` draws its ring (every widget names
+/// its `FocusRing` `ring`), so a test can tell where focus is without
+/// pressing anything.
 fn ring_on(app: &AppWindow, id: &str) -> bool {
     find_by_accessible_id(app, id)
         .and_then(|control| {
             control
                 .query_descendants()
-                .match_predicate(|e| e.id().as_deref() == Some("Focusable::ring"))
+                .match_predicate(|e| e.id().as_deref().is_some_and(|id| id.ends_with("::ring")))
                 .find_first()
         })
         .is_some_and(|ring| ring.computed_opacity() > 0.5)
@@ -680,6 +681,423 @@ fn closing_the_wizard_lands_on_the_list() {
     press(&app, Key::Return);
     press(&app, Key::Return);
     assert_eq!(*powered.borrow(), 1, "the wizard's exit focused the row");
+}
+
+/// Size the window tall enough that a detail's whole scroll content is
+/// in view: the element query prunes what's scrolled out of it.
+fn make_tall(app: &AppWindow) {
+    app.window()
+        .set_size(slint::LogicalSize::new(900.0, 1600.0));
+    settle();
+}
+
+#[test]
+fn a_confirm_dialog_holds_focus_and_closes_back_onto_its_opener() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    let daemon = app.global::<Daemon>();
+    let removed = counter();
+    let sink = removed.clone();
+    daemon.on_remove_tv(move |_| *sink.borrow_mut() += 1);
+
+    assert!(
+        tab_to(&app, "tv-detail-tv-1-remove-button"),
+        "Tab reaches the detail's Remove button"
+    );
+    press(&app, Key::Return);
+    assert!(
+        ring_on(&app, "dialog-cancel"),
+        "the dialog opened with focus on Cancel"
+    );
+    // Tab, Shift+Tab, Left/Right and Down (a synthesized Tab) all stay
+    // inside the dialog.
+    press(&app, Key::Tab);
+    assert!(ring_on(&app, "dialog-confirm"), "Tab moves to Confirm");
+    press(&app, Key::Tab);
+    assert!(ring_on(&app, "dialog-cancel"), "and wraps back to Cancel");
+    press_shift_tab(&app);
+    assert!(
+        ring_on(&app, "dialog-confirm"),
+        "Shift+Tab wraps the other way"
+    );
+    press(&app, Key::LeftArrow);
+    assert!(ring_on(&app, "dialog-cancel"), "Left is Cancel");
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "dialog-confirm"),
+        "Down steps within the dialog"
+    );
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "dialog-confirm"), "Right is Confirm");
+
+    press(&app, Key::Escape);
+    assert_eq!(*removed.borrow(), 0, "Escape cancels");
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-remove-button"),
+        "focus went back to the opener"
+    );
+    // Confirming from the keyboard works too.
+    press(&app, Key::Return);
+    press(&app, Key::Tab);
+    press(&app, Key::Return);
+    assert_eq!(*removed.borrow(), 1, "Return on Confirm removes");
+}
+
+#[test]
+fn a_dialog_with_a_disabled_confirm_cycles_past_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Profiles);
+    bind_key_router(&app);
+    let profiles = app.global::<Profiles>();
+    let created = Rc::new(RefCell::new(Vec::new()));
+    let sink = created.clone();
+    profiles.on_confirm_create(move |kind, name| sink.borrow_mut().push((kind, name.to_string())));
+
+    // Sidebar, then the system "+": its dialog opens editing the
+    // (empty) name field.
+    tabs(&app, SIDEBAR_STOPS + 1);
+    press(&app, Key::Return);
+    press(&app, Key::Tab);
+    assert!(
+        ring_on(&app, "dialog-cancel"),
+        "Tab from the field reaches Cancel"
+    );
+    // Create is disabled while the name is empty, so Tab skips it and
+    // lands back in the field: typing goes there.
+    press(&app, Key::Tab);
+    assert!(
+        !ring_on(&app, "dialog-confirm"),
+        "a disabled Create isn't a stop"
+    );
+    press_text(&app, SharedString::from("a"));
+    press_text(&app, SharedString::from("b"));
+    // Now Tab reaches Create past Cancel, and Return on it creates.
+    press(&app, Key::Tab);
+    press(&app, Key::Tab);
+    assert!(
+        ring_on(&app, "dialog-confirm"),
+        "Create is a stop once enabled"
+    );
+    press(&app, Key::Return);
+    assert_eq!(
+        created.borrow().as_slice(),
+        [(ProfileKind::System, "ab".to_string())],
+        "the typed name was created"
+    );
+    assert!(
+        ring_on(&app, "profiles-add-system"),
+        "focus went back to the \"+\" that opened the dialog"
+    );
+}
+
+#[test]
+fn escape_closes_a_name_dialog_and_return_in_its_field_confirms() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Profiles);
+    bind_key_router(&app);
+    let profiles = app.global::<Profiles>();
+    let created = Rc::new(RefCell::new(Vec::new()));
+    let sink = created.clone();
+    profiles.on_confirm_create(move |_, name| sink.borrow_mut().push(name.to_string()));
+
+    tabs(&app, SIDEBAR_STOPS + 1);
+    press(&app, Key::Return);
+    press_text(&app, SharedString::from("x"));
+    press(&app, Key::Escape);
+    assert!(created.borrow().is_empty(), "Escape cancels the dialog");
+    assert!(
+        ring_on(&app, "profiles-add-system"),
+        "and lands on the \"+\""
+    );
+    // Reopened, the field starts empty and Return in it confirms.
+    press(&app, Key::Return);
+    press_text(&app, SharedString::from("y"));
+    press(&app, Key::Return);
+    assert_eq!(created.borrow().as_slice(), ["y"]);
+}
+
+#[test]
+fn a_detail_created_by_the_pick_reports_its_column_and_anchors_its_opener() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Profiles);
+    bind_key_router(&app);
+    let profiles = app.global::<Profiles>();
+    let row = ProfileRow {
+        uuid: SharedString::from("p-1"),
+        name: SharedString::from("Gaming"),
+        display_name: SharedString::from("Gaming"),
+        ..ProfileRow::default()
+    };
+    profiles.set_system(ModelRc::new(VecModel::from(vec![row.clone()])));
+    // Rust answers a pick by selecting; mirror that, so the detail is
+    // created by the very Return that focuses it.
+    let weak = app.as_weak();
+    profiles.on_select(move |kind, uuid| {
+        if let Some(app) = weak.upgrade() {
+            let profiles = app.global::<Profiles>();
+            profiles.set_selected_kind(kind);
+            profiles.set_selected_uuid(uuid);
+            profiles.set_selected_row(row.clone());
+        }
+    });
+
+    assert!(tab_to(&app, "profiles-row-p-1"), "Tab reaches the row");
+    press(&app, Key::Return);
+    assert!(
+        ring_on(&app, "profiles-duplicate-button"),
+        "Return created the detail with focus on Duplicate"
+    );
+    // Left from the fresh detail goes to its row: the detail's column
+    // was reported although no focus-in handler ran for it.
+    press(&app, Key::LeftArrow);
+    assert!(ring_on(&app, "profiles-row-p-1"), "Left reached the row");
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "profiles-duplicate-button"));
+    // The duplicate dialog closes back onto Duplicate, not the row.
+    press(&app, Key::Return);
+    press(&app, Key::Tab);
+    assert!(ring_on(&app, "dialog-cancel"), "the dialog opened");
+    press(&app, Key::Escape);
+    assert!(
+        ring_on(&app, "profiles-duplicate-button"),
+        "Escape landed on the Duplicate button that opened the dialog"
+    );
+}
+
+/// Boot the Profiles pane with one deletable system profile selected,
+/// as Rust leaves it after a pick.
+fn boot_profile_selected() -> AppWindow {
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Profiles);
+    let profiles = app.global::<Profiles>();
+    let row = ProfileRow {
+        uuid: SharedString::from("p-1"),
+        name: SharedString::from("Gaming"),
+        display_name: SharedString::from("Gaming"),
+        ..ProfileRow::default()
+    };
+    profiles.set_system(ModelRc::new(VecModel::from(vec![row.clone()])));
+    profiles.set_selected_kind(ProfileKind::System);
+    profiles.set_selected_uuid(SharedString::from("p-1"));
+    profiles.set_selected_row(row);
+    app
+}
+
+#[test]
+fn deleting_the_profile_under_focus_lands_on_the_list() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_profile_selected();
+    bind_key_router(&app);
+    let profiles = app.global::<Profiles>();
+    // Rust removes the profile and clears the selection; mirror that.
+    let weak = app.as_weak();
+    profiles.on_confirm_delete(move |_, _| {
+        if let Some(app) = weak.upgrade() {
+            let profiles = app.global::<Profiles>();
+            profiles.set_system(ModelRc::new(VecModel::<ProfileRow>::default()));
+            profiles.set_selected_kind(ProfileKind::None);
+            profiles.set_selected_uuid(SharedString::default());
+            profiles.set_selected_row(ProfileRow::default());
+        }
+    });
+
+    assert!(tab_to(&app, "profiles-delete-button"), "Tab reaches Delete");
+    press(&app, Key::Return);
+    press(&app, Key::Tab);
+    assert!(
+        ring_on(&app, "dialog-confirm"),
+        "Tab reached the dialog's Delete"
+    );
+    press(&app, Key::Return);
+    settle();
+    // The opener and its detail are gone with the profile: the list's
+    // "+" (its only stop left) takes focus, and Return opens its dialog.
+    assert!(
+        ring_on(&app, "profiles-add-system"),
+        "focus moved to the list when the detail went away"
+    );
+}
+
+#[test]
+fn removing_the_tv_under_focus_lands_on_the_list() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    let weak = app.as_weak();
+    app.global::<Daemon>().on_remove_tv(move |_| {
+        if let Some(app) = weak.upgrade() {
+            app.set_selected_tv_index(-1);
+            app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
+        }
+    });
+
+    assert!(tab_to(&app, "tv-detail-tv-1-remove-button"));
+    press(&app, Key::Return);
+    press(&app, Key::Tab);
+    press(&app, Key::Return);
+    settle();
+    assert!(
+        ring_on(&app, "tvs-pair-button"),
+        "focus moved to the list's pair button when the detail went away"
+    );
+}
+
+#[test]
+fn a_rename_focuses_its_field_and_ends_back_on_the_rename_button() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_profile_selected();
+    bind_key_router(&app);
+    let renamed = Rc::new(RefCell::new(Vec::new()));
+    let sink = renamed.clone();
+    app.global::<Profiles>()
+        .on_rename_selected(move |name| sink.borrow_mut().push(name.to_string()));
+
+    assert!(
+        tab_to(&app, "profile-rename-button"),
+        "Tab reaches the detail header's Rename"
+    );
+    // The field appears editing with the name selected: typing
+    // replaces it, Return commits.
+    press(&app, Key::Return);
+    press_text(&app, SharedString::from("x"));
+    press(&app, Key::Return);
+    assert_eq!(renamed.borrow().as_slice(), ["x"]);
+    assert!(
+        ring_on(&app, "profile-rename-button"),
+        "the Rename button that replaced the field took focus"
+    );
+    // Escape in the field cancels and lands there too.
+    press(&app, Key::Return);
+    press_text(&app, SharedString::from("y"));
+    press(&app, Key::Escape);
+    assert_eq!(renamed.borrow().len(), 1, "Escape discards the typed name");
+    assert!(ring_on(&app, "profile-rename-button"));
+}
+
+#[test]
+fn entering_a_tv_edit_by_key_focuses_its_name_field() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    let edit = app.global::<EditPane>();
+    // Rust loads the draft and enters edit mode on start; mirror that.
+    let weak = app.as_weak();
+    edit.on_start(move |uuid| {
+        if let Some(app) = weak.upgrade() {
+            let edit = app.global::<EditPane>();
+            edit.set_name(SharedString::from("TV tv-1"));
+            edit.set_tv_uuid(uuid);
+        }
+    });
+
+    assert!(
+        tab_to(&app, "tv-detail-tv-1-edit-button"),
+        "Tab reaches Edit"
+    );
+    press(&app, Key::Return);
+    press_text(&app, SharedString::from("x"));
+    assert_eq!(
+        edit.get_name(),
+        "x",
+        "the form's name field took focus with its text selected"
+    );
+}
+
+#[test]
+fn in_couch_mode_a_text_field_edits_on_return_and_escape_ends_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    app.global::<Couch>().set_active(true);
+    let edit = app.global::<EditPane>();
+    let powered = counter();
+    let sink = powered.clone();
+    app.global::<Daemon>()
+        .on_power_on(move |_| *sink.borrow_mut() += 1);
+
+    // Down (Tab cycles panes in couch mode) until typing lands in the
+    // field; at every stop before, including the idle field itself,
+    // typing changes nothing.
+    let mut reached = false;
+    for _ in 0..40 {
+        press(&app, Key::DownArrow);
+        press_text(&app, SharedString::from("x"));
+        assert_eq!(edit.get_name(), "Test TV", "no stop takes text on its own");
+        press(&app, Key::Return);
+        press_text(&app, SharedString::from("x"));
+        if edit.get_name() == "x" {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "Return on the idle field started editing");
+
+    // Escape ends editing, with focus still on the field: typing is
+    // ignored again, and Left leaves for the list instead of moving
+    // the caret.
+    press(&app, Key::Escape);
+    press_text(&app, SharedString::from("y"));
+    assert_eq!(edit.get_name(), "x", "Escape left editing");
+    press(&app, Key::LeftArrow);
+    press(&app, Key::Return);
+    press(&app, Key::Return);
+    assert_eq!(
+        *powered.borrow(),
+        1,
+        "Left from the idle field reached the row"
+    );
+}
+
+#[test]
+fn in_couch_mode_a_spin_box_types_only_after_return() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_settings();
+    bind_key_router(&app);
+    app.global::<Couch>().set_active(true);
+    let scales = Rc::new(RefCell::new(Vec::new()));
+    let sink = scales.clone();
+    app.global::<Couch>()
+        .on_scale_changed(move |v| sink.borrow_mut().push(v));
+
+    // Down to the couch-scale spin box (the sidebar, the select, it).
+    for _ in 0..SIDEBAR_STOPS + 2 {
+        press(&app, Key::DownArrow);
+    }
+    assert!(
+        ring_on(&app, "settings-couch-scale"),
+        "the spin box is focused"
+    );
+    // Idle: typed digits are ignored, Right still steps.
+    press_text(&app, SharedString::from("9"));
+    press(&app, Key::RightArrow);
+    assert_eq!(scales.borrow().as_slice(), [150], "Right stepped once");
+    // Return: typing replaces the value, Return commits.
+    press(&app, Key::Return);
+    press_text(&app, SharedString::from("2"));
+    press_text(&app, SharedString::from("0"));
+    press_text(&app, SharedString::from("0"));
+    press(&app, Key::Return);
+    assert_eq!(scales.borrow().as_slice(), [150, 200]);
+    // Return, a digit, Escape: reverted, nothing committed.
+    press(&app, Key::Return);
+    press_text(&app, SharedString::from("7"));
+    press(&app, Key::Escape);
+    press_text(&app, SharedString::from("7"));
+    assert_eq!(
+        scales.borrow().as_slice(),
+        [150, 200],
+        "Escape reverted the typed value"
+    );
 }
 
 #[test]

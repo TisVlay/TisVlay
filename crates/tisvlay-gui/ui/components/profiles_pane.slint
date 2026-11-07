@@ -795,7 +795,7 @@ component ProfileFieldRowBool inherits Rectangle {
 
 component ProfileDetailHeader inherits Rectangle {
     /// Bare name as the daemon stores it. Used by the rename-pencil
-    /// `LineEdit` prefill (the daemon validates the name; the
+    /// field's prefill (the daemon validates the name; the
     /// default-indicator glyph is not a legal name character, so the
     /// buffer must start from the bare value).
     in property <string> name;
@@ -843,12 +843,17 @@ component ProfileDetailHeader inherits Rectangle {
     /// daemon's signal echo.
     property <string> pending-name;
 
+    /// Set when the rename ends by key: the Rename button that replaces
+    /// the field takes focus on creation.
+    property <bool> focus-rename-when-shown;
+
     /// Enter edit mode: snapshot the current name into the buffer +
     /// flip the inline-edit toggle. The `LineEditField` is `if`-gated
-    /// on `editing-name`, so the widget materializes here and grabs
+    /// on `editing-name`, so the widget materializes here and takes
     /// keyboard focus from its `init` block; nothing else needs to
     /// reach into it.
     function begin-rename() {
+        root.focus-rename-when-shown = false;
         root.pending-name = root.name;
         root.editing-name = true;
     }
@@ -938,14 +943,15 @@ component ProfileDetailHeader inherits Rectangle {
                             : @tr("{}, default profile", root.name);
                     }
                     // Wrap the field in a FocusScope so Escape (which
-                    // the inner LineEdit lets bubble out — only
-                    // printable text and Enter are consumed) reaches
-                    // `cancel-rename()`. Enter still rides
+                    // the field lets bubble out once it isn't editing;
+                    // only printable text and Enter are consumed)
+                    // reaches `cancel-rename()`. Enter still rides
                     // `LineEditField.accepted(...)` and routes to
                     // `commit-rename()` directly.
                     if root.editing-name: FocusScope {
                         key-pressed(event) => {
                             if (event.text == Key.Escape) {
+                                root.focus-rename-when-shown = true;
                                 root.cancel-rename();
                                 return accept;
                             }
@@ -955,16 +961,16 @@ component ProfileDetailHeader inherits Rectangle {
                         LineEditField {
                             placeholder-text: @tr("Profile name");
                             text <=> root.pending-name;
-                            accepted(v) => { root.commit-rename(); }
-                            // `init => self.focus-input()` removed
-                            // — Slint trips its property-recursion
-                            // guard when the LineEditField
-                            // materializes inside this `if`-branch
-                            // and immediately asks the inner
-                            // LineEdit to grab focus. User clicks
-                            // into the field manually for now;
-                            // revisit when we have a non-recursive
-                            // way to drive focus on materialization.
+                            accessible-id: "profile-rename-field";
+                            accepted(v) => {
+                                root.focus-rename-when-shown = true;
+                                root.commit-rename();
+                            }
+                            // A rename is what the user just asked
+                            // for: the field edits as it appears.
+                            init => {
+                                self.focus-input();
+                            }
                         }
                     }
                 }
@@ -982,9 +988,15 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.edit;
                         accessible-label: @tr("Rename profile");
+                        accessible-id: "profile-rename-button";
                         tip: @tr("Rename profile");
                         enabled: root.can-delete;
                         clicked => { root.begin-rename(); }
+                        init => {
+                            if (root.focus-rename-when-shown) {
+                                self.focus();
+                            }
+                        }
                     }
                 }
                 if !root.editing-name: VerticalLayout {
@@ -992,6 +1004,7 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
+                        accessible-id: "profiles-delete-button";
                         tip: @tr("Delete profile");
                         enabled: root.can-delete;
                         clicked => { root.request-delete(); }
@@ -1002,7 +1015,10 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.save;
                         accessible-label: @tr("Save rename");
-                        clicked => { root.commit-rename(); }
+                        clicked => {
+                            root.focus-rename-when-shown = self.focused;
+                            root.commit-rename();
+                        }
                     }
                 }
                 if root.editing-name: VerticalLayout {
@@ -1010,7 +1026,10 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.cancel;
                         accessible-label: @tr("Cancel rename");
-                        clicked => { root.cancel-rename(); }
+                        clicked => {
+                            root.focus-rename-when-shown = self.focused;
+                            root.cancel-rename();
+                        }
                     }
                 }
             }
@@ -1035,41 +1054,54 @@ component ProfileDetailHeader inherits Rectangle {
             // which falls back to `—` when the descriptor values
             // are empty); wrapped in a Flickable so a wide list
             // scrolls sideways (drag) instead of clipping into the
-            // status-badges column.
-            Flickable {
+            // status-badges column. The Flickable clips, so it
+            // overhangs a box of the row's own height by a focus
+            // ring's room: a link's ring isn't cut, and the header
+            // keeps the height the TVs pane's has.
+            usedby-box := Rectangle {
                 height: usedby-row.preferred-height;
-                content-width: usedby-row.preferred-width;
-                usedby-row := HorizontalLayout {
-                    spacing: Design.gap-meta;
-                    alignment: start;
-                    Text {
-                        text: @tr("Used by:");
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                    }
-                    if root.referenced-by.length == 0: Text {
-                        text: "—";
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                    }
-                    for tv[i] in root.referenced-by: HorizontalLayout {
+                property <length> ring-room: Design.ring-offset + Design.ring-width;
+                Flickable {
+                    x: -usedby-box.ring-room;
+                    y: -usedby-box.ring-room;
+                    width: usedby-box.width + 2 * usedby-box.ring-room;
+                    height: usedby-box.height + 2 * usedby-box.ring-room;
+                    content-width: usedby-row.preferred-width + 2 * usedby-box.ring-room;
+                    content-height: self.height;
+                    usedby-row := HorizontalLayout {
+                        x: usedby-box.ring-room;
+                        y: usedby-box.ring-room;
                         spacing: Design.gap-meta;
                         alignment: start;
-                        if i > 0: Text {
-                            text: "·";
+                        Text {
+                            text: @tr("Used by:");
                             color: Theme.text-dim;
                             font-size: Design.font-helper;
                         }
-                        LinkText {
-                            text: tv.name;
-                            tip: @tr("Edit {} config", tv.name);
-                            text-color: tv.automated
-                                ? Theme.success-text
-                                : Theme.info-text;
-                            accessible-label-override: tv.automated
-                                ? @tr("{}, automated", tv.name)
-                                : "";
-                            clicked => { Profiles.open-tv(tv.uuid); }
+                        if root.referenced-by.length == 0: Text {
+                            text: "—";
+                            color: Theme.text-dim;
+                            font-size: Design.font-helper;
+                        }
+                        for tv[i] in root.referenced-by: HorizontalLayout {
+                            spacing: Design.gap-meta;
+                            alignment: start;
+                            if i > 0: Text {
+                                text: "·";
+                                color: Theme.text-dim;
+                                font-size: Design.font-helper;
+                            }
+                            LinkText {
+                                text: tv.name;
+                                tip: @tr("Edit {} config", tv.name);
+                                text-color: tv.automated
+                                    ? Theme.success-text
+                                    : Theme.info-text;
+                                accessible-label-override: tv.automated
+                                    ? @tr("{}, automated", tv.name)
+                                    : "";
+                                clicked => { Profiles.open-tv(tv.uuid); }
+                            }
                         }
                     }
                 }
@@ -1223,6 +1255,7 @@ component ProfileDetail inherits Rectangle {
                             duplicate-button := IconBtn {
                                 source: Icons.copy;
                                 accessible-label: @tr("Duplicate profile");
+                                accessible-id: "profiles-duplicate-button";
                                 tip: @tr("Duplicate profile");
                                 clicked => { root.request-duplicate(); }
                             }
@@ -1490,6 +1523,13 @@ export component ProfilesPane {
     changed column-mirror => {
         if (Nav.column-target == 2 && root.has-selection) {
             root.focus-detail-tick += 1;
+        }
+    }
+    // The detail went away under focus (its profile was deleted, here
+    // or by another client): the list takes over.
+    changed has-selection => {
+        if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
         }
     }
     property <ProfileKind> pending-duplicate-kind: ProfileKind.none;

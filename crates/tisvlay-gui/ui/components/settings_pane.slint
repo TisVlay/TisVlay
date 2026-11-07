@@ -160,6 +160,7 @@ export component SettingsPane inherits Rectangle {
                         maximum: 250;
                         step: 10;
                         accessible-label: @tr("Scale");
+                        accessible-id: "settings-couch-scale";
                         committed(v) => { Couch.scale-changed(v); }
                     }
                 }

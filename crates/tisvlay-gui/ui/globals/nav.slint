@@ -45,4 +45,26 @@ export global Nav {
     /// doesn't move this count arrived with no focus: Rust then asks
     /// the shell to restore focus to the last column.
     in-out property <int> key-seen: 0;
+
+    /// Focus anchors. Every stop reports its focus-in through
+    /// `stop-focused`, which counts it; a focusable keeps the count as
+    /// its anchor. A dialog records the anchor and column at open and
+    /// asks for them back on close through `request-anchor`: the
+    /// focusable holding the anchor focuses itself and marks the
+    /// request served, and the shell falls back to the column when
+    /// none does (the opener is gone, or wasn't a focusable).
+    in-out property <int> focus-seq: 0;
+    public function stop-focused(column: int) {
+        self.column = column;
+        self.focus-seq += 1;
+    }
+    in-out property <int> anchor-seq: 0;
+    in-out property <int> anchor-column: 0;
+    in-out property <int> anchor-tick: 0;
+    in-out property <int> anchor-served: 0;
+    public function request-anchor(seq: int, column: int) {
+        self.anchor-seq = seq;
+        self.anchor-column = column;
+        self.anchor-tick += 1;
+    }
 }

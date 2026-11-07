@@ -133,6 +133,34 @@ export component AppWindow inherits Window {
         return true;
     }
 
+    // A column request for the sidebar (a dialog closing over it): the
+    // panes answer the other columns.
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 0) {
+            root.focus-active-sidebar-item();
+        }
+    }
+
+    // An anchor request nobody served (its focusable is gone, or the
+    // stop wasn't one) falls back to its column. The focusables answer
+    // in the same change pass as this handler, in no set order, so the
+    // check waits a tick.
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        anchor-fallback.running = true;
+    }
+    anchor-fallback := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if (Nav.anchor-served != Nav.anchor-tick) {
+                Nav.request-column(Nav.anchor-column);
+            }
+        }
+    }
+
     // Focus was lost (its item was hidden or destroyed, and Slint ran
     // no handler for the key that just arrived): put it back on the
     // column it was in, where the pane picks the stop.
@@ -276,9 +304,6 @@ export component AppWindow inherits Window {
         // - Up and Down always step through the Tab order, taken here so
         //   a text field's caret moves don't keep them, except while a
         //   select's list is open and owns them.
-        // - In couch mode Tab and Shift+Tab cycle the panes, as console
-        //   menus do with the shoulder buttons; a Tab Rust synthesized
-        //   for an arrow is let through to Slint's traversal.
         capture-key-pressed(event) => {
             Nav.key-seen += 1;
             if (event.text == Key.Tab || event.text == Key.Backtab
@@ -297,11 +322,6 @@ export component AppWindow inherits Window {
                     return accept;
                 }
             }
-            if (Couch.active && !Nav.synthesizing
-                && (event.text == Key.Tab || event.text == Key.Backtab)) {
-                root.cycle-pane(event.text == Key.Tab && !event.modifiers.shift);
-                return accept;
-            }
             reject
         }
         // Keys no child took. Alt+Left/Right is the browser-style history
@@ -309,7 +329,11 @@ export component AppWindow inherits Window {
         // first, so we don't steal keys mid-edit, and `nav-enabled`
         // covers the modal/edit flows that don't hold key focus. A bare
         // Left or Right, which a slider, a spin box or an editing field
-        // would have used, jumps columns: sidebar, list, detail.
+        // would have used, jumps columns: sidebar, list, detail. In couch
+        // mode Tab and Shift+Tab cycle the panes, as console menus do
+        // with the shoulder buttons; a dialog, which cycles its own
+        // controls, takes them first, and a Tab Rust synthesized for an
+        // arrow is left to Slint's traversal.
         key-pressed(event) => {
             if (root.nav-enabled && event.modifiers.alt && event.text == Key.LeftArrow) {
                 root.nav-back();
@@ -326,6 +350,11 @@ export component AppWindow inherits Window {
                 if (event.text == Key.RightArrow) {
                     return root.jump-right() ? accept : reject;
                 }
+            }
+            if (Couch.active && !Nav.synthesizing
+                && (event.text == Key.Tab || event.text == Key.Backtab)) {
+                root.cycle-pane(event.text == Key.Tab && !event.modifiers.shift);
+                return accept;
             }
             return reject;
         }

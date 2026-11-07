@@ -347,7 +347,7 @@ export component ThemedSelect inherits Rectangle {
         }
         changed has-focus => {
             if (self.has-focus) {
-                Nav.column = 2;
+                Nav.stop-focused(2);
             }
         }
     }

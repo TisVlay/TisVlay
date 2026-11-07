@@ -4,7 +4,7 @@
 // themed colors, not raw hex values. Add a primitive here when it's
 // needed by ≥ 2 panes; pane-specific helpers stay in their pane.
 
-import { LineEdit, Slider } from "std-widgets.slint";
+import { Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
@@ -97,6 +97,8 @@ export component Focusable inherits Rectangle {
 
     function activate() {
         if (root.enabled) {
+            // Whatever the activation opens finds its way back here.
+            root.take-anchor();
             root.activated();
         }
     }
@@ -122,9 +124,33 @@ export component Focusable inherits Rectangle {
             root.key(event)
         }
         changed has-focus => {
-            if (self.has-focus) {
-                Nav.column = root.column;
+            if (self.has-focus && Nav.focus-seq != root.anchor) {
+                root.take-anchor();
             }
+        }
+    }
+
+    // The control's focus anchor, the way a dialog finds its opener
+    // again (`Nav`). Taken on focus-in, and at once on activation,
+    // since a focus-in's change handler runs after the activation that
+    // may open the dialog, and never runs at all for a control created
+    // and focused in one pass (a detail focusing its first stop from
+    // `init`), which is also why `init` reports a focus it already has.
+    property <int> anchor: -1;
+    function take-anchor() {
+        Nav.stop-focused(root.column);
+        root.anchor = Nav.focus-seq;
+    }
+    init => {
+        if (fs.has-focus) {
+            root.take-anchor();
+        }
+    }
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        if (Nav.anchor-seq == root.anchor && root.anchor >= 0) {
+            Nav.anchor-served = Nav.anchor-tick;
+            root.focus();
         }
     }
 
@@ -325,7 +351,7 @@ export component ContextualHelpButton inherits Rectangle {
         }
         changed has-focus => {
             if (self.has-focus) {
-                Nav.column = 2;
+                Nav.stop-focused(2);
             } else if (trigger.pinned-mine) {
                 Help.dismiss();
             }
@@ -878,118 +904,240 @@ export component ThemedCheckBox inherits Focusable {
 }
 
 // =============================================================================
-// LineEditField — std-widgets LineEdit with a higher-contrast placeholder.
+// LineEditField — the themed text field.
 // =============================================================================
 //
-// Slint's `LineEdit` exposes `placeholder-text` but not
-// `placeholder-color`; the fluent style renders the placeholder at
-// `FluentPalette.text-secondary` (~60% black on white), which is
-// only ~30% lighter than entered text and reads as "same color"
-// to most users — easy to mistake an empty field for one
-// containing pre-entered text.
+// A bare `TextInput` in the shared control box (the `ThemedSelect` and
+// `ThemedSpinBox` shape), with a placeholder at `Theme.text-faint`,
+// clearly apart from entered text, and the focus ring. Fluent's
+// `LineEdit` isn't used: a disabled one dims, and a read-only one stays
+// a Tab stop and keeps Left and Right, and couch mode needs an idle
+// field that is neither (below).
 //
-// This wrapper keeps the std-widgets LineEdit (clear icon,
-// password toggle, focus border, accessibility hookups all
-// preserved) but suppresses its built-in placeholder by passing
-// `placeholder-text: ""`, then overlays our own Text with
-// `Theme.text-faint` — a clearly faded color (well-tuned for
-// both light and dark) that makes empty fields visually distinct
-// from filled ones.
+// The field's own stop is `reach`, a FocusScope outside the clip
+// around the input, for two reasons:
+//
+// - Tab's way into a field that's scrolled out of view. Slint skips a
+//   stop under a clipping element while a scroll view hides it, so Tab
+//   alone never reaches the clipped input below the fold. The scope
+//   takes the Tab instead and, on a desktop, forwards focus
+//   programmatically, which ignores visibility and scrolls the field
+//   into view.
+// - Couch mode's edit-on-Return. The on-screen keyboard follows an
+//   editable input's focus, so a remote stepping past fields would
+//   raise it at every one. There the scope is the ringed stop and the
+//   input is disabled, out of the Tab order and refusing focus, until
+//   Return or a click starts editing; Return or Escape ends it, with
+//   focus back on the stop.
 
 export component LineEditField inherits Rectangle {
     in property <string> placeholder-text;
-    in-out property <string> text <=> inner.text;
-    in property <bool> enabled <=> inner.enabled;
+    in-out property <string> text <=> field.text;
+    in property <bool> enabled: true;
     /// Optional font family (one family name, e.g. `Theme.mono-font`
     /// for IP / MAC entry); empty is the default font.
-    in property <string> font-family <=> inner.font-family;
-    in property <InputType> input-type <=> inner.input-type;
+    in property <string> font-family <=> field.font-family;
+    in property <InputType> input-type <=> field.input-type;
     callback edited(string);
     callback accepted(string);
 
-    horizontal-stretch: 1;
-    min-height: inner.min-height;
-    forward-focus: inner;
-
-    // The shared ring, around fluent's own focus look.
-    ring := FocusRing {
-        shown: inner.has-focus && Nav.focus-visible;
-        host-width: root.width;
-        host-height: root.height;
-        host-radius: Design.radius-control;
+    property <bool> couch: Couch.active;
+    /// Couch mode's editing state (a desktop field edits whenever its
+    /// input has focus).
+    property <bool> editing;
+    /// Focus the field the way Tab would: the ringed stop in couch
+    /// mode, the input on a desktop.
+    public function take-focus() {
+        if (root.couch) {
+            reach.focus();
+        } else {
+            field.focus();
+            field.select-all();
+        }
+    }
+    /// Focus the input, editing, in either mode.
+    public function focus-input() {
+        root.editing = true;
+        field.focus();
+        field.select-all();
+    }
+    function stop-editing() {
+        root.editing = false;
+        reach.focus();
     }
 
-    // Tab's way into a field that's scrolled out of view. Slint skips
-    // a stop under a clipping element while a scroll view hides it,
-    // and the LineEdit clips its text input, so Tab alone never
-    // reaches a field below the fold. This scope sits outside the clip,
-    // takes the Tab instead, and forwards focus programmatically, which
-    // ignores visibility and scrolls the field into view.
-    //
-    // It must not catch a Shift+Tab leaving the field: Slint takes
-    // focus away before it walks backwards, so `!inner.has-focus` alone
-    // would re-enable the scope in time to bounce focus back. The field
-    // raises `leaving-backwards` from its own key handler, which runs
-    // before the walk, and clears it once it has lost focus.
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    background: Theme.surface2;
+    // Accent border while editing; keyboard focus draws the shared ring.
+    border-color: field.has-focus ? Theme.accent : Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+    forward-focus: reach;
+
+    accessible-role: text-input;
+    accessible-value: root.text;
+    accessible-placeholder-text: root.placeholder-text;
+    accessible-enabled: root.enabled;
+    accessible-action-set-value(v) => {
+        root.text = v;
+        root.edited(v);
+    }
+
+    ring := FocusRing {
+        shown: (field.has-focus || reach.has-focus) && Nav.focus-visible;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
+
+    // The stop. It must not catch a Shift+Tab leaving the input: Slint
+    // takes focus away before it walks backwards, so `!field.has-focus`
+    // alone would re-enable the scope in time to bounce focus back. The
+    // input raises `leaving-backwards` from its own key handler, which
+    // runs before the walk, and clears it once it has lost focus.
     property <bool> leaving-backwards;
 
     reach := FocusScope {
         width: 100%;
         height: 100%;
-        enabled: !inner.has-focus && !root.leaving-backwards;
+        enabled: !field.has-focus && !root.leaving-backwards;
         focus-on-click: false;
-        changed has-focus => {
-            if (self.has-focus) {
-                inner.focus();
-                // What a direct tab-in does; programmatic focus doesn't.
-                inner.select-all();
-            }
-        }
-    }
-
-    inner := LineEdit {
-        // Bind to fill the wrapper Rectangle. Without this the
-        // LineEdit sits at its preferred size (~32px) anchored at
-        // (0,0) instead of stretching to whatever slot the outer
-        // layout grants the wrapper.
-        width: 100%;
-        height: 100%;
-        // Suppress fluent's subtle built-in placeholder; we render
-        // our own with a stronger contrast below.
-        placeholder-text: "";
-        edited(v) => { root.edited(v); }
-        accepted(v) => { root.accepted(v); }
         key-pressed(event) => {
-            if (event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift)) {
-                root.leaving-backwards = true;
+            if (root.couch && root.enabled && event.text == Key.Return) {
+                root.focus-input();
+                return accept;
             }
             reject
         }
         changed has-focus => {
             if (self.has-focus) {
-                Nav.column = 2;
-            } else {
-                root.leaving-backwards = false;
+                Nav.stop-focused(2);
+                if (!root.couch) {
+                    field.focus();
+                    // What a direct tab-in does; programmatic focus doesn't.
+                    field.select-all();
+                }
             }
         }
     }
 
-    // Overlay placeholder. Visible only when the field is empty
-    // and unfocused (matches the standard "placeholder hides on
-    // input or focus" pattern). Text without a TouchArea doesn't
-    // intercept clicks, so the underlying LineEdit still receives
-    // focus on click.
-    //
-    // x=13px matches fluent's 12px LineEdit padding plus a 1px
-    // optical adjustment so the placeholder sits exactly where
-    // typed text would appear. y centers within the wrapper.
-    if root.text == "" && !inner.has-focus: Text {
-        x: 13px;
-        y: (parent.height - self.height) / 2;
-        text: root.placeholder-text;
-        color: Theme.text-faint;
-        font-size: Design.font-body;
-        font-family: root.font-family;
+    // The right-click editing menu the std field has.
+    ContextMenuArea {
+        enabled: field.enabled;
+        Menu {
+            MenuItem {
+                title: @tr("Undo");
+                activated => { field.undo(); }
+            }
+            MenuItem {
+                title: @tr("Redo");
+                activated => { field.redo(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: @tr("Cut");
+                activated => { field.cut(); }
+            }
+            MenuItem {
+                title: @tr("Copy");
+                enabled: root.text != "";
+                activated => { field.copy(); }
+            }
+            MenuItem {
+                title: @tr("Paste");
+                activated => { field.paste(); }
+            }
+            MenuItem {
+                title: @tr("Select All");
+                enabled: root.text != "";
+                activated => { field.select-all(); }
+            }
+        }
+
+        layout := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+
+            clip-box := Rectangle {
+                clip: true;
+                horizontal-stretch: 1;
+                // Clipped to nothing, the input couldn't take focus.
+                min-width: 1px;
+
+                if root.text == "" && !field.has-focus: Text {
+                    width: 100%;
+                    height: 100%;
+                    vertical-alignment: center;
+                    text: root.placeholder-text;
+                    color: Theme.text-faint;
+                    font-size: field.font-size;
+                    font-family: root.font-family;
+                    accessible-role: none;
+                }
+
+                field := TextInput {
+                    // Keeps the caret in view through text wider than
+                    // the box, as the std field does.
+                    property <length> computed-x;
+                    property <length> scroll-margin: layout.padding-left + layout.padding-right;
+                    x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+                    width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                    height: 100%;
+                    vertical-alignment: center;
+                    single-line: true;
+                    color: Theme.text;
+                    font-size: Design.font-body;
+                    selection-background-color: Theme.accent-soft;
+                    selection-foreground-color: Theme.text;
+                    enabled: root.enabled && (!root.couch || root.editing);
+                    // The field's root carries the accessible role.
+                    accessible-role: none;
+
+                    cursor-position-changed(cursor-position) => {
+                        if (cursor-position.x + self.computed-x < self.scroll-margin) {
+                            self.computed-x = -cursor-position.x + self.scroll-margin;
+                        } else if (cursor-position.x + self.computed-x > parent.width - self.scroll-margin - self.text-cursor-width) {
+                            self.computed-x = parent.width - cursor-position.x - self.scroll-margin - self.text-cursor-width;
+                        }
+                    }
+                    accepted => {
+                        root.accepted(self.text);
+                        if (root.couch) {
+                            root.stop-editing();
+                        }
+                    }
+                    edited => { root.edited(self.text); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift)) {
+                            root.leaving-backwards = true;
+                        }
+                        if (root.couch && event.text == Key.Escape) {
+                            root.stop-editing();
+                            return accept;
+                        }
+                        reject
+                    }
+                    changed has-focus => {
+                        if (self.has-focus) {
+                            Nav.stop-focused(2);
+                        } else {
+                            root.leaving-backwards = false;
+                            root.editing = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Couch mode's click on an idle field: start editing (the disabled
+    // input can't take the click itself).
+    if root.couch && !root.editing: TouchArea {
+        enabled: root.enabled;
+        clicked => { root.focus-input(); }
     }
 }
 
@@ -1261,7 +1409,7 @@ export component OptimisticSlider {
                 changed(v) => { root.committed(round(v)); }
                 changed has-focus => {
                     if (self.has-focus) {
-                        Nav.column = 2;
+                        Nav.stop-focused(2);
                     }
                 }
             }
@@ -1388,6 +1536,23 @@ export component ThemedSpinBox inherits Rectangle {
         root.commit(round(t.to-float()));
     }
 
+    // Couch mode's typing: the input requests the on-screen keyboard
+    // only when it takes focus while editable, so editing starts and
+    // ends by re-taking focus around the `read-only` flip.
+    property <bool> couch: Couch.active;
+    property <bool> editing;
+    function start-editing() {
+        root.editing = true;
+        field.clear-focus();
+        field.focus();
+        field.select-all();
+    }
+    function stop-editing() {
+        root.editing = false;
+        field.clear-focus();
+        field.focus();
+    }
+
     // Same minimum as ThemedSelect (shared token) so a SpinBox and a
     // ComboBox in the same value column render one width — now that the
     // trailing modifier region is reserved on every row kind, the two
@@ -1444,16 +1609,25 @@ export component ThemedSpinBox inherits Rectangle {
             font-size: Design.font-meta;
             input-type: number;
             single-line: true;
-            // TextInput has no `enabled`; `read-only` blocks typing.
-            read-only: !root.enabled;
+            // TextInput has no `enabled`; `read-only` blocks typing. In
+            // couch mode the field is read-only until Return, so the
+            // on-screen keyboard (which follows an editable input's
+            // focus) doesn't pop up at every number a remote steps past.
+            read-only: !root.enabled || (root.couch && !root.editing);
             selection-background-color: Theme.accent-soft;
             text: root.display;
-            accepted => { root.commit-text(self.text); }
+            accepted => {
+                root.commit-text(self.text);
+                if (root.couch) {
+                    root.stop-editing();
+                }
+            }
             changed has-focus => {
                 if (self.has-focus) {
-                    Nav.column = 2;
+                    Nav.stop-focused(2);
                 } else {
                     root.commit-text(self.text);
+                    root.editing = false;
                 }
             }
             // Left/Right step the value, as a slider's do, so a remote
@@ -1467,6 +1641,15 @@ export component ThemedSpinBox inherits Rectangle {
                 }
                 if (root.enabled && event.text == Key.LeftArrow) {
                     root.commit(root.display - root.step);
+                    return accept;
+                }
+                if (root.couch && root.enabled && !root.editing && event.text == Key.Return) {
+                    root.start-editing();
+                    return accept;
+                }
+                if (root.couch && root.editing && event.text == Key.Escape) {
+                    self.text = root.display;
+                    root.stop-editing();
                     return accept;
                 }
                 reject
@@ -1915,59 +2098,123 @@ export component ConfirmDialog inherits Rectangle {
     callback confirmed();
     callback cancelled();
 
+    // Modal to the keyboard: opening focuses Cancel, the safe choice,
+    // Escape cancels, Tab and Shift+Tab cycle the two buttons (Confirm
+    // only while enabled), and closing puts focus back on the opener,
+    // through its anchor (`Nav`).
+    property <int> opener-anchor;
+    property <int> opener-column;
+    changed open => {
+        if (root.open) {
+            root.opener-anchor = Nav.focus-seq;
+            root.opener-column = Nav.column;
+            cancel-button.focus();
+        } else {
+            Nav.request-anchor(root.opener-anchor, root.opener-column);
+        }
+    }
+    function cycle(forward: bool) {
+        if (cancel-button.focused && forward && root.confirm-enabled) {
+            confirm-button.focus();
+        } else if (confirm-button.focused && !forward) {
+            cancel-button.focus();
+        } else if (!cancel-button.focused && !confirm-button.focused) {
+            cancel-button.focus();
+        } else if (root.confirm-enabled) {
+            // Wrapping: Tab past Confirm, Shift+Tab past Cancel.
+            if (cancel-button.focused) {
+                confirm-button.focus();
+            } else {
+                cancel-button.focus();
+            }
+        }
+    }
+
     visible: open;
     background: Theme.scrim;
     width: 100%;
     height: 100%;
 
-    TouchArea {
-        clicked => { root.cancelled(); }
-    }
-
-    Rectangle {
-        background: Theme.surface;
-        border-radius: Design.radius-card;
-        border-color: Theme.border;
-        border-width: Design.border-thin;
-        width: 380px;
-        // Grow with content; `max()` enforces the 170px floor so
-        // short messages keep the same visual weight as before.
-        height: max(170px, card-layout.preferred-height);
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-
-        // Inner TouchArea swallows clicks so they don't fall through
-        // to the scrim-cancel TouchArea below.
-        TouchArea {}
-
-        card-layout := VerticalLayout {
-            width: 100%;
-            padding: 18px;
-            spacing: Design.gap-block;
-
-            Text {
-                text: root.title;
-                color: Theme.text;
-                font-size: Design.font-title-3;
-                font-weight: 700;
+    // The keys the buttons don't take bubble up here; no stop itself.
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: false;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancelled();
+                return accept;
             }
-            Text {
-                text: root.message;
-                color: Theme.text-dim;
-                font-size: Design.font-body;
-                wrap: word-wrap;
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                root.cycle(event.text == Key.Tab && !event.modifiers.shift);
+                return accept;
             }
-            HorizontalLayout {
-                spacing: Design.gap-stack;
-                alignment: end;
-                ThemedButton {
-                    text: @tr("Cancel");
-                    clicked => { root.cancelled(); }
+            if (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                // The buttons sit side by side: Left is Cancel, Right
+                // is Confirm. Taken so they don't jump columns behind
+                // the dialog.
+                if (event.text == Key.LeftArrow) {
+                    cancel-button.focus();
+                } else if (root.confirm-enabled) {
+                    confirm-button.focus();
                 }
-                DangerBtn {
-                    text: root.confirm-label;
-                    enabled: root.confirm-enabled;
-                    clicked => { root.confirmed(); }
+                return accept;
+            }
+            reject
+        }
+
+        TouchArea {
+            clicked => { root.cancelled(); }
+        }
+
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Design.radius-card;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            width: 380px;
+            // Grow with content; `max()` enforces the 170px floor so
+            // short messages keep the same visual weight as before.
+            height: max(170px, card-layout.preferred-height);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+
+            // Inner TouchArea swallows clicks so they don't fall through
+            // to the scrim-cancel TouchArea below.
+            TouchArea {}
+
+            card-layout := VerticalLayout {
+                width: 100%;
+                padding: 18px;
+                spacing: Design.gap-block;
+
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.message;
+                    color: Theme.text-dim;
+                    font-size: Design.font-body;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Design.gap-stack;
+                    alignment: end;
+                    cancel-button := ThemedButton {
+                        text: @tr("Cancel");
+                        accessible-id: "dialog-cancel";
+                        clicked => { root.cancelled(); }
+                    }
+                    confirm-button := DangerBtn {
+                        text: root.confirm-label;
+                        enabled: root.confirm-enabled;
+                        accessible-id: "dialog-confirm";
+                        clicked => { root.confirmed(); }
+                    }
                 }
             }
         }
@@ -1978,7 +2225,7 @@ export component ConfirmDialog inherits Rectangle {
 // NameInputDialog — generic "type a name" modal scrim.
 // =============================================================================
 //
-// Mirrors `ConfirmDialog`'s shape with an extra `LineEdit` row + an
+// Mirrors `ConfirmDialog`'s shape with an extra text field row + an
 // `error-message` slot that turns the helper text red when populated
 // (e.g. "Reserved name"). The Confirm button is enabled iff
 // `name != ""` AND `error-message == ""`.
@@ -1992,8 +2239,8 @@ export component NameInputDialog inherits Rectangle {
     /// Caller-supplied validation reason. Empty means valid;
     /// non-empty puts the dialog into invalid state.
     in property <string> error-message: "";
-    /// Current name typed by the user. The dialog owns the
-    /// `LineEdit` widget; the caller observes via `name-changed`.
+    /// Current name typed by the user. The dialog owns the field;
+    /// the caller observes via `name-changed`.
     in-out property <string> name;
     /// Fires on every keystroke so the caller can validate
     /// (reserved-name check, existing-name check, etc.).
@@ -2001,72 +2248,144 @@ export component NameInputDialog inherits Rectangle {
     callback confirmed();
     callback cancelled();
 
+    // Modal to the keyboard: opening focuses the field, editing (the
+    // dialog exists to type a name), Escape cancels, Tab and Shift+Tab
+    // cycle field, Cancel and Confirm (Confirm only while enabled), and
+    // closing puts focus back on the opener, through its anchor (`Nav`).
+    property <int> opener-anchor;
+    property <int> opener-column;
+    property <bool> confirm-enabled: root.name != "" && root.error-message == "";
+    changed open => {
+        if (root.open) {
+            root.opener-anchor = Nav.focus-seq;
+            root.opener-column = Nav.column;
+            name-field.focus-input();
+        } else {
+            Nav.request-anchor(root.opener-anchor, root.opener-column);
+        }
+    }
+    function cycle(forward: bool) {
+        if (cancel-button.focused) {
+            if (forward && root.confirm-enabled) {
+                confirm-button.focus();
+            } else {
+                name-field.focus-input();
+            }
+        } else if (confirm-button.focused) {
+            if (forward) {
+                name-field.focus-input();
+            } else {
+                cancel-button.focus();
+            }
+        } else if (forward) {
+            cancel-button.focus();
+        } else if (root.confirm-enabled) {
+            confirm-button.focus();
+        } else {
+            cancel-button.focus();
+        }
+    }
+
     visible: open;
     background: Theme.scrim;
     width: 100%;
     height: 100%;
 
-    TouchArea {
-        clicked => { root.cancelled(); }
-    }
-
-    Rectangle {
-        background: Theme.surface;
-        border-radius: Design.radius-card;
-        border-color: Theme.border;
-        border-width: Design.border-thin;
-        width: 380px;
-        height: max(220px, card-layout.preferred-height);
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-
-        TouchArea {}
-
-        card-layout := VerticalLayout {
-            width: 100%;
-            padding: 18px;
-            spacing: Design.gap-block;
-
-            Text {
-                text: root.title;
-                color: Theme.text;
-                font-size: Design.font-title-3;
-                font-weight: 700;
+    // The keys the field and the buttons don't take bubble up here; no
+    // stop itself.
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: false;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancelled();
+                return accept;
             }
-            if root.prompt != "": Text {
-                text: root.prompt;
-                color: Theme.text-dim;
-                font-size: Design.font-body;
-                wrap: word-wrap;
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                root.cycle(event.text == Key.Tab && !event.modifiers.shift);
+                return accept;
             }
-            LineEdit {
-                placeholder-text: root.placeholder;
-                text <=> root.name;
-                edited(v) => { root.name-changed(v); }
-                accepted(v) => {
-                    if (v != "" && root.error-message == "") {
-                        root.confirmed();
+            if (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                // Between the two buttons; from the field (an idle one,
+                // in couch mode) nothing. Taken so they don't jump
+                // columns behind the dialog.
+                if (event.text == Key.LeftArrow && confirm-button.focused) {
+                    cancel-button.focus();
+                } else if (event.text == Key.RightArrow && cancel-button.focused && root.confirm-enabled) {
+                    confirm-button.focus();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        TouchArea {
+            clicked => { root.cancelled(); }
+        }
+
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Design.radius-card;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            width: 380px;
+            height: max(220px, card-layout.preferred-height);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+
+            TouchArea {}
+
+            card-layout := VerticalLayout {
+                width: 100%;
+                padding: 18px;
+                spacing: Design.gap-block;
+
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                }
+                if root.prompt != "": Text {
+                    text: root.prompt;
+                    color: Theme.text-dim;
+                    font-size: Design.font-body;
+                    wrap: word-wrap;
+                }
+                name-field := LineEditField {
+                    placeholder-text: root.placeholder;
+                    text <=> root.name;
+                    accessible-id: "dialog-name";
+                    edited(v) => { root.name-changed(v); }
+                    accepted(v) => {
+                        if (v != "" && root.error-message == "") {
+                            root.confirmed();
+                        }
                     }
                 }
-            }
-            if root.error-message != "": Text {
-                text: root.error-message;
-                color: Theme.danger-text;
-                font-size: Design.font-helper;
-                wrap: word-wrap;
-            }
-            HorizontalLayout {
-                spacing: Design.gap-stack;
-                alignment: end;
-                ThemedButton {
-                    text: @tr("Cancel");
-                    clicked => { root.cancelled(); }
+                if root.error-message != "": Text {
+                    text: root.error-message;
+                    color: Theme.danger-text;
+                    font-size: Design.font-helper;
+                    wrap: word-wrap;
                 }
-                ThemedButton {
-                    text: root.confirm-label;
-                    primary: true;
-                    enabled: root.name != "" && root.error-message == "";
-                    clicked => { root.confirmed(); }
+                HorizontalLayout {
+                    spacing: Design.gap-stack;
+                    alignment: end;
+                    cancel-button := ThemedButton {
+                        text: @tr("Cancel");
+                        accessible-id: "dialog-cancel";
+                        clicked => { root.cancelled(); }
+                    }
+                    confirm-button := ThemedButton {
+                        text: root.confirm-label;
+                        primary: true;
+                        enabled: root.confirm-enabled;
+                        accessible-id: "dialog-confirm";
+                        clicked => { root.confirmed(); }
+                    }
                 }
             }
         }

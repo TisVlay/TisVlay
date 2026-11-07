@@ -2413,6 +2413,7 @@ fn register_callbacks(
         let edit_pane = app.global::<EditPane>();
         edit_pane.set_error(SharedString::default());
         edit_pane.set_saving(false);
+        edit_pane.set_dirty(false);
         edit_pane.set_name(SharedString::from(name.as_str()));
 
         let app_weak = app.as_weak();
@@ -2467,6 +2468,7 @@ fn register_callbacks(
         edit_pane.set_error(SharedString::default());
         edit_pane.set_saving(false);
         edit_pane.set_valid(false);
+        edit_pane.set_dirty(false);
     });
 
     let app_weak = app.as_weak();
@@ -2476,6 +2478,7 @@ fn register_callbacks(
         };
         let edit_pane = app.global::<EditPane>();
         edit_pane.set_name(new_name);
+        edit_pane.set_dirty(true);
         edit_pane.set_valid(compute_edit_valid(&edit_pane));
     });
 
@@ -2505,6 +2508,7 @@ fn register_callbacks(
         if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
             vec_model.set_row_data(i as usize, row);
         }
+        edit_pane.set_dirty(true);
         edit_pane.set_valid(compute_edit_valid(&edit_pane));
     });
 
@@ -2550,6 +2554,7 @@ fn register_callbacks(
                         edit_pane.set_name(SharedString::default());
                         edit_pane.set_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
                         edit_pane.set_error(SharedString::default());
+                        edit_pane.set_dirty(false);
                     }
                     Err(e) => {
                         // Per-field validation errors get routed back

@@ -345,7 +345,7 @@ component TvList inherits Rectangle {
         }
     }
     function serve-column-request() {
-        if (Nav.column-target == 1 || root.selected-index < 0) {
+        if (Nav.column-target == 1 || root.selected-index < 0 || root.selected-index >= root.tvs.length) {
             Nav.column-served = Nav.column-tick;
             if (root.tvs.length > 0) {
                 root.focus-row-index = root.selected-index >= 0 ? root.selected-index : 0;
@@ -722,6 +722,10 @@ component TvDetailHeader inherits Rectangle {
 // inline layout that has a sibling ahead of it, so the card ended before
 // the form did. See `SchemaFieldRow` in schema_form.slint.
 component TvConfigEditForm {
+    /// The edit was entered by key: the name field takes focus as the
+    /// form appears.
+    in property <bool> focus-on-create;
+
     VerticalLayout {
         spacing: Design.gap-row;
 
@@ -736,7 +740,13 @@ component TvConfigEditForm {
             LineEditField {
                 placeholder-text: @tr("e.g. Living Room G4");
                 text <=> EditPane.name;
+                accessible-id: "tv-edit-name";
                 edited(v) => { EditPane.name-edited(v); }
+                init => {
+                    if (root.focus-on-create) {
+                        self.take-focus();
+                    }
+                }
             }
         }
 
@@ -769,8 +779,15 @@ component TvDetail inherits Rectangle {
     callback request-re-pair();
 
     /// Set when Cancel or Save is activated by key: the Edit button
-    /// that replaces them takes focus on creation.
+    /// that replaces them takes focus on creation. And the reverse: Edit
+    /// activated by key, the form's name field takes focus.
     property <bool> focus-edit-when-shown;
+    property <bool> focus-form-when-shown;
+    changed in-edit-mode => {
+        if (!root.in-edit-mode) {
+            root.focus-form-when-shown = false;
+        }
+    }
 
     /// Bumped by the pane when a list row is activated: the visible
     /// detail takes focus, landing on its first stop.
@@ -1141,7 +1158,10 @@ component TvDetail inherits Rectangle {
                             source: Icons.edit;
                             label: @tr("Edit");
                             accessible-id: "tv-detail-" + root.tv.uuid + "-edit-button";
-                            clicked => { EditPane.start(root.tv.uuid); }
+                            clicked => {
+                                root.focus-form-when-shown = self.focused;
+                                EditPane.start(root.tv.uuid);
+                            }
                             // Leaving edit mode destroys the Cancel and
                             // Save buttons with focus on one of them;
                             // this button, created in their place,
@@ -1195,7 +1215,9 @@ component TvDetail inherits Rectangle {
                                 dismissable: false;
                             }
 
-                            if root.in-edit-mode: TvConfigEditForm {}
+                            if root.in-edit-mode: TvConfigEditForm {
+                                focus-on-create: root.focus-form-when-shown;
+                            }
 
                             // View mode: name + vendor `UserInput`
                             // rows as read-only labels. Same set
@@ -1290,6 +1312,7 @@ component TvDetail inherits Rectangle {
                             alignment: center;
                             DangerBtn {
                                 text: @tr("Remove TV");
+                                accessible-id: "tv-detail-" + root.tv.uuid + "-remove-button";
                                 clicked => { root.request-remove(); }
                             }
                         }
@@ -1360,9 +1383,28 @@ export component TvsPane {
     property <int> focus-detail-tick;
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
-        if (Nav.column-target == 2 && root.selected-index >= 0 && !PairingWizard.active) {
+        if (Nav.column-target == 2 && root.has-selection && !PairingWizard.active) {
             Nav.column-served = Nav.column-tick;
             root.focus-detail-tick += 1;
+        }
+    }
+    property <bool> has-selection: root.selected-index >= 0 && root.selected-index < root.tvs.length;
+    // The detail went away under focus (its TV was removed): the list
+    // takes over.
+    changed has-selection => {
+        if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
+
+    // Leaving an edit with unsaved changes asks first (the Escape key
+    // routes here); an explicit Cancel is deliberate and doesn't.
+    property <bool> pending-discard;
+    public function cancel-edit() {
+        if (EditPane.dirty) {
+            root.pending-discard = true;
+        } else {
+            EditPane.cancel();
         }
     }
     // The wizard's exit destroys whatever it had focused; the list
@@ -1477,6 +1519,18 @@ export component TvsPane {
             root.pending-remove-id = "";
             root.pending-remove-name = "";
         }
+    }
+
+    ConfirmDialog {
+        open: root.pending-discard;
+        title: @tr("Discard changes");
+        message: @tr("Leave the TV's config without saving the changes?");
+        confirm-label: @tr("Discard");
+        confirmed => {
+            root.pending-discard = false;
+            EditPane.cancel();
+        }
+        cancelled => { root.pending-discard = false; }
     }
 
     ConfirmDialog {

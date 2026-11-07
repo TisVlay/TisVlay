@@ -45,6 +45,11 @@ export global EditPane {
     /// regardless of success/failure.
     in-out property <bool> saving;
 
+    /// The draft differs from what `start()` loaded: leaving the edit
+    /// by key asks before discarding it. Rust sets it on every edit
+    /// and clears it on `start()`.
+    in-out property <bool> dirty;
+
     /// Begin an edit session for the given TV. Rust prefetches
     /// `Tv1.GetConfig`, populates `name` + `fields` from the
     /// vendor's `config_schema`, and sets `tv-uuid` last so the
