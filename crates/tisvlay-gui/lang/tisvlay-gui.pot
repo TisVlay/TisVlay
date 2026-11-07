@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-31 17:18-0500\n"
+"POT-Creation-Date: 2026-11-01 21:49-0600\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -44,49 +44,49 @@ msgstr ""
 msgid "Paired successfully."
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:175
+#: crates/tisvlay-gui-app/src/about.rs:182
 msgid "Not running"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:176
-#: crates/tisvlay-gui-app/src/about.rs:176
+#: crates/tisvlay-gui-app/src/about.rs:183
+#: crates/tisvlay-gui-app/src/about.rs:183
 msgid "Same release as this GUI"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:177
+#: crates/tisvlay-gui-app/src/about.rs:184
 msgid "Release not read yet"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:179
+#: crates/tisvlay-gui-app/src/about.rs:186
 #, rust-format
 msgid "Runs {0}, this GUI {1}: compatible, only the patch release differs"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:184
+#: crates/tisvlay-gui-app/src/about.rs:191
 #, rust-format
 msgid ""
 "Runs {0}, this GUI {1}: the two can't talk. Restart it or upgrade so they "
 "match"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:196
+#: crates/tisvlay-gui-app/src/about.rs:203
 msgid "tisvlay not found on PATH"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:198
+#: crates/tisvlay-gui-app/src/about.rs:205
 #, rust-format
 msgid "From a different install: {0}, this GUI {1}"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:259
+#: crates/tisvlay-gui-app/src/about.rs:266
 msgid "offline"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:298
+#: crates/tisvlay-gui-app/src/about.rs:305
 msgid "This window's release"
 msgstr ""
 
-#: crates/tisvlay-gui-app/src/about.rs:312
+#: crates/tisvlay-gui-app/src/about.rs:319
 msgid "not found"
 msgstr ""
 
@@ -426,90 +426,95 @@ msgstr ""
 msgid "Address"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:242
+#: crates/tisvlay-gui/ui/main.slint:261
 msgctxt "AppWindow"
 msgid "TVs"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:249
+#: crates/tisvlay-gui/ui/main.slint:268
 msgctxt "AppWindow"
 msgid "Profiles"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:256
+#: crates/tisvlay-gui/ui/main.slint:275
 msgctxt "AppWindow"
 msgid "Settings"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:263
+#: crates/tisvlay-gui/ui/main.slint:282
 msgctxt "AppWindow"
 msgid "About"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:286
+#: crates/tisvlay-gui/ui/main.slint:305
 msgctxt "AppWindow"
 msgid "Reload config files"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:314
+#: crates/tisvlay-gui/ui/main.slint:333
 msgctxt "AppWindow"
 msgid "Reload"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:328
+#: crates/tisvlay-gui/ui/main.slint:347
 msgctxt "AppWindow"
 msgid ""
 "Reload the daemon, session and tray config files from disk — applies edits "
 "made outside the app."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:356
+#: crates/tisvlay-gui/ui/main.slint:375
 msgctxt "AppWindow"
 msgid "Daemon"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:362
+#: crates/tisvlay-gui/ui/main.slint:381
 msgctxt "AppWindow"
 msgid "Session"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:368
+#: crates/tisvlay-gui/ui/main.slint:387
 msgctxt "AppWindow"
 msgid "Tray"
 msgstr ""
 
 #. can't hover still hears it.
-#: crates/tisvlay-gui/ui/widgets.slint:132
+#: crates/tisvlay-gui/ui/widgets.slint:241
 msgctxt "ContextualHelpButton"
 msgid "Show help"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/widgets.slint:1111
+#: crates/tisvlay-gui/ui/widgets.slint:955
+msgctxt "InlineError"
+msgid "Dismiss"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/widgets.slint:1254
 msgctxt "ThemedSpinBox"
 msgid "Increase"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/widgets.slint:1118
+#: crates/tisvlay-gui/ui/widgets.slint:1261
 msgctxt "ThemedSpinBox"
 msgid "Decrease"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/widgets.slint:1546
+#: crates/tisvlay-gui/ui/widgets.slint:1676
 msgctxt "ConfirmDialog"
 msgid "OK"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/widgets.slint:1600
+#: crates/tisvlay-gui/ui/widgets.slint:1730
 msgctxt "ConfirmDialog"
 msgid "Cancel"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/widgets.slint:1627
+#: crates/tisvlay-gui/ui/widgets.slint:1757
 msgctxt "NameInputDialog"
 msgid "Create"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/widgets.slint:1698
+#: crates/tisvlay-gui/ui/widgets.slint:1828
 msgctxt "NameInputDialog"
 msgid "Cancel"
 msgstr ""

@@ -20,8 +20,10 @@
 
 import { ScrollView } from "std-widgets.slint";
 import { OverlayAnchor, OverlayIds } from "overlay.slint";
+import { Nav } from "nav.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { FocusRing } from "../widgets.slint";
 
 export global Select {
     // Open state + the active request's data.
@@ -247,12 +249,19 @@ export component ThemedSelect inherits Rectangle {
     // native ComboBox.
     opacity: root.enabled ? 1.0 : 0.45;
     background: Theme.surface2;
-    // Accent border when open OR keyboard-focused (the focus-visible ring
-    // a native combobox shows when you Tab onto it).
-    border-color: root.is-open || fs.has-focus ? Theme.accent : Theme.border;
-    border-width: root.is-open || fs.has-focus ? 2px : Design.border-thin;
+    // Accent border while open; keyboard focus draws the shared ring
+    // outside instead, so the two states read differently.
+    border-color: root.is-open ? Theme.accent : Theme.border;
+    border-width: root.is-open ? 2px : Design.border-thin;
     border-radius: Design.radius-control;
     forward-focus: fs;
+
+    ring := FocusRing {
+        shown: fs.has-focus && Nav.focus-visible && !root.is-open;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
 
     accessible-role: combobox;
     accessible-expandable: true;
@@ -341,6 +350,11 @@ export component ThemedSelect inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.enabled;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                Nav.focus-visible = false;
+            }
+        }
         clicked => {
             root.focus();
             root.open-list();

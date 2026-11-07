@@ -1,0 +1,11 @@
+// Keyboard-navigation state shared by the shell and the focusable
+// widgets.
+//
+// `focus-visible` decides whether the focused control draws its ring:
+// a navigation key (Tab, the arrows, Return, Space) turns it on in the
+// shell's key handling, a pointer press on a control turns it off. So
+// a mouse user never sees rings trail their clicks, while a remote or
+// keyboard user always sees where focus is.
+export global Nav {
+    in-out property <bool> focus-visible: false;
+}

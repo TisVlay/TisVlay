@@ -27,6 +27,7 @@ import { Icons } from "globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "globals/profiles.slint";
 import { Toast, ToastView } from "globals/toast.slint";
 import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
+import { Nav } from "globals/nav.slint";
 import { Health, ServiceHealth } from "globals/health.slint";
 import { SelectOverlay } from "globals/select.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
@@ -200,6 +201,18 @@ export component AppWindow inherits Window {
         // it instead of wrapping. Clicking the background still focuses
         // it, which is how a click away dismisses a pinned help bubble.
         focus-on-tab-navigation: false;
+        // A navigation key reveals the focus ring on whatever ends up
+        // focused; a pointer press on a control hides it again. Seen in
+        // the capture phase so it runs whichever child handles the key.
+        capture-key-pressed(event) => {
+            if (event.text == Key.Tab || event.text == Key.Backtab
+                || event.text == Key.UpArrow || event.text == Key.DownArrow
+                || event.text == Key.LeftArrow || event.text == Key.RightArrow
+                || event.text == Key.Return || event.text == " ") {
+                Nav.focus-visible = true;
+            }
+            reject
+        }
         // Global Alt+Left/Right history nav. As an ancestor of every
         // pane it catches the arrows bubbling up from whatever child
         // holds focus; a text input that consumes Alt+arrow (word-jump)

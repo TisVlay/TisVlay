@@ -11,6 +11,123 @@ import { Clipboard } from "globals/clipboard.slint";
 import { Icons } from "globals/icons.slint";
 import { ProfileKind } from "globals/profiles.slint";
 import { Help, HelpTrigger } from "globals/help.slint";
+import { Nav } from "globals/nav.slint";
+
+// =============================================================================
+// FocusRing — the keyboard-focus ring every focusable control draws.
+// =============================================================================
+//
+// An accent outline just outside its host. The host places it as a
+// child and hands it its size and corner radius; `shown` combines the
+// host's focus with `Nav.focus-visible`, so the ring appears only for
+// focus that came from a key. Opacity rather than `visible`, so a test
+// can read `computed_opacity()` to find the focused control.
+
+export component FocusRing inherits Rectangle {
+    in property <bool> shown;
+    in property <length> host-width;
+    in property <length> host-height;
+    /// The host's corner radius; the ring's follows it at the offset.
+    in property <length> host-radius;
+
+    x: -Design.ring-offset;
+    y: -Design.ring-offset;
+    width: root.host-width + 2 * Design.ring-offset;
+    height: root.host-height + 2 * Design.ring-offset;
+    border-width: Design.ring-width;
+    border-color: Theme.focus-ring;
+    border-radius: root.host-radius + Design.ring-offset;
+    opacity: root.shown ? 1.0 : 0.0;
+}
+
+// =============================================================================
+// Focusable — the base of every custom control a remote can reach.
+// =============================================================================
+//
+// A Rectangle, so a control keeps its background and border on its
+// root, with a FocusScope behind its hit area and a FocusRing around
+// it. It owns the one activation path: a click, Return, Space and the
+// accessibility default action all call `activated`, gated on
+// `enabled`. Controls built on it inherit it, read `hovered` /
+// `pressed` for their looks, and forward `hover-changed` to a
+// HelpTrigger when they show a tip. `focusable: false` keeps a control
+// hoverable and clickable but out of the Tab order (a decorative chip
+// with a tip).
+//
+// The FocusScope sits behind the TouchArea with `focus-on-click: false`
+// so the first click isn't spent on taking focus; the click handler
+// focuses explicitly, so a pointer user's next keys continue from the
+// control they clicked. A pointer press also clears `Nav.focus-visible`,
+// hiding rings until the next navigation key.
+
+export component Focusable inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <bool> focusable: true;
+    /// Cursor over the hit area; `pointer` is reserved for URL opens.
+    in property <MouseCursor> mouse-cursor: default;
+    /// A click, Return, Space, or the accessibility default action.
+    callback activated();
+    /// The pointer entered (true) or left (false) the control.
+    callback hover-changed(bool);
+    out property <bool> hovered: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+    out property <bool> focused: fs.has-focus;
+
+    forward-focus: fs;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        root.activate();
+    }
+
+    function activate() {
+        if (root.enabled) {
+            root.activated();
+        }
+    }
+
+    ring := FocusRing {
+        shown: fs.has-focus && Nav.focus-visible;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
+
+    fs := FocusScope {
+        width: 100%;
+        height: 100%;
+        enabled: root.enabled && root.focusable;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.activate();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    @children
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.mouse-cursor;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                Nav.focus-visible = false;
+            }
+        }
+        clicked => {
+            if (root.focusable) {
+                root.focus();
+            }
+            root.activate();
+        }
+        changed has-hover => {
+            root.hover-changed(self.has-hover);
+        }
+    }
+}
 
 // =============================================================================
 // Chip — small status pill (Connected, Managed, Unmanaged, etc.).
@@ -18,32 +135,37 @@ import { Help, HelpTrigger } from "globals/help.slint";
 //
 // `tone` selects the color palette. Defaults to neutral.
 
-export component Chip inherits Rectangle {
+export component Chip inherits Focusable {
     in property <string> label;
     /// One of: "neutral", "success", "danger", "warn", "info".
     in property <string> tone: "neutral";
-    /// `interactive: true` adds a pointer cursor + click handling so
-    /// the chip reads as a hyperlink-style affordance. Default
-    /// `false` keeps decorative chips (the About pane's version
-    /// chips, etc.) unclickable.
+    /// `interactive: true` makes the chip a focusable control with a
+    /// pointer cursor and a click, a hyperlink-style affordance.
+    /// Default `false` keeps decorative chips (the About pane's
+    /// version chips, etc.) unclickable and out of the Tab order.
     in property <bool> interactive: false;
-    /// Optional hover hint (hover-only). A decorative chip with a tip
-    /// gets a hover-only TouchArea: no pointer cursor, no click. Empty
-    /// → no tip.
+    /// Optional hover hint. A decorative chip with a tip is hoverable
+    /// only: no pointer cursor, no click, no focus. Empty → no tip.
     in property <string> tip;
     callback clicked();
 
-    /// Slint 1.16 requires a constant `accessible-role`; chips read
-    /// as text either way (the default-action callback below only
-    /// fires when `interactive: true` so screen-reader users get the
-    /// label without phantom button affordance on decorative chips).
+    /// Chips read as text either way (the activation below only fires
+    /// when `interactive: true`, so screen-reader users get the label
+    /// without phantom button affordance on decorative chips).
     accessible-role: text;
     accessible-label: root.label;
-    accessible-action-default => {
+    activated => {
         if (root.interactive) {
             root.clicked();
+            tip-trigger.hover-leave();
         }
     }
+    hover-changed(hovering) => {
+        tip-trigger.set-hover(hovering);
+    }
+    enabled: root.hoverable;
+    focusable: root.interactive;
+    mouse-cursor: root.interactive ? pointer : default;
 
     property <brush> bg-color: tone == "success" ? Theme.success-soft
                               : tone == "danger" ? Theme.danger-soft
@@ -91,25 +213,12 @@ export component Chip inherits Rectangle {
         text: root.tip;
     }
     property <bool> hoverable: root.interactive || root.tip != "";
-    // The `if`-gated TouchArea below is removed when the chip stops being
-    // hoverable, so it can't emit `has-hover = false` to dismiss its own
-    // bubble — clear it here instead.
+    // The hit area is disabled when the chip stops being hoverable, so
+    // it can't emit `has-hover = false` to dismiss its own bubble —
+    // clear it here instead.
     changed hoverable => {
         if (!root.hoverable) {
             tip-trigger.hover-leave();
-        }
-    }
-
-    if root.hoverable: TouchArea {
-        mouse-cursor: root.interactive ? pointer : default;
-        clicked => {
-            if (root.interactive) {
-                root.clicked();
-                tip-trigger.hover-leave();
-            }
-        }
-        changed has-hover => {
-            tip-trigger.set-hover(self.has-hover);
         }
     }
 }
@@ -245,7 +354,7 @@ export component ContextualHelpButton inherits Rectangle {
 // (`Profiles.open-tv(uuid)` and similar) signals interactivity
 // through the hover underline + color shift instead.
 
-export component LinkText inherits Rectangle {
+export component LinkText inherits Focusable {
     in property <string> text;
     /// Base color rendered in the resting state.
     in property <brush> text-color: Theme.info-text;
@@ -271,17 +380,23 @@ export component LinkText inherits Rectangle {
     width: inner.preferred-width;
     height: inner.preferred-height;
 
-    accessible-role: button;
     accessible-label: root.accessible-label-override == ""
         ? root.text
         : root.accessible-label-override;
-    accessible-action-default => { root.clicked(); }
+    activated => {
+        root.clicked();
+        tip-trigger.hover-leave();
+    }
+    // The same hover that the underline reads also drives the tip.
+    hover-changed(hovering) => {
+        tip-trigger.set-hover(hovering);
+    }
 
     inner := Text {
         text: root.text;
-        color: touch.pressed
+        color: root.pressed
             ? root.text-color.with-alpha(0.7)
-            : touch.has-hover ? root.hover-color : root.text-color;
+            : root.hovered ? root.hover-color : root.text-color;
         font-size: root.font-size;
     }
     // Hover-only underline, pinned at the baseline so the widget's
@@ -291,23 +406,12 @@ export component LinkText inherits Rectangle {
         y: parent.height - 1px;
         width: inner.preferred-width;
         height: 1px;
-        background: touch.has-hover ? inner.color : transparent;
+        background: root.hovered ? inner.color : transparent;
     }
     tip-trigger := HelpTrigger {
         width: 100%;
         height: 100%;
         text: root.tip;
-    }
-    touch := TouchArea {
-        clicked => {
-            root.clicked();
-            tip-trigger.hover-leave();
-        }
-        // The same has-hover that the underline reads above also drives
-        // the tip — no separate TouchArea to intercept the hover.
-        changed has-hover => {
-            tip-trigger.set-hover(self.has-hover);
-        }
     }
 }
 
@@ -433,19 +537,14 @@ export component ProfileTile inherits Rectangle {
 // destructive-by-name, even though the rendering matches a primary
 // button).
 
-export component DangerBtn inherits Rectangle {
+export component DangerBtn inherits Focusable {
     in property <string> text;
-    in property <bool> enabled: true;
     in property <length> min-button-width: 80px;
     callback clicked();
 
-    accessible-role: button;
     accessible-label: root.text;
-    accessible-enabled: root.enabled;
-    accessible-action-default => {
-        if (root.enabled) {
-            root.clicked();
-        }
+    activated => {
+        root.clicked();
     }
 
     horizontal-stretch: 0;
@@ -453,13 +552,13 @@ export component DangerBtn inherits Rectangle {
     min-height: Design.size-input;
     min-width: min-button-width;
 
-    background: !enabled
+    background: !root.enabled
         ? Theme.surface2
-        : touch.has-hover ? Theme.accent-pressed
+        : root.hovered ? Theme.accent-pressed
         : Theme.accent;
-    border-color: !enabled
+    border-color: !root.enabled
         ? Theme.border
-        : touch.has-hover ? Theme.accent-pressed
+        : root.hovered ? Theme.accent-pressed
         : Theme.accent;
     border-width: Design.border-thin;
     border-radius: Design.radius-control;
@@ -478,11 +577,6 @@ export component DangerBtn inherits Rectangle {
             font-weight: 500;
             vertical-alignment: center;
         }
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
     }
 }
 
@@ -505,9 +599,8 @@ export component DangerBtn inherits Rectangle {
 // or any other in-app action — those are `DangerBtn`, `IconBtn`,
 // `CopyBtn`, or std-widgets `Button` instead.
 
-export component UriBtn inherits Rectangle {
+export component UriBtn inherits Focusable {
     in property <string> text;
-    in property <bool> enabled: true;
     in property <length> min-button-width: 80px;
     // Optional hover hint (hover-only); empty → no tip. Mirrors IconBtn.
     in property <string> tip;
@@ -515,23 +608,25 @@ export component UriBtn inherits Rectangle {
     in property <image> icon;
     callback clicked();
 
-    accessible-role: button;
     accessible-label: root.text;
-    accessible-enabled: root.enabled;
-    accessible-action-default => {
-        if (root.enabled) {
-            root.clicked();
-        }
+    // Dismiss the tip on activation too (parity with IconBtn).
+    activated => {
+        root.clicked();
+        tip-trigger.hover-leave();
     }
+    hover-changed(hovering) => {
+        tip-trigger.set-hover(hovering);
+    }
+    mouse-cursor: root.enabled ? pointer : default;
 
     horizontal-stretch: 0;
     vertical-stretch: 0;
     min-height: Design.size-input;
     min-width: min-button-width;
 
-    background: !enabled
+    background: !root.enabled
         ? Theme.surface2
-        : touch.has-hover ? Theme.surface2
+        : root.hovered ? Theme.surface2
         : Theme.surface;
     border-color: Theme.border;
     border-width: Design.border-thin;
@@ -579,19 +674,6 @@ export component UriBtn inherits Rectangle {
     changed enabled => {
         if (!root.enabled) {
             tip-trigger.hover-leave();
-        }
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        // Dismiss the tip on click too (parity with IconBtn).
-        clicked => {
-            root.clicked();
-            tip-trigger.hover-leave();
-        }
-        changed has-hover => {
-            tip-trigger.set-hover(self.has-hover);
         }
     }
 }
@@ -838,14 +920,16 @@ export component InlineError inherits Rectangle {
         // own affordance, not a generic page-level button.
         if root.action-label != "": VerticalLayout {
             alignment: center;
-            Rectangle {
-                background: action-touch.has-hover ? root.border-c : transparent;
+            action := Focusable {
+                accessible-label: root.action-label;
+                background: action.hovered ? root.border-c : transparent;
                 border-color: root.border-c;
                 border-width: Design.border-thin;
                 border-radius: Design.radius-control;
                 min-height: Design.size-input;
                 min-width: 80px;
                 animate background { duration: 120ms; }
+                activated => { root.action-clicked(); }
                 HorizontalLayout {
                     width: 100%;
                     height: 100%;
@@ -854,14 +938,11 @@ export component InlineError inherits Rectangle {
                     alignment: center;
                     Text {
                         text: root.action-label;
-                        color: action-touch.has-hover ? white : root.text-c;
+                        color: action.hovered ? white : root.text-c;
                         font-size: Design.font-helper;
                         font-weight: 600;
                         vertical-alignment: center;
                     }
-                }
-                action-touch := TouchArea {
-                    clicked => { root.action-clicked(); }
                 }
             }
         }
@@ -870,24 +951,23 @@ export component InlineError inherits Rectangle {
         // accessible without the glyph itself being oversized.
         if root.dismissable: VerticalLayout {
             alignment: start;
-            Rectangle {
+            close := Focusable {
+                accessible-label: @tr("Dismiss");
                 width: 24px;
                 height: 24px;
                 border-radius: 12px;
-                background: close-touch.has-hover ? root.border-c : transparent;
+                background: close.hovered ? root.border-c : transparent;
                 animate background { duration: 120ms; }
+                activated => { root.dismissed(); }
                 Text {
                     text: "×";
-                    color: close-touch.has-hover ? white : root.text-c;
+                    color: close.hovered ? white : root.text-c;
                     font-size: Design.font-section;
                     font-weight: 700;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     width: 100%;
                     height: 100%;
-                }
-                close-touch := TouchArea {
-                    clicked => { root.dismissed(); }
                 }
             }
         }
@@ -1087,8 +1167,8 @@ export component ThemedSpinBox inherits Rectangle {
     horizontal-stretch: 1;
     height: Design.size-input;
     background: Theme.surface2;
-    border-color: field.has-focus ? Theme.accent : Theme.border;
-    border-width: field.has-focus ? 2px : Design.border-thin;
+    border-color: Theme.border;
+    border-width: Design.border-thin;
     border-radius: Design.radius-control;
     opacity: root.enabled ? 1.0 : Design.opacity-disabled;
     forward-focus: field;
@@ -1098,6 +1178,13 @@ export component ThemedSpinBox inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-increment => { root.commit(root.display + root.step); }
     accessible-action-decrement => { root.commit(root.display - root.step); }
+
+    ring := FocusRing {
+        shown: field.has-focus && Nav.focus-visible;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
 
     // Scroll-wheel stepping (native SpinBox parity). Behind the layout so
     // the field/steppers keep their clicks; a discrete wheel notch is a
@@ -1137,6 +1224,21 @@ export component ThemedSpinBox inherits Rectangle {
                 if (!self.has-focus) {
                     root.commit-text(self.text);
                 }
+            }
+            // Left/Right step the value, as a slider's do, so a remote
+            // can change a number without the on-screen keyboard. A
+            // step commits like a stepper click; Home/End still move
+            // the caret for typed edits.
+            key-pressed(event) => {
+                if (root.enabled && event.text == Key.RightArrow) {
+                    root.commit(root.display + root.step);
+                    return accept;
+                }
+                if (root.enabled && event.text == Key.LeftArrow) {
+                    root.commit(root.display - root.step);
+                    return accept;
+                }
+                reject
             }
         }
 
@@ -1372,7 +1474,7 @@ export component ScanLine inherits Rectangle {
 // handles the platform clipboard write and surfaces a
 // "Copied {label}." toast on success.
 
-export component CopyBtn inherits Rectangle {
+export component CopyBtn inherits Focusable {
     in property <string> value;
     /// Noun the success toast displays — typically forwarded from
     /// the wrapping `LabeledRow`'s `@tr()`-translated label
@@ -1380,12 +1482,11 @@ export component CopyBtn inherits Rectangle {
     /// back to the generic "Copied to clipboard." toast.
     in property <string> label;
 
-    accessible-role: button;
     /// Spell out the action when the visible content is just a
     /// glyph. Caller-supplied `label` (the noun being copied) plus
     /// the universal verb makes for a useful screen-reader phrase.
     accessible-label: root.label != "" ? "Copy " + root.label : "Copy";
-    accessible-action-default => {
+    activated => {
         Clipboard.copy(root.value, root.label);
     }
 
@@ -1393,7 +1494,7 @@ export component CopyBtn inherits Rectangle {
     height: 24px;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    background: touch.has-hover ? Theme.row-hover : transparent;
+    background: root.hovered ? Theme.row-hover : transparent;
     border-radius: Design.radius-control;
     animate background { duration: 150ms; }
 
@@ -1403,12 +1504,8 @@ export component CopyBtn inherits Rectangle {
         height: Design.size-glyph;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        colorize: touch.has-hover ? Theme.text : Theme.text-dim;
-        opacity: touch.has-hover ? 1.0 : 0.7;
-    }
-
-    touch := TouchArea {
-        clicked => { Clipboard.copy(root.value, root.label); }
+        colorize: root.hovered ? Theme.text : Theme.text-dim;
+        opacity: root.hovered ? 1.0 : 0.7;
     }
 }
 
@@ -1431,9 +1528,8 @@ export component CopyBtn inherits Rectangle {
 // motion communicates the wait. Click is blocked while spinning
 // so a double-tap can't fire two saves in flight.
 
-export component IconBtn inherits Rectangle {
+export component IconBtn inherits Focusable {
     in property <image> source;
-    in property <bool> enabled: true;
     in property <bool> loading: false;
     /// `framed: false` (default) → ghost style: transparent
     /// background, hover-only highlight, no border. Used by the
@@ -1459,17 +1555,24 @@ export component IconBtn inherits Rectangle {
     in property <bool> active: false;
     callback clicked();
 
-    accessible-role: button;
     /// `label` is the visible text when set; for icon-only callsites
     /// (label == "") the caller MUST supply `accessible-label: ...`
     /// directly on the instance for screen readers to announce the
     /// action.
     accessible-label: root.label;
-    accessible-enabled: root.enabled;
-    accessible-action-default => {
-        if (root.enabled && !root.loading) {
+    // Blocked while spinning so a double activation can't fire two
+    // saves in flight. Dismiss the tip as well: an activation can
+    // destroy this button (an `if`-gated row glyph) before the hit
+    // area can report the pointer leaving, which would strand the
+    // bubble.
+    activated => {
+        if (!root.loading) {
             root.clicked();
         }
+        tip-trigger.hover-leave();
+    }
+    hover-changed(hovering) => {
+        tip-trigger.set-hover(hovering);
     }
 
     property <bool> interactive: root.enabled && !root.loading;
@@ -1490,7 +1593,7 @@ export component IconBtn inherits Rectangle {
     property <brush> fg-rest: root.active ? Theme.accent : (root.framed ? Theme.text : Theme.text-dim);
     property <brush> fg-hover: root.active ? Theme.accent : Theme.text;
     property <brush> fg: !root.enabled ? Theme.text-faint
-        : (touch.has-hover && root.interactive ? root.fg-hover : root.fg-rest);
+        : (root.hovered && root.interactive ? root.fg-hover : root.fg-rest);
 
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -1499,8 +1602,8 @@ export component IconBtn inherits Rectangle {
     background: root.framed
         ? (!root.interactive
             ? Theme.surface2
-            : (touch.has-hover ? Theme.surface2 : Theme.surface))
-        : (touch.has-hover && root.interactive ? Theme.row-hover : transparent);
+            : (root.hovered ? Theme.surface2 : Theme.surface))
+        : (root.hovered && root.interactive ? Theme.row-hover : transparent);
     border-color: root.framed ? Theme.border : transparent;
     border-width: root.framed ? Design.border-thin : 0;
     border-radius: Design.radius-control;
@@ -1525,7 +1628,7 @@ export component IconBtn inherits Rectangle {
                 // Ghost mode also fades icon opacity at rest. Framed
                 // mode stays fully opaque so the icon reads as a
                 // first-class button glyph alongside `UriBtn` text.
-                opacity: root.framed || root.active ? 1.0 : (touch.has-hover ? 1.0 : 0.7);
+                opacity: root.framed || root.active ? 1.0 : (root.hovered ? 1.0 : 0.7);
             }
         }
 
@@ -1553,20 +1656,6 @@ export component IconBtn inherits Rectangle {
         width: 100%;
         height: 100%;
         text: root.tip;
-    }
-
-    touch := TouchArea {
-        enabled: root.interactive;
-        // Dismiss the tip on click as well: a click can destroy this
-        // button (an `if`-gated row glyph) before the TouchArea can emit
-        // `has-hover = false`, which would otherwise strand the bubble.
-        clicked => {
-            root.clicked();
-            tip-trigger.hover-leave();
-        }
-        changed has-hover => {
-            tip-trigger.set-hover(self.has-hover);
-        }
     }
 }
 

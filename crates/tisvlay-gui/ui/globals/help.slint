@@ -145,8 +145,9 @@ export global Help {
 // trip a reentrant layout-cache panic; the tick fires post-layout.
 //
 // Toggletip-specific focus-out/Escape dismissal stays in the host
-// (`ContextualHelpButton`), so hover-only hosts don't carry a FocusScope
-// (which would add a phantom tab stop). The host reads `pinned-mine`.
+// (`ContextualHelpButton`). Focus belongs to the host too (a
+// `Focusable` for the controls a remote reaches), never to the trigger,
+// so a tip adds no stop of its own. The host reads `pinned-mine`.
 export component HelpTrigger inherits Rectangle {
     in property <string> text;
     in property <duration> delay: 700ms;

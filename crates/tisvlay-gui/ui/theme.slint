@@ -96,6 +96,9 @@ export global Theme {
     // stays at the default below — Breeze's own blue
     // (Selection:BackgroundNormal / DecorationFocus, 61,174,233).
     in-out property <color> accent: #3daee9;
+    // The keyboard-focus ring the focusable widgets draw: the accent,
+    // so it tracks the DE like Breeze's DecorationFocus.
+    out property <color> focus-ring: accent;
     // The desktop's monospace family by name, set from Rust at startup;
     // empty, the default font, until it lands.
     in-out property <string> mono-font;

@@ -6,11 +6,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::platform::Key;
+use i_slint_backend_testing::ElementHandle;
+use slint::platform::{Key, PointerEventButton};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tisvlay_gui::{AppWindow, EditPane, Pane, Tray, TvViewModel};
 
-use crate::support::{press, press_shift_tab, press_text};
+use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
 
 /// Boot with the Settings pane active and the tray reachable, so its
 /// notification switches are enabled (a disabled std widget leaves the
@@ -158,5 +159,55 @@ fn shift_tab_leaves_a_text_field_without_bouncing_back() {
         edit.get_name(),
         "z",
         "Tab re-entered the field (its text was selected on tab-in)"
+    );
+}
+
+/// Focus rings drawn at full opacity: the focused control's, and only
+/// while focus came from a key.
+fn visible_rings(app: &AppWindow) -> usize {
+    ElementHandle::find_by_element_id(app, "Focusable::ring")
+        .filter(|ring| ring.computed_opacity() > 0.5)
+        .count()
+}
+
+#[test]
+fn the_ring_follows_keyboard_focus_and_a_click_hides_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::About);
+    let copies = Rc::new(RefCell::new(0));
+    let sink = copies.clone();
+    app.on_copy_diagnostic_clicked(move || *sink.borrow_mut() += 1);
+
+    assert_eq!(visible_rings(&app), 0, "no ring before any key");
+    // The About pane's first stops: the version chip, then Diagnostics.
+    press(&app, Key::Tab);
+    press(&app, Key::Tab);
+    assert_eq!(
+        visible_rings(&app),
+        1,
+        "exactly the focused control draws its ring"
+    );
+    press(&app, Key::Return);
+    assert_eq!(
+        *copies.borrow(),
+        1,
+        "Return activates the focused Diagnostics button"
+    );
+    press_text(&app, SharedString::from(" "));
+    assert_eq!(*copies.borrow(), 2, "Space activates it too");
+
+    // A pointer press hides the ring until the next navigation key.
+    let diagnostics = find_by_accessible_id(&app, "about-diagnostics-button")
+        .expect("the Diagnostics button renders");
+    diagnostics.mock_single_click(PointerEventButton::Left);
+    settle();
+    assert_eq!(*copies.borrow(), 3, "the click activates it");
+    assert_eq!(visible_rings(&app), 0, "a pointer press hides the ring");
+    press(&app, Key::Tab);
+    assert_eq!(
+        visible_rings(&app),
+        1,
+        "the next navigation key shows the ring again"
     );
 }
