@@ -68,10 +68,33 @@ export global Nav {
     /// request served, and the shell falls back to the column when
     /// none does (the opener is gone, or wasn't a focusable).
     in-out property <int> focus-seq: 0;
-    public function stop-focused(column: int) {
+    public function stop-focused(column: int, row: int) {
         self.column = column;
+        self.focus-row = row;
         self.focus-seq += 1;
     }
+
+    /// Rows (docs/ideas/gui-spatial-navigation.md). A detail row takes
+    /// an id from `next-row-id` as it's created and hands it to its
+    /// stops, which report it with their column on focus-in; 0 is a
+    /// stop in no row (a dialog's button, a pane that isn't a form),
+    /// which steps as a row of its own. The steps run in Rust, as
+    /// walks along the Tab order: `row-step` to the previous or next
+    /// row's first stop, `stop-step` to the previous or next stop of
+    /// the same row, false when there is none so the shell jumps
+    /// columns instead.
+    in-out property <int> row-counter: 0;
+    public function next-row-id() -> int {
+        self.row-counter += 1;
+        return self.row-counter;
+    }
+    in-out property <int> focus-row: 0;
+    callback row-step(bool);
+    callback stop-step(bool) -> bool;
+    /// A focused value control (a slider, a spin box) that hasn't been
+    /// entered, in couch mode: Left and Right walk its row instead of
+    /// adjusting it, so the shell takes them before the control.
+    in-out property <bool> value-idle: false;
     in-out property <int> anchor-seq: 0;
     in-out property <int> anchor-column: 0;
     in-out property <int> anchor-tick: 0;

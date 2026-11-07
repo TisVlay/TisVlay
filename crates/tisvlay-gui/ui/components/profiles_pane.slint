@@ -595,6 +595,8 @@ component ProfileList inherits Rectangle {
 // `enabled: false`, which dims it and drops interactivity.
 component ProfileRowTrailing inherits HorizontalLayout {
     in property <ProfileFieldEntry> entry;
+    /// The field row's id for the arrows; the icons take it.
+    in property <int> nav-row;
     /// The reset button is about to go (a reset clears the local
     /// value, and the button exists only while one is set); the row
     /// moves focus to its control first.
@@ -624,6 +626,7 @@ component ProfileRowTrailing inherits HorizontalLayout {
             IconBtn {
                 width: 100%;
                 height: 100%;
+                nav-row: root.nav-row;
                 source: Icons.restore-input;
                 enabled: root.entry.restore-enabled;
                 active: root.entry.restore-differs;
@@ -643,6 +646,7 @@ component ProfileRowTrailing inherits HorizontalLayout {
             IconBtn {
                 width: 100%;
                 height: 100%;
+                nav-row: root.nav-row;
                 source: root.entry.stream-gate-value
                     ? Icons.stream-gate-on
                     : Icons.stream-gate-off;
@@ -683,8 +687,10 @@ component ProfileRowTrailing inherits HorizontalLayout {
         if root.entry.is-locally-set: IconBtn {
             width: 100%;
             height: 100%;
+            nav-row: root.nav-row;
             source: Icons.reload;
             accessible-label: @tr("Reset {} to default", root.entry.label);
+            accessible-id: "profiles-field-" + root.entry.field-name + "-reset";
             tip: @tr("Reset field");
             clicked => {
                 root.reset-requested();
@@ -696,6 +702,10 @@ component ProfileRowTrailing inherits HorizontalLayout {
 
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
 
     height: row-layout.preferred-height;
 
@@ -743,6 +753,8 @@ component ProfileFieldRowEnum inherits Rectangle {
                 horizontal-stretch: 1;
                 alignment: center;
                 enum-control := ThemedSelect {
+                    nav-row: root.row-id;
+                    accessible-id: "profiles-field-" + root.entry.field-name;
                     model: root.entry.options;
                     current-value: root.entry.current-value;
                     selected(v) => { Profiles.value-edited(root.entry.field-name, v); }
@@ -753,6 +765,7 @@ component ProfileFieldRowEnum inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    nav-row: root.row-id;
                     reset-requested => { enum-control.focus(); }
                 }
             }
@@ -762,6 +775,10 @@ component ProfileFieldRowEnum inherits Rectangle {
 
 component ProfileFieldRowNumber inherits Rectangle {
     in property <ProfileFieldEntry> entry;
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
 
     height: row-layout.preferred-height;
 
@@ -816,6 +833,8 @@ component ProfileFieldRowNumber inherits Rectangle {
                 horizontal-stretch: 1;
                 alignment: center;
                 number-control := ThemedSpinBox {
+                    nav-row: root.row-id;
+                    accessible-id: "profiles-field-" + root.entry.field-name;
                     value: root.entry.number-value;
                     minimum: root.entry.min-value;
                     maximum: root.entry.max-value;
@@ -832,6 +851,7 @@ component ProfileFieldRowNumber inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    nav-row: root.row-id;
                     reset-requested => { number-control.focus(); }
                 }
             }
@@ -841,6 +861,10 @@ component ProfileFieldRowNumber inherits Rectangle {
 
 component ProfileFieldRowBool inherits Rectangle {
     in property <ProfileFieldEntry> entry;
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
 
     height: row-layout.preferred-height;
 
@@ -879,6 +903,8 @@ component ProfileFieldRowBool inherits Rectangle {
                 horizontal-stretch: 1;
                 alignment: center;
                 bool-control := ThemedSwitch {
+                    nav-row: root.row-id;
+                    accessible-id: "profiles-field-" + root.entry.field-name;
                     checked: root.entry.bool-value;
                     accessible-label: root.entry.label;
                     toggled => {
@@ -895,6 +921,7 @@ component ProfileFieldRowBool inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    nav-row: root.row-id;
                     reset-requested => { bool-control.focus(); }
                 }
             }
@@ -918,6 +945,14 @@ component ProfileDetailHeader inherits Rectangle {
     in property <string> display-name;
     in property <ProfileKind> kind;
     in property <[ProfileTvRef]> referenced-by;
+    // Two rows for the arrows: the title row's buttons (or the rename
+    // field with its two), and the Used-by links.
+    property <int> title-row;
+    property <int> usedby-row;
+    init => {
+        root.title-row = Nav.next-row-id();
+        root.usedby-row = Nav.next-row-id();
+    }
     /// True iff at least one referencing TV is currently automated.
     /// Drives the Active/Inactive status badge.
     in property <bool> active;
@@ -1072,6 +1107,7 @@ component ProfileDetailHeader inherits Rectangle {
                         }
 
                         LineEditField {
+                            nav-row: root.title-row;
                             placeholder-text: @tr("Profile name");
                             text <=> root.pending-name;
                             accessible-id: "profile-rename-field";
@@ -1099,6 +1135,7 @@ component ProfileDetailHeader inherits Rectangle {
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.edit;
                         accessible-label: @tr("Rename profile");
                         accessible-id: "profile-rename-button";
@@ -1115,6 +1152,7 @@ component ProfileDetailHeader inherits Rectangle {
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
                         accessible-id: "profiles-delete-button";
@@ -1126,6 +1164,7 @@ component ProfileDetailHeader inherits Rectangle {
                 if root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.save;
                         accessible-label: @tr("Save rename");
                         clicked => {
@@ -1137,6 +1176,7 @@ component ProfileDetailHeader inherits Rectangle {
                 if root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.cancel;
                         accessible-label: @tr("Cancel rename");
                         clicked => {
@@ -1205,6 +1245,7 @@ component ProfileDetailHeader inherits Rectangle {
                                 font-size: Design.font-helper;
                             }
                             LinkText {
+                                nav-row: root.usedby-row;
                                 text: tv.name;
                                 tip: @tr("Edit {} config", tv.name);
                                 text-color: tv.automated
@@ -1281,11 +1322,19 @@ component ProfileDetail inherits Rectangle {
     }
     init => {
         root.take-requested-focus();
+        root.fields-row = Nav.next-row-id();
+        root.from-tv-row = Nav.next-row-id();
+        root.stream-row = Nav.next-row-id();
     }
     changed focus-tick => {
         root.take-requested-focus();
     }
     forward-focus: duplicate-button;
+    // The three section toolbars are rows for the arrows: the "i",
+    // then Duplicate and Reset profile on the first.
+    property <int> fields-row;
+    property <int> from-tv-row;
+    property <int> stream-row;
 
     background: Theme.surface-alt;
 
@@ -1359,6 +1408,7 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
+                                nav-row: root.fields-row;
                                 text: @tr("Profile automation maps events to actions. Unset fields inherit from default.");
                             }
                         }
@@ -1366,6 +1416,7 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             duplicate-button := IconBtn {
+                                nav-row: root.fields-row;
                                 source: Icons.copy;
                                 accessible-label: @tr("Duplicate profile");
                                 accessible-id: "profiles-duplicate-button";
@@ -1376,8 +1427,10 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             IconBtn {
+                                nav-row: root.fields-row;
                                 source: Icons.reload;
                                 accessible-label: @tr("Reset profile");
+                                accessible-id: "profiles-reset-all-button";
                                 tip: @tr("Reset profile");
                                 enabled: Profiles.editor-can-reset-all;
                                 clicked => { root.request-reset-all(); }
@@ -1453,6 +1506,7 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
+                                nav-row: root.from-tv-row;
                                 text: @tr("What this PC does when the TV powers off by itself, or when the TV's remote powers this PC off, whether the TV powering on wakes this PC, and whether the remote's keys reach the desktop. TisVlay's own power-offs never count, and neither event acts while a stream arms the TV. The TV's pane shows what its connection supports.");
                             }
                         }
@@ -1508,6 +1562,7 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
+                                nav-row: root.stream-row;
                                 text: @tr("What counts as a stream, so events can be suppressed for an empty room. Suppress an individual event with the network toggle on its row in FIELDS above.");
                             }
                         }

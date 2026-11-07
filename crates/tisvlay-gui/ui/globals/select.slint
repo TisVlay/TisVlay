@@ -228,6 +228,8 @@ export component SelectOverlay inherits Rectangle {
 // The visible select button — a drop-in for `ComboBox` on the subset the
 // panes use (`model` / `current-value` / `selected`).
 export component ThemedSelect inherits Rectangle {
+    /// The detail row the select sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
     in property <[string]> model;
     in property <string> current-value;
     // Emitted on pick with the chosen value; `selected-index` carries the
@@ -345,10 +347,8 @@ export component ThemedSelect inherits Rectangle {
             }
             return reject;
         }
-        changed has-focus => {
-            if (self.has-focus) {
-                Nav.stop-focused(2);
-            }
+        focus-gained(reason) => {
+            Nav.stop-focused(2, root.nav-row);
         }
     }
 

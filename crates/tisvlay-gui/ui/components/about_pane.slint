@@ -207,6 +207,14 @@ export component AboutPane inherits Rectangle {
     changed column-mirror => {
         brand.focus();
     }
+    // The header's two lines are two rows for the arrows: the brand
+    // link with the version chip, then Diagnostics and Report issue.
+    property <int> header-row-1;
+    property <int> header-row-2;
+    init => {
+        root.header-row-1 = Nav.next-row-id();
+        root.header-row-2 = Nav.next-row-id();
+    }
 
     callback view-source-clicked();
     callback view-release-clicked();
@@ -255,6 +263,7 @@ export component AboutPane inherits Rectangle {
                 // the affordance reads even before the cursor change
                 // registers.
                 brand := Focusable {
+                    nav-row: root.header-row-1;
                     horizontal-stretch: 1;
                     border-radius: Design.radius-card;
                     mouse-cursor: pointer;
@@ -336,6 +345,7 @@ export component AboutPane inherits Rectangle {
                     HorizontalLayout {
                         alignment: end;
                         Chip {
+                            nav-row: root.header-row-1;
                             label: "v" + root.gui-version;
                             // `info`: a link to the release notes, not
                             // a status like the COMPONENTS chips.
@@ -350,6 +360,7 @@ export component AboutPane inherits Rectangle {
                         alignment: end;
                         spacing: Design.gap-stack;
                         IconBtn {
+                            nav-row: root.header-row-2;
                             source: Clipboard.copy-icon;
                             label: @tr("Diagnostics");
                             tip: @tr("Copy diagnostics to clipboard");
@@ -362,6 +373,7 @@ export component AboutPane inherits Rectangle {
                             clicked => { root.copy-diagnostic-clicked(); }
                         }
                         UriBtn {
+                            nav-row: root.header-row-2;
                             text: @tr("Report issue");
                             tip: @tr("Open issue tracker");
                             icon: Icons.open-link;

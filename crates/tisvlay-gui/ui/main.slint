@@ -191,8 +191,9 @@ export component AppWindow inherits Window {
 
     // Up and Down inside the focused region: the sidebar steps its
     // items and Reload as a rail, a list steps its own stops, and the
-    // detail steps the Tab order. Rail and list stop at their ends;
-    // Right or Return enters the next column.
+    // detail steps its rows (Rust walks the Tab order to the next
+    // row's first stop). All three stop at their ends; Right or Return
+    // enters the next column.
     function step-focus(forward: bool) {
         if (Nav.column == 0 && root.rail-step(forward)) {
             return;
@@ -201,7 +202,15 @@ export component AppWindow inherits Window {
             Nav.request-list-step(forward);
             return;
         }
-        Nav.step(forward);
+        Nav.row-step(forward);
+    }
+    // Left and Right that no control used: along the detail's row
+    // first, then across the columns.
+    function horizontal-step(forward: bool) -> bool {
+        if (Nav.column == 2 && Nav.stop-step(forward)) {
+            return true;
+        }
+        return forward ? root.jump-right() : root.jump-left();
     }
     function rail-step(forward: bool) -> bool {
         if (tvs-item.focused) {
@@ -406,6 +415,13 @@ export component AppWindow inherits Window {
                 root.step-focus(event.text == Key.DownArrow);
                 return accept;
             }
+            // A value control that isn't entered would use Left and
+            // Right itself; while it's idle they walk its row instead.
+            if (Nav.value-idle && !event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.LeftArrow || event.text == Key.RightArrow)) {
+                root.horizontal-step(event.text == Key.RightArrow);
+                return accept;
+            }
             reject
         }
         // Keys no child took. Alt+Left/Right is the browser-style history
@@ -413,7 +429,8 @@ export component AppWindow inherits Window {
         // first, so we don't steal keys mid-edit, and `nav-enabled`
         // covers the modal/edit flows that don't hold key focus. A bare
         // Left or Right, which a slider, a spin box or an editing field
-        // would have used, jumps columns: sidebar, list, detail. In couch
+        // would have used, walks the detail's row, then jumps columns:
+        // sidebar, list, detail. In couch
         // mode Tab and Shift+Tab cycle the panes, as console menus do
         // with the shoulder buttons; a dialog, which cycles its own
         // controls, takes them first, and a Tab Rust synthesized for an
@@ -427,13 +444,9 @@ export component AppWindow inherits Window {
                 root.nav-forward();
                 return accept;
             }
-            if (!event.modifiers.alt && !event.modifiers.control) {
-                if (event.text == Key.LeftArrow) {
-                    return root.jump-left() ? accept : reject;
-                }
-                if (event.text == Key.RightArrow) {
-                    return root.jump-right() ? accept : reject;
-                }
+            if (!event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.LeftArrow || event.text == Key.RightArrow)) {
+                return root.horizontal-step(event.text == Key.RightArrow) ? accept : reject;
             }
             if (Couch.active && !Nav.synthesizing
                 && (event.text == Key.Tab || event.text == Key.Backtab)) {

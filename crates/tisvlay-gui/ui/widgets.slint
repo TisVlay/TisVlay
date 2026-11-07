@@ -80,6 +80,9 @@ export component Focusable inherits Rectangle {
     /// roving stop (the sidebar, a list) keeps only its active item in
     /// the Tab order and steps the rest itself.
     in property <bool> tab-stop: true;
+    /// The detail row the control sits in (`Nav.next-row-id`); 0 for
+    /// none.
+    in property <int> nav-row: 0;
     /// A click, Return, Space, or the accessibility default action.
     callback activated();
     /// The control took keyboard focus, however it came (a key, a
@@ -131,30 +134,35 @@ export component Focusable inherits Rectangle {
             }
             root.key(event)
         }
+        // Synchronous, unlike the `has-focus` change below, so the
+        // shell's row walks read the column and row as soon as a
+        // synthesized Tab lands here.
+        focus-gained(reason) => {
+            if (Nav.focus-seq != root.anchor) {
+                root.take-anchor();
+            }
+        }
         changed has-focus => {
             if (self.has-focus) {
-                if (Nav.focus-seq != root.anchor) {
-                    root.take-anchor();
-                }
                 root.focus-in();
             }
         }
     }
 
     // The control's focus anchor, the way a dialog finds its opener
-    // again (`Nav`). Taken on focus-in, and at once on activation,
-    // since a focus-in's change handler runs after the activation that
-    // may open the dialog, and never runs at all for a control created
-    // and focused in one pass (a detail focusing its first stop from
-    // `init`), which is also why `init` reports a focus it already has.
+    // again (`Nav`). Taken as focus arrives, and at once on activation,
+    // which may open the dialog with no focus change at all. `focus-in`
+    // runs from the deferred change handler instead, since its
+    // listeners switch panes and selections; it never runs for a
+    // control created and focused in one pass (a detail focusing its
+    // first stop from `init`), which `init` covers.
     property <int> anchor: -1;
     function take-anchor() {
-        Nav.stop-focused(root.column);
+        Nav.stop-focused(root.column, root.nav-row);
         root.anchor = Nav.focus-seq;
     }
     init => {
         if (fs.has-focus) {
-            root.take-anchor();
             root.focus-in();
         }
     }
@@ -298,6 +306,8 @@ export component ContextualHelpButton inherits Rectangle {
     // rides on `accessible-description` so a screen-reader user who
     // can't hover still hears it.
     in property <string> name: @tr("Show help");
+    /// The detail row the button sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
 
     // Ghost style matching IconBtn: squarish, no resting border, dim
     // glyph — so it sits naturally among the other right-side row
@@ -361,10 +371,11 @@ export component ContextualHelpButton inherits Rectangle {
             }
             return reject;
         }
+        focus-gained(reason) => {
+            Nav.stop-focused(2, root.nav-row);
+        }
         changed has-focus => {
-            if (self.has-focus) {
-                Nav.stop-focused(2);
-            } else if (trigger.pinned-mine) {
+            if (!self.has-focus && trigger.pinned-mine) {
                 Help.dismiss();
             }
         }
@@ -950,6 +961,8 @@ export component LineEditField inherits Rectangle {
     /// for IP / MAC entry); empty is the default font.
     in property <string> font-family <=> field.font-family;
     in property <InputType> input-type <=> field.input-type;
+    /// The detail row the field sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
     callback edited(string);
     callback accepted(string);
 
@@ -1024,14 +1037,14 @@ export component LineEditField inherits Rectangle {
             }
             reject
         }
+        focus-gained(reason) => {
+            Nav.stop-focused(2, root.nav-row);
+        }
         changed has-focus => {
-            if (self.has-focus) {
-                Nav.stop-focused(2);
-                if (!root.couch) {
-                    field.focus();
-                    // What a direct tab-in does; programmatic focus doesn't.
-                    field.select-all();
-                }
+            if (self.has-focus && !root.couch) {
+                field.focus();
+                // What a direct tab-in does; programmatic focus doesn't.
+                field.select-all();
             }
         }
     }
@@ -1134,7 +1147,7 @@ export component LineEditField inherits Rectangle {
                     }
                     changed has-focus => {
                         if (self.has-focus) {
-                            Nav.stop-focused(2);
+                            Nav.stop-focused(2, root.nav-row);
                         } else {
                             root.leaving-backwards = false;
                             root.editing = false;
@@ -1184,6 +1197,11 @@ export component InlineError inherits Rectangle {
     in property <string> message;
     /// Font family for `message`; empty is the default font.
     in property <string> message-font-family;
+    // The action and the close button make one row for the arrows.
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
     /// Optional action label (e.g. "Retry", "Edit MAC"). Empty
     /// hides the action button.
     in property <string> action-label;
@@ -1290,6 +1308,7 @@ export component InlineError inherits Rectangle {
         if root.action-label != "": VerticalLayout {
             alignment: center;
             action := Focusable {
+                nav-row: root.row-id;
                 accessible-label: root.action-label;
                 background: action.hovered ? root.border-c : transparent;
                 border-color: root.border-c;
@@ -1321,6 +1340,7 @@ export component InlineError inherits Rectangle {
         if root.dismissable: VerticalLayout {
             alignment: start;
             close := Focusable {
+                nav-row: root.row-id;
                 accessible-label: @tr("Dismiss");
                 width: 24px;
                 height: 24px;
@@ -1394,6 +1414,9 @@ export component OptimisticSlider {
     /// reconciler + daemon write path.
     callback committed(int);
 
+    /// The detail row the slider sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
+
     // Local display value bound two-way to the Slider so user drag
     // updates the thumb. Re-synced from `model-value` whenever Rust
     // pushes a new value (the user-side `<=>` write breaks the
@@ -1401,27 +1424,63 @@ export component OptimisticSlider {
     in-out property <float> display: model-value;
     changed model-value => { display = model-value; }
 
+    // Couch mode: the focused slider is its row's stop first, Left and
+    // Right walking the row (the shell takes them while `Nav.value-idle`),
+    // and Return enters it, Left and Right then adjusting the value
+    // until Return or Escape. On a desktop arrows adjust at once.
+    property <bool> couch: Couch.active;
+    property <bool> entered;
+    function sync-idle() {
+        Nav.value-idle = root.couch && slider.has-focus && !root.entered;
+    }
+
     HorizontalLayout {
         spacing: Design.gap-row;
 
         // The slider keeps fluent's look (its focused state is the
         // "pressed" one); the shared ring around it is what reads at
-        // a distance.
+        // a distance, and a soft fill says it's entered.
         Rectangle {
             horizontal-stretch: 1;
             vertical-stretch: 0;
             height: slider.preferred-height;
-            slider := Slider {
+            border-radius: Design.radius-pill;
+            background: root.entered ? Theme.accent-soft : transparent;
+            // The keys the slider leaves (Return, Escape) bubble here.
+            FocusScope {
                 width: 100%;
                 height: 100%;
-                minimum: root.minimum;
-                maximum: root.maximum;
-                value <=> root.display;
-                enabled: root.enabled;
-                changed(v) => { root.committed(round(v)); }
-                changed has-focus => {
-                    if (self.has-focus) {
-                        Nav.stop-focused(2);
+                focus-on-tab-navigation: false;
+                focus-on-click: false;
+                key-pressed(event) => {
+                    if (root.couch && slider.has-focus) {
+                        if (event.text == Key.Return) {
+                            root.entered = !root.entered;
+                            root.sync-idle();
+                            return accept;
+                        }
+                        if (event.text == Key.Escape && root.entered) {
+                            root.entered = false;
+                            root.sync-idle();
+                            return accept;
+                        }
+                    }
+                    reject
+                }
+                slider := Slider {
+                    width: 100%;
+                    height: 100%;
+                    minimum: root.minimum;
+                    maximum: root.maximum;
+                    value <=> root.display;
+                    enabled: root.enabled;
+                    changed(v) => { root.committed(round(v)); }
+                    changed has-focus => {
+                        if (self.has-focus) {
+                            Nav.stop-focused(2, root.nav-row);
+                        }
+                        root.entered = false;
+                        root.sync-idle();
                     }
                 }
             }
@@ -1558,12 +1617,21 @@ export component ThemedSpinBox inherits Rectangle {
         field.clear-focus();
         field.focus();
         field.select-all();
+        root.sync-idle();
     }
     function stop-editing() {
         root.editing = false;
         field.clear-focus();
         field.focus();
+        root.sync-idle();
     }
+    // Idle in couch mode, Left and Right walk the row (the shell takes
+    // them while `Nav.value-idle`) rather than stepping the value.
+    function sync-idle() {
+        Nav.value-idle = root.couch && field.has-focus && !root.editing;
+    }
+    /// The detail row the spin box sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
 
     // Same minimum as ThemedSelect (shared token) so a SpinBox and a
     // ComboBox in the same value column render one width — now that the
@@ -1636,11 +1704,12 @@ export component ThemedSpinBox inherits Rectangle {
             }
             changed has-focus => {
                 if (self.has-focus) {
-                    Nav.stop-focused(2);
+                    Nav.stop-focused(2, root.nav-row);
                 } else {
                     root.commit-text(self.text);
                     root.editing = false;
                 }
+                root.sync-idle();
             }
             // Left/Right step the value, as a slider's do, so a remote
             // can change a number without the on-screen keyboard. A

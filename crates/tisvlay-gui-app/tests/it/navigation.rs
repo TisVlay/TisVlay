@@ -11,8 +11,8 @@ use slint::platform::{Key, PointerEventButton};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tisvlay_gui::keys::{bind_key_router, key_seen, recover_if_unhandled};
 use tisvlay_gui::{
-    AppWindow, Couch, Daemon, EditPane, PairingWizard, Pane, ProfileKind, ProfileRow, Profiles,
-    Tray, TvViewModel, WizardDiscoveredTv,
+    AppWindow, Couch, Daemon, EditPane, PairingWizard, Pane, ProfileFieldEntry, ProfileKind,
+    ProfileRow, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
 };
 
 use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
@@ -1062,10 +1062,19 @@ fn a_detail_created_by_the_pick_reports_its_column_and_anchors_its_opener() {
         ring_on(&app, "profiles-duplicate-button"),
         "Return created the detail with focus on Duplicate"
     );
-    // Left from the fresh detail goes to its row: the detail's column
-    // was reported although no focus-in handler ran for it.
+    // Left from the fresh detail walks its toolbar row first (the "i"
+    // before Duplicate), then goes to the list row: the detail's column
+    // and row were reported although no focus-in handler ran for it.
     press(&app, Key::LeftArrow);
-    assert!(ring_on(&app, "profiles-row-p-1"), "Left reached the row");
+    assert!(
+        !ring_on(&app, "profiles-duplicate-button"),
+        "Left reached the toolbar's \"i\""
+    );
+    press(&app, Key::LeftArrow);
+    assert!(
+        ring_on(&app, "profiles-row-p-1"),
+        "Left again reached the row"
+    );
     press(&app, Key::RightArrow);
     assert!(ring_on(&app, "profiles-duplicate-button"));
     // The duplicate dialog closes back onto Duplicate, not the row.
@@ -1287,12 +1296,23 @@ fn in_couch_mode_a_spin_box_types_only_after_return() {
         ring_on(&app, "settings-couch-scale"),
         "the spin box is focused"
     );
-    // Idle: typed digits are ignored, Right still steps.
+    // Idle: typed digits are ignored, and Right walks the row (alone in
+    // its row, it stays put) rather than stepping the value.
     press_text(&app, SharedString::from("9"));
     press(&app, Key::RightArrow);
-    assert_eq!(scales.borrow().as_slice(), [150], "Right stepped once");
-    // Return: typing replaces the value, Return commits.
+    assert!(
+        scales.borrow().is_empty(),
+        "Right changes nothing while idle"
+    );
+    assert!(ring_on(&app, "settings-couch-scale"), "and focus stayed");
+    // Return enters: Right steps, typing replaces the value, Return commits.
     press(&app, Key::Return);
+    press(&app, Key::RightArrow);
+    assert_eq!(
+        scales.borrow().as_slice(),
+        [150],
+        "Right stepped once entered"
+    );
     press_text(&app, SharedString::from("2"));
     press_text(&app, SharedString::from("0"));
     press_text(&app, SharedString::from("0"));
@@ -1307,6 +1327,207 @@ fn in_couch_mode_a_spin_box_types_only_after_return() {
         scales.borrow().as_slice(),
         [150, 200],
         "Escape reverted the typed value"
+    );
+}
+
+/// Boot the Profiles pane with a selected system profile whose editor
+/// shows the given enum fields, each locally set (so each row has a
+/// reset icon after its select).
+fn boot_profile_editor(fields: &[&str]) -> AppWindow {
+    let app = boot_profile_selected();
+    let entries: Vec<ProfileFieldEntry> = fields
+        .iter()
+        .map(|name| ProfileFieldEntry {
+            field_name: SharedString::from(*name),
+            label: SharedString::from(*name),
+            kind: SharedString::from("enum"),
+            options: ModelRc::new(VecModel::from(vec![
+                SharedString::from("none"),
+                SharedString::from("power_on"),
+            ])),
+            current_value: SharedString::from("none"),
+            is_locally_set: true,
+            ..ProfileFieldEntry::default()
+        })
+        .collect();
+    app.global::<Profiles>()
+        .set_editor_fields(ModelRc::new(VecModel::from(entries)));
+    make_tall(&app);
+    app
+}
+
+#[test]
+fn up_and_down_jump_rows_in_the_profile_editor_and_right_walks_a_row() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_profile_editor(&["on_startup", "on_shutdown"]);
+    bind_key_router(&app);
+
+    assert!(
+        tab_to(&app, "profiles-field-on_startup"),
+        "Tab reaches the first select"
+    );
+    // Down lands on the next row's control, past this row's reset icon.
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "profiles-field-on_shutdown"),
+        "Down jumped to the next row's select"
+    );
+    // Right walks the row out to its reset icon and stops there; Left
+    // comes back.
+    press(&app, Key::RightArrow);
+    assert!(
+        ring_on(&app, "profiles-field-on_shutdown-reset"),
+        "Right reached the reset icon"
+    );
+    press(&app, Key::RightArrow);
+    assert!(
+        ring_on(&app, "profiles-field-on_shutdown-reset"),
+        "Right at the row's end stays"
+    );
+    press(&app, Key::LeftArrow);
+    assert!(
+        ring_on(&app, "profiles-field-on_shutdown"),
+        "Left came back to the select"
+    );
+    // Down on the detail's last row stays (the Tab order would wrap to
+    // the rail); Up from an icon lands on the previous row's control.
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "profiles-field-on_shutdown"),
+        "Down at the detail's end stays"
+    );
+    press(&app, Key::RightArrow);
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "profiles-field-on_startup"),
+        "Up landed on the previous row's select"
+    );
+    // Left on a row's control leaves for the list.
+    press(&app, Key::LeftArrow);
+    assert!(
+        ring_on(&app, "profiles-row-p-1"),
+        "Left from a control went to the list"
+    );
+}
+
+#[test]
+fn up_and_down_jump_rows_in_the_tv_detail() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_system_profiles(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "default",
+    )])));
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+
+    // Into the detail (Power), then Down: Managed, then the System
+    // select, past Managed's "i".
+    tabs(&app, SIDEBAR_STOPS + 3);
+    press(&app, Key::Return);
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-managed"),
+        "Down reached Managed"
+    );
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-system-profile"),
+        "Down skipped the \"i\" to the next row"
+    );
+    // Right walks to the row's pencil; Up from there lands on Managed.
+    press(&app, Key::RightArrow);
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-system-profile-edit"),
+        "Right reached the pencil"
+    );
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-managed"),
+        "Up landed on the previous row's control"
+    );
+}
+
+#[test]
+fn the_about_header_is_two_rows() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::About);
+    bind_key_router(&app);
+
+    tabs(&app, SIDEBAR_STOPS + 1);
+    assert!(ring_on(&app, "about-brand-link"));
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "about-diagnostics-button"),
+        "Down skipped the version chip"
+    );
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "about-issue-button"));
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "about-brand-link"),
+        "Up came back to the brand"
+    );
+    press(&app, Key::RightArrow);
+    assert!(
+        ring_on(&app, "about-version-chip"),
+        "Right from the brand is the version chip"
+    );
+}
+
+#[test]
+fn in_couch_mode_a_slider_adjusts_only_once_entered() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    bind_key_router(&app);
+    app.global::<Couch>().set_active(true);
+    app.set_tvs(ModelRc::new(VecModel::from(vec![TvViewModel {
+        uuid: SharedString::from("tv-1"),
+        name: SharedString::from("TV"),
+        connected: true,
+        has_backlight: true,
+        backlight: 10,
+        ..Default::default()
+    }])));
+    app.set_selected_tv_index(0);
+    app.set_active_pane(Pane::Tvs);
+    make_tall(&app);
+    let backlights = Rc::new(RefCell::new(Vec::new()));
+    let sink = backlights.clone();
+    app.global::<Daemon>()
+        .on_set_backlight(move |_, value| sink.borrow_mut().push(value));
+
+    // Down the rows to the Backlight slider: Power, Managed, System,
+    // User, the three FROM THE TV rows, Backlight.
+    press(&app, Key::DownArrow);
+    press(&app, Key::RightArrow);
+    press(&app, Key::Return);
+    for _ in 0..7 {
+        press(&app, Key::DownArrow);
+    }
+    // Idle: Right walks the row (to the "i"), writing nothing; Left
+    // comes back. Return enters: Right adjusts. Escape leaves: Right
+    // walks again.
+    press(&app, Key::RightArrow);
+    assert!(
+        backlights.borrow().is_empty(),
+        "Right while idle adjusts nothing"
+    );
+    press(&app, Key::LeftArrow);
+    press(&app, Key::Return);
+    press(&app, Key::RightArrow);
+    assert_eq!(
+        backlights.borrow().as_slice(),
+        [11],
+        "Right once entered adjusts"
+    );
+    press(&app, Key::Escape);
+    press(&app, Key::RightArrow);
+    assert_eq!(
+        backlights.borrow().as_slice(),
+        [11],
+        "Right after Escape adjusts nothing"
     );
 }
 
