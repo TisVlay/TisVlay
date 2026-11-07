@@ -12,13 +12,13 @@
 // callback interfaces and the outer pane forwards them to the
 // global.
 
-import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
-import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, VendorTile } from "../widgets.slint";
+import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
 // =============================================================================
@@ -531,7 +531,7 @@ component StepDiscover {
 
                     VerticalLayout {
                         alignment: end;
-                        Button {
+                        ThemedButton {
                             text: root.manual-lookup-streaming
                                 ? @tr("Looking up…")
                                 : @tr("Continue");
@@ -697,7 +697,7 @@ component StepConfigure {
                 padding: 12px;
                 spacing: Design.gap-tight;
 
-                CheckBox {
+                ThemedCheckBox {
                     text: @tr("Managed by TisVlay");
                     checked: root.managed;
                     toggled => { root.managed-toggled(self.checked); }
@@ -814,12 +814,12 @@ component StepPair {
             if root.phase == "failed": HorizontalLayout {
                 alignment: center;
                 spacing: Design.gap-stack;
-                Button {
+                ThemedButton {
                     text: @tr("Retry pairing");
                     primary: true;
                     clicked => { root.retry(); }
                 }
-                Button {
+                ThemedButton {
                     text: @tr("Back to discovery");
                     clicked => { root.back-to-discovery(); }
                 }
@@ -923,12 +923,12 @@ component StepDone {
                 if root.mac-notice == "differs": HorizontalLayout {
                     alignment: center;
                     spacing: Design.gap-row;
-                    Button {
+                    ThemedButton {
                         text: @tr("Use reported");
                         primary: true;
                         clicked => { root.use-reported-mac(); }
                     }
-                    Button {
+                    ThemedButton {
                         text: @tr("Keep mine");
                         clicked => { root.keep-configured-mac(); }
                     }
@@ -1119,16 +1119,16 @@ export component PairingWizardPane inherits Rectangle {
                 spacing: Design.gap-stack;
                 alignment: stretch;
 
-                if PairingWizard.step != 4: Button {
+                if PairingWizard.step != 4: ThemedButton {
                     text: @tr("Cancel");
                     clicked => { PairingWizard.cancel(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): Button {
+                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): ThemedButton {
                     text: @tr("Back");
                     clicked => { PairingWizard.step-back(); }
                 }
-                Button {
+                ThemedButton {
                     text: root.next-label;
                     primary: true;
                     enabled: root.next-enabled;

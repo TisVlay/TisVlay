@@ -8,11 +8,10 @@
 // surfaced as defaults via `NotificationSettings::default()`);
 // an inline banner above the group explains the runtime constraint.
 
-import { Button, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Tray } from "../globals/tray.slint";
-import { Group, InlineError } from "../widgets.slint";
+import { Group, InlineError, ThemedButton, ThemedSwitch } from "../widgets.slint";
 
 // Local FormRow — label + switch + optional helper text below.
 // Inlined rather than reusing tvs_pane's FormRow to avoid a
@@ -47,7 +46,7 @@ component NotificationRow {
 
         VerticalLayout {
             alignment: center;
-            Switch {
+            ThemedSwitch {
                 checked: root.checked;
                 enabled: root.enabled;
                 toggled => { root.toggled(self.checked); }
@@ -154,7 +153,7 @@ export component SettingsPane inherits Rectangle {
                 }
                 VerticalLayout {
                     alignment: center;
-                    Button {
+                    ThemedButton {
                         text: @tr("Send test notification");
                         enabled: Tray.available;
                         clicked => { Tray.send-test-notification(); }

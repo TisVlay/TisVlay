@@ -45,6 +45,7 @@ fn tab_from_a_fresh_window_lands_on_the_first_settings_switch() {
     // stop they add.
     press(&app, Key::Tab);
     assert!(toggles.borrow().is_empty(), "Tab alone toggles nothing");
+    assert_eq!(visible_rings(&app), 1, "the focused switch draws the ring");
 
     press(&app, Key::Return);
     assert_eq!(

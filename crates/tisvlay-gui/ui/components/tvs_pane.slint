@@ -8,7 +8,7 @@
 // VendorTile, Group, …) come from ../widgets.slint; pane-local
 // helpers like `FormRow` and `LabeledRow` live further down.
 
-import { Button, ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
+import { ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
@@ -17,7 +17,7 @@ import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pair
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
-import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, ThemedButton, ThemedSwitch, VendorTile } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
@@ -738,13 +738,12 @@ component TvDetail inherits Rectangle {
                         property <bool> can-power-on:
                             root.tv.connected || root.tv.supports-wake;
 
-                        Button {
+                        ThemedButton {
                             // Keyed on `is-on`, not `connected`: a CEC TV
                             // reachable in standby is connected-but-off, and
                             // must still offer "Power on".
                             text: root.tv.is-on ? @tr("Power off") : @tr("Power on");
                             icon: Icons.shutdown;
-                            colorize-icon: true;
                             primary: !root.tv.is-on;
                             enabled: !power-row.power-cycle-in-flight && power-row.can-power-on;
                             clicked => {
@@ -794,7 +793,7 @@ component TvDetail inherits Rectangle {
                             alignment: start;
                             VerticalLayout {
                                 alignment: center;
-                                Switch {
+                                ThemedSwitch {
                                     checked: root.tv.managed;
                                     toggled => { Daemon.set-managed(root.tv.uuid, self.checked); }
                                 }
@@ -946,7 +945,7 @@ component TvDetail inherits Rectangle {
                             alignment: start;
                             VerticalLayout {
                                 alignment: center;
-                                Switch {
+                                ThemedSwitch {
                                     checked: root.tv.is-screen-on;
                                     enabled: root.tv.connected;
                                     toggled => { Daemon.set-screen(root.tv.uuid, self.checked); }
@@ -972,7 +971,7 @@ component TvDetail inherits Rectangle {
 
                     if root.tv.has-mute: FormRow {
                         label: @tr("Mute");
-                        Switch {
+                        ThemedSwitch {
                             checked: root.tv.muted;
                             enabled: root.tv.connected;
                             toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
@@ -1159,7 +1158,7 @@ component TvDetail inherits Rectangle {
                         }
                         VerticalLayout {
                             alignment: center;
-                            Button {
+                            ThemedButton {
                                 text: @tr("Re-pair");
                                 clicked => { root.request-re-pair(); }
                             }

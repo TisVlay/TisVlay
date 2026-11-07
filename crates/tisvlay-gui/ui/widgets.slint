@@ -4,7 +4,7 @@
 // themed colors, not raw hex values. Add a primitive here when it's
 // needed by ≥ 2 panes; pane-specific helpers stay in their pane.
 
-import { Button, LineEdit, Slider } from "std-widgets.slint";
+import { LineEdit, Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
@@ -679,6 +679,182 @@ export component UriBtn inherits Focusable {
 }
 
 // =============================================================================
+// ThemedButton — the push button, neutral or primary.
+// =============================================================================
+//
+// Replaces the std-widgets `Button` so a focused button draws the shared
+// FocusRing alone, not fluent's stroke inside it. Neutral matches
+// `UriBtn`'s surface and border (the in-app action look, arrow cursor);
+// `primary` is the accent fill `DangerBtn` uses. An optional leading
+// glyph is colorized to the label.
+
+export component ThemedButton inherits Focusable {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <image> icon;
+    in property <length> min-button-width: 80px;
+    callback clicked();
+
+    accessible-label: root.text;
+    activated => {
+        root.clicked();
+    }
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    min-width: root.min-button-width;
+    background: !root.enabled
+        ? Theme.surface2
+        : root.primary
+            ? (root.hovered ? Theme.accent-pressed : Theme.accent)
+            : (root.hovered ? Theme.surface2 : Theme.surface);
+    border-color: !root.enabled
+        ? Theme.border
+        : root.primary
+            ? (root.hovered ? Theme.accent-pressed : Theme.accent)
+            : Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    animate background, border-color { duration: 150ms; }
+
+    property <brush> fg: !root.enabled
+        ? Theme.text-faint
+        : root.primary ? white : Theme.text;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-row;
+        spacing: Design.gap-stack;
+        alignment: center;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
+                colorize: root.fg;
+            }
+        }
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// =============================================================================
+// ThemedSwitch — on/off toggle.
+// =============================================================================
+//
+// Replaces the std-widgets `Switch` on the same contract: a user toggle
+// writes `checked` and fires `toggled`, severing the caller's binding
+// as the std widget does, so callers re-sync through the model. A pill
+// track that fills with the accent when on, with a sliding knob.
+
+export component ThemedSwitch inherits Focusable {
+    in-out property <bool> checked;
+    callback toggled(bool);
+
+    accessible-role: switch;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    activated => {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+
+    width: 40px;
+    height: 20px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 10px;
+    background: root.checked
+        ? (root.hovered && root.enabled ? Theme.accent-pressed : Theme.accent)
+        : (root.hovered && root.enabled ? Theme.border-strong : Theme.border);
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+    animate background { duration: 150ms; }
+
+    Rectangle {
+        width: 16px;
+        height: 16px;
+        x: root.checked ? root.width - self.width - 2px : 2px;
+        y: 2px;
+        border-radius: 8px;
+        background: white;
+        animate x { duration: 150ms; easing: ease-out; }
+    }
+}
+
+// =============================================================================
+// ThemedCheckBox — labeled check box.
+// =============================================================================
+//
+// Replaces the std-widgets `CheckBox`, same `checked` / `toggled`
+// contract as `ThemedSwitch`. The ring wraps the box and its label,
+// which are one hit area.
+
+export component ThemedCheckBox inherits Focusable {
+    in property <string> text;
+    in-out property <bool> checked;
+    callback toggled(bool);
+
+    accessible-role: checkbox;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-label: root.text;
+    activated => {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+
+    HorizontalLayout {
+        spacing: Design.gap-stack;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: root.checked
+                    ? (root.hovered && root.enabled ? Theme.accent-pressed : Theme.accent)
+                    : (root.hovered && root.enabled ? Theme.surface2 : Theme.surface);
+                border-color: root.checked ? Theme.accent : Theme.border-strong;
+                border-width: Design.border-thin;
+                animate background, border-color { duration: 150ms; }
+                if root.checked: Path {
+                    x: 3px;
+                    y: 3px;
+                    width: 12px;
+                    height: 12px;
+                    stroke: white;
+                    stroke-width: 2px;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                    commands: "M 2 6.5 L 5 9.5 L 10 3";
+                }
+            }
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Design.font-body;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// =============================================================================
 // LineEditField — std-widgets LineEdit with a higher-contrast placeholder.
 // =============================================================================
 //
@@ -711,6 +887,14 @@ export component LineEditField inherits Rectangle {
     horizontal-stretch: 1;
     min-height: inner.min-height;
     forward-focus: inner;
+
+    // The shared ring, around fluent's own focus look.
+    ring := FocusRing {
+        shown: inner.has-focus && Nav.focus-visible;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: Design.radius-control;
+    }
 
     // Tab's way into a field that's scrolled out of view. Slint skips
     // a stop under a clipping element while a scroll view hides it,
@@ -1035,13 +1219,28 @@ export component OptimisticSlider {
     HorizontalLayout {
         spacing: Design.gap-row;
 
-        Slider {
+        // The slider keeps fluent's look (its focused state is the
+        // "pressed" one); the shared ring around it is what reads at
+        // a distance.
+        Rectangle {
             horizontal-stretch: 1;
-            minimum: root.minimum;
-            maximum: root.maximum;
-            value <=> root.display;
-            enabled: root.enabled;
-            changed(v) => { root.committed(round(v)); }
+            vertical-stretch: 0;
+            height: slider.preferred-height;
+            slider := Slider {
+                width: 100%;
+                height: 100%;
+                minimum: root.minimum;
+                maximum: root.maximum;
+                value <=> root.display;
+                enabled: root.enabled;
+                changed(v) => { root.committed(round(v)); }
+            }
+            FocusRing {
+                shown: slider.has-focus && Nav.focus-visible;
+                host-width: parent.width;
+                host-height: parent.height;
+                host-radius: Design.radius-pill;
+            }
         }
 
         Text {
@@ -1726,7 +1925,7 @@ export component ConfirmDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: Design.gap-stack;
                 alignment: end;
-                Button {
+                ThemedButton {
                     text: @tr("Cancel");
                     clicked => { root.cancelled(); }
                 }
@@ -1824,11 +2023,11 @@ export component NameInputDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: Design.gap-stack;
                 alignment: end;
-                Button {
+                ThemedButton {
                     text: @tr("Cancel");
                     clicked => { root.cancelled(); }
                 }
-                Button {
+                ThemedButton {
                     text: root.confirm-label;
                     primary: true;
                     enabled: root.name != "" && root.error-message == "";

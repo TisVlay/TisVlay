@@ -18,13 +18,13 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { ScrollView, Switch } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox } from "../widgets.slint";
+import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
@@ -699,7 +699,7 @@ component ProfileFieldRowBool inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                Switch {
+                ThemedSwitch {
                     checked: root.entry.bool-value;
                     accessible-label: root.entry.label;
                     toggled => {
