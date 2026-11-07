@@ -16,7 +16,7 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
-import { InlineError } from "widgets.slint";
+import { Focusable, InlineError } from "widgets.slint";
 import { Daemon } from "globals/daemon.slint";
 import { Tray, TrayNotificationSettings } from "globals/tray.slint";
 import { PairingWizard } from "globals/pairing_wizard.slint";
@@ -50,23 +50,22 @@ export enum Pane {
 // `Theme.sidebar-text` otherwise. If the icon failed to resolve the
 // `image` property is empty and Slint draws nothing in its slot —
 // the layout degrades to label-only without surrounding rework.
-component SidebarItem inherits Rectangle {
+component SidebarItem inherits Focusable {
     in property <image> icon;
     in property <string> label;
     in property <bool> selected;
     callback clicked();
 
-    accessible-role: button;
     accessible-label: root.label;
     accessible-checkable: true;
     accessible-checked: root.selected;
-    accessible-action-default => {
+    activated => {
         root.clicked();
     }
 
     height: Design.size-sidebar-item;
     background: selected ? Theme.sidebar-selected
-              : (touch.has-hover ? Theme.sidebar-hover : transparent);
+              : (root.hovered ? Theme.sidebar-hover : transparent);
     border-radius: 5px;
     animate background { duration: 150ms; }
 
@@ -94,10 +93,6 @@ component SidebarItem inherits Rectangle {
                 font-weight: root.selected ? 600 : 500;
             }
         }
-    }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
     }
 }
 
@@ -293,22 +288,22 @@ export component AppWindow inherits Window {
                     // (daemon.toml, session.toml, tray.toml); useful only
                     // when someone edited one outside the GUI. Sits above
                     // the service status block it acts on.
-                    Rectangle {
+                    reload := Focusable {
                         height: 28px;
-                        background: reload-touch.has-hover && root.daemon-available
+                        enabled: root.daemon-available;
+                        background: reload.hovered && root.daemon-available
                             ? Theme.sidebar-hover
                             : transparent;
                         border-radius: 5px;
                         animate background { duration: 150ms; }
 
-                        accessible-role: button;
                         accessible-label: @tr("Reload config files");
-                        accessible-enabled: root.daemon-available;
                         accessible-id: "sidebar-reload";
-                        accessible-action-default => {
-                            if (root.daemon-available) {
-                                Daemon.reload-config();
-                            }
+                        activated => {
+                            Daemon.reload-config();
+                        }
+                        hover-changed(hovering) => {
+                            reload-help.set-hover(hovering);
                         }
 
                         HorizontalLayout {
@@ -345,13 +340,6 @@ export component AppWindow inherits Window {
                             width: 100%;
                             height: 100%;
                             text: @tr("Reload the daemon, session and tray config files from disk — applies edits made outside the app.");
-                        }
-                        reload-touch := TouchArea {
-                            enabled: root.daemon-available;
-                            clicked => { Daemon.reload-config(); }
-                            changed has-hover => {
-                                reload-help.set-hover(self.has-hover);
-                            }
                         }
                     }
 

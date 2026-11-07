@@ -24,14 +24,14 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
+import { ConfirmDialog, Chip, ContextualHelpButton, Focusable, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
 // =============================================================================
 
-component ProfileListRow inherits Rectangle {
+component ProfileListRow inherits Focusable {
     in property <ProfileRow> entry;
     in property <ProfileKind> kind;
     in property <bool> selected;
@@ -39,12 +39,13 @@ component ProfileListRow inherits Rectangle {
 
     height: 64px;
     background: selected ? Theme.row-selected
-              : (touch.has-hover ? Theme.row-hover : transparent);
+              : (root.hovered ? Theme.row-hover : transparent);
     animate background { duration: 150ms; }
 
     accessible-role: list-item;
     accessible-label: root.entry.name;
-    accessible-action-default => { root.clicked(); }
+    accessible-id: "profiles-row-" + root.entry.uuid;
+    activated => { root.clicked(); }
 
     // 3px left accent stripe when selected — mirrors TvListRow.
     Rectangle {
@@ -126,10 +127,6 @@ component ProfileListRow inherits Rectangle {
             }
         }
     }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
 }
 
 component ProfileSectionHeader inherits Rectangle {
@@ -137,6 +134,8 @@ component ProfileSectionHeader inherits Rectangle {
     /// `+` enabled flag. False when the corresponding daemon isn't
     /// reachable (no session bus → user-profile create disabled).
     in property <bool> add-enabled: true;
+    /// The `+` button's test selector (`profiles-add-<kind>`).
+    in property <string> add-id;
     callback add-clicked();
 
     height: 40px;
@@ -180,22 +179,27 @@ component ProfileSectionHeader inherits Rectangle {
         }
 
         // "+" New-profile button — same shape as TvList's pair button.
-        Rectangle {
+        add := Focusable {
             width: 24px;
             height: 24px;
             y: (parent.height - self.height) / 2;
             border-radius: 12px;
+            enabled: root.add-enabled;
             background: !root.add-enabled
                 ? Theme.text-faint
-                : (add-touch.has-hover ? Theme.accent-pressed : Theme.accent);
+                : (add.hovered ? Theme.accent-pressed : Theme.accent);
             animate background { duration: 150ms; }
 
-            accessible-role: button;
             accessible-label: @tr("Create new {} profile", root.title);
-            accessible-action-default => {
-                if (root.add-enabled) {
-                    root.add-clicked();
-                }
+            accessible-id: root.add-id;
+            // Clear the tip on activation: it opens a modal name dialog
+            // the window-root tip would otherwise float over.
+            activated => {
+                root.add-clicked();
+                add-help.hover-leave();
+            }
+            hover-changed(hovering) => {
+                add-help.set-hover(hovering);
             }
 
             Text {
@@ -214,18 +218,6 @@ component ProfileSectionHeader inherits Rectangle {
                 height: 100%;
                 text: @tr("Create a new profile.");
             }
-            add-touch := TouchArea {
-                enabled: root.add-enabled;
-                // Clear on click: the click opens a modal name dialog the
-                // window-root tip would otherwise float over.
-                clicked => {
-                    root.add-clicked();
-                    add-help.hover-leave();
-                }
-                changed has-hover => {
-                    add-help.set-hover(self.has-hover);
-                }
-            }
         }
     }
 }
@@ -235,6 +227,9 @@ component ProfileList inherits Rectangle {
     /// name-input dialog. The section header itself can't host the
     /// dialog (it needs to render over the whole pane).
     callback request-create(ProfileKind);
+    /// A row was activated (clicked, or Return on it) after selecting
+    /// its profile: the pane moves focus into the detail.
+    callback activated();
 
     width: Design.width-master;
     background: Theme.surface-alt;
@@ -272,6 +267,7 @@ component ProfileList inherits Rectangle {
             ProfileSectionHeader {
                 title: @tr("SYSTEM PROFILES");
                 add-enabled: true;
+                add-id: "profiles-add-system";
                 add-clicked => { root.request-create(ProfileKind.system); }
             }
             if Profiles.system-loading: Rectangle {
@@ -310,6 +306,7 @@ component ProfileList inherits Rectangle {
                             Profiles.selected-uuid = r.uuid;
                             Profiles.selected-row = r;
                             Profiles.select(ProfileKind.system, r.uuid);
+                            root.activated();
                         }
                     }
                 }
@@ -327,6 +324,7 @@ component ProfileList inherits Rectangle {
             ProfileSectionHeader {
                 title: @tr("USER PROFILES");
                 add-enabled: Profiles.session-available;
+                add-id: "profiles-add-user";
                 add-clicked => { root.request-create(ProfileKind.user); }
             }
             if !Profiles.session-available: Rectangle {
@@ -373,6 +371,7 @@ component ProfileList inherits Rectangle {
                             Profiles.selected-uuid = r.uuid;
                             Profiles.selected-row = r;
                             Profiles.select(ProfileKind.user, r.uuid);
+                            root.activated();
                         }
                     }
                 }
@@ -1048,6 +1047,33 @@ component ProfileDetail inherits Rectangle {
     callback request-duplicate();
     callback request-reset-all();
 
+    /// Bumped by the pane when a list row is activated: the detail
+    /// takes focus. Its entry stop is Duplicate, the first control that
+    /// isn't inside a conditional (the header's Rename and Delete
+    /// buttons swap with the rename field, so they can't be a
+    /// `forward-focus` target).
+    ///
+    /// The first selection creates this detail on the activation that
+    /// bumps the tick, so it's born with the new value and sees no
+    /// change: `init` takes the request too. `focus-done` is the pane's
+    /// record of the last request served, so a detail recreated later
+    /// (a reselection from Rust) doesn't take focus for an old one.
+    in property <int> focus-tick;
+    in-out property <int> focus-done;
+    function take-requested-focus() {
+        if (root.focus-tick != root.focus-done) {
+            root.focus-done = root.focus-tick;
+            root.focus();
+        }
+    }
+    init => {
+        root.take-requested-focus();
+    }
+    changed focus-tick => {
+        root.take-requested-focus();
+    }
+    forward-focus: duplicate-button;
+
     background: Theme.surface-alt;
 
     VerticalLayout {
@@ -1126,7 +1152,7 @@ component ProfileDetail inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout {
                             alignment: center;
-                            IconBtn {
+                            duplicate-button := IconBtn {
                                 source: Icons.copy;
                                 accessible-label: @tr("Duplicate profile");
                                 tip: @tr("Duplicate profile");
@@ -1386,6 +1412,10 @@ export component ProfilesPane {
     property <string> pending-new-error;
 
     // --- Pending Duplicate dialog state ---
+    // Bumped when a list row is activated; the detail takes focus and
+    // records the request it served in `focus-detail-done`.
+    property <int> focus-detail-tick;
+    property <int> focus-detail-done;
     property <ProfileKind> pending-duplicate-kind: ProfileKind.none;
     property <string> pending-duplicate-source-uuid;
     property <string> pending-duplicate-name;
@@ -1474,6 +1504,7 @@ export component ProfilesPane {
 
             ProfileList {
                 request-create(kind) => { root.open-create-dialog(kind); }
+                activated => { root.focus-detail-tick += 1; }
             }
 
             // Detail column — fills remaining width.
@@ -1495,6 +1526,8 @@ export component ProfilesPane {
                     referenced-by: Profiles.selected-row.referenced-by;
                     active: Profiles.selected-row.active;
                     can-delete: !Profiles.selected-row.is-default;
+                    focus-tick: root.focus-detail-tick;
+                    focus-done <=> root.focus-detail-done;
                     request-delete => { root.open-delete-dialog(); }
                     request-duplicate => { root.open-duplicate-dialog(); }
                     request-reset-all => { root.open-reset-all-dialog(); }

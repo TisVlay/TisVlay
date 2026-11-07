@@ -6,12 +6,25 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use i_slint_backend_testing::ElementHandle;
+use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use slint::platform::{Key, PointerEventButton};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
-use tisvlay_gui::{AppWindow, EditPane, Pane, Tray, TvViewModel};
+use tisvlay_gui::{
+    AppWindow, Daemon, EditPane, PairingWizard, Pane, ProfileKind, ProfileRow, Profiles, Tray,
+    TvViewModel, WizardDiscoveredTv,
+};
 
 use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
+
+/// The shell's first stops: the four sidebar items. Reload follows them
+/// only while the daemon is reachable.
+const SIDEBAR_STOPS: usize = 4;
+
+fn tabs(app: &AppWindow, count: usize) {
+    for _ in 0..count {
+        press(app, Key::Tab);
+    }
+}
 
 /// Boot with the Settings pane active and the tray reachable, so its
 /// notification switches are enabled (a disabled std widget leaves the
@@ -39,11 +52,9 @@ fn tab_from_a_fresh_window_lands_on_the_first_settings_switch() {
     let app = boot_settings();
     let toggles = record_toggles(&app);
 
-    // Nothing before the pane's first switch is a Tab stop yet: the
-    // sidebar is pointer-only and `nav-scope` left the order. Later
-    // steps that make the sidebar focusable move this to one Tab per
-    // stop they add.
-    press(&app, Key::Tab);
+    // Past the sidebar (Reload is disabled without a daemon), the pane's
+    // first switch is the next stop; `nav-scope` left the order.
+    tabs(&app, SIDEBAR_STOPS + 1);
     assert!(toggles.borrow().is_empty(), "Tab alone toggles nothing");
     assert_eq!(visible_rings(&app), 1, "the focused switch draws the ring");
 
@@ -67,10 +78,10 @@ fn shift_tab_from_the_first_stop_wraps_to_the_last_not_the_window_scope() {
     });
 
     press(&app, Key::Tab);
-    // Backwards from the first switch. Before `nav-scope` left the Tab
-    // order this landed on the window-filling scope, an invisible stop
-    // where Return does nothing; now it wraps to the pane's last stop,
-    // the "Send test notification" button.
+    // Backwards from the first stop (the sidebar's TVs item). Before
+    // `nav-scope` left the Tab order this landed on the window-filling
+    // scope, an invisible stop where Return does nothing; now it wraps
+    // to the window's last stop, the "Send test notification" button.
     press_shift_tab(&app);
     press(&app, Key::Return);
     assert_eq!(
@@ -181,9 +192,9 @@ fn the_ring_follows_keyboard_focus_and_a_click_hides_it() {
     app.on_copy_diagnostic_clicked(move || *sink.borrow_mut() += 1);
 
     assert_eq!(visible_rings(&app), 0, "no ring before any key");
-    // The About pane's first stops: the version chip, then Diagnostics.
-    press(&app, Key::Tab);
-    press(&app, Key::Tab);
+    // Past the sidebar, the About pane's stops: the brand link, the
+    // version chip, then Diagnostics.
+    tabs(&app, SIDEBAR_STOPS + 3);
     assert_eq!(
         visible_rings(&app),
         1,
@@ -211,4 +222,177 @@ fn the_ring_follows_keyboard_focus_and_a_click_hides_it() {
         1,
         "the next navigation key shows the ring again"
     );
+}
+
+/// Boot the TVs pane with the daemon reachable (so Reload and the pair
+/// button are stops) and one connected TV per uuid.
+fn boot_tvs(uuids: &[&str]) -> AppWindow {
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_daemon_available(true);
+    let rows: Vec<TvViewModel> = uuids
+        .iter()
+        .map(|uuid| TvViewModel {
+            uuid: SharedString::from(*uuid),
+            name: SharedString::from(format!("TV {uuid}")),
+            connected: true,
+            ..Default::default()
+        })
+        .collect();
+    app.set_tvs(ModelRc::new(VecModel::from(rows)));
+    app.set_active_pane(Pane::Tvs);
+    app
+}
+
+fn counter() -> Rc<RefCell<usize>> {
+    Rc::new(RefCell::new(0))
+}
+
+#[test]
+fn return_on_a_sidebar_item_navigates() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&[]);
+    let navigated = Rc::new(RefCell::new(Vec::new()));
+    let sink = navigated.clone();
+    app.on_navigate(move |pane| sink.borrow_mut().push(pane));
+
+    // TVs, Profiles, Settings.
+    tabs(&app, 3);
+    press(&app, Key::Return);
+    assert_eq!(navigated.borrow().as_slice(), [Pane::Settings]);
+}
+
+#[test]
+fn return_on_reload_and_on_the_pair_button_fire_their_actions() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&[]);
+    let daemon = app.global::<Daemon>();
+    let reloads = counter();
+    let sink = reloads.clone();
+    daemon.on_reload_config(move || *sink.borrow_mut() += 1);
+    let pairs = counter();
+    let sink = pairs.clone();
+    daemon.on_request_pair(move || *sink.borrow_mut() += 1);
+
+    tabs(&app, SIDEBAR_STOPS + 1);
+    press(&app, Key::Return);
+    assert_eq!(*reloads.borrow(), 1, "Return on Reload reloads");
+    press(&app, Key::Tab);
+    press(&app, Key::Return);
+    assert_eq!(
+        *pairs.borrow(),
+        1,
+        "Return on the pair button starts pairing"
+    );
+}
+
+#[test]
+fn return_on_a_tv_row_selects_it_and_enters_the_detail() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1", "tv-2"]);
+    let powered = Rc::new(RefCell::new(Vec::new()));
+    let sink = powered.clone();
+    app.global::<Daemon>()
+        .on_power_on(move |uuid| sink.borrow_mut().push(uuid.to_string()));
+
+    // Sidebar, Reload, the pair button, the first row, the second row.
+    tabs(&app, SIDEBAR_STOPS + 4);
+    press(&app, Key::Return);
+    assert_eq!(
+        app.get_selected_tv_index(),
+        1,
+        "Return selects the row's TV"
+    );
+
+    // Focus moved into the detail, onto its Power button.
+    press(&app, Key::Return);
+    assert_eq!(powered.borrow().as_slice(), ["tv-2"]);
+}
+
+#[test]
+fn return_on_a_profile_row_selects_it_and_enters_the_detail() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Profiles);
+    let profiles = app.global::<Profiles>();
+    profiles.set_system(ModelRc::new(VecModel::from(vec![ProfileRow {
+        uuid: SharedString::from("p-1"),
+        name: SharedString::from("default"),
+        display_name: SharedString::from("default"),
+        ..ProfileRow::default()
+    }])));
+    let selected = Rc::new(RefCell::new(Vec::new()));
+    let sink = selected.clone();
+    profiles.on_select(move |kind, uuid| sink.borrow_mut().push((kind, uuid.to_string())));
+    let text_inputs = |app: &AppWindow| {
+        ElementQuery::from_root(app)
+            .match_descendants()
+            .match_predicate(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+            .find_all()
+            .len()
+    };
+
+    // Sidebar, the system "+" (the user one is disabled without a
+    // session), the row.
+    tabs(&app, SIDEBAR_STOPS + 2);
+    press(&app, Key::Return);
+    assert_eq!(
+        selected.borrow().as_slice(),
+        [(ProfileKind::System, "p-1".to_string())],
+        "Return selects the row's profile"
+    );
+
+    // Focus moved into the detail, onto Duplicate: Return opens the
+    // name dialog, whose text field is the pane's only text input.
+    assert_eq!(text_inputs(&app), 0, "no text input before the dialog");
+    press(&app, Key::Return);
+    assert!(text_inputs(&app) > 0, "the duplicate dialog opened");
+}
+
+#[test]
+fn return_on_a_discovered_tv_selects_it_and_focuses_next() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Tvs);
+    let wizard = app.global::<PairingWizard>();
+    wizard.set_active(true);
+    wizard.set_step(1);
+    wizard.set_discovered(ModelRc::new(VecModel::from(vec![WizardDiscoveredTv {
+        id: SharedString::from("d-1"),
+        name: SharedString::from("Living room"),
+        address: SharedString::from("192.168.1.5"),
+        ..Default::default()
+    }])));
+    // Rust answers a pick by setting the index; mirror that here.
+    let weak = app.as_weak();
+    wizard.on_selected_changed(move |i| {
+        if let Some(app) = weak.upgrade() {
+            app.global::<PairingWizard>().set_selected_index(i);
+        }
+    });
+    let nexts = counter();
+    let sink = nexts.clone();
+    wizard.on_step_next(move || *sink.borrow_mut() += 1);
+
+    // Sidebar (no daemon: Reload is disabled), then the discovered row.
+    tabs(&app, SIDEBAR_STOPS + 1);
+    press(&app, Key::Return);
+    assert_eq!(wizard.get_selected_index(), 0, "Return picks the row's TV");
+
+    // Focus moved to the footer's Next.
+    press(&app, Key::Return);
+    assert_eq!(*nexts.borrow(), 1, "Return on Next steps the wizard");
+}
+
+#[test]
+fn return_on_the_about_brand_opens_the_website() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::About);
+    let opened = counter();
+    let sink = opened.clone();
+    app.on_view_source_clicked(move || *sink.borrow_mut() += 1);
+
+    tabs(&app, SIDEBAR_STOPS + 1);
+    press(&app, Key::Return);
+    assert_eq!(*opened.borrow(), 1);
 }

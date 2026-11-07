@@ -1,7 +1,7 @@
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
+import { Group, Chip, Focusable, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
@@ -247,8 +247,19 @@ export component AboutPane inherits Rectangle {
                 // cursor; the title brightens to accent on hover so
                 // the affordance reads even before the cursor change
                 // registers.
-                Rectangle {
+                brand := Focusable {
                     horizontal-stretch: 1;
+                    border-radius: Design.radius-card;
+                    mouse-cursor: pointer;
+                    accessible-label: @tr("Open TisVlay website");
+                    accessible-id: "about-brand-link";
+                    activated => {
+                        root.view-source-clicked();
+                        brand-help.hover-leave();
+                    }
+                    hover-changed(hovering) => {
+                        brand-help.set-hover(hovering);
+                    }
                     HorizontalLayout {
                         width: 100%;
                         height: 100%;
@@ -281,7 +292,7 @@ export component AboutPane inherits Rectangle {
                                     text: "TisVlay";
                                     font-size: Design.font-title-1;
                                     font-weight: 700;
-                                    color: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                    color: brand.hovered ? Theme.accent : Theme.text;
                                     animate color { duration: 150ms; }
                                     vertical-alignment: center;
                                 }
@@ -291,7 +302,7 @@ export component AboutPane inherits Rectangle {
                                         source: Icons.open-link;
                                         width: Design.size-glyph;
                                         height: Design.size-glyph;
-                                        colorize: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                        colorize: brand.hovered ? Theme.accent : Theme.text;
                                         animate colorize { duration: 150ms; }
                                     }
                                 }
@@ -308,13 +319,6 @@ export component AboutPane inherits Rectangle {
                         width: 100%;
                         height: 100%;
                         text: @tr("Open TisVlay website");
-                    }
-                    brand-touch := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.view-source-clicked(); }
-                        changed has-hover => {
-                            brand-help.set-hover(self.has-hover);
-                        }
                     }
                 }
 

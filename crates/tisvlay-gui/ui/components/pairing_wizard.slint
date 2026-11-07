@@ -18,7 +18,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
-import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
+import { Chip, Focusable, LineEditField, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
 // =============================================================================
@@ -132,14 +132,24 @@ component Stepper inherits Rectangle {
 // Discovered-TV row.
 // =============================================================================
 
-component DiscoveryRow inherits Rectangle {
+component DiscoveryRow inherits Focusable {
     in property <WizardDiscoveredTv> tv;
     in property <bool> selected;
     callback clicked();
 
+    accessible-role: list-item;
+    accessible-label: root.tv.name == "" ? root.tv.address : root.tv.name;
+    accessible-id: "wizard-row-" + root.tv.id;
+    activated => {
+        root.clicked();
+    }
+    hover-changed(hovering) => {
+        warn-tip.set-hover(hovering);
+    }
+
     height: 56px;
     background: selected ? Theme.row-selected
-              : (touch.has-hover ? Theme.row-hover : Theme.surface);
+              : (root.hovered ? Theme.row-hover : Theme.surface);
     animate background { duration: 150ms; }
 
     Rectangle {
@@ -243,23 +253,16 @@ component DiscoveryRow inherits Rectangle {
 
     // Whole-row help anchor. Kept out of the layout (an absolutely
     // positioned child overlaying the right column) so it stays
-    // referenceable from `touch` — an `if`-gated element would not be —
-    // and the entire row is the hover target, so the user is most likely
-    // to surface the full remedy. Invisible (no background, no
-    // TouchArea): `touch` above it still owns clicks and hover.
+    // referenceable from the hover handler — an `if`-gated element would
+    // not be — and the entire row is the hover target, so the user is
+    // most likely to surface the full remedy. Invisible (no background,
+    // no hit area of its own): the row's hit area owns clicks and hover.
     warn-tip := HelpTrigger {
         x: parent.width - self.width - 12px;
         y: 0;
         width: 180px;
         height: parent.height;
         text: root.tv.access-warning ? @tr("The daemon can't access {} \u{2014} insufficient permissions. Check that node's permissions or the daemon user's group membership.", root.tv.address) : "";
-    }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-        changed has-hover => {
-            warn-tip.set-hover(self.has-hover);
-        }
     }
 }
 
@@ -1059,7 +1062,14 @@ export component PairingWizardPane inherits Rectangle {
                     selected-index: PairingWizard.selected-index;
                     manual-vendor-index <=> PairingWizard.manual-vendor-index;
                     manual-ip <=> PairingWizard.manual-ip;
-                    selection-changed(i) => { PairingWizard.selected-changed(i); }
+                    // A chosen row hands focus to Next, past the manual
+                    // entry fields, once the pick enabled it.
+                    selection-changed(i) => {
+                        PairingWizard.selected-changed(i);
+                        if (root.next-enabled) {
+                            next-button.focus();
+                        }
+                    }
                     manual-ip-edited(v) => { PairingWizard.manual-ip-edited(v); }
                     manual-add => { PairingWizard.manual-add(); }
                 }
@@ -1128,7 +1138,7 @@ export component PairingWizardPane inherits Rectangle {
                     text: @tr("Back");
                     clicked => { PairingWizard.step-back(); }
                 }
-                ThemedButton {
+                next-button := ThemedButton {
                     text: root.next-label;
                     primary: true;
                     enabled: root.next-enabled;

@@ -17,7 +17,7 @@ import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pair
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
-import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, ThemedButton, ThemedSwitch, VendorTile } from "../widgets.slint";
+import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Focusable, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, ThemedButton, ThemedSwitch, VendorTile } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
@@ -202,14 +202,21 @@ component FormRow {
 // Master list — left column, 260px.
 // =============================================================================
 
-component TvListRow inherits Rectangle {
+component TvListRow inherits Focusable {
     in property <TvViewModel> tv;
     in property <bool> selected;
     callback clicked();
 
+    accessible-role: list-item;
+    accessible-label: root.tv.name;
+    accessible-id: "tvs-row-" + root.tv.uuid;
+    activated => {
+        root.clicked();
+    }
+
     height: 64px;
     background: selected ? Theme.row-selected
-              : (touch.has-hover ? Theme.row-hover : transparent);
+              : (root.hovered ? Theme.row-hover : transparent);
     animate background { duration: 150ms; }
 
     // 3px left accent stripe when selected.
@@ -278,10 +285,6 @@ component TvListRow inherits Rectangle {
             }
         }
     }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
 }
 
 component TvList inherits Rectangle {
@@ -291,6 +294,9 @@ component TvList inherits Rectangle {
     in property <bool> daemon-loading;
     in property <ServiceHealth> daemon-health;
     in-out property <int> selected-index;
+    /// A row was activated (clicked, or Return on it) after selecting
+    /// its TV: the pane moves focus into the detail.
+    callback activated();
 
     width: Design.width-master;
     background: Theme.surface-alt;
@@ -364,15 +370,29 @@ component TvList inherits Rectangle {
                 // "+" Pair-new-TV button. Disabled when the daemon is
                 // offline — pairing requires an active daemon
                 // connection, so without one the wizard is futile.
-                Rectangle {
+                pair := Focusable {
                     width: 24px;
                     height: 24px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 12px;
+                    enabled: root.daemon-available;
                     background: !root.daemon-available
                         ? Theme.text-faint
-                        : (pair-touch.has-hover ? Theme.accent-pressed : Theme.accent);
+                        : (pair.hovered ? Theme.accent-pressed : Theme.accent);
                     animate background { duration: 150ms; }
+
+                    accessible-label: @tr("Pair a new TV");
+                    accessible-id: "tvs-pair-button";
+                    // Clear the tip on activation: it swaps to the
+                    // pairing wizard, removing this button before it
+                    // could dismiss its own tip.
+                    activated => {
+                        Daemon.request-pair();
+                        pair-help.hover-leave();
+                    }
+                    hover-changed(hovering) => {
+                        pair-help.set-hover(hovering);
+                    }
 
                     Text {
                         text: "+";
@@ -390,19 +410,6 @@ component TvList inherits Rectangle {
                         width: 100%;
                         height: 100%;
                         text: @tr("Pair a new TV — opens the pairing wizard.");
-                    }
-                    pair-touch := TouchArea {
-                        enabled: root.daemon-available;
-                        // Clear on click: the click swaps to the pairing
-                        // wizard, removing this button before it could
-                        // dismiss its own tip.
-                        clicked => {
-                            Daemon.request-pair();
-                            pair-help.hover-leave();
-                        }
-                        changed has-hover => {
-                            pair-help.set-hover(self.has-hover);
-                        }
                     }
                 }
             }
@@ -469,11 +476,22 @@ component TvList inherits Rectangle {
             }
         }
 
-        ListView {
-            for tv[i] in root.tvs: TvListRow {
-                tv: tv;
-                selected: i == root.selected-index;
-                clicked => { root.selected-index = i; }
+        // A ScrollView over a `for`, not a ListView: a virtualized list
+        // keeps the rows outside its viewport out of the item tree,
+        // where Tab and the arrows can't reach them.
+        ScrollView {
+            content-width: self.visible-width;
+            VerticalLayout {
+                spacing: 0;
+                alignment: start;
+                for tv[i] in root.tvs: TvListRow {
+                    tv: tv;
+                    selected: i == root.selected-index;
+                    clicked => {
+                        root.selected-index = i;
+                        root.activated();
+                    }
+                }
             }
         }
 
@@ -690,6 +708,16 @@ component TvDetail inherits Rectangle {
     /// active connection and requires user interaction on the TV).
     callback request-re-pair();
 
+    /// Bumped by the pane when a list row is activated: the visible
+    /// detail takes focus, landing on its first stop.
+    in property <int> focus-tick;
+    changed focus-tick => {
+        if (root.visible) {
+            root.focus();
+        }
+    }
+    forward-focus: power-button;
+
     background: Theme.surface-alt;
 
     VerticalLayout {
@@ -738,7 +766,7 @@ component TvDetail inherits Rectangle {
                         property <bool> can-power-on:
                             root.tv.connected || root.tv.supports-wake;
 
-                        ThemedButton {
+                        power-button := ThemedButton {
                             // Keyed on `is-on`, not `connected`: a CEC TV
                             // reachable in standby is connected-but-off, and
                             // must still offer "Power on".
@@ -1246,6 +1274,9 @@ export component TvsPane {
     property <string> pending-remove-name: "";
     property <string> pending-re-pair-id: "";
     property <string> pending-re-pair-name: "";
+    // Bumped when a list row is activated; the selected detail takes
+    // focus on the change.
+    property <int> focus-detail-tick;
 
     // Pairing wizard takes over the whole pane when active.
     if PairingWizard.active: PairingWizardPane {
@@ -1296,6 +1327,7 @@ export component TvsPane {
                 daemon-loading: root.daemon-loading;
                 daemon-health: root.daemon-health;
                 selected-index <=> root.selected-index;
+                activated => { root.focus-detail-tick += 1; }
             }
 
             // Detail column — fills remaining width.
@@ -1319,6 +1351,7 @@ export component TvsPane {
                     tv: tv;
                     system-profiles: root.system-profiles;
                     user-profiles: root.user-profiles;
+                    focus-tick: root.focus-detail-tick;
 
                     request-remove => {
                         root.pending-remove-id = tv.uuid;
