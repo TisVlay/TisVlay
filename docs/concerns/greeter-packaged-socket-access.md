@@ -1,6 +1,6 @@
 # Packaged greeter socket access (solved via a daemon group ACL)
 
-The login-screen greeter reaches the daemon socket through a **daemon-applied POSIX group ACL**, not group membership. At bind, after the `chmod 0660`, the daemon adds `g:<greeter-group>:rw` on the socket and `g:<greeter-group>:rx` on the runtime directory (`crates/tisvlay-daemon/src/acl.rs`, in-process via the `system.posix_acl_access` xattr — no libacl dependency). The packaged `tisvlay-daemon.service` passes `--greeter-access`, which auto-detects the group from `gdm` / `Debian-gdm`; NixOS or a plasma-login setup can pass `--greeter-group <name>` explicitly.
+The login-screen greeter reaches the daemon socket through a **daemon-applied POSIX group ACL**, not group membership. At bind, after the `chmod 0660`, the daemon adds `g:<greeter-group>:rw` on the socket and `g:<greeter-group>:rx` on the runtime directory (`crates/tisvlay-daemon/src/acl.rs`, in-process via the `system.posix_acl_access` xattr — no libacl dependency). The packaged `tisvlay-daemon.service` passes `--greeter-access`, which grants every known greeter group present (`gdm` / `Debian-gdm` / `plasmalogin`); NixOS passes the active display manager's group with `--greeter-group <name>` instead.
 
 ## Why membership doesn't work
 
@@ -15,6 +15,7 @@ The old "secondary `tisvlay:gdm` socket" idea is therefore unnecessary: a plain 
 ## Validation status
 
 - **Fedora 44 and Ubuntu 26.04 (both gdm 50 userdb dynamic greeters): validated.** On each, the daemon applies the ACL under its full systemd sandbox (journal: "greeter-group socket ACL applied"; `getfacl` shows `group gdm rw-` — gid 42 on Fedora, 975 on Ubuntu, resolved by name — with a matching mask so `tisvlay`-group clients keep access), and the dynamic `gdm-greeter` (uid 60578) connects with no `usermod` and no manual `setfacl`. This closes the earlier "Ubuntu DynamicUser greeter" deferral: the recorded Ubuntu group-ACL failure was a user-vs-group ACL misdiagnosis on a pre-userdb greeter.
+- **KDE neon (Ubuntu 24.04 base, plasma-login-manager): validated.** The plasma-login greeter is the static sysusers account `plasmalogin` (primary group `plasmalogin`, shipped by plasma-login-manager itself), so `--greeter-access` grants it alongside the GDM names, and the packages enable `tisvlay-greeter.service` beside the GDM variant.
 - **NixOS: resolved.** The module passes `--greeter-group` per active display manager — the static `gdm-greeter{,-2..5}` accounts carry group `gdm` and the plasma-login greeter carries `plasmalogin` (both confirmed in nixpkgs) — and the old `users.groups.tisvlay.members` greeter grant is retired.
 
 The greeter entry now coexists with the active-seat user entries in one desired-state ACL, reconciled by the daemon (compare-before-write, repaired on a periodic resync). The full access model — durable group, presence grant, greeter grant, per-channel wiring, and maintainer-script lifecycle — is documented in [packaging/README.md § Socket access & the ACL integration](../../packaging/README.md#socket-access--the-acl-integration).

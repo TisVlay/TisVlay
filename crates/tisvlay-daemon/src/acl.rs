@@ -3,14 +3,15 @@
 //!
 //! Two kinds of named entries share the one ACL:
 //!
-//! - **Greeter group** (`ACL_GROUP`): the modern GDM greeter is a
+//! - **Greeter groups** (`ACL_GROUP`): the modern GDM greeter is a
 //!   systemd-userdb dynamic user whose primary group is `gdm`
 //!   (`Debian-gdm` on Debian), so it cannot be reached via `/etc/group`
 //!   supplementary membership. Granting that group an ACL on the socket
 //!   (rw) and its runtime directory (traverse) is the one mechanism that
 //!   works across the static-account (NixOS) and dynamic (Fedora/Ubuntu)
 //!   greeters alike — it keys on the group, not the user, matching how
-//!   GDM's own polkit/D-Bus policies gate the greeter.
+//!   GDM's own polkit/D-Bus policies gate the greeter. The plasma-login
+//!   greeter, a static `plasmalogin` account, is granted the same way.
 //! - **Active-seat users** (`ACL_USER`): presence-scoped access for the
 //!   human at the console — `uaccess` semantics applied to our socket
 //!   instead of a device node. The seat watch (`seat.rs`) feeds the uid
@@ -40,17 +41,18 @@ use tracing::{debug, info, warn};
 pub enum GreeterAccess {
     /// No greeter ACL; any prior greeter entry is dropped.
     Disabled,
-    /// Auto-detect the display manager's greeter group from the known
-    /// set — the packaged single unit's mode, since the name differs by
-    /// distro (`gdm` vs Debian's `Debian-gdm`).
+    /// Grant every known greeter group present on the host — the
+    /// packaged single unit's mode, since the name differs by display
+    /// manager and distro, and a host with more than one DM installed may
+    /// run any of them.
     Auto,
-    /// An explicit greeter group name, for a DM that knows its own
-    /// (NixOS, or a plasma-login greeter whose group isn't auto-detected).
+    /// An explicit greeter group name, for a greeter outside the known
+    /// set (NixOS passes the active DM's own).
     Group(String),
 }
 
-/// Greeter groups tried under [`GreeterAccess::Auto`], in order.
-const KNOWN_GREETER_GROUPS: &[&str] = &["gdm", "Debian-gdm"];
+/// Greeter groups granted under [`GreeterAccess::Auto`] when present.
+const KNOWN_GREETER_GROUPS: &[&str] = &["gdm", "Debian-gdm", "plasmalogin"];
 
 /// Null-terminated for a direct FFI `*const c_char`.
 const ACL_XATTR: &[u8] = b"system.posix_acl_access\0";
@@ -67,7 +69,7 @@ const ACL_OTHER: u16 = 0x20;
 const ACL_UNDEFINED_ID: u32 = 0xffff_ffff;
 
 /// Reconcile the ACL on the socket and its runtime directory to the
-/// desired grants: the greeter group per `greeter` plus a named-user entry
+/// desired grants: the greeter groups per `greeter` plus a named-user entry
 /// per active-seat uid. Best-effort: a failure denies the grantee, never
 /// the daemon, so problems are logged rather than propagated. Rebuilding
 /// the whole ACL from desired state on every call (and stripping it when
@@ -81,8 +83,8 @@ pub(crate) fn reconcile(socket: &Path, greeter: &GreeterAccess, seat_uids: &BTre
         warn!("socket has no parent directory; skipping socket ACL");
         return;
     };
-    let gid = resolve_gid(greeter);
-    if gid.is_none() && seat_uids.is_empty() {
+    let gids = resolve_gids(greeter);
+    if gids.is_empty() && seat_uids.is_empty() {
         // Nothing granted: strip any prior ACL so the (preserved) runtime
         // directory reverts to its mode bits.
         let socket_stripped = clear(socket);
@@ -92,10 +94,10 @@ pub(crate) fn reconcile(socket: &Path, greeter: &GreeterAccess, seat_uids: &BTre
         }
         return;
     }
-    let socket_changed = apply(socket, gid, seat_uids);
-    let dir_changed = apply(dir, gid, seat_uids);
+    let socket_changed = apply(socket, &gids, seat_uids);
+    let dir_changed = apply(dir, &gids, seat_uids);
     if socket_changed || dir_changed {
-        info!(?gid, ?seat_uids, socket = %socket.display(), "socket ACL applied");
+        info!(?gids, ?seat_uids, socket = %socket.display(), "socket ACL applied");
     }
 }
 
@@ -104,24 +106,27 @@ pub(crate) fn reconcile(socket: &Path, greeter: &GreeterAccess, seat_uids: &BTre
 /// static misconfiguration at each login/logout would bury real warns.
 static MISSING_GROUP_WARNED: AtomicBool = AtomicBool::new(false);
 
-fn resolve_gid(access: &GreeterAccess) -> Option<u32> {
+fn resolve_gids(access: &GreeterAccess) -> BTreeSet<u32> {
     match access {
-        GreeterAccess::Disabled => None,
+        GreeterAccess::Disabled => BTreeSet::new(),
         GreeterAccess::Group(name) => {
             let gid = gid_of(name);
             if gid.is_none() && !MISSING_GROUP_WARNED.swap(true, Ordering::Relaxed) {
                 warn!(name, "greeter group not found; no greeter socket ACL");
             }
-            gid
+            gid.into_iter().collect()
         }
         GreeterAccess::Auto => {
-            let gid = KNOWN_GREETER_GROUPS.iter().find_map(|g| gid_of(g));
-            if gid.is_none() {
-                // Absent on a non-GDM desktop is the normal case for the
+            let gids: BTreeSet<u32> = KNOWN_GREETER_GROUPS
+                .iter()
+                .filter_map(|g| gid_of(g))
+                .collect();
+            if gids.is_empty() {
+                // Absent under an unknown DM is the normal case for the
                 // packaged unit's blanket --greeter-access, so keep quiet.
                 debug!("no known greeter group present; no greeter socket ACL");
             }
-            gid
+            gids
         }
     }
 }
@@ -174,7 +179,7 @@ fn gid_of(name: &str) -> Option<u32> {
 /// first, so an in-sync file is left untouched (and unlogged), while a
 /// failed or externally-clobbered previous write reads as drift and is
 /// repaired on the next call.
-fn apply(path: &Path, gid: Option<u32>, uids: &BTreeSet<u32>) -> bool {
+fn apply(path: &Path, gids: &BTreeSet<u32>, uids: &BTreeSet<u32>) -> bool {
     let mode = match std::fs::metadata(path) {
         Ok(m) => m.mode(),
         Err(e) => {
@@ -182,7 +187,7 @@ fn apply(path: &Path, gid: Option<u32>, uids: &BTreeSet<u32>) -> bool {
             return false;
         }
     };
-    let desired = blob(mode, gid, uids);
+    let desired = blob(mode, gids, uids);
     if getxattr(path).ok().flatten().as_deref() == Some(desired.as_slice()) {
         return false;
     }
@@ -196,18 +201,18 @@ fn apply(path: &Path, gid: Option<u32>, uids: &BTreeSet<u32>) -> bool {
 }
 
 /// The `system.posix_acl_access` value for `mode` plus the named grants.
-fn blob(mode: u32, gid: Option<u32>, uids: &BTreeSet<u32>) -> Vec<u8> {
+fn blob(mode: u32, gids: &BTreeSet<u32>, uids: &BTreeSet<u32>) -> Vec<u8> {
     let user_obj = ((mode >> 6) & 7) as u16;
     let group_obj = ((mode >> 3) & 7) as u16;
     let other = (mode & 7) as u16;
-    let mut entries: Vec<(u16, u16, u32)> = Vec::with_capacity(5 + uids.len());
+    let mut entries: Vec<(u16, u16, u32)> = Vec::with_capacity(4 + uids.len() + gids.len());
     entries.push((ACL_USER_OBJ, user_obj, ACL_UNDEFINED_ID));
-    // BTreeSet iteration gives the ascending-uid order the kernel requires.
+    // BTreeSet iteration gives the ascending-id order the kernel requires.
     for &uid in uids {
         entries.push((ACL_USER, group_obj, uid));
     }
     entries.push((ACL_GROUP_OBJ, group_obj, ACL_UNDEFINED_ID));
-    if let Some(gid) = gid {
+    for &gid in gids {
         entries.push((ACL_GROUP, group_obj, gid));
     }
     entries.push((ACL_MASK, group_obj, ACL_UNDEFINED_ID));
@@ -329,7 +334,7 @@ mod tests {
     #[test]
     fn blob_orders_tags_and_uids_ascending() {
         let uids = BTreeSet::from([1207, 42, 60578]);
-        let entries = decode(&blob(0o660, Some(975), &uids));
+        let entries = decode(&blob(0o660, &BTreeSet::from([975]), &uids));
         let tags: Vec<u16> = entries.iter().map(|e| e.0).collect();
         assert_eq!(
             tags,
@@ -354,10 +359,26 @@ mod tests {
     }
 
     #[test]
+    fn blob_grants_every_greeter_group_ascending() {
+        // A host with two DMs installed (GDM + plasma-login) grants both.
+        let entries = decode(&blob(0o660, &BTreeSet::from([985, 120]), &BTreeSet::new()));
+        let named_gids: Vec<u32> = entries
+            .iter()
+            .filter(|e| e.0 == ACL_GROUP)
+            .map(|e| e.2)
+            .collect();
+        assert_eq!(named_gids, [120, 985]);
+    }
+
+    #[test]
     fn blob_named_entries_carry_the_group_class_perm() {
         // 0660 socket: named entries + mask must all be rw (6) — anything
         // narrower would subtract access via first-match-by-class.
-        let entries = decode(&blob(0o660, Some(975), &BTreeSet::from([1000])));
+        let entries = decode(&blob(
+            0o660,
+            &BTreeSet::from([975]),
+            &BTreeSet::from([1000]),
+        ));
         for (tag, perm, _) in &entries {
             match *tag {
                 ACL_USER | ACL_GROUP | ACL_GROUP_OBJ | ACL_MASK => assert_eq!(*perm, 6),
@@ -367,7 +388,11 @@ mod tests {
             }
         }
         // 0750 dir: named entries + mask are r-x (5).
-        let entries = decode(&blob(0o750, Some(975), &BTreeSet::from([1000])));
+        let entries = decode(&blob(
+            0o750,
+            &BTreeSet::from([975]),
+            &BTreeSet::from([1000]),
+        ));
         for (tag, perm, _) in &entries {
             if matches!(*tag, ACL_USER | ACL_GROUP | ACL_MASK) {
                 assert_eq!(*perm, 5);
@@ -377,7 +402,7 @@ mod tests {
 
     #[test]
     fn blob_without_greeter_group_has_user_entries_only() {
-        let entries = decode(&blob(0o660, None, &BTreeSet::from([1000])));
+        let entries = decode(&blob(0o660, &BTreeSet::new(), &BTreeSet::from([1000])));
         let tags: Vec<u16> = entries.iter().map(|e| e.0).collect();
         assert_eq!(
             tags,
@@ -387,7 +412,7 @@ mod tests {
 
     #[test]
     fn greeter_only_blob_matches_the_original_five_entry_layout() {
-        let entries = decode(&blob(0o660, Some(975), &BTreeSet::new()));
+        let entries = decode(&blob(0o660, &BTreeSet::from([975]), &BTreeSet::new()));
         assert_eq!(
             entries,
             [
@@ -411,7 +436,8 @@ mod tests {
         let path = dir.path().join("acl-target");
         std::fs::write(&path, b"").unwrap();
         let uids = BTreeSet::from([12, 34]);
-        let value = blob(0o660, Some(7), &uids);
+        let gids = BTreeSet::from([7, 9]);
+        let value = blob(0o660, &gids, &uids);
         match setxattr(&path, &value) {
             Ok(()) => {}
             // The environment refuses xattrs outright — nothing to verify
@@ -427,11 +453,11 @@ mod tests {
         // Setting the ACL also rewrote the file's mode to match its
         // object entries (mode and ACL are two views of one state), so
         // the file is now fully in sync: apply() must read no drift.
-        assert!(!apply(&path, Some(7), &uids));
+        assert!(!apply(&path, &gids, &uids));
         // Clobber the ACL (as an external strip would) and apply() must
         // detect the drift, repair it, and then go quiet again.
         assert!(clear(&path));
-        assert!(apply(&path, Some(7), &uids));
-        assert!(!apply(&path, Some(7), &uids));
+        assert!(apply(&path, &gids, &uids));
+        assert!(!apply(&path, &gids, &uids));
     }
 }

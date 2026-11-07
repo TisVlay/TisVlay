@@ -33,9 +33,9 @@ case "$1" in
     # /etc/systemd/user symlinks so new logins don't restart them.
     systemctl --global disable tisvlay-session.service tisvlay-tray.service 2>/dev/null || true
 
-    # Undo the GDM greeter enablement postinstall added. Socket access is a
-    # daemon-applied ACL now, so there is no group membership to revoke.
-    systemctl --global disable tisvlay-greeter-gdm.service 2>/dev/null || true
+    # Undo the greeter enablement postinstall added. Socket access is a
+    # daemon-applied ACL, so there is no group membership to revoke.
+    systemctl --global disable tisvlay-greeter-gdm.service tisvlay-greeter.service 2>/dev/null || true
 
     # Reload systemd
     systemctl daemon-reload || true
