@@ -23,6 +23,7 @@ import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
+import { Nav } from "../globals/nav.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
 import { ConfirmDialog, Chip, ContextualHelpButton, Focusable, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
@@ -46,6 +47,24 @@ component ProfileListRow inherits Focusable {
     accessible-label: root.entry.name;
     accessible-id: "profiles-row-" + root.entry.uuid;
     activated => { root.clicked(); }
+    // Right opens the detail, like Return.
+    key(event) => {
+        if (event.text == Key.RightArrow) {
+            root.clicked();
+            return accept;
+        }
+        reject
+    }
+    /// The list asks a row to take focus by bumping `focus-tick` with
+    /// `focus-wanted` set on the one it means.
+    in property <int> focus-tick;
+    in property <bool> focus-wanted;
+    changed focus-tick => {
+        if (root.focus-wanted) {
+            root.focus();
+        }
+    }
+    column: 1;
     ring-inside: true;
 
     // 3px left accent stripe when selected — mirrors TvListRow.
@@ -138,6 +157,10 @@ component ProfileSectionHeader inherits Rectangle {
     /// The `+` button's test selector (`profiles-add-<kind>`).
     in property <string> add-id;
     callback add-clicked();
+    /// Focus the `+` button: the list's first stop when it has no rows.
+    public function focus-add() {
+        add.focus();
+    }
 
     height: 40px;
     // Header band — a distinct surface from the surface-alt master
@@ -232,6 +255,36 @@ component ProfileList inherits Rectangle {
     /// its profile: the pane moves focus into the detail.
     callback activated();
 
+    // A column request for the list: the selected row, else the first
+    // system row, else the first user row, else the system "+". Also
+    // answers a request for the detail when nothing is selected, since
+    // there's no detail to go to.
+    property <ProfileKind> focus-kind;
+    property <string> focus-uuid;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 1 || Profiles.selected-uuid == "") {
+            if (Profiles.selected-uuid != "") {
+                root.focus-kind = Profiles.selected-kind;
+                root.focus-uuid = Profiles.selected-uuid;
+            } else if (Profiles.system.length > 0) {
+                root.focus-kind = ProfileKind.system;
+                root.focus-uuid = "";
+            } else if (Profiles.user.length > 0) {
+                root.focus-kind = ProfileKind.user;
+                root.focus-uuid = "";
+            } else {
+                system-header.focus-add();
+                return;
+            }
+            root.focus-row-tick += 1;
+        }
+    }
+    function wants-row(kind: ProfileKind, uuid: string, index: int) -> bool {
+        root.focus-kind == kind && (root.focus-uuid == uuid || (root.focus-uuid == "" && index == 0))
+    }
+
     width: Design.width-master;
     background: Theme.surface-alt;
 
@@ -265,7 +318,7 @@ component ProfileList inherits Rectangle {
         VerticalLayout {
             vertical-stretch: 1;
             spacing: 0;
-            ProfileSectionHeader {
+            system-header := ProfileSectionHeader {
                 title: @tr("SYSTEM PROFILES");
                 add-enabled: true;
                 add-id: "profiles-add-system";
@@ -295,6 +348,8 @@ component ProfileList inherits Rectangle {
                         kind: ProfileKind.system;
                         selected: Profiles.selected-kind == ProfileKind.system
                                && Profiles.selected-uuid == r.uuid;
+                        focus-tick: root.focus-row-tick;
+                        focus-wanted: root.wants-row(ProfileKind.system, r.uuid, i);
                         clicked => {
                             // Hand the row off to `selected-row` here so the
                             // detail header (gated on `selected-row.uuid != ""`)
@@ -367,6 +422,8 @@ component ProfileList inherits Rectangle {
                         kind: ProfileKind.user;
                         selected: Profiles.selected-kind == ProfileKind.user
                                && Profiles.selected-uuid == r.uuid;
+                        focus-tick: root.focus-row-tick;
+                        focus-wanted: root.wants-row(ProfileKind.user, r.uuid, i);
                         clicked => {
                             Profiles.selected-kind = ProfileKind.user;
                             Profiles.selected-uuid = r.uuid;
@@ -1414,9 +1471,17 @@ export component ProfilesPane {
 
     // --- Pending Duplicate dialog state ---
     // Bumped when a list row is activated; the detail takes focus and
-    // records the request it served in `focus-detail-done`.
+    // records the request it served in `focus-detail-done`. A column
+    // request for the detail does the same while a profile is selected
+    // (the list answers it otherwise).
     property <int> focus-detail-tick;
     property <int> focus-detail-done;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 2 && root.has-selection) {
+            root.focus-detail-tick += 1;
+        }
+    }
     property <ProfileKind> pending-duplicate-kind: ProfileKind.none;
     property <string> pending-duplicate-source-uuid;
     property <string> pending-duplicate-name;

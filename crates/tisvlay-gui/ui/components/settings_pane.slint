@@ -13,6 +13,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Tray } from "../globals/tray.slint";
 import { Couch } from "../globals/couch.slint";
+import { Nav } from "../globals/nav.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Group, InlineError, ThemedButton, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
 
@@ -65,6 +66,12 @@ export component SettingsPane inherits Rectangle {
     property <[string]> couch-modes: [@tr("Follow the session"), @tr("On"), @tr("Off")];
     property <int> mode-index: Couch.mode == "on" ? 1 : Couch.mode == "off" ? 2 : 0;
 
+    // A column request lands on the pane's first control.
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        couch-select.focus();
+    }
+
     // A scroll view, not a plain column: couch mode's scale makes this
     // pane the first to outgrow a screen.
     ScrollView {
@@ -114,7 +121,7 @@ export component SettingsPane inherits Rectangle {
                 }
                 VerticalLayout {
                     alignment: center;
-                    ThemedSelect {
+                    couch-select := ThemedSelect {
                         width: 200px;
                         model: root.couch-modes;
                         current-value: root.couch-modes[root.mode-index];

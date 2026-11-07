@@ -30,7 +30,7 @@ import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
 import { Nav } from "globals/nav.slint";
 import { Couch } from "globals/couch.slint";
 import { Health, ServiceHealth } from "globals/health.slint";
-import { SelectOverlay } from "globals/select.slint";
+import { Select, SelectOverlay } from "globals/select.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
@@ -57,6 +57,7 @@ component SidebarItem inherits Focusable {
     in property <bool> selected;
     callback clicked();
 
+    column: 0;
     accessible-label: root.label;
     accessible-checkable: true;
     accessible-checked: root.selected;
@@ -107,6 +108,45 @@ export component AppWindow inherits Window {
     // screen.
     min-width: Couch.active ? 480px : 720px;
     min-height: Couch.active ? 320px : 480px;
+
+    // Left from a list goes to the sidebar; Left from a detail goes to
+    // its list, or to the sidebar on a single-column pane. Right from
+    // the sidebar goes to the pane's first stop (its list's selected
+    // row, or the first control); a row handles Right itself by
+    // opening its detail. The pane that exists answers the request.
+    function jump-left() -> bool {
+        if (Nav.column == 0) {
+            return false;
+        }
+        if (Nav.column == 1 || root.active-pane == Pane.settings || root.active-pane == Pane.about) {
+            root.focus-active-sidebar-item();
+            return true;
+        }
+        Nav.request-column(1);
+        return true;
+    }
+    function jump-right() -> bool {
+        if (Nav.column != 0) {
+            return false;
+        }
+        Nav.request-column(1);
+        return true;
+    }
+
+    // Couch mode's Tab: the next or previous pane, with focus on its
+    // sidebar item.
+    function cycle-pane(forward: bool) {
+        if (root.active-pane == Pane.tvs) {
+            root.navigate(forward ? Pane.profiles : Pane.about);
+        } else if (root.active-pane == Pane.profiles) {
+            root.navigate(forward ? Pane.settings : Pane.tvs);
+        } else if (root.active-pane == Pane.settings) {
+            root.navigate(forward ? Pane.about : Pane.profiles);
+        } else {
+            root.navigate(forward ? Pane.tvs : Pane.settings);
+        }
+        root.focus-active-sidebar-item();
+    }
 
     // Put keyboard focus on the sidebar item of the active pane, with
     // the ring showing: couch mode's launch and re-activation state, so
@@ -217,9 +257,16 @@ export component AppWindow inherits Window {
         // it instead of wrapping. Clicking the background still focuses
         // it, which is how a click away dismisses a pinned help bubble.
         focus-on-tab-navigation: false;
-        // A navigation key reveals the focus ring on whatever ends up
-        // focused; a pointer press on a control hides it again. Seen in
-        // the capture phase so it runs whichever child handles the key.
+        // The capture phase sees a key before the focused control does.
+        //
+        // - A navigation key reveals the focus ring on whatever ends up
+        //   focused; a pointer press on a control hides it again.
+        // - Up and Down always step through the Tab order, taken here so
+        //   a text field's caret moves don't keep them, except while a
+        //   select's list is open and owns them.
+        // - In couch mode Tab and Shift+Tab cycle the panes, as console
+        //   menus do with the shoulder buttons; a Tab Rust synthesized
+        //   for an arrow is let through to Slint's traversal.
         capture-key-pressed(event) => {
             if (event.text == Key.Tab || event.text == Key.Backtab
                 || event.text == Key.UpArrow || event.text == Key.DownArrow
@@ -227,13 +274,29 @@ export component AppWindow inherits Window {
                 || event.text == Key.Return || event.text == " ") {
                 Nav.focus-visible = true;
             }
+            if (!Select.open && !event.modifiers.alt && !event.modifiers.control) {
+                if (event.text == Key.DownArrow) {
+                    Nav.step(true);
+                    return accept;
+                }
+                if (event.text == Key.UpArrow) {
+                    Nav.step(false);
+                    return accept;
+                }
+            }
+            if (Couch.active && !Nav.synthesizing
+                && (event.text == Key.Tab || event.text == Key.Backtab)) {
+                root.cycle-pane(event.text == Key.Tab && !event.modifiers.shift);
+                return accept;
+            }
             reject
         }
-        // Global Alt+Left/Right history nav. As an ancestor of every
-        // pane it catches the arrows bubbling up from whatever child
-        // holds focus; a text input that consumes Alt+arrow (word-jump)
-        // wins first, so we don't steal keys mid-edit. `nav-enabled`
-        // covers the modal/edit flows that don't hold key focus.
+        // Keys no child took. Alt+Left/Right is the browser-style history
+        // nav; a text input that consumes Alt+arrow (word-jump) wins
+        // first, so we don't steal keys mid-edit, and `nav-enabled`
+        // covers the modal/edit flows that don't hold key focus. A bare
+        // Left or Right, which a slider, a spin box or an editing field
+        // would have used, jumps columns: sidebar, list, detail.
         key-pressed(event) => {
             if (root.nav-enabled && event.modifiers.alt && event.text == Key.LeftArrow) {
                 root.nav-back();
@@ -242,6 +305,14 @@ export component AppWindow inherits Window {
             if (root.nav-enabled && event.modifiers.alt && event.text == Key.RightArrow) {
                 root.nav-forward();
                 return accept;
+            }
+            if (!event.modifiers.alt && !event.modifiers.control) {
+                if (event.text == Key.LeftArrow) {
+                    return root.jump-left() ? accept : reject;
+                }
+                if (event.text == Key.RightArrow) {
+                    return root.jump-right() ? accept : reject;
+                }
             }
             return reject;
         }

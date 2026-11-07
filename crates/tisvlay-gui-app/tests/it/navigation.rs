@@ -9,9 +9,10 @@ use std::rc::Rc;
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use slint::platform::{Key, PointerEventButton};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use tisvlay_gui::keys::bind_key_router;
 use tisvlay_gui::{
-    AppWindow, Daemon, EditPane, PairingWizard, Pane, ProfileKind, ProfileRow, Profiles, Tray,
-    TvViewModel, WizardDiscoveredTv,
+    AppWindow, Couch, Daemon, EditPane, PairingWizard, Pane, ProfileKind, ProfileRow, Profiles,
+    Tray, TvViewModel, WizardDiscoveredTv,
 };
 
 use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
@@ -382,6 +383,189 @@ fn return_on_a_discovered_tv_selects_it_and_focuses_next() {
     // Focus moved to the footer's Next.
     press(&app, Key::Return);
     assert_eq!(*nexts.borrow(), 1, "Return on Next steps the wizard");
+}
+
+#[test]
+fn down_and_up_step_through_the_tab_order() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_settings();
+    bind_key_router(&app);
+    let toggles = record_toggles(&app);
+
+    // Down walks the same stops Tab does: the sidebar, then the couch
+    // select and spin box, then the first switch.
+    for _ in 0..SIDEBAR_STOPS + 3 {
+        press(&app, Key::DownArrow);
+    }
+    press(&app, Key::Return);
+    assert_eq!(
+        toggles.borrow().len(),
+        1,
+        "Return on the switch Down reached"
+    );
+
+    // Up goes back a stop (the spin box, which keeps Up/Down from its
+    // field), Down returns.
+    press(&app, Key::UpArrow);
+    press(&app, Key::DownArrow);
+    press(&app, Key::Return);
+    assert_eq!(
+        toggles.borrow().len(),
+        2,
+        "Up then Down came back to the switch"
+    );
+}
+
+#[test]
+fn an_open_select_keeps_up_and_down() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_settings();
+    bind_key_router(&app);
+    let modes = Rc::new(RefCell::new(Vec::new()));
+    let sink = modes.clone();
+    app.global::<Couch>()
+        .on_mode_changed(move |mode| sink.borrow_mut().push(mode.to_string()));
+
+    // The couch-mode select: Return opens it, Down moves its highlight
+    // rather than focus, Return picks the second entry, "On".
+    tabs(&app, SIDEBAR_STOPS + 1);
+    press(&app, Key::Return);
+    press(&app, Key::DownArrow);
+    press(&app, Key::Return);
+    assert_eq!(modes.borrow().as_slice(), ["on"]);
+}
+
+#[test]
+fn left_and_right_jump_between_the_columns() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    let navigated = Rc::new(RefCell::new(Vec::new()));
+    let sink = navigated.clone();
+    app.on_navigate(move |pane| sink.borrow_mut().push(pane));
+    let powered = counter();
+    let sink = powered.clone();
+    app.global::<Daemon>()
+        .on_power_on(move |_| *sink.borrow_mut() += 1);
+
+    // To the row, into the detail (its Power button).
+    tabs(&app, SIDEBAR_STOPS + 3);
+    press(&app, Key::Return);
+    // Left: detail → the selected row. Right on a row: into the detail.
+    press(&app, Key::LeftArrow);
+    press(&app, Key::RightArrow);
+    press(&app, Key::Return);
+    assert_eq!(
+        *powered.borrow(),
+        1,
+        "Right from the row re-entered the detail"
+    );
+    // Left twice: detail → row → the sidebar's TVs item.
+    press(&app, Key::LeftArrow);
+    press(&app, Key::LeftArrow);
+    press(&app, Key::Return);
+    assert_eq!(
+        navigated.borrow().as_slice(),
+        [Pane::Tvs],
+        "Left reached the sidebar"
+    );
+    // Right from the sidebar: the pane's selected row.
+    press(&app, Key::RightArrow);
+    press(&app, Key::Return);
+    press(&app, Key::Return);
+    assert_eq!(
+        *powered.borrow(),
+        2,
+        "Right from the sidebar reached the row"
+    );
+}
+
+#[test]
+fn couch_mode_tab_cycles_the_panes_but_a_synthesized_tab_does_not() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    bind_key_router(&app);
+    app.global::<Couch>().set_active(true);
+    let navigated = Rc::new(RefCell::new(Vec::new()));
+    let sink = navigated.clone();
+    let weak = app.as_weak();
+    app.on_navigate(move |pane| {
+        sink.borrow_mut().push(pane);
+        if let Some(app) = weak.upgrade() {
+            app.set_active_pane(pane);
+        }
+    });
+
+    press(&app, Key::Tab);
+    press(&app, Key::Tab);
+    press_shift_tab(&app);
+    assert_eq!(
+        navigated.borrow().as_slice(),
+        [Pane::Profiles, Pane::Settings, Pane::Profiles]
+    );
+    // Down synthesizes a Tab for Slint's traversal; the shell lets it
+    // through instead of cycling again.
+    press(&app, Key::DownArrow);
+    assert_eq!(
+        navigated.borrow().len(),
+        3,
+        "a synthesized Tab doesn't cycle"
+    );
+    assert_eq!(visible_rings(&app), 1, "focus moved to the next stop");
+}
+
+#[test]
+fn a_text_field_loses_up_and_down_but_keeps_left_and_right() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    let edit = app.global::<EditPane>();
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+
+    // Left moves the caret, so the next character lands before "x".
+    press(&app, Key::LeftArrow);
+    press_text(&app, SharedString::from("y"));
+    assert_eq!(edit.get_name(), "yx", "Left stayed in the field");
+    // Down leaves the field for the next stop.
+    press(&app, Key::DownArrow);
+    press_text(&app, SharedString::from("z"));
+    assert_eq!(edit.get_name(), "yx", "Down left the field");
+}
+
+#[test]
+fn a_slider_keeps_left_and_right() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    bind_key_router(&app);
+    app.set_tvs(ModelRc::new(VecModel::from(vec![TvViewModel {
+        uuid: SharedString::from("tv-1"),
+        name: SharedString::from("TV"),
+        connected: true,
+        has_backlight: true,
+        ..Default::default()
+    }])));
+    app.set_selected_tv_index(0);
+    app.set_active_pane(Pane::Tvs);
+    let backlights = Rc::new(RefCell::new(Vec::new()));
+    let sink = backlights.clone();
+    app.global::<Daemon>()
+        .on_set_backlight(move |_, value| sink.borrow_mut().push(value));
+
+    // Walk the detail's stops pressing Right at each: only the slider
+    // uses it (a select ignores it, a column jump from the detail's
+    // right edge has nowhere to go).
+    for _ in 0..30 {
+        press(&app, Key::Tab);
+        press(&app, Key::RightArrow);
+        if !backlights.borrow().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(
+        backlights.borrow().as_slice(),
+        [1],
+        "Right stepped the slider by one"
+    );
 }
 
 #[test]

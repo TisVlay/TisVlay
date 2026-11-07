@@ -16,6 +16,7 @@ import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
+import { Nav } from "../globals/nav.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
 import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Focusable, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, ThemedButton, ThemedSwitch, VendorTile } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
@@ -213,7 +214,25 @@ component TvListRow inherits Focusable {
     activated => {
         root.clicked();
     }
+    // Right opens the detail, like Return.
+    key(event) => {
+        if (event.text == Key.RightArrow) {
+            root.clicked();
+            return accept;
+        }
+        reject
+    }
+    /// The list asks a row to take focus by bumping `focus-tick` with
+    /// `focus-wanted` set on the one it means.
+    in property <int> focus-tick;
+    in property <bool> focus-wanted;
+    changed focus-tick => {
+        if (root.focus-wanted) {
+            root.focus();
+        }
+    }
 
+    column: 1;
     ring-inside: true;
     height: 64px;
     background: selected ? Theme.row-selected
@@ -298,6 +317,23 @@ component TvList inherits Rectangle {
     /// A row was activated (clicked, or Return on it) after selecting
     /// its TV: the pane moves focus into the detail.
     callback activated();
+
+    // A column request for the list: the selected row, else the first,
+    // else the pair button. Also answers a request for the detail when
+    // nothing is selected, since there's no detail to go to.
+    property <int> focus-row-index;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 1 || root.selected-index < 0) {
+            if (root.tvs.length > 0) {
+                root.focus-row-index = root.selected-index >= 0 ? root.selected-index : 0;
+                root.focus-row-tick += 1;
+            } else {
+                pair.focus();
+            }
+        }
+    }
 
     width: Design.width-master;
     background: Theme.surface-alt;
@@ -488,6 +524,8 @@ component TvList inherits Rectangle {
                 for tv[i] in root.tvs: TvListRow {
                     tv: tv;
                     selected: i == root.selected-index;
+                    focus-tick: root.focus-row-tick;
+                    focus-wanted: i == root.focus-row-index;
                     clicked => {
                         root.selected-index = i;
                         root.activated();
@@ -1276,8 +1314,15 @@ export component TvsPane {
     property <string> pending-re-pair-id: "";
     property <string> pending-re-pair-name: "";
     // Bumped when a list row is activated; the selected detail takes
-    // focus on the change.
+    // focus on the change. A column request for the detail does the
+    // same while a TV is selected (the list answers it otherwise).
     property <int> focus-detail-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 2 && root.selected-index >= 0 && !PairingWizard.active) {
+            root.focus-detail-tick += 1;
+        }
+    }
 
     // Pairing wizard takes over the whole pane when active.
     if PairingWizard.active: PairingWizardPane {

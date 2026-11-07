@@ -16,6 +16,7 @@ mod edit_pane;
 mod file_manager;
 mod fonts;
 mod icon_theme;
+pub mod keys;
 mod nav;
 mod power_cycle;
 mod profiles;
@@ -836,6 +837,8 @@ pub fn run() -> Result<()> {
     // the experience when it can.
     tokio::spawn(watch_accent_color(app.as_weak()));
     fonts::resolve_monospace(app.as_weak());
+
+    keys::bind_key_router(&app);
 
     // Couch mode's window side. The `Couch` global carries the decision
     // and the preference to the panes; the Settings pane's edits come

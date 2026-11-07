@@ -6,6 +6,34 @@
 // shell's key handling, a pointer press on a control turns it off. So
 // a mouse user never sees rings trail their clicks, while a remote or
 // keyboard user always sees where focus is.
+//
+// Up and Down step through the Tab order. Slint has no "focus next"
+// call, so the shell's capture handler asks Rust through `step` to
+// synthesize a Tab or Backtab; `synthesizing` marks that key so the
+// shell's own Tab handling (couch mode's pane cycle) lets it through.
+//
+// Left and Right jump between the three columns, sidebar, list and
+// detail, with explicit focus targets. Every focusable reports its
+// column on focus-in, and `request-column` asks the pane that exists
+// to focus a column's first stop (a pane observes `column-tick`).
 export global Nav {
     in-out property <bool> focus-visible: false;
+
+    /// The column of the focused control: 0 the sidebar, 1 a list, 2
+    /// the detail or a single-column pane.
+    in-out property <int> column: 0;
+    /// Synthesize a Tab (true) or Backtab (false): Rust dispatches it.
+    callback step(bool);
+    /// Set around the synthesized key so the shell doesn't treat it as
+    /// a Tab of its own.
+    in-out property <bool> synthesizing: false;
+
+    /// The column a pane was last asked to focus, and the request
+    /// counter a pane observes.
+    in-out property <int> column-target: 0;
+    in-out property <int> column-tick: 0;
+    public function request-column(target: int) {
+        self.column-target = target;
+        self.column-tick += 1;
+    }
 }

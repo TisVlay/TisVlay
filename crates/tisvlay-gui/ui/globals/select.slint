@@ -338,13 +338,17 @@ export component ThemedSelect inherits Rectangle {
                 // above dismiss it.
                 return accept;
             }
-            if (event.text == Key.Return
-                || event.text == " "
-                || event.text == Key.DownArrow) {
+            // Return or Space opens; Down doesn't, it steps focus.
+            if (event.text == Key.Return || event.text == " ") {
                 root.open-list();
                 return accept;
             }
             return reject;
+        }
+        changed has-focus => {
+            if (self.has-focus) {
+                Nav.column = 2;
+            }
         }
     }
 

@@ -12,6 +12,7 @@ import { Icons } from "globals/icons.slint";
 import { ProfileKind } from "globals/profiles.slint";
 import { Help, HelpTrigger } from "globals/help.slint";
 import { Nav } from "globals/nav.slint";
+import { Couch } from "globals/couch.slint";
 
 // =============================================================================
 // FocusRing — the keyboard-focus ring every focusable control draws.
@@ -72,10 +73,17 @@ export component Focusable inherits Rectangle {
     in property <bool> ring-inside: false;
     /// Cursor over the hit area; `pointer` is reserved for URL opens.
     in property <MouseCursor> mouse-cursor: default;
+    /// The column the control reports to `Nav` on focus-in: 0 the
+    /// sidebar, 1 a list, 2 the detail or a single-column pane.
+    in property <int> column: 2;
     /// A click, Return, Space, or the accessibility default action.
     callback activated();
     /// The pointer entered (true) or left (false) the control.
     callback hover-changed(bool);
+    /// A key other than Return and Space while focused; a control that
+    /// uses one (a row opening its detail on Right) accepts it here.
+    callback key(KeyEvent) -> EventResult;
+    key(event) => { reject }
     out property <bool> hovered: touch.has-hover;
     out property <bool> pressed: touch.pressed;
     out property <bool> focused: fs.has-focus;
@@ -111,7 +119,12 @@ export component Focusable inherits Rectangle {
                 root.activate();
                 return accept;
             }
-            reject
+            root.key(event)
+        }
+        changed has-focus => {
+            if (self.has-focus) {
+                Nav.column = root.column;
+            }
         }
     }
 
@@ -311,7 +324,9 @@ export component ContextualHelpButton inherits Rectangle {
             return reject;
         }
         changed has-focus => {
-            if (!self.has-focus && trigger.pinned-mine) {
+            if (self.has-focus) {
+                Nav.column = 2;
+            } else if (trigger.pinned-mine) {
                 Help.dismiss();
             }
         }
@@ -951,7 +966,9 @@ export component LineEditField inherits Rectangle {
             reject
         }
         changed has-focus => {
-            if (!self.has-focus) {
+            if (self.has-focus) {
+                Nav.column = 2;
+            } else {
                 root.leaving-backwards = false;
             }
         }
@@ -1242,6 +1259,11 @@ export component OptimisticSlider {
                 value <=> root.display;
                 enabled: root.enabled;
                 changed(v) => { root.committed(round(v)); }
+                changed has-focus => {
+                    if (self.has-focus) {
+                        Nav.column = 2;
+                    }
+                }
             }
             FocusRing {
                 shown: slider.has-focus && Nav.focus-visible;
@@ -1428,7 +1450,9 @@ export component ThemedSpinBox inherits Rectangle {
             text: root.display;
             accepted => { root.commit-text(self.text); }
             changed has-focus => {
-                if (!self.has-focus) {
+                if (self.has-focus) {
+                    Nav.column = 2;
+                } else {
                     root.commit-text(self.text);
                 }
             }
@@ -1696,6 +1720,9 @@ export component CopyBtn inherits Focusable {
     activated => {
         Clipboard.copy(root.value, root.label);
     }
+    // A clipboard is little use on a couch; the stops it would add to
+    // every INFO row aren't worth the presses.
+    focusable: !Couch.active;
 
     width: 24px;
     height: 24px;

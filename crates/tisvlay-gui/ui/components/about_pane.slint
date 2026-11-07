@@ -6,6 +6,7 @@ import { Clipboard } from "../globals/clipboard.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Health, ServiceHealth } from "../globals/health.slint";
+import { Nav } from "../globals/nav.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace wire identity in parens) above a rich
@@ -200,6 +201,12 @@ export component AboutPane inherits Rectangle {
     in property <string> gui-version;
     in property <[AboutComponentRow]> components;
     in property <image> logo;
+
+    // A column request lands on the pane's first control.
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        brand.focus();
+    }
 
     callback view-source-clicked();
     callback view-release-clicked();

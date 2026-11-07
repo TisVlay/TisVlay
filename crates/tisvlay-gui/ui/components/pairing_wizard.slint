@@ -18,6 +18,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
+import { Nav } from "../globals/nav.slint";
 import { Chip, Focusable, LineEditField, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
@@ -143,10 +144,28 @@ component DiscoveryRow inherits Focusable {
     activated => {
         root.clicked();
     }
+    // Right picks the TV, like Return.
+    key(event) => {
+        if (event.text == Key.RightArrow) {
+            root.clicked();
+            return accept;
+        }
+        reject
+    }
     hover-changed(hovering) => {
         warn-tip.set-hover(hovering);
     }
+    /// The step asks a row to take focus by bumping `focus-tick` with
+    /// `focus-wanted` set on the one it means.
+    in property <int> focus-tick;
+    in property <bool> focus-wanted;
+    changed focus-tick => {
+        if (root.focus-wanted) {
+            root.focus();
+        }
+    }
 
+    column: 1;
     ring-inside: true;
     height: 56px;
     background: selected ? Theme.row-selected
@@ -292,6 +311,20 @@ component StepDiscover {
     callback manual-ip-edited(string);
     callback manual-add();
 
+    // A column request while this step shows: the selected discovered
+    // row, else the first, else the manual-entry address field.
+    property <int> focus-row-index;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (root.discovered.length > 0) {
+            root.focus-row-index = root.selected-index >= 0 ? root.selected-index : 0;
+            root.focus-row-tick += 1;
+        } else {
+            address-field.focus();
+        }
+    }
+
     VerticalLayout {
         spacing: Design.gap-block;
 
@@ -395,6 +428,8 @@ component StepDiscover {
                             for tv[i] in root.discovered: DiscoveryRow {
                                 tv: tv;
                                 selected: i == root.selected-index;
+                                focus-tick: root.focus-row-tick;
+                                focus-wanted: i == root.focus-row-index;
                                 clicked => { root.selection-changed(i); }
                             }
                         }
@@ -522,7 +557,7 @@ component StepDiscover {
                             font-size: Design.font-helper;
                             font-weight: 500;
                         }
-                        LineEditField {
+                        address-field := LineEditField {
                             placeholder-text:
                                 root.supported-vendors.length > root.manual-vendor-index
                                     ? root.supported-vendors[root.manual-vendor-index].primary-placeholder
