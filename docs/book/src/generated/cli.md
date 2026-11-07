@@ -688,8 +688,8 @@ The system daemon: owns the TVs and the system socket
 * `--ssdp-port <SSDP_PORT>` — SSDP source port for LG discovery — replies return to this port, so it must match your firewall rule (see the user guide's Firewall & Discovery page); 0 = ephemeral
 
   Default value: `1901`
-* `--greeter-access` — Grant the login-screen greeter socket access by applying a POSIX ACL for the display manager's greeter group, auto-detected from the known set (`gdm`, `Debian-gdm`). The modern GDM greeter is a dynamic-userdb account that `/etc/group` membership can't reach
-* `--greeter-group <GREETER_GROUP>` — Explicit greeter group for the socket ACL, overriding --greeter-access — for a DM whose greeter group isn't auto-detected (e.g. a plasma-login greeter)
+* `--greeter-access` — Grant the login-screen greeter socket access by applying a POSIX ACL for each known display-manager greeter group present (`gdm`, `Debian-gdm`, `plasmalogin`). The modern GDM greeter is a dynamic-userdb account that `/etc/group` membership can't reach
+* `--greeter-group <GREETER_GROUP>` — Explicit greeter group for the socket ACL, overriding --greeter-access — for a DM whose greeter group isn't in the known set
 * `--seat-access <SEAT_ACCESS>` — Grant each seat's active graphical user socket access via a POSIX ACL while their session is the seat foreground (uaccess-style presence grant; the tisvlay group remains the durable grant). `--seat-access=false` restricts the socket to the group + greeter
 
   Default value: `true`

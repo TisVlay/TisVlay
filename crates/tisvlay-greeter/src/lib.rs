@@ -70,9 +70,9 @@ where
     Attach: FnOnce(u32, mpsc::UnboundedSender<(u32, IdleTransition)>) -> Attached,
     Attached: Future<Output = Result<Guard>>,
 {
-    // Pre-flight the daemon socket: a greeter enabled on a session whose
-    // user isn't in the tisvlay group — GDM's DynamicUser greeter (Ubuntu),
-    // or a grant that hasn't taken effect — can never reach the 0660 socket.
+    // Pre-flight the daemon socket: a greeter whose group the daemon grants
+    // no socket ACL — a daemon run without --greeter-access, or a greeter
+    // group outside its known set — can never reach the 0660 socket.
     // Bow out cleanly so `Restart=on-failure` doesn't loop for the whole
     // login screen. Other connect errors (daemon still coming up) fall
     // through to zenoh, whose failure keeps the supervised-restart retry.
@@ -82,7 +82,8 @@ where
         info!(
             socket = %socket.display(),
             "daemon socket not accessible to this greeter session; idle \
-             protection disabled (grant the greeter user tisvlay-group access)"
+             protection disabled (run the daemon with --greeter-access, or \
+             --greeter-group <this greeter's group>)"
         );
         return Ok(());
     }

@@ -43,15 +43,15 @@ pub struct Args {
     ssdp_port: u16,
 
     /// Grant the login-screen greeter socket access by applying a POSIX
-    /// ACL for the display manager's greeter group, auto-detected from the
-    /// known set (`gdm`, `Debian-gdm`). The modern GDM greeter is a
+    /// ACL for each known display-manager greeter group present (`gdm`,
+    /// `Debian-gdm`, `plasmalogin`). The modern GDM greeter is a
     /// dynamic-userdb account that `/etc/group` membership can't reach.
     #[arg(long)]
     greeter_access: bool,
 
     /// Explicit greeter group for the socket ACL, overriding
-    /// --greeter-access — for a DM whose greeter group isn't auto-detected
-    /// (e.g. a plasma-login greeter).
+    /// --greeter-access — for a DM whose greeter group isn't in the known
+    /// set.
     #[arg(long)]
     greeter_group: Option<String>,
 

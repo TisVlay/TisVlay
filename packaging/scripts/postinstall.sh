@@ -79,14 +79,16 @@ fi
 # is safe for users not in the tisvlay group.
 systemctl --global enable tisvlay-session.service tisvlay-tray.service 2>/dev/null || true
 
-# GDM greeter idle client (OLED protection at the login screen). Its unit
-# hangs off gnome-session@gnome-login.target, active only inside a GDM
-# greeter session, so the --global symlink is inert under other display
-# managers. The greeter reaches the socket through the daemon's
-# greeter-group ACL (`tisvlay service daemon --greeter-access`) — no group edit here,
-# since the modern GDM greeter is a dynamic-userdb account /etc/group can't
+# Greeter idle client (OLED protection at the login screen), one unit per
+# display manager. Each hangs off its DM's greeter-only target
+# (gnome-session@gnome-login.target for GDM, plasma-login-wayland.target
+# for plasma-login), active only inside that DM's greeter session, so the
+# --global symlinks are inert under any other display manager. The greeter
+# reaches the socket through the daemon's greeter-group ACL
+# (`tisvlay service daemon --greeter-access`) — no group edit here, since
+# the modern GDM greeter is a dynamic-userdb account /etc/group can't
 # reach.
-systemctl --global enable tisvlay-greeter-gdm.service 2>/dev/null || true
+systemctl --global enable tisvlay-greeter-gdm.service tisvlay-greeter.service 2>/dev/null || true
 
 echo "tisvlay installed; the daemon is enabled and starts on fresh installs"
 echo "(upgrades keep its running state)."
