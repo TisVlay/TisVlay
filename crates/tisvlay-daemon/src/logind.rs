@@ -1,6 +1,6 @@
 //! Consumed-D-Bus adapter: logind lifecycle signals → world system events.
-//! Takes a delay inhibitor so TVs get their sleep/shutdown actions before
-//! the system goes down, releasing it once every connection has run the
+//! Takes delay inhibitors so TVs get their sleep/shutdown actions before
+//! the system goes down, releasing them once every connection has run the
 //! commands those actions queued.
 
 use std::future::Future;
@@ -115,9 +115,9 @@ where
 /// supervisor reconnects.
 pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> anyhow::Result<()> {
     let manager = Login1ManagerProxy::new(&connection).await?;
-    // Best-effort delay inhibitor: without it the box may sleep before the
-    // TVs get their actions. A fake logind without Inhibit is fine.
-    let mut inhibitor = take_inhibitor(&manager).await;
+    // Best-effort delay inhibitors: without them the box may sleep before
+    // the TVs get their actions. A fake logind without Inhibit is fine.
+    let mut inhibitors = take_inhibitors(&manager).await;
     let mut sleep_stream = manager.receive_prepare_for_sleep().await?;
     let mut shutdown_stream = manager.receive_prepare_for_shutdown().await?;
     info!("logind watcher started");
@@ -131,11 +131,11 @@ pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> a
                     world.send(InEvent::System { event: SystemEvent::Sleep, connector: None });
                     // Let the sleep proceed once the TVs' commands ran;
                     // retake on resume.
-                    release_after_drain(&world, &manager, &mut inhibitor).await;
+                    release_after_drain(&world, &manager, &mut inhibitors).await;
                 } else {
                     info!("system resumed");
                     world.send(InEvent::System { event: SystemEvent::Resume, connector: None });
-                    inhibitor = take_inhibitor(&manager).await;
+                    inhibitors = take_inhibitors(&manager).await;
                 }
             }
             signal = shutdown_stream.next() => {
@@ -155,22 +155,22 @@ pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> a
                     };
                     info!(?event, "system shutting down");
                     world.send(InEvent::System { event, connector: None });
-                    release_after_drain(&world, &manager, &mut inhibitor).await;
+                    release_after_drain(&world, &manager, &mut inhibitors).await;
                 }
             }
         }
     }
 }
 
-/// Release the delay inhibitor once every live connection has run the
+/// Release the delay inhibitors once every live connection has run the
 /// commands queued before this call (the event just sent), or at logind's
 /// `InhibitDelayMaxUSec`, after which logind proceeds without us anyway.
 async fn release_after_drain(
     world: &WorldClient,
     manager: &Login1ManagerProxy<'_>,
-    inhibitor: &mut Option<zbus::zvariant::OwnedFd>,
+    inhibitors: &mut Vec<zbus::zvariant::OwnedFd>,
 ) {
-    if inhibitor.is_some() {
+    if !inhibitors.is_empty() {
         let (token, drained) = DrainToken::pair();
         world.send(InEvent::Drain(token));
         let bound = manager
@@ -184,25 +184,28 @@ async fn release_after_drain(
             );
         }
     }
-    inhibitor.take();
+    inhibitors.clear();
 }
 
-async fn take_inhibitor(manager: &Login1ManagerProxy<'_>) -> Option<zbus::zvariant::OwnedFd> {
-    match manager
-        .inhibit(
-            "sleep:shutdown",
-            "tisvlay",
-            "dispatching TV power actions",
-            "delay",
-        )
-        .await
-    {
-        Ok(fd) => Some(fd),
-        Err(e) => {
-            warn!(%e, "could not take logind inhibitor (continuing without)");
-            None
+/// Take one delay inhibitor per kind. Never a combined `sleep:shutdown`:
+/// an unpatched logind checks a combined request against an unrelated
+/// polkit action that refuses a caller without a session, like this
+/// daemon, while granting each kind alone
+/// (<https://github.com/systemd/systemd/issues/33834>). A workaround,
+/// revertible once that logind is gone from supported distros: see
+/// docs/concerns/logind-combined-inhibitor.md.
+async fn take_inhibitors(manager: &Login1ManagerProxy<'_>) -> Vec<zbus::zvariant::OwnedFd> {
+    let mut held = Vec::with_capacity(2);
+    for what in ["sleep", "shutdown"] {
+        match manager
+            .inhibit(what, "tisvlay", "dispatching TV power actions", "delay")
+            .await
+        {
+            Ok(fd) => held.push(fd),
+            Err(e) => warn!(what, %e, "could not take logind inhibitor (continuing without)"),
         }
     }
+    held
 }
 
 /// Spawn the sleeper: each of the system profile's sleep requests (a TV
