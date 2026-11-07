@@ -194,6 +194,12 @@ export component AppWindow inherits Window {
     nav-scope := FocusScope {
         width: 100%;
         height: 100%;
+        // The window's initial focus (`forward-focus`) and the home of
+        // global key handling, not a stop: a Tab stop here is invisible
+        // and inert, and Shift+Tab from the first control would land on
+        // it instead of wrapping. Clicking the background still focuses
+        // it, which is how a click away dismisses a pinned help bubble.
+        focus-on-tab-navigation: false;
         // Global Alt+Left/Right history nav. As an ancestor of every
         // pane it catches the arrows bubbling up from whatever child
         // holds focus; a text input that consumes Alt+arrow (word-jump)

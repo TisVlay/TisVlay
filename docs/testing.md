@@ -487,7 +487,11 @@ Slint's compiler embeds element-id metadata only when asked to **at build time**
 - `accessible-label` (translated via `@tr(...)`) — the screen-reader announcement; defaults to the visible text on button primitives. Tests query via `ElementHandle::find_by_accessible_label`.
 - `accessible-id` (literal, untranslated, `<pane>-<element>`) — the stable test selector. Tests query via `ElementQuery::match_predicate(|e| e.accessible_id() == ...)` until upstream adds a direct finder ([slint-ui/slint#9940](https://github.com/slint-ui/slint/pull/9940) shipped the property; finder remains TBD).
 
-Slint propagates accessibility properties to descendants, so an `accessible-id` query returns one hit per descendant of the target widget — see `tisvlay-gui-app/tests/it/about_pane.rs` for `find_by_accessible_id` (returns the first match) and `count_by_id` (renders-or-not check).
+Slint propagates accessibility properties to descendants, so an `accessible-id` query returns one hit per descendant of the target widget — see `tisvlay-gui-app/tests/it/support.rs` for `find_by_accessible_id` (returns the first match) and `count_by_id` (renders-or-not check).
+
+### Driving keys
+
+The testing backend has no event loop and no public key helper, but `slint::Window::dispatch_event` needs neither: a `KeyPressed`/`KeyReleased` pair runs Slint's capture and bubble handlers and its own Tab traversal synchronously. `tisvlay-gui-app/tests/it/support.rs` wraps it: `press(&app, Key::Tab)`, `press_text` for typed characters, and `press_shift_tab`, which holds Shift around a Tab the way a keyboard or a gamepad's shoulder button does (`Key::Backtab` never arrives from a real window). Each ends with `settle()`, which advances the mock clock a frame and fires due timers, so deferred focus and synthesized keys have run before the assertion. Focus itself isn't readable from an `ElementHandle`, so a test observes it through what the focused control does: Return on a switch fires its callback and flips `accessible_checked()`, typed text lands in a field's `accessible_value()`. Prefer effects on state the test set up itself. `ElementQuery` skips elements scrolled out of a scroll view's viewport, and the testing window starts small, so a test that reaches for a control deep in a pane sizes the window tall first (`app.window().set_size(...)`).
 
 ### What we deliberately don't do
 
