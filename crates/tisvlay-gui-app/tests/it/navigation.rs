@@ -6,11 +6,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::ComponentHandle;
 use slint::platform::Key;
-use tisvlay_gui::{AppWindow, Pane, Tray};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use tisvlay_gui::{AppWindow, EditPane, Pane, Tray, TvViewModel};
 
-use crate::support::{press, press_shift_tab};
+use crate::support::{press, press_shift_tab, press_text};
 
 /// Boot with the Settings pane active and the tray reachable, so its
 /// notification switches are enabled (a disabled std widget leaves the
@@ -79,5 +79,84 @@ fn shift_tab_from_the_first_stop_wraps_to_the_last_not_the_window_scope() {
     assert!(
         toggles.borrow().is_empty(),
         "no switch toggled along the way"
+    );
+}
+
+/// Boot with one connected TV selected and its CONFIG card in edit
+/// mode. The testing window keeps its small default size, so the form
+/// sits below the detail's fold.
+fn boot_tv_in_edit_mode() -> AppWindow {
+    let app = AppWindow::new().expect("AppWindow::new");
+    let tv = TvViewModel {
+        uuid: SharedString::from("tv-1"),
+        name: SharedString::from("Test TV"),
+        connected: true,
+        ..Default::default()
+    };
+    app.set_tvs(ModelRc::new(VecModel::from(vec![tv])));
+    app.set_selected_tv_index(0);
+    app.set_active_pane(Pane::Tvs);
+    let edit = app.global::<EditPane>();
+    edit.set_name(SharedString::from("Test TV"));
+    edit.set_tv_uuid(SharedString::from("tv-1"));
+    app
+}
+
+/// Tab until typing lands in the edit form's name field: the Tab count
+/// that got there, or `None` after 40. Slint selects a field's text on
+/// tab-in, so the marker replaces it.
+fn tab_to_name_field(app: &AppWindow) -> Option<usize> {
+    let edit = app.global::<EditPane>();
+    for stop in 1..=40 {
+        press(app, Key::Tab);
+        press_text(app, SharedString::from("x"));
+        if edit.get_name() == "x" {
+            return Some(stop);
+        }
+        assert_eq!(
+            edit.get_name(),
+            "Test TV",
+            "a stop that isn't the field took the marker"
+        );
+    }
+    None
+}
+
+#[test]
+fn tab_reaches_a_text_field_below_the_fold() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+
+    // The field is under the LineEdit's clip and scrolled out of view,
+    // which Slint's Tab traversal skips on its own; the field's reach
+    // scope takes the Tab and forwards focus in.
+    let stop = tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+    assert!(
+        stop > 1,
+        "the form sits behind the detail's other stops, got Tab {stop}"
+    );
+}
+
+#[test]
+fn shift_tab_leaves_a_text_field_without_bouncing_back() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    let edit = app.global::<EditPane>();
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+
+    // Backwards out of the field: the reach scope is disabled while the
+    // field has focus, so focus moves to the previous stop and typing
+    // no longer reaches the field.
+    press_shift_tab(&app);
+    press_text(&app, SharedString::from("y"));
+    assert_eq!(edit.get_name(), "x", "Shift+Tab left the field");
+
+    // And forward again lands back in it.
+    press(&app, Key::Tab);
+    press_text(&app, SharedString::from("z"));
+    assert_eq!(
+        edit.get_name(),
+        "z",
+        "Tab re-entered the field (its text was selected on tab-in)"
     );
 }

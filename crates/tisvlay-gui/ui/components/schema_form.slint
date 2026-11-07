@@ -13,7 +13,7 @@
 // "password" / "ip" / "mac" / "port" / "int" / "bool" / "select" /
 // "path"). `FieldRenderer` switches on it to pick the right widget.
 
-import { CheckBox, LineEdit } from "std-widgets.slint";
+import { CheckBox } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
@@ -59,7 +59,7 @@ export component FieldRenderer {
             font-family: root.is-mono ? Theme.mono-font : "";
             edited(v) => { root.value-edited(v); }
         }
-        if root.field.field-type == "password": LineEdit {
+        if root.field.field-type == "password": LineEditField {
             placeholder-text: root.field.placeholder;
             text: root.field.value;
             input-type: password;
