@@ -127,7 +127,7 @@ socket2 = "0.6"
 # from, and our critical sections are panic-free by inspection
 # (HashMap ops on owned strings + channel senders). For locks
 # held across `.await` we still use `tokio::sync::Mutex`.
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 # XDG directories
 directories = "6"
