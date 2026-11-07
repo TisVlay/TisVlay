@@ -9,6 +9,7 @@
 
 mod about;
 mod accent;
+mod couch;
 mod dbus;
 mod diagnostic;
 mod edit_pane;
@@ -411,7 +412,26 @@ pub fn run() -> Result<()> {
     // A second tisvlay-gui process discovers the name is taken,
     // proxies `org.freedesktop.Application.Activate` to us, and
     // exits — no duplicate window flash.
-    let (claim, activation) = rt.block_on(dbus::try_claim_and_serve(None))?;
+    // Couch mode: the GUI's own preference file, read before the window
+    // exists since it decides how the window opens.
+    let gui_config_path = couch::default_config_path();
+    let couch_prefs = couch::load(&gui_config_path);
+    let couch_override = std::env::var(couch::ENV_OVERRIDE).ok();
+    let session_signals = couch::SessionSignals::from_env();
+    let couch_active = couch::active(
+        couch_prefs.mode,
+        couch_override.as_deref(),
+        &session_signals,
+    );
+    info!(
+        couch = couch_active,
+        mode = couch_prefs.mode.as_str(),
+        scale = couch_prefs.scale,
+        "couch mode decided"
+    );
+
+    let (claim, activation) =
+        rt.block_on(dbus::try_claim_and_serve(Some(gui_config_path.clone())))?;
     let gui_dbus = match claim {
         dbus::ClaimResult::Primary(connection) => connection,
         dbus::ClaimResult::Proxied => {
@@ -817,11 +837,82 @@ pub fn run() -> Result<()> {
     tokio::spawn(watch_accent_color(app.as_weak()));
     fonts::resolve_monospace(app.as_weak());
 
+    // Couch mode's window side. The `Couch` global carries the decision
+    // and the preference to the panes; the Settings pane's edits come
+    // back through its callbacks and are saved and applied at once.
+    // The scale is relative: every compositor scale event is multiplied
+    // by the preference and re-dispatched (the raw value is kept for
+    // later changes), and applied once here for the scale the window
+    // was created with, which bypasses the hook.
+    let compositor_scale = std::rc::Rc::new(std::cell::Cell::new(1.0f32));
+    {
+        let couch = app.global::<Couch>();
+        couch.set_active(couch_active);
+        couch.set_mode(couch_prefs.mode.as_str().into());
+        couch.set_scale_percent((couch_prefs.scale * 100.0).round() as i32);
+
+        let prefs = std::rc::Rc::new(std::cell::Cell::new(couch_prefs));
+        let save = {
+            let path = gui_config_path;
+            move |prefs: couch::CouchPrefs| {
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = couch::save(&path, prefs) {
+                        warn!(%e, file = %path.display(), "couch preference write failed");
+                    }
+                });
+            }
+        };
+
+        let app_weak = app.as_weak();
+        let prefs_for_mode = prefs.clone();
+        let save_for_mode = save.clone();
+        let scale_for_mode = compositor_scale.clone();
+        let signals = session_signals;
+        let env_override = couch_override;
+        couch.on_mode_changed(move |text: SharedString| {
+            let Some(mode) = couch::CouchMode::parse(text.as_str()) else {
+                return;
+            };
+            let mut current = prefs_for_mode.get();
+            current.mode = mode;
+            prefs_for_mode.set(current);
+            save_for_mode(current);
+            if let Some(app) = app_weak.upgrade() {
+                let active = couch::active(mode, env_override.as_deref(), &signals);
+                let couch = app.global::<Couch>();
+                couch.set_mode(mode.as_str().into());
+                couch.set_active(active);
+                apply_scale(&app, scale_for_mode.get(), active.then_some(current.scale));
+            }
+        });
+
+        let app_weak = app.as_weak();
+        let scale_for_pref = compositor_scale.clone();
+        couch.on_scale_changed(move |percent| {
+            let mut current = prefs.get();
+            current.scale = percent as f32 / 100.0;
+            prefs.set(current);
+            save(current);
+            if let Some(app) = app_weak.upgrade() {
+                let couch = app.global::<Couch>();
+                couch.set_scale_percent(percent);
+                apply_scale(
+                    &app,
+                    scale_for_pref.get(),
+                    couch.get_active().then_some(current.scale),
+                );
+            }
+        });
+    }
+
     // Mouse back/forward buttons → history navigation, handled at the
     // winit layer so the side buttons work anywhere in the window
     // without a full-window TouchArea swallowing clicks. Gated on
     // `nav-enabled` so it stays inert behind the pairing wizard / TV
-    // edit-mode, matching the Alt+Left/Right FocusScope.
+    // edit-mode, matching the Alt+Left/Right FocusScope. The same hook
+    // sees the compositor's scale events for couch mode's relative
+    // scale.
     {
         use slint::winit_030::winit::event::{ElementState, MouseButton, WindowEvent};
         use slint::winit_030::{EventResult, WinitWindowAccessor};
@@ -829,23 +920,51 @@ pub fn run() -> Result<()> {
         let app_weak = app.as_weak();
         let back = nav.back.clone();
         let forward = nav.forward.clone();
-        app.window().on_winit_window_event(move |_window, event| {
-            if let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button,
-                ..
-            } = event
-                && let Some(app) = app_weak.upgrade()
-                && app.get_nav_enabled()
-            {
-                match button {
-                    MouseButton::Back => back(&app),
-                    MouseButton::Forward => forward(&app),
-                    _ => {}
+        let compositor_scale = compositor_scale.clone();
+        app.window()
+            .on_winit_window_event(move |_window, event| match event {
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button,
+                    ..
+                } => {
+                    if let Some(app) = app_weak.upgrade()
+                        && app.get_nav_enabled()
+                    {
+                        match button {
+                            MouseButton::Back => back(&app),
+                            MouseButton::Forward => forward(&app),
+                            _ => {}
+                        }
+                    }
+                    EventResult::Propagate
                 }
-            }
-            EventResult::Propagate
-        });
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    compositor_scale.set(*scale_factor as f32);
+                    match app_weak.upgrade() {
+                        Some(app) if app.global::<Couch>().get_active() => {
+                            let couch = app.global::<Couch>();
+                            let factor = couch.get_scale_percent() as f32 / 100.0;
+                            apply_scale(&app, compositor_scale.get(), Some(factor));
+                            EventResult::PreventDefault
+                        }
+                        _ => EventResult::Propagate,
+                    }
+                }
+                _ => EventResult::Propagate,
+            });
+    }
+
+    // Open maximized and scaled in couch mode, with focus on the active
+    // sidebar item so the ring shows from the first frame.
+    if couch_active {
+        app.window().set_maximized(true);
+    }
+    app.show()?;
+    compositor_scale.set(app.window().scale_factor());
+    if couch_active {
+        apply_scale(&app, compositor_scale.get(), Some(couch_prefs.scale));
+        app.invoke_focus_active_sidebar_item();
     }
 
     // Slint event loop blocks the main thread; tokio workers keep
@@ -858,6 +977,14 @@ pub fn run() -> Result<()> {
 
     info!("tisvlay-gui shutting down");
     Ok(())
+}
+
+/// Set the window's scale to the compositor's times couch mode's
+/// factor, or back to the compositor's own when the factor is `None`.
+fn apply_scale(app: &AppWindow, compositor: f32, factor: Option<f32>) {
+    let scale_factor = compositor * factor.unwrap_or(1.0);
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor });
 }
 
 #[expect(

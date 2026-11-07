@@ -8,10 +8,13 @@
 // surfaced as defaults via `NotificationSettings::default()`);
 // an inline banner above the group explains the runtime constraint.
 
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Tray } from "../globals/tray.slint";
-import { Group, InlineError, ThemedButton, ThemedSwitch } from "../widgets.slint";
+import { Couch } from "../globals/couch.slint";
+import { ThemedSelect } from "../globals/select.slint";
+import { Group, InlineError, ThemedButton, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
 
 // Local FormRow — label + switch + optional helper text below.
 // Inlined rather than reusing tvs_pane's FormRow to avoid a
@@ -58,9 +61,16 @@ component NotificationRow {
 export component SettingsPane inherits Rectangle {
     background: Theme.surface-alt;
 
+    // The couch-mode preference's choices, in the order of `mode-index`.
+    property <[string]> couch-modes: [@tr("Follow the session"), @tr("On"), @tr("Off")];
+    property <int> mode-index: Couch.mode == "on" ? 1 : Couch.mode == "off" ? 2 : 0;
+
+    // A scroll view, not a plain column: couch mode's scale makes this
+    // pane the first to outgrow a screen.
+    ScrollView {
+        content-width: self.visible-width;
     VerticalLayout {
         width: 100%;
-        height: 100%;
         padding-left: Design.pad-pane;
         padding-right: Design.pad-pane;
         padding-top: Design.pad-pane-top;
@@ -73,6 +83,80 @@ export component SettingsPane inherits Rectangle {
             color: Theme.text;
             font-size: Design.font-title-2;
             font-weight: 700;
+        }
+
+        // -- COUCH MODE group --
+        //
+        // The layout for a TV across the room. Rust owns the decision
+        // (`couch::active`) and the window side; the pane only edits
+        // the preference through the `Couch` callbacks.
+        Group {
+            title: @tr("COUCH MODE");
+
+            HorizontalLayout {
+                spacing: Design.gap-row;
+                alignment: stretch;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: Design.gap-form;
+                    alignment: center;
+                    Text {
+                        text: @tr("Couch mode");
+                        color: Theme.text;
+                        font-size: Design.font-body;
+                    }
+                    Text {
+                        text: @tr("Maximized and scaled up, with the keys arranged for a remote. Following the session turns it on under a TV shell such as Plasma Bigscreen.");
+                        color: Theme.text-faint;
+                        font-size: Design.font-mini;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    ThemedSelect {
+                        width: 200px;
+                        model: root.couch-modes;
+                        current-value: root.couch-modes[root.mode-index];
+                        selected-index(i) => {
+                            Couch.mode-changed(i == 1 ? "on" : i == 2 ? "off" : "auto");
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Design.gap-row;
+                alignment: stretch;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: Design.gap-form;
+                    alignment: center;
+                    Text {
+                        text: @tr("Scale");
+                        color: Theme.text;
+                        font-size: Design.font-body;
+                    }
+                    Text {
+                        text: @tr("On top of the display's own scale, in percent. Larger for a farther couch or a smaller screen.");
+                        color: Theme.text-faint;
+                        font-size: Design.font-mini;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    ThemedSpinBox {
+                        width: 200px;
+                        value: Couch.scale-percent;
+                        minimum: 100;
+                        maximum: 250;
+                        step: 10;
+                        accessible-label: @tr("Scale");
+                        committed(v) => { Couch.scale-changed(v); }
+                    }
+                }
+            }
         }
 
         // Inline banner when the tray service is offline. Switches
@@ -161,7 +245,6 @@ export component SettingsPane inherits Rectangle {
                 }
             }
         }
-
-        Rectangle { vertical-stretch: 1; }
+    }
     }
 }

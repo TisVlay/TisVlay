@@ -52,9 +52,10 @@ fn tab_from_a_fresh_window_lands_on_the_first_settings_switch() {
     let app = boot_settings();
     let toggles = record_toggles(&app);
 
-    // Past the sidebar (Reload is disabled without a daemon), the pane's
-    // first switch is the next stop; `nav-scope` left the order.
-    tabs(&app, SIDEBAR_STOPS + 1);
+    // Past the sidebar (Reload is disabled without a daemon) and the
+    // couch-mode select and spin box, the pane's first switch is the
+    // next stop; `nav-scope` left the order.
+    tabs(&app, SIDEBAR_STOPS + 3);
     assert!(toggles.borrow().is_empty(), "Tab alone toggles nothing");
     assert_eq!(visible_rings(&app), 1, "the focused switch draws the ring");
 

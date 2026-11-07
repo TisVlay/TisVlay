@@ -28,6 +28,7 @@ import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } fr
 import { Toast, ToastView } from "globals/toast.slint";
 import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
 import { Nav } from "globals/nav.slint";
+import { Couch } from "globals/couch.slint";
 import { Health, ServiceHealth } from "globals/health.slint";
 import { SelectOverlay } from "globals/select.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
@@ -35,7 +36,7 @@ import { ProfilesPane } from "components/profiles_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, Tray, TrayNotificationSettings, PairingWizard, EditPane, Clipboard, Errors, Icons, Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry, Toast, Help, ServiceHealth }
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, Tray, TrayNotificationSettings, PairingWizard, EditPane, Clipboard, Errors, Icons, Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry, Toast, Help, ServiceHealth, Nav, Couch }
 
 export enum Pane {
     tvs,
@@ -100,8 +101,28 @@ export component AppWindow inherits Window {
     title: "TisVlay";
     preferred-width: 720px;
     preferred-height: 480px;
-    min-width: 720px;
-    min-height: 480px;
+    // Couch mode scales the whole UI on top of the display's scale, so
+    // a maximized window can be smaller in logical pixels than the
+    // desk minimum; the minimum relaxes rather than overflowing the
+    // screen.
+    min-width: Couch.active ? 480px : 720px;
+    min-height: Couch.active ? 320px : 480px;
+
+    // Put keyboard focus on the sidebar item of the active pane, with
+    // the ring showing: couch mode's launch and re-activation state, so
+    // a remote user sees where they are before pressing anything.
+    public function focus-active-sidebar-item() {
+        if (root.active-pane == Pane.profiles) {
+            profiles-item.focus();
+        } else if (root.active-pane == Pane.settings) {
+            settings-item.focus();
+        } else if (root.active-pane == Pane.about) {
+            about-item.focus();
+        } else {
+            tvs-item.focus();
+        }
+        Nav.focus-visible = true;
+    }
 
     // TV-state model (read-only from Slint's perspective; Rust pushes
     // updates via `app.set_tvs(...)`). Writes go through the Daemon
@@ -251,28 +272,28 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                     }
 
-                    SidebarItem {
+                    tvs-item := SidebarItem {
                         icon: root.tvs-icon;
                         label: @tr("TVs");
                         selected: root.active-pane == Pane.tvs;
                         accessible-id: "sidebar-tvs";
                         clicked => { root.navigate(Pane.tvs); }
                     }
-                    SidebarItem {
+                    profiles-item := SidebarItem {
                         icon: root.profiles-icon;
                         label: @tr("Profiles");
                         selected: root.active-pane == Pane.profiles;
                         accessible-id: "sidebar-profiles";
                         clicked => { root.navigate(Pane.profiles); }
                     }
-                    SidebarItem {
+                    settings-item := SidebarItem {
                         icon: root.settings-icon;
                         label: @tr("Settings");
                         selected: root.active-pane == Pane.settings;
                         accessible-id: "sidebar-settings";
                         clicked => { root.navigate(Pane.settings); }
                     }
-                    SidebarItem {
+                    about-item := SidebarItem {
                         icon: root.about-icon;
                         label: @tr("About");
                         selected: root.active-pane == Pane.about;
