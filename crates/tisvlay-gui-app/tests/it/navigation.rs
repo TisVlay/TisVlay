@@ -1659,7 +1659,7 @@ fn escape_dismisses_a_help_bubble_before_moving_focus() {
         .on_power_on(move |_| *sink.borrow_mut() += 1);
 
     // Into the detail (Power), with a help bubble pinned open as a
-    // Menu press would leave it (step 9); Escape closes the bubble and
+    // Menu press would leave it; Escape closes the bubble and
     // leaves focus where it was.
     tabs(&app, SIDEBAR_STOPS + 3);
     press(&app, Key::Return);

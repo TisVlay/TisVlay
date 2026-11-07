@@ -464,7 +464,7 @@ export component AppWindow inherits Window {
             }
             // Menu (a gamepad's Square) toggles the focused row's help
             // without moving focus, taken here so a text field's context
-            // menu never sees it (decision 6).
+            // menu never sees it.
             if (event.text == Key.Menu) {
                 Help.menu-toggle(Nav.focus-row);
                 return accept;

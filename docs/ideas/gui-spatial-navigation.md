@@ -1,6 +1,6 @@
 # Row navigation in the detail panes
 
-Research and design for the TV-navigation train ([docs/plans/tv-navigation.md](../plans/tv-navigation.md)), written 2026-11-07 for review before any code. The train's decision 3 left "true 2D navigation" to this doc; the decision now is to build the row model in that PR, before its step 8, because the Escape chain and the ringed help buttons both depend on the row vocabulary.
+Research and design for the GUI's remote navigation ([docs/gui/remote-navigation.md](../gui/remote-navigation.md) is what shipped), written 2026-11-07 for review before any code. The train's plan had left "true 2D navigation" to this doc; the decision was to build the row model in the same PR, before its Escape chain, because the chain and the ringed help buttons both depend on the row vocabulary. The plan itself retired with the PR; git history has it.
 
 ## The problem
 
@@ -22,14 +22,14 @@ Three families, all in use today.
 
 ## The design
 
-The decisions taken on 2026-11-07, in the terms of the train's decisions 3 and 6.
+The decisions taken on 2026-11-07, in the terms of the train's arrow and help rules.
 
 - **A detail is a vertical region of rows; a row is a horizontal region of stops in reading order.** The row's first stop is its primary: the control in a form row, the only stop in a row that has one (a FROM THE TV row's "i", a DANGER ZONE button), the Edit or Cancel button of the CONFIG title band, Rename in the profile header, the "i" of a FIELDS toolbar. Rows without a reachable stop (a couch-mode INFO row, whose copy button isn't focusable there; a row whose only control is disabled) are skipped.
 - **Up and Down move to the previous or next row and land on its primary** (not on the same column: the icons are secondary actions, and the control is the predictable landing). The detail stops at its first and last row, as the rail and the lists do; a desktop Tab still wraps.
 - **Right walks out from the primary to the row's trailing stops, Left walks back.** Right on the last stop does nothing. Left on the primary isn't the row's to take: it bubbles to the shell's column jump and goes to the list, as today.
-- **Every visible stop stays reachable by arrows, Return and Escape alone** (decision 1). The help "i" is the row's last stop and opens on Return (decision 6); Menu stays the shortcut for the focused row's help. Reset, restore and gate are stops too; nothing moves behind a contextual key, since CEC remotes have none.
+- **Every visible stop stays reachable by arrows, Return and Escape alone**, the train's invariant. The help "i" is the row's last stop and opens on Return; Menu stays the shortcut for the focused row's help. Reset, restore and gate are stops too; nothing moves behind a contextual key, since CEC remotes have none.
 - **A value control is entered, in couch mode.** Focused but not entered, a slider or a spin box is just the row's primary, so Left and Right walk the row. Return enters it: a slider's adjust mode takes Left and Right for the value and leaves on Return or Escape, with the ring saying so; a spin box's Return is today's editing (digits type, Left and Right step, Return commits, Escape reverts); a select's Return opens its list as today; switches and buttons act on Return. One press more per adjustment, and one gesture everywhere: Return goes into something (a pane, a detail, a control, a dialog), Escape comes out, arrows move between siblings. On a desktop nothing changes: arrows adjust a focused slider or spin box as in every desktop app, and Tab reaches the icons.
-- **Escape gains inner levels** for step 8's chain: leave adjust mode; from a trailing stop, back to the row's primary; then the detail's row, the list, the rail.
+- **Escape gains inner levels** for the Escape chain that followed: leave adjust mode; from a trailing stop, back to the row's primary; then the detail's row, the list, the rail.
 - **Tab order.** The detail's stops all stay Tab stops; roving stops remain the rail's and the lists' (ARIA roves toolbars and lists, not forms).
 
 ### Rows, as inventoried
@@ -59,11 +59,11 @@ Two ways to teach Slint the tree; the first was chosen on 2026-11-07 and built (
 5. Tests: Down lands on the next row's control past its icons; Up lands on the previous row's control; Right and Left walk a profile row's icons and stop at its ends; a couch slider walks the row until Return and adjusts after; Escape returns to the primary; a dialog still cycles on Down.
 6. VM check with the virtual keyboard: the profile editor and the TV detail by rows.
 
-Step 8 then adds the Escape levels, and step 9's ringed "i" lands as each row's last stop.
+The Escape levels and the ringed "i", each row's last stop, followed in the same PR. All of this shipped; the property is `nav-row`, since `row` is a reserved name.
 
 ### Still deferred
 
-The train's step 10 also meant this doc to hold the ideas it doesn't build: an inline row editor for profile rows (one Return opens a row's full editor instead of its control), and a couch-mode hint strip showing the keys the focused stop takes (Return, Left/Right, Menu), as console menus' button legends do.
+The ideas the PR didn't build: an inline row editor for profile rows (one Return opens a row's full editor instead of its control), and a couch-mode hint strip showing the keys the focused stop takes (Return, Left/Right, Menu), as console menus' button legends do. True 2D navigation (the geometric family above) stays unbuilt: the tagged Tab order covers every pane the GUI has.
 
 ## Sources
 

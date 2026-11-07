@@ -22,8 +22,6 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 
 ## Active plans
 
-- [`tv-navigation.md`](tv-navigation.md) — TV remote and gamepad navigation for the settings GUI: focusable controls with a visible ring, arrow keys, Escape as Back, focus that survives transitions, and a couch mode for Plasma Bigscreen and other 10-foot sessions.
-
 When a plan is in flight, list it here with a one-line summary of the work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short description of what's landing and why a multi-commit PR benefits from an upfront design doc.

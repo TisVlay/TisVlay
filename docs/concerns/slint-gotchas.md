@@ -22,4 +22,42 @@ Both drove the custom in-window overlay — see [gui/contextual-help.md](../gui/
 
 ### `TouchArea` can't catch clicks while passing hover through
 
-A Slint `TouchArea` is binary: enabled it eats both clicks and hover; disabled it eats neither. There is no "block clicks but let hover through," so a full-window modal scrim and a live cursor are mutually exclusive — the help overlay forgoes a scrim (intercepting only the bubble rect) and dismisses on focus-out instead, which (because the window's `forward-focus` points at a full-area nav `FocusScope`) still yields a click-anywhere dismiss without any scrim. The same binary nature means a destroyed or disabled `TouchArea` never emits a final `has-hover = false`, so a trigger that goes non-interactive must clear its own hover state explicitly.
+A Slint `TouchArea` is binary: enabled it eats both clicks and hover; disabled it eats neither. There is no "block clicks but let hover through," so a full-window modal scrim and a live cursor are mutually exclusive — the help overlay forgoes a scrim (intercepting only the bubble rect) and dismisses when focus leaves the "i"'s row instead, which (because the window's `forward-focus` points at a full-area nav `FocusScope` with `focus-on-click`) still yields a click-anywhere dismiss without any scrim. The same binary nature means a destroyed or disabled `TouchArea` never emits a final `has-hover = false`, so a trigger that goes non-interactive must clear its own hover state explicitly.
+
+The rest were hit making the GUI navigable from a remote ([gui/remote-navigation.md](../gui/remote-navigation.md)), on Slint 1.18.1.
+
+### The winit backend drops keys it can't name
+
+A key with neither a Slint name nor text never reaches a handler. A gamepad's Square under Plasma Bigscreen arrives as the `XF86MenuKB` keysym (winit: `Key::Unidentified(NativeKey::Xkb(0x1008ff65))`) and its Share and L2 as `XF86Back` (winit: `NamedKey::BrowserBack`, which Slint has no name for). The `on_winit_window_event` hook sees them first: `keys::remap_dropped_key` maps them to Menu and Escape, the hook dispatches that key through `Window::dispatch_event` and prevents the original.
+
+### Tab skips a stop under a clipping ancestor while it's scrolled out of view
+
+Traversal forgives an item hidden only by a `Flickable`, but its walk stops at the first clipping ancestor, and that ancestor's own clip rect is already empty below the fold (`item_tree.rs`, `is_visible_or_clipped_by_flickable`), so a `TextInput` or `FocusScope` under a `Rectangle { clip: true }` is skipped while a bare one is reached. `LineEdit` clips its `TextInput`. Keep the stop's `FocusScope` outside any clip, or take the Tab in a reach scope outside the clip and forward focus programmatically: programmatic focus ignores visibility and still scrolls into view.
+
+### No focus, no key handlers
+
+When the focused item is hidden or destroyed, Slint clears focus, and with nothing focused it runs no key handler at all, not even a window-filling `FocusScope`'s capture phase; only the built-in Tab still works. `has-focus` is set only on the focused scope, never on an ancestor, so the state can't be observed from the shell either. The GUI counts the keys its capture handler sees and compares the count around each dispatch from the winit hook; a key that didn't move it had no focus, and focus is restored to its last column.
+
+### `changed has-focus` is deferred; `focus-gained` is synchronous
+
+A `changed` handler runs after the pass that changed the property, and a component created and focused in the same pass (a detail focusing its first stop from `init`) never sees a `changed has-focus` at all. `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`; what needs the deferred handler covers the created-and-focused case in `init`.
+
+### Change handlers in one pass run in no set order
+
+Several `changed` handlers triggered by one property change run in no defined order, so a shell handler can't tell in the same pass whether a widget's handler has answered a request. The GUI's request-and-serve pattern (`Nav.request-column`, `request-anchor`, `request-list-step`) pairs a tick with a served marker and checks it from a 1 ms `Timer`.
+
+### The Menu key's release opens a `ContextMenu` too
+
+Slint's `ContextMenu` item opens on any Menu key event, the release included. A capture handler that takes the press for its own purpose has to take the release as well, or the context menu opens anyway.
+
+### `row` is a reserved property name
+
+`row` (and `col`, `rowspan`, `colspan`) are the GridLayout placement properties and can't be declared on a component; the GUI's row id is `nav-row`.
+
+### Scroll-into-view has no margin
+
+The focused item is brought into view edge to edge, through every enclosing scroll area, with no margin for its label or its neighbors. The GUI reports the focused stop's window rectangle on focus-in and nudges the `ScrollView`'s `content-y` to keep a margin around it.
+
+### `TextInput` focus rules
+
+`TextInput::focus_event` refuses focus while `enabled: false` (`focus()` on it is ignored), and enables the input method only on a focus-in that finds it not `read-only`, so a field that flips `read-only` under focus has to clear and retake focus for the keyboard to rise. A std `LineEdit` leaves the Tab order only through `enabled: false`, which dims it; a read-only one stays a stop. The GUI's text field is a bare `TextInput` in its own control box for that reason, with its ring's scope as the stop.

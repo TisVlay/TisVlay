@@ -9,6 +9,7 @@
 
 - `slint::winit_030::WinitWindowAccessor::with_winit_window` — synchronous `&winit::window::Window` access from inside event-loop callbacks. Used in `dbus.rs::raise()` to call `request_user_attention` on re-activation (taskbar pulse UX on KDE Plasma 6).
 - `slint::BackendSelector::with_winit_window_attributes_hook` — apply `WindowAttributes` at construction time. Used in `lib.rs` to plumb the cold-spawn `activation-token` via `WindowAttributesExtStartupNotify::with_activation_token`. Replaces an earlier `unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", ...) }` block.
+- `slint::winit_030::WinitWindowAccessor::on_winit_window_event` — see a winit `WindowEvent` before Slint does and `Propagate` or `PreventDefault` it. Used in `lib.rs` for the mouse's Back and Forward buttons (history), for `ScaleFactorChanged` (couch mode multiplies the compositor's scale and prevents the original), and for `KeyboardInput`: the keys the backend would drop are remapped (`keys::remap_dropped_key`, matching `winit::keyboard::{Key, NamedKey, NativeKey}`) and dispatched as Slint keys, and a navigation key is wrapped in the focus-loss watch (`is_navigation_key`, `watch_focus_after`). The model is in [gui/remote-navigation.md](../gui/remote-navigation.md).
 
 Slint marks the `winit_030` module as "may be removed or changed in future minor releases" (its module doc in `slint`'s `lib.rs`).
 
@@ -57,6 +58,8 @@ When bumping `slint` to a new version, verify these still compile and behave as 
 - `crates/tisvlay-gui-app/src/dbus.rs::raise()` — `app.window().with_winit_window(|w| w.request_user_attention(...))` path.
 - `crates/tisvlay-gui-app/src/lib.rs` — `BackendSelector::new().with_winit_window_attributes_hook(...)` path and the `WindowAttributesExtStartupNotify` import from `slint::winit_030::winit::platform::startup_notify`.
 - `ActivationToken::from_raw(token)` import from `slint::winit_030::winit::window::ActivationToken` (note: the type is *also* exposed at `slint::winit_030::winit::platform::startup_notify::ActivationToken` but as private — use the public one).
+- `crates/tisvlay-gui-app/src/lib.rs` — the `on_winit_window_event` hook: `EventResult`, `WindowEvent::{MouseInput, ScaleFactorChanged, KeyboardInput}`, `ElementState`, `MouseButton`, and the key event's `logical_key`, `state` and `repeat` fields.
+- `crates/tisvlay-gui-app/src/keys.rs` — `remap_dropped_key` and its test, matching `Key::Named(NamedKey::BrowserBack)` and `Key::Unidentified(NativeKey::Xkb(_))`. A behavioral check needs Plasma Bigscreen and a gamepad: Square opens the focused row's help, Share backs out.
 
 ### Alternative rejected: direct `winit = "0.30"` dev-dep
 

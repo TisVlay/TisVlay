@@ -16,7 +16,7 @@ Two banners can appear above any page:
 - **Enable TV control**: your account can't reach the service yet. Click the button, then log out and back in; see [Access](../getting-started/installation.md#access).
 - **Version mismatch**: a service is on a different release than the window, usually right after an upgrade. See [Troubleshooting](../operations/troubleshooting.md#version-mismatch).
 
-**Tips.** An **ⓘ** button reveals a longer explanation of the option beside it, and icon-only buttons show a short tip when you hover. **Alt+←** and **Alt+→** (or your mouse's back and forward buttons) step through the pages you've visited, like a browser. They're inactive while the pairing wizard or a TV edit form is open.
+**Tips.** An **ⓘ** button reveals a longer explanation of the option beside it (click it, or press OK on it), and icon-only buttons show a short tip when you hover, or when the focus ring rests on them. **Alt+←** and **Alt+→** (or your mouse's back and forward buttons) step through the pages you've visited, like a browser. They're inactive while the pairing wizard or a TV edit form is open. The whole window also works without a mouse: see [From a remote or gamepad](#from-a-remote-or-gamepad).
 
 ### TVs
 
@@ -45,15 +45,32 @@ Create, rename, duplicate, and delete profiles, and edit what each event does, i
 
 ### Settings
 
-The **Settings** page controls the tray's desktop [notifications](#notifications) and has a **Send test notification** button to check that your desktop's notification system works. If the tray service isn't running, the switches are dimmed and a banner says so.
+The **Settings** page controls the tray's desktop [notifications](#notifications) and has a **Send test notification** button to check that your desktop's notification system works. If the tray service isn't running, the switches are dimmed and a banner says so. Its **COUCH MODE** group sets how the window behaves on a TV across the room; see [From a remote or gamepad](#from-a-remote-or-gamepad).
 
 ![The Settings page](../docs/screenshots/settings_pane.png)
 
 ### About
 
-The version, the status and version of each component (daemon, session, tray, GUI, and CLI), and links to the release notes, third-party notices, and the issue tracker. **Diagnostics** copies a report to your clipboard; paste it into bug reports. Each service row has a **Config** button that opens its configuration file in your file manager.
+The version, the status and version of each component (daemon, session, tray, GUI, and CLI), and links to the release notes, third-party notices, and the issue tracker. **Diagnostics** copies a report to your clipboard; paste it into bug reports. Each component with a configuration file has a **Config** button that opens it in your file manager.
 
 ![The About page](../docs/screenshots/about_pane.png)
+
+### From a remote or gamepad
+
+The window can be driven without a mouse: from a keyboard, or from a TV remote or gamepad under a TV shell that turns their buttons into keys. Plasma Bigscreen does, and so does a TV that forwards its own remote's keys to the desktop ([The remote's keys](./tv-controls-pc.md#the-remotes-keys)). An accent-colored ring marks the control the keys act on. It appears with the first key press and hides again when you use the mouse.
+
+| Key | What it does |
+|-----|--------------|
+| **↑ ↓** | Move along the sidebar, down a list, or between the rows of a page. The sidebar switches pages as you move, and a list shows the TV or profile under the ring. |
+| **← →** | Move along a row, from its control to the buttons beside it, and between the sidebar, the list and the page. On a slider they change the value. |
+| **OK** / **Enter** | Activate: enter a page from the sidebar, open the TV or profile under the ring, press a button, flip a switch, open a choice, start typing in a field. |
+| **Back** / **Esc** | One level out: close a help bubble, stop editing, leave the page for its list and the list for the sidebar. On the sidebar it returns from a jump you made with a pencil or a **Used by** link. |
+| **Menu** | Help for the row under the ring, the same as its **ⓘ**. |
+| **Tab** / **Shift+Tab** | The next or previous control; in couch mode, the next or previous page. |
+
+Under Plasma Bigscreen, a gamepad's D-pad, Cross and Circle are the arrows, OK and Back, Square is Menu, and the shoulder buttons are Tab and Shift+Tab. A TV remote's arrows, OK and Back map the same way. It has no Menu key, so a row's help is one **→** away, on its **ⓘ**.
+
+**Couch mode.** On a TV across the room the window opens maximized and scaled up, and the keys are arranged for a remote: a text field, slider or number waits for OK before it takes the arrows, so moving between rows never changes a value by accident (OK or Back finishes), Tab and Shift+Tab step between the pages, and Back on the sidebar closes the window. It turns on by itself under a TV shell such as Plasma Bigscreen. To use it on an ordinary desktop driving a TV, or to keep it off, set **Settings → COUCH MODE → Couch mode** to **On** or **Off** (**Follow the session** is the default), and adjust **Scale**, a percentage on top of your display's own scale: larger for a farther couch or a smaller screen. Changes apply at once and are kept for the next launch.
 
 ## Tray applet (`tisvlay-tray`)
 
@@ -103,5 +120,7 @@ The window is the `tisvlay-gui` command, and the tray applet runs as the `tisvla
 tisvlay-gui
 systemctl --user status tisvlay-tray
 ```
+
+`TISVLAY_COUCH_MODE=on tisvlay-gui` (or `off`) opens the window in or out of couch mode for this launch, whatever the setting says.
 
 </details>

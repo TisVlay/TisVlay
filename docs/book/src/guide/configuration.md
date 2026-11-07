@@ -9,8 +9,9 @@ TisVlay is configured with TOML, spread across a few files:
 | `/var/lib/tisvlay/daemon.toml` | the daemon (`tisvlay` user) | TV definitions, discovery, and **system** profiles, the daemon's own persisted store |
 | `~/.config/tisvlay/session.toml` | each desktop user | **user** profiles and per-user TV profile assignments |
 | `~/.config/tisvlay/tray.toml` | each desktop user | tray notification preferences |
+| `~/.config/tisvlay/gui.toml` | each desktop user | the window's own preferences: [couch mode](./gui-tray.md#from-a-remote-or-gamepad) and its scale |
 
-Each service rewrites its own file as state changes, so changes you make in the app, the tray, or the command line are persisted without any file editing. You can also [edit a file by hand and reload it](#hand-editing-and-reloading).
+Each service rewrites its own file as state changes, so changes you make in the app, the tray, or the command line are persisted without any file editing. You can also [edit a file by hand and reload it](#hand-editing-and-reloading). The window's `gui.toml` is the exception: it's read when the window opens and written by the **Settings** page, and a reload leaves it alone.
 
 To declare TVs **declaratively** (for a reproducible or headless setup), give the daemon a **seed file** with `tisvlay service daemon --seed <file>`; on NixOS, the module's `settings` option writes it for you. The seed is re-applied on every start, but only for TVs whose `id` is absent from `daemon.toml`, so runtime edits stick, and a still-declared TV that you removed at runtime comes back (drop the seed entry to drop it). Omit an entry's `id` and it is derived deterministically from the entry's content.
 
@@ -96,7 +97,7 @@ The two idle timers set **how long** to wait in each lock state; the shared `on_
 
 ## Hand-editing and reloading
 
-Any of the three files can be edited by hand while the services run. Then apply the edit with one of:
+Any of the three service files can be edited by hand while the services run. Then apply the edit with one of:
 
 - `tisvlay reload`, which reloads the daemon's, the session's and the tray's files, one line per service (a service that isn't running is reported, not failed).
 - The app's **Reload** button, in the sidebar, which does the same for all three files.
