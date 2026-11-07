@@ -349,6 +349,7 @@ export component ThemedSelect inherits Rectangle {
         }
         focus-gained(reason) => {
             Nav.stop-focused(2, root.nav-row, "");
+            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
         }
     }
 

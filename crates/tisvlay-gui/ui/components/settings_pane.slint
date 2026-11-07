@@ -8,7 +8,7 @@
 // surfaced as defaults via `NotificationSettings::default()`);
 // an inline banner above the group explains the runtime constraint.
 
-import { ScrollView } from "std-widgets.slint";
+import { HelpScrollView } from "../globals/help.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Tray } from "../globals/tray.slint";
@@ -74,7 +74,7 @@ export component SettingsPane inherits Rectangle {
 
     // A scroll view, not a plain column: couch mode's scale makes this
     // pane the first to outgrow a screen.
-    ScrollView {
+    HelpScrollView {
         content-width: self.visible-width;
     VerticalLayout {
         width: 100%;

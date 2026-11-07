@@ -102,6 +102,23 @@ export global Nav {
     /// adjusting it, so the shell takes them before the control.
     in-out property <bool> value-idle: false;
 
+    /// Scrolling to the focused stop. Slint brings the focused item
+    /// alone into view, edge to edge; the stop reports its window
+    /// rectangle here on focus-in as well, and the pane's scroll view
+    /// (`HelpScrollView`) keeps `Design.scroll-margin` around it, so
+    /// the row's label and neighbors, and a group's title when landing
+    /// on its first row, show too.
+    in-out property <length> reveal-x;
+    in-out property <length> reveal-y;
+    in-out property <length> reveal-height;
+    in-out property <int> reveal-tick: 0;
+    public function reveal(x: length, y: length, height: length) {
+        self.reveal-x = x;
+        self.reveal-y = y;
+        self.reveal-height = height;
+        self.reveal-tick += 1;
+    }
+
     /// Escape's last levels (decision 5). Rust keeps the history: this
     /// is whether the current page was reached through a click-through
     /// (a profile pencil, a "used by" link), so Escape on the sidebar

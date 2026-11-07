@@ -156,10 +156,17 @@ export component Focusable inherits Rectangle {
     // listeners switch panes and selections; it never runs for a
     // control created and focused in one pass (a detail focusing its
     // first stop from `init`), which `init` covers.
+    /// Whether a pane scrolls to keep the control and a margin around
+    /// it in view on focus; off for a dialog's buttons, which float over
+    /// the pane.
+    in property <bool> reveal: true;
     property <int> anchor: -1;
     function take-anchor() {
         Nav.stop-focused(root.column, root.nav-row, root.accessible-id);
         root.anchor = Nav.focus-seq;
+        if (root.reveal) {
+            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+        }
     }
     init => {
         if (fs.has-focus) {
@@ -376,6 +383,7 @@ export component ContextualHelpButton inherits Rectangle {
         }
         focus-gained(reason) => {
             Nav.stop-focused(2, root.nav-row, "");
+            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
         }
         changed has-focus => {
             if (!self.has-focus && trigger.pinned-mine) {
@@ -1042,6 +1050,7 @@ export component LineEditField inherits Rectangle {
         }
         focus-gained(reason) => {
             Nav.stop-focused(2, root.nav-row, "");
+            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
             root.anchor = Nav.focus-seq;
         }
         changed has-focus => {
@@ -1164,6 +1173,7 @@ export component LineEditField inherits Rectangle {
                     changed has-focus => {
                         if (self.has-focus) {
                             Nav.stop-focused(2, root.nav-row, "");
+                            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
                             root.anchor = Nav.focus-seq;
                         } else {
                             root.leaving-backwards = false;
@@ -1495,6 +1505,7 @@ export component OptimisticSlider {
                     changed has-focus => {
                         if (self.has-focus) {
                             Nav.stop-focused(2, root.nav-row, "");
+                            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
                         }
                         root.entered = false;
                         root.sync-idle();
@@ -1722,6 +1733,7 @@ export component ThemedSpinBox inherits Rectangle {
             changed has-focus => {
                 if (self.has-focus) {
                     Nav.stop-focused(2, root.nav-row, "");
+                    Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
                 } else {
                     root.commit-text(self.text);
                     root.editing = false;
@@ -2307,12 +2319,14 @@ export component ConfirmDialog inherits Rectangle {
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
                         accessible-id: "dialog-cancel";
+                        reveal: false;
                         clicked => { root.cancelled(); }
                     }
                     confirm-button := DangerBtn {
                         text: root.confirm-label;
                         enabled: root.confirm-enabled;
                         accessible-id: "dialog-confirm";
+                        reveal: false;
                         clicked => { root.confirmed(); }
                     }
                 }
@@ -2479,6 +2493,7 @@ export component NameInputDialog inherits Rectangle {
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
                         accessible-id: "dialog-cancel";
+                        reveal: false;
                         clicked => { root.cancelled(); }
                     }
                     confirm-button := ThemedButton {
@@ -2486,6 +2501,7 @@ export component NameInputDialog inherits Rectangle {
                         primary: true;
                         enabled: root.confirm-enabled;
                         accessible-id: "dialog-confirm";
+                        reveal: false;
                         clicked => { root.confirmed(); }
                     }
                 }

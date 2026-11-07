@@ -16,6 +16,7 @@ import { ScrollView } from "std-widgets.slint";
 import { OverlayAnchor, OverlayIds } from "overlay.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Nav } from "nav.slint";
 
 export global Help {
     // Active request (empty `text` ⇒ nothing shown).
@@ -343,6 +344,31 @@ export component HelpScrollView inherits ScrollView {
     content-width: self.visible-width;
     changed content-y => {
         Help.reposition-tick += 1;
+    }
+
+    // Keep a margin around the focused stop (`Nav.reveal`), on top of
+    // Slint's own edge-to-edge reveal of the item. Only for a stop
+    // inside this view's area: the one detail view at a time, not a
+    // list's. Reading `absolute-position` here, in a change handler,
+    // never forces it during layout.
+    property <int> reveal-mirror: Nav.reveal-tick;
+    changed reveal-mirror => {
+        if (Nav.reveal-x < self.absolute-position.x
+            || Nav.reveal-x >= self.absolute-position.x + self.width) {
+            return;
+        }
+        self.keep-in-view(Nav.reveal-y - self.absolute-position.y, Nav.reveal-height);
+    }
+    function keep-in-view(top: length, height: length) {
+        if (self.content-height <= self.visible-height) {
+            return;
+        }
+        if (top < Design.scroll-margin) {
+            self.content-y = min(0px, self.content-y + (Design.scroll-margin - top));
+        } else if (top + height > self.visible-height - Design.scroll-margin) {
+            self.content-y = max(self.visible-height - self.content-height,
+                self.content-y - (top + height - (self.visible-height - Design.scroll-margin)));
+        }
     }
     property <bool> help-shown-mirror: Help.shown;
     property <int> reposition-mirror: Help.reposition-tick;

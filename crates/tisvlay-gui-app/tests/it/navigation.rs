@@ -1710,6 +1710,29 @@ fn an_anchor_finds_its_stop_again_by_id_after_the_pane_was_recreated() {
 }
 
 #[test]
+fn a_pane_scrolls_to_keep_a_margin_around_the_focused_stop() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    let window_height = app.window().size().height as f32 / app.window().scale_factor();
+
+    // The edit form's name field sits below the fold at the default
+    // window size; focusing it scrolls it into view with room to
+    // spare below (its neighbor row shows), not flush with the edge.
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+    let field = find_by_accessible_id(&app, "tv-edit-name").expect("the name field renders");
+    let bottom = field.absolute_position().y + field.size().height;
+    assert!(
+        bottom <= window_height - 40.0,
+        "the field's bottom at {bottom} sits within 40px of the window's {window_height}"
+    );
+    assert!(
+        field.absolute_position().y >= 40.0,
+        "and it isn't flush with the top either"
+    );
+}
+
+#[test]
 fn escape_in_the_wizard_mirrors_its_footer() {
     i_slint_backend_testing::init_no_event_loop();
     let app = AppWindow::new().expect("AppWindow::new");
