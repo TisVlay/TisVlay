@@ -325,7 +325,28 @@ component TvList inherits Rectangle {
     property <int> focus-row-tick;
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
+        root.serve-column-request();
+    }
+    // The list is created by the change that closes the wizard, the
+    // same one that asks for the list: no tick change to see, so
+    // check for an unserved request here too. Served a frame later,
+    // once the rows exist to take the focus.
+    init => {
+        if (Nav.column-tick != Nav.column-served) {
+            serve-later.running = true;
+        }
+    }
+    serve-later := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.serve-column-request();
+        }
+    }
+    function serve-column-request() {
         if (Nav.column-target == 1 || root.selected-index < 0) {
+            Nav.column-served = Nav.column-tick;
             if (root.tvs.length > 0) {
                 root.focus-row-index = root.selected-index >= 0 ? root.selected-index : 0;
                 root.focus-row-tick += 1;
@@ -747,6 +768,10 @@ component TvDetail inherits Rectangle {
     /// active connection and requires user interaction on the TV).
     callback request-re-pair();
 
+    /// Set when Cancel or Save is activated by key: the Edit button
+    /// that replaces them takes focus on creation.
+    property <bool> focus-edit-when-shown;
+
     /// Bumped by the pane when a list row is activated: the visible
     /// detail takes focus, landing on its first stop.
     in property <int> focus-tick;
@@ -1117,13 +1142,26 @@ component TvDetail inherits Rectangle {
                             label: @tr("Edit");
                             accessible-id: "tv-detail-" + root.tv.uuid + "-edit-button";
                             clicked => { EditPane.start(root.tv.uuid); }
+                            // Leaving edit mode destroys the Cancel and
+                            // Save buttons with focus on one of them;
+                            // this button, created in their place,
+                            // takes it.
+                            init => {
+                                if (root.focus-edit-when-shown) {
+                                    root.focus-edit-when-shown = false;
+                                    self.focus();
+                                }
+                            }
                         }
                         if root.in-edit-mode: IconBtn {
                             source: Icons.cancel;
                             label: @tr("Cancel");
                             enabled: !EditPane.saving;
                             accessible-id: "tv-detail-" + root.tv.uuid + "-cancel-button";
-                            clicked => { EditPane.cancel(); }
+                            clicked => {
+                                root.focus-edit-when-shown = self.focused;
+                                EditPane.cancel();
+                            }
                         }
                         if root.in-edit-mode: IconBtn {
                             source: Icons.save;
@@ -1131,7 +1169,10 @@ component TvDetail inherits Rectangle {
                             enabled: EditPane.valid;
                             loading: EditPane.saving;
                             accessible-id: "tv-detail-" + root.tv.uuid + "-save-button";
-                            clicked => { EditPane.save(); }
+                            clicked => {
+                                root.focus-edit-when-shown = self.focused;
+                                EditPane.save();
+                            }
                         }
                     }
 
@@ -1320,7 +1361,17 @@ export component TvsPane {
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
         if (Nav.column-target == 2 && root.selected-index >= 0 && !PairingWizard.active) {
+            Nav.column-served = Nav.column-tick;
             root.focus-detail-tick += 1;
+        }
+    }
+    // The wizard's exit destroys whatever it had focused; the list
+    // takes over (the new TV's row once it's selected, else the first
+    // row, else the pair button).
+    property <bool> wizard-mirror: PairingWizard.active;
+    changed wizard-mirror => {
+        if (!root.wizard-mirror) {
+            Nav.request-column(1);
         }
     }
 

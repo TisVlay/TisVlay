@@ -29,11 +29,20 @@ export global Nav {
     in-out property <bool> synthesizing: false;
 
     /// The column a pane was last asked to focus, and the request
-    /// counter a pane observes.
+    /// counter a pane observes. A list created by the same change that
+    /// made the request (the wizard closing) sees no tick change, so it
+    /// checks `column-served` in its `init` instead.
     in-out property <int> column-target: 0;
     in-out property <int> column-tick: 0;
+    in-out property <int> column-served: 0;
     public function request-column(target: int) {
         self.column-target = target;
         self.column-tick += 1;
     }
+
+    /// Counts every key the shell's capture handler sees. Slint runs no
+    /// handler at all once the focused item is gone, so a key that
+    /// doesn't move this count arrived with no focus: Rust then asks
+    /// the shell to restore focus to the last column.
+    in-out property <int> key-seen: 0;
 }

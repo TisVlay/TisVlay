@@ -133,6 +133,18 @@ export component AppWindow inherits Window {
         return true;
     }
 
+    // Focus was lost (its item was hidden or destroyed, and Slint ran
+    // no handler for the key that just arrived): put it back on the
+    // column it was in, where the pane picks the stop.
+    public function restore-focus() {
+        if (Nav.column == 0) {
+            root.focus-active-sidebar-item();
+        } else {
+            Nav.focus-visible = true;
+            Nav.request-column(Nav.column == 1 ? 1 : 2);
+        }
+    }
+
     // Couch mode's Tab: the next or previous pane, with focus on its
     // sidebar item.
     function cycle-pane(forward: bool) {
@@ -268,6 +280,7 @@ export component AppWindow inherits Window {
         //   menus do with the shoulder buttons; a Tab Rust synthesized
         //   for an arrow is let through to Slint's traversal.
         capture-key-pressed(event) => {
+            Nav.key-seen += 1;
             if (event.text == Key.Tab || event.text == Key.Backtab
                 || event.text == Key.UpArrow || event.text == Key.DownArrow
                 || event.text == Key.LeftArrow || event.text == Key.RightArrow

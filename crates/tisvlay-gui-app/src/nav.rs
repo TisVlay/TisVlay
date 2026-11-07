@@ -24,7 +24,7 @@ use tokio::sync::RwLock;
 use tracing::warn;
 
 use crate::profiles::{self, EditorKind, ProfileEditor};
-use crate::{AppWindow, Pane, ProfileKind, ProfileRow, Profiles};
+use crate::{AppWindow, Nav, Pane, ProfileKind, ProfileRow, Profiles};
 
 /// The master/detail selection captured alongside a pane.
 #[derive(Clone, PartialEq)]
@@ -40,6 +40,10 @@ enum NavSel {
 struct NavEntry {
     pane: Pane,
     sel: NavSel,
+    /// The column focus was in when this page was left (`Nav.column`:
+    /// sidebar, list or detail), so coming back puts focus where it
+    /// was rather than leaving a remote with nothing focused.
+    column: i32,
 }
 
 struct NavHistory {
@@ -52,16 +56,23 @@ impl NavHistory {
         let cur = self.cursor;
         let cur_pane = self.entries[cur].pane;
         self.entries[cur].sel = read_current_sel(app, cur_pane);
+        self.entries[cur].column = app.global::<Nav>().get_column();
         if self.entries[cur].pane == pane && self.entries[cur].sel == sel {
             return false;
         }
         self.entries.truncate(cur + 1);
-        self.entries.push(NavEntry { pane, sel });
+        self.entries.push(NavEntry {
+            pane,
+            sel,
+            column: 0,
+        });
         self.cursor = self.entries.len() - 1;
         true
     }
 
-    fn step(&mut self, app: &AppWindow, forward: bool) -> Option<(Pane, NavSel)> {
+    /// Move one step through the history: the destination's pane,
+    /// selection and the column focus was in there.
+    fn step(&mut self, app: &AppWindow, forward: bool) -> Option<(Pane, NavSel, i32)> {
         let cur = self.cursor;
         let next = if forward {
             (cur + 1 < self.entries.len()).then_some(cur + 1)?
@@ -70,8 +81,21 @@ impl NavHistory {
         };
         let cur_pane = self.entries[cur].pane;
         self.entries[cur].sel = read_current_sel(app, cur_pane);
+        self.entries[cur].column = app.global::<Nav>().get_column();
         self.cursor = next;
-        Some((self.entries[next].pane, self.entries[next].sel.clone()))
+        let entry = &self.entries[next];
+        Some((entry.pane, entry.sel.clone(), entry.column))
+    }
+}
+
+/// After a history step, put focus back in the column it was in on
+/// that page: the sidebar item directly, a list or detail through the
+/// pane's column request.
+fn restore_column(app: &AppWindow, column: i32) {
+    if column == 0 {
+        app.invoke_focus_active_sidebar_item();
+    } else {
+        app.global::<Nav>().invoke_request_column(column);
     }
 }
 
@@ -107,6 +131,7 @@ pub(crate) fn wire(
         entries: vec![NavEntry {
             pane: app.get_active_pane(),
             sel: NavSel::None,
+            column: 0,
         }],
         cursor: 0,
     }));
@@ -141,8 +166,9 @@ pub(crate) fn wire(
     let step: StepFn = {
         let apply = apply.clone();
         Rc::new(move |app: &AppWindow, forward: bool| {
-            if let Some((pane, sel)) = history.borrow_mut().step(app, forward) {
+            if let Some((pane, sel, column)) = history.borrow_mut().step(app, forward) {
                 apply(app, pane, &sel);
+                restore_column(app, column);
             }
         })
     };
@@ -318,6 +344,7 @@ mod tests {
             entries: vec![NavEntry {
                 pane: app.get_active_pane(),
                 sel: NavSel::None,
+                column: 0,
             }],
             cursor: 0,
         }
@@ -341,7 +368,7 @@ mod tests {
         app.set_active_pane(Pane::About);
         assert!(history.step(&app, false).is_some());
 
-        let (pane, selection) = history
+        let (pane, selection, _) = history
             .step(&app, true)
             .unwrap_or_else(|| panic!("forward history should remain after stepping back"));
         assert!(pane == Pane::About);
@@ -349,7 +376,7 @@ mod tests {
 
         app.set_active_pane(Pane::Tvs);
         app.set_selected_tv_index(1);
-        let (pane, selection) = history
+        let (pane, selection, _) = history
             .step(&app, false)
             .unwrap_or_else(|| panic!("back history should remain after stepping forward"));
         assert!(pane == Pane::Tvs);

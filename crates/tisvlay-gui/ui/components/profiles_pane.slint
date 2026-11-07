@@ -482,6 +482,10 @@ component ProfileList inherits Rectangle {
 // `enabled: false`, which dims it and drops interactivity.
 component ProfileRowTrailing inherits HorizontalLayout {
     in property <ProfileFieldEntry> entry;
+    /// The reset button is about to go (a reset clears the local
+    /// value, and the button exists only while one is set); the row
+    /// moves focus to its control first.
+    callback reset-requested();
 
     spacing: Design.gap-form;
     alignment: end;
@@ -569,7 +573,10 @@ component ProfileRowTrailing inherits HorizontalLayout {
             source: Icons.reload;
             accessible-label: @tr("Reset {} to default", root.entry.label);
             tip: @tr("Reset field");
-            clicked => { Profiles.reset-field(root.entry.field-name); }
+            clicked => {
+                root.reset-requested();
+                Profiles.reset-field(root.entry.field-name);
+            }
         }
     }
 }
@@ -622,7 +629,7 @@ component ProfileFieldRowEnum inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ThemedSelect {
+                enum-control := ThemedSelect {
                     model: root.entry.options;
                     current-value: root.entry.current-value;
                     selected(v) => { Profiles.value-edited(root.entry.field-name, v); }
@@ -633,6 +640,7 @@ component ProfileFieldRowEnum inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    reset-requested => { enum-control.focus(); }
                 }
             }
         }
@@ -694,7 +702,7 @@ component ProfileFieldRowNumber inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ThemedSpinBox {
+                number-control := ThemedSpinBox {
                     value: root.entry.number-value;
                     minimum: root.entry.min-value;
                     maximum: root.entry.max-value;
@@ -711,6 +719,7 @@ component ProfileFieldRowNumber inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    reset-requested => { number-control.focus(); }
                 }
             }
         }
@@ -756,7 +765,7 @@ component ProfileFieldRowBool inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ThemedSwitch {
+                bool-control := ThemedSwitch {
                     checked: root.entry.bool-value;
                     accessible-label: root.entry.label;
                     toggled => {
@@ -773,6 +782,7 @@ component ProfileFieldRowBool inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    reset-requested => { bool-control.focus(); }
                 }
             }
         }

@@ -954,6 +954,26 @@ pub fn run() -> Result<()> {
                         _ => EventResult::Propagate,
                     }
                 }
+                // A navigation key with nothing focused reaches no
+                // handler; check after the dispatch and restore focus.
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && !event.repeat
+                        && is_navigation_key(&event.logical_key) =>
+                {
+                    if let Some(app) = app_weak.upgrade() {
+                        let seen = keys::key_seen(&app);
+                        let weak = app.as_weak();
+                        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                            if let Some(app) = weak.upgrade()
+                                && keys::recover_if_unhandled(&app, seen)
+                            {
+                                info!("focus was lost; restored to its column");
+                            }
+                        });
+                    }
+                    EventResult::Propagate
+                }
                 _ => EventResult::Propagate,
             });
     }
@@ -980,6 +1000,24 @@ pub fn run() -> Result<()> {
 
     info!("tisvlay-gui shutting down");
     Ok(())
+}
+
+/// The keys a remote navigates with, whose arrival with no focus means
+/// focus was lost.
+fn is_navigation_key(key: &slint::winit_030::winit::keyboard::Key) -> bool {
+    use slint::winit_030::winit::keyboard::{Key, NamedKey};
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::ArrowUp
+                | NamedKey::ArrowDown
+                | NamedKey::ArrowLeft
+                | NamedKey::ArrowRight
+                | NamedKey::Tab
+                | NamedKey::Enter
+                | NamedKey::Escape
+        )
+    )
 }
 
 /// Set the window's scale to the compositor's times couch mode's

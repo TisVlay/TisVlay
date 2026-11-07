@@ -9,7 +9,7 @@ use std::rc::Rc;
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use slint::platform::{Key, PointerEventButton};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
-use tisvlay_gui::keys::bind_key_router;
+use tisvlay_gui::keys::{bind_key_router, key_seen, recover_if_unhandled};
 use tisvlay_gui::{
     AppWindow, Couch, Daemon, EditPane, PairingWizard, Pane, ProfileKind, ProfileRow, Profiles,
     Tray, TvViewModel, WizardDiscoveredTv,
@@ -566,6 +566,120 @@ fn a_slider_keeps_left_and_right() {
         [1],
         "Right stepped the slider by one"
     );
+}
+
+/// Whether the control found by `id` draws its ring, so a test can tell
+/// where focus is without pressing anything.
+fn ring_on(app: &AppWindow, id: &str) -> bool {
+    find_by_accessible_id(app, id)
+        .and_then(|control| {
+            control
+                .query_descendants()
+                .match_predicate(|e| e.id().as_deref() == Some("Focusable::ring"))
+                .find_first()
+        })
+        .is_some_and(|ring| ring.computed_opacity() > 0.5)
+}
+
+/// Tab until the control with `id` is focused, or give up after 40.
+fn tab_to(app: &AppWindow, id: &str) -> bool {
+    for _ in 0..40 {
+        press(app, Key::Tab);
+        if ring_on(app, id) {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn focus_is_restored_after_its_control_vanished() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    let powered = counter();
+    let sink = powered.clone();
+    app.global::<Daemon>()
+        .on_power_on(move |_| *sink.borrow_mut() += 1);
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+
+    // The edit ends from outside (a save completing): the form and
+    // the focused field are destroyed, and Slint runs no handler for
+    // the next key.
+    app.global::<EditPane>().set_tv_uuid(SharedString::from(""));
+    let seen = key_seen(&app);
+    press(&app, Key::DownArrow);
+    assert!(
+        recover_if_unhandled(&app, seen),
+        "the shell never saw the key, so focus is restored"
+    );
+
+    // Restored to the detail column: its first stop, the Power button.
+    press(&app, Key::Return);
+    assert_eq!(*powered.borrow(), 1);
+    let seen = key_seen(&app);
+    press(&app, Key::DownArrow);
+    assert!(
+        !recover_if_unhandled(&app, seen),
+        "with focus live the shell sees every key"
+    );
+}
+
+#[test]
+fn cancelling_an_edit_lands_on_the_edit_button() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    let edit = app.global::<EditPane>();
+    // Rust ends the edit on cancel; mirror that.
+    let weak = app.as_weak();
+    edit.on_cancel(move || {
+        if let Some(app) = weak.upgrade() {
+            app.global::<EditPane>().set_tv_uuid(SharedString::from(""));
+        }
+    });
+    let started = counter();
+    let sink = started.clone();
+    edit.on_start(move |_| *sink.borrow_mut() += 1);
+
+    assert!(
+        tab_to(&app, "tv-detail-tv-1-cancel-button"),
+        "Tab reaches Cancel"
+    );
+    press(&app, Key::Return);
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-edit-button"),
+        "the Edit button that replaced Cancel took focus"
+    );
+    press(&app, Key::Return);
+    assert_eq!(*started.borrow(), 1, "Return on it starts a new edit");
+}
+
+#[test]
+fn closing_the_wizard_lands_on_the_list() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    let wizard = app.global::<PairingWizard>();
+    wizard.set_active(true);
+    settle();
+    // Nothing is focused when the wizard closes; the list takes over.
+    // The headless tree instantiates the list on the first query, and
+    // the list serves the request a frame after it exists.
+    wizard.set_active(false);
+    settle();
+    let _ = find_by_accessible_id(&app, "tvs-row-tv-1");
+    settle();
+    // No key has shown the ring yet, so observe the focus by its
+    // effect: Return on the focused row opens the detail, where Return
+    // again fires the Power button.
+    let powered = counter();
+    let sink = powered.clone();
+    app.global::<Daemon>()
+        .on_power_on(move |_| *sink.borrow_mut() += 1);
+    press(&app, Key::Return);
+    press(&app, Key::Return);
+    assert_eq!(*powered.borrow(), 1, "the wizard's exit focused the row");
 }
 
 #[test]
