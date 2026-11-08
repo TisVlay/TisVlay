@@ -48,7 +48,7 @@ The pending `changed` handlers are pushed at the front of a list and drained fro
 
 ### A programmatic `focus()` on an item that refuses walks on
 
-`focus()` compiles to `set_focus_item(.., Programmatic)`, whose `move_focus` takes focus off the current item and walks `next_focus_item` until one accepts, and with the `Programmatic` reason it ignores visibility. So `focus()` on a disabled control isn't a no-op: focus lands on whatever accepts next in tree order, a hidden dialog's `FocusScope` included, with no ring anywhere. Disable what's closed (`enabled: open` on a dialog's scope and buttons) and guard a programmatic `focus()` on a target that may be disabled.
+`focus()` compiles to `set_focus_item(.., Programmatic)`, whose `move_focus` takes focus off the current item and walks `next_focus_item` until one accepts, and with the `Programmatic` reason it ignores visibility. So `focus()` on a disabled control isn't a no-op: focus lands on whatever accepts next in tree order, a hidden dialog's `FocusScope` included, with no ring anywhere. The next key then doesn't reach that scope either: `process_key_input` drops a focus item its clip-aware `is_visible()` rejects, so the key is lost, and a shell that restores focus on a lost key sends it straight back in. Disable what's closed (`enabled: open` on a dialog's scope and buttons) and guard a programmatic `focus()` on a target that may be disabled. Reproduced on 1.18.1 and on master (2026-11-07).
 
 ### The Menu key's release opens a `ContextMenu` too
 
