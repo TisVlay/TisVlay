@@ -965,7 +965,7 @@ pub fn run() -> Result<()> {
         let back = nav.back.clone();
         let forward = nav.forward.clone();
         app.window()
-            .on_winit_window_event(move |window, event| match event {
+            .on_winit_window_event(move |_window, event| match event {
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button,
@@ -1004,11 +1004,13 @@ pub fn run() -> Result<()> {
                     if let Some(app) = app_weak.upgrade()
                         && app.global::<Couch>().get_active()
                     {
-                        compositor_scale.set(window.scale_factor());
+                        // The hook's `window` is Slint's, whose scale is
+                        // the one already applied: the compositor's own
+                        // comes from the winit window underneath.
+                        let compositor = compositor_scale_now(&app, &compositor_scale);
                         let factor = app.global::<Couch>().get_scale_percent() as f32 / 100.0;
-                        let wanted = compositor_scale.get() * factor;
-                        if (app.window().scale_factor() - wanted).abs() > 1e-3 {
-                            apply_scale(&app, compositor_scale.get(), Some(factor));
+                        if (app.window().scale_factor() - compositor * factor).abs() > 1e-3 {
+                            apply_scale(&app, compositor, Some(factor));
                         }
                     }
                     EventResult::Propagate
