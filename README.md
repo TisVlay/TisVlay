@@ -33,7 +33,9 @@
 - 🖱️ Graphical User Interfaces
   - GUI app for device pairing, profile editing, and user setting
   - System tray for quick access controls and device status
-- 🛋️ Couch...
+- 🛋️ Couch mode for the big screen
+  - Drive the GUI from a TV remote or gamepad, no mouse needed
+  - Scaled-up 10-foot layout, automatic under Plasma Bigscreen
 
 ## 📸 Screenshots
 
