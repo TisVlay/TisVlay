@@ -11,7 +11,7 @@ TisVlay is configured with TOML, spread across a few files:
 | `~/.config/tisvlay/tray.toml` | each desktop user | tray notification preferences |
 | `~/.config/tisvlay/gui.toml` | each desktop user | the window's own preferences: [couch mode](./gui-tray.md#from-a-remote-or-gamepad) and its scale |
 
-Each service rewrites its own file as state changes, so changes you make in the app, the tray, or the command line are persisted without any file editing. You can also [edit a file by hand and reload it](#hand-editing-and-reloading). The window's `gui.toml` is the exception: it's read when the window opens and written by the **Settings** page, and a reload leaves it alone.
+Each service rewrites its own file as state changes, so changes you make in the app, the tray, or the command line are persisted without any file editing. You can also [edit a file by hand and reload it](#hand-editing-and-reloading). The window's `gui.toml` is the exception: it's read when the window opens and written by the **Settings** page, and a reload leaves it alone. If it can't be read when the window opens, it's moved aside to `gui.toml.edited` and the window starts with its defaults; a scale outside the **Scale** control's range is brought back into it.
 
 To declare TVs **declaratively** (for a reproducible or headless setup), give the daemon a **seed file** with `tisvlay service daemon --seed <file>`; on NixOS, the module's `settings` option writes it for you. The seed is re-applied on every start, but only for TVs whose `id` is absent from `daemon.toml`, so runtime edits stick, and a still-declared TV that you removed at runtime comes back (drop the seed entry to drop it). Omit an entry's `id` and it is derived deterministically from the entry's content.
 

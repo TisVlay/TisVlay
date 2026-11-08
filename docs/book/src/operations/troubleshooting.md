@@ -88,7 +88,7 @@ Until the session service matches the daemon again, your user profile's actions 
 This only applies if you edited a configuration file by hand. After clicking **Reload** in the sidebar (or running `tisvlay reload`):
 
 - **A banner appears naming a file and a problem.** The message gives the line and column of a parse error. Nothing from that file was applied: fix it and click **Reload** again.
-- **A `<file>.edited` file appeared.** You edited a state file, but a service wrote it before you reloaded, so your edit was moved aside rather than overwritten. Redo the edit in the current file and reload.
+- **A `<file>.edited` file appeared.** You edited a state file, but a service wrote it before you reloaded, so your edit was moved aside rather than overwritten. Redo the edit in the current file and reload. For the window's `gui.toml`, it means the file couldn't be read when the window opened and the window started with its defaults; fix the copy set aside and put it back.
 
 See [Hand-editing and reloading](../guide/configuration.md#hand-editing-and-reloading).
 
