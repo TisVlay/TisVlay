@@ -120,12 +120,23 @@ impl NavHistory {
 }
 
 impl NavEntry {
-    /// Record where focus is as this page is left.
+    /// Record where focus is as this page is left. A page left through
+    /// the sidebar keeps no stop: the item focused by then is the
+    /// destination's (it navigates from its focus-in), and focusing it
+    /// on the way back would navigate forward again. The column
+    /// fallback focuses the active item instead.
     fn leave_from(&mut self, app: &AppWindow) {
         let nav = app.global::<Nav>();
+        let column = nav.get_column();
+        if column == 0 {
+            self.anchor = -1;
+            self.anchor_id = SharedString::default();
+            self.column = 0;
+            return;
+        }
         self.anchor = nav.get_focus_seq();
         self.anchor_id = nav.get_focus_id();
-        self.column = nav.get_column();
+        self.column = column;
     }
 }
 
@@ -510,5 +521,24 @@ mod tests {
         ));
         assert_eq!(history.entries.len(), 2);
         assert!(history.step(&app, true).is_none());
+    }
+
+    #[test]
+    fn a_page_left_through_the_sidebar_returns_to_its_active_item() {
+        let app = app_with_selected_tv();
+        let mut history = history_for(&app);
+        // The Profiles item has focus, and has reported itself, by the
+        // time its focus-in navigates.
+        app.global::<Nav>()
+            .invoke_stop_focused(0, 0, SharedString::from("sidebar-profiles"));
+        assert!(history.navigate(&app, Pane::Profiles, NavSel::None, false));
+
+        // Back names no stop: focusing the Profiles item would navigate
+        // forward again. The column fallback focuses the active item.
+        let (pane, _, ret) = history.step(&app, false).unwrap();
+        assert!(pane == Pane::Tvs);
+        assert_eq!(ret.anchor, -1);
+        assert_eq!(ret.anchor_id, "");
+        assert_eq!(ret.column, 0);
     }
 }

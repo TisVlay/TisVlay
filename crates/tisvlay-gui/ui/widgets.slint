@@ -174,11 +174,14 @@ export component Focusable inherits Rectangle {
         }
     }
     // By the count for an instance that still exists, by the id for
-    // one re-created with its pane (history back).
+    // one re-created with its pane (history back). Only while it can
+    // take focus: a programmatic focus on an item that refuses walks on
+    // to the next item that accepts, hidden ones included.
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
-        if ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
-            || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id)) {
+        if (root.enabled && root.focusable
+            && ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
+                || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id))) {
             Nav.anchor-served = Nav.anchor-tick;
             root.focus();
         }
@@ -335,7 +338,12 @@ export component ContextualHelpButton inherits Focusable {
     accessible-label: root.name;
     accessible-description: root.text;
 
+    // The row a pin was made from: this "i"'s own, or the field row
+    // that relayed Menu to its section's "i". The bubble follows that
+    // row.
+    property <int> pinned-for-row;
     activated => {
+        root.pinned-for-row = Nav.focus-row;
         trigger.toggle();
     }
     key(event) => {
@@ -350,16 +358,29 @@ export component ContextualHelpButton inherits Focusable {
     }
     // Pinned from the keyboard or a click, the bubble follows the row:
     // focus moving to another row (or to a list, the rail) closes it.
+    // Checked a tick later: a row walk probes past the row's end and
+    // undoes the hop, and that must not close the bubble.
     property <int> row-mirror: Nav.focus-row;
     changed row-mirror => {
-        if (trigger.pinned-mine && Nav.focus-row != root.nav-row) {
-            Help.dismiss();
+        if (trigger.pinned-mine && Nav.focus-row != root.pinned-for-row) {
+            row-left.running = true;
+        }
+    }
+    row-left := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if (trigger.pinned-mine && Nav.focus-row != root.pinned-for-row) {
+                Help.dismiss();
+            }
         }
     }
     // Menu on a stop of this row toggles this help.
     property <int> menu-mirror: Help.menu-tick;
     changed menu-mirror => {
         if (root.nav-row != 0 && Help.menu-row == root.nav-row) {
+            root.pinned-for-row = Nav.focus-row;
             trigger.toggle();
         }
     }
@@ -1026,7 +1047,7 @@ export component LineEditField inherits Rectangle {
             reject
         }
         focus-gained(reason) => {
-            Nav.stop-focused(2, root.nav-row, "");
+            Nav.stop-focused(2, root.nav-row, root.accessible-id);
             Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
             root.anchor = Nav.focus-seq;
         }
@@ -1044,8 +1065,9 @@ export component LineEditField inherits Rectangle {
     property <int> anchor: -1;
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
-        if ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
-            || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id)) {
+        if (root.enabled
+            && ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
+                || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id))) {
             Nav.anchor-served = Nav.anchor-tick;
             root.take-focus();
         }
@@ -2232,9 +2254,13 @@ export component ConfirmDialog inherits Rectangle {
     height: 100%;
 
     // The keys the buttons don't take bubble up here; no stop itself.
+    // Disabled while closed, as the buttons are: a programmatic focus
+    // that walks the tree for an item that accepts must not land in a
+    // hidden dialog.
     FocusScope {
         width: 100%;
         height: 100%;
+        enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;
         key-pressed(event) => {
@@ -2302,13 +2328,14 @@ export component ConfirmDialog inherits Rectangle {
                     alignment: end;
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
+                        enabled: root.open;
                         accessible-id: "dialog-cancel";
                         reveal: false;
                         clicked => { root.cancelled(); }
                     }
                     confirm-button := DangerBtn {
                         text: root.confirm-label;
-                        enabled: root.confirm-enabled;
+                        enabled: root.open && root.confirm-enabled;
                         accessible-id: "dialog-confirm";
                         reveal: false;
                         clicked => { root.confirmed(); }
@@ -2392,10 +2419,12 @@ export component NameInputDialog inherits Rectangle {
     height: 100%;
 
     // The keys the field and the buttons don't take bubble up here; no
-    // stop itself.
+    // stop itself. Disabled while closed, as the field and the buttons
+    // are, so a programmatic focus walking the tree can't land here.
     FocusScope {
         width: 100%;
         height: 100%;
+        enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;
         key-pressed(event) => {
@@ -2457,6 +2486,7 @@ export component NameInputDialog inherits Rectangle {
                 name-field := LineEditField {
                     placeholder-text: root.placeholder;
                     text <=> root.name;
+                    enabled: root.open;
                     accessible-id: "dialog-name";
                     edited(v) => { root.name-changed(v); }
                     accepted(v) => {
@@ -2476,6 +2506,7 @@ export component NameInputDialog inherits Rectangle {
                     alignment: end;
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
+                        enabled: root.open;
                         accessible-id: "dialog-cancel";
                         reveal: false;
                         clicked => { root.cancelled(); }
@@ -2483,7 +2514,7 @@ export component NameInputDialog inherits Rectangle {
                     confirm-button := ThemedButton {
                         text: root.confirm-label;
                         primary: true;
-                        enabled: root.confirm-enabled;
+                        enabled: root.open && root.confirm-enabled;
                         accessible-id: "dialog-confirm";
                         reveal: false;
                         clicked => { root.confirmed(); }

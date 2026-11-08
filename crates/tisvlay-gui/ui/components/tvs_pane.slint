@@ -137,6 +137,10 @@ component FormRow {
     // Optional longer / optional help, revealed by a trailing "i"
     // ContextualHelpButton.
     in property <string> help;
+    /// Prefix for the "i"'s `accessible-id`, unique per TV: a detail
+    /// exists for every TV, hidden when not selected, and an anchor
+    /// found by id must name the one shown.
+    in property <string> id-prefix;
     in property <length> label-width: Design.width-label-col;
     /// The row's id for the arrows: the control a site places here
     /// takes it as its `row`, the trailing "i" does on its own.
@@ -192,7 +196,7 @@ component FormRow {
                     ContextualHelpButton {
                         text: root.help;
                         nav-row: root.row-id;
-                        accessible-id: "help-" + root.label;
+                        accessible-id: root.id-prefix + "help-" + root.label;
                     }
                 }
             }
@@ -338,7 +342,10 @@ component TvList inherits Rectangle {
     // A column request for the list: the selected row, else the first,
     // else the pair button. Also answers a request for the detail when
     // nothing is selected, since there's no detail to go to.
-    property <int> focus-row-index;
+    // The row is named by uuid, not index: a removal drops the instance
+    // at that index at once and leaves the survivors' indexes stale until
+    // the next update, so an index names no live row for a while.
+    property <string> focus-row-uuid;
     property <int> focus-row-tick;
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
@@ -353,7 +360,7 @@ component TvList inherits Rectangle {
         if (slot < 0) {
             pair.focus();
         } else if (slot < root.tvs.length) {
-            root.focus-row-index = slot;
+            root.focus-row-uuid = root.tvs[slot].uuid;
             root.focus-row-tick += 1;
         }
     }
@@ -387,10 +394,15 @@ component TvList inherits Rectangle {
         if (Nav.column-target == 1 || root.selected-index < 0 || root.selected-index >= root.tvs.length) {
             Nav.column-served = Nav.column-tick;
             if (root.tvs.length > 0) {
-                root.focus-row-index = root.selected-index >= 0 ? root.selected-index : 0;
+                root.focus-row-uuid = root.tvs[root.selected-index >= 0 ? root.selected-index : 0].uuid;
                 root.focus-row-tick += 1;
-            } else {
+            } else if (pair.enabled) {
                 pair.focus();
+            } else {
+                // Nothing here can take focus (the daemon is down):
+                // back to the sidebar, rather than a focus that walks
+                // on into whatever accepts next.
+                Nav.request-column(0);
             }
         }
     }
@@ -587,7 +599,7 @@ component TvList inherits Rectangle {
                     selected: i == root.selected-index;
                     tab-stop: root.has-selection ? i == root.selected-index : i == 0;
                     focus-tick: root.focus-row-tick;
-                    focus-wanted: i == root.focus-row-index;
+                    focus-wanted: tv.uuid == root.focus-row-uuid;
                     // Selection follows focus; Return, Right or a click
                     // then enter the detail.
                     focus-in => {
@@ -930,6 +942,7 @@ component TvDetail inherits Rectangle {
                             root.tv.connected || root.tv.supports-wake;
 
                         power-button := ThemedButton {
+                            accessible-id: "tv-detail-" + root.tv.uuid + "-power";
                             // Keyed on `is-on`, not `connected`: a CEC TV
                             // reachable in standby is connected-but-off, and
                             // must still offer "Power on".
@@ -977,6 +990,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     managed-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("Managed");
                         help: @tr("Let this TV's System and User profiles act: on the TV, and on this PC for the TV's own events.");
                         HorizontalLayout {
@@ -1007,6 +1021,7 @@ component TvDetail inherits Rectangle {
                     // placement matches the INFO group's CopyBtn and
                     // the Profiles-pane field-row reset glyph.
                     system-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("system profile" => "System");
                         help: @tr("Drives daemon lifecycle (boot / shutdown / sleep).");
                         HorizontalLayout {
@@ -1041,6 +1056,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     user-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("user profile" => "User");
                         help: @tr("Drives session events (lock / unlock / idle).");
                         HorizontalLayout {
@@ -1082,6 +1098,7 @@ component TvDetail inherits Rectangle {
                     title: @tr("FROM THE TV");
 
                     FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("Remote power key");
                         help: @tr("Whether the TV's remote can power this PC off (on HDMI-CEC, the TV's \"power off this device\"), for the profiles' \"On remote power key\".");
                         Text {
@@ -1093,6 +1110,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("Remote keys");
                         help: @tr("Whether the TV remote's other keys can reach this PC's desktop (on HDMI-CEC, through an adapter with a remote-control device), for the system profile's \"Remote keys reach the desktop\".");
                         Text {
@@ -1104,6 +1122,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("Wakes this PC");
                         help: @tr("Whether the TV powering on can wake this PC from sleep (on HDMI-CEC, through a USB adapter allowed to wake the system), for the system profile's \"On TV power on\".");
                         Text {
@@ -1127,6 +1146,7 @@ component TvDetail inherits Rectangle {
                     title: @tr("PICTURE");
 
                     if root.tv.has-backlight: backlight-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("Backlight");
                         help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
@@ -1139,6 +1159,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     if root.tv.has-screen: screen-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("screen power" => "Screen");
                         help: @tr("Turn off the display — a dedicated screen-blank with instant resume where the TV supports it, otherwise emulated by powering the set off and on.");
                         HorizontalLayout {
@@ -1161,6 +1182,7 @@ component TvDetail inherits Rectangle {
                     title: @tr("AUDIO");
 
                     if root.tv.has-volume: volume-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("Volume");
                         OptimisticSlider {
                             nav-row: volume-row.row-id;
@@ -1172,6 +1194,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     if root.tv.has-mute: mute-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("Mute");
                         ThemedSwitch {
                             nav-row: mute-row.row-id;
@@ -1187,6 +1210,7 @@ component TvDetail inherits Rectangle {
                     title: @tr("INPUT");
 
                     current-input-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("current input" => "Current");
                         help: @tr("Current input shown now; changing it switches the live input.");
                         ThemedSelect {
@@ -1200,6 +1224,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     primary-input-row := FormRow {
+                        id-prefix: "tv-detail-" + root.tv.uuid + "-";
                         label: @tr("primary input" => "Primary");
                         help: @tr("Primary input gating automation; E.g. input used for display.");
                         ThemedSelect {
@@ -1494,6 +1519,14 @@ export component TvsPane {
     // takes over.
     changed has-selection => {
         if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
+    // The TV under the selection changed without the selection moving
+    // (a TV before it was removed): the detail under focus is gone too.
+    property <string> selected-uuid: root.has-selection ? root.tvs[root.selected-index].uuid : "";
+    changed selected-uuid => {
+        if (root.has-selection && Nav.column == 2) {
             Nav.request-column(1);
         }
     }

@@ -348,8 +348,22 @@ export component ThemedSelect inherits Rectangle {
             return reject;
         }
         focus-gained(reason) => {
-            Nav.stop-focused(2, root.nav-row, "");
+            Nav.stop-focused(2, root.nav-row, root.accessible-id);
             Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+            root.anchor = Nav.focus-seq;
+        }
+    }
+
+    // The select's focus anchor, so a dialog opened from it (Escape in
+    // a dirty config edit) comes back to it; a focusable keeps its own.
+    property <int> anchor: -1;
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        if (root.enabled
+            && ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
+                || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id))) {
+            Nav.anchor-served = Nav.anchor-tick;
+            fs.focus();
         }
     }
 

@@ -205,6 +205,7 @@ export component AboutPane inherits Rectangle {
     // A column request lands on the pane's first control.
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
+        Nav.column-served = Nav.column-tick;
         brand.focus();
     }
     // The header's two lines are two rows for the arrows: the brand

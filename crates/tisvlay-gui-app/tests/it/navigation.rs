@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use slint::platform::{Key, PointerEventButton};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_gui::keys::{bind_key_router, key_seen, recover_if_unhandled};
 use tisvlay_gui::{
     AppWindow, Couch, Daemon, EditPane, Help, Nav, PairingWizard, Pane, ProfileFieldEntry,
@@ -1757,7 +1757,7 @@ fn return_on_an_i_pins_its_help_until_focus_leaves_the_row() {
 
     // Right to the row's "i", a ringed stop; Return pins its help.
     press(&app, Key::RightArrow);
-    assert!(ring_on(&app, "help-Managed"), "the \"i\" is a ringed stop");
+    assert!(ring_on(&app, "tv-detail-tv-1-help-Managed"), "the \"i\" is a ringed stop");
     press(&app, Key::Return);
     assert!(
         help.get_shown() && help.get_pinned(),
@@ -1779,7 +1779,7 @@ fn return_on_an_i_pins_its_help_until_focus_leaves_the_row() {
     press(&app, Key::Escape);
     assert!(!help.get_shown(), "Escape closes");
     assert!(
-        ring_on(&app, "help-Managed"),
+        ring_on(&app, "tv-detail-tv-1-help-Managed"),
         "and leaves focus on the \"i\""
     );
 }
@@ -1907,4 +1907,207 @@ fn return_on_the_about_brand_opens_the_website() {
     tabs(&app, SIDEBAR_STOPS + 1);
     press(&app, Key::Return);
     assert_eq!(*opened.borrow(), 1);
+}
+
+#[test]
+fn escape_on_another_pane_leaves_a_tv_edit_out_of_sight_alone() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    bind_key_router(&app);
+    // The edit stays open on the TVs pane while Profiles shows.
+    app.set_active_pane(Pane::Profiles);
+    press(&app, Key::Escape);
+    assert_eq!(
+        app.global::<EditPane>().get_cancel_tick(),
+        0,
+        "Escape on Profiles doesn't cancel the edit it can't see"
+    );
+}
+
+#[test]
+fn right_into_an_empty_tvs_pane_with_no_daemon_keeps_the_sidebar() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&[]);
+    app.set_daemon_available(false);
+    bind_key_router(&app);
+    press(&app, Key::Tab);
+    assert!(ring_on(&app, "sidebar-tvs"));
+    // Nothing in the pane can take focus: the "+" is disabled and the
+    // list is empty. Focus must not walk on into a hidden dialog.
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "sidebar-tvs"), "the sidebar keeps focus");
+    assert_eq!(visible_rings(&app), 1);
+    press(&app, Key::Escape);
+    assert!(ring_on(&app, "sidebar-tvs"), "and the shell still sees keys");
+}
+
+#[test]
+fn the_wizards_later_steps_land_a_column_request_on_the_footer() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    make_tall(&app);
+    let wizard = app.global::<PairingWizard>();
+    wizard.set_active(true);
+    wizard.set_step(3);
+    wizard.set_pair_phase(SharedString::from("awaiting_tv"));
+    settle();
+    let nav = app.global::<Nav>();
+    nav.set_focus_visible(true);
+    // What a dialog closing onto a destroyed opener (Re-pair) and a key
+    // arriving with nothing focused both end in.
+    nav.invoke_request_column(2);
+    settle();
+    assert!(
+        ring_on(&app, "wizard-cancel-button"),
+        "mid-handshake, Cancel is the enabled footer button"
+    );
+    wizard.set_pair_phase(SharedString::from("complete"));
+    settle();
+    nav.invoke_request_column(2);
+    settle();
+    assert!(
+        ring_on(&app, "wizard-next-button"),
+        "Next takes the landing once enabled"
+    );
+}
+
+#[test]
+fn a_column_request_served_elsewhere_doesnt_pull_the_tv_list_later() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    let _navigated = record_navigation(&app);
+    press(&app, Key::Tab);
+    press(&app, Key::DownArrow);
+    assert!(app.get_active_pane() == Pane::Profiles);
+    press(&app, Key::RightArrow);
+    press(&app, Key::LeftArrow);
+    press(&app, Key::UpArrow);
+    assert!(app.get_active_pane() == Pane::Tvs);
+    assert!(ring_on(&app, "sidebar-tvs"));
+    // The re-created list must not take a request another pane served.
+    settle();
+    settle();
+    assert!(ring_on(&app, "sidebar-tvs"), "focus stays on the item");
+    assert_eq!(visible_rings(&app), 1);
+}
+
+#[test]
+fn removing_a_tv_before_the_selected_one_lands_on_the_list() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-a", "tv-b"]);
+    bind_key_router(&app);
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    assert!(tab_to(&app, "tv-detail-tv-a-remove-button"));
+    // The TV under focus goes away (by another client): the selection
+    // index now names the other TV, and the focused detail is gone.
+    app.get_tvs()
+        .as_any()
+        .downcast_ref::<VecModel<TvViewModel>>()
+        .expect("the test's own VecModel")
+        .remove(0);
+    settle();
+    settle();
+    assert!(
+        ring_on(&app, "tvs-row-tv-b"),
+        "the list takes focus, on the TV now selected"
+    );
+}
+
+#[test]
+fn up_from_a_stop_in_no_row_stays_in_the_detail() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    // Power is the detail's first stop and sits in no row.
+    assert!(tab_to(&app, "tv-detail-tv-1-power"));
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-power"),
+        "Up at the top of the detail stays; Left is the way to the list"
+    );
+}
+
+#[test]
+fn an_arrow_after_a_click_on_empty_background_resumes_in_the_last_column() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    make_tall(&app);
+    press(&app, Key::Tab);
+    assert!(ring_on(&app, "sidebar-tvs"));
+    // A click on the sidebar's empty background focuses the shell's
+    // own scope.
+    let position = slint::LogicalPosition::new(100.0, 900.0);
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    settle();
+    assert_eq!(visible_rings(&app), 0, "the click took focus off the item");
+    press(&app, Key::RightArrow);
+    assert!(
+        ring_on(&app, "sidebar-tvs"),
+        "Right resumes at the last column, the sidebar, not in the list"
+    );
+}
+
+#[test]
+fn a_select_keeps_an_anchor_for_a_dialog_to_come_back_to() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.set_system_profiles(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "default",
+    )])));
+    app.set_selected_tv_index(0);
+    make_tall(&app);
+    assert!(tab_to(&app, "tv-detail-tv-1-system-profile"));
+    let nav = app.global::<Nav>();
+    let anchor = nav.get_focus_seq();
+    assert_eq!(
+        nav.get_focus_id(),
+        "tv-detail-tv-1-system-profile",
+        "the select reports its id"
+    );
+    press(&app, Key::Tab);
+    assert!(!ring_on(&app, "tv-detail-tv-1-system-profile"));
+    // What a dialog does as it closes.
+    nav.invoke_request_anchor(anchor, SharedString::default(), 2);
+    settle();
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-system-profile"),
+        "the select took its anchor back"
+    );
+}
+
+#[test]
+fn right_at_the_end_of_a_row_keeps_its_pinned_help() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_on_managed_row();
+    let help = app.global::<Help>();
+    press(&app, Key::RightArrow);
+    press(&app, Key::Return);
+    assert!(help.get_shown() && help.get_pinned());
+    // The "i" is the row's last stop: Right probes the next row and
+    // comes back, and the bubble must not notice.
+    press(&app, Key::RightArrow);
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-help-Managed"),
+        "focus stayed on the \"i\""
+    );
+    assert!(help.get_shown(), "the probe hop didn't close the help");
+    // Leaving the row for real still closes it.
+    press(&app, Key::DownArrow);
+    assert!(!help.get_shown());
 }

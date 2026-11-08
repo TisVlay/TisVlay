@@ -336,6 +336,12 @@ component StepDiscover {
     property <int> focus-row-tick;
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
+        // The request the wizard's exit makes is the list's: this step
+        // is on its way out then.
+        if (!PairingWizard.active) {
+            return;
+        }
+        Nav.column-served = Nav.column-tick;
         if (root.discovered.length > 0) {
             root.focus-row-index = root.selected-index >= 0 ? root.selected-index : 0;
             root.focus-row-tick += 1;
@@ -1119,6 +1125,40 @@ export component PairingWizardPane inherits Rectangle {
     property <int> footer-row;
     init => {
         root.footer-row = Nav.next-row-id();
+        // Opened by key (the "+" is gone with the list): focus the
+        // discovery step a tick later, once it exists.
+        if (Nav.focus-visible) {
+            open-focus.running = true;
+        }
+    }
+    open-focus := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            Nav.request-column(2);
+        }
+    }
+
+    // A column request on a step past discovery (its rows answer
+    // there): the footer's primary button, else Cancel, else Back. A
+    // dialog closing onto a destroyed opener (Re-pair) and a key that
+    // arrives with nothing focused (Retry, the MAC buttons) both land
+    // here. Cancel and Back exist conditionally, so they focus
+    // themselves on a tick.
+    property <int> footer-target;
+    property <int> footer-focus-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (PairingWizard.active && PairingWizard.step != 1) {
+            Nav.column-served = Nav.column-tick;
+            if (root.next-enabled) {
+                next-button.focus();
+            } else {
+                root.footer-target = PairingWizard.cancel-enabled ? 1 : PairingWizard.back-enabled ? 2 : 0;
+                root.footer-focus-tick += 1;
+            }
+        }
     }
 
     background: Theme.surface-alt;
@@ -1240,17 +1280,32 @@ export component PairingWizardPane inherits Rectangle {
 
                 if PairingWizard.cancel-enabled: ThemedButton {
                     nav-row: root.footer-row;
+                    accessible-id: "wizard-cancel-button";
                     text: @tr("Cancel");
                     clicked => { PairingWizard.cancel(); }
+                    property <int> focus-mirror: root.footer-focus-tick;
+                    changed focus-mirror => {
+                        if (root.footer-target == 1) {
+                            self.focus();
+                        }
+                    }
                 }
                 Rectangle { horizontal-stretch: 1; }
                 if PairingWizard.back-enabled: ThemedButton {
                     nav-row: root.footer-row;
+                    accessible-id: "wizard-back-button";
                     text: @tr("Back");
                     clicked => { PairingWizard.step-back(); }
+                    property <int> focus-mirror: root.footer-focus-tick;
+                    changed focus-mirror => {
+                        if (root.footer-target == 2) {
+                            self.focus();
+                        }
+                    }
                 }
                 next-button := ThemedButton {
                     nav-row: root.footer-row;
+                    accessible-id: "wizard-next-button";
                     text: root.next-label;
                     primary: true;
                     enabled: root.next-enabled;

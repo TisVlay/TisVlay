@@ -69,6 +69,7 @@ export component SettingsPane inherits Rectangle {
     // A column request lands on the pane's first control.
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
+        Nav.column-served = Nav.column-tick;
         couch-select.focus();
     }
 

@@ -154,6 +154,7 @@ export component AppWindow inherits Window {
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
         if (Nav.column-target == 0) {
+            Nav.column-served = Nav.column-tick;
             root.focus-active-sidebar-item();
         }
     }
@@ -285,7 +286,10 @@ export component AppWindow inherits Window {
             Help.dismiss();
             return true;
         }
-        if (PairingWizard.active) {
+        // The wizard and a config edit live on the TVs pane; left open
+        // while another pane shows, they're out of sight, and Escape
+        // walks the pane shown.
+        if (PairingWizard.active && root.active-pane == Pane.tvs) {
             if (PairingWizard.back-enabled) {
                 PairingWizard.step-back();
             } else if (PairingWizard.cancel-enabled) {
@@ -293,7 +297,7 @@ export component AppWindow inherits Window {
             }
             return true;
         }
-        if (EditPane.tv-uuid != "") {
+        if (EditPane.tv-uuid != "" && root.active-pane == Pane.tvs) {
             EditPane.request-cancel();
             return true;
         }
@@ -449,6 +453,15 @@ export component AppWindow inherits Window {
                 || event.text == Key.LeftArrow || event.text == Key.RightArrow
                 || event.text == Key.Return || event.text == " ") {
                 Nav.focus-visible = true;
+            }
+            // An arrow while this scope itself has focus (a fresh
+            // window, a click on empty background): back to the column
+            // focus was in, not a walk from stale state.
+            if (self.has-focus && !event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.UpArrow || event.text == Key.DownArrow
+                    || event.text == Key.LeftArrow || event.text == Key.RightArrow)) {
+                root.restore-focus();
+                return accept;
             }
             if (!Select.open && !event.modifiers.alt && !event.modifiers.control
                 && (event.text == Key.DownArrow || event.text == Key.UpArrow)) {

@@ -83,7 +83,12 @@ fn position(app: &AppWindow) -> (i32, i32) {
 pub fn row_step(app: &AppWindow, forward: bool) {
     let (column, row) = position(app);
     if row == 0 {
+        // One stop, undone when it left the column: a stop in no row
+        // (Power) stops at the detail's ends as a row does.
         dispatch_tab(app, forward);
+        if position(app).0 != column {
+            undo(app, forward, 1);
+        }
         return;
     }
     // Leave the row.
