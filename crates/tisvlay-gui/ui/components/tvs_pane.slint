@@ -341,7 +341,8 @@ component TvList inherits Rectangle {
 
     // A column request for the list: the selected row, else the first,
     // else the pair button. Also answers a request for the detail when
-    // nothing is selected, since there's no detail to go to.
+    // nothing is selected, since there's no detail to go to; one for
+    // the sidebar is the shell's.
     // The row is named by uuid, not index: a removal drops the instance
     // at that index at once and leaves the survivors' indexes stale until
     // the next update, so an index names no live row for a while.
@@ -391,7 +392,7 @@ component TvList inherits Rectangle {
         }
     }
     function serve-column-request() {
-        if (Nav.column-target == 1 || root.selected-index < 0 || root.selected-index >= root.tvs.length) {
+        if (Nav.column-target == 1 || (Nav.column-target == 2 && !root.has-selection)) {
             Nav.column-served = Nav.column-tick;
             if (root.tvs.length > 0) {
                 root.focus-row-uuid = root.tvs[root.selected-index >= 0 ? root.selected-index : 0].uuid;

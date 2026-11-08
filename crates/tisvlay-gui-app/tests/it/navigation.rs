@@ -2210,3 +2210,25 @@ fn walking_through_a_number_row_writes_nothing_but_a_typed_edit_still_commits() 
     assert_eq!(edits.len(), 1, "{edits:?}");
     assert_eq!(edits[0].0, "locked_idle_timeout_seconds");
 }
+
+#[test]
+fn a_column_request_for_the_sidebar_isnt_answered_by_a_tv_list_with_no_selection() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    // Nothing selected: the list answers a request for the detail (there
+    // is none to go to), but one for the sidebar is the shell's, as
+    // history back makes when the page was left through the sidebar.
+    let nav = app.global::<Nav>();
+    nav.set_focus_visible(true);
+    nav.invoke_request_column(0);
+    settle();
+    assert!(ring_on(&app, "sidebar-tvs"), "the sidebar item took it");
+    assert_eq!(visible_rings(&app), 1, "and not the first row as well");
+    nav.invoke_request_column(2);
+    settle();
+    assert!(
+        ring_on(&app, "tvs-row-tv-1"),
+        "a detail request lands on the row instead"
+    );
+}
