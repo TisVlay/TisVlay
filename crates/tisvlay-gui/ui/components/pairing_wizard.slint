@@ -143,14 +143,7 @@ component DiscoveryRow inherits ListRow {
     }
 
     height: 56px;
-    background: root.selected ? Theme.row-selected
-              : (root.hovered ? Theme.row-hover : Theme.surface);
-
-    Rectangle {
-        x: 0;
-        width: root.selected ? 3px : 0;
-        background: Theme.accent;
-    }
+    resting-background: Theme.surface;
 
     HorizontalLayout {
         width: 100%;
@@ -192,9 +185,9 @@ component DiscoveryRow inherits ListRow {
                 Text {
                     horizontal-stretch: 1;
                     text: root.tv.name == "" ? root.tv.address : root.tv.name;
-                    color: root.selected ? Theme.row-selected-text : Theme.text;
+                    color: root.title-color;
                     font-size: Design.font-body;
-                    font-weight: root.selected ? 600 : 500;
+                    font-weight: root.title-weight;
                     vertical-alignment: center;
                     overflow: elide;
                 }

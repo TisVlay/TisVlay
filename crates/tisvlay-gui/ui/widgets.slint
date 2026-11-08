@@ -312,10 +312,18 @@ export component Chip inherits Focusable {
 // the detail; focusing the row is what selects it, in each list's own
 // `focus-in`), takes focus when its list asks (`focus-tick`, with
 // `focus-wanted` on the row meant), and hands Up and Down to its list
-// through `step` (`Nav.list-step-tick`). What a row shows, its height
-// and its background stay with each list.
+// through `step` (`Nav.list-step-tick`). The selected row's look is
+// the base's: its background, the accent stripe at its left edge and
+// the colors its title takes (`title-color`, `title-weight`). What a
+// row shows and its height stay with each list.
 export component ListRow inherits Focusable {
     in property <bool> selected;
+    /// The background of a row neither selected nor hovered: a list
+    /// drawn on a surface passes its surface.
+    in property <brush> resting-background: transparent;
+    /// The row's title follows the selection.
+    out property <brush> title-color: root.selected ? Theme.row-selected-text : Theme.text;
+    out property <int> title-weight: root.selected ? 600 : 500;
     callback clicked();
     /// The list asks a row to take focus by bumping `focus-tick` with
     /// `focus-wanted` set on the one it means.
@@ -328,7 +336,16 @@ export component ListRow inherits Focusable {
     accessible-role: list-item;
     column: 1;
     ring-inside: true;
+    background: root.selected ? Theme.row-selected
+              : (root.hovered ? Theme.row-hover : root.resting-background);
     animate background { duration: 150ms; }
+
+    // The accent stripe at the selected row's left edge.
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.selected ? Theme.accent : transparent;
+    }
 
     activated => {
         root.clicked();

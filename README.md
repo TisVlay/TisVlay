@@ -33,6 +33,7 @@
 - 🖱️ Graphical User Interfaces
   - GUI app for device pairing, profile editing, and user setting
   - System tray for quick access controls and device status
+- 🛋️ Couch...
 
 ## 📸 Screenshots
 

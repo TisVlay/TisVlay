@@ -222,15 +222,6 @@ component TvListRow inherits ListRow {
     accessible-id: "tvs-row-" + root.tv.uuid;
 
     height: 64px;
-    background: root.selected ? Theme.row-selected
-              : (root.hovered ? Theme.row-hover : transparent);
-
-    // 3px left accent stripe when selected.
-    Rectangle {
-        x: 0;
-        width: 3px;
-        background: root.selected ? Theme.accent : transparent;
-    }
 
     HorizontalLayout {
         width: 100%;
@@ -256,9 +247,9 @@ component TvListRow inherits ListRow {
 
             Text {
                 text: root.tv.name;
-                color: root.selected ? Theme.row-selected-text : Theme.text;
+                color: root.title-color;
                 font-size: Design.font-body;
-                font-weight: root.selected ? 600 : 500;
+                font-weight: root.title-weight;
                 overflow: elide;
             }
 
