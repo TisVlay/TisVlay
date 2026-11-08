@@ -76,12 +76,18 @@ impl CouchPrefs {
     /// the file is hand-editable, so a value outside them is clamped,
     /// and one that isn't a number (TOML's `nan`, `inf`) is the default.
     pub(crate) fn sanitized(self, min_percent: i32, max_percent: i32) -> Self {
+        debug_assert!(
+            0 < min_percent && min_percent <= max_percent,
+            "the scale's bounds are a positive, ordered range (the Couch global's)"
+        );
         let scale = if self.scale.is_finite() {
             self.scale
                 .clamp(min_percent as f32 / 100.0, max_percent as f32 / 100.0)
         } else {
             DEFAULT_SCALE
         };
+        // Whole percents, as the control shows and the hook applies.
+        let scale = (scale * 100.0).round() / 100.0;
         Self { scale, ..self }
     }
 }

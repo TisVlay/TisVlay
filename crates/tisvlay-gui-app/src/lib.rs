@@ -413,9 +413,21 @@ pub fn run() -> Result<()> {
     // A second tisvlay-gui process discovers the name is taken,
     // proxies `org.freedesktop.Application.Activate` to us, and
     // exits — no duplicate window flash.
-    // Couch mode: the GUI's own preference file, read before the window
-    // exists since it decides how the window opens.
     let gui_config_path = couch::default_config_path();
+    let (claim, activation) =
+        rt.block_on(dbus::try_claim_and_serve(Some(gui_config_path.clone())))?;
+    let gui_dbus = match claim {
+        dbus::ClaimResult::Primary(connection) => connection,
+        dbus::ClaimResult::Proxied => {
+            info!("tisvlay-gui shutting down (handed off to existing instance)");
+            return Ok(());
+        }
+    };
+
+    // Couch mode: the GUI's own preference file, read before the window
+    // exists since it decides how the window opens, and only by the
+    // instance that keeps the window (reading sets an unreadable file
+    // aside).
     let couch_prefs = couch::load(&gui_config_path);
     let couch_override = std::env::var(couch::ENV_OVERRIDE).ok();
     let session_signals = couch::SessionSignals::from_env();
@@ -427,19 +439,8 @@ pub fn run() -> Result<()> {
     info!(
         couch = couch_active,
         mode = couch_prefs.mode.as_str(),
-        scale = couch_prefs.scale,
         "couch mode decided"
     );
-
-    let (claim, activation) =
-        rt.block_on(dbus::try_claim_and_serve(Some(gui_config_path.clone())))?;
-    let gui_dbus = match claim {
-        dbus::ClaimResult::Primary(connection) => connection,
-        dbus::ClaimResult::Proxied => {
-            info!("tisvlay-gui shutting down (handed off to existing instance)");
-            return Ok(());
-        }
-    };
 
     // Initialize Slint's backend explicitly so `set_xdg_app_id`
     // below has a backend to register the app-id against — its
@@ -862,33 +863,36 @@ pub fn run() -> Result<()> {
         let couch = app.global::<Couch>();
         couch_prefs.sanitized(couch.get_scale_min_percent(), couch.get_scale_max_percent())
     };
+    debug!(scale = couch_prefs.scale, "couch scale");
     let prefs = std::rc::Rc::new(std::cell::Cell::new(couch_prefs));
-    let prefs_at_exit = prefs.clone();
     // One writer, in order, the latest value last: the scale spin box
     // commits a value per step of a held arrow, and concurrent atomic
     // writes would unlink each other's temp files. `written` is what
     // reached the disk, for the flush at exit.
-    let (prefs_tx, mut prefs_rx) = tokio::sync::watch::channel(couch_prefs);
-    let (written_tx, written_rx) = tokio::sync::watch::channel(couch_prefs);
+    // Each change carries a sequence number, and the writer reports the
+    // last one it attempted, written or not, so the flush waits for
+    // exactly the changes made and never for a write that failed.
+    let (prefs_tx, mut prefs_rx) = tokio::sync::watch::channel((0u64, couch_prefs));
+    let (settled_tx, settled_rx) = tokio::sync::watch::channel(0u64);
     {
         let path = gui_config_path;
         tokio::spawn(async move {
             while prefs_rx.changed().await.is_ok() {
-                let prefs = *prefs_rx.borrow_and_update();
+                let (seq, prefs) = *prefs_rx.borrow_and_update();
                 let target = path.clone();
                 match tokio::task::spawn_blocking(move || couch::save(&target, prefs)).await {
-                    Ok(Ok(())) => {
-                        // The receiver lives as long as the window.
-                        let _ = written_tx.send(prefs);
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        warn!(%error, file = %path.display(), "couch preference write failed");
                     }
-                    Ok(Err(e)) => {
-                        warn!(%e, file = %path.display(), "couch preference write failed");
-                    }
-                    Err(e) => warn!(%e, "couch preference writer stopped"),
+                    Err(error) => warn!(%error, "couch preference writer stopped"),
                 }
+                // The receiver lives as long as the window.
+                let _ = settled_tx.send(seq);
             }
         });
     }
+    let sent_seq = std::rc::Rc::new(std::cell::Cell::new(0u64));
     {
         let couch = app.global::<Couch>();
         couch.set_active(couch_active);
@@ -897,10 +901,12 @@ pub fn run() -> Result<()> {
 
         let save = {
             let tx = prefs_tx;
+            let sent_seq = sent_seq.clone();
             // Only a closed channel refuses, and the writer runs as long
             // as the runtime.
             move |prefs: couch::CouchPrefs| {
-                let _ = tx.send(prefs);
+                sent_seq.set(sent_seq.get() + 1);
+                let _ = tx.send((sent_seq.get(), prefs));
             }
         };
 
@@ -1070,14 +1076,21 @@ pub fn run() -> Result<()> {
     // remaining tasks.
     app.run()?;
 
+    // The name claim and the object server live exactly as long as this
+    // connection, so release it only once the window has closed, and
+    // before the flush below, so a launch meanwhile isn't handed to a
+    // window that is gone.
+    drop(gui_dbus);
+
     // A preference changed just before the window closed may still be
-    // on its way to the disk: wait for the writer, briefly.
-    let pending = prefs_at_exit.get();
-    let mut written_rx = written_rx;
+    // on its way to the disk: wait for the writer to reach the last
+    // change, briefly.
+    let last_sent = sent_seq.get();
+    let mut settled_rx = settled_rx;
     rt.block_on(async {
         let drained = async {
-            while *written_rx.borrow_and_update() != pending {
-                if written_rx.changed().await.is_err() {
+            while *settled_rx.borrow_and_update() < last_sent {
+                if settled_rx.changed().await.is_err() {
                     break;
                 }
             }
@@ -1089,9 +1102,6 @@ pub fn run() -> Result<()> {
             warn!("couch preference write didn't finish before exit");
         }
     });
-    // The name claim and the object server live exactly as long as this
-    // connection, so release it only once the window has closed.
-    drop(gui_dbus);
 
     info!("tisvlay-gui shutting down");
     Ok(())
