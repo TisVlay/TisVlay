@@ -668,10 +668,13 @@ component ProfileRowTrailing inherits HorizontalLayout {
     }
 }
 
-component ProfileFieldRowEnum inherits Rectangle {
+// A row of the editor's FIELDS card, whatever its control: the field's
+// entry, a row id for the arrows, and Menu relayed to the section's
+// toolbar "i", since the row has none of its own.
+component ProfileFieldRow inherits Rectangle {
     in property <ProfileFieldEntry> entry;
-    property <int> row-id;
-    /// The section toolbar's row: its "i" answers Menu on this row, which has none.
+    out property <int> row-id;
+    /// The section toolbar's row: its "i" answers Menu on this row.
     in property <int> section-row;
     property <int> menu-mirror: Help.menu-tick;
     changed menu-mirror => {
@@ -682,7 +685,9 @@ component ProfileFieldRowEnum inherits Rectangle {
     init => {
         root.row-id = Nav.next-row-id();
     }
+}
 
+component ProfileFieldRowEnum inherits ProfileFieldRow {
     height: row-layout.preferred-height;
 
     HorizontalLayout {
@@ -749,21 +754,7 @@ component ProfileFieldRowEnum inherits Rectangle {
     }
 }
 
-component ProfileFieldRowNumber inherits Rectangle {
-    in property <ProfileFieldEntry> entry;
-    property <int> row-id;
-    /// The section toolbar's row: its "i" answers Menu on this row, which has none.
-    in property <int> section-row;
-    property <int> menu-mirror: Help.menu-tick;
-    changed menu-mirror => {
-        if (Help.menu-row == root.row-id) {
-            Help.menu-toggle(root.section-row);
-        }
-    }
-    init => {
-        root.row-id = Nav.next-row-id();
-    }
-
+component ProfileFieldRowNumber inherits ProfileFieldRow {
     height: row-layout.preferred-height;
 
     HorizontalLayout {
@@ -843,21 +834,7 @@ component ProfileFieldRowNumber inherits Rectangle {
     }
 }
 
-component ProfileFieldRowBool inherits Rectangle {
-    in property <ProfileFieldEntry> entry;
-    property <int> row-id;
-    /// The section toolbar's row: its "i" answers Menu on this row, which has none.
-    in property <int> section-row;
-    property <int> menu-mirror: Help.menu-tick;
-    changed menu-mirror => {
-        if (Help.menu-row == root.row-id) {
-            Help.menu-toggle(root.section-row);
-        }
-    }
-    init => {
-        root.row-id = Nav.next-row-id();
-    }
-
+component ProfileFieldRowBool inherits ProfileFieldRow {
     height: row-layout.preferred-height;
 
     HorizontalLayout {
