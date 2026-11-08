@@ -2232,3 +2232,44 @@ fn a_column_request_for_the_sidebar_isnt_answered_by_a_tv_list_with_no_selection
         "a detail request lands on the row instead"
     );
 }
+
+#[test]
+fn the_rail_stops_at_both_ends_and_the_couch_cycle_wraps() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    let _navigated = record_navigation(&app);
+
+    press(&app, Key::Tab);
+    press(&app, Key::UpArrow);
+    assert!(
+        ring_on(&app, "sidebar-tvs"),
+        "Up at the top of the rail stays"
+    );
+    for _ in 0..3 {
+        press(&app, Key::DownArrow);
+    }
+    assert!(ring_on(&app, "sidebar-about"));
+    press(&app, Key::DownArrow);
+    assert!(
+        ring_on(&app, "sidebar-reload"),
+        "past the last pane lies Reload"
+    );
+    press(&app, Key::DownArrow);
+    assert!(ring_on(&app, "sidebar-reload"), "and the rail ends there");
+    press(&app, Key::UpArrow);
+    assert!(ring_on(&app, "sidebar-about"));
+
+    // Couch mode's Tab cycle wraps at both ends; the rail doesn't.
+    app.global::<Couch>().set_active(true);
+    press(&app, Key::Tab);
+    assert!(
+        app.get_active_pane() == Pane::Tvs,
+        "Tab past About wraps to TVs"
+    );
+    press_shift_tab(&app);
+    assert!(
+        app.get_active_pane() == Pane::About,
+        "Shift+Tab before TVs wraps to About"
+    );
+}

@@ -213,46 +213,52 @@ export component AppWindow inherits Window {
         }
         return forward ? root.jump-right() : root.jump-left();
     }
+    // The sidebar's order, defined once: the rail's steps, couch mode's
+    // Tab cycle and the launch focus all read it. Reload sits past the
+    // last pane, on the rail but outside the cycle.
+    pure function pane-index(p: Pane) -> int {
+        return p == Pane.tvs ? 0 : p == Pane.profiles ? 1 : p == Pane.settings ? 2 : 3;
+    }
+    pure function pane-at(i: int) -> Pane {
+        return i <= 0 ? Pane.tvs : i == 1 ? Pane.profiles : i == 2 ? Pane.settings : Pane.about;
+    }
+    function focus-pane-item(p: Pane) {
+        if (p == Pane.tvs) {
+            tvs-item.focus();
+        } else if (p == Pane.profiles) {
+            profiles-item.focus();
+        } else if (p == Pane.settings) {
+            settings-item.focus();
+        } else {
+            about-item.focus();
+        }
+    }
+    // The index of the pane item that has focus; -1 for none.
+    function focused-pane-index() -> int {
+        return tvs-item.focused ? 0
+            : profiles-item.focused ? 1
+            : settings-item.focused ? 2
+            : about-item.focused ? 3
+            : -1;
+    }
     function rail-step(forward: bool) -> bool {
-        if (tvs-item.focused) {
-            if (forward) {
-                profiles-item.focus();
-            }
-            return true;
-        }
-        if (profiles-item.focused) {
-            if (forward) {
-                settings-item.focus();
-            } else {
-                tvs-item.focus();
-            }
-            return true;
-        }
-        if (settings-item.focused) {
-            if (forward) {
-                about-item.focus();
-            } else {
-                profiles-item.focus();
-            }
-            return true;
-        }
-        if (about-item.focused) {
-            if (forward) {
-                if (reload.enabled) {
-                    reload.focus();
-                }
-            } else {
-                settings-item.focus();
-            }
-            return true;
-        }
         if (reload.focused) {
             if (!forward) {
-                about-item.focus();
+                root.focus-pane-item(Pane.about);
             }
             return true;
         }
-        return false;
+        if (root.focused-pane-index() < 0) {
+            return false;
+        }
+        if (!forward) {
+            root.focus-pane-item(root.pane-at(root.focused-pane-index() - 1));
+        } else if (root.focused-pane-index() < root.pane-index(Pane.about)) {
+            root.focus-pane-item(root.pane-at(root.focused-pane-index() + 1));
+        } else if (reload.enabled) {
+            reload.focus();
+        }
+        return true;
     }
     // A list step nobody served (no list stop has focus, or the wizard's
     // last row was passed) steps the Tab order instead, a tick later
@@ -318,15 +324,9 @@ export component AppWindow inherits Window {
     // Couch mode's Tab: the next or previous pane, with focus on its
     // sidebar item.
     function cycle-pane(forward: bool) {
-        if (root.active-pane == Pane.tvs) {
-            root.navigate(forward ? Pane.profiles : Pane.about);
-        } else if (root.active-pane == Pane.profiles) {
-            root.navigate(forward ? Pane.settings : Pane.tvs);
-        } else if (root.active-pane == Pane.settings) {
-            root.navigate(forward ? Pane.about : Pane.profiles);
-        } else {
-            root.navigate(forward ? Pane.tvs : Pane.settings);
-        }
+        root.navigate(forward
+            ? (root.active-pane == Pane.about ? Pane.tvs : root.pane-at(root.pane-index(root.active-pane) + 1))
+            : (root.active-pane == Pane.tvs ? Pane.about : root.pane-at(root.pane-index(root.active-pane) - 1)));
         root.focus-active-sidebar-item();
     }
 
@@ -342,15 +342,7 @@ export component AppWindow inherits Window {
     // the ring showing: couch mode's launch and re-activation state, so
     // a remote user sees where they are before pressing anything.
     public function focus-active-sidebar-item() {
-        if (root.active-pane == Pane.profiles) {
-            profiles-item.focus();
-        } else if (root.active-pane == Pane.settings) {
-            settings-item.focus();
-        } else if (root.active-pane == Pane.about) {
-            about-item.focus();
-        } else {
-            tvs-item.focus();
-        }
+        root.focus-pane-item(root.active-pane);
         Nav.focus-visible = true;
     }
 
