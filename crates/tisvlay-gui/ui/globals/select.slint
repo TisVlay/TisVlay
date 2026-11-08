@@ -358,9 +358,7 @@ export component ThemedSelect inherits Rectangle {
     property <int> anchor: -1;
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
-        if (root.enabled
-            && ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
-                || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id))) {
+        if (root.enabled && Nav.anchor-matches(root.anchor, root.accessible-id)) {
             Nav.anchor-served = Nav.anchor-tick;
             fs.focus();
         }

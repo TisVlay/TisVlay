@@ -1919,6 +1919,8 @@ fn escape_on_another_pane_leaves_a_tv_edit_out_of_sight_alone() {
     bind_key_router(&app);
     // The edit stays open on the TVs pane while Profiles shows.
     app.set_active_pane(Pane::Profiles);
+    // Nothing has focus yet, so the key goes to the window's
+    // `forward-focus`, nav-scope, whose chain this exercises.
     press(&app, Key::Escape);
     assert_eq!(
         app.global::<EditPane>().get_cancel_tick(),
@@ -2048,7 +2050,13 @@ fn an_arrow_after_a_click_on_empty_background_resumes_in_the_last_column() {
     assert!(ring_on(&app, "sidebar-tvs"));
     // A click on the sidebar's empty background focuses the shell's
     // own scope.
-    let position = slint::LogicalPosition::new(100.0, 900.0);
+    // Placed from the TVs item's geometry, below the four items and
+    // above Reload, so a layout change can't land it on a control.
+    let item = find_by_accessible_id(&app, "sidebar-tvs").expect("the TVs item renders");
+    let origin = item.absolute_position();
+    let size = item.size();
+    let position =
+        slint::LogicalPosition::new(origin.x + size.width / 2.0, origin.y + size.height * 7.0);
     app.window()
         .dispatch_event(slint::platform::WindowEvent::PointerPressed {
             position,
@@ -2272,4 +2280,130 @@ fn the_rail_stops_at_both_ends_and_the_couch_cycle_wraps() {
         app.get_active_pane() == Pane::About,
         "Shift+Tab before TVs wraps to About"
     );
+}
+
+#[test]
+fn removing_the_last_tv_with_others_left_lands_on_the_list() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-a", "tv-b"]);
+    bind_key_router(&app);
+    app.set_selected_tv_index(1);
+    make_tall(&app);
+    assert!(tab_to(&app, "tv-detail-tv-b-remove-button"));
+    // The selected TV, the last one, goes away; the selection index now
+    // names no row, as production leaves it.
+    app.get_tvs()
+        .as_any()
+        .downcast_ref::<VecModel<TvViewModel>>()
+        .expect("the test's own VecModel")
+        .remove(1);
+    settle();
+    settle();
+    assert!(
+        ring_on(&app, "tvs-row-tv-a"),
+        "the list takes focus on the row that is left"
+    );
+}
+
+#[test]
+fn a_column_request_for_the_sidebar_isnt_answered_by_a_single_column_pane() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_settings();
+    bind_key_router(&app);
+    let nav = app.global::<Nav>();
+    nav.set_focus_visible(true);
+    nav.invoke_request_column(0);
+    settle();
+    assert!(
+        ring_on(&app, "sidebar-settings"),
+        "the sidebar item took it"
+    );
+    assert_eq!(
+        visible_rings(&app),
+        1,
+        "and the pane's first control didn't"
+    );
+}
+
+#[test]
+fn a_number_field_shows_a_value_that_arrived_while_it_had_focus_once_left() {
+    i_slint_backend_testing::init_no_event_loop();
+    let (app, edits) = boot_two_number_rows();
+    assert!(tab_to(&app, "profiles-field-locked_idle_timeout_seconds"));
+    // Type a value and leave: committed, and the field shows it.
+    press_text(&app, SharedString::from("4"));
+    press_text(&app, SharedString::from("5"));
+    press(&app, Key::DownArrow);
+    assert_eq!(edits.borrow().len(), 1);
+    // The service echoes the value into the model (the headless tree
+    // updates its rows on a query, the change handler on a settle).
+    let fields = app.global::<Profiles>().get_editor_fields();
+    let echo = |value: i32| {
+        let mut entry = fields.row_data(0).expect("the first row");
+        entry.number_value = value;
+        fields.set_row_data(0, entry);
+        let _ = find_by_accessible_id(&app, "profiles-field-locked_idle_timeout_seconds");
+        settle();
+    };
+    echo(45);
+    // Back on the field, a reset's echo changes the value under it.
+    press(&app, Key::UpArrow);
+    echo(30);
+    press(&app, Key::DownArrow);
+    let input = find_by_accessible_id(&app, "profiles-field-locked_idle_timeout_seconds")
+        .expect("the spin box renders")
+        .query_descendants()
+        .match_accessible_role(AccessibleRole::TextInput)
+        .find_first()
+        .expect("the spin box's text input");
+    assert_eq!(
+        input.accessible_value().as_deref(),
+        Some("30"),
+        "the field shows the value that arrived, not what was typed before"
+    );
+    assert_eq!(edits.borrow().len(), 1, "and leaving committed nothing new");
+}
+
+#[test]
+fn reactivation_focuses_the_sidebar_only_when_nothing_of_ours_has_focus() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-1"]);
+    bind_key_router(&app);
+    app.global::<Couch>().set_active(true);
+    // A row has focus: re-activation leaves it there.
+    press(&app, Key::Tab);
+    press(&app, Key::RightArrow);
+    assert!(ring_on(&app, "tvs-row-tv-1"));
+    app.invoke_focus_on_reactivation();
+    settle();
+    assert!(ring_on(&app, "tvs-row-tv-1"), "focus stayed where it was");
+    // The shell's own scope has focus (a fresh window, a background
+    // click), and the window went inactive while the second launch was
+    // handed over: re-activation places focus on the active item.
+    app.global::<Nav>().set_focus_visible(false);
+    make_tall(&app);
+    let item = find_by_accessible_id(&app, "sidebar-tvs").expect("the TVs item renders");
+    let origin = item.absolute_position();
+    let size = item.size();
+    let position =
+        slint::LogicalPosition::new(origin.x + size.width / 2.0, origin.y + size.height * 7.0);
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    settle();
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    settle();
+    app.invoke_focus_on_reactivation();
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+    settle();
+    assert!(ring_on(&app, "sidebar-tvs"), "the active item took focus");
 }

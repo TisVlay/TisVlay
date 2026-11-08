@@ -7,7 +7,7 @@
 //! the arrow key's handler; `Nav.synthesizing` marks it so the shell's
 //! own Tab handling (couch mode's pane cycle) lets it through.
 //!
-//! The detail panes navigate by rows (docs/ideas/gui-spatial-navigation.md):
+//! The detail panes navigate by rows (docs/gui/remote-navigation.md):
 //! every stop reports the row it sits in as it takes focus, and a row
 //! step is a walk along the Tab order until the row changes, undone
 //! when the column changes instead (the order wrapped out of the

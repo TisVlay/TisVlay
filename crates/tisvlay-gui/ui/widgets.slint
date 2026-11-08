@@ -180,9 +180,7 @@ export component Focusable inherits Rectangle {
     // to the next item that accepts, hidden ones included.
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
-        if (root.enabled && root.focusable
-            && ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
-                || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id))) {
+        if (root.enabled && root.focusable && Nav.anchor-matches(root.anchor, root.accessible-id)) {
             Nav.anchor-served = Nav.anchor-tick;
             root.focus();
         }
@@ -1089,7 +1087,7 @@ export component LineEditField inherits Rectangle {
     reach := FocusScope {
         width: 100%;
         height: 100%;
-        enabled: !field.has-focus && !root.leaving-backwards;
+        enabled: root.enabled && !field.has-focus && !root.leaving-backwards;
         focus-on-click: false;
         key-pressed(event) => {
             if (root.couch && root.enabled && event.text == Key.Return) {
@@ -1116,9 +1114,7 @@ export component LineEditField inherits Rectangle {
     property <int> anchor: -1;
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
-        if (root.enabled
-            && ((Nav.anchor-seq == root.anchor && root.anchor >= 0)
-                || (Nav.anchor-id != "" && Nav.anchor-id == root.accessible-id))) {
+        if (root.enabled && Nav.anchor-matches(root.anchor, root.accessible-id)) {
             Nav.anchor-served = Nav.anchor-tick;
             root.take-focus();
         }
@@ -1222,7 +1218,7 @@ export component LineEditField inherits Rectangle {
                     }
                     changed has-focus => {
                         if (self.has-focus) {
-                            Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
+                            Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
                             root.anchor = Nav.focus-seq;
                         } else {
                             root.leaving-backwards = false;
@@ -1682,6 +1678,8 @@ export component ThemedSpinBox inherits Rectangle {
     function commit(v: int) {
         root.display = v.clamp(root.minimum.max(0), root.maximum);
         field.text = root.display;
+        // What was typed is in, so leaving won't commit it again.
+        root.typed = false;
         root.committed(root.display);
     }
     // Parse-and-commit a typed string; empty/invalid reverts (no write).
@@ -1799,12 +1797,16 @@ export component ThemedSpinBox inherits Rectangle {
             }
             changed has-focus => {
                 if (self.has-focus) {
-                    Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
+                    Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
                     root.seen-seq = Nav.focus-seq;
                     root.sync-idle();
                 } else {
                     if (root.typed) {
                         root.commit-text(self.text);
+                    } else {
+                        // A value that arrived while the field had focus
+                        // (a reset's echo) is shown now that it's left.
+                        self.text = root.display;
                     }
                     root.typed = false;
                     root.editing = false;

@@ -251,7 +251,7 @@ component ProfileList inherits Rectangle {
     property <int> focus-row-tick;
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
-        if (Nav.column-target == 1 || Profiles.selected-uuid == "") {
+        if (Nav.column-target != 0 && (Nav.column-target == 1 || Profiles.selected-uuid == "")) {
             Nav.column-served = Nav.column-tick;
             if (Profiles.selected-uuid != "") {
                 root.focus-kind = Profiles.selected-kind;

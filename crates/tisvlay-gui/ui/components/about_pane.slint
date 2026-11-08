@@ -202,9 +202,13 @@ export component AboutPane inherits Rectangle {
     in property <[AboutComponentRow]> components;
     in property <image> logo;
 
-    // A column request lands on the pane's first control.
+    // A column request lands on the pane's first control; one for the
+    // sidebar is the shell's.
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
+        if (Nav.column-target == 0) {
+            return;
+        }
         Nav.column-served = Nav.column-tick;
         brand.focus();
     }

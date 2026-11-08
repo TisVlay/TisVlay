@@ -19,7 +19,7 @@ import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Nav } from "../globals/nav.slint";
-import { Chip, Focusable, LineEditField, ListRow, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
+import { Chip, LineEditField, ListRow, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
 // =============================================================================
@@ -302,8 +302,8 @@ component StepDiscover {
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
         // The request the wizard's exit makes is the list's: this step
-        // is on its way out then.
-        if (!PairingWizard.active) {
+        // is on its way out then. One for the sidebar is the shell's.
+        if (!PairingWizard.active || Nav.column-target == 0) {
             return;
         }
         Nav.column-served = Nav.column-tick;
@@ -1115,7 +1115,7 @@ export component PairingWizardPane inherits Rectangle {
     property <int> footer-focus-tick;
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
-        if (PairingWizard.active && PairingWizard.step != 1) {
+        if (PairingWizard.active && PairingWizard.step != 1 && Nav.column-target != 0) {
             Nav.column-served = Nav.column-tick;
             if (root.next-enabled) {
                 next-button.focus();

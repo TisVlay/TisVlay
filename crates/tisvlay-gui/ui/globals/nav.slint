@@ -29,9 +29,12 @@ export global Nav {
     in-out property <bool> synthesizing: false;
 
     /// The column a pane was last asked to focus, and the request
-    /// counter a pane observes. A list created by the same change that
-    /// made the request (the wizard closing) sees no tick change, so it
-    /// checks `column-served` in its `init` instead.
+    /// counter a pane observes. Every answerer marks the request served:
+    /// a list created by the same change that made the request (the
+    /// wizard closing) sees no tick change, so it checks `column-served`
+    /// in its `init` instead, and an old request left unmarked would
+    /// pull focus into the next list created. A request for the sidebar
+    /// (target 0) is the shell's alone.
     in-out property <int> column-target: 0;
     in-out property <int> column-tick: 0;
     in-out property <int> column-served: 0;
@@ -82,7 +85,7 @@ export global Nav {
         self.value-idle = false;
     }
 
-    /// Rows (docs/ideas/gui-spatial-navigation.md). A detail row takes
+    /// Rows (docs/gui/remote-navigation.md). A detail row takes
     /// an id from `next-row-id` as it's created and hands it to its
     /// stops, which report it with their column on focus-in; 0 is a
     /// stop in no row (a dialog's button, a pane that isn't a form),
@@ -146,5 +149,12 @@ export global Nav {
         self.anchor-id = id;
         self.anchor-column = column;
         self.anchor-tick += 1;
+    }
+    /// Whether the request names a stop: by the count, for an instance
+    /// that still exists, or by the id, for one re-created with its
+    /// pane (history back).
+    public pure function anchor-matches(anchor: int, id: string) -> bool {
+        return (self.anchor-seq == anchor && anchor >= 0)
+            || (self.anchor-id != "" && self.anchor-id == id);
     }
 }
